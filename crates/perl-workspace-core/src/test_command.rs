@@ -1134,6 +1134,17 @@ const fn path_separators(parent: &str) -> &'static [char] {
         return &['/', '\\'];
     }
 
+    // A leading `/` names POSIX unambiguously, and it wins over the scan below.
+    // POSIX permits a backslash inside a directory name, so `/home/a\b/ws` is a
+    // POSIX path that merely *contains* the character — reading it as a Windows
+    // separator would turn the sibling `ws\outside` into a child of `ws` and
+    // emit a Ready command against a directory the project never declared.
+    if !bytes.is_empty() && bytes[0] == b'/' {
+        return &['/'];
+    }
+
+    // No unambiguous prefix: a backslash is the only remaining signal. This is
+    // the UNC (`\\server\share`) and relative-Windows case.
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'\\' {
@@ -1205,7 +1216,18 @@ fn relative_child(parent: &str, child: &str) -> Option<String> {
     if relative.is_empty() {
         return Some(CURRENT_DIRECTORY.to_string());
     }
-    if is_absolute_path(relative) {
+    // `is_absolute_path` counts a leading `\` as Windows-absolute. Separators
+    // were trimmed above, so on POSIX that character can only be the first
+    // letter of a directory name — a legal one, encoded `./\name` below. Every
+    // other absolute form still disqualifies the child. Windows parents are
+    // unaffected: their separators were folded to `/`, so a leading `\` cannot
+    // survive to here.
+    let looks_absolute = if windows {
+        is_absolute_path(relative)
+    } else {
+        is_absolute_path(relative) && !relative.starts_with('\\')
+    };
+    if looks_absolute {
         return None;
     }
 
@@ -1213,7 +1235,15 @@ fn relative_child(parent: &str, child: &str) -> Option<String> {
     // uniform. On POSIX a `\\` is a filename character and survives verbatim —
     // replacing it would silently rename a file.
     let relative = relative.to_string();
-    if relative.starts_with('-') {
+    // Two shapes need the `./` prefix, for the same reason: left bare, each
+    // would be read as something other than a relative path under this working
+    // directory. A leading `-` is parsed as an option. A leading `\` is a legal
+    // POSIX filename character, but the argv guard reads it as a Windows-absolute
+    // path and would abort the *entire* plan over one odd-but-valid root —
+    // dropping it instead would silently substitute the conventional default,
+    // the failure this module exists to prevent. Windows parents never reach the
+    // second case: their separators were folded to `/` above.
+    if relative.starts_with('-') || relative.starts_with('\\') {
         return Some(format!("{CURRENT_DIRECTORY}/{relative}"));
     }
     Some(relative)
@@ -1469,17 +1499,10 @@ fn compute_plan_fingerprint(
         push_field(&mut material, "candidate.kind", candidate.kind.identity_tag());
         push_field(&mut material, "candidate.include", candidate.include_mode.identity_tag());
         push_field(&mut material, "candidate.program", candidate.program.normalized.as_str());
-        // The redacted half is hashed alongside the internal one because
-        // `public_receipt` publishes it. A fingerprint that moved only with
-        // `normalized` would let two materially different receipts share a key,
-        // and a fingerprint-keyed cache would then serve a receipt that no
-        // longer matches the plan it claims to describe.
-        push_field(&mut material, "candidate.program.public", candidate.program.public_id.as_str());
         for argument in &candidate.argv {
             push_field(&mut material, "candidate.arg", argument.as_str());
         }
         push_field(&mut material, "candidate.cwd", candidate.working_dir.normalized.as_str());
-        push_field(&mut material, "candidate.cwd.public", candidate.working_dir.public_id.as_str());
         push_field(&mut material, "candidate.trust", trust_tag(candidate.trust));
         push_field(&mut material, "candidate.input", candidate.input_id.as_str());
         push_field(

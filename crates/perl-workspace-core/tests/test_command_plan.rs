@@ -1338,6 +1338,85 @@ fn a_windows_backslash_child_still_resolves() -> Result<(), FixtureError> {
     Ok(())
 }
 
+/// A POSIX workspace may itself contain a backslash in a directory name, and
+/// inferring Windows from that character turns a *sibling* into a child. A
+/// leading `/` names POSIX unambiguously, so it wins over the backslash
+/// heuristic. Rules out: reading a valid POSIX filename character as a platform
+/// signal, which would produce a Ready command targeting another directory.
+#[test]
+fn a_posix_workspace_containing_a_backslash_does_not_adopt_windows_rules()
+-> Result<(), FixtureError> {
+    let root_input = accepted_input("root.workspace");
+    let tool_input = accepted_input("tool.prove");
+    let test_input = accepted_input("root.test");
+    let snapshot =
+        ProjectEnvironmentSnapshotBuilder::new(WORKSPACE_ID, 11, WorkspaceTrust::Trusted)
+            .with_input(root_input.clone())
+            .with_input(tool_input.clone())
+            .with_input(test_input.clone())
+            .with_project_root(ProjectRoot::new(
+                ProjectRootRole::Workspace,
+                path("/home/a\\b/ws"),
+                root_input.id.clone(),
+            ))
+            // A sibling on POSIX: `ws` and `ws\outside` are different directories.
+            .with_project_root(ProjectRoot::new(
+                ProjectRootRole::Test,
+                path("/home/a\\b/ws\\outside/t"),
+                test_input.id.clone(),
+            ))
+            .with_tool_candidate(prove_tool(tool_input.id.clone()))
+            .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+    let candidate = prove.first().ok_or(FixtureError::Missing("prove"))?;
+
+    assert_ne!(
+        candidate.argv,
+        vec!["-l".to_string(), "outside/t".to_string()],
+        "a POSIX sibling must not be adopted as a child"
+    );
+    assert_eq!(candidate.admission, TestCommandAdmission::BlockedIncompleteTestRoots);
+    assert!(
+        plan.limitations
+            .iter()
+            .any(|item| item.code == "test_command.test_root_outside_working_directory"),
+        "the detached sibling is reported"
+    );
+    Ok(())
+}
+
+/// A POSIX directory may legitimately begin with a backslash. The argv guard
+/// rejects absolute-looking arguments, so such a root would abort the entire
+/// plan rather than yield a candidate. It is encoded `./\name` exactly as an
+/// option-shaped root is. Rules out: one odd but valid root destroying every
+/// candidate in the plan.
+#[test]
+fn a_posix_root_beginning_with_a_backslash_is_encoded_not_fatal() -> Result<(), FixtureError> {
+    let (builder, _) = base_builder();
+    let tool_input = accepted_input("tool.prove");
+    let test_input = accepted_input("root.test");
+    let snapshot = builder
+        .with_input(tool_input.clone())
+        .with_input(test_input.clone())
+        .with_tool_candidate(prove_tool(tool_input.id.clone()))
+        .with_project_root(ProjectRoot::new(
+            ProjectRootRole::Test,
+            path("/ws/\\tests"),
+            test_input.id.clone(),
+        ))
+        .build()?;
+
+    let plan = plan_test_commands(&snapshot, &GeneratedStateEvidence::for_snapshot(&snapshot))?;
+    let prove = candidates_of(&plan.candidates, TestRunnerKind::Prove);
+    let candidate = prove.first().ok_or(FixtureError::Missing("prove"))?;
+
+    assert_eq!(candidate.argv, vec!["-l".to_string(), "./\\tests".to_string()]);
+    assert_eq!(candidate.admission, TestCommandAdmission::Ready);
+    Ok(())
+}
+
 /// A drive letter names Windows whichever separator the producer wrote, so
 /// `C:/ws` accepts a `\` child exactly as `C:\ws` does — `is_absolute_path`
 /// already treats both spellings as Windows-absolute. Rules out: inferring the
@@ -1667,20 +1746,33 @@ fn a_receipt_difference_always_moves_the_plan_fingerprint() -> Result<(), Fixtur
         Ok(plan_test_commands(&snapshot, &evidence)?)
     };
 
-    for varied in [
-        PublishedIdentity::Program,
-        PublishedIdentity::WorkingDirectory,
-        PublishedIdentity::ArtifactLocation,
-    ] {
+    // The artifact location comes from caller-supplied `GeneratedStateEvidence`,
+    // which is not part of the snapshot, so `EnvironmentFingerprint` cannot
+    // carry it. That makes this arm a genuine independence proof: the plan
+    // fingerprint must move on its own account.
+    let left = plan_with(PublishedIdentity::ArtifactLocation, "public:one")?;
+    let right = plan_with(PublishedIdentity::ArtifactLocation, "public:two")?;
+    assert_eq!(
+        left.environment_fingerprint, right.environment_fingerprint,
+        "evidence is not snapshot material, so the snapshot fingerprint cannot separate these"
+    );
+    assert_ne!(left.public_receipt(), right.public_receipt(), "the receipts genuinely differ");
+    assert_ne!(
+        left.fingerprint, right.fingerprint,
+        "a published difference must move the fingerprint that keys it"
+    );
+
+    // The program and working directory are snapshot-sourced, and current `main`
+    // now folds each published `public_id` into `EnvironmentFingerprint`, which
+    // this plan already hashes. These arms are therefore regression guards, not
+    // independence proofs: asserting the snapshot fingerprint is unchanged would
+    // be false, and asserting the plan fingerprint moved proves only that *some*
+    // input did. Stated rather than quietly dropped, so the evidence is not read
+    // as stronger than it is.
+    for varied in [PublishedIdentity::Program, PublishedIdentity::WorkingDirectory] {
         let left = plan_with(varied, "public:one")?;
         let right = plan_with(varied, "public:two")?;
 
-        // The premise: only the redacted half moved. If the snapshot fingerprint
-        // already separated these, this test would prove nothing about the plan.
-        assert_eq!(
-            left.environment_fingerprint, right.environment_fingerprint,
-            "the snapshot fingerprint does not cover public identities, so the plan must"
-        );
         assert_ne!(
             left.public_receipt(),
             right.public_receipt(),
@@ -1691,6 +1783,51 @@ fn a_receipt_difference_always_moves_the_plan_fingerprint() -> Result<(), Fixtur
             "a published difference must move the fingerprint that keys it"
         );
     }
+    Ok(())
+}
+
+/// The Module::Build launcher is the one candidate whose *program* comes from
+/// caller-supplied evidence rather than from the snapshot, so it is the case
+/// where the plan fingerprint must carry the program's published identity on
+/// its own account. Rules out: relying on `EnvironmentFingerprint` to cover a
+/// program it never sees.
+#[test]
+fn a_build_launcher_identity_moves_the_plan_fingerprint() -> Result<(), FixtureError> {
+    let plan_with_launcher_id = |public_id: &str| -> Result<TestCommandPlan, FixtureError> {
+        let (builder, _) = base_builder();
+        let build_input = accepted_input("build.module_build");
+        let snapshot = builder
+            .with_input(build_input.clone())
+            .with_build_system(build_fact(BuildSystemKind::ModuleBuild, build_input.id.clone()))
+            .build()?;
+
+        let evidence = GeneratedStateEvidence::for_snapshot(&snapshot).with_observation(
+            GeneratedArtifact::BuildScript,
+            GeneratedStateObservation::new(
+                GeneratedStateFreshness::Current,
+                Some(EnvironmentPathRef::new("/ws/Build", public_id)),
+                "fixture",
+            ),
+        );
+        Ok(plan_test_commands(&snapshot, &evidence)?)
+    };
+
+    let left = plan_with_launcher_id("public:build-one")?;
+    let right = plan_with_launcher_id("public:build-two")?;
+
+    let launcher = candidates_of(&left.candidates, TestRunnerKind::BuildTest);
+    let candidate = launcher.first().ok_or(FixtureError::Missing("Build test"))?;
+    assert_eq!(candidate.program.public_id, "public:build-one", "the program is evidence-sourced");
+
+    assert_eq!(
+        left.environment_fingerprint, right.environment_fingerprint,
+        "the launcher is not snapshot material, so the snapshot fingerprint cannot separate these"
+    );
+    assert_ne!(left.public_receipt(), right.public_receipt(), "the receipts genuinely differ");
+    assert_ne!(
+        left.fingerprint, right.fingerprint,
+        "an evidence-sourced program identity must move the plan fingerprint"
+    );
     Ok(())
 }
 
