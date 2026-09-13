@@ -144,6 +144,7 @@ struct ResponsePlan {
 struct State {
     script: VecDeque<ScriptedServerRequest>,
     observed: Vec<ObservedServerRequest>,
+    cancelled: bool,
 }
 
 pub(crate) struct ServerRequestScript {
@@ -166,7 +167,11 @@ impl ServerRequestScript {
         stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
         script: Vec<ScriptedServerRequest>,
     ) -> Result<(Self, ServerRequestObserver)> {
-        let state = Arc::new(Mutex::new(State { script: script.into(), observed: Vec::new() }));
+        let state = Arc::new(Mutex::new(State {
+            script: script.into(),
+            observed: Vec::new(),
+            cancelled: false,
+        }));
         let state_cv = Arc::new(Condvar::new());
         let (response_tx, response_rx) = mpsc::channel::<(usize, ResponsePlan)>();
         let response_tx = Arc::new(Mutex::new(Some(response_tx)));
@@ -185,28 +190,33 @@ impl ServerRequestScript {
                     let worker = std::thread::Builder::new()
                         .name(format!("ux-scripted-response-{index}"))
                         .spawn(move || {
-                            if !plan.delay.is_zero() {
-                                // ux-timing: deliberate-stimulus — the scripted response delay is the behavior under test
-                                std::thread::sleep(plan.delay);
-                            }
-                            let delivery = match worker_stdin.lock() {
-                                Ok(mut stdin) => match stdin.as_mut() {
-                                    Some(stdin) => {
-                                        match super::write_framed_to(stdin, &plan.response) {
-                                            Ok(()) => ServerRequestDelivery::Sent,
-                                            Err(error) => {
-                                                ServerRequestDelivery::Failed(format!("{error:#}"))
+                            let delivery =
+                                if wait_for_delay(&worker_state, &worker_state_cv, plan.delay) {
+                                    match worker_stdin.lock() {
+                                        Ok(mut stdin) => match stdin.as_mut() {
+                                            Some(stdin) => {
+                                                match super::write_framed_to(stdin, &plan.response)
+                                                {
+                                                    Ok(()) => ServerRequestDelivery::Sent,
+                                                    Err(error) => ServerRequestDelivery::Failed(
+                                                        format!("{error:#}"),
+                                                    ),
+                                                }
                                             }
-                                        }
+                                            None => ServerRequestDelivery::Failed(
+                                                "LSP client stdin is already closed".into(),
+                                            ),
+                                        },
+                                        Err(error) => ServerRequestDelivery::Failed(format!(
+                                            "failed to lock LSP client stdin: {error}"
+                                        )),
                                     }
-                                    None => ServerRequestDelivery::Failed(
-                                        "LSP client stdin is already closed".into(),
-                                    ),
-                                },
-                                Err(error) => ServerRequestDelivery::Failed(format!(
-                                    "failed to lock LSP client stdin: {error}"
-                                )),
-                            };
+                                } else {
+                                    ServerRequestDelivery::Failed(
+                                        "scripted response cancelled before its delay elapsed"
+                                            .into(),
+                                    )
+                                };
                             set_delivery(&worker_state, &worker_state_cv, index, delivery);
                         });
                     match worker {
@@ -250,6 +260,7 @@ impl ServerRequestScript {
                 })
             {
                 drop(state);
+                self.cancel();
                 self.join_workers()?;
                 return Err(anyhow!("failed to answer {}: {}", failure.0, failure.1));
             }
@@ -309,7 +320,14 @@ impl ServerRequestScript {
         Ok(())
     }
 
+    fn cancel(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.cancelled = true;
+        self.state_cv.notify_all();
+    }
+
     pub(crate) fn settle(mut self) {
+        self.cancel();
         self.response_tx.lock().unwrap_or_else(|error| error.into_inner()).take();
         if let Some(dispatcher) = self.dispatcher.take() {
             let _ = dispatcher.join();
@@ -373,6 +391,26 @@ impl ServerRequestObserver {
                     ServerRequestDelivery::Failed("response dispatcher stopped".into()),
                 );
             }
+        }
+    }
+}
+
+fn wait_for_delay(state: &Arc<Mutex<State>>, state_cv: &Arc<Condvar>, delay: Duration) -> bool {
+    let deadline = Instant::now() + delay;
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    loop {
+        if state.cancelled {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return true;
+        }
+        let (next_state, timeout) =
+            state_cv.wait_timeout(state, remaining).unwrap_or_else(|error| error.into_inner());
+        state = next_state;
+        if timeout.timed_out() {
+            return !state.cancelled;
         }
     }
 }
