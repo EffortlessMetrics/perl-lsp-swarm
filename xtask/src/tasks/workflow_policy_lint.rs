@@ -480,6 +480,8 @@ fn command_tokens_invoke_xtask_cli(tokens: &[String]) -> bool {
         Some((first, tail)) if first.starts_with('+') => tail,
         _ => args,
     };
+    // Cargo's own options may precede the subcommand without changing it.
+    let args = skip_cargo_global_options(args);
     if selects_another_target(args) {
         return false;
     }
@@ -501,6 +503,30 @@ fn command_tokens_invoke_xtask_cli(tokens: &[String]) -> bool {
         }
         _ => false,
     }
+}
+
+/// Cargo options accepted before the subcommand that consume a separate value.
+const CARGO_GLOBAL_OPTIONS_WITH_VALUE: &[&str] = &["--color", "--config", "--explain", "-Z", "-C"];
+
+/// Skip cargo's own options, which sit between `cargo` and its subcommand
+/// without changing which subcommand runs — `cargo --offline xtask …`,
+/// `cargo -q run -p xtask -- …`, `cargo --color always xtask …`.
+///
+/// Stops at the first argument that is not an option, which is the subcommand.
+/// A subcommand's own `--bin`/`--example` therefore stays visible to
+/// [`selects_another_target`].
+fn skip_cargo_global_options(mut args: &[String]) -> &[String] {
+    while let Some(first) = args.first().map(String::as_str) {
+        if !first.starts_with('-') {
+            break;
+        }
+        let takes_value = CARGO_GLOBAL_OPTIONS_WITH_VALUE.contains(&first);
+        args = &args[1..];
+        if takes_value && !args.is_empty() {
+            args = &args[1..];
+        }
+    }
+    args
 }
 
 /// Whether the arguments select a build target other than the default `xtask`
@@ -2095,6 +2121,10 @@ mod tests {
             "cargo run --manifest-path xtask/Cargo.toml -- example-contract check",
             "cargo +stable xtask example-contract check",
             "cargo +nightly run -p xtask -- example-contract check",
+            "cargo --offline xtask example-contract check",
+            "cargo -q run -p xtask -- example-contract check",
+            "cargo --color always xtask example-contract check",
+            "cargo +stable --locked xtask example-contract check",
             "RUST_LOG=debug cargo xtask example-contract check",
             "env RUST_LOG=debug cargo xtask example-contract check",
             "sudo -E cargo xtask example-contract check",
@@ -2108,6 +2138,9 @@ mod tests {
             "cargo test -p xtask --locked --test example_contract",
             "cargo build -p xtask",
             "cargo +stable test -p xtask",
+            "cargo --offline test -p xtask",
+            "cargo -q build -p xtask",
+            "cargo --color always run -p xtask --bin other -- check",
             "echo 'run cargo xtask example-contract check locally'",
             "echo -n 10 cargo xtask example-contract check",
             "# cargo xtask example-contract check",
