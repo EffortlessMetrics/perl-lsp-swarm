@@ -75,6 +75,37 @@ fn recovered_missing_operand_reports_its_stored_location() -> Result<(), Box<dyn
 }
 
 #[test]
+fn same_line_residue_maps_to_the_residual_token_range() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "my $x = 1 print \"hi\";\n";
+    let output = Parser::new(source).parse_with_recovery();
+    let location = output
+        .diagnostics
+        .iter()
+        .find_map(|error| match error {
+            ParseError::Recovered {
+                site: RecoverySite::Statement,
+                kind: RecoveryKind::UnexpectedSameLineResidue,
+                location,
+            } => Some(*location),
+            _ => None,
+        })
+        .ok_or("parser did not emit same-line residue recovery")?;
+    let parse_errors = output.diagnostics.clone();
+    let ast = Arc::new(output.ast);
+    let provider = DiagnosticsProvider::new();
+    let diagnostics = provider.get_diagnostics(&ast, &parse_errors, source, None);
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.range.0 == location)
+        .ok_or("same-line residual diagnostic was not emitted")?;
+
+    assert_eq!(location, source.find("print").ok_or("missing residual token")?);
+    assert_eq!(diagnostic.range, (location, location + 1));
+    assert_eq!(diagnostic.message, "Unexpected same-line residue after the statement");
+    Ok(())
+}
+
+#[test]
 fn unexpected_token_still_reports_its_location() -> Result<(), Box<dyn std::error::Error>> {
     let error = ParseError::unexpected("semicolon", "}", 25);
     assert_eq!(parse_diagnostic_start(SOURCE, error), Some(25));
