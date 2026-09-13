@@ -1,10 +1,11 @@
 //! Diagnostics-focused helpers for UX harness orchestration.
 
 use crate::LspEvent;
+use crate::client::EventSource;
 use serde_json::Value;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// Polling helper for diagnostics events in the UX harness queue.
+/// Event-driven helper for diagnostics events in the UX harness queue.
 pub struct DiagnosticsTracker;
 
 impl DiagnosticsTracker {
@@ -49,20 +50,23 @@ impl DiagnosticsTracker {
     }
 
     /// Wait until diagnostics for `uri` satisfy `predicate`, returning the
-    /// matching payload. Returns `None` on timeout.
+    /// matching payload. Returns `None` on timeout — and also when the
+    /// stream ends first: a closed transport and an expired bound are
+    /// indistinguishable here. Callers that must tell them apart should use
+    /// `wait_for_events` and keep the [`WaitEnd`](crate::observation::WaitEnd).
     ///
-    /// The `events_provider` closure is called on each poll cycle to get the
-    /// current event snapshot. Use `peek_events` (non-draining) to allow
-    /// repeated calls to see events that arrived since the last drain.
+    /// `events` is the observation source to block on — normally the scenario's
+    /// `UxClient`. Events are never consumed by the wait, so a later waiter
+    /// still sees everything this one matched on.
     ///
     /// # Timeout behaviour
     ///
-    /// At least one predicate check always runs before the deadline is tested.
-    /// If the predicate still has not matched when the deadline expires, `None`
-    /// is returned on the very next iteration — so the effective ceiling is
-    /// `timeout + poll_interval` (50 ms by default).
+    /// The wait is event-driven: `predicate` is re-evaluated when the server
+    /// publishes something, not on a timer, so `timeout` is a pure outer bound
+    /// rather than a rounding term. A matching payload already buffered returns
+    /// without ever consulting the deadline.
     pub fn wait_for_uri_matching<F>(
-        mut events_provider: impl FnMut() -> Vec<LspEvent>,
+        events: &impl EventSource,
         uri: &str,
         timeout: Duration,
         mut predicate: F,
@@ -70,60 +74,56 @@ impl DiagnosticsTracker {
     where
         F: FnMut(&[Value]) -> bool,
     {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let events = events_provider();
-            if let Some(diagnostics) = Self::latest_for_uri(&events, uri)
-                && predicate(&diagnostics)
-            {
-                return Some(diagnostics);
-            }
-
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        events
+            .wait_for_events(timeout, |observed| {
+                Self::latest_for_uri(observed, uri).filter(|diagnostics| predicate(diagnostics))
+            })
+            .ok()
     }
 
     /// Wait until at least one diagnostics payload newer than `already_seen`
     /// matching events is available for `uri`.
     pub fn wait_for_uri_after_count(
-        mut events_provider: impl FnMut() -> Vec<LspEvent>,
+        events: &impl EventSource,
         uri: &str,
         already_seen: usize,
         timeout: Duration,
     ) -> Option<Vec<Value>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let events = events_provider();
-            if let Some(diagnostics) = Self::latest_for_uri_after_count(&events, uri, already_seen)
-            {
-                return Some(diagnostics);
-            }
-
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        events
+            .wait_for_events(timeout, |observed| {
+                Self::latest_for_uri_after_count(observed, uri, already_seen)
+            })
+            .ok()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
+    // The #3021 `unwrap_used` expectation is gone: these waits no longer poll a
+    // hand-rolled provider, so they no longer need to unwrap shared test state.
     use super::DiagnosticsTracker;
     use crate::LspEvent;
-    use serde_json::json;
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use crate::observation::Inbox;
+    use serde_json::{Value, json};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    /// A generous outer bound. Every passing wait below must finish far inside
+    /// it — a test that only passes by consuming it has proved nothing.
+    const GENEROUS: Duration = Duration::from_secs(30);
+
+    /// Build the raw notification the server actually sends, so these waits are
+    /// driven through the same decode path production uses.
+    fn publish(uri: &str, diagnostics: Vec<Value>) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": uri, "version": 1, "diagnostics": diagnostics },
+        })
+    }
 
     #[test]
-    fn latest_for_uri_prefers_most_recent_payload() {
+    fn latest_for_uri_prefers_most_recent_payload() -> anyhow::Result<()> {
         let events = vec![
             LspEvent::Diagnostics {
                 uri: "file:///a.pl".to_string(),
@@ -143,22 +143,30 @@ mod tests {
         ];
 
         let latest = DiagnosticsTracker::latest_for_uri(&events, "file:///a.pl");
-        assert_eq!(latest, Some(vec![json!({"message": "new"})]));
+        anyhow::ensure!(
+            latest == Some(vec![json!({"message": "new"})]),
+            "expected only the newer diagnostic payload, got {latest:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn latest_for_uri_returns_none_when_no_match() {
+    fn latest_for_uri_returns_none_when_no_match() -> anyhow::Result<()> {
         let events = vec![LspEvent::Diagnostics {
             uri: "file:///b.pl".to_string(),
             version: Some(1),
             diagnostics: vec![json!({"message": "other"})],
         }];
         let latest = DiagnosticsTracker::latest_for_uri(&events, "file:///a.pl");
-        assert!(latest.is_none());
+        anyhow::ensure!(
+            latest.is_none(),
+            "no matching new diagnostic payload expected, got {latest:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn count_for_uri_counts_only_matching_diagnostics() {
+    fn count_for_uri_counts_only_matching_diagnostics() -> anyhow::Result<()> {
         let events = vec![
             LspEvent::Diagnostics {
                 uri: "file:///a.pl".to_string(),
@@ -177,11 +185,15 @@ mod tests {
             },
         ];
 
-        assert_eq!(DiagnosticsTracker::count_for_uri(&events, "file:///a.pl"), 2);
+        anyhow::ensure!(
+            DiagnosticsTracker::count_for_uri(&events, "file:///a.pl") == 2,
+            "expected two diagnostics for a.pl; events: {events:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn latest_for_uri_after_count_returns_newer_payload() {
+    fn latest_for_uri_after_count_returns_newer_payload() -> anyhow::Result<()> {
         let events = vec![
             LspEvent::Diagnostics {
                 uri: "file:///a.pl".to_string(),
@@ -197,11 +209,15 @@ mod tests {
 
         let latest = DiagnosticsTracker::latest_for_uri_after_count(&events, "file:///a.pl", 1);
 
-        assert_eq!(latest, Some(vec![json!({"message": "new"})]));
+        anyhow::ensure!(
+            latest == Some(vec![json!({"message": "new"})]),
+            "expected only the newer diagnostic payload, got {latest:?}"
+        );
+        Ok(())
     }
 
     #[test]
-    fn latest_for_uri_after_count_returns_none_without_newer_payload() {
+    fn latest_for_uri_after_count_returns_none_without_newer_payload() -> anyhow::Result<()> {
         let events = vec![LspEvent::Diagnostics {
             uri: "file:///a.pl".to_string(),
             version: Some(1),
@@ -210,97 +226,116 @@ mod tests {
 
         let latest = DiagnosticsTracker::latest_for_uri_after_count(&events, "file:///a.pl", 1);
 
-        assert!(latest.is_none());
-    }
-
-    /// `wait_for_uri_matching` returns immediately when the first event snapshot
-    /// already satisfies the predicate — no polling delay.
-    #[test]
-    fn wait_for_uri_matching_returns_on_immediate_match() {
-        let events = vec![LspEvent::Diagnostics {
-            uri: "file:///a.pl".to_string(),
-            version: Some(1),
-            diagnostics: vec![],
-        }];
-        let result = DiagnosticsTracker::wait_for_uri_matching(
-            || events.clone(),
-            "file:///a.pl",
-            Duration::from_millis(500),
-            |diags| diags.is_empty(),
+        anyhow::ensure!(
+            latest.is_none(),
+            "no matching new diagnostic payload expected, got {latest:?}"
         );
-        assert_eq!(result, Some(vec![]), "expected immediate match on empty diagnostics");
+        Ok(())
     }
 
-    /// `wait_for_uri_matching` returns `None` when the predicate never matches
-    /// within the timeout, without blocking for longer than necessary.
+    /// An already-buffered matching payload returns without ever consulting
+    /// the deadline — there is no poll interval to round up to.
     #[test]
-    fn wait_for_uri_matching_returns_none_on_timeout() {
-        // Provider always returns a non-empty diagnostic — predicate for empty never fires.
-        let result = DiagnosticsTracker::wait_for_uri_matching(
-            || {
-                vec![LspEvent::Diagnostics {
-                    uri: "file:///a.pl".to_string(),
-                    version: Some(1),
-                    diagnostics: vec![json!({"message": "err"})],
-                }]
-            },
-            "file:///a.pl",
-            Duration::from_millis(120), // short timeout so the test runs quickly
-            |diags| diags.is_empty(),   // never satisfied
+    fn wait_for_uri_matching_returns_on_immediate_match() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish("file:///a.pl", vec![]));
+
+        let started = Instant::now();
+        let result =
+            DiagnosticsTracker::wait_for_uri_matching(&inbox, "file:///a.pl", GENEROUS, |diags| {
+                diags.is_empty()
+            });
+
+        anyhow::ensure!(result == Some(vec![]), "expected immediate match on empty diagnostics");
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(1),
+            "a buffered match must not depend on the deadline, took {:?}",
+            started.elapsed()
         );
-        assert!(result.is_none(), "expected None when predicate never matches within timeout");
+        Ok(())
     }
 
-    /// `wait_for_uri_matching` returns the payload once the predicate is satisfied
-    /// on a later poll cycle (simulated by a counter-based provider).
+    /// A live stream that never satisfies the predicate reports the bound.
     #[test]
-    fn wait_for_uri_matching_returns_when_predicate_satisfied_later() {
-        // First two calls return errors; third returns empty (cleared).
-        let call_count = Arc::new(Mutex::new(0usize));
-        let call_count_clone = call_count.clone();
+    fn wait_for_uri_matching_returns_none_on_timeout() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish("file:///a.pl", vec![json!({"message": "err"})]));
 
         let result = DiagnosticsTracker::wait_for_uri_matching(
-            move || {
-                let mut count = call_count_clone.lock().unwrap();
-                *count += 1;
-                let diags = if *count < 3 {
-                    vec![json!({"message": "err"})]
-                } else {
-                    vec![] // cleared on third call
-                };
-                vec![LspEvent::Diagnostics {
-                    uri: "file:///a.pl".to_string(),
-                    version: Some(1),
-                    diagnostics: diags,
-                }]
-            },
+            &inbox,
             "file:///a.pl",
-            Duration::from_secs(5),
-            |diags| diags.is_empty(),
-        );
-
-        assert_eq!(result, Some(vec![]), "expected empty payload when diagnostics clear");
-        let calls = *call_count.lock().unwrap();
-        assert!(calls >= 3, "expected at least 3 provider calls, got {}", calls);
-    }
-
-    /// `wait_for_uri_matching` ignores events for other URIs and does not
-    /// falsely trigger the predicate on them.
-    #[test]
-    fn wait_for_uri_matching_ignores_other_uris() {
-        // Provider always returns empty diagnostics but for the WRONG URI.
-        let result = DiagnosticsTracker::wait_for_uri_matching(
-            || {
-                vec![LspEvent::Diagnostics {
-                    uri: "file:///b.pl".to_string(), // different URI
-                    version: Some(1),
-                    diagnostics: vec![],
-                }]
-            },
-            "file:///a.pl", // we're waiting on a.pl
             Duration::from_millis(120),
             |diags| diags.is_empty(),
         );
-        assert!(result.is_none(), "should not match events for a different URI");
+
+        anyhow::ensure!(
+            result.is_none(),
+            "expected None when predicate never matches within timeout"
+        );
+        Ok(())
+    }
+
+    /// The wait wakes on the *publication that clears the file*, not on a timer.
+    ///
+    /// The clearing notification is published from another thread after the
+    /// waiter is already blocked, so a wait that depended on a poll interval
+    /// would be measurably slower than one driven by the event itself.
+    #[test]
+    fn wait_for_uri_matching_returns_when_diagnostics_clear_later() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish("file:///a.pl", vec![json!({"message": "err"})]));
+
+        let publisher = inbox.clone();
+        let clearing = thread::spawn(move || {
+            publisher.push_event(publish("file:///a.pl", vec![]));
+        });
+
+        let result =
+            DiagnosticsTracker::wait_for_uri_matching(&inbox, "file:///a.pl", GENEROUS, |diags| {
+                diags.is_empty()
+            });
+        let _ = clearing.join();
+
+        anyhow::ensure!(result == Some(vec![]), "expected empty payload when diagnostics clear");
+        Ok(())
+    }
+
+    /// Traffic for another file wakes the waiter but cannot satisfy it.
+    #[test]
+    fn wait_for_uri_matching_ignores_other_uris() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish("file:///b.pl", vec![]));
+
+        let result = DiagnosticsTracker::wait_for_uri_matching(
+            &inbox,
+            "file:///a.pl",
+            Duration::from_millis(120),
+            |diags| diags.is_empty(),
+        );
+
+        anyhow::ensure!(result.is_none(), "should not match events for a different URI");
+        Ok(())
+    }
+
+    /// A newer publication for the file must supersede the already-seen ones.
+    #[test]
+    fn wait_for_uri_after_count_wakes_on_the_newer_publication() -> anyhow::Result<()> {
+        let inbox = Inbox::new();
+        inbox.push_event(publish("file:///a.pl", vec![json!({"message": "old"})]));
+
+        let publisher = inbox.clone();
+        let later = thread::spawn(move || {
+            publisher.push_event(publish("file:///a.pl", vec![json!({"message": "new"})]));
+        });
+
+        let result =
+            DiagnosticsTracker::wait_for_uri_after_count(&inbox, "file:///a.pl", 1, GENEROUS);
+        let _ = later.join();
+
+        anyhow::ensure!(
+            result == Some(vec![json!({"message": "new"})]),
+            "expected only the newer diagnostic payload, got {result:?}"
+        );
+        Ok(())
     }
 }

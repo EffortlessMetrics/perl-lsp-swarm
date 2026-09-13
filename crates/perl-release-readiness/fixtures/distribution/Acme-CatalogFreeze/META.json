@@ -1,0 +1,15 @@
+{
+   "abstract" : "Minimal catalog v1 control distribution",
+   "author" : ["Catalog Freeze <devnull@example.com>"],
+   "dynamic_config" : 0,
+   "generated_by" : "hand-authored for perl-kwalitee catalog v1",
+   "license" : ["perl_5"],
+   "meta-spec" : { "url" : "https://metacpan.org/pod/CPAN::Meta::Spec", "version" : 2 },
+   "name" : "Acme-CatalogFreeze",
+   "prereqs" : { "runtime" : { "requires" : { "perl" : "5.008" } } },
+   "release_status" : "stable",
+   "version" : "0.001",
+   "provides" : {
+      "Acme::CatalogFreeze" : { "file" : "lib/Acme/CatalogFreeze.pm", "version" : "0.001" }
+   }
+}

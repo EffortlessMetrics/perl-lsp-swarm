@@ -792,11 +792,14 @@ fn test_did_close_after_change_storm_drains_background_index_tasks()
         // handle_did_close now removes virtual files (no backing file on disk)
         // from the workspace index automatically; no manual remove_file needed.
 
-        for _ in 0..100 {
+        // Post-#15018 budget standard: a bounded drain deadline must tolerate
+        // CI host load (#15274). 30s ceiling, still breaking early the moment
+        // the background index tasks drain.
+        for _ in 0..300 {
             if server.pending_index_task_count.load(Ordering::SeqCst) == 0 {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         let after = server.memory_state_snapshot();

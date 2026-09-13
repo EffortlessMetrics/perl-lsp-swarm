@@ -1,5 +1,6 @@
 #[cfg(test)]
 use super::implementation::TextPosition;
+use super::implementation::counters::{self, NativePipelineCounters, PipelineCollectorScope};
 use super::implementation::{
     BracePlacement, ElsePlacement, FinalNewline, FormatConfig, FormatDiagnosticSeverity,
     FormatResult, FormatterMode, KeywordSpacing, NativeFormatter, PerlFormatter, TextEdit,
@@ -223,6 +224,28 @@ impl NativeFormatter {
         classify_native_result(source, config, context, FormatRequestTarget::Document, result)
     }
 
+    /// Format a complete document recording deterministic pipeline work
+    /// counters. The outcome is byte-identical to [`Self::format_document_typed`];
+    /// only the collector observes the stages (NPC-001/NPC-002).
+    #[must_use]
+    pub fn format_document_typed_with_counters(
+        &self,
+        source: &str,
+        config: &FormatConfig,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> TypedFormatResult {
+        let scope = PipelineCollectorScope::install();
+        let started = std::time::Instant::now();
+        let result = <Self as PerlFormatter>::format_document(self, source, config);
+        scope.merge_into(counters);
+        observe_edits_derived(counters, &result);
+        let typed =
+            classify_native_result(source, config, context, FormatRequestTarget::Document, result);
+        observe_elapsed(counters, started.elapsed());
+        typed
+    }
+
     /// Format one range and return an explicit typed terminal outcome.
     #[must_use]
     pub fn format_range_typed(
@@ -249,6 +272,57 @@ impl NativeFormatter {
             result,
         )
     }
+
+    /// Format one range recording deterministic pipeline work counters. The
+    /// outcome is byte-identical to [`Self::format_range_typed`].
+    #[must_use]
+    pub fn format_range_typed_with_counters(
+        &self,
+        source: &str,
+        range: TextRange,
+        config: &FormatConfig,
+        context: &FormatContext,
+        counters: &mut NativePipelineCounters,
+    ) -> TypedFormatResult {
+        let scope = PipelineCollectorScope::install();
+        let started = std::time::Instant::now();
+        let result = if valid_range(source, range) {
+            <Self as PerlFormatter>::format_range(self, source, range, config)
+        } else {
+            FormatResult::unsafe_to_format(
+                source,
+                UNSAFE_RANGE_CODE,
+                "native range formatting refused because the requested UTF-16 range is invalid",
+            )
+        };
+        scope.merge_into(counters);
+        observe_edits_derived(counters, &result);
+        let typed = classify_native_result(
+            source,
+            config,
+            context,
+            FormatRequestTarget::Range { range },
+            result,
+        );
+        observe_elapsed(counters, started.elapsed());
+        typed
+    }
+}
+
+fn observe_edits_derived(counters: &mut NativePipelineCounters, result: &FormatResult) {
+    let edits = u64::try_from(result.edits.len()).unwrap_or(u64::MAX);
+    let replacement_bytes =
+        result.edits.iter().map(|edit| edit.new_text.len() as u64).fold(0_u64, u64::saturating_add);
+    counters.observe_edits_derived(edits, replacement_bytes);
+    // A typed entry may be nested inside a caller-owned collector. The
+    // supplied snapshot and the outer scope must observe the same derived
+    // output, just as they already do for pipeline-stage counters.
+    counters::record_with(|outer| outer.observe_edits_derived(edits, replacement_bytes));
+}
+
+fn observe_elapsed(counters: &mut NativePipelineCounters, elapsed: std::time::Duration) {
+    counters.observe_elapsed(elapsed);
+    counters::record_with(|outer| outer.observe_elapsed(elapsed));
 }
 
 fn classify_native_result(
@@ -258,6 +332,17 @@ fn classify_native_result(
     target: FormatRequestTarget,
     result: FormatResult,
 ) -> TypedFormatResult {
+    let mut result = result;
+    // The rendered bytes are the formatting authority. A result whose render
+    // reproduces the source carries no real change, so its edits are normalized
+    // away before classification; otherwise the typed outcome could report
+    // `Applied` beside the zero change summary that identical bytes produce
+    // (#7585). Refusals and failures already render the source unchanged with
+    // no edits, so this leaves their diagnostics-driven classification intact.
+    if result.formatted == source && !result.edits.is_empty() {
+        result.edits.clear();
+        result.changed = false;
+    }
     let classification = classify(source, config, target, &result);
     let actual_engine = if matches!(config.mode, FormatterMode::Off) {
         FormatEngine::Disabled
@@ -361,11 +446,76 @@ fn valid_range(source: &str, range: TextRange) -> bool {
     if (range.start.line, range.start.character) > (range.end.line, range.end.character) {
         return false;
     }
-    let lines: Vec<&str> = source.split('\n').collect();
+    let lines = split_lines_for_range_validation(source);
     let position_is_valid = |position: super::implementation::TextPosition| {
         lines.get(position.line as usize).is_some_and(|line| utf16_len(line) >= position.character)
     };
     position_is_valid(range.start) && position_is_valid(range.end)
+}
+
+/// Split `source` into lines using CR-aware geometry (`\r\n`, `\r`, or `\n`),
+/// stripping terminators from each line. Always produces a trailing empty
+/// element when the source ends with a line terminator, matching the LSP
+/// protocol's 0-based line addressing: a terminal newline introduces a valid
+/// zero-length final line.
+///
+/// This is the geometry that `valid_range` must use so that bare-CR documents
+/// have the line structure promised by LSP positions. Without it, bare-CR
+/// sources appear as a single `\n`-less line, causing any range past physical
+/// line 0 to be rejected as `UnsafeRange` before the CR-aware
+/// literal-preservation refusal in `format_range` can fire. The formatter's
+/// remaining line-to-byte mapping is a separate follow-up concern.
+fn split_lines_for_range_validation(source: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let bytes = source.as_bytes();
+    let mut line_start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\r' => {
+                result.push(&source[line_start..i]);
+                // Treat \r\n as a single two-byte terminator.
+                i += if i + 1 < bytes.len() && bytes[i + 1] == b'\n' { 2 } else { 1 };
+                line_start = i;
+            }
+            b'\n' => {
+                result.push(&source[line_start..i]);
+                i += 1;
+                line_start = i;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    // Always push the final segment; it is empty when source ends with a terminator,
+    // giving callers a valid zero-length final line (matching LSP line numbering).
+    result.push(&source[line_start..]);
+    result
+}
+
+#[cfg(test)]
+mod line_geometry_tests {
+    use super::split_lines_for_range_validation;
+
+    #[test]
+    fn split_lines_strips_terminators_and_keeps_trailing_empty() -> Result<(), String> {
+        let cases = [
+            ("", vec![""]),
+            ("a\nb", vec!["a", "b"]),
+            ("a\rb", vec!["a", "b"]),
+            ("a\r\nb", vec!["a", "b"]),
+            ("a\nb\n", vec!["a", "b", ""]),
+            ("a\r\nb\r\n", vec!["a", "b", ""]),
+        ];
+        for (source, expected) in cases {
+            let actual = split_lines_for_range_validation(source);
+            if actual != expected {
+                return Err(format!("unexpected line geometry for {source:?}: {actual:?}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn utf16_len(source: &str) -> u32 {
@@ -456,6 +606,17 @@ fn next_action(reason: FormatReasonCode) -> Option<&'static str> {
     }
 }
 
+/// Summarize the transformation between the source and the rendered output.
+///
+/// Contract: callers normalize before calling. A rendered no-op reaches this
+/// function with an already-empty edit set (`classify_native_result` clears it),
+/// so the `source == formatted` branch reports `edit_count: 0`. The branch does
+/// not itself enforce that — passing a non-empty edit set alongside identical
+/// bytes would report a non-zero `edit_count` beside zero byte deltas, which is
+/// exactly the envelope inconsistency #7585 forbids. The sibling implementation
+/// in `perl-lsp-rs-core` guards the same condition with `edits.is_empty() ||
+/// source == formatted`, so the two answer an unnormalized call differently;
+/// unifying them belongs to #7138, which owns this duplication.
 fn change_summary(source: &str, formatted: &str, edits: &[TextEdit]) -> FormatChangeSummary {
     if source == formatted {
         return FormatChangeSummary {
@@ -613,6 +774,96 @@ const fn keyword_spacing_name(value: KeywordSpacing) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Negative control for #7585: a rendered no-op can never classify as
+    /// `Applied`.
+    ///
+    /// The engine currently pushes a range edit only when the line text really
+    /// differs, so the inconsistency is unreachable through the public
+    /// formatter today. That makes the guard coincidental rather than enforced,
+    /// so this test drives `classify_native_result` directly with the one
+    /// result shape that would break the envelope. Deleting the normalization
+    /// in `classify_native_result` fails this test: `classify` reads
+    /// `result.changed` and would report `Applied` beside the zero change
+    /// summary that identical bytes always produce.
+    #[test]
+    fn a_rendered_no_op_edit_set_is_normalized_before_classification() {
+        let source = "my $value = 1;\n";
+        let result = FormatResult {
+            formatted: source.to_string(),
+            edits: vec![TextEdit::new(
+                TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 14)),
+                "my $value = 1;".to_string(),
+            )],
+            changed: true,
+            diagnostics: Vec::new(),
+        };
+
+        let typed = classify_native_result(
+            source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+            FormatRequestTarget::Document,
+            result,
+        );
+
+        assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(
+            typed.result.edits.is_empty(),
+            "a no-op edit set must be normalized away, not returned to the caller"
+        );
+        assert_eq!(typed.outcome.change.edit_count, 0);
+        assert_eq!(typed.outcome.change.source_bytes_changed, 0);
+        assert_eq!(typed.outcome.change.rendered_bytes_changed, 0);
+        assert_eq!(typed.outcome.change.changed_lines, 0);
+        assert_eq!(typed.result.formatted, source, "normalization must not alter rendered bytes");
+    }
+
+    /// Normalization must not rescue a refusal into a legitimate no-change:
+    /// refusals already render the source unchanged with no edits, so their
+    /// diagnostic still decides the terminal outcome.
+    #[test]
+    fn normalization_leaves_diagnostic_driven_refusals_intact() {
+        let source = "my $value = 1;\n";
+        let result = FormatResult::unsafe_to_format(
+            source,
+            UNSAFE_RANGE_CODE,
+            "native range formatting refused because the requested UTF-16 range is invalid",
+        );
+
+        let typed = classify_native_result(
+            source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+            FormatRequestTarget::Document,
+            result,
+        );
+
+        assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::UnsafeRange);
+        assert!(typed.result.edits.is_empty());
+        assert_eq!(typed.outcome.change.edit_count, 0);
+    }
+
+    /// A real change still classifies as `Applied` and still carries non-zero
+    /// change evidence, so the normalization cannot be satisfied by reporting
+    /// everything as a no-change.
+    #[test]
+    fn a_real_render_difference_still_applies_with_non_zero_evidence() {
+        let typed = NativeFormatter::new().format_document_typed(
+            "my$x=1;\n",
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+
+        assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::Applied);
+        assert!(!typed.result.edits.is_empty());
+        assert_eq!(typed.outcome.change.edit_count, typed.result.edits.len());
+        assert!(typed.outcome.change.source_bytes_changed > 0);
+        assert!(typed.outcome.change.rendered_bytes_changed > 0);
+    }
 
     #[test]
     fn unsupported_unchanged_source_is_refused() {

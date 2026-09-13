@@ -295,6 +295,9 @@ pub struct BreakpointStore {
     breakpoints: Arc<Mutex<HashMap<String, Vec<BreakpointRecord>>>>,
     /// Next breakpoint ID (monotonically increasing)
     next_id: Arc<Mutex<i64>>,
+    /// Counts visits to the source read boundary, shared by clones of this store.
+    #[cfg(test)]
+    source_read_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl BreakpointStore {
@@ -308,7 +311,18 @@ impl BreakpointStore {
     /// let store = BreakpointStore::new();
     /// ```
     pub fn new() -> Self {
-        Self { breakpoints: Arc::new(Mutex::new(HashMap::new())), next_id: Arc::new(Mutex::new(1)) }
+        Self {
+            breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(Mutex::new(1)),
+            #[cfg(test)]
+            source_read_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// Observe the actual store read boundary without a process-global test counter.
+    #[cfg(test)]
+    pub(crate) fn source_read_attempts(&self) -> usize {
+        self.source_read_attempts.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Set breakpoints for a source file (REPLACE semantics)
@@ -361,6 +375,8 @@ impl BreakpointStore {
         let source_breakpoints = args.breakpoints.as_deref().unwrap_or(&[]);
 
         // Read source file and parse once for AST validation (AC7).
+        #[cfg(test)]
+        self.source_read_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let source_content = std::fs::read_to_string(&source_path).ok();
         let validator = source_content
             .as_ref()

@@ -130,17 +130,26 @@ fn invalid_expression_remains_invalid_before_context_classification() -> TestRes
 }
 
 #[test]
-fn context_free_compatibility_path_is_preserved() -> TestResult {
+fn context_free_valid_name_is_fail_closed_without_a_data_id() -> TestResult {
+    // #9091: a syntactically valid Perl name is not a watchpoint identity.
+    // The context-free compatibility path is retired — native data breakpoints
+    // are unsupported, so no persistent dataId is minted and no accessTypes
+    // are promised.
     let mut adapter = DebugAdapter::new();
     let body = data_breakpoint_info(&mut adapter, json!({ "name": "$value" }))?;
 
-    assert_eq!(body.get("dataId").and_then(Value::as_str), Some("$value"));
-    assert_eq!(
-        body.get("accessTypes")
-            .and_then(Value::as_array)
-            .and_then(|items| items.first())
-            .and_then(Value::as_str),
-        Some("write")
+    assert!(
+        data_id_is_explicit_null(&body),
+        "context-free valid names must not receive a persistent native dataId: {body}"
+    );
+    let description = body.get("description").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        description.contains("unsupported") && description.contains("#9091"),
+        "context-free refusal must explain the unsupported disposition: {description:?}"
+    );
+    assert!(
+        body.get("accessTypes").is_none(),
+        "unsupported dataBreakpointInfo must not promise access types: {body}"
     );
     Ok(())
 }
