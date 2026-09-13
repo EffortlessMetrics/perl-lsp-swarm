@@ -77,6 +77,13 @@ on:
       - 'docs/project/status/provider_fact_reads.md'
       - 'xtask/src/tasks/update_status/provider_fact_reads.rs'
       - 'xtask/src/tasks/update_status/mod.rs'
+      - 'docs/distribution/INSTALL_CLAIM_SURFACES.md'
+      - 'distribution/public_release_claims.v2.json'
+      - 'distribution/release_receipts/**'
+      - 'schemas/public_release_claims.v2.schema.json'
+      - 'scripts/validate_public_release_claims_v2.py'
+      - 'xtask/src/public_release_claims.rs'
+      - 'xtask/src/tasks/public_release_claims.rs'
       - '.github/workflows/policy-validators.yml'
   workflow_dispatch: {}
 
@@ -101,6 +108,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 1
+
+      - name: Validate public_release_claims.v2 catalog
+        run: |
+          python3 scripts/validate_public_release_claims_v2.py \
+            distribution/public_release_claims.v2.json
+          python3 scripts/validate_public_release_claims_v2.py \
+            --prove-tamper distribution/public_release_claims.v2.json
 
       # System python3 on the self-hosted runner (Ubuntu ships >=3.11 with
       # tomllib). actions/setup-python has no tool-cache build for this
