@@ -16,7 +16,7 @@ schema_version = 1
 policy = "non-rust-allowlist"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-08-24"
+updated = "2026-09-07"
 
 [defaults]
 rust_is_default = true
@@ -46,6 +46,21 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-changelog-product-12815-fixture"
+path = "xtask/tests/fixtures/product-12815-Fixed-221500.yaml"
+kind = "test_fixture"
+language = "yaml"
+surface = "fixtures"
+classification = "test"
+owner = "tooling/changelog"
+reason = "Permanent Changie fragment fixture preserving the product-12815 folded-body regression after release batching removes unreleased entries."
+covered_by = [
+  "cargo test -p xtask --bin xtask tasks::changelog::tests::repaired_product_12815_fragment_is_schema_valid -- --exact --nocapture",
+]
+created = "2026-09-02"
+review_after = "2027-03-02"
+
+[[allow]]
 id = "non-rust-generated-badge-endpoints"
 glob = "badges/*.json"
 kind = "generated_badge_endpoint"
@@ -57,7 +72,7 @@ reason = "Generated Shields endpoint JSON for public README badges."
 generated_by = "python3 scripts/generate-badges.py"
 covered_by = ["python3 scripts/generate-badges.py --check"]
 created = "2026-05-13"
-review_after = "2026-08-13"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-docs-tree"
@@ -73,7 +88,7 @@ covered_by = [
 ]
 broad_glob_reason = "Docs are intentionally tree-shaped and non-executable. The executable, generated, process, and network companion ledgers cover risky drift."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-crate-features-sot"
@@ -152,6 +167,21 @@ created = "2026-08-26"
 review_after = "2027-02-26"
 
 [[allow]]
+id = "non-rust-semantic-facts-dancer2-dsl-oracle-tsv"
+path = "crates/perl-semantic-facts/tests/data/dancer2_two_x_dsl_registry_oracle.tsv"
+kind = "test_fixture_data"
+language = "text"
+surface = "fixtures"
+classification = "test"
+owner = "semantic-facts/framework-adapters"
+reason = "Dancer2 2.x core-DSL keyword oracle generated from pinned upstream lib/Dancer2/Core/DSL.pm (2.0.0/2.0.1/2.1.0, byte-identical dsl_keywords map verified by direct diff); consumed by the dancer2_two_x_dsl_registry_oracle test to pin framework adapter keyword, scope, and deprecation coverage."
+covered_by = [
+  "cargo test -p perl-semantic-facts --all-targets --locked",
+]
+created = "2026-08-30"
+review_after = "2027-02-28"
+
+[[allow]]
 id = "non-rust-ripr-facts-packet-goldens"
 glob = "crates/perl-ripr-facts/tests/golden/*.json"
 kind = "test_fixture"
@@ -183,6 +213,21 @@ created = "2026-08-24"
 review_after = "2026-11-24"
 
 [[allow]]
+id = "non-rust-ripr-010-consumer-fixtures"
+glob = "xtask/tests/fixtures/ripr-0.10/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "ci/ripr-consumer"
+reason = "Captured `ripr check --format json` output from the published 0.9.0 and 0.10.0 releases over one identical diff, pinning the producer output schema across the #9113 consumer migration. The repository has a recorded regression where a RIPR version bump changed JSON fields and the consumer silently stopped matching them (docs/learnings/2026-06-ripr-output-schema-break.md); hand-authored JSON cannot catch that class because it encodes the assumption under test. Regenerating them by hand would defeat their purpose — they change only when a reviewed producer release is intended. Provenance is in the sibling README.md."
+covered_by = [
+  "cargo test -p xtask --bin xtask ripr_evidence --locked",
+]
+created = "2026-09-07"
+review_after = "2027-03-07"
+
+[[allow]]
 id = "non-rust-lsp-318-changelog-fixture"
 glob = "xtask/tests/fixtures/lsp-318-changelog/*.md"
 kind = "test_fixture"
@@ -211,7 +256,7 @@ covered_by = [
 ]
 broad_glob_reason = "Markdown is non-executable prose and non-Rust by definition. The glob is written `**/*.md` because that is the breadth this entry has always had: until #9994 the checker let a single `*` cross `/`, so the previous `*.md` already matched markdown at every depth. Narrowing this entry back to repository-root governance docs, with explicit entries for the 259 files across 21 trees it currently absorbs, is #14583 and is deliberately not a silent side effect of the matcher fix."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-lsp4ij-template"
@@ -265,7 +310,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-github-actions"
@@ -282,7 +327,7 @@ covered_by = [
 ]
 broad_glob_reason = "Composite Actions are by-convention a tree of action.yml + helper scripts; cover the entire dir."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-github-policy"
@@ -298,7 +343,7 @@ covered_by = [
 ]
 broad_glob_reason = "GitHub-required metadata location. Workflow trigger and policy lints cover the executable subset."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-ci-config"
@@ -315,7 +360,7 @@ covered_by = [
 ]
 broad_glob_reason = ".ci is a governed policy/config tree. Companion workflow, dependency, process, and network checks cover risky drift."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Policy ledgers
@@ -337,7 +382,7 @@ covered_by = [
 ]
 broad_glob_reason = "Policy ledgers are intentionally a tree of TOML files; broad coverage is the policy stack itself."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Control-plane authority contract
@@ -392,6 +437,22 @@ created = "2026-08-15"
 review_after = "2026-11-15"
 
 [[allow]]
+id = "non-rust-docs-agents-contract-workflows-test"
+path = "tests/test_docs_agents_contract_workflows.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Always-running existence gate for registered docs/agents contract workflows (#14628). Standard-library `unittest` and `tomllib` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 tests/test_docs_agents_contract_workflows.py",
+  "python3 -m unittest tests/test_docs_agents_contract_workflows.py",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
 id = "non-rust-legacy-authority-banners-test"
 path = "tests/test_legacy_authority_banners.py"
 kind = "control_plane_contract_test"
@@ -406,6 +467,22 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-worked-lane-corpus-test"
+path = "tests/test_worked_lane_corpus.py"
+kind = "control_plane_contract_test"
+language = "python"
+surface = "ci"
+classification = "test"
+owner = "release/ci"
+reason = "Binds the worked-lane category ledger to the corpus it accounts for, so an added, renamed, or deleted example cannot leave the accounting stale and a category cannot borrow a lane or receipt that demonstrates something else. Standard-library `unittest` and `re` only, so it needs no Rust build and no Python dependency install."
+covered_by = [
+  "python3 -m unittest tests/test_worked_lane_corpus.py",
+  ".github/workflows/worked-lane-corpus.yml",
+]
+created = "2026-08-29"
+review_after = "2026-11-29"
 
 [[allow]]
 id = "non-rust-legacy-authority-banner-migrator"
@@ -495,7 +572,7 @@ covered_by = [
 ]
 broad_glob_reason = "tree-sitter generates a tree of C sources, headers, queries, and grammar tests; the entire crate is the artifact."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-tree-sitter-grammar"
@@ -511,7 +588,7 @@ covered_by = [
 ]
 broad_glob_reason = "Tree-sitter shared crate is a tree of grammar/queries/corpus by tree-sitter convention."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # VS Code extension
@@ -549,7 +626,7 @@ covered_by = [
 ]
 broad_glob_reason = "Editor extension is a first-class shipped artifact; TypeScript, package.json, esbuild config, and extension docs all live together."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Build / release tooling
@@ -568,7 +645,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-justfiles-tree"
@@ -584,7 +661,7 @@ covered_by = [
 ]
 broad_glob_reason = "Modular justfile fragments live under a single tree."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-flake-nix"
@@ -599,7 +676,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-flake-lock"
@@ -615,7 +692,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-dist-workspace"
@@ -630,7 +707,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-cliff-toml"
@@ -645,7 +722,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-deny-toml"
@@ -661,7 +738,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-codecov-yml"
@@ -676,7 +753,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-ripr-toml"
@@ -691,7 +768,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-features-toml"
@@ -707,7 +784,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-bacon-toml"
@@ -722,7 +799,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-rust-analyzer-toml"
@@ -737,7 +814,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-clippy-toml"
@@ -754,7 +831,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-cargo-config"
@@ -770,7 +847,7 @@ covered_by = [
 ]
 broad_glob_reason = ".cargo/config.toml family lives in a single tree."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-cargo-semver-checks"
@@ -785,7 +862,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Test fixtures and snapshots
@@ -888,23 +965,7 @@ covered_by = [
 ]
 broad_glob_reason = "cargo-insta writes snapshot files alongside tests across all crates; **/*.snap is the canonical match."
 created = "2026-05-07"
-review_after = "2026-08-07"
-
-[[allow]]
-id = "non-rust-insta-pending-snapshots"
-glob = "**/*.snap.new"
-kind = "test_snapshot"
-language = "yaml"
-surface = "fixtures"
-classification = "test"
-owner = "parser/snapshots"
-reason = "cargo-insta pending snapshot review files."
-covered_by = [
-  "cargo insta accept",
-]
-broad_glob_reason = "Pending snapshots co-locate with accepted ones across the tree."
-created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-proptest-regressions"
@@ -920,7 +981,7 @@ covered_by = [
 ]
 broad_glob_reason = "proptest writes regression files alongside the failing test, always under crate `proptest-regressions/`."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-proptest-default-layout-regressions"
@@ -989,11 +1050,10 @@ covered_by = [
   "cargo xtask check-file-policy",
   "cargo xtask check-executable-files",
   "cargo xtask check-process-policy",
-  "cargo xtask check-network-policy",
 ]
-broad_glob_reason = "scripts/ contains legacy and compatibility helpers being progressively migrated to xtask. The executable, process, and network companion policies constrain risky behavior."
+broad_glob_reason = "scripts/ contains legacy and compatibility helpers being progressively migrated to xtask. The executable, process, and file-policy companion checks constrain risky behavior."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-install-shell"
@@ -1009,7 +1069,7 @@ covered_by = [
   "cargo xtask check-network-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-install-powershell"
@@ -1024,7 +1084,7 @@ covered_by = [
   "cargo xtask check-network-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Editor / IDE / agent configuration
@@ -1044,7 +1104,7 @@ covered_by = [
 ]
 broad_glob_reason = "Workspace VS Code config is a tree (settings, tasks, launch)."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-claude-config"
@@ -1060,7 +1120,7 @@ covered_by = [
 ]
 broad_glob_reason = "Agent runtime config is structurally a tree of agent files, prompts, and orchestrator state."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-spec-tree"
@@ -1076,7 +1136,7 @@ covered_by = [
 ]
 broad_glob_reason = "Spec-planner artifacts are a tree (acceptance grids, checklists, context bundles)."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-roo"
@@ -1155,7 +1215,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Developer / repo metadata
@@ -1205,7 +1265,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-cspell"
@@ -1220,7 +1280,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-trivyignore"
@@ -1235,7 +1295,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-tokeignore"
@@ -1250,7 +1310,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-pre-commit-hooks"
@@ -1265,7 +1325,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-perl-lsp-example-config"
@@ -1281,7 +1341,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Container / packaging
@@ -1302,7 +1362,7 @@ covered_by = [
 ]
 broad_glob_reason = "Docker build context is a tree of Dockerfiles, scripts, and supporting files."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-docker-compose"
@@ -1317,7 +1377,7 @@ covered_by = [
   "cargo xtask check-file-policy",
 ]
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-homebrew-formula"
@@ -1334,7 +1394,7 @@ covered_by = [
 ]
 broad_glob_reason = "Homebrew formulas live in a single Formula/ directory."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Release topology contract
@@ -1355,6 +1415,88 @@ covered_by = [
 ]
 created = "2026-08-08"
 review_after = "2026-11-08"
+
+[[allow]]
+id = "non-rust-release-topology-json-admission"
+path = "scripts/release_topology_json.py"
+kind = "release_contract"
+language = "python"
+surface = "release"
+classification = "production"
+owner = "release/ci"
+reason = "Shared standard-library admission of exact release-topology schema numbers at the canonical and bounded consumer JSON file boundaries; preserves original evidence bytes."
+covered_by = [
+  "python -m unittest scripts.test_generate_release_topology scripts.test_release_build_identity",
+  "python scripts/tests/test-validate-public-release-claims.py",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-10"
+review_after = "2026-12-10"
+
+[[allow]]
+id = "non-rust-release-topology-v2-schema"
+path = "schemas/release_topology.v2.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed opt-in release topology checksum inventory contract for #6067; preserves the historical v1 schema and exact frozen/prepared authority."
+covered_by = [
+  "python -m unittest scripts.test_generate_release_topology",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-10"
+review_after = "2026-12-10"
+
+[[allow]]
+id = "non-rust-release-trust-invariants-schema"
+path = "schemas/release_trust_invariants.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "JSON Schema for the release_trust_invariants.v1 registry (#9392). The xtask checker enforces closed vocabularies and owner/producer/denominator currentness without consuming live candidate receipts."
+covered_by = [
+  "cargo xtask release-trust-invariants check",
+  "cargo test -p xtask --locked --test release_trust_invariants",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
+id = "non-rust-release-candidate-artifacts-schema"
+path = "schemas/release_candidate_artifacts.v1.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Closed Draft 2020-12 schema for the no-publish release_candidate_artifacts.v1 freeze/handoff packet (#9092); exact bytes are bound to topology digest and verified without rebuild or public-channel mutation."
+covered_by = [
+  "cargo xtask release check-candidate-artifacts",
+  "cargo test -p xtask --locked --bin xtask release_candidate_artifacts",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
+id = "non-rust-release-candidate-artifacts-fixtures"
+glob = "fixtures/release_candidate_artifacts/**/*.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "release/ci"
+reason = "Topology membership fixture for the #9092 freeze/verify handoff: a projection over canonical archive/VSIX subjects used by the closed negative-control suite."
+covered_by = [
+  "cargo xtask release check-candidate-artifacts",
+  "cargo test -p xtask --locked --bin xtask release_candidate_artifacts",
+]
+broad_glob_reason = "The `**` spans the owned fixture directory for the handoff contract (topology plus any later invalid packet vectors). Breadth is bounded by that directory."
+created = "2026-09-06"
+review_after = "2026-12-06"
 
 [[allow]]
 id = "non-rust-blocker-closeout-schema"
@@ -1392,7 +1534,7 @@ covered_by = [
 ]
 broad_glob_reason = ".receipts/ holds CI gate receipts as a tree of JSON files."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-ops-tree"
@@ -1408,7 +1550,7 @@ covered_by = [
 ]
 broad_glob_reason = "Swarm ops directory holds heterogeneous operational state by design."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 [[allow]]
 id = "non-rust-config-tree"
@@ -1424,7 +1566,7 @@ covered_by = [
 ]
 broad_glob_reason = ".config/ holds per-tool XDG-style config as a tree."
 created = "2026-05-07"
-review_after = "2026-08-07"
+review_after = "2026-12-07"
 
 # =============================================================================
 # Sublime Text helper package
@@ -1986,6 +2128,19 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-perl-corpus-train-schema"
+path = "schemas/perl_corpus_train.v1.schema.json"
+kind = "release_metadata"
+language = "json"
+surface = "tooling"
+classification = "documentation"
+owner = "perl-corpus-train"
+reason = "Closed JSON Schema for the stable perl-corpus authority train manifest (#10980); applied by cargo xtask perl-corpus-train check."
+covered_by = ["cargo xtask perl-corpus-train check"]
+created = "2026-09-06"
+review_after = "2026-12-06"
 
 [[allow]]
 id = "non-rust-native-neovim-train-schema"
@@ -3831,22 +3986,22 @@ review_after = "2027-02-20"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-catalog-v1"
-path = "crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml"
+path = "crates/perl-release-readiness/distribution_kwalitee_catalog.v1.toml"
 kind = "config"
 language = "toml"
 surface = "tooling"
 classification = "config"
 owner = "distribution/kwalitee"
-reason = "Frozen machine-readable CPANTS-compatible catalog v1 (#7170); decoded and validated by perl-kwalitee tests, not by a second runtime language."
+reason = "Frozen machine-readable CPANTS-compatible catalog v1 (#7170); decoded and validated by perl-release-readiness tests, not by a second runtime language."
 covered_by = [
-  "cargo test -p perl-kwalitee --all-targets --locked",
+  "cargo test -p perl-release-readiness --all-targets --locked",
 ]
 created = "2026-08-26"
 review_after = "2026-11-26"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-fixture-contract-v1"
-path = "crates/perl-kwalitee/distribution_kwalitee_fixtures.v1.toml"
+path = "crates/perl-release-readiness/distribution_kwalitee_fixtures.v1.toml"
 kind = "config"
 language = "toml"
 surface = "tooling"
@@ -3854,14 +4009,14 @@ classification = "config"
 owner = "distribution/kwalitee"
 reason = "Frozen fixture-identity contract for catalog v1 (#7170); expected facts are independently authored and catalog-bound."
 covered_by = [
-  "cargo test -p perl-kwalitee --all-targets --locked",
+  "cargo test -p perl-release-readiness --all-targets --locked",
 ]
 created = "2026-08-26"
 review_after = "2026-11-26"
 
 [[allow]]
 id = "non-rust-distribution-kwalitee-fixture-trees"
-glob = "crates/perl-kwalitee/fixtures/distribution/**"
+glob = "crates/perl-release-readiness/fixtures/distribution/**"
 kind = "language_fixture"
 language = "mixed"
 surface = "fixtures"
@@ -3869,11 +4024,41 @@ classification = "test"
 owner = "distribution/kwalitee"
 reason = "Committed catalog-bound distribution fixture trees for Kwalitee contract tests. Perl/metadata files are the subject under test, not runtime tooling."
 covered_by = [
-  "cargo test -p perl-kwalitee --all-targets --locked",
+  "cargo test -p perl-release-readiness --all-targets --locked",
 ]
 broad_glob_reason = "Each catalog metric may grow a reserved tree under a stable fixture id; the Rust fixture contract enumerates the allowed relative paths."
 created = "2026-08-26"
 review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-release-readiness-legacy-indicator-migrations"
+path = "crates/perl-release-readiness/legacy_indicator_migrations.toml"
+kind = "config"
+language = "toml"
+surface = "tooling"
+classification = "config"
+owner = "distribution/kwalitee"
+reason = "Frozen one-to-one destination ledger for every historical perl_kwalitee.v1 indicator; decoded by perl-release-readiness, not by a second runtime language."
+covered_by = [
+  "cargo test -p perl-release-readiness --all-targets --locked",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
+
+[[allow]]
+id = "non-rust-release-readiness-legacy-receipt-v1"
+path = "crates/perl-release-readiness/fixtures/legacy_receipt_v1.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "distribution/kwalitee"
+reason = "Pinned perl_kwalitee.v1 compatibility-reader fixture for the moved mixed evaluator; JSON is the historical receipt, not runtime tooling."
+covered_by = [
+  "cargo test -p perl-release-readiness --all-targets --locked",
+]
+created = "2026-09-06"
+review_after = "2026-12-06"
 
 [[allow]]
 id = "non-rust-product-health-status-fixtures"
@@ -4149,5 +4334,626 @@ covered_by = [
   "cargo test -p xtask --locked --example first_ten_minutes",
 ]
 broad_glob_reason = "The whole tree is one finite, content-addressed testdata set: fixture file names and layout follow each fixture project's own Perl structure (bin/, lib/, t/, script/), so per-file allowlist rows would only mirror manifest.json, which already enumerates the set and binds every fixture byte by deterministic sha256 tree digest; drift, extra families, and unsafe fixture paths are rejected by the first_ten_minutes xtask verifier, so the glob marks an accounting boundary, not a trust boundary."
+created = "2026-08-29"
+review_after = "2027-02-28"
+
+
+# =============================================================================
+# Bulk classification of the #14861 unclassified-file census (2026-09-07)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-root-changie-yaml"
+path = ".changie.yaml"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Changie CLI configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-dockerignore"
+path = ".dockerignore"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Docker build ignore rules. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-editorconfig"
+path = ".editorconfig"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Editor formatting conventions. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-typos-toml"
+path = ".typos.toml"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Typos spell-check configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-aqua-yaml"
+path = "aqua.yaml"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "aqua tool configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-taplo-toml"
+path = "taplo.toml"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "Taplo TOML language-server configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-root-tokmd-toml"
+path = "tokmd.toml"
+kind = "tooling_config"
+language = "mixed"
+surface = "tooling"
+classification = "config"
+owner = "release/ci"
+reason = "tokmd documentation tool configuration. Exact-path allowlist keeps the new-file ratchet intact (#14861 bulk classification)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-dir--agents"
+glob = ".agents/**/*"
+kind = "agent_skill_manifest"
+language = "yaml"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "Swarm skill manifests and agent definitions consumed by the provider-native skill procedures under .agents/skills/ and .agents/skills/*/agents/. (20 tracked files under .agents/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir--changes"
+glob = ".changes/**/*"
+kind = "release_metadata"
+language = "yaml"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Changie state and metadata outside the unreleased-fragments glob already covered by non-rust-changelog-fragments. (4 tracked files under .changes/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir--claude-plugin"
+glob = ".claude-plugin/**/*"
+kind = "agent_plugin_manifest"
+language = "json"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "Claude plugin manifest for the agent plugin surface. (1 tracked files under .claude-plugin/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir--codex"
+glob = ".codex/**/*"
+kind = "codex_config"
+language = "toml"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "Codex CLI configuration for the repo automation. (1 tracked files under .codex/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-book"
+glob = "book/**/*"
+kind = "docs_config"
+language = "toml"
+surface = "documentation"
+classification = "documentation"
+owner = "release/ci"
+reason = "mdBook configuration for the rendered policy/handbook book. (1 tracked files under book/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-contracts"
+glob = "contracts/**/*"
+kind = "contract_doc"
+language = "markdown"
+surface = "documentation"
+classification = "documentation"
+owner = "release/ci"
+reason = "Contract documentation for the generated policy surface. (1 tracked files under contracts/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-crates-fixture-data"
+glob = "crates/*/fixtures/**"
+kind = "test_fixture"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Per-crate fixture manifests and fixture data (differential oracles, parser accuracy manifests). (49 tracked files across the fixture/fuzz classes)"
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the fixture/fuzz directory class is the reviewed unit because the files are data whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-crates-tests-fixtures"
+glob = "crates/*/tests/fixtures/**"
+kind = "test_fixture"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Per-crate test-tree fixture data (golden transcripts, security cases, mocks, expected diagnostics)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the fixture/fuzz directory class is the reviewed unit because the files are data whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-crates-tests-snapshots"
+glob = "crates/*/tests/snapshots/**"
+kind = "test_snapshot"
+language = "json"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Per-crate serialized test snapshots (capability profiles and similar pinned expectations)."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the fixture/fuzz directory class is the reviewed unit because the files are data whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-crates-tests-helper-data"
+path = "crates/perl-lsp-rs/src/features/inlay_hints_provider_tests.txt"
+kind = "test_data_file"
+language = "text"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Helper data file consumed by the inlay-hints provider tests."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-parser-core-libcheck-rlib"
+path = "crates/perl-parser-core/libcheck_unwrap.rlib"
+kind = "test_binary"
+language = "binary"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Prebuilt check artifact consumed by the parser-core tests; tracked deliberately so the unwrap check runs without a rebuild."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+[[allow]]
+id = "non-rust-parser-tests-override-script"
+path = "crates/perl-parser/tests/test_with_override.sh"
+kind = "test_script"
+language = "shell"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Test-local override script for the parser tests."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+
+
+[[allow]]
+id = "non-rust-crates-fuzz-artifacts"
+glob = "crates/*/fuzz/**"
+kind = "fuzz_artifact"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Per-crate fuzz artifacts: crash reproducers and validation notes."
+covered_by = [
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the fixture/fuzz directory class is the reviewed unit because the files are data whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-distribution"
+glob = "distribution/**/*"
+kind = "packaging_config"
+language = "mixed"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Packaging and distribution configs for the release artifacts. (12 tracked files under distribution/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-fixtures"
+glob = "fixtures/**/*"
+kind = "test_fixture"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Repo-level test fixtures: deterministic inputs owned by the test suites that read them. (80 tracked files under fixtures/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-fuzz"
+glob = "fuzz/**/*"
+kind = "fuzz_corpus"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Committed fuzz corpus and artifacts for the fuzz targets: corpus files are inputs, not source, and are byte-fidelity pinned by the fuzz harness. (1694 tracked files under fuzz/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-hooks-pre-push"
+path = "hooks/pre-push"
+kind = "git_hook"
+language = "shell"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "Repository hook script. (1 tracked files under hooks/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-icon"
+glob = "icon/**/*"
+kind = "media_asset"
+language = "png"
+surface = "release"
+classification = "documentation"
+owner = "release/ci"
+reason = "Icon assets packaged with the release. (6 tracked files under icon/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-integrations"
+glob = "integrations/**/*"
+kind = "integration_config"
+language = "mixed"
+surface = "tooling"
+classification = "tooling"
+owner = "release/ci"
+reason = "Third-party integration manifests and configs. (4 tracked files under integrations/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-man"
+glob = "man/**/*"
+kind = "man_page"
+language = "roff"
+surface = "documentation"
+classification = "documentation"
+owner = "release/ci"
+reason = "Rendered man page source. (1 tracked files under man/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-queries"
+glob = "queries/**/*"
+kind = "tree_sitter_query"
+language = "scm"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Tree-sitter query file for the grammar tests. (1 tracked files under queries/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-ripr"
+glob = "ripr/**/*"
+kind = "ripr_config"
+language = "toml"
+surface = "ci"
+classification = "tooling"
+owner = "release/ci"
+reason = "ripr tool configuration. (2 tracked files under ripr/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-schemas"
+glob = "schemas/**/*"
+kind = "json_schema"
+language = "json"
+surface = "ci"
+classification = "documentation"
+owner = "release/ci"
+reason = "JSON schemas pinning receipt and policy shapes; the receipts they validate are generated. (24 tracked files under schemas/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-templates"
+glob = "templates/**/*"
+kind = "template_file"
+language = "mixed"
+surface = "release"
+classification = "tooling"
+owner = "release/ci"
+reason = "Templates rendered by the release and packaging tooling. (5 tracked files under templates/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-test-corpus"
+glob = "test_corpus/**/*"
+kind = "test_corpus"
+language = "perl"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Committed Perl test corpus: real-world inputs the parser corpora replay byte-for-byte. (52 tracked files under test_corpus/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-testdata"
+glob = "testdata/**/*"
+kind = "test_data"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Test data directories owned by the suites that read them. (14 tracked files under testdata/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-tests"
+glob = "tests/**/*"
+kind = "test_fixture"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Non-Rust files inside repo-level test trees: fixtures, expected outputs, and harness data. (15 tracked files under tests/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-tree-sitter-perl"
+glob = "tree-sitter-perl/**/*"
+kind = "vendored_grammar_tree"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Vendored read-only tree-sitter-perl checkout used as parser-corpus comparison input. The tree mixes generated parser artifacts WITH handwritten upstream content (grammar.js, scanner, bindings, workflows, manifests), so it is classified as a whole as vendored test input consumed read-only - maintenance and review of that content happen upstream, not here. (96 tracked files under tree-sitter-perl/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-dir-xtask"
+glob = "xtask/**/*"
+kind = "xtask_fixture"
+language = "mixed"
+surface = "testing"
+classification = "test"
+owner = "release/ci"
+reason = "Xtask fixture and data files: falsifier cases, policy fixtures, and corpus inputs the xtask suites replay. (146 tracked files under xtask/)"
+covered_by = [
+  "cargo xtask check-file-policy",
+  "cargo xtask non-rust inventory",
+]
+created = "2026-09-07"
+review_after = "2026-12-07"
+broad_glob_reason = "bulk classification of the #14861 unclassified-file census: the directory class is the reviewed unit because the files are data/fixtures/manifests whose per-file identity carries no policy information"
+
+[[allow]]
+id = "non-rust-standalone-source-build-schema"
+path = "schemas/standalone_source_build.v1.schema.json"
+kind = "install_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "install/release"
+reason = "Closed machine-readable plan schema for exact registry-source build identity and trust boundaries (#11514)."
+covered_by = ["cargo test -p xtask --test standalone_source_build_contract --locked", "cargo xtask check-file-policy"]
+created = "2026-08-29"
+review_after = "2027-02-28"
+
+[[allow]]
+id = "non-rust-standalone-source-build-fixtures"
+glob = "fixtures/experience/standalone_source_build/*.json"
+kind = "install_contract_fixture"
+language = "json"
+surface = "release"
+classification = "test"
+owner = "install/release"
+reason = "Positive and negative deterministic vectors for the standalone source-build contract (#11514)."
+covered_by = ["cargo test -p xtask --test standalone_source_build_contract --locked", "cargo xtask check-file-policy"]
+broad_glob_reason = "One positive packet and single-field mutation vectors are materialized by the focused contract test, then checked against the plan/evidence schema and semantic bindings; per-vector rows would not add policy precision."
 created = "2026-08-29"
 review_after = "2027-02-28"

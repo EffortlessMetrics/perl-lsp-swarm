@@ -25,6 +25,12 @@ from __future__ import annotations
 import sys
 import unittest
 import os
+import json
+import shlex
+import shutil
+import subprocess
+import tempfile
+import textwrap
 
 # Ensure the scripts directory is on the path so we can import publish-topo.
 scripts_dir = os.path.join(os.path.dirname(__file__), "..")
@@ -76,11 +82,15 @@ def _pkg(
     return pkg
 
 
-def _dep(name: str, kind: str | None = None) -> dict:
+def _dep(
+    name: str, kind: str | None = None, source: str | None = None
+) -> dict:
     """Build a minimal cargo-metadata dependency entry."""
     d: dict = {"name": name}
     if kind is not None:
         d["kind"] = kind
+    if source is not None:
+        d["source"] = source
     return d
 
 
@@ -123,6 +133,82 @@ class TestLinearChain(unittest.TestCase):
         meta = _meta(packages, ["a", "b", "c"])
         result = compute_publish_order(meta)
         self.assertEqual(len(result), 3)
+
+
+class TestRegistryDependency(unittest.TestCase):
+    """Registry packages sharing a workspace name are not local edges."""
+
+    def test_registry_dependency_does_not_create_local_cycle(self) -> None:
+        packages = [
+            _pkg("a", deps=[_dep("b", source="registry+https://example.invalid")]),
+            _pkg("b", deps=[_dep("a")]),
+        ]
+        meta = _meta(packages, ["a", "b"])
+        result = compute_publish_order(meta)
+        names = [row["name"] for row in result]
+        self.assertLess(names.index("a"), names.index("b"))
+
+
+class TestPublishWorkflowStep(unittest.TestCase):
+    """The publication workflow executes the shared graph authority."""
+
+    def _run_workflow_topology_command(
+        self, metadata: dict, cargo_status: int = 0
+    ) -> subprocess.CompletedProcess[str]:
+        repository = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        workflow_path = os.path.join(repository, ".github", "workflows", "publish-crates.yml")
+        with open(workflow_path, encoding="utf-8") as workflow_file:
+            workflow = workflow_file.read()
+        step_start = workflow.index("      - name: Compute topological order")
+        command_start = workflow.index("          set -euo pipefail", step_start)
+        command_end = workflow.index("\n\n          printf", command_start)
+        command = textwrap.dedent(workflow[command_start:command_end]).strip()
+        temporary_root = tempfile.mkdtemp(prefix="publish-workflow-test-", dir=repository)
+        output_name = os.path.relpath(
+            os.path.join(temporary_root, "crates.json"), repository
+        ).replace(os.sep, "/")
+        command = command.replace("/tmp/crates.json", output_name)
+        stub_cargo = "cargo() { printf '%%s\\n' %s; return %d; }; %s" % (
+            shlex.quote(json.dumps(metadata)),
+            cargo_status,
+            command,
+        )
+        try:
+            result = subprocess.run(
+                ["bash", "-lc", stub_cargo],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            output_path = os.path.join(repository, output_name.replace("/", os.sep))
+            if os.path.exists(output_path):
+                with open(output_path, encoding="utf-8") as output_file:
+                    result.stdout = output_file.read()
+            return result
+        finally:
+            shutil.rmtree(temporary_root)
+
+    def test_workflow_step_uses_shared_helper_for_registry_edges(self) -> None:
+        metadata = _meta(
+            [
+                _pkg("a", deps=[_dep("b", source="registry+https://example.invalid")]),
+                _pkg("b", deps=[_dep("a")]),
+            ],
+            ["a", "b"],
+        )
+        result = self._run_workflow_topology_command(metadata)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), [{"name": "a", "version": "0.1.0"}, {"name": "b", "version": "0.1.0"}])
+
+    def test_workflow_step_fails_closed_on_malformed_metadata(self) -> None:
+        result = self._run_workflow_topology_command({"not": "cargo metadata"})
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_workflow_step_propagates_cargo_failure_with_valid_json(self) -> None:
+        metadata = _meta([_pkg("a")], ["a"])
+        result = self._run_workflow_topology_command(metadata, cargo_status=7)
+        self.assertNotEqual(result.returncode, 0)
 
 
 class TestDevDepCrossingSccBoundary(unittest.TestCase):

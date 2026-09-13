@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-06",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14821"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture is the opposite-direction pair of valid-proof-level-unchanged-release: the PR body is identical, and the issue requires release-level proof rather than requiring that surface to stay unchanged."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990018,
+    "title": "fix(readiness): keep the mechanism seam honest (#9001501)",
+    "body": "## Claim Boundary\n\nRelease evidence is explicitly out of scope.\n\nCloses #9001501."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001501,
+      "title": "fix(readiness): keep the mechanism seam honest",
+      "body": "## Acceptance\n\nRelease proof is required."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_PROOF_LEVEL_CONTRADICTION",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001501,
+        "code": "FAIL_PROOF_LEVEL_CONTRADICTION"
+      }
+    ]
+  }
+}
