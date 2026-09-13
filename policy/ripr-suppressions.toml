@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-10"
+updated = "2026-09-13"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -3471,6 +3471,53 @@ review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
 
+# -----------------------------------------------------------------------------
+# PR #14958 (#13589) startup-@INC snapshot: declaration-line probes and
+# deleted-base probes anchored inside the head file.
+#
+# Hosted ripr 0.10.0 run 34732444951 (evaluated head da39581c against base
+# 8b945cfd, #15230 route) and the local replay of the same producer report
+# 19 no_static_path probes across the two files, all of which are counted by
+# `enforce-new-ripr` and none of which is a reachable executable seam:
+#
+# - 6 field_construction probes on the `SystemIncProbeSnapshot` field
+#   declarations (config/mod.rs:1115-1126) and 2 on the
+#   `EffectiveIncContext.system_inc_state` field declaration
+#   (inc_context/mod.rs:51). The ripr#1429 declaration-line class: a
+#   co-located literal-construction test that reads every field
+#   (system_inc_probe_snapshot_law_holds_on_literal_snapshots, added on the
+#   same candidate) leaves the count unchanged.
+# - 10 probes anchored at inc_context/mod.rs:357, a doc-comment line at
+#   head, carrying the text of the `system_inc_for_context(&self, folder_uri)`
+#   body the candidate deleted (base lines 277-281). No test can reach deleted
+#   code; the #6260 head-extent filter cannot see an anchor inside the file.
+#   #15484 owns the producer-side repair (patch attached there); it cannot
+#   ride in #14958 because touching xtask pushes the ripr index to 1573 files,
+#   over the 1000-file hosted admission (#15117).
+# - 1 probe on the test module's `TestResult` alias was cleared by inlining
+#   the alias on the same candidate.
+#
+# The behavior behind these declarations is proven elsewhere on the head:
+# the core peek_system_inc_probe_* family and the explicit real-process
+# matrix, the 12-case context_capture_survives_owner_reconfiguration matrix,
+# and the missing_module_lookup projection tests (see the PR body). This
+# entry is not proof of that behavior. HONEST SCOPE NOTE: the matcher is
+# path-scoped, so any other no_static_path probe added to these two files
+# before expiry is masked for this window; narrow immediately if a receipt
+# reports an executable seam here.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-14958-startup-inc-snapshot-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-lsp-rs-core/src/config/mod.rs", "crates/perl-lsp-rs/src/runtime/lifecycle/inc_context/mod.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14958 (#13589): 8 declaration-line no_static_path probes on the SystemIncProbeSnapshot and EffectiveIncContext.system_inc_state field declarations (ripr#1429 class; a co-located literal-construction test does not change the count) plus 10 deleted-base probes anchored on a surviving head line at inc_context/mod.rs:357 (#15484, the #6260 residual, producer fix handed off there because it cannot ride in this candidate under the 1000-file admission). Behavior is proven by the peek_system_inc_probe_*, real-process matrix, context_capture_survives_owner_reconfiguration, and missing_module_lookup projection tests on the same head. Not receipt-behavior proof."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-09-30"
+removal_criteria = "Remove when #15484 lands (deleted-base probes) and ripr#1429 resolves declaration-line probes, or at expiry; narrow immediately if a receipt reports a non-declaration executable seam in either file."
 # -----------------------------------------------------------------------------
 # PR #14650 (#12616) adds the compiler transformation law/plan/result contract
 # vocabulary as one dependency-neutral in-memory module. ripr 0.10.0 reports
