@@ -384,7 +384,26 @@ impl ExecuteCommandProvider {
         }
 
         let request_position = request.request_position;
-        let user_message = format_provider_decision_explanation(&explanation);
+        // These top-level defaults describe provider policy, not a recorded
+        // request outcome. Keep attached evidence distinct in the editor message.
+        let request_evidence = if let Some(receipt) = &explanation.request_receipt {
+            let freshness = receipt.get("freshness").and_then(|value| {
+                serde_json::from_value::<ProviderDecisionFreshness>(value.clone()).ok()
+            });
+            let label = match freshness {
+                Some(ProviderDecisionFreshness::Fresh) => "fresh",
+                Some(ProviderDecisionFreshness::Stale) => "stale",
+                Some(ProviderDecisionFreshness::NotApplicable) => "not applicable",
+                _ => "unknown",
+            };
+            format!("Attached request freshness: {label}.")
+        } else {
+            "No request evidence is attached.".to_string()
+        };
+        let user_message = format!(
+            "{request_evidence}\nProvider policy summary:\n{}",
+            format_provider_decision_explanation(&explanation)
+        );
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,
