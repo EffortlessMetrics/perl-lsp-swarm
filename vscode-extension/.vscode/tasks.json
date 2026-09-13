@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "perl-lsp: checked build",
+      "type": "npm",
+      "script": "build",
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "perl-lsp: dev watch (supervisor)",
+      "type": "npm",
+      "script": "dev",
+      "isBackground": true,
+      "problemMatcher": {
+        "name": "perl-lsp-dev-supervisor",
+        "owner": "perl-lsp-dev-supervisor",
+        "pattern": {
+          "regexp": "^\\b\\B"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[dev-supervisor\\] starting",
+          "endsPattern": "^\\[dev-supervisor\\] ready"
+        }
+      }
+    }
+  ]
+}

@@ -11,6 +11,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .release_topology_json import load_topology_json
+else:
+    from release_topology_json import load_topology_json
+
 
 SCHEMA_VERSION = "public_release_claims.v1"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -105,11 +110,12 @@ def validate_topology_binding(catalog: dict[str, Any], topology_path: Path) -> N
     expected_digest = catalog["topology_digest"].removeprefix("sha256:")
     _require(actual_digest == expected_digest, "topology_digest does not match topology bytes")
     try:
-        topology = json.loads(topology_bytes)
+        topology = load_topology_json(topology_bytes)
     except json.JSONDecodeError as error:
         raise ValueError(f"parsing topology: {error}") from error
     _require(isinstance(topology, dict), "topology must be an object")
-    _require(topology.get("schema") == 1, "topology.schema must be 1")
+    version = topology.get("schema")
+    _require(type(version) in (int, float) and version in (1, 2), "topology.schema must be 1 or 2")
     _require(topology.get("release") == catalog["release"], "topology release does not match catalog")
     _require(topology.get("track") == catalog["track"], "topology track does not match catalog")
     _require(topology.get("frozen_product_sha") == catalog["subject_sha"], "topology subject does not match catalog")

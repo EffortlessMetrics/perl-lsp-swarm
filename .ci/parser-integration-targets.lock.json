@@ -8,12 +8,20 @@
       "invocation_sha256": "04a692651ff6257474f4d8b7552eea2ab0b259ce9b0c1fc2596a1a9e77f03517"
     },
     {
+      "id": "parser.class_grammar.admission",
+      "invocation_sha256": "731a607dbc8091921422ba5886475241bfd2e3b93a545c0bbd9192cb13151338"
+    },
+    {
       "id": "parser.cli.continued_read_failure_stats",
       "invocation_sha256": "0d1ed3f64b8f8c25c2f878bbacf3eec77662b91319c4329b85b5832a6cdb26c6"
     },
     {
       "id": "parser.command_line.oneliners",
       "invocation_sha256": "562d66111ff70e436552bfb60f662804c475f19d5d22beb7227028128cdf9349"
+    },
+    {
+      "id": "parser.command_line.regex_modifier_matrix",
+      "invocation_sha256": "612c3748f429a49411b0d18af1bf5b576c88442de9639a72500af2abec6850f4"
     },
     {
       "id": "parser.concepts.magic_token_arguments",

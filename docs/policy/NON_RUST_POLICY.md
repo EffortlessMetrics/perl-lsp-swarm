@@ -7,20 +7,48 @@ declares which non-Rust files are permitted in `perl-lsp` and on what terms.
 ## Source of truth
 
 ```text
-policy/non-rust-allowlist.toml   # the active allowlist
-policy/non-rust-debt.toml        # uncertain entries pending classification
-docs/policy/NON_RUST_INVENTORY.md  # generated inventory (PR 3)
+policy/non-rust-allowlist.toml              # active policy authority
+policy/non-rust-debt.toml                   # uncertain entries pending classification
+target/policy/non-rust-inventory.{md,json}  # ignored per-run evidence (uploaded as the non-rust-inventory-<sha> CI artifact)
+docs/policy/NON_RUST_INVENTORY.md           # frozen pointer; never generated, never changes on main
 ```
 
 Reader / writer:
 
 ```text
-cargo xtask non-rust inventory        # emit Markdown + JSON inventory
-cargo xtask non-rust propose          # propose entries for unallowlisted files
-cargo xtask non-rust validate-policy  # validate allowlist/debt TOML schema
+cargo xtask non-rust inventory          # emit current-tree Markdown + JSON evidence
+cargo xtask non-rust inventory --check  # validate current tree, require the frozen pointer, reject newly introduced debt
+cargo xtask non-rust propose            # propose entries for unallowlisted files
+cargo xtask non-rust validate-policy    # validate allowlist/debt TOML schema
 cargo xtask non-rust migration-candidates  # find tooling candidates to migrate into Rust-owned surfaces
-cargo xtask check-file-policy         # enforce the allowlist
+cargo xtask check-file-policy           # enforce the allowlist
 ```
+
+## Authority boundary
+
+The merge check validates the allowlist, classifies the current tracked tree,
+and writes both evidence files before applying its merge-base ratchet. The
+added-path set is `merge-base(baseline, HEAD)..HEAD` with `--no-renames`, not
+the live tip of `origin/main`.
+Inherited unclassified paths remain visible as warnings; newly added
+unclassified paths fail and remain named in the retained evidence.
+
+The tracked `docs/policy/NON_RUST_INVENTORY.md` is a frozen pointer, not
+policy input and not a publication. No command writes it and `main` never
+changes it, so it cannot conflict on merge (#14688). `inventory --check`
+requires a regular file matching the selected base-tip pointer content
+(normalizing CRLF) and names the one-command restore
+(`git checkout origin/main -- docs/policy/NON_RUST_INVENTORY.md`) when a
+branch has regenerated it. The policy shard retains both ignored projections
+when they are produced, including on a newly unclassified-path failure, and
+uploads them as the `non-rust-inventory-<sha>` artifact; the artifact from a
+`main` run is the default-branch reference.
+
+When the base still contains the legacy counted document, there is no frozen
+pointer to authenticate. The first publication is compared with the proposed
+compiled pointer and requires cutover review. Subsequent checks bind to the
+published base-tip blob; they do not isolate execution from candidate edits to
+the checker.
 
 ## Schema
 
@@ -229,7 +257,7 @@ ambiguous and a maintainer wants a tracked place for the question.
 
 | Trigger                                          | Action                                        |
 | ------------------------------------------------ | --------------------------------------------- |
-| New non-Rust file in PR                          | `cargo xtask check-file-policy` fails; author runs `cargo xtask non-rust propose` and adds an entry. |
+| New non-Rust file in PR                          | `cargo xtask non-rust inventory --check` rejects an unclassified added path; author runs `cargo xtask non-rust propose` and adds an entry. |
 | `review_after` date passes                       | Strict mode flags; owner re-justifies, advances date, or removes the entry. |
 | `expires` date passes                            | Hard fail in any blocking mode. Owner removes or replaces the entry. |
 | Surface goes away                                | Owner sets `retired = true`. Strict mode flags any remaining matches. |
