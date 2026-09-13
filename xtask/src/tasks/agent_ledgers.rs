@@ -155,12 +155,61 @@ const VALID_UB_CLASSIFICATIONS: &[&str] =
 /// Valid values for the ub-review `value` field.
 const VALID_UB_VALUES: &[&str] = &["high", "medium", "low", "n/a"];
 
+/// Accept an absent field, but reject an explicit JSON `null`.
+///
+/// `serde` resolves both a missing key and an explicit `null` to `None` for
+/// `Option<T>`. These contracts permit omission but not null, so whenever the key is
+/// present the value is decoded as `T` and a `null` fails with a type error.
+fn absent_or<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// The structured `close_proof` defined by `docs/agents/pr-ledger.schema.json`.
+///
+/// Governed by `docs/agents/CLOSE_PROOF_POLICY.md`: landing ancestry alone never
+/// authorizes a close, so the receipt and the separate semantic-completion evidence
+/// are both required.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StructuredCloseProof {
+    command: String,
+    receipt: LandingProofReceipt,
+    semantic_completion_evidence: String,
+    verified_date: String,
+}
+
+/// The `landing_proof.v1` receipt carried inside a structured close proof.
+///
+/// `content_survives` is optional in the schema and carries no rule of its own;
+/// declaring it is what makes it *accepted* under `deny_unknown_fields`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct LandingProofReceipt {
+    schema_version: String,
+    commit_reachable: bool,
+    commit: String,
+    canonical_main: String,
+    #[serde(default, deserialize_with = "absent_or")]
+    content_survives: Option<bool>,
+    semantic_completion: String,
+}
+
 /// One PR reconciliation worklist row.
 ///
 /// Mirrors the shape [`crate::tasks::pr_ledger`] emits; the generator-provided
 /// descriptive fields are optional so a hand-written worklist need not carry them.
+///
+/// Those descriptive fields carry no rule beyond their type: under
+/// `deny_unknown_fields`, declaring them is what makes a generated worklist row
+/// acceptable at all.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct PrTriageRow {
     pr: String,
     title: String,
@@ -169,17 +218,21 @@ struct PrTriageRow {
     evidence: Vec<String>,
     cleanup_done: bool,
     known_gaps: Vec<String>,
-    #[serde(default)]
-    close_proof: Option<String>,
-    #[serde(default)]
+    /// Kept as a raw `Value` so absent, `null`, prose, and the structured form of
+    /// `pr-ledger.schema.json` are distinguishable; see [`check_close_proof`].
+    /// `absent_or` is required because `Option<Value>` alone would fold an explicit
+    /// `null` back into `None`, losing the missing-versus-null distinction.
+    #[serde(default, deserialize_with = "absent_or")]
+    close_proof: Option<Value>,
+    #[serde(default, deserialize_with = "absent_or")]
     surface_guess: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "absent_or")]
     is_draft: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "absent_or")]
     mergeable: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "absent_or")]
     head_ref: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "absent_or")]
     author: Option<String>,
 }
 
@@ -187,9 +240,11 @@ struct PrTriageRow {
 ///
 /// Conforms to `docs/agents/workflow-outcome.schema.json`: the 15 required
 /// properties plus optional `notes`, with `additionalProperties: false`. Counters are
-/// unsigned so the schema's `minimum: 0` holds by construction.
+/// unsigned so the schema's `minimum: 0` holds by construction — their declared type
+/// *is* their rule, so they need no further check.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[allow(dead_code)]
 struct WorkflowOutcomeRow {
     date: String,
     workflow_type: String,
@@ -206,7 +261,7 @@ struct WorkflowOutcomeRow {
     builders_dispatched: u64,
     known_gaps: Vec<String>,
     cleanup_done: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "absent_or")]
     notes: Option<String>,
 }
 
@@ -346,6 +401,10 @@ fn validate_file(
     file: &str,
     expected_schema: Option<LedgerSchemaId>,
 ) -> (usize, Vec<LedgerError>) {
+    // A tool that writes the file with a UTF-8 BOM would otherwise hide the directive
+    // behind a non-whitespace character that `str::trim` does not remove.
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+
     let (schema, directive_line) = match resolve_schema(content, file) {
         Ok(resolved) => resolved,
         Err(errors) => return (0, errors),
@@ -373,6 +432,17 @@ fn validate_file(
         }
         rows += 1;
         errors.extend(validate_line(trimmed, file, idx + 1, schema));
+    }
+
+    // A declared ledger carrying no rows is far more likely a truncated write than a
+    // deliberate empty file, and silently passing it is the one shape that would
+    // still validate vacuously.
+    if rows == 0 {
+        errors.push(LedgerError {
+            file: file.to_string(),
+            line: directive_line,
+            message: format!("ledger declares schema `{schema}` but contains no rows"),
+        });
     }
 
     (rows, errors)
@@ -515,25 +585,117 @@ fn check_pr_triage(row: &PrTriageRow) -> Vec<String> {
         ));
     }
 
-    if CLOSE_PROOF_REQUIRED.contains(&row.classification.as_str()) {
-        match row.close_proof.as_deref() {
-            None => errors.push(format!(
-                "classification `{}` requires `close_proof` field",
-                row.classification
-            )),
-            Some(proof) if proof.trim().is_empty() => errors.push(format!(
-                "classification `{}` requires non-empty `close_proof`",
-                row.classification
-            )),
-            Some(_) => {}
-        }
-    }
+    check_close_proof(row.close_proof.as_ref(), &row.classification, &mut errors);
 
     if !VALID_CONFIDENCES.contains(&row.confidence.as_str()) {
         errors.push(format!(
             "unknown confidence `{}`; valid values: {}",
             row.confidence,
             VALID_CONFIDENCES.join(", ")
+        ));
+    }
+
+    errors
+}
+
+/// Validate `close_proof` for a pr-triage row.
+///
+/// Two forms are accepted. The structured form of `docs/agents/pr-ledger.schema.json`
+/// is checked field by field; the prose form is the shape this validator has always
+/// accepted and is kept for compatibility, but it carries no machine-checkable
+/// landing or semantic evidence.
+fn check_close_proof(proof: Option<&Value>, classification: &str, errors: &mut Vec<String>) {
+    let required = CLOSE_PROOF_REQUIRED.contains(&classification);
+
+    match proof {
+        None => {
+            if required {
+                errors.push(format!(
+                    "classification `{classification}` requires `close_proof` field"
+                ));
+            }
+        }
+        Some(Value::Null) => {
+            if required {
+                errors.push(format!(
+                    "classification `{classification}` requires non-null `close_proof`"
+                ));
+            } else {
+                errors.push("`close_proof` must not be null".to_string());
+            }
+        }
+        Some(Value::String(prose)) => {
+            if prose.trim().is_empty() {
+                errors.push(format!(
+                    "classification `{classification}` requires non-empty `close_proof`"
+                ));
+            }
+        }
+        Some(Value::Object(_)) => {
+            let structured: StructuredCloseProof = match serde_json::from_value(
+                proof.cloned().unwrap_or(Value::Null),
+            ) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    errors.push(format!("`close_proof` object does not match the structured close-proof contract: {e}"));
+                    return;
+                }
+            };
+            errors.extend(check_structured_close_proof(&structured));
+        }
+        Some(_) => errors
+            .push("`close_proof` must be a string or a structured close-proof object".to_string()),
+    }
+}
+
+/// Enforce the constants and non-empty fields `pr-ledger.schema.json` declares.
+fn check_structured_close_proof(proof: &StructuredCloseProof) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for (field, value) in [
+        ("close_proof.command", &proof.command),
+        ("close_proof.semantic_completion_evidence", &proof.semantic_completion_evidence),
+        ("close_proof.receipt.canonical_main", &proof.receipt.canonical_main),
+    ] {
+        if value.trim().is_empty() {
+            errors.push(format!("field `{field}` must not be empty"));
+        }
+    }
+
+    if !is_iso_date(&proof.verified_date) {
+        errors.push(format!(
+            "field `close_proof.verified_date` must be an ISO 8601 date (YYYY-MM-DD), got `{}`",
+            proof.verified_date
+        ));
+    }
+
+    if proof.receipt.schema_version != "landing_proof.v1" {
+        errors.push(format!(
+            "field `close_proof.receipt.schema_version` must be `landing_proof.v1`, got `{}`",
+            proof.receipt.schema_version
+        ));
+    }
+
+    if !proof.receipt.commit_reachable {
+        errors.push(
+            "field `close_proof.receipt.commit_reachable` must be true; an unreachable commit is not landing proof"
+                .to_string(),
+        );
+    }
+
+    if proof.receipt.commit.trim().len() < 7 {
+        errors.push(format!(
+            "field `close_proof.receipt.commit` must be at least 7 characters, got `{}`",
+            proof.receipt.commit
+        ));
+    }
+
+    // Per CLOSE_PROOF_POLICY.md the receipt is evidence, never close authorization:
+    // semantic completion is always carried separately and is never self-asserted.
+    if proof.receipt.semantic_completion != "not_evaluated" {
+        errors.push(format!(
+            "field `close_proof.receipt.semantic_completion` must be `not_evaluated`, got `{}`",
+            proof.receipt.semantic_completion
         ));
     }
 
@@ -1291,6 +1453,191 @@ mod tests {
     }
 
     // ----- registry ---------------------------------------------------------
+
+    // ----- close-proof contract (structured form) --------------------------
+
+    /// The structured `close_proof` of `pr-ledger.schema.json` must be accepted.
+    ///
+    /// Binds to that schema's own `examples[1]`, so the Rust contract and the
+    /// published schema cannot drift apart silently.
+    #[test]
+    fn test_structured_close_proof_from_schema_example_is_accepted() -> Result<()> {
+        let schema_path = crate::utils::project_root()?.join("docs/agents/pr-ledger.schema.json");
+        let schema: Value = serde_json::from_str(&fs::read_to_string(&schema_path)?)?;
+
+        let close_proof = schema
+            .get("examples")
+            .and_then(Value::as_array)
+            .and_then(|examples| examples.iter().find_map(|e| e.get("close_proof")))
+            .ok_or_else(|| eyre!("pr-ledger.schema.json has no example carrying close_proof"))?;
+
+        let mut row: Value = serde_json::from_str(valid_row())?;
+        let obj = row.as_object_mut().ok_or_else(|| eyre!("row is not an object"))?;
+        obj.insert("classification".to_string(), Value::String("close-superseded".to_string()));
+        obj.insert("close_proof".to_string(), close_proof.clone());
+
+        let errs = line_errors(&serde_json::to_string(&row)?);
+        ensure!(errs.is_empty(), "schema's own structured close_proof rejected: {errs:?}");
+        Ok(())
+    }
+
+    /// Each constant the close-proof contract pins must actually be enforced.
+    #[test]
+    fn test_structured_close_proof_constants_are_enforced() -> Result<()> {
+        let base = r#"{"command":"cargo xtask landing-proof --commit abc1234 --canonical-main origin/main --format json","receipt":{"schema_version":"landing_proof.v1","commit_reachable":true,"commit":"abc1234","canonical_main":"origin/main","semantic_completion":"not_evaluated"},"semantic_completion_evidence":"semantic-close packet #1100","verified_date":"2026-06-07"}"#;
+
+        let row_with = |proof: &str| {
+            format!(
+                r#"{{"pr":"1","title":"t","classification":"close-superseded","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":{proof}}}"#
+            )
+        };
+
+        ensure!(line_errors(&row_with(base)).is_empty(), "valid structured close proof rejected");
+
+        for (case, mutated, expected) in [
+            (
+                "wrong receipt schema_version",
+                base.replace("landing_proof.v1", "landing_proof.v2"),
+                "must be `landing_proof.v1`",
+            ),
+            (
+                "unreachable commit",
+                base.replace(r#""commit_reachable":true"#, r#""commit_reachable":false"#),
+                "must be true",
+            ),
+            (
+                "self-asserted semantic completion",
+                base.replace("not_evaluated", "complete"),
+                "must be `not_evaluated`",
+            ),
+            (
+                "short commit",
+                base.replace(r#""commit":"abc1234""#, r#""commit":"abc""#),
+                "at least 7 characters",
+            ),
+            ("bad verified_date", base.replace("2026-06-07", "07/06/2026"), "ISO 8601"),
+            (
+                "empty semantic evidence",
+                base.replace("semantic-close packet #1100", "   "),
+                "must not be empty",
+            ),
+        ] {
+            let msg = first_msg(&row_with(&mutated));
+            ensure!(msg.contains(expected), "{case}: expected `{expected}`, got `{msg}`");
+        }
+
+        // An unknown key inside the receipt is structural drift, not extra detail.
+        let extra = base.replace(
+            r#""semantic_completion":"not_evaluated""#,
+            r#""semantic_completion":"not_evaluated","smuggled":1"#,
+        );
+        ensure!(!line_errors(&row_with(&extra)).is_empty(), "unknown receipt field accepted");
+
+        // A missing receipt is not a close proof at all.
+        let no_receipt =
+            r#"{"command":"c","semantic_completion_evidence":"e","verified_date":"2026-06-07"}"#;
+        ensure!(
+            !line_errors(&row_with(no_receipt)).is_empty(),
+            "close proof without receipt accepted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_close_proof_of_wrong_json_type_is_rejected() -> Result<()> {
+        let line = r#"{"pr":"1","title":"t","classification":"close-superseded","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":42}"#;
+        let msg = first_msg(line);
+        ensure!(msg.contains("must be a string or a structured close-proof object"), "got: {msg}");
+        Ok(())
+    }
+
+    // ----- explicit null is not absence --------------------------------------
+
+    /// These contracts permit omission but not an explicit `null`.
+    #[test]
+    fn test_explicit_null_optional_fields_are_rejected() -> Result<()> {
+        let workflow_null_notes =
+            valid_workflow_row().trim_end_matches('}').to_string() + r#","notes":null}"#;
+        ensure!(
+            !validate_line(&workflow_null_notes, "t.jsonl", 1, LedgerSchemaId::WorkflowOutcomeV1)
+                .is_empty(),
+            "workflow-outcome `notes: null` accepted"
+        );
+        // ...while omitting it entirely stays valid.
+        ensure!(
+            validate_line(valid_workflow_row(), "t.jsonl", 1, LedgerSchemaId::WorkflowOutcomeV1)
+                .is_empty(),
+            "workflow-outcome row without notes rejected"
+        );
+
+        for field in ["surface_guess", "mergeable", "head_ref", "author", "is_draft"] {
+            let line = format!(
+                r#"{{"pr":"1","title":"t","classification":"unclassified","confidence":"low","evidence":[],"cleanup_done":false,"known_gaps":[],"{field}":null}}"#
+            );
+            ensure!(!line_errors(&line).is_empty(), "`{field}: null` accepted");
+        }
+
+        // An explicit null close_proof is reported as null, not as absence.
+        let null_proof = r#"{"pr":"1","title":"t","classification":"close-superseded","confidence":"high","evidence":[],"cleanup_done":false,"known_gaps":[],"close_proof":null}"#;
+        ensure!(first_msg(null_proof).contains("non-null"), "got: {}", first_msg(null_proof));
+        Ok(())
+    }
+
+    // ----- file-level shapes -------------------------------------------------
+
+    /// A declared ledger with a valid header but no rows must not pass vacuously.
+    #[test]
+    fn test_declared_ledger_with_no_rows_is_rejected() -> Result<()> {
+        let contents = format!(
+            "{WORKFLOW_HEADER}
+# header only, no data
+
+"
+        );
+        let (rows, errs) = validate_file(&contents, "t.jsonl", None);
+        ensure!(rows == 0, "expected zero rows, got {rows}");
+        let first = errs.first().ok_or_else(|| eyre!("empty ledger accepted"))?;
+        ensure!(first.message.contains("contains no rows"), "got: {}", first.message);
+        Ok(())
+    }
+
+    /// A UTF-8 BOM must not hide the directive: `str::trim` does not remove U+FEFF.
+    #[test]
+    fn test_leading_bom_does_not_hide_the_directive() -> Result<()> {
+        let contents = format!("\u{feff}{PR_TRIAGE_HEADER}\n{}\n", valid_row());
+        let errs = file_errors(&contents);
+        ensure!(errs.is_empty(), "BOM-prefixed ledger rejected: {errs:?}");
+        Ok(())
+    }
+
+    // ----- generator drift ---------------------------------------------------
+
+    /// `pr-triage.v1` must keep accepting exactly what `pr_ledger` emits.
+    ///
+    /// Serializing the generator's own row type means a field added, removed, or
+    /// renamed in `pr_ledger::LedgerRow` turns this red via `deny_unknown_fields`,
+    /// rather than silently making every generated worklist invalid.
+    #[test]
+    fn test_pr_triage_accepts_the_generator_row_type() -> Result<()> {
+        let generated = crate::tasks::pr_ledger::LedgerRow {
+            pr: "1234".to_string(),
+            title: "fix: thing (#1234)".to_string(),
+            surface_guess: "xtask".to_string(),
+            classification: "unclassified".to_string(),
+            confidence: "low".to_string(),
+            evidence: Vec::new(),
+            cleanup_done: false,
+            known_gaps: Vec::new(),
+            is_draft: false,
+            mergeable: "MERGEABLE".to_string(),
+            head_ref: "feat/1234-thing".to_string(),
+            author: "EffortlessSteven".to_string(),
+        };
+        let line = serde_json::to_string(&generated)?;
+        let errs = line_errors(&line);
+        ensure!(errs.is_empty(), "pr_ledger::LedgerRow rejected by pr-triage.v1: {errs:?}");
+        Ok(())
+    }
 
     #[test]
     fn test_schema_ids_round_trip_and_are_unique() -> Result<()> {
