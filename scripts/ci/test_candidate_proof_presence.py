@@ -285,6 +285,29 @@ class RepositoryContractTests(unittest.TestCase):
         for operator, value in conditions:
             self.assertEqual((operator, value), ("!=", presence.STALE_HEAD_ABSENT))
 
+    def test_the_classify_invocation_is_itself_a_declaration(self) -> None:
+        """Removing only the ``on.paths`` entry must not buy a skip.
+
+        The ``--proof`` arguments live in the same workflow file the classifier
+        reads, so a candidate that still wires a proof into the classify step
+        still declares it. Reaching ``stale_head_absent`` therefore requires a
+        candidate whose workflow never mentions the proof at all, which is the
+        stale head. This is what keeps a deleted proof from retiring a gate.
+        """
+        for identifier, path in self.proofs:
+            with self.subTest(proof=identifier):
+                without_watch = "\n".join(
+                    line
+                    for line in self.workflow.splitlines()
+                    if line.strip() != f"- '{path}'"
+                )
+                self.assertIn(f"--proof {identifier}={path}", without_watch)
+                with TemporaryDirectory() as name:
+                    self.assertEqual(
+                        presence.classify(Path(name), without_watch, path),
+                        presence.DECLARED_BUT_MISSING,
+                    )
+
     def test_every_proof_path_is_watched_on_pull_request_and_push(self) -> None:
         for _identifier, path in self.proofs:
             with self.subTest(path=path):
