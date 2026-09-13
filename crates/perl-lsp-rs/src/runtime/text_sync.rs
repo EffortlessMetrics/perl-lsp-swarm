@@ -663,6 +663,22 @@ impl LspServer {
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
 
+            // The editor has changed even if the candidate text is rejected.
+            // Stop streams derived from its predecessor before validating it.
+            // Saves preserve the client version, so also cancel same-version
+            // streams; ordinary changes retain the older-only policy.
+            for key in Self::uri_key_variants(uri) {
+                if let Some(version) = incoming_version_i64 {
+                    if allow_same_version {
+                        self.stream_sessions().cancel_for_uri(&key);
+                    } else {
+                        self.stream_sessions().cancel_for_uri_version(&key, version);
+                    }
+                } else {
+                    self.stream_sessions().cancel_for_uri(&key);
+                }
+            }
+
             if let Some(changes) = params["contentChanges"].as_array() {
                 // Phase-1 latency instrumentation (opt-in via PERL_LSP_TIMING).
                 // Instrumentation only — no behavior change to the mutation path.
@@ -770,21 +786,6 @@ impl LspServer {
                 // The candidate is private until the line bound passes. Keep the
                 // document lock so validation and these effects use the same
                 // predecessor; rejection must preserve its generation/readiness.
-                // Stream cancellation holds only the stream manager's own lock.
-                // Saves replace text at the same client version, so they cancel
-                // all URI streams; ordinary changes cancel only older versions.
-                for key in Self::uri_key_variants(uri) {
-                    if let Some(version) = incoming_version_i64 {
-                        if allow_same_version {
-                            self.stream_sessions().cancel_for_uri(&key);
-                        } else {
-                            self.stream_sessions().cancel_for_uri_version(&key, version);
-                        }
-                    } else {
-                        self.stream_sessions().cancel_for_uri(&key);
-                    }
-                }
-
                 // Invalidate cached diagnostics only for an accepted buffer.
                 #[cfg(not(target_arch = "wasm32"))]
                 {

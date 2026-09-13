@@ -1601,13 +1601,20 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
         if server.test_active_document_readiness(&normalized_uri) != Some(before_readiness) {
             return Err(format!("rejected didChange replaced readiness in case {case}").into());
         }
-        if stream.is_cancelled() || server.stream_sessions().len() != 1 {
+        if !stream.is_cancelled() || server.stream_sessions().len() != 0 {
             return Err(format!(
-                "rejected didChange cancelled its predecessor stream in case {case}"
+                "rejected didChange retained an obsolete editor stream in case {case}"
             )
             .into());
         }
 
+        let recovery_stream =
+            server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+                uri: uri.to_string(),
+                document_version: 1,
+                line: 0,
+                character: 0,
+            });
         server.handle_did_change(Some(json!({
             "textDocument": {"uri": uri, "version": 2},
             "contentChanges": [{"text": "my $recovered = 1;\n"}]
@@ -1625,7 +1632,7 @@ fn test_did_change_rejects_overlong_result_before_commit() -> Result<(), Box<dyn
                 format!("valid recovery did not increment generation in case {case}").into()
             );
         }
-        if !stream.is_cancelled() {
+        if !recovery_stream.is_cancelled() {
             return Err(format!("valid recovery did not cancel stale stream in case {case}").into());
         }
         if server.stream_sessions().len() != 0 {
@@ -1689,12 +1696,21 @@ fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std
         || document.version != 1
         || document.current_generation() != before_generation
         || server.test_active_document_readiness(&normalized_uri) != Some(before_readiness)
-        || stream.is_cancelled()
-        || server.stream_sessions().len() != 1
+        || !stream.is_cancelled()
+        || server.stream_sessions().len() != 0
     {
-        return Err("rejected didSave changed predecessor document/readiness/stream state".into());
+        return Err(
+            "rejected didSave changed document/readiness or retained an obsolete stream".into()
+        );
     }
 
+    let recovery_stream =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_string(),
+            document_version: 1,
+            line: 0,
+            character: 0,
+        });
     server.handle_did_save(Some(json!({
         "textDocument": {"uri": uri},
         "text": "my $saved = 1;\n"
@@ -1710,7 +1726,7 @@ fn test_did_save_rejects_overlong_text_before_commit() -> Result<(), Box<dyn std
     if document.current_generation() != before_generation.wrapping_add(1) {
         return Err("valid save recovery did not increment generation".into());
     }
-    if !stream.is_cancelled() {
+    if !recovery_stream.is_cancelled() {
         return Err("valid save recovery did not cancel same-version stream".into());
     }
     if server.stream_sessions().len() != 0 {
