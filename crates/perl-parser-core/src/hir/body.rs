@@ -680,6 +680,19 @@ pub enum HirStmt {
         resolution: LoopControlResolution,
     },
 
+    /// A bare block (`{ ... }`) appearing in statement position.
+    ///
+    /// A statement ID cannot represent a sequence, so the block's children are
+    /// held in the block arena and referenced here. Consumers walk bodies from
+    /// [`HirBody::root_block`] and follow block statement lists, so carrying the
+    /// [`HirBlockId`] is what keeps every child reachable — returning only the
+    /// first child's ID would orphan the rest in the arena (#13249).
+    ///
+    /// The block's own lexical scope is applied while its children are lowered,
+    /// so a declaration inside the block resolves as a lexical rather than
+    /// against the enclosing scope.
+    Block(HirBlockId),
+
     /// Statement followed by a postfix condition (`expr if condition`).
     PostfixCondition {
         /// Structured statement being conditionally executed.

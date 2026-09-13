@@ -19,8 +19,8 @@ use std::error::Error;
 
 use perl_parser_core::Parser;
 use perl_parser_core::hir::{
-    ControlTransferKind, HirBlock, HirBody, HirExpr, HirFile, HirLoopRegionId, HirStmt,
-    LoopControlResolution, LoopKind, StatementModifierKind, lower_ast,
+    ControlTransferKind, HirBlock, HirBlockId, HirBody, HirExpr, HirFile, HirLoopRegionId, HirStmt,
+    HirVariable, LoopControlResolution, LoopKind, StatementModifierKind, VariableKind, lower_ast,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -552,5 +552,178 @@ fn region_ids_are_body_local() -> TestResult {
     }
     // Each sub body has exactly one loop; both allocate region 0.
     assert_eq!(per_body_ids, vec![0, 0]);
+    Ok(())
+}
+
+// ── §F: bare-block reachability, scope, and direct-label discrimination ──────
+
+/// Every statement ID reachable by walking blocks from `body.root_block`,
+/// in execution order.
+///
+/// Consumers (PIR lowering, graph walkers) start at `root_block` and follow
+/// block statement lists; they never scan the statement arena. A test that
+/// scanned `body.stmts` would therefore pass on orphaned statements, so this
+/// helper deliberately walks the reachable graph instead.
+fn reachable_stmts<'a>(body: &'a HirBody, block: &'a HirBlock, out: &mut Vec<&'a HirStmt>) {
+    for stmt_id in &block.stmts {
+        let Some(stmt) = body.stmt(*stmt_id) else { continue };
+        out.push(stmt);
+        match stmt {
+            HirStmt::Block(nested_id) => descend(body, Some(*nested_id), out),
+            HirStmt::PostfixCondition { statement, .. } => {
+                if let Some(inner) = body.stmt(*statement) {
+                    out.push(inner);
+                    if let HirStmt::Block(nested_id) = inner {
+                        descend(body, Some(*nested_id), out);
+                    }
+                }
+            }
+            // Block-carrying expressions (loop bodies, branch arms) are part
+            // of the reachable graph too.
+            HirStmt::Expr(expr_id) => match body.expr(*expr_id) {
+                Some(HirExpr::Loop { init, body: loop_body, continue_block, .. }) => {
+                    descend(body, *init, out);
+                    descend(body, Some(*loop_body), out);
+                    descend(body, *continue_block, out);
+                }
+                Some(HirExpr::Branch { then_block, elsif_arms, else_block, .. }) => {
+                    descend(body, Some(*then_block), out);
+                    for (_, arm) in elsif_arms {
+                        descend(body, Some(*arm), out);
+                    }
+                    descend(body, *else_block, out);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+fn descend<'a>(body: &'a HirBody, block_id: Option<HirBlockId>, out: &mut Vec<&'a HirStmt>) {
+    if let Some(id) = block_id
+        && let Some(block) = body.block(id)
+    {
+        reachable_stmts(body, block, out);
+    }
+}
+
+fn reachable_from_root<'a>(body: &'a HirBody) -> Result<Vec<&'a HirStmt>, Box<dyn Error>> {
+    let mut out = Vec::new();
+    reachable_stmts(body, root_block(body)?, &mut out);
+    Ok(out)
+}
+
+/// A bare block holds a statement *sequence*, and a statement ID cannot
+/// represent one. Lowering must therefore keep the block's children in the
+/// block arena and link them from the statement, or statements after the
+/// first become orphan arena entries that no consumer reaches.
+#[test]
+fn bare_block_keeps_every_statement_reachable_from_the_root_block() -> TestResult {
+    let file = parse("{ my $a = 1; my $b = 2; my $c = 3; } my $d = 4;");
+    let body = root_body(&file)?;
+    let names: Vec<&str> = reachable_from_root(body)?
+        .into_iter()
+        .filter_map(|stmt| match stmt {
+            HirStmt::Let { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec!["a", "b", "c", "d"],
+        "every bare-block child must stay reachable from the root block, in source order"
+    );
+    Ok(())
+}
+
+/// The same guarantee for a labelled bare block holding a loop transfer: the
+/// `last BLK` after a leading statement must still be reachable.
+#[test]
+fn labelled_bare_block_keeps_trailing_loop_control_reachable() -> TestResult {
+    let file = parse("while ($x) { BLK: { my $seen = 1; last BLK; } }");
+    let body = root_body(&file)?;
+    let reachable = reachable_from_root(body)?;
+    assert!(
+        reachable.iter().any(|stmt| matches!(stmt, HirStmt::Let { name, .. } if name == "seen")),
+        "the block's leading declaration must be reachable"
+    );
+    let controls = collect_loop_controls(body);
+    assert_eq!(controls.len(), 1, "the labelled block's `last BLK` must be lowered");
+    let (written, resolved, disposition) = loop_control(controls[0]);
+    assert_eq!(written.as_deref(), Some("BLK"));
+    assert!(resolved.is_none(), "a labelled bare block is not a loop region");
+    assert!(matches!(
+        disposition,
+        LoopControlResolution::NonLoopTarget { label } if label == "BLK"
+    ));
+    Ok(())
+}
+
+/// A `my` declared inside a labelled bare block and read later in that block
+/// must resolve as a lexical. Lowering the children under the parent scope
+/// instead would misclassify the read as a package variable.
+#[test]
+fn declaration_in_a_labelled_bare_block_resolves_as_lexical() -> TestResult {
+    let file = parse("BLK: { my $inner = 1; print $inner; }");
+    let body = root_body(&file)?;
+    let reads: Vec<&HirVariable> = body
+        .exprs
+        .iter()
+        .filter_map(|expr| match expr {
+            HirExpr::Variable(var) if var.name == "inner" => Some(var),
+            _ => None,
+        })
+        .collect();
+    assert!(!reads.is_empty(), "the `$inner` read must be lowered");
+    assert!(
+        reads.iter().all(|var| matches!(var.kind, VariableKind::Lexical)),
+        "a block-local `my` read inside its own block must be lexical, got {reads:?}"
+    );
+    Ok(())
+}
+
+/// A `NonLoop` frame from a labelled *ancestor* must not be mistaken for a
+/// label written on the modifier itself: both unlabelled postfix loops below
+/// own distinct regions, even though `BLK:` is on the enclosing-label stack
+/// the whole time they are lowered.
+#[test]
+fn unlabelled_postfix_loops_inside_a_labelled_block_keep_distinct_regions() -> TestResult {
+    let file = parse("BLK: { $x++ while $ready; $y++ until $done; }");
+    let body = root_body(&file)?;
+    let regions: Vec<HirLoopRegionId> = body
+        .stmts
+        .iter()
+        .filter_map(|stmt| match stmt {
+            HirStmt::PostfixCondition { postfix_loop_region, .. } => *postfix_loop_region,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        regions.len(),
+        2,
+        "both unlabelled loop-form modifiers must mint a region despite the labelled ancestor"
+    );
+    assert_ne!(regions[0], regions[1], "sibling postfix loops must not share a region ID");
+    Ok(())
+}
+
+/// The complement: a label written *directly* on a loop-form modifier is
+/// absorbed by the labelled-statement wrapper, so the modifier mints no
+/// region of its own. This keeps the ancestor-vs-direct distinction honest
+/// in both directions.
+#[test]
+fn directly_labelled_postfix_loop_still_mints_no_region() -> TestResult {
+    let file = parse("LOOP: $x++ while $ready;");
+    let body = root_body(&file)?;
+    let regions: Vec<Option<HirLoopRegionId>> = body
+        .stmts
+        .iter()
+        .filter_map(|stmt| match stmt {
+            HirStmt::PostfixCondition { postfix_loop_region, .. } => Some(*postfix_loop_region),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(regions, vec![None], "a directly-labelled loop-form modifier mints no region");
     Ok(())
 }

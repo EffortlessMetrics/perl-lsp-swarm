@@ -3617,11 +3617,28 @@ impl<'a> BodyBuilder2<'a> {
     }
 
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
+        self.lower_labelled_statement(node, None)
+    }
+
+    /// Lower one statement, carrying the label of an immediately-enclosing
+    /// `LABEL:` wrapper.
+    ///
+    /// `direct_label` is the label written directly on this statement, not any
+    /// label further out: it survives only the transparent
+    /// `ExpressionStatement` peel and is `None` for every child lowered from
+    /// here. A postfix modifier needs that distinction, because the
+    /// enclosing-label stack cannot tell `LOOP: $x++ while $c` (labelled) from
+    /// `BLK: { $x++ while $c; }` (an unlabelled modifier under a labelled
+    /// ancestor) — both leave a `NonLoop` frame on top (#13249).
+    fn lower_labelled_statement(&mut self, node: &Node, direct_label: Option<&str>) -> HirStmtId {
         let range = node.location;
 
         match &node.kind {
-            // Peel through the expression-statement wrapper.
-            NodeKind::ExpressionStatement { expression } => self.lower_statement(expression),
+            // Peel through the expression-statement wrapper. The wrapper is
+            // transparent, so a label written on it still counts as direct.
+            NodeKind::ExpressionStatement { expression } => {
+                self.lower_labelled_statement(expression, direct_label)
+            }
 
             // `LABEL: <statement>` (#13249). The label attaches to the
             // immediately-nested statement. Loop-shaped children consume it
@@ -3644,7 +3661,7 @@ impl<'a> BodyBuilder2<'a> {
                     stmt_id
                 } else {
                     self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
-                    let stmt_id = self.lower_statement(statement);
+                    let stmt_id = self.lower_labelled_statement(statement, Some(label));
                     // Pop only the entry this LabeledStatement pushed. Any
                     // nested LabeledStatement inside `statement` popped its
                     // own entry before returning, so this pop always removes
@@ -3654,19 +3671,15 @@ impl<'a> BodyBuilder2<'a> {
                 }
             }
 
-            // A bare block has no standalone HIR expression yet, but its
-            // statements must still be lowered so loop controls inside a
-            // labelled block remain visible to resolution.
-            NodeKind::Block { statements } => {
-                let first = statements.first().map(|statement| self.lower_statement(statement));
-                for statement in statements.iter().skip(1) {
-                    let _ = self.lower_statement(statement);
-                }
-                first.unwrap_or_else(|| {
-                    let expr =
-                        self.alloc_expr(HirExpr::Opaque { ast_kind: "Block".to_string() }, range);
-                    self.alloc_stmt(HirStmt::Expr(expr), range)
-                })
+            // A bare block in statement position. Its children are kept as an
+            // ordered sequence in the block arena and referenced by the
+            // statement, so every child stays reachable from `root_block`;
+            // returning only the first child's ID would leave the rest as
+            // orphan arena entries that no consumer walks (#13249).
+            // `lower_nested_block` also applies the block's own lexical scope.
+            NodeKind::Block { .. } => {
+                let block_id = self.lower_nested_block(node);
+                self.alloc_stmt(HirStmt::Block(block_id), range)
             }
 
             NodeKind::LoopControl { op, label } => {
@@ -3699,8 +3712,11 @@ impl<'a> BodyBuilder2<'a> {
                         | StatementModifierKind::Until
                         | StatementModifierKind::Foreach
                 );
-                let labelled =
-                    matches!(self.enclosing_label_stack.last(), Some(EnclosingLabel::NonLoop(_)));
+                // Only a label written directly on this modifier suppresses the
+                // region; a `NonLoop` frame from a labelled ancestor (say a
+                // labelled bare block) must not, or every unlabelled postfix
+                // loop inside it would silently lose its identity.
+                let labelled = direct_label.is_some();
                 let postfix_loop_region =
                     if loop_form && !labelled { Some(self.alloc_loop_region()) } else { None };
                 let postfix_label = None;
@@ -3898,16 +3914,22 @@ impl<'a> BodyBuilder2<'a> {
 
     /// Append every statement in a labelled bare block. Bare blocks are
     /// transparent for body sequencing, but their label remains an enclosing
-    /// non-loop target while each child is lowered.
+    /// non-loop target while each child is lowered, and the block's own
+    /// lexical scope applies — without the scope switch a `my` declared in the
+    /// block and read later in it resolves against the parent scope and is
+    /// misclassified as package-scoped (#13249).
     fn append_statement_nodes(&mut self, node: &Node, block: &mut HirBlock) {
         if let NodeKind::LabeledStatement { label, statement } = &node.kind
             && let NodeKind::Block { statements } = &statement.kind
         {
+            let previous_scope = self.start_scope;
+            self.start_scope = find_body_scope(self.scope_graph, statement.location);
             self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
             for statement in statements {
                 block.stmts.push(self.lower_statement(statement));
             }
             self.enclosing_label_stack.pop();
+            self.start_scope = previous_scope;
         } else {
             block.stmts.push(self.lower_statement(node));
         }
