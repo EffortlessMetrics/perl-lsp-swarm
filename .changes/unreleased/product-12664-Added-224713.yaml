@@ -1,0 +1,15 @@
+project: product
+component: Developer experience
+kind: Added
+body: >-
+  Add `perllsp --doctor --dev-environment`, a bounded prerequisite report for
+  Windows symlink privilege, Cargo identity versus the workspace pin, Bash
+  flavor reachability, and native Perl identity divergence. The report carries
+  copyable fixes and does not install or configure anything. The public
+  `LaunchAction` enum gains this explicit command variant, so downstream
+  exhaustive matches must account for the compatibility boundary (#12595).
+time: 2026-09-08T15:17:24Z
+custom:
+  PR: "12664"
+  Slug: doctor-dev-environment
+  Breaking: "yes"

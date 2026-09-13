@@ -74,6 +74,33 @@ pub(super) fn run_doctor_critic_compatibility(json: bool) -> i32 {
     }
 }
 
+/// `perllsp --doctor --dev-environment`: bounded development-environment
+/// prerequisite report (#12595). Probes this machine for the four Windows
+/// clone-and-make findings behind the #11869 audit: temporary symlink
+/// privilege (#12567), per-shell Cargo probes versus the workspace toolchain
+/// pin, bash flavor coverage for repository POSIX entrypoints, and Perl
+/// identity divergence for DAP E2E / prove consumers. Typed statuses and
+/// copyable fix lines follow the #7212 posture; the symlink probe uses temporary
+/// files with best-effort cleanup and never installs or configures anything.
+pub(super) fn run_doctor_dev_environment(json: bool) -> i32 {
+    let report = build_dev_environment_report();
+    if json {
+        match serde_json::to_string_pretty(&report) {
+            Ok(json_str) => {
+                println!("{json_str}");
+                0
+            }
+            Err(err) => {
+                eprintln!("Failed to serialize dev-environment doctor report: {err}");
+                1
+            }
+        }
+    } else {
+        print!("{}", render_dev_environment_report(&report));
+        0
+    }
+}
+
 pub(super) fn run_doctor(dir: &str, json: bool) -> i32 {
     match build_doctor_report_struct(dir) {
         Ok(report) => {
@@ -554,6 +581,1538 @@ fn system_inc_report(workspace: &Path, config: &mut WorkspaceConfig) -> SystemIn
         .map(|path| if path.is_absolute() { path } else { probe_cwd.join(path) })
         .collect();
     SystemIncReport { status, paths: resolved }
+}
+
+// ── Development-environment prerequisites arm (#12595) ─────────────────────
+//
+// Privacy posture follows #7212: typed statuses from a closed set, resolved
+// tool identities only, copyable environment-scoped fix lines, probe details
+// that carry OS error codes rather than paths, and no auto-mutation.
+
+/// Schema tag for the versioned dev-environment JSON report.
+const DEV_ENVIRONMENT_SCHEMA: &str = "perllsp-doctor-dev-environment-v1";
+
+/// Workspace MSRV label ([workspace.package] rust-version). Cross-checked
+/// against rust-toolchain.toml and the crate manifest by the pin test.
+const WORKSPACE_RUST_VERSION_LABEL: &str = "1.95";
+const WORKSPACE_RUST_VERSION_MAJOR: u64 = 1;
+const WORKSPACE_RUST_VERSION_MINOR: u64 = 95;
+
+/// Channel pinned by rust-toolchain.toml. A rustup shim can select it, but
+/// resolved path provenance alone cannot prove that cwd and overrides did
+/// select it. Distro cargo bypasses that selection mechanism (#12595).
+const TOOLCHAIN_CHANNEL_LABEL: &str = "1.95.0";
+
+/// Prerequisite found and healthy for its role.
+const STATUS_PRESENT: &str = "present";
+/// Required prerequisite absent or unreachable.
+const STATUS_MISSING: &str = "missing";
+/// Probe does not apply on this host or flavor.
+const STATUS_NOT_APPLICABLE: &str = "not_applicable";
+/// Reachable but below the workspace MSRV.
+const STATUS_STALE: &str = "stale";
+/// Reachable but a distro/shim cargo that ignores rust-toolchain.toml.
+const STATUS_NON_RUSTUP: &str = "non_rustup";
+/// More than one distinct identity discoverable; consumers may pick either.
+const STATUS_DIVERGENT: &str = "divergent";
+/// The probe itself could not determine an honest verdict.
+const STATUS_PROBE_ERROR: &str = "probe_error";
+
+/// The closed set of dev-environment statuses, asserted by the schema tests;
+/// JSON consumers may match on these codes exhaustively.
+#[cfg(test)]
+fn dev_env_status_codes() -> [&'static str; 7] {
+    [
+        STATUS_PRESENT,
+        STATUS_MISSING,
+        STATUS_NOT_APPLICABLE,
+        STATUS_STALE,
+        STATUS_NON_RUSTUP,
+        STATUS_DIVERGENT,
+        STATUS_PROBE_ERROR,
+    ]
+}
+
+const PROVENANCE_RUSTUP_SHIM: &str = "rustup_shim";
+const PROVENANCE_RUSTUP_TOOLCHAIN: &str = "rustup_toolchain";
+const PROVENANCE_NON_RUSTUP: &str = "non_rustup";
+const PROVENANCE_UNKNOWN: &str = "unknown";
+
+const IDENTITY_MSYS_CYGWIN: &str = "msys_cygwin";
+const IDENTITY_STRAWBERRY: &str = "strawberry";
+const IDENTITY_ACTIVESTATE: &str = "activestate";
+const IDENTITY_SYSTEM_UNIX: &str = "system_unix";
+const IDENTITY_UNKNOWN: &str = "unknown";
+
+/// The DAP-supported ActiveState Perl 64-bit default install path.
+const ACTIVESTATE_PERL64_DEFAULT_PATH: &str = "c:/perl64/bin/perl.exe";
+
+const FLAVOR_NATIVE_SHELL: &str = "native_shell";
+const FLAVOR_GIT_BASH: &str = "git_bash";
+const FLAVOR_WSL: &str = "wsl";
+
+const HOST_PLATFORM_WINDOWS: &str = "windows";
+const HOST_PLATFORM_UNIX: &str = "unix";
+
+/// Wall-clock timeout for one dev-environment process probe.
+const DEV_ENV_PROBE_TIMEOUT_SECS: u64 = 10;
+/// WSL cold starts can take far longer than an ordinary spawn.
+const DEV_ENV_WSL_TIMEOUT_SECS: u64 = 30;
+
+/// Probe detail text is diagnosis, not logging; keep snippets bounded.
+const DETAIL_MAX_CHARS: usize = 240;
+
+/// os error 1314 (`ERROR_PRIVILEGE_NOT_HELD`): creating symlinks requires
+/// Developer Mode or an elevated token (#12567).
+#[cfg(windows)]
+const WINDOWS_ERROR_PRIVILEGE_NOT_HELD: i32 = 1314;
+
+/// Prescribed enablement step for the symlink privilege finding (#12595).
+#[cfg(any(windows, test))]
+const FIX_SYMLINK_PRIVILEGE: &str = "Settings > Privacy & security > For developers > Developer Mode: On, or run from an elevated shell";
+
+/// Copyable rustup bootstrap; guidance only — doctor never executes it.
+const RUSTUP_INSTALL_ONE_LINER: &str =
+    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh";
+
+const FIX_BASH_INSTALL_GIT_WINDOWS: &str =
+    "fix: install Git for Windows so a POSIX bash is available: winget install --id Git.Git -e";
+const FIX_BASH_INSTALL_UNIX: &str = "fix: install bash with your distribution's package manager so repository .sh entrypoints can run";
+
+const FIX_PERL_IDENTITY_DIVERGENCE: &str = "fix: reorder PATH so your intended perl resolves first ('where perl' lists resolution order on Windows, 'which -a perl' elsewhere), or pin [perl] perl_path in .perl-lsp.toml";
+const FIX_PERL_MISSING_WINDOWS: &str =
+    "fix: install a native perl (for example Strawberry Perl) ahead of MSYS entries on PATH";
+const FIX_PERL_MISSING_UNIX: &str =
+    "fix: install a system perl via the distribution package manager";
+const FIX_CARGO_DIRECT_RUSTUP_TOOLCHAIN: &str = "fix: use rustup's cargo shim (for example ~/.cargo/bin/cargo) so rust-toolchain.toml selects this workspace's channel";
+
+/// Marker walked up from the working directory to locate the checkout.
+const REPO_ENTRYPOINT_MARKER: &str = ".github/run_all_tests.sh";
+/// Repository files whose execution assumes a POSIX bash (#12595).
+const REPO_BASH_ENTRYPOINTS: [(&str, RepoEntrypointKind); 3] = [
+    (".github/run_all_tests.sh", RepoEntrypointKind::File),
+    ("scripts", RepoEntrypointKind::Directory),
+    ("scripts/cargo-safe", RepoEntrypointKind::File),
+];
+/// Documented-prerequisite line demanded by #12595.
+const BASH_PREREQUISITE_LINE: &str = "Repository conformance entrypoints (.github/run_all_tests.sh, scripts/*.sh, scripts/cargo-safe) assume a POSIX bash; Git Bash ships with Git for Windows.";
+
+/// One parsed `major.minor.patch` toolchain version triple.
+type VersionTriple = (u64, u64, u64);
+
+/// Stdout/stderr bytes from a version probe, already run under its timeout.
+type ProbeOutput = Result<std::process::Output, String>;
+
+#[derive(Serialize)]
+struct DevEnvironmentReport {
+    schema: &'static str,
+    host_platform: &'static str,
+    workspace_rust_version: &'static str,
+    toolchain_channel_pin: &'static str,
+    symlink_privilege: SymlinkPrivilegeReport,
+    cargo_toolchains: Vec<CargoToolchainReport>,
+    bash_flavors: Vec<BashFlavorReport>,
+    repo_entrypoints: RepoEntrypointsReport,
+    documented_prerequisite: &'static str,
+    perl_identity: PerlIdentityReport,
+}
+
+#[derive(Serialize)]
+struct SymlinkPrivilegeReport {
+    status: &'static str,
+    detail: String,
+    fix: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CargoToolchainReport {
+    flavor: &'static str,
+    status: &'static str,
+    path: Option<String>,
+    version: Option<String>,
+    provenance: &'static str,
+    meets_workspace_pin: Option<bool>,
+    honors_toolchain_file: Option<bool>,
+    error: Option<String>,
+    fix: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BashFlavorReport {
+    flavor: &'static str,
+    status: &'static str,
+    bash_path: Option<String>,
+    runs_repo_entrypoints: Option<bool>,
+    note: String,
+    fix: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RepoEntrypointsReport {
+    marker: &'static str,
+    located: bool,
+    complete: Option<bool>,
+    note: String,
+}
+
+#[derive(Serialize)]
+struct PerlIdentityReport {
+    status: &'static str,
+    path: Option<String>,
+    version: Option<String>,
+    identity: &'static str,
+    other_identities: Vec<&'static str>,
+    error: Option<String>,
+    fix: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum RepoEntrypointKind {
+    File,
+    Directory,
+}
+
+fn build_dev_environment_report() -> DevEnvironmentReport {
+    build_dev_environment_report_in(&std::env::temp_dir())
+}
+
+/// Dependency seam for tests: `temp_base` receives the temporary symlink.
+fn build_dev_environment_report_in(temp_base: &Path) -> DevEnvironmentReport {
+    let windows_host = cfg!(windows);
+    let native_cargo = probe_native_cargo();
+    let git_bash_executable = if windows_host { resolve_git_bash_executable() } else { None };
+    let (git_bash_cargo, git_bash) =
+        build_git_bash_reports(windows_host, git_bash_executable, probe_git_bash_cargo_for_path);
+    let wsl_bash = if windows_host {
+        wsl_bash_flavor_report()
+    } else {
+        not_applicable_bash_flavor_report(FLAVOR_WSL)
+    };
+    DevEnvironmentReport {
+        schema: DEV_ENVIRONMENT_SCHEMA,
+        host_platform: if windows_host { HOST_PLATFORM_WINDOWS } else { HOST_PLATFORM_UNIX },
+        workspace_rust_version: WORKSPACE_RUST_VERSION_LABEL,
+        toolchain_channel_pin: TOOLCHAIN_CHANNEL_LABEL,
+        symlink_privilege: probe_symlink_privilege_in(temp_base),
+        cargo_toolchains: build_cargo_toolchain_reports(windows_host, native_cargo, git_bash_cargo),
+        bash_flavors: build_bash_flavor_reports(windows_host, git_bash, wsl_bash),
+        repo_entrypoints: build_repo_entrypoints_report(),
+        documented_prerequisite: BASH_PREREQUISITE_LINE,
+        perl_identity: probe_perl_identity(windows_host),
+    }
+}
+
+fn build_git_bash_reports(
+    windows_host: bool,
+    git_bash_executable: Option<PathBuf>,
+    probe_cargo: impl FnOnce(Option<PathBuf>) -> CargoToolchainReport,
+) -> (CargoToolchainReport, BashFlavorReport) {
+    if windows_host {
+        let git_bash_cargo = probe_cargo(git_bash_executable.clone());
+        let git_bash = git_bash_flavor_report_for_path(git_bash_executable);
+        (git_bash_cargo, git_bash)
+    } else {
+        (
+            not_applicable_cargo_report(FLAVOR_GIT_BASH),
+            not_applicable_bash_flavor_report(FLAVOR_GIT_BASH),
+        )
+    }
+}
+
+fn build_cargo_toolchain_reports(
+    windows_host: bool,
+    native_cargo: CargoToolchainReport,
+    git_bash_cargo: CargoToolchainReport,
+) -> Vec<CargoToolchainReport> {
+    let mut reports = vec![native_cargo];
+    if windows_host {
+        reports.push(git_bash_cargo);
+        reports.push(probe_wsl_cargo());
+    } else {
+        // The flavor table keeps its shape on every host so JSON consumers
+        // can rely on one row per flavor; Git Bash and WSL simply do not
+        // apply outside Windows.
+        reports.push(not_applicable_cargo_report(FLAVOR_GIT_BASH));
+        reports.push(not_applicable_cargo_report(FLAVOR_WSL));
+    }
+    reports
+}
+
+fn not_applicable_cargo_report(flavor: &'static str) -> CargoToolchainReport {
+    CargoToolchainReport {
+        flavor,
+        status: STATUS_NOT_APPLICABLE,
+        path: None,
+        version: None,
+        provenance: PROVENANCE_UNKNOWN,
+        meets_workspace_pin: None,
+        honors_toolchain_file: None,
+        error: None,
+        fix: None,
+    }
+}
+
+fn build_bash_flavor_reports(
+    windows_host: bool,
+    git_bash: BashFlavorReport,
+    wsl_bash: BashFlavorReport,
+) -> Vec<BashFlavorReport> {
+    let mut reports = vec![native_shell_bash_report()];
+    if windows_host {
+        reports.push(git_bash);
+        reports.push(wsl_bash);
+    } else {
+        // Flavor-table parity with Windows hosts (see
+        // `build_cargo_toolchain_reports`): Git Bash and WSL are not
+        // applicable flavors on Unix.
+        reports.push(not_applicable_bash_flavor_report(FLAVOR_GIT_BASH));
+        reports.push(not_applicable_bash_flavor_report(FLAVOR_WSL));
+    }
+    reports
+}
+
+fn not_applicable_bash_flavor_report(flavor: &'static str) -> BashFlavorReport {
+    BashFlavorReport {
+        flavor,
+        status: STATUS_NOT_APPLICABLE,
+        bash_path: None,
+        runs_repo_entrypoints: None,
+        note: "not an applicable flavor on this host".to_string(),
+        fix: None,
+    }
+}
+
+fn build_repo_entrypoints_report() -> RepoEntrypointsReport {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match locate_repo_root(&cwd) {
+        None => RepoEntrypointsReport {
+            marker: REPO_ENTRYPOINT_MARKER,
+            located: false,
+            complete: None,
+            note: format!(
+                "no {} found walking up from the working directory",
+                REPO_ENTRYPOINT_MARKER
+            ),
+        },
+        Some(root) => RepoEntrypointsReport {
+            marker: REPO_ENTRYPOINT_MARKER,
+            located: true,
+            complete: Some(repo_entrypoints_complete(&root)),
+            note: format!("repository root: {}", root.display()),
+        },
+    }
+}
+
+fn repo_entrypoints_complete(root: &Path) -> bool {
+    REPO_BASH_ENTRYPOINTS.iter().all(|(relative, kind)| match kind {
+        RepoEntrypointKind::File => root.join(relative).is_file(),
+        RepoEntrypointKind::Directory => root.join(relative).is_dir(),
+    })
+}
+
+/// Walk up from `start` until the repository entrypoint marker appears.
+fn locate_repo_root(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|current| current.join(REPO_ENTRYPOINT_MARKER).is_file())
+        .map(Path::to_path_buf)
+}
+
+// ── Symlink privilege probe (#12567) ────────────────────────────────────────
+
+fn probe_symlink_privilege_in(base_dir: &Path) -> SymlinkPrivilegeReport {
+    #[cfg(windows)]
+    {
+        probe_symlink_privilege_windows(base_dir)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = base_dir;
+        SymlinkPrivilegeReport {
+            status: STATUS_NOT_APPLICABLE,
+            detail: "the Windows symlink-privilege probe does not apply on this platform"
+                .to_string(),
+            fix: None,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn probe_symlink_privilege_windows(base_dir: &Path) -> SymlinkPrivilegeReport {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let stem = format!("perllsp-doctor-symlink-{}-{nonce}", std::process::id());
+    let target = base_dir.join(format!("{stem}.txt"));
+    let link = base_dir.join(format!("{stem}.ln"));
+    run_file_symlink_probe(&target, &link)
+}
+
+/// Create `link` pointing at `target`, classify the privilege outcome, then
+/// attempt to remove both files again. Detail messages carry only the OS error
+/// code, never the probe paths (#7212 privacy posture).
+#[cfg(windows)]
+fn run_file_symlink_probe(target: &Path, link: &Path) -> SymlinkPrivilegeReport {
+    let outcome = std::fs::write(target, b"perllsp doctor symlink-privilege probe (#12595)")
+        .and_then(|()| std::os::windows::fs::symlink_file(target, link));
+    let report = match outcome {
+        Ok(()) => SymlinkPrivilegeReport {
+            status: STATUS_PRESENT,
+            detail: "temporary file symlink creation succeeded; cleanup was attempted".to_string(),
+            fix: None,
+        },
+        Err(error) if error.raw_os_error() == Some(WINDOWS_ERROR_PRIVILEGE_NOT_HELD) => {
+            SymlinkPrivilegeReport {
+                status: STATUS_MISSING,
+                detail: format!(
+                    "creating a file symlink failed with os error \
+                     {WINDOWS_ERROR_PRIVILEGE_NOT_HELD} (required privilege is not held)"
+                ),
+                fix: Some(FIX_SYMLINK_PRIVILEGE.to_string()),
+            }
+        }
+        Err(error) => {
+            let code = error
+                .raw_os_error()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            SymlinkPrivilegeReport {
+                status: STATUS_PROBE_ERROR,
+                detail: format!("symlink probe failed with os error {code}"),
+                fix: None,
+            }
+        }
+    };
+    let _ = std::fs::remove_file(link);
+    let _ = std::fs::remove_file(target);
+    report
+}
+
+// ── Cargo per shell flavor ─────────────────────────────────────────────────
+
+/// Parse the first `major.minor.patch` word of a `cargo --version` line such
+/// as `cargo 1.95.0 (8f3d0b0ac 2026-01-30)`; distro builds append their own
+/// suffixes after the patch number.
+fn parse_cargo_version_line(line: &str) -> Option<VersionTriple> {
+    line.split_whitespace().find_map(parse_version_word)
+}
+
+fn parse_version_word(word: &str) -> Option<VersionTriple> {
+    let core = word.trim_end_matches(|character: char| !character.is_ascii_digit());
+    let mut parts = core.split('.');
+    let major = parts.next().and_then(|part| part.parse::<u64>().ok())?;
+    let minor = parts.next().and_then(|part| part.parse::<u64>().ok())?;
+    let patch_text = parts.next()?;
+    let patch_digits: String =
+        patch_text.chars().take_while(|character| character.is_ascii_digit()).collect();
+    let patch = patch_digits.parse::<u64>().ok()?;
+    Some((major, minor, patch))
+}
+
+/// How a reachable cargo was installed, inferred from its resolved path and
+/// the provider context that resolved it: rustup shims live under the observed
+/// home's bin; direct .rustup/toolchains binaries are rustup-installed but
+/// bypass the shim; known system paths identify distro cargo. Unresolved path
+/// context remains unknown, and no variant here proves active toolchain
+/// selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CargoProvenance {
+    RustupShim,
+    RustupToolchain,
+    NonRustup,
+}
+
+impl CargoProvenance {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::RustupShim => PROVENANCE_RUSTUP_SHIM,
+            Self::RustupToolchain => PROVENANCE_RUSTUP_TOOLCHAIN,
+            Self::NonRustup => PROVENANCE_NON_RUSTUP,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CargoPathStyle {
+    Windows,
+    Posix,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CargoProbeContext {
+    path_style: CargoPathStyle,
+    cwd: Option<String>,
+    home: Option<String>,
+    cargo_home: Option<String>,
+}
+
+impl CargoProbeContext {
+    fn native() -> Self {
+        Self {
+            path_style: if cfg!(windows) { CargoPathStyle::Windows } else { CargoPathStyle::Posix },
+            cwd: std::env::current_dir().ok().and_then(|path| path.to_str().map(str::to_owned)),
+            home: native_home(),
+            cargo_home: std::env::var("CARGO_HOME").ok(),
+        }
+    }
+
+    fn shell(home: Option<String>, cargo_home: Option<String>, cwd: Option<String>) -> Self {
+        Self { path_style: CargoPathStyle::Posix, cwd, home, cargo_home }
+    }
+}
+
+fn native_home() -> Option<String> {
+    native_home_from_vars(
+        cfg!(windows),
+        std::env::var("HOME").ok().as_deref(),
+        std::env::var("USERPROFILE").ok().as_deref(),
+    )
+}
+
+fn native_home_from_vars(
+    windows_host: bool,
+    home: Option<&str>,
+    userprofile: Option<&str>,
+) -> Option<String> {
+    let candidate = if windows_host { userprofile } else { home }?;
+    (!candidate.is_empty()).then(|| candidate.to_string())
+}
+
+fn classify_cargo_provenance_with_context(
+    cargo_path: &str,
+    context: &CargoProbeContext,
+) -> Option<CargoProvenance> {
+    let normalized = normalize_cargo_path(cargo_path, context.path_style);
+    if has_ambiguous_cargo_components(&normalized)
+        || !is_absolute_cargo_path(&normalized, context.path_style)
+    {
+        return None;
+    }
+    let parent = normalized.rsplit_once('/').map(|(parent, _)| parent);
+    if parent.is_some_and(|parent| {
+        effective_cargo_home(context).is_some_and(|home| parent == format!("{home}/bin"))
+    }) {
+        return Some(CargoProvenance::RustupShim);
+    }
+    if normalized.contains("/.rustup/toolchains/") {
+        // A direct toolchain binary is rustup-installed, but it bypasses the
+        // rustup shim and therefore does not select rust-toolchain.toml.
+        return Some(CargoProvenance::RustupToolchain);
+    }
+    if is_known_non_rustup_path(&normalized, context.path_style) {
+        return Some(CargoProvenance::NonRustup);
+    }
+    // A path outside the observed Cargo home may be a copied shim, an alias,
+    // or a native executable reached through another shell's path spelling.
+    // A failed positive match does not establish how that binary was installed.
+    None
+}
+
+fn normalize_cargo_path(path: &str, style: CargoPathStyle) -> String {
+    match style {
+        CargoPathStyle::Windows => {
+            path.trim_end_matches(['/', '\\']).replace('\\', "/").to_ascii_lowercase()
+        }
+        CargoPathStyle::Posix => path.trim_end_matches('/').to_string(),
+    }
+}
+
+fn effective_cargo_home(context: &CargoProbeContext) -> Option<String> {
+    let configured = context.cargo_home.as_deref();
+    let configured_home = match configured {
+        Some("") => return None,
+        Some(value) => value,
+        None => {
+            let home = context.home.as_deref().filter(|value| !value.is_empty())?;
+            let home = normalize_cargo_path(home, context.path_style);
+            if !is_absolute_cargo_path(&home, context.path_style)
+                || has_ambiguous_cargo_components(&home)
+            {
+                return None;
+            }
+            return Some(format!("{}/.cargo", home.trim_end_matches('/')));
+        }
+    };
+    let normalized = normalize_cargo_path(configured_home, context.path_style);
+    if has_ambiguous_cargo_components(&normalized) {
+        return None;
+    }
+    if is_absolute_cargo_path(&normalized, context.path_style) {
+        return Some(normalized);
+    }
+    if is_drive_relative_windows_path(&normalized, context.path_style)
+        || normalized.split('/').any(|component| component.is_empty())
+    {
+        return None;
+    }
+    let cwd = context.cwd.as_deref().filter(|value| !value.is_empty())?;
+    let cwd = normalize_cargo_path(cwd, context.path_style);
+    if !is_absolute_cargo_path(&cwd, context.path_style) || has_ambiguous_cargo_components(&cwd) {
+        return None;
+    }
+    Some(format!("{}/{}", cwd.trim_end_matches('/'), normalized))
+}
+
+fn is_absolute_cargo_path(path: &str, style: CargoPathStyle) -> bool {
+    match style {
+        CargoPathStyle::Windows => {
+            path.starts_with("//")
+                || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes().get(2) == Some(&b'/'))
+        }
+        CargoPathStyle::Posix => path.starts_with('/'),
+    }
+}
+
+fn has_ambiguous_cargo_components(path: &str) -> bool {
+    path.split('/').any(|component| component == "." || component == "..")
+}
+
+fn is_drive_relative_windows_path(path: &str, style: CargoPathStyle) -> bool {
+    style == CargoPathStyle::Windows
+        && path.as_bytes().get(1) == Some(&b':')
+        && path.as_bytes().get(2) != Some(&b'/')
+}
+
+fn is_known_non_rustup_path(path: &str, style: CargoPathStyle) -> bool {
+    match style {
+        CargoPathStyle::Windows => false,
+        CargoPathStyle::Posix => matches!(path, "/usr/bin/cargo" | "/usr/local/bin/cargo"),
+    }
+}
+
+fn probe_native_cargo() -> CargoToolchainReport {
+    let Some(binary) = resolve_tool_on_path("cargo") else {
+        return unreachable_cargo_report(FLAVOR_NATIVE_SHELL, "cargo not found on PATH");
+    };
+    let mut command = Command::new(&binary);
+    command.arg("--version");
+    cargo_report_from_output(
+        FLAVOR_NATIVE_SHELL,
+        binary,
+        run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS),
+    )
+}
+
+/// Standard Git for Windows install locations probed when `bash.exe` is not
+/// on PATH: a stock Git install is supported by this repository (its
+/// baseline scripts invoke the absolute path), so it must not read as
+/// "Git Bash missing".
+fn standard_git_bash_location() -> Option<PathBuf> {
+    if cfg!(windows) {
+        [r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files (x86)\Git\bin\bash.exe"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|candidate| candidate.exists())
+    } else {
+        None
+    }
+}
+
+/// Resolve Git Bash using the same PATH-then-standard-install fallback for
+/// both the Bash capability row and its shell-mediated Cargo probe.
+fn resolve_git_bash_executable() -> Option<PathBuf> {
+    resolve_git_bash_executable_with(resolve_tool_on_path, standard_git_bash_location)
+}
+
+fn resolve_git_bash_executable_with(
+    resolve_on_path: impl FnOnce(&str) -> Option<PathBuf>,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    match resolve_on_path("bash") {
+        Some(path)
+            if classify_windows_bash_path(&path.to_string_lossy())
+                == WindowsBashKind::PosixProvider =>
+        {
+            Some(path)
+        }
+        Some(_) | None => fallback(),
+    }
+}
+
+fn probe_git_bash_cargo_for_path(bash_exe: Option<PathBuf>) -> CargoToolchainReport {
+    let Some(bash_exe) = bash_exe else {
+        return unreachable_cargo_report(
+            FLAVOR_GIT_BASH,
+            "no bash.exe on PATH and no Git Bash at the standard install locations",
+        );
+    };
+    match classify_windows_bash_path(&bash_exe.to_string_lossy()) {
+        WindowsBashKind::WslShim => {
+            return unreachable_cargo_report(
+                FLAVOR_GIT_BASH,
+                "PATH bash.exe resolves to a WSL shim (System32/WindowsApps), not Git Bash",
+            );
+        }
+        WindowsBashKind::OtherProvider => {
+            return unreachable_cargo_report(
+                FLAVOR_GIT_BASH,
+                "PATH bash.exe resolves to an unrecognized POSIX provider, not Git Bash",
+            );
+        }
+        WindowsBashKind::PosixProvider => {}
+    }
+    let mut command = Command::new(&bash_exe);
+    command.args(["-c", SHELL_CARGO_PROBE_SCRIPT]);
+    shell_cargo_report_from_output(
+        FLAVOR_GIT_BASH,
+        run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS),
+    )
+}
+
+fn probe_wsl_cargo() -> CargoToolchainReport {
+    let Some(wsl_exe) = resolve_tool_on_path("wsl") else {
+        return unreachable_cargo_report(FLAVOR_WSL, "wsl.exe not found on PATH");
+    };
+    let mut command = Command::new(&wsl_exe);
+    // Bypass WSL's default shell: it must not expand this script before the
+    // requested Bash process observes its own environment and emits the record.
+    command.args(["--exec", "bash", "-c", SHELL_CARGO_PROBE_SCRIPT]);
+    shell_cargo_report_from_output(
+        FLAVOR_WSL,
+        run_command_with_timeout(command, DEV_ENV_WSL_TIMEOUT_SECS),
+    )
+}
+
+const SHELL_CARGO_PROBE_SCRIPT: &str = r#"
+cargo_status=0
+cargo_path=$(command -v cargo 2>/dev/null || true)
+cargo_version=
+if test -n "$cargo_path"; then
+    cargo_version=$(cargo --version) || cargo_status=$?
+fi
+home_state=unset
+test -n "${HOME+x}" && home_state=set
+cargo_home_state=unset
+test -n "${CARGO_HOME+x}" && cargo_home_state=set
+cwd_state=unset
+test -n "${PWD+x}" && cwd_state=set
+printf 'cargo_path\0%s\0cargo_version\0%s\0home_state\0%s\0home\0%s\0cargo_home_state\0%s\0cargo_home\0%s\0cwd_state\0%s\0cwd\0%s\0' \
+    "$cargo_path" "$cargo_version" "$home_state" "${HOME-}" \
+    "$cargo_home_state" "${CARGO_HOME-}" "$cwd_state" "${PWD-}"
+exit "$cargo_status"
+"#;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShellCargoProbe {
+    cargo_path: Option<PathBuf>,
+    version_output: String,
+    context: CargoProbeContext,
+}
+
+fn parse_shell_cargo_probe_output(output: &str) -> Result<ShellCargoProbe, String> {
+    let output = output
+        .strip_suffix('\0')
+        .ok_or_else(|| "shell cargo probe omitted its NUL record terminator".to_string())?;
+    let fields: Vec<&str> = output.split('\0').collect();
+    if !fields.len().is_multiple_of(2) {
+        return Err("shell cargo probe emitted an incomplete NUL-delimited field".to_string());
+    }
+
+    let mut cargo_path = None;
+    let mut version_output = None;
+    let mut home_state = None;
+    let mut home = None;
+    let mut cargo_home_state = None;
+    let mut cargo_home = None;
+    let mut cwd_state = None;
+    let mut cwd = None;
+    for pair in fields.chunks_exact(2) {
+        let [key, value] = pair else {
+            return Err("shell cargo probe emitted an incomplete NUL-delimited field".to_string());
+        };
+        let slot = match *key {
+            "cargo_path" => &mut cargo_path,
+            "cargo_version" => &mut version_output,
+            "home_state" => &mut home_state,
+            "home" => &mut home,
+            "cargo_home_state" => &mut cargo_home_state,
+            "cargo_home" => &mut cargo_home,
+            "cwd_state" => &mut cwd_state,
+            "cwd" => &mut cwd,
+            other => return Err(format!("shell cargo probe emitted unknown field {other:?}")),
+        };
+        if slot.replace(value.to_string()).is_some() {
+            return Err(format!("shell cargo probe emitted duplicate field {key:?}"));
+        }
+    }
+
+    let cargo_path =
+        cargo_path.ok_or_else(|| "shell cargo probe omitted cargo_path".to_string())?;
+    let cargo_path = (!cargo_path.is_empty()).then(|| PathBuf::from(cargo_path));
+    let version_output =
+        version_output.ok_or_else(|| "shell cargo probe omitted cargo_version".to_string())?;
+    let home_state =
+        home_state.ok_or_else(|| "shell cargo probe omitted home_state".to_string())?;
+    let home = home.ok_or_else(|| "shell cargo probe omitted home".to_string())?;
+    let cargo_home_state =
+        cargo_home_state.ok_or_else(|| "shell cargo probe omitted cargo_home_state".to_string())?;
+    let cargo_home =
+        cargo_home.ok_or_else(|| "shell cargo probe omitted cargo_home".to_string())?;
+    let cwd_state = cwd_state.ok_or_else(|| "shell cargo probe omitted cwd_state".to_string())?;
+    let cwd = cwd.ok_or_else(|| "shell cargo probe omitted cwd".to_string())?;
+
+    let optional_field =
+        |state: &str, value: String, name: &str| -> Result<Option<String>, String> {
+            match state {
+                "set" => Ok(Some(value)),
+                "unset" if value.is_empty() => Ok(None),
+                "unset" => {
+                    Err(format!("shell cargo probe emitted a non-empty {name} value while unset"))
+                }
+                other => Err(format!("shell cargo probe emitted invalid {name} state {other:?}")),
+            }
+        };
+    let home = optional_field(&home_state, home, "home")?;
+    let cargo_home = optional_field(&cargo_home_state, cargo_home, "cargo_home")?;
+    let cwd = optional_field(&cwd_state, cwd, "cwd")?;
+    let context = CargoProbeContext::shell(home, cargo_home, cwd);
+
+    Ok(ShellCargoProbe { cargo_path, version_output, context })
+}
+
+/// Which provider owns a Windows `bash.exe` resolution: System32 and the
+/// WindowsApps alias both host WSL shims; Git/MSYS/Cygwin provide native
+/// POSIX bashes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowsBashKind {
+    PosixProvider,
+    WslShim,
+    OtherProvider,
+}
+
+fn classify_windows_bash_path(path_text: &str) -> WindowsBashKind {
+    let normalized = path_text.to_lowercase().replace('\\', "/");
+    if normalized.contains("/system32/")
+        || normalized.ends_with("/system32/bash.exe")
+        || normalized.contains("/windowsapps/")
+    {
+        // Both the System32 binary and the WindowsApps execution alias are
+        // WSL entry points: a cargo probed through them resolves inside the
+        // WSL filesystem, not in a native POSIX environment.
+        WindowsBashKind::WslShim
+    } else if normalized.contains("git")
+        || normalized.contains("msys")
+        || normalized.contains("cygwin")
+    {
+        WindowsBashKind::PosixProvider
+    } else {
+        WindowsBashKind::OtherProvider
+    }
+}
+
+/// Decode child-process output. `wsl.exe` emits UTF-16LE through pipes while
+/// ordinary children stay UTF-8, so both shapes must land as readable text.
+fn decode_shell_output(bytes: &[u8]) -> String {
+    if looks_like_utf16le(bytes) {
+        let units: Vec<u16> =
+            bytes.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+    .trim_start_matches('\u{feff}')
+    .to_owned()
+}
+
+/// Odd-index NUL bytes dominate only in UTF-16LE ASCII text, which is the
+/// shape this conservative heuristic accepts.
+fn looks_like_utf16le(bytes: &[u8]) -> bool {
+    if bytes.len() < 4 || !bytes.len().is_multiple_of(2) {
+        return false;
+    }
+    let odd_zeroes = bytes.iter().skip(1).step_by(2).filter(|byte| **byte == 0).count();
+    odd_zeroes * 3 > bytes.len()
+}
+
+/// Extract the `v5.42.2`-style token from a `perl --version` banner such as
+/// "This is perl 5, version 42, subversion 2 (v5.42.2) built for ...".
+fn extract_perl_version(version_output: &str) -> Option<String> {
+    version_output.split_whitespace().find_map(|word| {
+        let candidate = word.trim_matches(|character: char| "() ,;".contains(character));
+        let digits = candidate.strip_prefix('v').unwrap_or(candidate);
+        let starts_numeric = digits.starts_with(|character: char| character.is_ascii_digit());
+        (starts_numeric && digits.contains('.')).then(|| candidate.to_string())
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PerlIdentityKind {
+    MsysCygwin,
+    Strawberry,
+    ActiveState,
+    SystemUnix,
+    Unknown,
+}
+
+impl PerlIdentityKind {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::MsysCygwin => IDENTITY_MSYS_CYGWIN,
+            Self::Strawberry => IDENTITY_STRAWBERRY,
+            Self::ActiveState => IDENTITY_ACTIVESTATE,
+            Self::SystemUnix => IDENTITY_SYSTEM_UNIX,
+            Self::Unknown => IDENTITY_UNKNOWN,
+        }
+    }
+}
+
+/// Classify a perl binary's identity from its path alone. On a Windows host
+/// a POSIX-rooted `/usr/bin/perl*` resolution belongs to an MSYS/Cygwin
+/// environment; the same path on Unix is the system perl.
+fn classify_perl_identity(path_text: &str, windows_host: bool) -> PerlIdentityKind {
+    let normalized = path_text.to_lowercase().replace('\\', "/");
+    if normalized.contains("msys64")
+        || normalized.contains("cygwin64")
+        || normalized.contains("/msys")
+        || normalized.contains("/cygwin")
+    {
+        return PerlIdentityKind::MsysCygwin;
+    }
+    if normalized.contains("strawberry") {
+        return PerlIdentityKind::Strawberry;
+    }
+    if normalized == ACTIVESTATE_PERL64_DEFAULT_PATH {
+        return PerlIdentityKind::ActiveState;
+    }
+    let posix_rooted_perl =
+        normalized == "/usr/bin/perl" || normalized.ends_with("/usr/bin/perl.exe");
+    let unix_system_perl =
+        normalized.starts_with("/usr/bin/perl") || normalized.starts_with("/usr/local/bin/perl");
+    if posix_rooted_perl && windows_host {
+        PerlIdentityKind::MsysCygwin
+    } else if unix_system_perl {
+        PerlIdentityKind::SystemUnix
+    } else {
+        PerlIdentityKind::Unknown
+    }
+}
+
+/// Distinct additional named perl identities among `discovered`, excluding
+/// the primary kind and unnamed resolutions.
+fn other_named_identities(
+    primary: PerlIdentityKind,
+    discovered: &[PerlIdentityKind],
+) -> Vec<&'static str> {
+    let mut others: Vec<&'static str> = Vec::new();
+    for kind in discovered {
+        if *kind == primary || *kind == PerlIdentityKind::Unknown {
+            continue;
+        }
+        let code = kind.code();
+        if !others.contains(&code) {
+            others.push(code);
+        }
+    }
+    others
+}
+
+/// Assemble the Perl identity verdict from the probe outcome and bounded
+/// discovered identities. Probe failure takes precedence over divergence so a
+/// failed interpreter cannot be reported as a healthy prerequisite.
+fn assemble_perl_identity_status(
+    probe_succeeded: bool,
+    primary: PerlIdentityKind,
+    discovered: &[PerlIdentityKind],
+) -> (&'static str, Vec<&'static str>, Option<String>) {
+    let other_identities = other_named_identities(primary, discovered);
+    let status = if !probe_succeeded {
+        STATUS_PROBE_ERROR
+    } else if other_identities.is_empty() {
+        STATUS_PRESENT
+    } else {
+        STATUS_DIVERGENT
+    };
+    let fix = (status == STATUS_DIVERGENT).then(|| FIX_PERL_IDENTITY_DIVERGENCE.to_string());
+    (status, other_identities, fix)
+}
+
+/// Fixed, well-known default install locations probed for additional perl
+/// identities (#12595: common locations only — never a filesystem scan).
+fn common_perl_candidate_paths(windows_host: bool) -> Vec<PathBuf> {
+    common_perl_candidate_paths_with_program_files(
+        windows_host,
+        std::env::var("ProgramFiles").ok().as_deref(),
+    )
+}
+
+fn common_perl_candidate_paths_with_program_files(
+    windows_host: bool,
+    program_files: Option<&str>,
+) -> Vec<PathBuf> {
+    if windows_host {
+        let program_files =
+            program_files.filter(|value| !value.trim().is_empty()).unwrap_or(r"C:\Program Files");
+        vec![
+            PathBuf::from("C:\\Strawberry\\perl\\bin\\perl.exe"),
+            PathBuf::from("C:\\Perl64\\bin\\perl.exe"),
+            PathBuf::from("C:\\msys64\\usr\\bin\\perl.exe"),
+            PathBuf::from("C:\\cygwin64\\usr\\bin\\perl.exe"),
+            PathBuf::from(program_files).join(r"Strawberry\perl\bin\perl.exe"),
+        ]
+    } else {
+        vec![PathBuf::from("/usr/bin/perl")]
+    }
+}
+
+fn probe_perl_identity(windows_host: bool) -> PerlIdentityReport {
+    // A perl absent from PATH is not necessarily absent from the machine:
+    // the production DAP probes the same well-known default install
+    // locations, so the doctor must check them before declaring Perl
+    // missing and prescribing an install.
+    let binary = match resolve_tool_on_path("perl") {
+        Some(binary) => Some(binary),
+        None => common_perl_candidate_paths(windows_host)
+            .into_iter()
+            .find(|candidate| candidate.exists()),
+    };
+    let Some(binary) = binary else {
+        return PerlIdentityReport {
+            status: STATUS_MISSING,
+            path: None,
+            version: None,
+            identity: IDENTITY_UNKNOWN,
+            other_identities: Vec::new(),
+            error: Some("perl not found on PATH".to_string()),
+            fix: Some(
+                if windows_host { FIX_PERL_MISSING_WINDOWS } else { FIX_PERL_MISSING_UNIX }
+                    .to_string(),
+            ),
+        };
+    };
+
+    let mut command = Command::new(&binary);
+    command.arg("--version");
+    let (version, error) = match run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS) {
+        Ok(output) if output.status.success() => {
+            (extract_perl_version(&decode_shell_output(&output.stdout)), None)
+        }
+        Ok(output) => (
+            None,
+            Some(truncate_for_detail(decode_shell_output(&output.stderr).trim(), DETAIL_MAX_CHARS)),
+        ),
+        Err(spawn_error) => (None, Some(truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS))),
+    };
+
+    let path_text = binary.display().to_string();
+    let identity = classify_perl_identity(&path_text, windows_host);
+    let discovered: Vec<PerlIdentityKind> = common_perl_candidate_paths(windows_host)
+        .into_iter()
+        .filter(|candidate| !same_install_location(candidate, &binary))
+        .filter(|candidate| candidate.exists())
+        .map(|candidate| classify_perl_identity(&candidate.display().to_string(), windows_host))
+        .collect();
+    // A resolved perl that could not execute is an indeterminate probe
+    // failure, never a healthy prerequisite: probe_error wins over both
+    // present and identity-divergence classification.
+    let (status, other_identities, fix) =
+        assemble_perl_identity_status(version.is_some(), identity, &discovered);
+
+    PerlIdentityReport {
+        status,
+        path: Some(path_text),
+        version,
+        identity: identity.code(),
+        other_identities,
+        error,
+        fix,
+    }
+}
+
+fn same_install_location(left: &Path, right: &Path) -> bool {
+    left.display().to_string().to_lowercase() == right.display().to_string().to_lowercase()
+}
+
+/// Decide the typed verdict for a reachable cargo: non-rustup wins over
+/// staleness because it explains why the pin is ignored; a stale rustup
+/// toolchain gets the alignment fix. Returns the status plus whether the
+/// version meets the workspace MSRV (`None` when unparsable).
+fn reachable_cargo_status(
+    provenance: Option<CargoProvenance>,
+    version: Option<VersionTriple>,
+) -> (&'static str, Option<bool>) {
+    let Some(version) = version else {
+        return (STATUS_PROBE_ERROR, None);
+    };
+    let below_pin = version_below_workspace_pin(version);
+    match (provenance, below_pin) {
+        (Some(CargoProvenance::NonRustup | CargoProvenance::RustupToolchain), _) => {
+            (STATUS_NON_RUSTUP, Some(!below_pin))
+        }
+        (_, true) => (STATUS_STALE, Some(false)),
+        _ => (STATUS_PRESENT, Some(!below_pin)),
+    }
+}
+
+/// True when `major.minor` sits below the workspace MSRV; patch level never
+/// rescues an older minor nor sinks the pinned minor.
+fn version_below_workspace_pin(version: VersionTriple) -> bool {
+    (version.0, version.1) < (WORKSPACE_RUST_VERSION_MAJOR, WORKSPACE_RUST_VERSION_MINOR)
+}
+
+/// One copyable fix line per failing shape (#7212: guidance only, never
+/// auto-executed, scoped to the failing environment).
+fn cargo_fix_line(flavor: &str, status: &str) -> Option<String> {
+    match status {
+        STATUS_NON_RUSTUP => Some(match flavor {
+            FLAVOR_WSL => format!("fix: inside WSL run: {RUSTUP_INSTALL_ONE_LINER}"),
+            _ => format!("fix: in this shell run: {RUSTUP_INSTALL_ONE_LINER}"),
+        }),
+        STATUS_STALE => Some(format!(
+            "fix: align this shell's toolchain with rust-toolchain.toml \
+             ({TOOLCHAIN_CHANNEL_LABEL}): rustup toolchain install {TOOLCHAIN_CHANNEL_LABEL}"
+        )),
+        STATUS_MISSING => Some(match flavor {
+            FLAVOR_GIT_BASH => FIX_BASH_INSTALL_GIT_WINDOWS.to_string(),
+            FLAVOR_WSL => format!(
+                "fix: WSL answered but has no usable cargo; inside WSL run: \
+                 {RUSTUP_INSTALL_ONE_LINER}"
+            ),
+            _ => format!("fix: install rustup (https://rustup.rs): {RUSTUP_INSTALL_ONE_LINER}"),
+        }),
+        _ => None,
+    }
+}
+
+fn cargo_report_from_output(
+    flavor: &'static str,
+    binary: PathBuf,
+    output: ProbeOutput,
+) -> CargoToolchainReport {
+    match output {
+        Ok(process_output) if process_output.status.success() => finish_reachable_cargo_report(
+            flavor,
+            Some(binary),
+            &decode_shell_output(&process_output.stdout),
+        ),
+        Ok(_) | Err(_) => failed_probe_cargo_report(flavor, Some(binary), output),
+    }
+}
+
+/// Shell-mediated probe result:
+/// the output is a NUL-delimited path/version/environment record emitted by
+/// the same shell invocation.
+fn shell_cargo_report_from_output(
+    flavor: &'static str,
+    output: ProbeOutput,
+) -> CargoToolchainReport {
+    match output {
+        Ok(process_output) => {
+            let parsed =
+                parse_shell_cargo_probe_output(&decode_shell_output(&process_output.stdout));
+            match (process_output.status.success(), parsed) {
+                (true, Ok(probe)) => match probe.cargo_path {
+                    Some(cargo_path) => finish_reachable_cargo_report_with_context(
+                        flavor,
+                        Some(cargo_path),
+                        &probe.version_output,
+                        &probe.context,
+                    ),
+                    None => unreachable_cargo_report(flavor, "cargo was not found in this shell"),
+                },
+                (false, Ok(probe)) => {
+                    failed_probe_cargo_report(flavor, probe.cargo_path, Ok(process_output))
+                }
+                (_, Err(parse_error)) => failed_probe_cargo_report(
+                    flavor,
+                    None,
+                    Err(format!(
+                        "shell cargo probe output was invalid: {parse_error}; exit status {}; stderr: {}",
+                        process_output.status,
+                        decode_shell_output(&process_output.stderr).trim()
+                    )),
+                ),
+            }
+        }
+        // The shell probe failed before emitting a complete record, so there
+        // is no trustworthy provider context or cargo identity to preserve.
+        Err(error) => failed_probe_cargo_report(flavor, None, Err(error)),
+    }
+}
+
+/// A candidate cargo was resolved but could not be run (nonzero exit or
+/// timeout). That is an indeterminate execution failure, not an absent
+/// prerequisite: it reports `probe_error` while preserving the resolved
+/// identity instead of a misleading "missing" with an install suggestion.
+fn failed_probe_cargo_report(
+    flavor: &'static str,
+    binary: Option<PathBuf>,
+    output: ProbeOutput,
+) -> CargoToolchainReport {
+    let detail = match output {
+        Ok(process_output) => truncate_for_detail(
+            &format!(
+                "probe exited with status {}; stderr: {}",
+                process_output.status,
+                decode_shell_output(&process_output.stderr).trim()
+            ),
+            DETAIL_MAX_CHARS,
+        ),
+        Err(spawn_error) => truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS),
+    };
+    CargoToolchainReport {
+        flavor,
+        status: STATUS_PROBE_ERROR,
+        path: binary.as_ref().map(|binary| binary.display().to_string()),
+        version: None,
+        provenance: PROVENANCE_UNKNOWN,
+        meets_workspace_pin: None,
+        honors_toolchain_file: None,
+        error: Some(detail),
+        fix: None,
+    }
+}
+
+fn finish_reachable_cargo_report(
+    flavor: &'static str,
+    binary: Option<PathBuf>,
+    version_output: &str,
+) -> CargoToolchainReport {
+    finish_reachable_cargo_report_with_context(
+        flavor,
+        binary,
+        version_output,
+        &CargoProbeContext::native(),
+    )
+}
+
+fn finish_reachable_cargo_report_with_context(
+    flavor: &'static str,
+    binary: Option<PathBuf>,
+    version_output: &str,
+    context: &CargoProbeContext,
+) -> CargoToolchainReport {
+    let version_line =
+        version_output.lines().map(str::trim).find(|line| !line.is_empty()).map(String::from);
+    let parsed_version = version_line.as_deref().and_then(parse_cargo_version_line);
+    let provenance = binary
+        .as_deref()
+        .and_then(Path::to_str)
+        .and_then(|path| classify_cargo_provenance_with_context(path, context));
+    let (status, meets_workspace_pin) = reachable_cargo_status(provenance, parsed_version);
+    let error = if parsed_version.is_none() {
+        Some(cargo_version_probe_error(version_output))
+    } else {
+        None
+    };
+    let fix = match provenance {
+        Some(CargoProvenance::RustupToolchain) => {
+            Some(FIX_CARGO_DIRECT_RUSTUP_TOOLCHAIN.to_string())
+        }
+        Some(_) => cargo_fix_line(flavor, status),
+        None => None,
+    };
+    CargoToolchainReport {
+        flavor,
+        status,
+        path: binary.as_ref().map(|path| path.display().to_string()),
+        version: version_line,
+        provenance: provenance.map_or(PROVENANCE_UNKNOWN, CargoProvenance::code),
+        meets_workspace_pin,
+        // Path provenance distinguishes direct/non-rustup cargo from a rustup
+        // shim, but it cannot observe cwd or rustup overrides. A shim therefore
+        // remains unknown until the active selection is probed.
+        honors_toolchain_file: match provenance {
+            Some(CargoProvenance::RustupShim) => None,
+            Some(CargoProvenance::RustupToolchain | CargoProvenance::NonRustup) => Some(false),
+            None => None,
+        },
+        error,
+        fix,
+    }
+}
+
+fn cargo_version_probe_error(version_output: &str) -> String {
+    let output = version_output.trim();
+    if output.is_empty() {
+        return "cargo --version returned no parseable version banner".to_string();
+    }
+    format!(
+        "cargo --version returned an unparseable version banner: {}",
+        truncate_for_detail(output, DETAIL_MAX_CHARS)
+    )
+}
+
+fn unreachable_cargo_report(flavor: &'static str, detail: &str) -> CargoToolchainReport {
+    CargoToolchainReport {
+        flavor,
+        status: STATUS_MISSING,
+        path: None,
+        version: None,
+        provenance: PROVENANCE_UNKNOWN,
+        meets_workspace_pin: None,
+        honors_toolchain_file: None,
+        error: Some(detail.to_string()),
+        fix: cargo_fix_line(flavor, STATUS_MISSING),
+    }
+}
+
+// ── Bash flavors and repository entrypoints ────────────────────────────────
+
+fn native_shell_bash_report() -> BashFlavorReport {
+    let bash_executable = if cfg!(windows) { None } else { resolve_tool_on_path("bash") };
+    native_shell_bash_report_for_platform(cfg!(windows), bash_executable)
+}
+
+fn native_shell_bash_report_for_platform(
+    windows_host: bool,
+    bash_executable: Option<PathBuf>,
+) -> BashFlavorReport {
+    if windows_host {
+        BashFlavorReport {
+            flavor: FLAVOR_NATIVE_SHELL,
+            status: STATUS_PRESENT,
+            bash_path: None,
+            runs_repo_entrypoints: None,
+            note: "native Windows shell is available; repository .sh entrypoint execution is not proven; use Git Bash or WSL".to_string(),
+            fix: None,
+        }
+    } else if let Some(bash_executable) = bash_executable {
+        BashFlavorReport {
+            flavor: FLAVOR_NATIVE_SHELL,
+            status: STATUS_PRESENT,
+            bash_path: Some(bash_executable.display().to_string()),
+            runs_repo_entrypoints: None,
+            note: "native POSIX bash is available; repository .sh entrypoint execution is not proven by this probe".to_string(),
+            fix: None,
+        }
+    } else {
+        BashFlavorReport {
+            flavor: FLAVOR_NATIVE_SHELL,
+            status: STATUS_MISSING,
+            bash_path: None,
+            runs_repo_entrypoints: None,
+            note: "bash was not found on PATH; native repository .sh entrypoint execution is not proven"
+                .to_string(),
+            fix: Some(FIX_BASH_INSTALL_UNIX.to_string()),
+        }
+    }
+}
+
+fn git_bash_flavor_report_for_path(bash_exe: Option<PathBuf>) -> BashFlavorReport {
+    match bash_exe {
+        None => BashFlavorReport {
+            flavor: FLAVOR_GIT_BASH,
+            status: STATUS_MISSING,
+            bash_path: None,
+            runs_repo_entrypoints: None,
+            note: "no bash.exe on PATH; repository .sh entrypoints cannot run natively".to_string(),
+            fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
+        },
+        Some(bash_exe)
+            if classify_windows_bash_path(&bash_exe.to_string_lossy())
+                == WindowsBashKind::WslShim =>
+        {
+            BashFlavorReport {
+                flavor: FLAVOR_GIT_BASH,
+                status: STATUS_MISSING,
+                bash_path: Some(bash_exe.display().to_string()),
+                runs_repo_entrypoints: None,
+                note: "PATH bash.exe is a WSL shim (System32/WindowsApps), not Git Bash"
+                    .to_string(),
+                fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
+            }
+        }
+        Some(bash_exe)
+            if classify_windows_bash_path(&bash_exe.to_string_lossy())
+                == WindowsBashKind::PosixProvider =>
+        {
+            BashFlavorReport {
+                flavor: FLAVOR_GIT_BASH,
+                status: STATUS_PRESENT,
+                bash_path: Some(bash_exe.display().to_string()),
+                runs_repo_entrypoints: None,
+                note: "native POSIX bash is available; repository .sh entrypoint execution is not proven by this probe".to_string(),
+                fix: None,
+            }
+        }
+        Some(bash_exe) => BashFlavorReport {
+            flavor: FLAVOR_GIT_BASH,
+            status: STATUS_MISSING,
+            bash_path: Some(bash_exe.display().to_string()),
+            runs_repo_entrypoints: None,
+            note: "PATH bash.exe resolves to an unrecognized POSIX provider; repository .sh entrypoints are not proven to run under it".to_string(),
+            fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
+        },
+    }
+}
+
+fn wsl_bash_flavor_report() -> BashFlavorReport {
+    let Some(wsl_exe) = resolve_tool_on_path("wsl") else {
+        return BashFlavorReport {
+            flavor: FLAVOR_WSL,
+            status: STATUS_MISSING,
+            bash_path: None,
+            runs_repo_entrypoints: None,
+            note: "wsl.exe not found on PATH".to_string(),
+            fix: None,
+        };
+    };
+    let mut command = Command::new(&wsl_exe);
+    // `wsl --status` only reports that the host integration is installed. A
+    // direct Bash invocation proves that a distribution can actually execute
+    // the shell used by the Cargo probe below.
+    command.args(["--exec", "bash", "-c", "exit 0"]);
+    let status = match run_command_with_timeout(command, DEV_ENV_WSL_TIMEOUT_SECS) {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(truncate_for_detail(
+            &format!("wsl.exe --exec bash failed: {}", decode_shell_output(&output.stderr).trim()),
+            DETAIL_MAX_CHARS,
+        )),
+        Err(timeout_error) => Err(truncate_for_detail(&timeout_error, DETAIL_MAX_CHARS)),
+    };
+    wsl_bash_flavor_report_from_status(status)
+}
+
+fn wsl_bash_flavor_report_from_status(status: Result<(), String>) -> BashFlavorReport {
+    match status {
+        Ok(()) => BashFlavorReport {
+            flavor: FLAVOR_WSL,
+            status: STATUS_PRESENT,
+            bash_path: None,
+            runs_repo_entrypoints: None,
+            note: "WSL is available; repository .sh entrypoint execution is not proven by this probe; compare the wsl cargo flavor"
+                .to_string(),
+            fix: None,
+        },
+        Err(note) => BashFlavorReport {
+            flavor: FLAVOR_WSL,
+            status: STATUS_PROBE_ERROR,
+            bash_path: None,
+            runs_repo_entrypoints: None,
+            note,
+            fix: None,
+        },
+    }
+}
+
+// ── Rendering ───────────────────────────────────────────────────────────────
+
+fn render_dev_environment_report(report: &DevEnvironmentReport) -> String {
+    let mut out = String::new();
+    out.push_str("perl-lsp doctor - development environment\n");
+    out.push_str("=========================================\n\n");
+    out.push_str(&format!(
+        "Pins: workspace rust-version {}, rust-toolchain.toml channel {}\n",
+        report.workspace_rust_version, report.toolchain_channel_pin
+    ));
+
+    out.push_str(&format!("\nSymlink privilege: {}\n", report.symlink_privilege.status));
+    out.push_str(&format!("  {}\n", report.symlink_privilege.detail));
+    if let Some(fix) = &report.symlink_privilege.fix {
+        out.push_str(&format!("  Fix: {fix}\n"));
+    }
+
+    out.push_str("\nCargo per shell flavor:\n");
+    for cargo in &report.cargo_toolchains {
+        out.push_str(&format!("  - {}: {}", cargo.flavor, cargo.status));
+        if let Some(path) = &cargo.path {
+            out.push_str(&format!(" | {path}"));
+        }
+        if let Some(version) = &cargo.version {
+            out.push_str(&format!(" | {version}"));
+        }
+        out.push('\n');
+        out.push_str(&format!("      provenance: {}\n", cargo.provenance));
+        out.push_str(&format!(
+            "      meets workspace pin ({}): {}\n",
+            report.workspace_rust_version,
+            render_optional_bool(cargo.meets_workspace_pin)
+        ));
+        out.push_str(&format!(
+            "      honors rust-toolchain.toml: {}\n",
+            render_optional_bool(cargo.honors_toolchain_file)
+        ));
+        if let Some(error) = &cargo.error {
+            out.push_str(&format!("      error: {error}\n"));
+        }
+        if let Some(fix) = &cargo.fix {
+            out.push_str(&format!("      Fix: {fix}\n"));
+        }
+    }
+
+    out.push_str("\nBash flavors:\n");
+    for flavor in &report.bash_flavors {
+        out.push_str(&format!("  - {}: {}", flavor.flavor, flavor.status));
+        if let Some(path) = &flavor.bash_path {
+            out.push_str(&format!(" | {path}"));
+        }
+        out.push_str(&format!(
+            " | runs repo entrypoints: {}",
+            render_entrypoint_evidence(flavor.runs_repo_entrypoints)
+        ));
+        out.push('\n');
+        out.push_str(&format!("      {}\n", flavor.note));
+        if let Some(fix) = &flavor.fix {
+            out.push_str(&format!("      Fix: {fix}\n"));
+        }
+    }
+
+    out.push_str("\nRepository bash entrypoints:\n");
+    out.push_str(&format!(
+        "  located via {}: {}\n",
+        report.repo_entrypoints.marker, report.repo_entrypoints.located
+    ));
+    if let Some(complete) = report.repo_entrypoints.complete {
+        out.push_str(&format!("      all documented entrypoints present: {complete}\n"));
+    }
+    out.push_str(&format!("      {}\n", report.repo_entrypoints.note));
+    out.push_str(&format!("\nPrerequisite: {}\n", report.documented_prerequisite));
+
+    out.push_str("\nPerl identity:\n");
+    match &report.perl_identity.path {
+        Some(path) => {
+            out.push_str("  resolved: ");
+            out.push_str(path);
+            if let Some(version) = &report.perl_identity.version {
+                out.push_str(&format!(" ({version})"));
+            }
+            out.push_str(&format!(" [identity: {}]\n", report.perl_identity.identity));
+        }
+        None => out.push_str("  resolved: none\n"),
+    }
+    if !report.perl_identity.other_identities.is_empty() {
+        out.push_str(&format!(
+            "  WARNING: additional distinct identities also discoverable: {}; DAP E2E\n  and prove consumers may pick a different perl.\n",
+            report.perl_identity.other_identities.join(", ")
+        ));
+    }
+    if let Some(error) = &report.perl_identity.error {
+        out.push_str(&format!("  error: {error}\n"));
+    }
+    if let Some(fix) = &report.perl_identity.fix {
+        out.push_str(&format!("  Fix: {fix}\n"));
+    }
+
+    out.push_str("\nClaim boundary:\n");
+    out.push_str("  Bounded probes. Doctor uses temporary files for a symlink probe with\n");
+    out.push_str("  best-effort cleanup, probes Cargo flavors and native Perl identity,\n");
+    out.push_str("  and never installs, moves, or configures anything.\n");
+    out
+}
+
+fn render_optional_bool(value: Option<bool>) -> String {
+    match value {
+        Some(true) => "yes".to_string(),
+        Some(false) => "no".to_string(),
+        None => "unknown".to_string(),
+    }
+}
+
+fn render_entrypoint_evidence(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "not_proven",
+    }
+}
+
+fn truncate_for_detail(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        text.to_string()
+    } else {
+        format!("{}...", text.chars().take(max_chars).collect::<String>())
+    }
 }
 
 fn render_report(report: DoctorReport) -> String {
@@ -1695,5 +3254,1178 @@ mod tests {
     fn run_cli_rejects_mode_flags_without_doctor() {
         assert_eq!(crate::run_cli(["perl-lsp", "--external-tools"]), 1);
         assert_eq!(crate::run_cli(["perl-lsp", "--critic-compatibility"]), 1);
+        assert_eq!(crate::run_cli(["perl-lsp", "--dev-environment"]), 1);
+    }
+
+    // ── Development-environment arm (#12595) ────────────────────────────
+
+    #[test]
+    fn run_cli_dispatches_doctor_dev_environment() {
+        assert_eq!(crate::run_cli(["perl-lsp", "--doctor", "--dev-environment"]), 0);
+    }
+
+    #[test]
+    fn workspace_pins_match_toolchain_file_and_crate_manifest() -> TestResult {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let toolchain_path =
+            Path::new(manifest_dir).join("..").join("..").join("rust-toolchain.toml");
+        let toolchain = std::fs::read_to_string(&toolchain_path)
+            .map_err(|error| format!("reading {}: {error}", toolchain_path.display()))?;
+        let channel_line = toolchain
+            .lines()
+            .find(|line| line.trim_start().starts_with("channel"))
+            .ok_or("rust-toolchain.toml should pin a channel")?;
+        let channel = channel_line.split('"').nth(1).ok_or("quoted channel value")?;
+
+        assert_eq!(channel, TOOLCHAIN_CHANNEL_LABEL, "rust-toolchain.toml drifted");
+        assert_eq!(TOOLCHAIN_CHANNEL_LABEL, "1.95.0");
+        let mut channel_parts = TOOLCHAIN_CHANNEL_LABEL.split('.');
+        let channel_major = channel_parts.next().and_then(|part| part.parse::<u64>().ok());
+        let channel_minor = channel_parts.next().and_then(|part| part.parse::<u64>().ok());
+        assert_eq!(channel_major, Some(WORKSPACE_RUST_VERSION_MAJOR));
+        assert_eq!(channel_minor, Some(WORKSPACE_RUST_VERSION_MINOR));
+        assert_eq!(
+            format!("{}.{}", WORKSPACE_RUST_VERSION_MAJOR, WORKSPACE_RUST_VERSION_MINOR),
+            env!("CARGO_PKG_RUST_VERSION"),
+            "workspace rust-version drifted; update WORKSPACE_RUST_VERSION_*"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_cargo_version_line_parses_rustup_and_distro_banners() {
+        assert_eq!(
+            parse_cargo_version_line("cargo 1.95.0 (8f3d0b0ac 2026-01-30)"),
+            Some((1, 95, 0))
+        );
+        assert_eq!(
+            parse_cargo_version_line("cargo 1.75.0 (2ca31a4c3 2023-12-26)"),
+            Some((1, 75, 0))
+        );
+    }
+
+    #[test]
+    fn parse_cargo_version_line_rejects_non_version_words() {
+        assert_eq!(parse_cargo_version_line(""), None);
+        assert_eq!(parse_cargo_version_line("cargo docker-hash 2026-01-30"), None);
+    }
+
+    #[test]
+    fn version_below_workspace_pin_boundary() {
+        assert!(version_below_workspace_pin((1, 94, 9)));
+        assert!(!version_below_workspace_pin((1, 95, 0)));
+        assert!(!version_below_workspace_pin((1, 96, 0)));
+        assert!(!version_below_workspace_pin((2, 0, 0)));
+    }
+
+    #[test]
+    fn reachable_cargo_status_prefers_non_rustup_then_stale() {
+        let (status, meets) =
+            reachable_cargo_status(Some(CargoProvenance::NonRustup), Some((1, 75, 0)));
+        assert_eq!(status, STATUS_NON_RUSTUP);
+        assert_eq!(meets, Some(false));
+
+        let (stale, stale_meets) =
+            reachable_cargo_status(Some(CargoProvenance::RustupShim), Some((1, 90, 1)));
+        assert_eq!(stale, STATUS_STALE);
+        assert_eq!(stale_meets, Some(false));
+
+        let (healthy, healthy_meets) =
+            reachable_cargo_status(Some(CargoProvenance::RustupShim), Some((1, 95, 0)));
+        assert_eq!(healthy, STATUS_PRESENT);
+        assert_eq!(healthy_meets, Some(true));
+
+        let (unparsable, unparsable_meets) =
+            reachable_cargo_status(Some(CargoProvenance::RustupShim), None);
+        assert_eq!(unparsable, STATUS_PROBE_ERROR);
+        assert_eq!(unparsable_meets, None);
+    }
+
+    #[test]
+    fn successful_unparseable_cargo_probe_is_red_with_bounded_evidence() -> TestResult {
+        let report = finish_reachable_cargo_report(
+            FLAVOR_NATIVE_SHELL,
+            Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
+            "cargo development-build 2026-09-08",
+        );
+
+        assert_eq!(report.status, STATUS_PROBE_ERROR);
+        assert_eq!(report.meets_workspace_pin, None);
+        assert_eq!(report.fix, None);
+        let error = report.error.ok_or("unparseable cargo error")?;
+        assert!(error.contains("unparseable version banner"));
+        assert!(error.contains("cargo development-build"));
+        assert!(error.chars().count() <= DETAIL_MAX_CHARS + 80);
+        Ok(())
+    }
+
+    #[test]
+    fn classify_cargo_provenance_separates_shims_from_distro_paths() -> TestResult {
+        let windows_context = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\work".to_string()),
+            home: Some(r"C:\Users\dev".to_string()),
+            cargo_home: None,
+        };
+        let custom_windows_context = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\work".to_string()),
+            home: None,
+            cargo_home: Some(r"D:\rustup-cache".to_string()),
+        };
+        let posix_context = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            None,
+            Some("/workspace".to_string()),
+        );
+        for (path, context, expected) in [
+            (
+                r"C:\Users\dev\.cargo\bin\cargo.exe",
+                &windows_context,
+                Some(CargoProvenance::RustupShim),
+            ),
+            (
+                r"C:/Users/dev/.cargo/bin/cargo.exe",
+                &windows_context,
+                Some(CargoProvenance::RustupShim),
+            ),
+            (r"C:\Users\dev\.cargo\bin-other\cargo.exe", &windows_context, None),
+            (r"C:\Users\dev\.cargo\bin\nested\cargo.exe", &windows_context, None),
+            (
+                r"D:\rustup-cache\bin\cargo.exe",
+                &custom_windows_context,
+                Some(CargoProvenance::RustupShim),
+            ),
+            (r"D:\rustup-cache\bin-other\cargo.exe", &custom_windows_context, None),
+            (r"D:\rustup-cache\bin\nested\cargo.exe", &custom_windows_context, None),
+            (
+                "/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo",
+                &posix_context,
+                Some(CargoProvenance::RustupToolchain),
+            ),
+            ("/usr/bin/cargo", &posix_context, Some(CargoProvenance::NonRustup)),
+            ("/opt/vendor/.cargo/bin/cargo", &posix_context, None),
+        ] {
+            let actual = classify_cargo_provenance_with_context(path, context);
+            if actual != expected {
+                return Err(
+                    format!("Cargo path {path:?}: expected {expected:?}, got {actual:?}").into()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_rustup_toolchain_does_not_claim_to_honor_workspace_pin() -> TestResult {
+        let report = finish_reachable_cargo_report_with_context(
+            FLAVOR_NATIVE_SHELL,
+            Some(PathBuf::from("/home/dev/.rustup/toolchains/1.95.0-x86_64/bin/cargo")),
+            "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+            &CargoProbeContext::shell(Some("/home/dev".to_string()), None, None),
+        );
+
+        if report.status != STATUS_NON_RUSTUP
+            || report.provenance != PROVENANCE_RUSTUP_TOOLCHAIN
+            || report.honors_toolchain_file != Some(false)
+            || report.meets_workspace_pin != Some(true)
+            || report.fix.as_deref() != Some(FIX_CARGO_DIRECT_RUSTUP_TOOLCHAIN)
+        {
+            return Err(format!("direct toolchain verdict changed: {report:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rustup_shim_does_not_claim_workspace_selection_from_path_alone() -> TestResult {
+        let report = finish_reachable_cargo_report_with_context(
+            FLAVOR_NATIVE_SHELL,
+            Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
+            "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+            &CargoProbeContext {
+                path_style: CargoPathStyle::Windows,
+                cwd: Some(r"C:\workspace".to_string()),
+                home: Some(r"C:\Users\dev".to_string()),
+                cargo_home: None,
+            },
+        );
+
+        if report.honors_toolchain_file.is_some() {
+            return Err("a rustup shim path cannot prove active workspace selection".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn classify_windows_bash_path_separates_wsl_shim_from_git_bash() {
+        assert_eq!(
+            classify_windows_bash_path(r"C:\Windows\System32\bash.exe"),
+            WindowsBashKind::WslShim
+        );
+        assert_eq!(
+            classify_windows_bash_path(
+                r"C:\Users\dev\AppData\Local\Microsoft\WindowsApps\bash.EXE"
+            ),
+            WindowsBashKind::WslShim,
+            "the WindowsApps execution alias is a WSL shim, not Git Bash"
+        );
+        assert_eq!(
+            classify_windows_bash_path(r"C:\Program Files\Git\bin\bash.exe"),
+            WindowsBashKind::PosixProvider
+        );
+        assert_eq!(
+            classify_windows_bash_path(r"C:\msys64\usr\bin\bash.exe"),
+            WindowsBashKind::PosixProvider
+        );
+        assert_eq!(
+            classify_windows_bash_path(r"D:\tools\busybox-bash.exe"),
+            WindowsBashKind::OtherProvider
+        );
+    }
+
+    #[test]
+    fn native_posix_shell_reports_resolved_bash_without_execution_proof() -> TestResult {
+        let report =
+            native_shell_bash_report_for_platform(false, Some(PathBuf::from("/usr/bin/bash")));
+
+        if report.status != STATUS_PRESENT
+            || report.bash_path.as_deref() != Some("/usr/bin/bash")
+            || report.runs_repo_entrypoints.is_some()
+            || !report.note.contains("execution is not proven")
+        {
+            return Err(format!("unexpected resolved Bash report: {:?}", report.status).into());
+        }
+        if report.fix.is_some() {
+            return Err("resolved Bash must not carry an installation fix".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_posix_shell_reports_missing_bash_honestly() -> TestResult {
+        let report = native_shell_bash_report_for_platform(false, None);
+
+        if report.status != STATUS_MISSING
+            || report.bash_path.is_some()
+            || report.runs_repo_entrypoints.is_some()
+            || !report.note.contains("bash was not found")
+        {
+            return Err("missing native Bash must not be reported as present".into());
+        }
+        if report.fix.as_deref() != Some(FIX_BASH_INSTALL_UNIX) {
+            return Err("missing native Bash should carry the Unix installation fix".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_windows_shell_keeps_entrypoint_execution_unproven() -> TestResult {
+        let report = native_shell_bash_report_for_platform(true, None);
+
+        if report.status != STATUS_PRESENT
+            || report.runs_repo_entrypoints.is_some()
+            || !report.note.contains("execution is not proven")
+        {
+            return Err("native Windows shell semantics changed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn git_bash_fallback_only_report_feeds_capability_and_cargo_rows() -> TestResult {
+        let fallback = PathBuf::from(r"C:\Program Files\Git\bin\bash.exe");
+        let resolved_fallback =
+            resolve_git_bash_executable_with(|_| None, || Some(fallback.clone()))
+                .ok_or("fallback Git Bash path")?;
+        let mut probed_path = None;
+        let (cargo, bash) = build_git_bash_reports(true, Some(resolved_fallback.clone()), |path| {
+            probed_path = path.clone();
+            finish_reachable_cargo_report_with_context(
+                FLAVOR_GIT_BASH,
+                Some(PathBuf::from("/home/dev/.cargo/bin/cargo")),
+                "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+                &CargoProbeContext::shell(
+                    Some("/home/dev".to_string()),
+                    None,
+                    Some("/workspace".to_string()),
+                ),
+            )
+        });
+
+        assert_eq!(probed_path, Some(resolved_fallback));
+        assert_eq!(cargo.status, STATUS_PRESENT);
+        assert_eq!(cargo.meets_workspace_pin, Some(true));
+        assert_eq!(bash.status, STATUS_PRESENT);
+        assert_eq!(bash.runs_repo_entrypoints, None);
+        assert_eq!(bash.bash_path.as_deref(), Some(r"C:\Program Files\Git\bin\bash.exe"));
+        assert!(bash.note.contains("execution is not proven"));
+        Ok(())
+    }
+
+    #[test]
+    fn git_bash_non_posix_path_falls_back_to_standard_install() -> TestResult {
+        let fallback = PathBuf::from(r"C:\Program Files\Git\bin\bash.exe");
+        let resolved = resolve_git_bash_executable_with(
+            |_| Some(PathBuf::from(r"C:\Windows\System32\bash.exe")),
+            || Some(fallback.clone()),
+        )
+        .ok_or("standard Git Bash fallback")?;
+
+        assert_eq!(resolved, fallback);
+        Ok(())
+    }
+
+    #[test]
+    fn wsl_status_success_keeps_entrypoint_execution_unproven() -> TestResult {
+        let report = wsl_bash_flavor_report_from_status(Ok(()));
+
+        assert_eq!(report.status, STATUS_PRESENT);
+        assert_eq!(report.runs_repo_entrypoints, None);
+        assert!(report.note.contains("execution is not proven"));
+        Ok(())
+    }
+
+    #[test]
+    fn wsl_bash_probe_failure_is_not_reported_as_absence() -> TestResult {
+        for note in [
+            "wsl.exe --exec bash failed: distribution startup timed out",
+            "wsl.exe --exec bash failed: no distribution is installed",
+        ] {
+            let report = wsl_bash_flavor_report_from_status(Err(note.to_string()));
+            if report.status != STATUS_PROBE_ERROR
+                || !report.note.contains(note)
+                || report.fix.is_some()
+            {
+                return Err(format!(
+                    "WSL probe failure was misclassified: status={}, note={}",
+                    report.status, report.note
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn decode_shell_output_decodes_utf16le_and_plain_utf8() {
+        // wsl.exe emits its own diagnostics as UTF-16LE through pipes.
+        let utf16_text = "Windows Subsystem for Linux";
+        let mut utf16_bytes = Vec::new();
+        for unit in utf16_text.encode_utf16() {
+            utf16_bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        assert_eq!(decode_shell_output(&utf16_bytes), utf16_text);
+
+        assert_eq!(decode_shell_output(b"cargo 1.95.0\n"), "cargo 1.95.0\n");
+        assert_eq!(decode_shell_output(&[0xEF, 0xBB, 0xBF, b'x']), "x", "BOM stripped");
+    }
+
+    #[test]
+    fn extract_perl_version_finds_banner_token() {
+        assert_eq!(
+            extract_perl_version(
+                "\nThis is perl 5, version 42, subversion 2 (v5.42.2) built for MSWin32-x64-multi-thread\n(with 2 registered patches)\n"
+            ),
+            Some("v5.42.2".to_string())
+        );
+        assert_eq!(extract_perl_version("no version banner"), None);
+    }
+
+    fn synthetic_process_output(
+        stdout: &[u8],
+        stderr: &[u8],
+        success: bool,
+    ) -> std::process::Output {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt as _;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt as _;
+
+        #[cfg(windows)]
+        let status = std::process::ExitStatus::from_raw(u32::from(!success));
+        #[cfg(unix)]
+        let status = std::process::ExitStatus::from_raw(i32::from(!success));
+
+        std::process::Output { status, stdout: stdout.to_vec(), stderr: stderr.to_vec() }
+    }
+
+    #[test]
+    fn shell_cargo_probe_parser_preserves_empty_and_relative_context() -> TestResult {
+        let output = concat!(
+            "cargo_path\0/usr/bin/cargo\0",
+            "cargo_version\0cargo 1.95.0 (fixture)\0",
+            "home_state\0set\0home\0\0",
+            "cargo_home_state\0set\0cargo_home\0.rustup-cache\0",
+            "cwd_state\0set\0cwd\0\0",
+        );
+        let probe = parse_shell_cargo_probe_output(output)?;
+        if probe.cargo_path != Some(PathBuf::from("/usr/bin/cargo")) {
+            return Err(format!("unexpected shell cargo path {:?}", probe.cargo_path).into());
+        }
+        if probe.version_output != "cargo 1.95.0 (fixture)" {
+            return Err(format!("unexpected shell cargo version {:?}", probe.version_output).into());
+        }
+        if probe.context.home != Some(String::new())
+            || probe.context.cargo_home != Some(".rustup-cache".to_string())
+            || probe.context.cwd != Some(String::new())
+        {
+            return Err(format!("shell context lost set/empty fields: {:?}", probe.context).into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_cargo_missing_is_a_missing_prerequisite() -> TestResult {
+        let output = concat!(
+            "cargo_path\0\0cargo_version\0\0",
+            "home_state\0set\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0\0",
+            "cwd_state\0set\0cwd\0/workspace\0",
+        );
+        let report = shell_cargo_report_from_output(
+            FLAVOR_WSL,
+            Ok(synthetic_process_output(output.as_bytes(), b"", true)),
+        );
+        if report.status != STATUS_MISSING
+            || report.path.is_some()
+            || report.error.as_deref() != Some("cargo was not found in this shell")
+            || report.fix.is_none()
+        {
+            return Err(
+                format!("missing shell Cargo was not classified as missing: {report:?}").into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn healthy_shell_report_uses_observed_home_and_preserves_unknown_paths() -> TestResult {
+        for flavor in [FLAVOR_GIT_BASH, FLAVOR_WSL] {
+            for (cargo_path, expected_provenance) in [
+                ("/shell-home/.cargo/bin/cargo", PROVENANCE_RUSTUP_SHIM),
+                ("/different-home/.cargo/bin/cargo", PROVENANCE_UNKNOWN),
+            ] {
+                let output = format!(
+                    "cargo_path\0{cargo_path}\0cargo_version\0cargo 1.95.0\0\
+                     home_state\0set\0home\0/shell-home\0\
+                     cargo_home_state\0unset\0cargo_home\0\0\
+                     cwd_state\0set\0cwd\0/workspace\0"
+                );
+                let report = shell_cargo_report_from_output(
+                    flavor,
+                    Ok(synthetic_process_output(output.as_bytes(), b"", true)),
+                );
+                if report.status != STATUS_PRESENT
+                    || report.path.as_deref() != Some(cargo_path)
+                    || report.version.as_deref() != Some("cargo 1.95.0")
+                    || report.provenance != expected_provenance
+                    || report.meets_workspace_pin != Some(true)
+                    || report.honors_toolchain_file.is_some()
+                    || report.fix.is_some()
+                {
+                    return Err(format!("{flavor} lost provider context: {report:?}").into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_cargo_report_preserves_failed_record_path_and_stderr() -> TestResult {
+        let output = concat!(
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "home_state\0set\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0\0",
+            "cwd_state\0set\0cwd\0/workspace\0",
+        );
+        let report = shell_cargo_report_from_output(
+            FLAVOR_GIT_BASH,
+            Ok(synthetic_process_output(output.as_bytes(), b"cargo failed", false)),
+        );
+        if report.status != STATUS_PROBE_ERROR
+            || report.path.as_deref() != Some("/usr/bin/cargo")
+            || !report.error.as_deref().is_some_and(|error| error.contains("cargo failed"))
+        {
+            return Err(format!("failed shell record lost evidence: {report:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_cargo_report_before_record_preserves_stderr() -> TestResult {
+        let report = shell_cargo_report_from_output(
+            FLAVOR_GIT_BASH,
+            Ok(synthetic_process_output(b"", b"cargo command not found", false)),
+        );
+        if report.status != STATUS_PROBE_ERROR
+            || report.path.is_some()
+            || !report
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("cargo command not found"))
+        {
+            return Err(format!("failed shell startup lost evidence: {report:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_shell_record_preserves_parse_and_process_evidence() -> TestResult {
+        for success in [true, false] {
+            let report = shell_cargo_report_from_output(
+                FLAVOR_GIT_BASH,
+                Ok(synthetic_process_output(b"unterminated", b"provider detail", success)),
+            );
+            let error = report.error.as_deref().ok_or("malformed record lost its error")?;
+            if report.status != STATUS_PROBE_ERROR
+                || report.path.is_some()
+                || !error.contains("shell cargo probe omitted its NUL record terminator")
+                || !error.contains("exit status")
+                || !error.contains("provider detail")
+            {
+                return Err(format!("malformed record lost evidence: {report:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_cargo_probe_parser_rejects_malformed_or_duplicate_fields() -> TestResult {
+        let missing_cargo_path = concat!(
+            "cargo_version\0cargo 1.95.0\0home_state\0set\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0\0cwd_state\0set\0cwd\0/workspace\0",
+        );
+        if parse_shell_cargo_probe_output(missing_cargo_path).is_ok() {
+            return Err("missing cargo_path field was accepted".into());
+        }
+        if parse_shell_cargo_probe_output("cargo_path\0/usr/bin/cargo\0odd").is_ok() {
+            return Err("odd NUL field sequence was accepted".into());
+        }
+        if parse_shell_cargo_probe_output("cargo_path\0/usr/bin/cargo").is_ok() {
+            return Err("missing NUL record terminator was accepted".into());
+        }
+        let valid_body = concat!(
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "home_state\0set\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0\0",
+            "cwd_state\0set\0cwd\0/workspace",
+        );
+        let valid = format!("{valid_body}\0");
+        if parse_shell_cargo_probe_output(&valid).is_err() {
+            return Err("otherwise-valid NUL record was rejected".into());
+        }
+        let trailing_extra = format!("{valid_body}\0extra_key\0extra_value\0");
+        if parse_shell_cargo_probe_output(&trailing_extra).is_ok() {
+            return Err("trailing extra NUL field pair was accepted".into());
+        }
+        let duplicate = format!("{valid_body}\0cargo_path\0/usr/local/bin/cargo\0");
+        if parse_shell_cargo_probe_output(&duplicate).is_ok() {
+            return Err("duplicate NUL field was accepted".into());
+        }
+        let unset_with_value = concat!(
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "home_state\0unset\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0/workspace/.cargo\0",
+            "cwd_state\0unset\0cwd\0/workspace\0",
+        );
+        if parse_shell_cargo_probe_output(unset_with_value).is_ok() {
+            return Err("unset shell context accepted a non-empty value".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_context_classification_resolves_relative_home_and_preserves_posix_case() -> TestResult
+    {
+        let relative = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            Some("rustup-cache".to_string()),
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/workspace/rustup-cache/bin/cargo", &relative)
+            != Some(CargoProvenance::RustupShim)
+        {
+            return Err("relative shell CARGO_HOME was not resolved against observed PWD".into());
+        }
+        if classify_cargo_provenance_with_context("/other/rustup-cache/bin/cargo", &relative)
+            == Some(CargoProvenance::RustupShim)
+        {
+            return Err("a sibling relative home was classified as a rustup shim".into());
+        }
+
+        let empty = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            Some(String::new()),
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/workspace/bin/cargo", &empty).is_some() {
+            return Err("explicit empty CARGO_HOME was treated as a known shim home".into());
+        }
+
+        let case_sensitive = CargoProbeContext::shell(
+            Some("/Home/Dev".to_string()),
+            None,
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/home/dev/.cargo/bin/cargo", &case_sensitive)
+            == Some(CargoProvenance::RustupShim)
+        {
+            return Err("POSIX home comparison was lowercased".into());
+        }
+
+        let posix_backslash = CargoProbeContext::shell(
+            Some(r"/home/dev\cache".to_string()),
+            None,
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context(
+            "/home/dev/cache/.cargo/bin/cargo",
+            &posix_backslash,
+        ) == Some(CargoProvenance::RustupShim)
+        {
+            return Err("POSIX backslash was incorrectly treated as a separator".into());
+        }
+
+        let relative_home = CargoProbeContext::shell(
+            Some("home/dev".to_string()),
+            None,
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/home/dev/.cargo/bin/cargo", &relative_home)
+            .is_some()
+        {
+            return Err("relative HOME produced a cargo provenance".into());
+        }
+
+        let relative_cwd = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            Some("cache".to_string()),
+            Some("workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("workspace/cache/bin/cargo", &relative_cwd)
+            .is_some()
+        {
+            return Err("relative PWD produced a cargo provenance".into());
+        }
+
+        let absolute_dotdot = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            Some("/home/dev/../cache".to_string()),
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("/cache/bin/cargo", &absolute_dotdot).is_some() {
+            return Err("dot-dot CARGO_HOME produced a cargo provenance".into());
+        }
+
+        let windows_drive_relative = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\workspace".to_string()),
+            home: Some(r"C:\Users\dev".to_string()),
+            cargo_home: Some(r"C:cache".to_string()),
+        };
+        if classify_cargo_provenance_with_context(
+            r"C:\cache\bin\cargo.exe",
+            &windows_drive_relative,
+        )
+        .is_some()
+        {
+            return Err("drive-relative CARGO_HOME produced a cargo provenance".into());
+        }
+
+        let windows_single_rooted = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\workspace".to_string()),
+            home: Some(r"C:\Users\dev".to_string()),
+            cargo_home: Some(r"\cache".to_string()),
+        };
+        if classify_cargo_provenance_with_context(r"\cache\bin\cargo.exe", &windows_single_rooted)
+            .is_some()
+        {
+            return Err("single-rooted Windows CARGO_HOME produced a cargo provenance".into());
+        }
+
+        let known_home = CargoProbeContext::shell(
+            Some("/home/dev".to_string()),
+            None,
+            Some("/workspace".to_string()),
+        );
+        if classify_cargo_provenance_with_context("cargo", &known_home).is_some() {
+            return Err("relative resolved cargo path produced a provenance".into());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_home_uses_platform_authoritative_variable() -> TestResult {
+        if native_home_from_vars(true, Some(r"C:\wrong"), Some(r"C:\right"))
+            != Some(r"C:\right".to_string())
+        {
+            return Err("Windows native HOME did not use USERPROFILE".into());
+        }
+        if native_home_from_vars(true, Some(r"C:\wrong"), None).is_some() {
+            return Err("missing Windows USERPROFILE was guessed from HOME".into());
+        }
+        if native_home_from_vars(false, Some("/home/dev"), Some(r"C:\wrong"))
+            != Some("/home/dev".to_string())
+        {
+            return Err("POSIX native HOME did not remain authoritative".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cargo_context_windows_home_comparison_is_case_insensitive() -> TestResult {
+        let context = CargoProbeContext {
+            path_style: CargoPathStyle::Windows,
+            cwd: Some(r"C:\workspace".to_string()),
+            home: Some(r"C:\Users\Dev".to_string()),
+            cargo_home: None,
+        };
+        if classify_cargo_provenance_with_context(r"c:\users\dev\.cargo\bin\cargo.exe", &context)
+            != Some(CargoProvenance::RustupShim)
+        {
+            return Err("Windows default cargo home comparison was case-sensitive".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_cargo_context_does_not_emit_stale_rustup_fix() -> TestResult {
+        let report = finish_reachable_cargo_report_with_context(
+            FLAVOR_GIT_BASH,
+            Some(PathBuf::from("/opt/custom/bin/cargo")),
+            "cargo 1.90.0 (fixture)",
+            &CargoProbeContext::shell(None, None, None),
+        );
+        if report.provenance != PROVENANCE_UNKNOWN {
+            return Err(
+                format!("unknown shell context got provenance {}", report.provenance).into()
+            );
+        }
+        if report.status != STATUS_STALE || report.meets_workspace_pin != Some(false) {
+            return Err("version facts were lost when provenance was unknown".into());
+        }
+        if report.fix.is_some() {
+            return Err("unknown provenance emitted a misleading stale rustup fix".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn classify_perl_identity_from_synthetic_paths() -> TestResult {
+        assert_eq!(
+            classify_perl_identity(r"C:\msys64\usr\bin\perl.exe", true),
+            PerlIdentityKind::MsysCygwin
+        );
+        assert_eq!(
+            classify_perl_identity(r"C:\Strawberry\perl\bin\perl.exe", true),
+            PerlIdentityKind::Strawberry
+        );
+        if classify_perl_identity(r"C:\Perl64\bin\perl.exe", true) != PerlIdentityKind::ActiveState
+        {
+            return Err("the DAP-supported ActiveState default path lost its named identity".into());
+        }
+        if classify_perl_identity(r"C:\tools\Perl64\bin\perl.exe", true)
+            != PerlIdentityKind::Unknown
+        {
+            return Err("ActiveState identity escaped its exact default path".into());
+        }
+        assert_eq!(
+            classify_perl_identity("/usr/bin/perl", false),
+            PerlIdentityKind::SystemUnix,
+            "on Unix hosts /usr/bin/perl is the system perl"
+        );
+        assert_eq!(
+            classify_perl_identity("/usr/bin/perl", true),
+            PerlIdentityKind::MsysCygwin,
+            "POSIX-rooted perl on a Windows host belongs to an MSYS/Cygwin environment"
+        );
+        assert_eq!(
+            classify_perl_identity(r"C:\tools\somewhere\perl.exe", true),
+            PerlIdentityKind::Unknown
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn other_named_identities_flags_only_new_named_kinds() {
+        let others = other_named_identities(
+            PerlIdentityKind::MsysCygwin,
+            &[
+                PerlIdentityKind::MsysCygwin,
+                PerlIdentityKind::Strawberry,
+                PerlIdentityKind::Unknown,
+            ],
+        );
+        assert_eq!(others, vec!["strawberry"]);
+
+        assert!(
+            other_named_identities(PerlIdentityKind::Strawberry, &[PerlIdentityKind::Strawberry])
+                .is_empty()
+        );
+        assert!(
+            other_named_identities(
+                PerlIdentityKind::Unknown,
+                &[PerlIdentityKind::Unknown, PerlIdentityKind::Unknown]
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn perl_identity_status_reports_msys_and_activestate_divergence_with_fix() -> TestResult {
+        let (status, other_identities, fix) = assemble_perl_identity_status(
+            true,
+            PerlIdentityKind::MsysCygwin,
+            &[PerlIdentityKind::ActiveState],
+        );
+
+        if status != STATUS_DIVERGENT
+            || other_identities != vec![IDENTITY_ACTIVESTATE]
+            || fix != Some(FIX_PERL_IDENTITY_DIVERGENCE.to_string())
+        {
+            return Err("ActiveState divergence did not produce the bounded repair".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn perl_identity_probe_failure_precedes_known_divergence() -> TestResult {
+        let (status, other_identities, fix) = assemble_perl_identity_status(
+            false,
+            PerlIdentityKind::MsysCygwin,
+            &[PerlIdentityKind::ActiveState],
+        );
+
+        if status != STATUS_PROBE_ERROR || other_identities != vec![IDENTITY_ACTIVESTATE] {
+            return Err("probe failure did not preserve the discovered identity".into());
+        }
+        if fix.is_some() {
+            return Err("probe failure prescribed divergence repair".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn locate_repo_root_walks_up_and_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let nested = temp.path().join("a").join("b");
+        std::fs::create_dir_all(&nested)?;
+        std::fs::create_dir_all(temp.path().join(".github"))?;
+        std::fs::write(temp.path().join(".github").join("run_all_tests.sh"), "#!/bin/sh\n")?;
+
+        let root = locate_repo_root(&nested).ok_or("marker two levels up should be found")?;
+        assert_eq!(root, temp.path());
+        let marker_free = tempfile::tempdir()?;
+        assert!(
+            locate_repo_root(&marker_free.path().join("missing-root")).is_none(),
+            "a checkout without the marker must fail closed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn locate_repo_root_walks_beyond_legacy_depth_and_rejects_deep_marker_free_tree() -> TestResult
+    {
+        let temp = tempfile::tempdir()?;
+        let mut nested = temp.path().to_path_buf();
+        for index in 0..13 {
+            nested.push(format!("level-{index}"));
+        }
+        std::fs::create_dir_all(&nested)?;
+        std::fs::create_dir_all(temp.path().join(".github"))?;
+        std::fs::write(temp.path().join(REPO_ENTRYPOINT_MARKER), "#!/bin/sh\n")?;
+
+        let root = locate_repo_root(&nested).ok_or("deep marker should be found")?;
+        if root != temp.path() {
+            return Err(format!("deep marker resolved to {}", root.display()).into());
+        }
+
+        let marker_free = tempfile::tempdir()?;
+        let mut deep_marker_free = marker_free.path().to_path_buf();
+        for index in 0..13 {
+            deep_marker_free.push(format!("level-{index}"));
+        }
+        std::fs::create_dir_all(&deep_marker_free)?;
+        if locate_repo_root(&deep_marker_free).is_some() {
+            return Err("marker-free deep tree must fail closed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repo_entrypoints_require_expected_file_and_directory_kinds() -> TestResult {
+        let valid = tempfile::tempdir()?;
+        std::fs::create_dir_all(valid.path().join(".github"))?;
+        std::fs::write(valid.path().join(REPO_ENTRYPOINT_MARKER), "#!/bin/sh\n")?;
+        std::fs::create_dir_all(valid.path().join("scripts"))?;
+        std::fs::write(valid.path().join("scripts/cargo-safe"), "#!/usr/bin/env bash\n")?;
+        assert!(repo_entrypoints_complete(valid.path()));
+
+        let marker_directory = tempfile::tempdir()?;
+        std::fs::create_dir_all(marker_directory.path().join(REPO_ENTRYPOINT_MARKER))?;
+        std::fs::create_dir_all(marker_directory.path().join("scripts/cargo-safe"))?;
+        assert!(!repo_entrypoints_complete(marker_directory.path()));
+
+        let scripts_file = tempfile::tempdir()?;
+        std::fs::create_dir_all(scripts_file.path().join(".github"))?;
+        std::fs::write(scripts_file.path().join(REPO_ENTRYPOINT_MARKER), "#!/bin/sh\n")?;
+        std::fs::write(scripts_file.path().join("scripts"), "not a directory")?;
+        assert!(!repo_entrypoints_complete(scripts_file.path()));
+
+        let missing = tempfile::tempdir()?;
+        std::fs::create_dir_all(missing.path().join(".github"))?;
+        std::fs::write(missing.path().join(REPO_ENTRYPOINT_MARKER), "#!/bin/sh\n")?;
+        std::fs::create_dir_all(missing.path().join("scripts"))?;
+        assert!(!repo_entrypoints_complete(missing.path()));
+        Ok(())
+    }
+
+    #[test]
+    fn common_perl_candidate_paths_probe_common_locations_only() {
+        let windows_candidates = common_perl_candidate_paths(true);
+        assert_eq!(windows_candidates.len(), 5);
+        assert!(
+            windows_candidates.iter().any(|path| path.display().to_string().contains("Strawberry"))
+        );
+        assert!(
+            windows_candidates.iter().any(|path| path.display().to_string().contains("Perl64"))
+        );
+        let injected_program_files = PathBuf::from(r"X:\Portable Programs");
+        let injected_candidates =
+            common_perl_candidate_paths_with_program_files(true, Some(r"X:\Portable Programs"));
+        assert!(
+            injected_candidates
+                .contains(&injected_program_files.join(r"Strawberry\perl\bin\perl.exe"))
+        );
+        assert_eq!(common_perl_candidate_paths(false).len(), 1);
+    }
+
+    #[test]
+    fn cargo_fix_lines_cover_each_failure_shape() -> TestResult {
+        let non_rustup = cargo_fix_line(FLAVOR_WSL, STATUS_NON_RUSTUP)
+            .ok_or("non-rustup finding must carry a fix")?;
+        assert!(non_rustup.contains("inside WSL"));
+        assert!(non_rustup.contains("sh.rustup.rs"));
+
+        let native_non_rustup = cargo_fix_line(FLAVOR_NATIVE_SHELL, STATUS_NON_RUSTUP)
+            .ok_or("native non-rustup finding must carry a fix")?;
+        assert!(native_non_rustup.contains("sh.rustup.rs"));
+
+        let stale = cargo_fix_line(FLAVOR_GIT_BASH, STATUS_STALE)
+            .ok_or("stale finding must carry a fix")?;
+        assert!(stale.contains("rustup toolchain install 1.95.0"));
+
+        let missing = cargo_fix_line(FLAVOR_NATIVE_SHELL, STATUS_MISSING)
+            .ok_or("unreachable flavor must carry a fix")?;
+        assert!(missing.contains("install rustup"));
+
+        assert!(cargo_fix_line(FLAVOR_NATIVE_SHELL, STATUS_PRESENT).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn dev_env_status_codes_are_the_closed_set() {
+        let codes = dev_env_status_codes();
+        assert_eq!(codes.len(), 7);
+        for expected in [
+            STATUS_PRESENT,
+            STATUS_MISSING,
+            STATUS_NOT_APPLICABLE,
+            STATUS_STALE,
+            STATUS_NON_RUSTUP,
+            STATUS_DIVERGENT,
+            STATUS_PROBE_ERROR,
+        ] {
+            assert!(codes.contains(&expected), "{expected} missing from closed set");
+        }
+    }
+
+    fn synthetic_dev_environment_report() -> DevEnvironmentReport {
+        DevEnvironmentReport {
+            schema: DEV_ENVIRONMENT_SCHEMA,
+            host_platform: HOST_PLATFORM_WINDOWS,
+            workspace_rust_version: WORKSPACE_RUST_VERSION_LABEL,
+            toolchain_channel_pin: TOOLCHAIN_CHANNEL_LABEL,
+            symlink_privilege: SymlinkPrivilegeReport {
+                status: STATUS_MISSING,
+                detail: "creating a file symlink failed with os error 1314".to_string(),
+                fix: Some(FIX_SYMLINK_PRIVILEGE.to_string()),
+            },
+            cargo_toolchains: vec![
+                CargoToolchainReport {
+                    flavor: FLAVOR_NATIVE_SHELL,
+                    status: STATUS_PRESENT,
+                    path: Some(r"C:\Users\dev\.cargo\bin\cargo.exe".to_string()),
+                    version: Some("cargo 1.95.0 (8f3d0b0ac 2026-01-30)".to_string()),
+                    provenance: PROVENANCE_RUSTUP_SHIM,
+                    meets_workspace_pin: Some(true),
+                    honors_toolchain_file: None,
+                    error: None,
+                    fix: None,
+                },
+                CargoToolchainReport {
+                    flavor: FLAVOR_WSL,
+                    status: STATUS_NON_RUSTUP,
+                    path: Some("/usr/bin/cargo".to_string()),
+                    version: Some("cargo 1.75.0".to_string()),
+                    provenance: PROVENANCE_NON_RUSTUP,
+                    meets_workspace_pin: Some(false),
+                    honors_toolchain_file: Some(false),
+                    error: None,
+                    fix: Some(format!("fix: inside WSL run: {RUSTUP_INSTALL_ONE_LINER}")),
+                },
+            ],
+            bash_flavors: vec![BashFlavorReport {
+                flavor: FLAVOR_GIT_BASH,
+                status: STATUS_MISSING,
+                bash_path: None,
+                runs_repo_entrypoints: None,
+                note: "no bash.exe on PATH".to_string(),
+                fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
+            }],
+            repo_entrypoints: RepoEntrypointsReport {
+                marker: REPO_ENTRYPOINT_MARKER,
+                located: true,
+                complete: Some(true),
+                note: "repository root: <checkout>".to_string(),
+            },
+            documented_prerequisite: BASH_PREREQUISITE_LINE,
+            perl_identity: PerlIdentityReport {
+                status: STATUS_DIVERGENT,
+                path: Some(r"C:\msys64\usr\bin\perl.exe".to_string()),
+                version: Some("v5.42.2".to_string()),
+                identity: IDENTITY_MSYS_CYGWIN,
+                other_identities: vec![IDENTITY_STRAWBERRY],
+                error: None,
+                fix: Some(FIX_PERL_IDENTITY_DIVERGENCE.to_string()),
+            },
+        }
+    }
+
+    #[test]
+    fn render_dev_environment_report_surfaces_findings_and_prescribed_fixes() {
+        let rendered = render_dev_environment_report(&synthetic_dev_environment_report());
+
+        assert!(rendered.contains("perl-lsp doctor - development environment"));
+        assert!(rendered.contains("Symlink privilege: missing"));
+        assert!(rendered.contains("Developer Mode"));
+        assert!(rendered.contains("- wsl: non_rustup | /usr/bin/cargo | cargo 1.75.0"));
+        assert!(rendered.contains("meets workspace pin (1.95): no"));
+        assert!(rendered.contains("honors rust-toolchain.toml: no"));
+        assert!(rendered.contains("WARNING: additional distinct identities"));
+        assert!(rendered.contains("strawberry"));
+        assert!(rendered.contains(BASH_PREREQUISITE_LINE));
+        assert!(rendered.contains("Claim boundary:"));
+        assert!(rendered.matches("Fix:").count() >= 4);
+    }
+
+    #[test]
+    fn render_dev_environment_report_labels_unproven_entrypoints_explicitly() {
+        let mut report = synthetic_dev_environment_report();
+        report.bash_flavors = vec![BashFlavorReport {
+            flavor: FLAVOR_GIT_BASH,
+            status: STATUS_PRESENT,
+            bash_path: Some(r"C:\Program Files\Git\bin\bash.exe".to_string()),
+            runs_repo_entrypoints: None,
+            note: "native POSIX bash is available; execution is not proven".to_string(),
+            fix: None,
+        }];
+
+        let rendered = render_dev_environment_report(&report);
+        assert!(rendered.contains("runs repo entrypoints: not_proven"));
+    }
+
+    #[test]
+    fn dev_environment_json_schema_is_typed_and_closed_set() -> TestResult {
+        use serde_json::Value;
+
+        let temp = tempfile::tempdir()?;
+        let report = build_dev_environment_report_in(temp.path());
+        let json = serde_json::to_value(&report).map_err(|error| error.to_string())?;
+
+        let schema = json.get("schema").and_then(Value::as_str).ok_or("schema field")?;
+        assert_eq!(schema, DEV_ENVIRONMENT_SCHEMA);
+
+        let allowed = dev_env_status_codes();
+
+        let symlink_status = json
+            .pointer("/symlink_privilege/status")
+            .and_then(Value::as_str)
+            .ok_or("symlink_privilege.status field")?;
+        assert!(allowed.contains(&symlink_status), "unexpected symlink status {symlink_status}");
+        if cfg!(windows) {
+            assert_ne!(
+                symlink_status, STATUS_NOT_APPLICABLE,
+                "a Windows host must actually probe symlink privilege"
+            );
+        } else {
+            assert_eq!(symlink_status, STATUS_NOT_APPLICABLE);
+        }
+
+        let cargo_rows = json
+            .get("cargo_toolchains")
+            .and_then(Value::as_array)
+            .ok_or("cargo_toolchains array")?;
+        assert_eq!(cargo_rows.len(), 3, "one row per flavor on every host");
+        for row in cargo_rows {
+            let status = row.get("status").and_then(Value::as_str).ok_or("cargo row status")?;
+            assert!(allowed.contains(&status), "unexpected cargo status {status}");
+            let flavor = row.get("flavor").and_then(Value::as_str).ok_or("cargo row flavor")?;
+            if !cfg!(windows) && flavor != FLAVOR_NATIVE_SHELL {
+                let unix_status =
+                    row.get("status").and_then(Value::as_str).ok_or("unix flavor status")?;
+                assert_eq!(
+                    unix_status, STATUS_NOT_APPLICABLE,
+                    "git_bash/wsl are not applicable flavors on unix"
+                );
+            }
+        }
+
+        let bash_rows =
+            json.get("bash_flavors").and_then(Value::as_array).ok_or("bash_flavors array")?;
+        assert_eq!(bash_rows.len(), 3, "one row per flavor on every host");
+        for row in bash_rows {
+            let status = row.get("status").and_then(Value::as_str).ok_or("bash row status")?;
+            assert!(allowed.contains(&status), "unexpected bash status {status}");
+        }
+
+        let perl_status = json
+            .pointer("/perl_identity/status")
+            .and_then(Value::as_str)
+            .ok_or("perl_identity.status field")?;
+        assert!(allowed.contains(&perl_status), "unexpected perl status {perl_status}");
+
+        let prerequisite = json
+            .get("documented_prerequisite")
+            .and_then(Value::as_str)
+            .ok_or("prerequisite line")?;
+        assert_eq!(prerequisite, BASH_PREREQUISITE_LINE);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn symlink_probe_reports_valid_status_and_always_cleans_up() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let target = temp.path().join("perllsp-doctor-probe-target.txt");
+        let link = temp.path().join("perllsp-doctor-probe-target.ln");
+
+        let report = run_file_symlink_probe(&target, &link);
+
+        assert!(
+            dev_env_status_codes().contains(&report.status),
+            "unexpected probe status {}",
+            report.status
+        );
+        assert_eq!(
+            report.fix.as_deref() == Some(FIX_SYMLINK_PRIVILEGE),
+            report.status == STATUS_MISSING,
+            "only the privilege-not-held outcome prescribes the Developer Mode fix"
+        );
+        assert!(!link.exists(), "probe must remove the link");
+        assert!(!target.exists(), "probe must remove the target file");
+        Ok(())
     }
 }

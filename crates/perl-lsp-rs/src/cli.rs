@@ -92,6 +92,7 @@ where
         LaunchAction::DoctorCriticCompatibility { json } => {
             doctor::run_doctor_critic_compatibility(json)
         }
+        LaunchAction::DoctorDevEnvironment { json } => doctor::run_doctor_dev_environment(json),
         LaunchAction::Completion { ref shell } => {
             if let Some(script) = shell_completion(shell) {
                 print!("{}", render_shell_completion(script, &command_name));
