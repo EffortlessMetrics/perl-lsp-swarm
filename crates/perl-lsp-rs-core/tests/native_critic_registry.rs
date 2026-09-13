@@ -177,6 +177,63 @@ fn check_skips_rule_when_not_listed_in_explicit_include() {
 }
 
 #[test]
+fn enabled_rule_count_matches_include_exclude_without_running_rules() {
+    struct FlagRule {
+        id: &'static str,
+        called: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl FlagRule {
+        fn new(id: &'static str) -> (Self, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+            let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            (Self { id, called: std::sync::Arc::clone(&called) }, called)
+        }
+    }
+
+    impl CriticRule for FlagRule {
+        fn id(&self) -> &'static str {
+            self.id
+        }
+
+        fn category(&self) -> CriticCategory {
+            CriticCategory::Syntax
+        }
+
+        fn default_severity(&self) -> Severity {
+            Severity::Harsh
+        }
+
+        fn check(&self, _ctx: &CriticContext<'_>, _out: &mut Vec<CriticFinding>) {
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    let (first, first_called) = FlagRule::new("rule.a");
+    let (second, second_called) = FlagRule::new("rule.b");
+    let registry = NativeCriticRegistry::with_rules(vec![Box::new(first), Box::new(second)]);
+    assert_eq!(registry.enabled_rule_count(&CriticConfig::default()), 2);
+    assert_eq!(
+        registry.enabled_rule_count(&CriticConfig {
+            include: vec!["rule.a".to_string()],
+            ..Default::default()
+        }),
+        1
+    );
+    assert_eq!(
+        registry.enabled_rule_count(&CriticConfig {
+            exclude: vec!["rule.b".to_string()],
+            ..Default::default()
+        }),
+        1
+    );
+    assert!(
+        !first_called.load(std::sync::atomic::Ordering::SeqCst)
+            && !second_called.load(std::sync::atomic::Ordering::SeqCst),
+        "enabled_rule_count must not invoke CriticRule::check"
+    );
+}
+
+#[test]
 fn check_skips_rule_when_explicitly_excluded() {
     let registry = NativeCriticRegistry::with_rules(vec![
         Box::new(MarkerRule::new("rule.a")),
