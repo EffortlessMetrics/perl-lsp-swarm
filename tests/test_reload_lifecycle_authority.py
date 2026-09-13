@@ -17,6 +17,7 @@ sentence. What is asserted here is structure, closure, and uniqueness.
 from __future__ import annotations
 
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -53,6 +54,13 @@ HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$", re.MULTILINE)
 MD_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 TODAY_VOCABULARY = {"implemented", "partial", "contracted"}
+CLAIMS_A_TYPE = {"implemented", "partial"}
+
+# A backticked CamelCase word in the realisation column is a claim that a Rust type
+# by that name exists in `crates/`. Lowercase backticks (`perl-dap`, a crate path)
+# are prose, not claims.
+BACKTICKED = re.compile(r"`([^`]+)`")
+RUST_TYPE_NAME = re.compile(r"\b([A-Z][A-Za-z0-9]*[a-z][A-Za-z0-9]*)\b")
 
 # Documents scanned for a competing authority claim.
 DOC_ROOTS = ("docs",)
@@ -76,6 +84,27 @@ def slugify(heading: str) -> str:
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"[^\w\s-]", "", text)
     return re.sub(r"\s+", "-", text).strip("-")
+
+
+def claimed_type_names(realisation: str) -> list[str]:
+    """Rust type names a realisation cell claims exist."""
+    names: list[str] = []
+    for span in BACKTICKED.findall(realisation):
+        names.extend(RUST_TYPE_NAME.findall(span))
+    return names
+
+
+def type_name_exists_in_crates(name: str) -> bool:
+    result = subprocess.run(
+        ["git", "grep", "-l", "-F", name, "--", "crates"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"git grep failed for {name!r}: {result.stderr.strip()}")
+    return any(line.endswith(".rs") for line in result.stdout.splitlines())
 
 
 def contiguous(ids: list[str], prefix: str) -> list[str]:
@@ -185,6 +214,50 @@ class ReloadLifecycleAuthorityTest(unittest.TestCase):
         self.assertEqual(problems, [], "; ".join(problems))
         self.assertEqual(
             contiguous([row[0] for row in rows], "RL-I"), [], "identity id series"
+        )
+
+    def test_claimed_types_exist_and_absent_ones_are_not_claimed(self) -> None:
+        """Over-claiming is the defect this table most needs not to have.
+
+        A row marked `implemented` or `partial` names real Rust types, and those
+        names must resolve in `crates/`. A row marked `contracted` asserts no type
+        exists, so it must not name one -- that catches under-claiming too, which
+        is how a row goes stale once its owner lands the work.
+        """
+        problems: list[str] = []
+        for identifier, _name, _owner, today, realisation in IDENTITY_ROW.findall(
+            self.spec
+        ):
+            marker = today.split("(")[0].strip().lower()
+            names = claimed_type_names(realisation)
+            if marker in CLAIMS_A_TYPE:
+                for name in names:
+                    if not type_name_exists_in_crates(name):
+                        problems.append(
+                            f"{identifier} is {marker} and names `{name}`, "
+                            "which no Rust file under crates/ mentions"
+                        )
+            elif marker == "contracted" and names:
+                problems.append(
+                    f"{identifier} is contracted but names {names}; "
+                    "either the type landed and the row is stale, or the name is wrong"
+                )
+        self.assertEqual(problems, [], "; ".join(problems))
+
+    def test_every_implemented_row_actually_names_a_type(self) -> None:
+        """`implemented` without a named type is an unfalsifiable claim."""
+        nameless = [
+            identifier
+            for identifier, _name, _owner, today, realisation in IDENTITY_ROW.findall(
+                self.spec
+            )
+            if today.split("(")[0].strip().lower() == "implemented"
+            and not claimed_type_names(realisation)
+        ]
+        self.assertEqual(
+            nameless,
+            [],
+            f"these rows claim `implemented` but name no type: {nameless}",
         )
 
     def test_rule_series_is_contiguous_and_each_rule_says_something(self) -> None:
