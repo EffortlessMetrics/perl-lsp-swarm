@@ -868,3 +868,183 @@ fn require_u64(
         .as_u64()
         .ok_or_else(|| EnvelopeValidationError::new(format!("{path}: expected unsigned integer")))
 }
+
+/// Coherence of the tables above, proven where they are declared.
+///
+/// The falsifiers for the validator's *behaviour* live in
+/// `xtask/tests/neovim_activation_root_envelope.rs` and stay there. What this
+/// module adds is the property those falsifiers cannot see: the constants are
+/// hand-maintained parallel tables, and a plausible edit — dropping a row,
+/// duplicating an identifier, reusing a scenario role, naming a disposition
+/// that is not in the census — leaves every behavioural test passing while the
+/// denominator quietly stops meaning what it says.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn is_sorted_unique(values: impl Iterator<Item = &'static str>) -> bool {
+        let collected: Vec<&str> = values.collect();
+        let mut sorted = collected.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        collected == sorted
+    }
+
+    #[test]
+    fn the_schema_version_is_the_one_the_producer_emits() {
+        // The producer writes this literal into every envelope
+        // (scripts/ux/neovim/neovim_activation_root_smoke.lua). Changing one
+        // side alone silently rejects every captured run.
+        assert_eq!(SCHEMA_VERSION, "neovim_activation_root_envelope.v1");
+    }
+
+    #[test]
+    fn the_required_file_family_census_is_sorted_and_unambiguous() {
+        assert!(!REQUIRED_FILE_FAMILIES.is_empty());
+        assert!(is_sorted_unique(REQUIRED_FILE_FAMILIES.iter().map(|(id, _)| *id)));
+        // A fixture may back at most one family: two families sharing a file
+        // would make one of them a relabelled copy of the other, which is the
+        // fabrication the fixture binding exists to stop.
+        let mut fixtures: Vec<&str> = REQUIRED_FILE_FAMILIES.iter().map(|(_, f)| *f).collect();
+        fixtures.sort_unstable();
+        let before = fixtures.len();
+        fixtures.dedup();
+        assert_eq!(fixtures.len(), before, "two required families cite the same fixture");
+    }
+
+    #[test]
+    fn every_required_root_cell_names_its_own_scenario() {
+        assert!(!REQUIRED_ROOT_CELLS.is_empty());
+        assert!(is_sorted_unique(REQUIRED_ROOT_CELLS.iter().map(|(id, _, _)| *id)));
+        // The load-bearing property: markers are deliberately shared (three
+        // cells use `cpanfile`, two use `.git`), so the role is the only column
+        // that keeps each required identifier bound to a distinct scenario.
+        let mut roles: Vec<&str> = REQUIRED_ROOT_CELLS.iter().map(|(_, _, r)| *r).collect();
+        roles.sort_unstable();
+        let before = roles.len();
+        roles.dedup();
+        assert_eq!(roles.len(), before, "two required root cells share an expected role");
+        assert!(
+            REQUIRED_ROOT_CELLS.iter().filter(|(_, m, _)| *m == "cpanfile").count() > 1,
+            "the shared-marker case this binding exists for has disappeared"
+        );
+    }
+
+    #[test]
+    fn the_observation_cell_is_the_single_exemption_and_is_declared_as_one() {
+        let boundary = REQUIRED_ROOT_CELLS
+            .iter()
+            .find(|(id, _, _)| *id == OBSERVATION_ONLY_ROOT_CELL)
+            .copied();
+        let Some((_, marker, role)) = boundary else {
+            panic!("the observation cell is not in the required census");
+        };
+        assert_eq!(marker, BOUNDARY_MARKER);
+        assert_eq!(role, OBSERVATION_ONLY_ROLE);
+        assert!(SEMANTIC_OUTCOMES.contains(&OBSERVATION_ONLY_OUTCOME));
+        // Every other required cell asserts a real root, so it must carry a
+        // fixture role rather than the observation placeholder.
+        for (id, _, role) in REQUIRED_ROOT_CELLS {
+            if *id == OBSERVATION_ONLY_ROOT_CELL {
+                continue;
+            }
+            assert!(role.starts_with("fixture:"), "{id} does not name a fixture root");
+        }
+    }
+
+    #[test]
+    fn isolation_cells_are_required_cells_that_assert_a_root() {
+        assert!(!ISOLATION_ROOT_CELLS.is_empty());
+        assert!(is_sorted_unique(ISOLATION_ROOT_CELLS.iter().copied()));
+        for id in ISOLATION_ROOT_CELLS {
+            assert!(
+                REQUIRED_ROOT_CELLS.iter().any(|(required, _, _)| required == id),
+                "{id} claims isolation but is not a required root cell"
+            );
+            assert_ne!(
+                *id, OBSERVATION_ONLY_ROOT_CELL,
+                "the observation cell asserts no root and cannot claim isolation"
+            );
+        }
+    }
+
+    #[test]
+    fn every_accepted_key_list_is_sorted_and_unambiguous() {
+        // `reject_unknown_keys` compares against these, so a duplicate is dead
+        // weight and an unsorted list hides the next missing field.
+        assert!(is_sorted_unique(FILE_FAMILY_FIELDS.iter().copied()));
+        assert!(is_sorted_unique(ROOT_FIELDS.iter().copied()));
+        assert!(is_sorted_unique(SEMANTIC_FIELDS.iter().copied()));
+        assert!(is_sorted_unique(SEMANTIC_OUTCOMES.iter().copied()));
+        assert!(is_sorted_unique(SERVER_ROLES.iter().copied()));
+        assert!(!SERVER_ROLES.is_empty());
+    }
+
+    #[test]
+    fn every_disposition_subset_is_drawn_from_the_census() {
+        assert!(is_sorted_unique(ALL_DISPOSITIONS.iter().copied()));
+        for subset in [
+            ATTACHING_DISPOSITIONS,
+            NON_ACTIVATING_POLICY_DISPOSITIONS,
+            REASONED_DISPOSITIONS,
+            FAILED_DISPOSITIONS,
+        ] {
+            assert!(is_sorted_unique(subset.iter().copied()));
+            for disposition in subset {
+                assert!(
+                    ALL_DISPOSITIONS.contains(disposition),
+                    "{disposition} is not in the disposition census"
+                );
+            }
+        }
+        // These two partition the ways a row can decline to activate, so an
+        // overlap would make one row satisfy contradictory rules.
+        for disposition in NON_ACTIVATING_POLICY_DISPOSITIONS {
+            assert!(!ATTACHING_DISPOSITIONS.contains(disposition));
+            assert!(!FAILED_DISPOSITIONS.contains(disposition));
+        }
+    }
+
+    #[test]
+    fn the_pinned_subject_identities_are_the_ones_this_schema_describes() {
+        assert_eq!(HOST_FAMILY, "neovim");
+        assert_eq!(PERL_FILETYPE, "perl");
+        assert_eq!(BOUNDARY_MARKER, "none");
+        assert_eq!(OBSERVATION_ONLY_ROLE, "observation_only");
+        assert_eq!(OBSERVATION_ONLY_OUTCOME, "not_applicable");
+    }
+
+    #[test]
+    fn a_rejection_carries_the_path_it_was_raised_against() {
+        let failure: Validated = Err(EnvelopeValidationError::new("envelope.config.path: bad"));
+        let Err(error) = failure else {
+            panic!("the constructed rejection did not survive the Result");
+        };
+        assert_eq!(error.to_string(), "envelope.config.path: bad");
+        assert_eq!(error, EnvelopeValidationError::new("envelope.config.path: bad"));
+    }
+
+    #[test]
+    fn the_recorded_config_carries_both_flattened_marker_shapes() {
+        let envelope = json!({
+            "path": "scripts/ux/neovim/perllsp.lua",
+            "sha256": "2ba6d3dc4faedfbce75a397b70b4d4bf88237950dacd86fcd6060c3c2c83e018",
+            "filetypes": ["perl"],
+            "root_marker_groups": [["cpanfile", "dist.ini"], ".git"],
+        });
+        let root = json!({ "config": envelope });
+        let Some(object) = root.as_object() else {
+            panic!("the constructed envelope is not an object");
+        };
+        let Ok(recorded) = validate_config(object) else {
+            panic!("a well-formed config did not validate");
+        };
+        // A bare marker and an equal-priority group must reach the same set:
+        // the nesting is Neovim's priority mechanism, not a marker identity.
+        assert!(recorded.markers.contains("cpanfile"));
+        assert!(recorded.markers.contains("dist.ini"));
+        assert!(recorded.markers.contains(".git"));
+        assert!(recorded.filetypes.contains(PERL_FILETYPE));
+    }
+}
