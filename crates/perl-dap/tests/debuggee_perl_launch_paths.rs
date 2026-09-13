@@ -25,6 +25,13 @@ struct EnvGuard {
 }
 
 impl EnvGuard {
+    #[cfg(windows)]
+    fn remove(key: &'static str) -> Self {
+        let previous = env::var_os(key);
+        unsafe { env::remove_var(key) };
+        Self { key, previous }
+    }
+
     fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
         let previous = env::var_os(key);
         unsafe { env::set_var(key, value) };
@@ -97,7 +104,7 @@ fn observe_pin_with_session(
 }
 
 #[test]
-#[serial(dap_debuggee_environment)]
+#[serial]
 #[allow(clippy::print_stderr)]
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
     let Some(source_perl) = find_configured_or_path_pipe_perl()? else {
@@ -165,7 +172,7 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
 
 #[test]
 #[cfg(windows)]
-#[serial(dap_debuggee_environment)]
+#[serial]
 fn windows_pipe_launch_configures_perl_debugger_transport() -> Result<(), Box<dyn Error>> {
     let locator = Command::new("where.exe").arg("perl").output()?;
     if !locator.status.success() {
@@ -187,27 +194,19 @@ fn windows_pipe_launch_configures_perl_debugger_transport() -> Result<(), Box<dy
         &script,
         "use strict;\nuse warnings;\nmy $executed = 41;\n$executed++;\nprint \"executed\\n\";\n",
     )?;
-    let previous_emacs = env::var_os("EMACS");
-    unsafe { env::remove_var("EMACS") };
-    let result = (|| -> Result<(), Box<dyn Error>> {
-        let mut session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&perl))?;
-        let script_text = script.to_string_lossy().into_owned();
-        session.launch_pinned(&perl, &script_text)?;
-        session.set_breakpoints_checked(&script_text, &[5])?;
-        session.configuration_done()?;
-        let stopped = session.wait_stopped_with_frame()?;
-        if stopped.line != 5 {
-            return Err(format!("pipe launch stopped at unexpected line {}", stopped.line).into());
-        }
-        let (value, _) = session.evaluate_expression("$executed", stopped.frame_id)?;
-        if value.split_whitespace().last() != Some("42") {
-            return Err(format!("debuggee did not execute the expected program: {value}").into());
-        }
-        Ok(())
-    })();
-    match previous_emacs {
-        Some(value) => unsafe { env::set_var("EMACS", value) },
-        None => unsafe { env::remove_var("EMACS") },
+    let _emacs_guard = EnvGuard::remove("EMACS");
+    let mut session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&perl))?;
+    let script_text = script.to_string_lossy().into_owned();
+    session.launch_pinned(&perl, &script_text)?;
+    session.set_breakpoints_checked(&script_text, &[5])?;
+    session.configuration_done()?;
+    let stopped = session.wait_stopped_with_frame()?;
+    if stopped.line != 5 {
+        return Err(format!("pipe launch stopped at unexpected line {}", stopped.line).into());
     }
-    result
+    let (value, _) = session.evaluate_expression("$executed", stopped.frame_id)?;
+    if value.split_whitespace().last() != Some("42") {
+        return Err(format!("debuggee did not execute the expected program: {value}").into());
+    }
+    Ok(())
 }
