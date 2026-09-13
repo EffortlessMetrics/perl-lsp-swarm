@@ -391,6 +391,54 @@ fn a_field_cannot_smuggle_the_next_line() -> Result<()> {
     Ok(())
 }
 
+/// A character the shell deletes in transit must not rewrite a field.
+///
+/// Bash command substitution drops NUL bytes with only a warning, so a receipt
+/// carrying `0.<NUL>18.0` arrives at the version check as `0.18.0` and passes
+/// it — the resolver would certify a version the receipt does not contain, and
+/// a NUL spliced into a 40-hex subject would likewise arrive as a valid but
+/// different SHA for the checkout. The shell is not a faithful pipe, so the
+/// decoder rejects anything non-printable rather than trusting what survives.
+#[test]
+fn a_deleted_character_cannot_rewrite_a_field() -> Result<()> {
+    // In each case the NUL-stripped form is a perfectly legitimate value, so a
+    // resolver that trusts the shell sees nothing wrong and certifies it.
+    let cases = [
+        (
+            format!(
+                r#"{{"schema_version":"{SCHEMA}","release_version":"0.\u000018.0","subject_sha":"{PUBLISHED_SHA}"}}"#
+            ),
+            "release_version",
+        ),
+        (
+            format!(
+                r#"{{"schema_version":"{SCHEMA}","release_version":"{PUBLISHED}","subject_sha":"1111111111\u00001111111111111111111111111111111"}}"#
+            ),
+            "subject_sha",
+        ),
+    ];
+
+    for (receipt, field) in cases {
+        let resolved = resolve("workflow_run", "success", Some(&receipt))?;
+
+        if resolved.output.status.success() {
+            bail!("a NUL inside {field} must fail the step:\n{}", resolved.combined());
+        }
+        if resolved.runs() {
+            bail!("a NUL inside {field} must not be certified:\n{}", resolved.combined());
+        }
+        // The stripped forms are exactly the values a trusting resolver would
+        // have used, so neither may appear in the outputs.
+        if resolved.version.as_deref() == Some(PUBLISHED) && field == "release_version" {
+            bail!("the resolver certified {PUBLISHED}, which this receipt does not contain");
+        }
+        if resolved.subject.as_deref() == Some(&"1".repeat(40)) {
+            bail!("a NUL-stripped subject reached the checkout");
+        }
+    }
+    Ok(())
+}
+
 /// The finding in #15332. A producer that moves to a new schema — renaming
 /// `release_version`, adding a required field — must not be silently
 /// unreadable to an older consumer.

@@ -145,8 +145,12 @@ jobs:
             # The decoder writes the two fields to stdout, one per line, and its
             # reason for refusing to stderr. Keeping the streams apart means
             # stray interpreter output cannot shift the value lines, and the
-            # line-break check below means neither field can supply the other's
-            # line.
+            # printable check below means neither field can supply the other's
+            # line or rewrite itself in transit. Both matter because the shell
+            # is not a faithful pipe: a newline would let one field supply the
+            # next one's line, and command substitution deletes NUL bytes with
+            # only a warning, so `0.<NUL>18.0` would arrive as `0.18.0` and be
+            # certified as a version the receipt never contained.
             RECEIPT_ERROR="$(mktemp)"
             RECEIPT_FIELDS="$(python3 -c '
           import json, sys
@@ -163,8 +167,8 @@ jobs:
               value = receipt.get(field, "")
               if not isinstance(value, str):
                   raise SystemExit(f"{field} is {value!r}, expected a string")
-              if "\n" in value or "\r" in value:
-                  raise SystemExit(f"{field} contains a line break")
+              if not value.isprintable() and value != "":
+                  raise SystemExit(f"{field} is not printable: {value!r}")
               print(value)
           ' "$RECEIPT_PATH" 2>"$RECEIPT_ERROR")" || {
               printf '::error::Publication receipt at %s is not a readable publication_receipt.v1 envelope (%s). Refusing to certify a publication this run cannot describe.\n' \
