@@ -1010,6 +1010,49 @@ fn test_object_pad_constructor_param_completion_quotes_literal_keys() {
     }
 }
 
+/// A literal constructor key stays reachable while the user types the
+/// identifier head of that key, and the edit replaces what was typed.
+///
+/// Offering `foo-bar` only at the bare `->new(` caret would make the key
+/// visible but unusable in practice: a user who starts typing it would lose
+/// it. This pins the reachable window that the quoting work depends on.
+///
+/// Boundary, deliberately not asserted here: once the caret follows the `-`
+/// itself, `analyze_context` rewrites the prefix to `foo->` and answers the
+/// position as a method call, so no key survives the `field_name`
+/// `starts_with` filter. That rule is in `analyze_context` and predates this
+/// change; #15466 owns it, with the measured evidence that widening
+/// `object_pad_constructor_package` instead removes the method and variable
+/// completions that currently answer those carets.
+///
+/// Controlling issue: #13449.
+#[test]
+fn test_object_pad_constructor_param_completion_survives_an_identifier_prefix() {
+    let code = "\nuse Object::Pad;\n\nclass Point {\nfield $x :param(foo-bar) = 0;\nfield $y :param = 0;\n}\n\nPoint->new(foo";
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+    let completions = provider.get_completions(code, code.len());
+
+    let item = must_some(completions.iter().find(|item| item.label == "foo-bar"));
+    assert_eq!(
+        item.insert_text.as_deref(),
+        Some("'foo-bar' => "),
+        "the typed identifier head must still reach the quoted literal key"
+    );
+    assert_eq!(
+        item.text_edit_range,
+        Some((code.len() - "foo".len(), code.len())),
+        "accepting the item must replace the typed `foo`, not append after it"
+    );
+    assert!(
+        !completions.iter().any(|item| item.label == "y"),
+        "the typed prefix must still filter out the keys it does not match; got {:?}",
+        completions.iter().map(|item| item.label.as_ref()).collect::<Vec<_>>()
+    );
+}
+
 /// The `=>` auto-quote discriminator: only a leading `_`/ASCII letter
 /// followed by `_`/ASCII-alphanumeric characters keeps the bare form.
 ///
