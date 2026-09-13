@@ -73,6 +73,10 @@ use crate::id::{Digest, FileId};
 const MAX_INPUT_BYTES: usize = 1 << 20; // 1 MiB — META.yml files are small
 const MAX_DEPTH: usize = 32;
 const MAX_NODES: usize = 10_000;
+/// Bounds the diagnostic list itself. Overflowing it means some refusals are
+/// unreported, which fails the whole parse closed rather than publishing facts
+/// with only partly reported refusals.
+const MAX_FINDINGS: usize = 64;
 
 /// The observed `meta-spec` version, kept distinct from the parse state: a
 /// file can parse cleanly while declaring an unrecognized spec.
@@ -263,15 +267,27 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
         licenses: root_licenses(&root, &mut findings),
         prereqs: root_prereqs(&root),
     };
-    if findings.len() > 64 {
+    if findings.len() > MAX_FINDINGS {
         // The finding list itself is bounded; a pathological input must not
-        // grow it without limit.
-        findings.truncate(64);
+        // grow it without limit. Once it overflows, the remaining refusals
+        // are unreported, so publishing facts would claim a completeness the
+        // diagnostics no longer back. Fail closed instead — the same reading
+        // `failure_state` already gives every other `ResourceLimit`.
+        findings.truncate(MAX_FINDINGS);
         findings.push(MetaYmlFinding::new(
             MetaYmlFindingKind::ResourceLimit,
             None,
-            "finding list truncated at 64 entries",
+            format!(
+                "more than {MAX_FINDINGS} findings; the list is truncated and no facts are published, because the remaining refused values would go unreported"
+            ),
         ));
+        return outcome(
+            MetaYmlParseState::Unsupported,
+            spec_version,
+            None,
+            findings,
+            source_digest,
+        );
     }
     outcome(MetaYmlParseState::Parsed, spec_version, Some(facts), findings, source_digest)
 }
@@ -2037,6 +2053,50 @@ build_requires:
         // ...and the facts stay honest: nothing is invented to fill the slot.
         let facts = must_some_with(parse_meta_yml(fid(), "license: [null, ~]\n").facts, "facts");
         assert!(facts.licenses.is_empty(), "a reported null yields no license fact");
+    }
+
+    /// #15544 review: shape findings are the first producer that can overflow
+    /// the finding budget on an otherwise-parsing document. Once it overflows,
+    /// some refusals are unreported, so facts must not be published as though
+    /// every refused value had been named.
+    #[test]
+    fn overflowing_the_finding_budget_fails_closed_instead_of_publishing_facts() {
+        let bad_items =
+            |count: usize| -> String { (0..count).map(|i| format!("  - K{i}: V\n")).collect() };
+
+        // Just at the cap: still a success, every refusal reported.
+        let outcome =
+            parse_meta_yml(fid(), &format!("license:\n  - perl_5\n{}", bad_items(MAX_FINDINGS)));
+        assert_eq!(
+            outcome.state,
+            MetaYmlParseState::Parsed,
+            "at the cap the document still parses"
+        );
+        assert_eq!(outcome.findings.len(), MAX_FINDINGS, "every refusal is reported");
+        assert!(
+            !outcome.findings.iter().any(|f| f.kind == MetaYmlFindingKind::ResourceLimit),
+            "nothing was truncated at the cap"
+        );
+        assert_eq!(must_some_with(outcome.facts, "facts").licenses, vec!["perl_5"]);
+
+        // One past it: the diagnostics can no longer account for every refused
+        // value, so the outcome refuses rather than publishing partial facts.
+        let outcome = parse_meta_yml(
+            fid(),
+            &format!("license:\n  - perl_5\n{}", bad_items(MAX_FINDINGS + 1)),
+        );
+        assert_non_success(&outcome, MetaYmlFindingKind::ResourceLimit, "finding budget overflow");
+        assert_eq!(
+            outcome.state,
+            MetaYmlParseState::Unsupported,
+            "ResourceLimit reads Unsupported"
+        );
+        assert_eq!(outcome.findings.len(), MAX_FINDINGS + 1, "list stays bounded");
+        assert_eq!(
+            outcome.findings.last().map(|f| f.kind),
+            Some(MetaYmlFindingKind::ResourceLimit),
+            "the truncation itself is disclosed"
+        );
     }
 
     /// The same honesty rule at the sibling scalar fields normalized through
