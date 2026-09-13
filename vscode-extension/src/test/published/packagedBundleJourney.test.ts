@@ -19,6 +19,8 @@ import {
   sha256,
   waitForStartupMetrics,
   scanBundledDapProcessIdentities,
+  parseLinuxProcessStat,
+  isLinuxProcessGoneError,
   withTimeout,
   type ReceiptValue,
 } from './journeySupport';
@@ -247,11 +249,29 @@ function recordPackagedDapEvidence(
 
 interface OwnedDebuggee {
   pid: number;
-  creationTimeFileTime: string;
+  creationTimeFileTime?: string;
+  creationIdentity?: string;
 }
 
 async function observeDebuggee(pid: number): Promise<OwnedDebuggee | null> {
   assert.ok(Number.isSafeInteger(pid) && pid > 0, 'invalid owned debuggee PID');
+  const windows = process.platform === 'win32';
+  if (!windows && process.platform !== 'linux') return null;
+  if (!windows) {
+    const bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    try {
+      const identity = parseLinuxProcessStat(
+        fs.readFileSync(`/proc/${pid}/stat`, 'utf8'),
+        pid,
+        bootId,
+      ).creationIdentity;
+      if (!identity) throw new Error('Linux debuggee identity is missing');
+      return { pid, creationIdentity: identity };
+    } catch (error: unknown) {
+      if (isLinuxProcessGoneError(error)) return null;
+      throw error;
+    }
+  }
   const result = await runBoundedProcess(
     'powershell.exe',
     [
@@ -297,7 +317,13 @@ async function waitForDebuggeeExit(debuggee: OwnedDebuggee): Promise<void> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const observed = await observeDebuggee(debuggee.pid);
-    if (!observed || observed.creationTimeFileTime !== debuggee.creationTimeFileTime) return;
+    if (
+      !observed ||
+      (debuggee.creationIdentity
+        ? observed.creationIdentity !== debuggee.creationIdentity
+        : observed.creationTimeFileTime !== debuggee.creationTimeFileTime)
+    )
+      return;
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`owned debuggee survived Stop: ${debuggee.pid}`);
@@ -307,12 +333,17 @@ async function waitForNewPackagedDap(
   directory: string,
   baseline: Set<string>,
   expectedPath: string,
-): Promise<{ pid: number; path: string; creationTimeFileTime?: string }> {
+): Promise<{
+  pid: number;
+  path: string;
+  creationTimeFileTime?: string;
+  creationIdentity?: string;
+}> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const processes = await scanBundledDapProcessIdentities(directory);
     const matches = processes.filter((entry) => {
-      const key = `${entry.pid}:${entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`;
+      const key = `${entry.pid}:${entry.creationIdentity ?? entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`;
       return !baseline.has(key) && pathsEquivalent(entry.path, expectedPath);
     });
     if (matches.length > 1) {
@@ -766,8 +797,8 @@ suite('Packaged VSIX bundled-server journey', function () {
     }
   });
 
-  test('starts and cleanly stops the packaged DAP on Windows', async function () {
-    if (process.platform !== 'win32') {
+  test('starts and cleanly stops the packaged DAP on the host platform', async function () {
+    if (process.platform !== 'win32' && process.platform !== 'linux') {
       this.skip();
       return;
     }
@@ -779,11 +810,20 @@ suite('Packaged VSIX bundled-server journey', function () {
     const dapPath = bundledDapPath(extensionPath);
     assert.ok(fs.existsSync(dapPath), `packaged DAP is missing: ${dapPath}`);
     const expectedDapSha256 = sha256(dapPath);
+    const builtDapSha256 = process.env.PERL_LSP_DAP_SHA256?.trim();
+    if (process.platform === 'linux') {
+      assert.ok(builtDapSha256, 'Linux packaged DAP proof requires the built adapter SHA-256');
+    }
+    if (builtDapSha256) {
+      assert.match(builtDapSha256, /^[0-9a-f]{64}$/i, 'built DAP SHA-256 is invalid');
+      assert.equal(expectedDapSha256, builtDapSha256, 'installed DAP differs from built DAP input');
+    }
     const dapDirectory = path.dirname(dapPath);
     const beforeProcesses = await scanBundledDapProcessIdentities(dapDirectory);
     const beforeKeys = new Set(
       beforeProcesses.map(
-        (entry) => `${entry.pid}:${entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`,
+        (entry) =>
+          `${entry.pid}:${entry.creationIdentity ?? entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`,
       ),
     );
     const workspacePath = workspaceFolder.uri.fsPath;
@@ -972,7 +1012,10 @@ suite('Packaged VSIX bundled-server journey', function () {
           name: 'Packaged DAP startup',
           program,
           args: [pidFile, releaseFile, environmentFile],
-          env: { PERL_RL: 'Perl', perldb_opts: 'CommandSet=580 ReadLine=1' },
+          env:
+            process.platform === 'win32'
+              ? { PERL_RL: 'Perl', perldb_opts: 'CommandSet=580 ReadLine=1' }
+              : { PERL_RL: 'Perl', PERLDB_OPTS: 'CommandSet=580 ReadLine=0' },
           cwd: workspacePath,
           stopOnEntry: false,
         }),
@@ -981,7 +1024,10 @@ suite('Packaged VSIX bundled-server journey', function () {
       assert.equal(startResult, true, 'VS Code did not start the packaged DAP session');
       const session = await withTimeout('packaged DAP session start', started, 30_000);
       const matchingProcess = await waitForNewPackagedDap(dapDirectory, beforeKeys, dapPath);
-      assert.ok(matchingProcess.creationTimeFileTime, 'packaged DAP creation time is required');
+      assert.ok(
+        matchingProcess.creationIdentity ?? matchingProcess.creationTimeFileTime,
+        'packaged DAP process identity is required',
+      );
       assert.equal(
         sha256(matchingProcess.path),
         expectedDapSha256,
@@ -997,7 +1043,11 @@ suite('Packaged VSIX bundled-server journey', function () {
       debuggee = await waitForDebuggee(pidFile);
       const childEnvironment = fs.readFileSync(environmentFile, 'utf8');
       assert.match(childEnvironment, /^PERL_RL=Perl$/m);
-      assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=1 ReadLine=0$/m);
+      if (process.platform === 'win32') {
+        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=1 ReadLine=0$/m);
+      } else {
+        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=0$/m);
+      }
       stopRequested = true;
       await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
       await withTimeout('packaged DAP termination event', termination, 30_000);
@@ -1044,7 +1094,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         remainingProcesses.filter(
           (process) =>
             !beforeKeys.has(
-              `${process.pid}:${process.creationTimeFileTime ?? ''}:${process.path.toLowerCase()}`,
+              `${process.pid}:${process.creationIdentity ?? process.creationTimeFileTime ?? ''}:${process.path.toLowerCase()}`,
             ),
         ).length,
         0,
