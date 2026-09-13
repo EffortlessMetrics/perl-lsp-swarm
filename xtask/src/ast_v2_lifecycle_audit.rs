@@ -41,15 +41,27 @@
 //! parity-complete belongs here — adding one violates the issue's non-goals and
 //! the guard test named `no_migration_or_mutation_surface_is_added`.
 //!
-//! Macro-expanded consumers. On this module's own two files the parser branch is
-//! the only classifier, and inside a macro body a bare crate identifier is not
-//! decidable: `stringify!(perl_ast_v2)` binds nothing and a `macro_rules!` taking
-//! an `ident` fragment could expand the same token into an import. `syn` does not
-//! expand macros, so the audit resolves the tie toward not inventing a consumer
-//! and records the gap here. Determinate forms — a multi-segment path, `use`, or
-//! `extern crate` — are still detected, because a macro body is parsed and walked
-//! by the same visitor as ordinary source. See `ApiUseVisitor::bare_paths_count`,
-//! which is where the tie is broken.
+//! Macro consumers, in two halves, both on this module's own two files — the only
+//! files the parser branch classifies alone.
+//!
+//! *A body that parses but is ambiguous.* A bare crate identifier is not
+//! decidable: `stringify!(perl_ast_v2)` binds nothing while a `macro_rules!`
+//! taking an `ident` fragment could expand the same token into an import. `syn`
+//! does not expand macros, so the tie is broken toward not inventing a consumer
+//! — see `ApiUseVisitor::bare_paths_count`.
+//!
+//! *A body that does not parse at all.* Custom macro syntax — `route => …` and
+//! anything else a macro defines — is not Rust, so there is no grammar to read a
+//! path out of. Groups are descended into, and any parseable fragment inside one
+//! is still seen, but a path stranded among unparseable tokens is not recovered.
+//! Deriving it would mean rebuilding path syntax by hand from tokens, which this
+//! module did once and retired: four defects over six passes, two of them
+//! inventing consumers, replaced by parsing in favour of forms that are correct
+//! by construction.
+//!
+//! Determinate Rust inside a macro is unaffected: items, expression lists, types,
+//! and parseable fragments nested in groups are all detected, because a macro
+//! body is parsed and walked by the same visitor as ordinary source.
 //!
 //! Recorded shape vs. breaking change. The shape is the declaration as written,
 //! which is deliberately broader than the semver-breaking surface: renaming a
