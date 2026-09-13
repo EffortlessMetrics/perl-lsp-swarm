@@ -1275,21 +1275,47 @@ fn a_member_missing_from_a_closed_aggregate_is_absent_not_unknown() -> Result<()
 
 #[test]
 fn non_canonical_limitations_cannot_survive_the_transport_boundary() -> Result<(), Box<dyn Error>> {
-    let mut value = serde_json::to_value(nested_chain()?)?;
-    value["hops"][0]["limitations"] = serde_json::json!(["OpenAggregate", "OpenAggregate"]);
-    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    // Every limitation here restates no typed field, so law 11 has nothing to
+    // say about any of them and law 7 is the only check that can reject. An
+    // earlier version used `OpenAggregate` against this fixture's `Closed`
+    // completeness: law 11 rejected it too, so deleting law 7 outright left
+    // the assertion green and the test measured nothing it was named for.
+    // The error payload is matched exactly for the same reason — both laws
+    // return `ContradictoryStatus`, so the variant alone does not discriminate.
+    let canonical = |limitations: serde_json::Value| -> Result<_, Box<dyn Error>> {
+        let mut value = serde_json::to_value(nested_chain()?)?;
+        value["hops"][0]["limitations"] = limitations;
+        let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+        Ok(decoded)
+    };
+
+    let duplicated = canonical(serde_json::json!(["Unsupported", "Unsupported"]))?;
     assert!(
-        decoded.validate().is_err(),
-        "duplicate limitations must not survive the transport boundary"
+        matches!(
+            duplicated.validate(),
+            Err(StructuralAccessContractError::ContradictoryStatus(
+                "limitations must be sorted and free of duplicates"
+            ))
+        ),
+        "duplicate limitations must be rejected by the canonical-order law, got {:?}",
+        duplicated.validate()
     );
 
-    let mut value = serde_json::to_value(nested_chain()?)?;
-    value["hops"][0]["limitations"] = serde_json::json!(["OpenAggregate", "DynamicSelector"]);
-    let decoded: StructuralAccessChain = serde_json::from_value(value)?;
+    let unsorted = canonical(serde_json::json!(["Unsupported", "RecoveredSyntax"]))?;
     assert!(
-        decoded.validate().is_err(),
-        "unsorted limitations must not survive the transport boundary"
+        matches!(
+            unsorted.validate(),
+            Err(StructuralAccessContractError::ContradictoryStatus(
+                "limitations must be sorted and free of duplicates"
+            ))
+        ),
+        "descending limitations must be rejected by the canonical-order law, got {:?}",
+        unsorted.validate()
     );
+
+    // Negative control: the same two limitations in canonical order validate,
+    // so the law rejects the ordering rather than the limitations themselves.
+    canonical(serde_json::json!(["RecoveredSyntax", "Unsupported"]))?.validate()?;
     Ok(())
 }
 

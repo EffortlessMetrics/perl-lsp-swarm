@@ -398,10 +398,13 @@ fn a_json_shape_the_constructor_would_reject_is_caught_by_validate() -> Result<(
             }),
         ),
         (
+            // `Unsupported` restates no typed field, so the canonical-order
+            // law is the only one that can reject this. `OpenAggregate` would
+            // also contradict this fixture's `Closed` completeness, leaving the
+            // assertion green even with the duplicate check deleted.
             "duplicated limitations",
             Box::new(|value: &mut serde_json::Value| {
-                value["hops"][0]["limitations"] =
-                    serde_json::json!(["OpenAggregate", "OpenAggregate"]);
+                value["hops"][0]["limitations"] = serde_json::json!(["Unsupported", "Unsupported"]);
             }),
         ),
         (
