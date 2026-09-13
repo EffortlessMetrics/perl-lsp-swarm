@@ -40,5 +40,9 @@ describe('Linux packaged-process identity parsing', () => {
     assert.equal(isLinuxProcessGoneError({ code: 'ESRCH' }), true);
     assert.equal(isLinuxProcessGoneError({ code: 'EACCES' }), false);
     assert.equal(isLinuxProcessGoneError(new Error('malformed stat')), false);
+    assert.equal(isLinuxProcessGoneError(null), false);
+    assert.equal(isLinuxProcessGoneError(undefined), false);
+    assert.equal(isLinuxProcessGoneError('ENOENT'), false);
+    assert.equal(isLinuxProcessGoneError(13), false);
   });
 });
