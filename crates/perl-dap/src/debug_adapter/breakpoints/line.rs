@@ -484,7 +484,9 @@ mod source_boundary_tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            initial_stop_pending: false,
             stopped_generation: 0,
         });
         adapter.operation_broker.open_session();

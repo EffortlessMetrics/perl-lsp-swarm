@@ -700,7 +700,9 @@ impl DebugAdapter {
                     stack_frame_arguments: HashMap::new(),
                     variable_cache: VariableCache::default(),
                     thread_id,
+                    debuggee_cwd: debuggee_cwd.clone(),
                     last_resume_mode: ResumeMode::Unknown,
+                    initial_stop_pending: !stop_on_entry,
                     stopped_generation: 0,
                 };
 
@@ -1338,6 +1340,20 @@ impl DebugAdapter {
                                             end_column: None,
                                         }];
                                         s.stack_frame_arguments.clear();
+                                    }
+
+                                    if was_running
+                                        && s.initial_stop_pending
+                                        && matches!(s.last_resume_mode, ResumeMode::Unknown)
+                                    {
+                                        // Perl pauses at the first executable line before
+                                        // configurationDone. Retain that pause for an
+                                        // acknowledged breakpoint on the same line; the
+                                        // configurationDone handler will publish it only after
+                                        // correlating the engine installation.
+                                        s.state = DebugState::Stopped;
+                                        s.last_resume_mode = ResumeMode::Unknown;
+                                        continue;
                                     }
 
                                     if was_running {
@@ -2477,10 +2493,39 @@ impl DebugAdapter {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
+        let mut startup_breakpoint_ids = Vec::new();
+        let mut startup_thread_id = None;
+        let startup_generation = self.current_session_generation();
+        let startup_workspace =
+            lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
         if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             && let Some(stdin) = session.process.stdin.as_mut()
         {
-            if stop_on_entry {
+            if !stop_on_entry
+                && session.initial_stop_pending
+                && let Some(frame) = session.stack_frames.first().cloned()
+            {
+                let outcome = Self::register_observed_engine_breakpoint_hit(
+                    &self.breakpoints,
+                    &frame.source.path,
+                    i64::from(frame.line),
+                    startup_workspace.as_deref(),
+                    &session.debuggee_cwd,
+                    startup_generation,
+                );
+                if outcome.should_stop {
+                    startup_breakpoint_ids = outcome.hit_breakpoint_ids;
+                    startup_thread_id = Some(session.thread_id);
+                    session.state = DebugState::Stopped;
+                    session.last_resume_mode = ResumeMode::Unknown;
+                    session.initial_stop_pending = false;
+                }
+            }
+
+            if startup_thread_id.is_some() {
+                // The implicit startup pause already corresponds to an
+                // acknowledged breakpoint. Publish it without sending `c`.
+            } else if stop_on_entry {
                 // The entry stopped event was already emitted during launch.
                 // List the current source location so the IDE can display it.
                 let _ = stdin.write_all(b"l\n");
@@ -2491,11 +2536,22 @@ impl DebugAdapter {
                 // ResumeMode::RunToBreakpoint signals the output reader to
                 // silently skip non-breakpoint stops (the implicit first-line
                 // stop) and auto-continue until a user breakpoint is hit.
+                session.initial_stop_pending = false;
                 session.state = DebugState::Running;
                 session.last_resume_mode = ResumeMode::RunToBreakpoint;
                 let _ = stdin.write_all(b"c\n");
                 let _ = stdin.flush();
             }
+        }
+
+        if let Some(thread_id) = startup_thread_id {
+            let mut body = json!({
+                "reason": "breakpoint",
+                "threadId": thread_id,
+                "allThreadsStopped": true
+            });
+            body["hitBreakpointIds"] = json!(startup_breakpoint_ids);
+            self.send_event("stopped", Some(body));
         }
 
         DapMessage::Response {
@@ -3791,7 +3847,9 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            initial_stop_pending: false,
             stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
@@ -3909,7 +3967,9 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            initial_stop_pending: false,
             stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
