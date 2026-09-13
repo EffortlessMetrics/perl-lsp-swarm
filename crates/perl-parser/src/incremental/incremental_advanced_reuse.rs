@@ -19,11 +19,12 @@
 //! - **<500µs processing** for reuse analysis on typical documents
 
 use perl_parser_core::{
-    ast::{Node, NodeKind},
+    ast::{NativeDebugSexpLimits, NativeDebugSexpResult, Node, NodeKind},
     edit::EditSet,
     position::{Position, Range},
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 /// Advanced node reuse analyzer with sophisticated matching algorithms
@@ -202,7 +203,10 @@ impl AdvancedReuseAnalyzer {
     /// Build comprehensive analysis of tree structure
     fn build_tree_analysis(&mut self, tree: &Node, config: &ReuseConfig) -> TreeAnalysis {
         let mut analysis = TreeAnalysis::new();
-        self.analyze_node_recursive(tree, &mut analysis, 0, config);
+        // One bottom-up pass over the whole tree, independent of how deep the
+        // analysis walk below is allowed to go.
+        let content_hashes = ContentHashes::compute(tree);
+        self.analyze_node_recursive(tree, &mut analysis, 0, config, &content_hashes);
         analysis
     }
 
@@ -213,6 +217,7 @@ impl AdvancedReuseAnalyzer {
         analysis: &mut TreeAnalysis,
         depth: usize,
         config: &ReuseConfig,
+        content_hashes: &ContentHashes,
     ) {
         if depth > config.max_analysis_depth {
             return;
@@ -230,7 +235,7 @@ impl AdvancedReuseAnalyzer {
             structural_hash,
             depth,
             children_count: self.get_children_count(node),
-            content_hash: self.calculate_content_hash(node),
+            content_hash: content_hashes.get(node),
         };
 
         analysis.add_node_info(node.location.start, node_info);
@@ -250,36 +255,54 @@ impl AdvancedReuseAnalyzer {
         match &node.kind {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
                 for stmt in statements {
-                    self.analyze_node_recursive(stmt, analysis, depth + 1, config);
+                    self.analyze_node_recursive(stmt, analysis, depth + 1, config, content_hashes);
                 }
             }
             NodeKind::VariableDeclaration { variable, initializer, .. } => {
-                self.analyze_node_recursive(variable, analysis, depth + 1, config);
+                self.analyze_node_recursive(variable, analysis, depth + 1, config, content_hashes);
                 if let Some(init) = initializer {
-                    self.analyze_node_recursive(init, analysis, depth + 1, config);
+                    self.analyze_node_recursive(init, analysis, depth + 1, config, content_hashes);
                 }
             }
             NodeKind::Binary { left, right, .. } => {
-                self.analyze_node_recursive(left, analysis, depth + 1, config);
-                self.analyze_node_recursive(right, analysis, depth + 1, config);
+                self.analyze_node_recursive(left, analysis, depth + 1, config, content_hashes);
+                self.analyze_node_recursive(right, analysis, depth + 1, config, content_hashes);
             }
             NodeKind::Unary { operand, .. } => {
-                self.analyze_node_recursive(operand, analysis, depth + 1, config);
+                self.analyze_node_recursive(operand, analysis, depth + 1, config, content_hashes);
             }
             NodeKind::FunctionCall { args, .. } => {
                 for arg in args {
-                    self.analyze_node_recursive(arg, analysis, depth + 1, config);
+                    self.analyze_node_recursive(arg, analysis, depth + 1, config, content_hashes);
                 }
             }
             NodeKind::If { condition, then_branch, elsif_branches, else_branch, .. } => {
-                self.analyze_node_recursive(condition, analysis, depth + 1, config);
-                self.analyze_node_recursive(then_branch, analysis, depth + 1, config);
+                self.analyze_node_recursive(condition, analysis, depth + 1, config, content_hashes);
+                self.analyze_node_recursive(
+                    then_branch,
+                    analysis,
+                    depth + 1,
+                    config,
+                    content_hashes,
+                );
                 for (cond, branch) in elsif_branches {
-                    self.analyze_node_recursive(cond, analysis, depth + 1, config);
-                    self.analyze_node_recursive(branch, analysis, depth + 1, config);
+                    self.analyze_node_recursive(cond, analysis, depth + 1, config, content_hashes);
+                    self.analyze_node_recursive(
+                        branch,
+                        analysis,
+                        depth + 1,
+                        config,
+                        content_hashes,
+                    );
                 }
                 if let Some(branch) = else_branch {
-                    self.analyze_node_recursive(branch, analysis, depth + 1, config);
+                    self.analyze_node_recursive(
+                        branch,
+                        analysis,
+                        depth + 1,
+                        config,
+                        content_hashes,
+                    );
                 }
             }
             _ => {} // Leaf nodes
@@ -621,13 +644,6 @@ impl AdvancedReuseAnalyzer {
         hasher.finish()
     }
 
-    /// Calculate content-based hash for exact subtree comparison.
-    fn calculate_content_hash(&self, node: &Node) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        node.to_sexp().hash(&mut hasher);
-        hasher.finish()
-    }
-
     /// Get count of direct children for a node
     fn get_children_count(&self, node: &Node) -> usize {
         match &node.kind {
@@ -947,6 +963,181 @@ impl TreeAnalysis {
     }
 }
 
+/// Feeds rendered S-expression fragments straight into a hasher.
+///
+/// [`Node::render_debug_sexp`] writes through [`fmt::Write`], so no rendered
+/// text is buffered on this side: fragments are hashed as they arrive and the
+/// node's own payload string is never assembled here.
+///
+/// This is not an allocation-free path, and the sink cannot make it one. The
+/// renderer still allocates internally per node — `grammar_kind_name` returns
+/// an owned `String` even for a static name, `emit_atom` fills a scratch
+/// `String`, and `load_children` builds a `Vec`. Scratch storage depends on
+/// local payload size and immediate child count. What is gone is the whole-
+/// subtree output buffer `node.to_sexp()` made at every analyzed node. Removing
+/// the remaining allocations
+/// needs an allocation-free payload API on `perl-ast`, which is out of scope
+/// here (#15037).
+struct SexpHashSink<'a> {
+    hasher: &'a mut DefaultHasher,
+}
+
+impl fmt::Write for SexpHashSink<'_> {
+    fn write_str(&mut self, fragment: &str) -> fmt::Result {
+        fragment.hash(self.hasher);
+        Ok(())
+    }
+}
+
+/// Content hashes for every node of one tree, computed bottom-up.
+///
+/// The hash of a node is its own grammar name and payloads folded together with
+/// the already-computed hashes of its children, so each node's payload text is
+/// rendered exactly once for the whole tree. The previous implementation hashed
+/// `node.to_sexp()` per visited node, re-serializing overlapping subtrees at
+/// every level of the walk.
+///
+/// Two subtrees that render to the same S-expression always receive the same
+/// hash: the per-node component comes from the same renderer and the same
+/// payload grammar, and children are folded in canonical visit-table order with
+/// their field roles. Hash equality is a candidate filter only —
+/// `collect_materializable_reuse` re-checks every candidate with full
+/// structural equality before accepting it, so a collision costs a rejected
+/// reuse opportunity and never a wrong tree.
+#[derive(Debug, Default)]
+struct ContentHashes {
+    /// Keyed by node address rather than `location.start`: a parent and its
+    /// first child can share a start offset, the same aliasing hazard already
+    /// documented on `IncrementalParserV2::find_analyzed_node_at_start`.
+    by_node: HashMap<usize, u64>,
+    /// Total nodes the S-expression renderer visited across the whole pass.
+    ///
+    /// This is the measurement behind the depth-independence claim: it equals
+    /// the node count exactly when each node's payload is rendered once. Whole
+    /// subtree serialization drives it to the sum of all subtree sizes instead.
+    #[cfg(test)]
+    rendered_nodes: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    // Observe all production hashing calls on this test thread, including
+    // accidentally repeated passes, without interference from parallel tests.
+    static CONTENT_HASH_RENDERED_NODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl ContentHashes {
+    /// Compute the content hash of every node in `root`'s subtree.
+    ///
+    /// The walk is iterative so that deeply nested input cannot overflow the
+    /// stack, matching the renderer it draws its payloads from.
+    fn compute(root: &Node) -> Self {
+        let mut by_node: HashMap<usize, u64> = HashMap::new();
+        #[cfg(test)]
+        let mut rendered_nodes = 0usize;
+        let mut pending: Vec<(&Node, bool)> = vec![(root, false)];
+
+        while let Some((node, children_done)) = pending.pop() {
+            if !children_done {
+                pending.push((node, true));
+                node.for_each_child_with_field(|_, child| pending.push((child, false)));
+                continue;
+            }
+
+            let mut hasher = DefaultHasher::new();
+            let rendered = Self::hash_own_payload(node, &mut hasher);
+            #[cfg(test)]
+            {
+                rendered_nodes = rendered_nodes.saturating_add(rendered);
+            }
+            let _ = rendered;
+
+            // Fold children in canonical visit-table order, each under the same
+            // field name the renderer labels it with. The role is folded so the
+            // hash mirrors the rendered form by construction: no current
+            // `NodeKind` yields two identical child sequences under different
+            // roles, so this guards a future AST shape rather than a case the
+            // suite can falsify today. Child arity needs no separate term —
+            // a shorter or longer child sequence is already a different hash
+            // input (`child_arity_is_load_bearing`).
+            node.for_each_child_with_field(|field, child| {
+                match field {
+                    Some(field) => field.name().hash(&mut hasher),
+                    None => "child".hash(&mut hasher),
+                }
+                by_node.get(&Self::key(child)).copied().unwrap_or(0).hash(&mut hasher);
+            });
+
+            by_node.insert(Self::key(node), hasher.finish());
+        }
+
+        Self {
+            by_node,
+            #[cfg(test)]
+            rendered_nodes,
+        }
+    }
+
+    /// Content hash of a node belonging to the tree this map was computed over.
+    fn get(&self, node: &Node) -> u64 {
+        self.by_node.get(&Self::key(node)).copied().unwrap_or(0)
+    }
+
+    /// Number of nodes hashed.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.by_node.len()
+    }
+
+    fn key(node: &Node) -> usize {
+        std::ptr::from_ref(node) as usize
+    }
+
+    /// Hash a node's own grammar name and payloads, excluding its children.
+    ///
+    /// Returns the number of nodes the renderer visited, which is `1` whenever
+    /// the depth limit is doing its job.
+    fn hash_own_payload(node: &Node, hasher: &mut DefaultHasher) -> usize {
+        let limits =
+            NativeDebugSexpLimits { max_depth: Some(0), ..NativeDebugSexpLimits::unbounded() };
+        // A depth limit of zero renders this node's grammar name and payloads
+        // and then refuses the first descent, so `Truncated` is the expected
+        // result for any node that has children.
+        let result = node.render_debug_sexp(&mut SexpHashSink { hasher }, limits);
+
+        let rendered = match result {
+            NativeDebugSexpResult::Complete { work }
+            | NativeDebugSexpResult::Truncated { work, .. } => work.nodes_visited,
+            NativeDebugSexpResult::InstrumentFailure { work, .. } => {
+                // Unreachable for a sink that cannot fail, but a silently empty
+                // payload would let two different nodes hash alike. Fall back to
+                // a marker plus the kind discriminant; reuse still has to clear
+                // full structural equality either way.
+                "native-debug-sexp-instrument-failure".hash(hasher);
+                std::mem::discriminant(&node.kind).hash(hasher);
+                work.nodes_visited
+            }
+        };
+
+        #[cfg(test)]
+        CONTENT_HASH_RENDERED_NODES.with(|count| {
+            count.set(count.get().saturating_add(rendered));
+        });
+
+        // A `try` block's catch binders are parent-owned payloads that the
+        // renderer nests under each catch child rather than under the `try`
+        // node itself (see `load_children` in `perl-ast`), so they are not
+        // covered by the depth-limited render above.
+        if let NodeKind::Try { catch_blocks, .. } = &node.kind {
+            for (binder, _) in catch_blocks {
+                binder.as_ref().map(|(name, _)| name).hash(hasher);
+            }
+        }
+
+        rendered
+    }
+}
+
 /// Detailed information about a node for reuse analysis
 #[derive(Debug, Clone)]
 struct NodeAnalysisInfo {
@@ -998,6 +1189,7 @@ impl ReuseAnalysisResult {
 
 #[cfg(test)]
 mod tests {
+    use super::hash_fixtures::content_hash;
     use super::*;
     use perl_parser_core::{SourceLocation, ast::Node};
 
@@ -1031,8 +1223,6 @@ mod tests {
 
     #[test]
     fn test_content_hash_differs_for_different_values() {
-        let analyzer = AdvancedReuseAnalyzer::new();
-
         let node1 = Node::new(
             NodeKind::Number { value: "42".to_string() },
             SourceLocation { start: 0, end: 2 },
@@ -1043,8 +1233,8 @@ mod tests {
             SourceLocation { start: 0, end: 2 },
         );
 
-        let hash1 = analyzer.calculate_content_hash(&node1);
-        let hash2 = analyzer.calculate_content_hash(&node2);
+        let hash1 = content_hash(&node1);
+        let hash2 = content_hash(&node2);
 
         assert_ne!(hash1, hash2, "Different values should have different content hashes");
     }
@@ -1069,8 +1259,8 @@ mod tests {
             "v-string structural hash should depend on kind, not version text"
         );
 
-        let content_hash1 = analyzer.calculate_content_hash(&node1);
-        let content_hash2 = analyzer.calculate_content_hash(&node2);
+        let content_hash1 = content_hash(&node1);
+        let content_hash2 = content_hash(&node2);
         assert_ne!(
             content_hash1, content_hash2,
             "v-string content hash must distinguish version text"
@@ -1387,5 +1577,497 @@ mod tests {
 
         assert_eq!(result.reuse_map.get(&10).map(|s| s.target_position), Some(100));
         assert_eq!(result.reuse_map.get(&20).map(|s| s.target_position), Some(110));
+    }
+}
+
+/// Shared fixtures for the content-hash proof.
+#[cfg(test)]
+mod hash_fixtures {
+    use super::*;
+    use perl_parser_core::{SourceLocation, ast::Node};
+
+    /// Content hash of one subtree, through the same bottom-up pass production
+    /// uses.
+    pub(super) fn content_hash(node: &Node) -> u64 {
+        ContentHashes::compute(node).get(node)
+    }
+
+    pub(super) fn loc() -> SourceLocation {
+        SourceLocation { start: 0, end: 1 }
+    }
+
+    pub(super) fn total_nodes(node: &Node) -> usize {
+        let mut count = 1usize;
+        node.for_each_child(|child| count = count.saturating_add(total_nodes(child)));
+        count
+    }
+
+    pub(super) fn number(value: &str) -> Node {
+        Node::new(NodeKind::Number { value: value.to_string() }, loc())
+    }
+
+    pub(super) fn string(value: &str, interpolated: bool) -> Node {
+        Node::new(NodeKind::String { value: value.to_string(), interpolated }, loc())
+    }
+
+    pub(super) fn variable(sigil: &str, name: &str) -> Node {
+        Node::new(NodeKind::Variable { sigil: sigil.to_string(), name: name.to_string() }, loc())
+    }
+
+    pub(super) fn program(statements: Vec<Node>) -> Node {
+        Node::new(NodeKind::Program { statements }, loc())
+    }
+
+    pub(super) fn block(statements: Vec<Node>) -> Node {
+        Node::new(NodeKind::Block { statements }, loc())
+    }
+
+    pub(super) fn binary(op: &str, left: Node, right: Node) -> Node {
+        Node::new(
+            NodeKind::Binary { op: op.to_string(), left: Box::new(left), right: Box::new(right) },
+            loc(),
+        )
+    }
+
+    pub(super) fn unary(op: &str, operand: Node) -> Node {
+        Node::new(NodeKind::Unary { op: op.to_string(), operand: Box::new(operand) }, loc())
+    }
+
+    pub(super) fn call(name: &str, args: Vec<Node>) -> Node {
+        Node::new(NodeKind::FunctionCall { name: name.to_string(), args }, loc())
+    }
+
+    pub(super) fn if_node(condition: Node, then_branch: Node, else_branch: Option<Node>) -> Node {
+        Node::new(
+            NodeKind::If {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                elsif_branches: Vec::new(),
+                else_branch: else_branch.map(Box::new),
+                keyword: None,
+            },
+            loc(),
+        )
+    }
+
+    /// A `try` block with one catch handler, optionally binding an exception
+    /// variable.
+    pub(super) fn try_node(binder: Option<&str>) -> Node {
+        Node::new(
+            NodeKind::Try {
+                body: Box::new(block(vec![number("1")])),
+                catch_blocks: vec![(
+                    binder.map(|name| (name.to_string(), loc())),
+                    Box::new(block(vec![number("2")])),
+                )],
+                finally_block: None,
+            },
+            loc(),
+        )
+    }
+
+    /// An `if` carrying `elsif` arms.
+    ///
+    /// `elsif` is the one place the visit table reuses a `FieldId` within a
+    /// single variant: `FieldId::CONDITION` labels both the leading condition
+    /// and every `elsif` condition (`kind_schema/visit.rs`). Field names alone
+    /// therefore cannot disambiguate position here, which makes these shapes
+    /// the sharpest test of the ordered child fold.
+    pub(super) fn if_with_elsifs(
+        condition: Node,
+        then_branch: Node,
+        elsif_branches: Vec<(Node, Node)>,
+        else_branch: Option<Node>,
+    ) -> Node {
+        Node::new(
+            NodeKind::If {
+                condition: Box::new(condition),
+                then_branch: Box::new(then_branch),
+                elsif_branches: elsif_branches
+                    .into_iter()
+                    .map(|(cond, body)| (Box::new(cond), Box::new(body)))
+                    .collect(),
+                else_branch: else_branch.map(Box::new),
+                keyword: None,
+            },
+            loc(),
+        )
+    }
+
+    /// A `try` whose second child is a catch handler, versus one whose second
+    /// child is the identical block in the `finally` role.
+    ///
+    /// Same child count, order, and content, but different catch/finally shape.
+    /// This does not isolate the field-role hash term: a catch also contributes
+    /// its absent binder (`None`) to the parent payload hash.
+    pub(super) fn try_with_second_child_as(role: SecondChildRole) -> Node {
+        let handler = || Box::new(block(vec![number("7")]));
+        let (catch_blocks, finally_block) = match role {
+            SecondChildRole::Catch => (vec![(None, handler())], None),
+            SecondChildRole::Finally => (Vec::new(), Some(handler())),
+        };
+        Node::new(
+            NodeKind::Try { body: Box::new(block(vec![number("1")])), catch_blocks, finally_block },
+            loc(),
+        )
+    }
+
+    #[derive(Clone, Copy)]
+    pub(super) enum SecondChildRole {
+        Catch,
+        Finally,
+    }
+
+    /// Wrap `leaf` in `depth` nested unary nodes.
+    pub(super) fn nest(depth: usize, leaf: Node) -> Node {
+        let mut node = leaf;
+        for _ in 0..depth {
+            node = unary("!", node);
+        }
+        node
+    }
+
+    /// A deliberately varied set of subtrees, including near-miss pairs that
+    /// differ only in one payload, one role, or one arity.
+    pub(super) fn corpus_nodes() -> Vec<Node> {
+        vec![
+            number("1"),
+            number("2"),
+            string("x", false),
+            string("x", true),
+            string("y", false),
+            variable("$", "x"),
+            variable("@", "x"),
+            variable("$", "y"),
+            program(Vec::new()),
+            program(vec![number("1")]),
+            program(vec![number("2")]),
+            program(vec![number("1"), number("1")]),
+            program(vec![number("1"), number("2")]),
+            program(vec![number("2"), number("1")]),
+            block(Vec::new()),
+            block(vec![number("1")]),
+            binary("+", number("1"), number("2")),
+            binary("+", number("2"), number("1")),
+            binary("-", number("1"), number("2")),
+            unary("!", number("1")),
+            unary("-", number("1")),
+            call("foo", Vec::new()),
+            call("bar", Vec::new()),
+            call("foo", vec![number("1")]),
+            call("foo", vec![number("1"), number("2")]),
+            call("foo", vec![call("foo", vec![number("1")])]),
+            if_node(number("1"), block(vec![number("2")]), None),
+            if_node(number("1"), block(vec![number("2")]), Some(block(vec![number("3")]))),
+            if_node(number("1"), block(vec![number("3")]), Some(block(vec![number("2")]))),
+            try_node(None),
+            try_node(Some("$err")),
+            try_node(Some("$other")),
+            try_with_second_child_as(SecondChildRole::Catch),
+            try_with_second_child_as(SecondChildRole::Finally),
+            // `elsif` reuses FieldId::CONDITION, so only the ordered fold
+            // separates these.
+            if_with_elsifs(number("1"), block(vec![number("2")]), Vec::new(), None),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![(number("3"), block(vec![number("4")]))],
+                None,
+            ),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![(number("4"), block(vec![number("3")]))],
+                None,
+            ),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![(number("3"), block(vec![number("4")]))],
+                Some(block(vec![number("5")])),
+            ),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![
+                    (number("3"), block(vec![number("4")])),
+                    (number("5"), block(vec![number("6")])),
+                ],
+                None,
+            ),
+            if_with_elsifs(
+                number("1"),
+                block(vec![number("2")]),
+                vec![
+                    (number("5"), block(vec![number("6")])),
+                    (number("3"), block(vec![number("4")])),
+                ],
+                None,
+            ),
+            nest(3, number("1")),
+            nest(3, number("2")),
+            nest(4, number("1")),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod content_hash_tests {
+    use super::hash_fixtures::*;
+    use super::*;
+    use perl_parser_core::{SourceLocation, ast::Node};
+
+    /// The property the previous `to_sexp` hash provided, stated directly: two
+    /// subtrees hash equal exactly when they render to the same S-expression.
+    ///
+    /// Soundness (same render => same hash) is what reuse selection depends on.
+    /// Completeness (different render => different hash) is what keeps the new
+    /// hash from proposing candidates the old one would not have.
+    #[test]
+    fn content_hash_agrees_with_sexp_equality_across_a_corpus() -> anyhow::Result<()> {
+        let corpus = corpus_nodes();
+        anyhow::ensure!(corpus.len() > 20, "corpus too small to discriminate");
+
+        for (i, a) in corpus.iter().enumerate() {
+            for (j, b) in corpus.iter().enumerate() {
+                let same_render = a.to_sexp() == b.to_sexp();
+                let same_hash = content_hash(a) == content_hash(b);
+                anyhow::ensure!(
+                    same_render == same_hash,
+                    "corpus[{i}] vs corpus[{j}]: to_sexp equality {same_render} but hash equality \
+                     {same_hash}\n  a = {}\n  b = {}",
+                    a.to_sexp(),
+                    b.to_sexp()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn identical_subtrees_built_independently_hash_equal() -> anyhow::Result<()> {
+        anyhow::ensure!(
+            content_hash(&program(vec![binary("+", number("1"), number("2"))]))
+                == content_hash(&program(vec![binary("+", number("1"), number("2"))])),
+            "structurally identical trees must hash equal regardless of allocation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_location_alone_does_not_change_the_hash() -> anyhow::Result<()> {
+        let here = Node::new(
+            NodeKind::Number { value: "42".to_string() },
+            SourceLocation { start: 0, end: 2 },
+        );
+        let moved = Node::new(
+            NodeKind::Number { value: "42".to_string() },
+            SourceLocation { start: 900, end: 902 },
+        );
+        anyhow::ensure!(here.to_sexp() == moved.to_sexp(), "guard: the renderer omits spans");
+        anyhow::ensure!(
+            content_hash(&here) == content_hash(&moved),
+            "content hash must stay position-independent, as position-shifted reuse relies on it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_leaf_change_deep_in_the_tree_changes_the_root_hash() -> anyhow::Result<()> {
+        // Proves child hashes are actually folded into the parent rather than
+        // the parent hashing only its own payload.
+        let deep_a = nest(12, number("1"));
+        let deep_b = nest(12, number("2"));
+        anyhow::ensure!(
+            content_hash(&deep_a) != content_hash(&deep_b),
+            "a change 12 levels down must reach the root hash"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn swapping_then_else_children_changes_the_hash() -> anyhow::Result<()> {
+        // Same children, different roles: `if (1) {2} else {3}` must not hash
+        // like `if (1) {3} else {2}`.
+        let then_first = if_node(number("1"), number("2"), Some(number("3")));
+        let else_first = if_node(number("1"), number("3"), Some(number("2")));
+        anyhow::ensure!(
+            content_hash(&then_first) != content_hash(&else_first),
+            "swapping then/else arms must change the hash"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn catch_and_finally_shapes_with_matching_children_hash_differently() -> anyhow::Result<()> {
+        // A `try` with one catch handler and no finally, versus one with no
+        // catch and an identical finally block: two children, same order, same
+        // content. Both the field role and the catch binder option distinguish
+        // these shapes, so this is not an isolated test of the field-role term.
+        let as_catch = try_with_second_child_as(SecondChildRole::Catch);
+        let as_finally = try_with_second_child_as(SecondChildRole::Finally);
+
+        anyhow::ensure!(
+            as_catch.to_sexp() != as_finally.to_sexp(),
+            "guard: the renderer distinguishes the catch and finally roles"
+        );
+        anyhow::ensure!(
+            content_hash(&as_catch) != content_hash(&as_finally),
+            "identical children in identical order must not hash alike across field roles"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn elsif_arms_are_separated_by_fold_order_not_field_names() -> anyhow::Result<()> {
+        // The visit table labels the leading condition and every `elsif`
+        // condition with the same `FieldId::CONDITION`, so field names alone
+        // cannot tell these apart — only the ordered child fold can.
+        let a = if_with_elsifs(
+            number("1"),
+            block(vec![number("2")]),
+            vec![(number("3"), block(vec![number("4")]))],
+            None,
+        );
+        let swapped_within_arm = if_with_elsifs(
+            number("1"),
+            block(vec![number("2")]),
+            vec![(number("4"), block(vec![number("3")]))],
+            None,
+        );
+        let two_arms_reordered = if_with_elsifs(
+            number("1"),
+            block(vec![number("2")]),
+            vec![(number("5"), block(vec![number("6")])), (number("3"), block(vec![number("4")]))],
+            None,
+        );
+        let two_arms = if_with_elsifs(
+            number("1"),
+            block(vec![number("2")]),
+            vec![(number("3"), block(vec![number("4")])), (number("5"), block(vec![number("6")]))],
+            None,
+        );
+
+        anyhow::ensure!(a.to_sexp() != swapped_within_arm.to_sexp(), "guard: renders differ");
+        anyhow::ensure!(
+            content_hash(&a) != content_hash(&swapped_within_arm),
+            "swapping an elsif condition with its body must change the hash"
+        );
+        anyhow::ensure!(
+            content_hash(&two_arms) != content_hash(&two_arms_reordered),
+            "reordering two elsif arms must change the hash"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn child_arity_is_load_bearing() -> anyhow::Result<()> {
+        let one = program(vec![number("1")]);
+        let two = program(vec![number("1"), number("1")]);
+        anyhow::ensure!(
+            content_hash(&one) != content_hash(&two),
+            "a repeated child must not fold into the same hash as a single child"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn catch_binder_names_are_load_bearing() -> anyhow::Result<()> {
+        // The renderer nests a `try` block's catch binder under the catch child
+        // rather than under the `try` node, so a depth-limited render of the
+        // `try` node alone does not see it.
+        let with_err = try_node(Some("$err"));
+        let with_other = try_node(Some("$other"));
+        let without = try_node(None);
+
+        anyhow::ensure!(
+            with_err.to_sexp() != with_other.to_sexp(),
+            "guard: the renderer distinguishes catch binders"
+        );
+        anyhow::ensure!(
+            content_hash(&with_err) != content_hash(&with_other),
+            "catch binder name must reach the hash"
+        );
+        anyhow::ensure!(
+            content_hash(&with_err) != content_hash(&without),
+            "a present binder must not hash like an absent one"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_node_is_hashed_exactly_once_per_tree() -> anyhow::Result<()> {
+        let tree = nest(40, number("1"));
+        let hashes = ContentHashes::compute(&tree);
+        anyhow::ensure!(hashes.len() == total_nodes(&tree), "one hash entry per node");
+        Ok(())
+    }
+
+    /// The falsifier for the defect itself: no whole-subtree serialization.
+    ///
+    /// Each node's payload render must visit exactly that one node, so the
+    /// renderer's total node visits equal the tree's node count. Hashing
+    /// `node.to_sexp()` per node instead makes each render walk a whole
+    /// subtree, so the total becomes the sum of all subtree sizes — quadratic
+    /// in the depth of a nested chain.
+    #[test]
+    fn payload_rendering_never_walks_a_whole_subtree() -> anyhow::Result<()> {
+        for depth in [1usize, 8, 40] {
+            let tree = nest(depth, number("1"));
+            let nodes = total_nodes(&tree);
+            let hashes = ContentHashes::compute(&tree);
+
+            anyhow::ensure!(
+                hashes.rendered_nodes == nodes,
+                "depth {depth}: the renderer visited {} nodes for a {nodes}-node tree; payload \
+                 rendering must not descend into children",
+                hashes.rendered_nodes
+            );
+
+            // Guard that the measurement is live: whole-subtree rendering of
+            // this same chain would have cost quadratically more.
+            let whole_subtree_cost = nodes * (nodes + 1) / 2;
+            anyhow::ensure!(
+                depth == 0 || hashes.rendered_nodes < whole_subtree_cost || nodes == 1,
+                "depth {depth}: cost is indistinguishable from whole-subtree rendering"
+            );
+        }
+        Ok(())
+    }
+
+    /// The depth-independence measurement #9608 asks for, taken as work rather
+    /// than wall clock so it is deterministic in CI.
+    ///
+    /// `nodes_analyzed` still grows with `max_analysis_depth` — that is the
+    /// live control proving analysis depth varies. Renderer visits are sampled
+    /// around the real analyzer call, so repeated subtree hashing is visible.
+    #[test]
+    fn content_hashing_cost_does_not_grow_with_analysis_depth() -> anyhow::Result<()> {
+        let tree = nest(30, number("1"));
+        let expected_rendered = total_nodes(&tree).saturating_mul(2);
+
+        let mut analyzed_by_depth = Vec::new();
+        for depth in [1usize, 5, 10, 30] {
+            let config = ReuseConfig { max_analysis_depth: depth, ..ReuseConfig::default() };
+
+            let before = CONTENT_HASH_RENDERED_NODES.with(std::cell::Cell::get);
+            let mut analyzer = AdvancedReuseAnalyzer::new();
+            analyzer.analyze_reuse_opportunities(&tree, &tree, &EditSet::new(), &config);
+            let after = CONTENT_HASH_RENDERED_NODES.with(std::cell::Cell::get);
+            anyhow::ensure!(
+                after.checked_sub(before) == Some(expected_rendered),
+                "depth {depth}: expected {expected_rendered} renderer visits across old/new trees, observed before={before}, after={after}"
+            );
+            analyzed_by_depth.push(analyzer.analysis_stats.nodes_analyzed);
+        }
+
+        anyhow::ensure!(
+            analyzed_by_depth
+                .windows(2)
+                .any(|pair| matches!(pair, [earlier, later] if later > earlier)),
+            "control failed: the analysis walk should still deepen with max_analysis_depth, \
+             otherwise this test cannot detect depth-dependent hashing ({analyzed_by_depth:?})"
+        );
+        Ok(())
     }
 }

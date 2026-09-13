@@ -487,10 +487,10 @@ impl<'a> Parser<'a> {
             .filter(|s| !s.is_empty())
             .collect();
 
-        self.in_class_body += 1;
-        let body = self.parse_block();
-        self.in_class_body -= 1;
-        let body = body?;
+        // Block-form class body. The grammar frame is scoped to `parse_block`
+        // so it is restored on every exit path, including recovery and
+        // truncated input, without a paired reset here.
+        let body = self.within_class_grammar(ClassGrammarForm::Block, Self::parse_block)?;
 
         let end = self.previous_position();
         Ok(Node::new(
