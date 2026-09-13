@@ -41,7 +41,8 @@ use serde_json::Value;
 use xtask::git_ancestry::{AncestryDisposition, is_ancestor};
 
 use super::module_train::{
-    LoadedManifest, NodeStaticFact, ProbeOutcome, canonical_digest, load_manifest,
+    LoadedManifest, NodeStaticFact, PROBED_FROM_A_DIFFERENT_TREE, RepoTreeSource, TreeSource,
+    canonical_digest, load_manifest, tree_binding,
 };
 
 #[cfg(test)]
@@ -1972,12 +1973,41 @@ fn candidate_view(pr: &PrFacts) -> CandidateView {
     }
 }
 
+/// The tree whose files back the C02 implementation probes, plus its identity.
+///
+/// Named explicitly so a consumer cannot silently join an offline projection of
+/// the executing checkout to an observation of some other revision.
+pub struct TreeProbe<'a> {
+    pub source: &'a dyn TreeSource,
+    /// HEAD of the probed tree, when it can be established. `None` is treated
+    /// as "cannot be shown to match the observation" and fails closed.
+    pub head: Option<String>,
+    /// Dirty working-tree contents cannot establish exact equality with a
+    /// commit-only observation, so joins fail closed while this is true.
+    pub dirty: bool,
+}
+
 /// Normalize a raw observation into the immutable deterministic snapshot.
-pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSnapshot> {
+pub fn normalize(
+    raw: &RawObservation,
+    loaded: &LoadedManifest,
+    probe: &TreeProbe<'_>,
+) -> Result<LiveSnapshot> {
     if raw.schema != RAW_SCHEMA_NAME {
         bail!("raw observation schema mismatch: expected {RAW_SCHEMA_NAME}, found {}", raw.schema);
     }
-    let statuses = loaded.node_statuses()?;
+    let statuses = loaded.node_statuses(probe.source)?;
+    // Implementation presence describes the probed tree. When the observation
+    // describes a different revision — a stored fixture's synthetic head, most
+    // obviously — the join is still emitted, but every node says so rather
+    // than presenting one revision's actions beside another's states.
+    let probed_a_different_tree = probe.dirty
+        || !raw.git_local.dirty_paths.is_empty()
+        || raw.git_local.manifest_dirty
+        || match (probe.head.as_deref(), raw.git_local.head.as_deref()) {
+            (Some(probed), Some(observed)) => probed != observed,
+            _ => true,
+        };
     let static_facts = loaded.node_static_facts();
     let static_by_issue: BTreeMap<u64, NodeStaticFact> =
         static_facts.iter().map(|fact| (fact.issue, fact.clone())).collect();
@@ -2156,11 +2186,16 @@ pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSn
             .collect();
         let misbound_refs = misbound_by_node.get(&fact.node_id).cloned().unwrap_or_default();
 
+        let (classification_c02_state, classification_c02_reasons) = if probed_a_different_tree {
+            ("not_proven".to_string(), vec![PROBED_FROM_A_DIFFERENT_TREE.to_string()])
+        } else {
+            (status.state.as_str().to_string(), status.reasons.clone())
+        };
         let node_facts = NodeFacts {
             role: fact.role.clone(),
             buildable: fact.buildable,
-            c02_state: status.state.as_str().to_string(),
-            c02_reasons: status.reasons.clone(),
+            c02_state: classification_c02_state.clone(),
+            c02_reasons: classification_c02_reasons.clone(),
             open_bound: open_bound.iter().map(|pr| candidate_view(pr)).collect(),
             merged_bound: merged_bound.iter().map(|pr| candidate_view(pr)).collect(),
             closed_bound: closed_bound.iter().map(|pr| candidate_view(pr)).collect(),
@@ -2181,6 +2216,12 @@ pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSn
             merged_window_truncated: raw.github.merged_truncated,
         };
         let classified = classify(&node_facts);
+        let mut limitations = classified.limitations;
+        if probed_a_different_tree {
+            limitations.push(PROBED_FROM_A_DIFFERENT_TREE.to_string());
+            limitations.sort();
+            limitations.dedup();
+        }
         nodes.push(NodeLive {
             node_id: fact.node_id.clone(),
             issue: fact.issue,
@@ -2188,14 +2229,14 @@ pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSn
             lane: fact.lane.clone(),
             conflict_key: fact.conflict_key.clone(),
             parallel_group: fact.parallel_group.clone(),
-            c02_state: status.state.as_str().to_string(),
-            c02_reasons: status.reasons.clone(),
+            c02_state: classification_c02_state,
+            c02_reasons: classification_c02_reasons,
             candidate_flags: classified.flags,
             candidates: bound.into_iter().cloned().collect(),
             surfaces,
             action: classified.action.as_str().to_string(),
             action_reasons: classified.reasons,
-            limitations: classified.limitations,
+            limitations,
         });
     }
     nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
@@ -2231,10 +2272,10 @@ pub fn normalize(raw: &RawObservation, loaded: &LoadedManifest) -> Result<LiveSn
                         status.node_id.clone(),
                         C02NodeSummary {
                             state: status.state.as_str().to_string(),
-                            implementation_presence: match status.implementation_presence {
-                                ProbeOutcome::Pass => "probe:pass".to_string(),
-                                ProbeOutcome::Absent => "not_proven".to_string(),
-                            },
+                            implementation_presence: status
+                                .implementation_presence
+                                .as_str()
+                                .to_string(),
                             reasons: status.reasons.clone(),
                         },
                     )
@@ -2433,6 +2474,23 @@ pub fn validate_snapshot(snapshot: &LiveSnapshot, loaded: &LoadedManifest) -> Re
         }
     }
 
+    // The producer computes the cross-tree condition once per snapshot, so an
+    // honest record carries the marker on every node or none. A mixed set can
+    // only come from a stale or tampered producer — and an unmarked node would
+    // otherwise skip the stored-state check below.
+    let marked = snapshot
+        .semantic
+        .nodes
+        .iter()
+        .filter(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE))
+        .count();
+    if marked != 0 && marked != snapshot.semantic.nodes.len() {
+        bail!(
+            "cross-tree probe marker is present on {marked} of {} nodes, but the producer computes it snapshot-wide; a mixed record is stale or tampered",
+            snapshot.semantic.nodes.len()
+        );
+    }
+
     // Rebuild classification inputs from the snapshot's fact sections and
     // compare with the stored actions.
     let static_facts = loaded.node_static_facts();
@@ -2462,11 +2520,39 @@ pub fn validate_snapshot(snapshot: &LiveSnapshot, loaded: &LoadedManifest) -> Re
             );
         }
         let bound = bound_by_node.get(&node.node_id).cloned().unwrap_or_default();
+        let probed_a_different_tree =
+            node.limitations.iter().any(|limitation| limitation == PROBED_FROM_A_DIFFERENT_TREE);
+        // The re-derivation below substitutes the honest not_proven values for
+        // a cross-tree probe; it must not launder a stored false state through
+        // that substitution. A cross-tree node has exactly one honest record —
+        // not_proven with the marker reason — and anything else is a stale or
+        // tampered producer, even when its digest is self-consistent.
+        if probed_a_different_tree
+            && (node.c02_state != "not_proven"
+                || node.c02_reasons.iter().map(String::as_str).collect::<Vec<_>>()
+                    != [PROBED_FROM_A_DIFFERENT_TREE])
+        {
+            bail!(
+                "cross-tree node {} stores c02 state {:?} with reasons {:?}, but a node probed from a different tree must record not_proven with the {} reason (snapshot tampering or stale producer)",
+                node.node_id,
+                node.c02_state,
+                node.c02_reasons,
+                PROBED_FROM_A_DIFFERENT_TREE
+            );
+        }
         let facts = NodeFacts {
             role: fact.role.clone(),
             buildable: fact.buildable,
-            c02_state: node.c02_state.clone(),
-            c02_reasons: node.c02_reasons.clone(),
+            c02_state: if probed_a_different_tree {
+                "not_proven".to_string()
+            } else {
+                node.c02_state.clone()
+            },
+            c02_reasons: if probed_a_different_tree {
+                vec![PROBED_FROM_A_DIFFERENT_TREE.to_string()]
+            } else {
+                node.c02_reasons.clone()
+            },
             // Misbound refs already surfaced on the stored node's flags; the
             // re-derivation reads them back from the snapshot's own record.
             misbound_refs: snapshot
@@ -2834,7 +2920,31 @@ pub fn run_refresh(output: &Path, from_fixture: Option<&Path>) -> Result<()> {
         }
     };
     let loaded = load_manifest()?;
-    let snapshot = normalize(&raw, &loaded)?;
+    let root = project_root()?;
+    let binding = tree_binding("HEAD")?;
+    let tree_spec = format!("{}^{{tree}}", binding.tree_head);
+    let tree_oid = std::process::Command::new("git")
+        .args(["rev-parse", tree_spec.as_str()])
+        .current_dir(&root)
+        .output()
+        .with_context(|| format!("failed to resolve HEAD tree in {}", root.display()))?;
+    if !tree_oid.status.success() {
+        bail!(
+            "git rev-parse captured HEAD^{{tree}} failed: {}",
+            String::from_utf8_lossy(&tree_oid.stderr).trim()
+        );
+    }
+    let tree_oid = String::from_utf8(tree_oid.stdout)
+        .with_context(|| "git rev-parse captured HEAD^{tree} produced non-UTF-8 output")?
+        .trim()
+        .to_string();
+    let source = RepoTreeSource::from_root_at_revision(root, tree_oid)?;
+    let probe = TreeProbe {
+        source: &source,
+        head: Some(binding.tree_head),
+        dirty: binding.dirty_paths != 0,
+    };
+    let snapshot = normalize(&raw, &loaded, &probe)?;
     if let Some(parent) = output.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).with_context(|| {
             format!("failed to create snapshot output directory {}", parent.display())

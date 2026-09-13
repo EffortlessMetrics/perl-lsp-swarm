@@ -113,6 +113,37 @@ fn workflow_step_value(job_name: &str, step_name: &str) -> Result<Value> {
         .ok_or_else(|| anyhow!("{job_name} step {step_name} is missing"))
 }
 
+fn require_single_canonical_container_installer(script: &str) -> Result<(), String> {
+    let installers: Vec<_> = script
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("cargo install ripr"))
+        .collect();
+    let expected = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    if installers.len() != 1 || installers.first().copied() != Some(expected) {
+        return Err(format!(
+            "normal hosted producer must have exactly one canonical container RIPR installer; \
+             found {installers:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn container_installer_contract_rejects_extra_or_mismatched_installers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let canonical = r#"cargo install ripr --version "$RIPR_VERSION" --locked"#;
+    require_single_canonical_container_installer(canonical)?;
+
+    for extra in [r#"cargo install ripr --version "0.9.0" --locked"#, "cargo install ripr"] {
+        let script = format!("{canonical}\n{extra}");
+        if require_single_canonical_container_installer(&script).is_ok() {
+            return Err(format!("accepted invalid container installer fixture: {extra}").into());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 struct GateRoute<'a> {
     router_target: &'a str,
@@ -1225,7 +1256,9 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "ripr.yml must not path-filter the ready-for-review proof run"
     );
     assert!(
-        workflow.contains("if: github.event.pull_request.draft != true"),
+        workflow.contains(
+            "(github.event.pull_request.draft != true || github.event_name != 'pull_request')"
+        ),
         "ripr.yml may skip draft PRs while they are still draft"
     );
     let gate_step = workflow_step(&workflow, "Enforce new RIPR gap quality gate")
@@ -1237,6 +1270,47 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     assert!(
         workflow.contains("cargo xtask ripr-pr --base") && workflow.contains("target/ripr/pr/**"),
         "ripr.yml must produce and upload diff-scoped RIPR PR receipts"
+    );
+    if workflow_run_block("ripr-github", "Install ripr")?.trim()
+        != r#"cargo install ripr --version "$RIPR_VERSION" --locked"#
+    {
+        return Err(anyhow!(
+            "normal hosted job must retain its pinned host-side ripr installer for downstream consumers"
+        )
+        .into());
+    }
+    let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    require_single_canonical_container_installer(&hosted_producer)?;
+    assert!(
+        hosted_producer.contains("docker run --rm")
+            && hosted_producer.contains("--memory=6g")
+            && hosted_producer.contains("--memory-swap=6g")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 40m")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 25m")
+            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=1000")
+            && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
+            && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
+            && hosted_producer.contains("--name \"$container_name\"")
+            && hosted_producer.contains("trap cleanup_host_state EXIT")
+            && hosted_producer.contains("timeout --signal=TERM --kill-after=5s 15s docker ps -aq")
+            && hosted_producer.contains(
+                "timeout --signal=TERM --kill-after=5s 15s docker rm -f \"$container_name\""
+            )
+            && hosted_producer.contains("sudo -n chown -R \"$(id -u):$(id -g)\" target")
+            && hosted_producer.contains(
+                "cargo xtask ripr-pr --base \"$base_arg\" --head HEAD --pr-head \"$PR_HEAD_SHA\""
+            ),
+        "normal GitHub-hosted RIPR production must use the bounded Docker producer"
+    );
+    assert!(
+        !hosted_producer.contains("test -n \"$PR_HEAD_SHA\""),
+        "normal hosted producer must preserve empty PR_HEAD_SHA for merge-group and push events"
+    );
+    assert!(
+        !workflow.contains("ripr_hosted_measurement")
+            && !workflow.contains("measurement_head_sha")
+            && !workflow.contains("ripr-hosted-measurement"),
+        "capacity measurement must be part of the normal hosted producer, not a duplicate manual job"
     );
     assert!(
         workflow.contains("PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}")
@@ -1333,6 +1407,96 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
         "RIPR summary step must publish only current evidence after a successful handoff"
     );
 
+    Ok(())
+}
+
+#[test]
+fn hosted_producer_cleanup_preserves_failure_and_restores_target_owner() -> Result<()> {
+    let hosted_producer = workflow_run_block("ripr-github", "Generate PR evidence")?;
+    let cleanup_body = hosted_producer
+        .split_once("cleanup_host_state() {")
+        .ok_or_else(|| anyhow!("hosted producer cleanup function is missing"))?
+        .1
+        .split_once("trap cleanup_host_state EXIT")
+        .ok_or_else(|| anyhow!("hosted producer cleanup trap is missing"))?
+        .0;
+    let sandbox = tempfile::tempdir()?;
+    let script = format!(
+        r#"set -u
+container_name='fixture-container'
+docker() {{ printf '%s' "$*" > "$DOCKER_MARKER"; if [ "$1" = ps ]; then printf 'fixture-id\n'; fi; return 0; }}
+sudo() {{ printf '%s' "$*" > "$CHOWN_MARKER"; if [ "${{FAIL_CHOWN:-0}}" = 1 ]; then return 1; fi; return 0; }}
+timeout() {{ printf '%s' "$*" > "$TIMEOUT_MARKER"; shift 3; "$@"; }}
+cleanup_host_state() {{{cleanup_body}
+trap cleanup_host_state EXIT
+exit 23
+"#
+    );
+    let mut child = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("DOCKER_MARKER", sandbox.path().join("docker.marker"))
+        .env("CHOWN_MARKER", sandbox.path().join("chown.marker"))
+        .env("TIMEOUT_MARKER", sandbox.path().join("timeout.marker"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("cleanup fixture stdin unavailable"))?
+        .write_all(script.as_bytes())?;
+    let output = child.wait_with_output()?;
+    ensure!(
+        output.status.code() == Some(23),
+        "cleanup must preserve producer failure status: {output:?}"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("docker.marker"))?.contains("fixture-container"),
+        "cleanup must attempt removal of the uniquely named container"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("timeout.marker"))?.contains("docker"),
+        "cleanup must route container inspection/removal through bounded timeout"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("chown.marker"))?.contains("target"),
+        "cleanup must restore host target ownership after producer failure"
+    );
+
+    let mut cleanup_failure = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-s"])
+        .current_dir(sandbox.path())
+        .env("DOCKER_MARKER", sandbox.path().join("docker.failure.marker"))
+        .env("CHOWN_MARKER", sandbox.path().join("chown.failure.marker"))
+        .env("TIMEOUT_MARKER", sandbox.path().join("timeout.failure.marker"))
+        .env("FAIL_CHOWN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    cleanup_failure
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("cleanup failure fixture stdin unavailable"))?
+        .write_all(script.replace("exit 23", "exit 0").as_bytes())?;
+    let cleanup_failure_output = cleanup_failure.wait_with_output()?;
+    ensure!(
+        cleanup_failure_output.status.code() == Some(1),
+        "cleanup failure must turn an otherwise successful producer into failure: {cleanup_failure_output:?}"
+    );
+    ensure!(
+        fs::read_to_string(sandbox.path().join("chown.failure.marker"))?.contains("target")
+            && fs::read_to_string(sandbox.path().join("timeout.failure.marker"))?
+                .contains("docker rm -f"),
+        "cleanup failure fixture must execute ownership restoration after bounded removal"
+    );
+    ensure!(
+        String::from_utf8_lossy(&cleanup_failure_output.stderr)
+            .contains("failed to restore hosted RIPR target ownership"),
+        "cleanup failure must report the ownership error"
+    );
     Ok(())
 }
 
@@ -1989,6 +2153,7 @@ fn ripr_infra_classifier_is_shared_tested_and_boundary_documented()
         "RIPR_GATE_VERDICT=ripr-failure",
         "RIPR_GATE_VERDICT=cancelled-no-verdict",
         "RIPR_GATE_VERDICT=neutral-router-skipped",
+        "RIPR_GATE_VERDICT=draft-no-proof",
         "RIPR_GATE_VERDICT=router-not-success",
         "RIPR_GATE_VERDICT=success",
     ] {
@@ -2371,4 +2536,16 @@ fn ripr_gate_retrieval_reaches_classifier_and_failed_fetch_fails_closed() -> Res
     }
 
     Ok(())
+}
+
+#[path = "support/draft_routed_result.rs"]
+mod draft_routed_result;
+
+#[test]
+fn ripr_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
+    draft_routed_result::check_contract(
+        &project_root()?.join(".github/workflows/ripr.yml"),
+        "ripr",
+        "RIPR_GATE_VERDICT=draft-no-proof",
+    )
 }

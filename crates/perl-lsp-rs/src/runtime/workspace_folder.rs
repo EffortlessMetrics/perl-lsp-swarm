@@ -101,17 +101,28 @@ impl WorkspaceFolderState {
         self
     }
 
+    /// Replace settings while retaining metadata facts until the next
+    /// buffer-aware refresh.
+    ///
+    /// Configuration reloads rebuild effective settings, but metadata facts
+    /// and detector-owned include roots belong to the metadata read authority.
+    /// Keeping both across the unlocked refresh gap prevents concurrent
+    /// consumers from observing incomplete state while new settings are
+    /// accepted (#15088).
+    pub(crate) fn replace_effective_workspace_config(&mut self, mut config: WorkspaceConfig) {
+        config.preserve_metadata_state_from(&self.effective_workspace_config);
+        self.effective_workspace_config = config;
+    }
+
     /// Refresh metadata-derived facts for this folder's effective workspace config.
     ///
     /// # This route reads disk and ignores open buffers
     ///
     /// Facts come from the files on disk, so a metadata document the editor
     /// holds with unsaved changes does *not* speak for itself here. That is
-    /// correct for establishing a folder — nothing is open yet — and it is
-    /// what the configuration-reload paths still use, but it means a
-    /// configuration reload that lands while a metadata buffer is dirty
-    /// replaces staged facts with disk contents until the next event on that
-    /// document restores them (#15088).
+    /// correct for establishing a folder — nothing is open yet. Registered
+    /// folders must use [`Self::refresh_workspace_metadata_from_reads`], so
+    /// configuration reloads preserve open-buffer authority (#15088).
     ///
     /// Prefer [`Self::refresh_workspace_metadata_from_reads`] anywhere an open
     /// buffer could be authoritative (#8041). Every route added by #13640 —
@@ -309,6 +320,48 @@ mod tests {
             vec!["lib", ".", "local/lib/perl5"],
             "a user-configured include path is never claimed or retired by detection"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn config_replacement_retains_detector_root_until_refresh()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'JSON';\n")?;
+        let carton_lock = temp.path().join("carton.lock");
+        std::fs::write(&carton_lock, "snapshot\n")?;
+        let mut initial = WorkspaceConfig::default();
+        initial.include_paths = vec!["lib".to_string()];
+        let mut folder = WorkspaceFolderState::new("file:///workspace".to_string())
+            .with_path(temp.path().to_path_buf())
+            .with_effective_workspace_config(initial);
+
+        folder.refresh_workspace_metadata();
+        let mut replacement = WorkspaceConfig::default();
+        replacement.include_paths = vec!["lib".to_string()];
+        folder.replace_effective_workspace_config(replacement);
+        if !folder.effective_workspace_config.include_paths.contains(&"local/lib/perl5".to_string())
+        {
+            return Err("detector root disappeared before the refresh commit".into());
+        }
+
+        std::fs::remove_file(&carton_lock)?;
+        folder.refresh_workspace_metadata();
+        if folder.effective_workspace_config.include_paths.contains(&"local/lib/perl5".to_string())
+        {
+            return Err("missing marker did not retire the detector root".into());
+        }
+
+        std::fs::write(&carton_lock, "snapshot\n")?;
+        let mut explicit = WorkspaceConfig::default();
+        explicit.include_paths = vec!["lib".to_string(), "local/lib/perl5".to_string()];
+        folder.replace_effective_workspace_config(explicit);
+        std::fs::remove_file(carton_lock)?;
+        folder.refresh_workspace_metadata();
+        if !folder.effective_workspace_config.include_paths.contains(&"local/lib/perl5".to_string())
+        {
+            return Err("explicit user root was removed during marker reconciliation".into());
+        }
         Ok(())
     }
 

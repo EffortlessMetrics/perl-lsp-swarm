@@ -18,6 +18,8 @@
 //! must run hermetic and version-pinned as a separate conformance surface,
 //! never as part of editor analysis.
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+
 use perl_semantic_facts::framework_adapters::dancer2::DslKeywordScope;
 use perl_semantic_facts::framework_adapters::dancer2_two_x::{
     DANCER2_TWO_X_DSL_KEYWORDS, DANCER2_TWO_X_KEYWORD_GLOBAL, DANCER2_TWO_X_KEYWORD_ROUTE_ONLY,
