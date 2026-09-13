@@ -1,6 +1,6 @@
 # Legacy `perl_kwalitee.v1` migration
 
-> Generated from `crates/perl-kwalitee/legacy_indicator_migrations.toml` and the frozen
+> Generated from `crates/perl-release-readiness/legacy_indicator_migrations.toml` and the frozen
 > legacy catalog. Do not edit this table independently.
 
 ## Contract
@@ -22,7 +22,7 @@ cannot authorize a current release candidate.
 | `manifest.publish_policy_clean` | publish policy is intentional | yes | 4 | `native` | `all` | `release_governance` / `release_governance.publish_policy_clean` | `transfer` | #7191 | `cargo xtask publish-manifest-check` |
 | `license.declared` | crate declares license metadata | yes | 3 | `native` | `all` | `release_governance` / `release_governance.license_declared` | `transfer` | #7191 | `cargo xtask publish-manifest-check` |
 | `product_surface.native_only` | first-mile surfaces stay native-only | yes | 15 | `native` | `all` | `native_product` / `native_product.native_only` | `transfer` | #7168 | `cargo xtask check-native-product-surface` |
-| `dap.cli_native_only` | shipped perl-dap CLI stays native-only | yes | 7 | `native` | `all` | `native_product` / `native_product.dap_cli_native_only` | `transfer` | #7168 | `cargo test -p perl-kwalitee evidence::dap::tests::clean_cli_passes -- --exact` |
+| `dap.cli_native_only` | shipped perl-dap CLI stays native-only | yes | 7 | `native` | `all` | `native_product` / `native_product.dap_cli_native_only` | `transfer` | #7168 | `cargo test -p perl-release-readiness evidence::dap::tests::clean_cli_passes -- --exact` |
 | `release.native_binaries_present` | release archives contain the native binaries | yes | 7 | `external` | `release_only` | `release_integrity` / `release_integrity.native_binaries_present` | `replace` | #4145 | `cargo xtask release artifact-check --dist <dir>` |
 | `release.no_external_tooling` | release archives bundle no external Perl tooling | yes | 8 | `external` | `release_only` | `release_integrity` / `release_integrity.no_external_tooling` | `replace` | #4145 | `cargo xtask release artifact-check --dist <dir>` |
 | `release.checksums_valid` | consolidated checksums are present and valid | yes | 5 | `external` | `release_only` | `release_integrity` / `release_integrity.checksums_valid` | `replace` | #4145 | `cargo xtask release artifact-check --dist <dir>` |
