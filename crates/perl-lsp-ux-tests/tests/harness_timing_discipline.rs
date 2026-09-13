@@ -46,7 +46,12 @@ const GOVERNED: &[&str] = &[
 ///
 /// These are the transport and wait substrate itself. There is no legitimate
 /// reason for the layer that *implements* event-driven waiting to sleep.
-const SLEEP_FREE: &[&str] = &["src/client/mod.rs", "src/diagnostics.rs", "src/observation.rs"];
+const SLEEP_FREE: &[&str] = &[
+    "src/client/mod.rs",
+    "src/client/server_request_script.rs",
+    "src/diagnostics.rs",
+    "src/observation.rs",
+];
 
 /// Timing classes a sleep may declare.
 const CLASSES: &[&str] = &["deliberate-stimulus", "product-retry"];

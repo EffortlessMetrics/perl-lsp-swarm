@@ -90,6 +90,34 @@ fn scripted_client_completes_success_error_delay_and_timeout_outcomes() -> Resul
     Ok(())
 }
 
+#[test]
+fn scripted_client_cancels_long_delays_when_wait_times_out() -> Result<()> {
+    let binary = env!("CARGO_BIN_EXE_ux_server_request_fixture");
+    let wait_timeout = Duration::from_millis(200);
+    let script = vec![
+        ScriptedServerRequest::success(
+            "workspace/configuration",
+            json!([{"perlPath": "fixture-perl"}]),
+        ),
+        ScriptedServerRequest::new(
+            "client/registerCapability",
+            ScriptedServerResponse::success(Value::Null).after(Duration::from_secs(60)),
+        ),
+        ScriptedServerRequest::success("window/workDoneProgress/create", Value::Null),
+    ];
+    let client = UxClient::spawn_scripted(binary, "file:///fixture", script, wait_timeout)?;
+    let started = Instant::now();
+    let error = client.wait_for_script(wait_timeout).expect_err("script wait must time out");
+    ensure!(error.to_string().contains("timed out"));
+    drop(client);
+    ensure!(
+        started.elapsed() < Duration::from_secs(10),
+        "timed-out scripted delay was not cancelled: elapsed={:?}",
+        started.elapsed()
+    );
+    Ok(())
+}
+
 fn request_by_method<'a>(
     observed: &'a [ObservedServerRequest],
     method: &str,
