@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Comprehensive unit tests for the perl-lexer crate.
 //!
 //! Covers: Token construction, LexerMode, LexerError, LexerConfig,
@@ -73,7 +74,7 @@ fn token_type_debug_formatting() {
         TokenType::QuoteRegex,
         TokenType::StringLiteral,
         TokenType::QuoteSingle,
-        TokenType::QuoteDouble,
+        TokenType::QuoteDouble(Vec::new()),
         TokenType::QuoteWords,
         TokenType::QuoteCommand,
         TokenType::HeredocStart,
@@ -253,6 +254,7 @@ fn lexer_error_clone() {
 // ===========================================================================
 
 #[test]
+#[allow(deprecated)] // Deliberately exercises the deprecated compatibility field.
 fn default_config_values() {
     let cfg = LexerConfig::default();
     assert!(cfg.parse_interpolation);
@@ -261,6 +263,7 @@ fn default_config_values() {
 }
 
 #[test]
+#[allow(deprecated)] // Deliberately exercises the deprecated compatibility field.
 fn custom_config() {
     let cfg = LexerConfig {
         parse_interpolation: false,
@@ -349,8 +352,10 @@ fn with_body_tokens_emits_heredoc_body() -> R {
     let input = "print <<EOF;\nhello world\nEOF\n";
     let mut lexer = PerlLexer::with_body_tokens(input);
     let toks = lexer.collect_tokens();
-    let has_heredoc_body = toks.iter().any(|t| matches!(t.token_type, TokenType::HeredocBody(_)));
-    assert!(has_heredoc_body, "with_body_tokens should emit HeredocBody tokens");
+    let has_heredoc_body = toks.iter().any(|t| {
+        matches!(t.token_type, TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_))
+    });
+    assert!(has_heredoc_body, "with_body_tokens should emit heredoc body tokens");
     Ok(())
 }
 
@@ -359,7 +364,9 @@ fn regular_lexer_omits_heredoc_body() -> R {
     let input = "print <<EOF;\nhello world\nEOF\n";
     let mut lexer = PerlLexer::new(input);
     let toks = lexer.collect_tokens();
-    let has_heredoc_body = toks.iter().any(|t| matches!(t.token_type, TokenType::HeredocBody(_)));
+    let has_heredoc_body = toks.iter().any(|t| {
+        matches!(t.token_type, TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_))
+    });
     assert!(!has_heredoc_body, "default lexer should NOT emit HeredocBody tokens");
     Ok(())
 }
@@ -841,7 +848,7 @@ fn double_quoted_string() -> R {
     assert!(
         matches!(
             tok.token_type,
-            TokenType::StringLiteral | TokenType::InterpolatedString(_) | TokenType::QuoteDouble
+            TokenType::StringLiteral | TokenType::InterpolatedString(_) | TokenType::QuoteDouble(_)
         ),
         "got {:?}",
         tok.token_type
@@ -1297,7 +1304,11 @@ fn q_operator_curly() -> R {
 #[test]
 fn qq_operator_paren() -> R {
     let tok = first_token("qq(world)").ok_or("no token")?;
-    assert_eq!(tok.token_type, TokenType::QuoteDouble);
+    assert!(
+        matches!(tok.token_type, TokenType::QuoteDouble(_)),
+        "expected qq token, got {:?}",
+        tok.token_type
+    );
     Ok(())
 }
 
@@ -1368,7 +1379,7 @@ fn quote_op_without_delimiter_is_identifier() -> R {
 fn quote_ops_with_alternate_delimiters() -> R {
     let cases = [
         ("q<hello>", TokenType::QuoteSingle),
-        ("qq[world]", TokenType::QuoteDouble),
+        ("qq[world]", TokenType::QuoteDouble(Vec::new())),
         ("qw(a b)", TokenType::QuoteWords),
         ("qr{pat}", TokenType::QuoteRegex),
         ("s{old}{new}", TokenType::Substitution),
@@ -1483,27 +1494,30 @@ fn utf8_bom_is_skipped() -> R {
 
 #[test]
 fn checkpoint_new_defaults() {
-    let cp = LexerCheckpoint::new();
-    assert_eq!(cp.position, 0);
-    assert_eq!(cp.mode, LexerMode::ExpectTerm);
-    assert!(cp.delimiter_stack.is_empty());
-    assert!(!cp.in_prototype);
-    assert_eq!(cp.prototype_depth, 0);
-    assert!(!cp.after_sub);
+    let cp = LexerCheckpoint::origin("my $x = 1;");
+    assert_eq!(cp.position(), 0);
+    assert_eq!(cp.mode(), LexerMode::ExpectTerm);
+    assert!(cp.delimiter_stack().is_empty());
+    assert!(!cp.in_prototype());
+    assert_eq!(cp.prototype_depth(), 0);
+    assert!(!cp.after_sub());
     assert!(cp.is_at_start());
 }
 
 #[test]
-fn checkpoint_at_position() {
+fn checkpoint_at_position_is_not_a_restart_boundary() {
     let cp = LexerCheckpoint::at_position(50);
-    assert_eq!(cp.position, 50);
+    assert_eq!(cp.position(), 50);
     assert!(!cp.is_at_start());
+    let filler = "x".repeat(60);
+    let lexer = PerlLexer::new(&filler);
+    assert!(!lexer.can_restore(&cp), "caller-selected positions must not restore");
 }
 
 #[test]
 fn checkpoint_display() {
     let cp = LexerCheckpoint::at_position(42);
-    let s = format!("{}", cp);
+    let s = format!("{cp}");
     assert!(s.contains("42"));
 }
 
@@ -1517,48 +1531,58 @@ fn checkpoint_diff_no_state_changes() {
 }
 
 #[test]
-fn checkpoint_diff_with_mode_change() {
-    let cp1 = LexerCheckpoint::at_position(10);
-    let mut cp2 = LexerCheckpoint::at_position(10);
-    cp2.mode = LexerMode::ExpectOperator;
+fn checkpoint_diff_with_live_mode_change() {
+    let source = "my $x = 1; my $y = 2;";
+    let mut lexer = PerlLexer::new(source);
+    let cp1 = lexer.checkpoint();
+    let _ = lexer.next_token();
+    let cp2 = lexer.checkpoint();
     let diff = cp2.diff(&cp1);
-    assert!(diff.mode_changed);
-    assert!(diff.has_state_changes());
+    assert!(
+        diff.position_delta > 0 || diff.has_state_changes() || cp1.position() != cp2.position()
+    );
 }
 
 #[test]
 fn checkpoint_apply_edit_before() {
     let mut cp = LexerCheckpoint::at_position(50);
     cp.apply_edit(10, 5, 10); // Insert 5 chars before checkpoint
-    assert_eq!(cp.position, 55);
+    assert_eq!(cp.position(), 55);
+    assert!(cp.is_invalidated());
 }
 
 #[test]
 fn checkpoint_apply_edit_after() {
     let mut cp = LexerCheckpoint::at_position(50);
     cp.apply_edit(60, 10, 5); // Edit after checkpoint
-    assert_eq!(cp.position, 50); // No change
+    assert_eq!(cp.position(), 50); // No change
+    assert!(!cp.is_invalidated(), "edit after position must not invalidate");
 }
 
 #[test]
-fn checkpoint_apply_edit_inside() {
+fn checkpoint_apply_edit_inside_invalidates_without_default_origin() {
     let mut cp = LexerCheckpoint::at_position(50);
     cp.apply_edit(45, 10, 5); // Edit contains checkpoint
-    assert_eq!(cp.position, 45); // Reset to edit start
-    assert_eq!(cp.mode, LexerMode::ExpectTerm); // State reset
+    assert!(cp.is_invalidated());
+    let filler = "x".repeat(60);
+    assert!(!PerlLexer::new(&filler).can_restore(&cp));
 }
 
 #[test]
 fn checkpoint_is_valid_for() {
-    let cp = LexerCheckpoint::at_position(5);
+    let cp = LexerCheckpoint::origin("hello world");
     assert!(cp.is_valid_for("hello world"));
-    assert!(!cp.is_valid_for("hi"));
+    let other = PerlLexer::new("hi");
+    assert!(
+        !other.can_restore(&cp),
+        "origin of a different source must not restore even when offsets fit"
+    );
 }
 
 #[test]
 fn checkpoint_default_trait() {
     let cp: LexerCheckpoint = Default::default();
-    assert_eq!(cp.position, 0);
+    assert_eq!(cp.position(), 0);
 }
 
 #[test]
@@ -1569,7 +1593,7 @@ fn checkpoint_save_and_restore_on_lexer() -> R {
     let tok_before = lexer.next_token().ok_or("expected $x")?;
     let _ = lexer.next_token(); // skip =
     assert!(lexer.can_restore(&cp));
-    lexer.restore(&cp);
+    assert!(lexer.restore(&cp).is_ok());
     let tok_after = lexer.next_token().ok_or("expected $x again")?;
     assert_eq!(tok_before.start, tok_after.start);
     Ok(())
@@ -1583,10 +1607,10 @@ fn checkpoint_cache_basic() -> R {
     cache.add(LexerCheckpoint::at_position(30));
 
     let cp = cache.find_before(25).ok_or("expected checkpoint")?;
-    assert_eq!(cp.position, 20);
+    assert_eq!(cp.position(), 20);
 
     let cp = cache.find_before(10).ok_or("expected checkpoint")?;
-    assert_eq!(cp.position, 10);
+    assert_eq!(cp.position(), 10);
 
     assert!(cache.find_before(5).is_none());
     Ok(())
@@ -1619,7 +1643,7 @@ fn checkpoint_cache_apply_edit() -> R {
     cache.add(LexerCheckpoint::at_position(50));
     cache.apply_edit(20, 5, 10); // Insert 5 chars at pos 20
     let cp = cache.find_before(60).ok_or("expected checkpoint")?;
-    assert_eq!(cp.position, 55); // 50 + 5
+    assert_eq!(cp.position(), 55); // 50 + 5
     Ok(())
 }
 

@@ -52,6 +52,10 @@ pub struct QualityGateArgs {
     pub receipt: PathBuf,
     pub summary: PathBuf,
     pub check: bool,
+    /// Suppress the success line. Facades that evaluate in a temporary
+    /// workspace set this so logs never name paths that vanish on return;
+    /// they print the published caller artifacts themselves.
+    pub quiet: bool,
 }
 
 #[derive(Debug)]
@@ -82,11 +86,13 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
         );
     }
 
-    println!(
-        "quality gate passed; receipt {} summary {}",
-        args.receipt.display(),
-        args.summary.display()
-    );
+    if !args.quiet {
+        println!(
+            "quality gate passed; receipt {} summary {}",
+            args.receipt.display(),
+            args.summary.display()
+        );
+    }
     Ok(())
 }
 
@@ -1699,7 +1705,7 @@ fn new_ripr_gap_action(
     })
 }
 
-fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
+pub(crate) fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result<String> {
     let decision = receipt.get("decision").and_then(Value::as_str).unwrap_or("unknown");
 
     let mut markdown = String::new();
@@ -2474,6 +2480,7 @@ mod tests {
             receipt: dir.join("quality-gate.json"),
             summary: dir.join("quality-gate.md"),
             check: false,
+            quiet: false,
         })
     }
 

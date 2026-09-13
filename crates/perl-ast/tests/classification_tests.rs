@@ -255,7 +255,13 @@ fn category_spot_checks() {
 
     // DataSection → Declaration (plan-reviewer correction: NOT Statement)
     assert_eq!(
-        NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }.category(),
+        NodeKind::DataSection {
+            marker: "__DATA__".to_string(),
+            marker_span: None,
+            body: None,
+            body_span: None
+        }
+        .category(),
         NodeKindCategory::Declaration
     );
 

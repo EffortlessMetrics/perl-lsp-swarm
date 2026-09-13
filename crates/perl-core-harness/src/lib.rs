@@ -10,6 +10,7 @@
 pub mod artifacts;
 #[path = "target_contracts/contract.rs"]
 pub mod contract;
+pub mod critic_oracle;
 #[path = "target_contracts/io.rs"]
 pub mod io;
 #[path = "target_contracts/matrix.rs"]
@@ -25,6 +26,18 @@ pub mod target_contracts {
 #[path = "target_contracts/tests.rs"]
 mod target_contract_tests;
 
+mod baseline;
+// One shared minimal JSON Schema validator for every contract suite, so
+// "Rust decoding and the registered schema agree" is a claim about one
+// instrument rather than about per-suite copies that can drift apart (#7729).
+#[cfg(test)]
+pub(crate) mod schema_check;
+
+/// Closed-world proof for the target and runner evidence contracts (#7729):
+/// every exact object rejects unknown fields at every nesting level, in both
+/// serde and the registered schema, while declared extension maps stay open.
+#[cfg(test)]
+mod contract_closure_tests;
 mod normalization;
 pub mod public_evidence;
 mod run_authority;
@@ -49,6 +62,13 @@ pub(crate) mod normalize;
 #[allow(dead_code)]
 #[path = "runner_plan/model.rs"]
 pub(crate) mod runner_model;
+// Included so the closed-world contract proof can build its parity payload
+// through the production comparator instead of hand-assembling a receipt. Only
+// that proof needs it in this unit, so it stays out of the non-test build.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "runner_plan/compare.rs"]
+pub(crate) mod compare;
 
 /// Strict immutable observed upstream-discovery receipts
 /// (`upstream_runner_discovery.v1`, #12281): byte-exact raw envelopes, typed
@@ -114,9 +134,17 @@ pub mod invocation_trace {
     /// Strict byte-level frame decoder and row-state derivation.
     #[path = "decode.rs"]
     pub mod decode;
+    /// Exact supervised instrumented-runner capture route (#12285):
+    /// disposable exact-anchor patch, isolated private trace channel, bounded
+    /// supervision, and strict receipt assembly through the landed
+    /// constructors.
+    #[path = "instrument.rs"]
+    pub mod instrument;
     /// Receipt, frame, field-state, row, subject, and work types.
     #[path = "model.rs"]
     pub mod model;
+    #[path = "receipt_publication.rs"]
+    mod receipt_publication;
     /// Fail-closed validation reconstructing frames from retained raw bytes.
     #[path = "validate.rs"]
     pub mod validate;
@@ -139,6 +167,17 @@ pub mod invocation_trace {
         trace_receipt_freshness,
     };
     pub use decode::derive_row_state;
+    // `EffectiveInvocationFields` carries these types in public fields, so
+    // instrumented-capture consumers (including the fixture binary) need them
+    // nameable through the same module.
+    pub use crate::runner_model::{RunnerScheduling, SourceForm};
+    pub use instrument::{
+        EXACT_PATCH_SCHEMA_VERSION, ExactPatchOp, ExactPatchSpec,
+        INSTRUMENTATION_WORK_SCHEMA_VERSION, InstrumentationState, InstrumentationWorkReceiptV1,
+        InstrumentedObservation, ObserveInvocationsConfig, PATCH_TOOL_IDENTITY,
+        PatchApplicationError, apply_exact_patch, instrumentation_payload_digest,
+        observe_invocations, observe_invocations_command, validate_instrumentation_work,
+    };
     pub use model::{
         CanonicalInvocationProjection, CapturePoint, EffectiveInvocationField,
         EffectiveInvocationFields, EffectiveInvocationRow, EffectiveInvocationTraceReceiptV1,
@@ -189,28 +228,32 @@ pub mod observed_subject {
 
 use chrono::Utc;
 use color_eyre::eyre::{Context, Result, bail};
+#[cfg(test)]
 use perl_core_harness_types::{
-    BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BaselineViolation,
-    BaselineViolationKind, BoundaryRetirement, COMPILE_BASELINE_SCHEMA_VERSION,
-    COMPILE_BASELINE_V2_SCHEMA_VERSION, COMPILER_COMPATIBILITY_SCHEMA_VERSION,
-    CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION, CompatibilityAcceptedRatchet,
-    CompatibilityClusterState, CompatibilityDebtState, CompatibilityObservation,
-    CompatibilityRailAvailability, CompatibilityRailState, CompatibilityRunState,
-    CompatibilitySeriesIdentity, CompatibilityTransition, CompatibilityTransitionCandidate,
-    CompileBaseline, CompileBaselineV2, CompilerCompatibilitySeries, CompilerCompatibilityState,
-    CurrentAuthorityEntry, CurrentAuthorityIndex, CurrentAuthorityStatus, DISCOVERY_SCHEMA_VERSION,
-    DiscoveredTest, DiscoveryReport, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
-    FAILURE_CLUSTER_SCHEMA_VERSION, FailureCluster, FailureClusterHistory,
-    FailureClusterHistoryEntry, FailureClusterHistoryPresence, FailureClusterHistoryStatus,
-    FailureClusterIdentityQuality, FailureClusterReport, FailureClusterSignature,
-    FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION, GapMap, LANDED_LINEAGE_SCHEMA_VERSION,
-    LandedLineage, ObservedSemanticBoundary, PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus,
-    RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport, RunSummary, RunnerRecord,
-    RunnerStatus, SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION,
-    SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
-    SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry, SemanticBoundaryRegistryState,
-    SemanticBoundaryReplacementStrategy, SeriesManifest, SmokeFailureKind, SmokeReport,
-    SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket, workstream_for_bucket,
+    BOUNDARY_RETIREMENT_SCHEMA_VERSION, BaselineComparison, BoundaryRetirement, CompileBaseline,
+};
+use perl_core_harness_types::{
+    BaselineViolationKind, COMPILE_BASELINE_V2_SCHEMA_VERSION,
+    COMPILER_COMPATIBILITY_SCHEMA_VERSION, CURRENT_AUTHORITY_INDEX_SCHEMA_VERSION,
+    CompatibilityAcceptedRatchet, CompatibilityClusterState, CompatibilityDebtState,
+    CompatibilityObservation, CompatibilityRailAvailability, CompatibilityRailState,
+    CompatibilityRunState, CompatibilitySeriesIdentity, CompatibilityTransition,
+    CompatibilityTransitionCandidate, CompileBaselineV2, CompilerCompatibilitySeries,
+    CompilerCompatibilityState, CurrentAuthorityEntry, CurrentAuthorityIndex,
+    CurrentAuthorityStatus, DISCOVERY_SCHEMA_VERSION, DiscoveredTest, DiscoveryReport,
+    ExecutionMechanism, FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION, FAILURE_CLUSTER_SCHEMA_VERSION,
+    FailureCluster, FailureClusterHistory, FailureClusterHistoryEntry,
+    FailureClusterHistoryPresence, FailureClusterHistoryStatus, FailureClusterIdentityQuality,
+    FailureClusterReport, FailureClusterSignature, FailureDebtCandidate, GAP_MAP_SCHEMA_VERSION,
+    GapMap, LANDED_LINEAGE_SCHEMA_VERSION, LandedLineage, ObservedSemanticBoundary,
+    PREPARE_SCHEMA_VERSION, PrepareReceipt, PrepareStatus, RUN_REPORT_SCHEMA_VERSION, RunFailure,
+    RunFileResult, RunReport, RunSummary, RunnerRecord, RunnerStatus,
+    SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION, SMOKE_SCHEMA_VERSION, SemanticBoundaryDisposition,
+    SemanticBoundaryLockScope, SemanticBoundaryRegistry, SemanticBoundaryRegistryEntry,
+    SemanticBoundaryRegistryState, SemanticBoundaryReplacementStrategy, SeriesManifest,
+    SmokeFailureKind, SmokeReport, SmokeStatus, SmokeStructuralFailure, lsp_impact_for_bucket,
+    validate_execution_mechanism, validate_file_result_mechanisms, validate_series_rail_mechanisms,
+    workstream_for_bucket,
 };
 pub use perl_core_harness_types::{HarnessMode, HarnessProfile, HarnessRunner};
 use run_authority::{
@@ -219,6 +262,20 @@ use run_authority::{
 };
 pub use series::{SeriesManifestConfig, series_manifest};
 
+pub use baseline::{BaselineConfig, baseline};
+use baseline::{
+    V2Identities, compare_baseline_v2_with_identities, ensure_valid_report_shape,
+    parse_compile_baseline_v2, read_compile_baseline_v2, semantic_boundary_key,
+    validate_accepted_semantic_boundary_inventory, validate_report_against_series,
+    validate_report_bucket_shape, validate_result_summary_shape,
+    validate_semantic_boundary_inventory, validate_semantic_boundary_shape,
+};
+#[cfg(test)]
+use baseline::{
+    baseline_from_report, baseline_v2_from_report, compare_baseline, compare_baseline_v2,
+    compare_boundary_transition, default_baseline_path, read_compile_baseline, report_digest,
+    write_compile_baseline, write_compile_baseline_v2,
+};
 use normalization::{hex_lower, sha256_digest_bytes};
 use public_evidence::PublicStringClass;
 use serde::{Deserialize, de::DeserializeOwned};
@@ -363,7 +420,9 @@ fn filter_discovered_tests(
 #[derive(Debug, Clone)]
 pub struct DiscoverConfig {
     pub perl_tree: PathBuf,
-    pub host_perl: PathBuf,
+    /// Explicit override for the scheduler interpreter; `None` runs the
+    /// upstream scheduler under the prepared tree's built perl (`$TREE/perl`).
+    pub host_perl: Option<PathBuf>,
     pub runner: HarnessRunner,
     pub profile: HarnessProfile,
     pub output: Option<PathBuf>,
@@ -380,7 +439,9 @@ pub struct PrepareConfig {
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     pub perl_tree: PathBuf,
-    pub host_perl: PathBuf,
+    /// Explicit override for the scheduler interpreter; `None` runs the
+    /// upstream scheduler under the prepared tree's built perl (`$TREE/perl`).
+    pub host_perl: Option<PathBuf>,
     pub runner: HarnessRunner,
     pub mode: HarnessMode,
     pub profile: HarnessProfile,
@@ -393,25 +454,6 @@ pub struct RunConfig {
     /// Diagnostics are retained under a separate receipt and can never change
     /// the upstream result, totals, or verdict.
     pub diagnostic_probes: bool,
-}
-
-/// Configuration for `perl-core-harness baseline`.
-#[derive(Debug, Clone)]
-pub struct BaselineConfig {
-    pub mode: HarnessMode,
-    pub profile: HarnessProfile,
-    pub report: Option<PathBuf>,
-    pub baseline: Option<PathBuf>,
-    pub accept: bool,
-    pub series: Option<PathBuf>,
-    pub previous_baseline: Option<PathBuf>,
-    pub boundary_retirements: Option<PathBuf>,
-    pub compiler_subject_identity: Option<String>,
-    pub invocation_identity: Option<String>,
-    pub capability_identity: Option<String>,
-    pub environment_identity: Option<String>,
-    pub accepted_transition_id: Option<String>,
-    pub evidence_bundle: Option<String>,
 }
 
 /// Configuration for `perl-core-harness boundaries`.
@@ -464,7 +506,9 @@ pub struct CompatibilityLoadConfig {
 #[derive(Debug, Clone)]
 pub struct SmokeConfig {
     pub perl_tree: PathBuf,
-    pub host_perl: PathBuf,
+    /// Explicit override for the scheduler interpreter; `None` runs the
+    /// upstream scheduler under the prepared tree's built perl (`$TREE/perl`).
+    pub host_perl: Option<PathBuf>,
     pub runner: HarnessRunner,
     pub profile: HarnessProfile,
     pub modes: Vec<HarnessMode>,
@@ -478,10 +522,11 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
     let perl_tree = canonicalize_existing_dir(&config.perl_tree, "prepared Perl tree")?;
     let t_dir = perl_tree.join("t");
     let script = validate_runner_script(&t_dir, config.runner)?;
+    let scheduler_perl = resolve_scheduler_perl(&perl_tree, config.host_perl.as_deref())?;
     let output_path = config.output.unwrap_or_else(|| default_discovery_path(config.profile));
 
     let output = invoke_dumptests(
-        &config.host_perl,
+        &scheduler_perl,
         &t_dir,
         &script,
         &profile_runner_args(config.profile, &t_dir, config.runner)?,
@@ -496,8 +541,8 @@ pub fn discover(config: DiscoverConfig) -> Result<()> {
         commit: current_commit(),
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         perl_ref: perl_tree_ref(&perl_tree),
-        prepared_tree: perl_tree.display().to_string(),
-        host_perl: config.host_perl.display().to_string(),
+        prepared_tree: receipt_path_display(&perl_tree),
+        host_perl: receipt_path_display(&scheduler_perl),
         runner: config.runner,
         profile: config.profile,
         tests,
@@ -612,10 +657,12 @@ pub fn boundaries(config: BoundaryRegistryConfig) -> Result<()> {
 pub fn triage(config: TriageConfig) -> Result<()> {
     let bundle = read_boundary_bundle(&config.bundle)?;
     let compile_path = bundle_artifact_path(&bundle, "compile_report")?;
-    let raw = fs::read_to_string(&compile_path)
-        .with_context(|| format!("reading compile report {}", compile_path.display()))?;
-    let report: RunReport = serde_json::from_str(&raw)
-        .with_context(|| format!("decoding compile report {}", compile_path.display()))?;
+    // Decode through the shared reader rather than inline: it is the only place
+    // the mechanism contract is applied to this JSON shape, and clustering a
+    // report that over-claims its execution evidence would carry that claim
+    // into the durable failure-cluster and history artifacts (#14363).
+    let report = read_run_report(&compile_path)
+        .with_context(|| format!("compile report {}", compile_path.display()))?;
     validate_bundle_report_identity(&bundle, &report)?;
     ensure_valid_report_shape(&report)?;
     let cluster_report = build_failure_cluster_report(&bundle, &report)?;
@@ -1509,7 +1556,7 @@ fn load_compatibility_series(
         landed_sha: bundle.index.lineage.landed_sha.clone(),
         evidence_bundle_id: bundle.index.bundle_id.clone(),
     };
-    Ok(CompilerCompatibilitySeries {
+    let series = CompilerCompatibilitySeries {
         identity,
         current_observation: observation,
         transition_candidate: CompatibilityTransitionCandidate {
@@ -1532,7 +1579,13 @@ fn load_compatibility_series(
         differential_oracle: unavailable_rail("differential-oracle receipt was not supplied"),
         eir: unavailable_rail("EIR evaluation receipt was not supplied"),
         claim_boundary: "compile-harness and typed receipt state only; general semantics and runtime correctness are not implied".into(),
-    })
+    };
+    // The published series is what #4748/#4749/#5172/#5174 consume, so an
+    // inadmissible rail claim must fail here rather than reach a reader.
+    if let Err(violation) = validate_series_rail_mechanisms(&series) {
+        bail!("compatibility series {}: {violation}", series.identity.series_id);
+    }
+    Ok(series)
 }
 
 fn validate_authority_artifact_bindings(
@@ -1743,6 +1796,8 @@ fn load_registry_state(
         SEMANTIC_BOUNDARY_REGISTRY_SCHEMA_VERSION,
         format!("validated {} registry entries", registry.entries.len()),
         vec![format!("series:{}", baseline.series_id)],
+        // The boundary registry represents no execution, so it names no rail.
+        None,
     ))
 }
 
@@ -1797,6 +1852,8 @@ fn load_cluster_history_state(
             FAILURE_CLUSTER_HISTORY_SCHEMA_VERSION,
             format!("validated {} history entries", history.entries.len()),
             history_bundle_id.clone().into_iter().collect(),
+            // Cluster history represents no execution, so it names no rail.
+            None,
         ),
         CompatibilityClusterState {
             active_count: clusters.clusters.len(),
@@ -1823,12 +1880,47 @@ fn load_execution_rail(
     {
         bail!("execution rail identity does not match series {}", series.series_id);
     }
+    // The rail stamps `RUN_REPORT_SCHEMA_VERSION` as its own schema identity,
+    // so a report declaring a different version would be relabeled current —
+    // the same kind of unearned identity this rail exists to stop. Parse and
+    // compile propagate the report's actual version instead; the execution
+    // rail publishes a constant, so it has to earn it here.
+    if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
+        bail!("execution rail report schema is not the supported run-report schema");
+    }
     ensure_valid_report_shape(&report)?;
+    let mechanism = execution_receipt_mechanism(&report)?;
     Ok(available_rail(
         RUN_REPORT_SCHEMA_VERSION,
-        "selected execution receipt validated".into(),
+        format!("selected execution receipt validated; mechanism {mechanism}"),
         vec![format!("bundle:{bundle_id}")],
+        Some(mechanism),
     ))
+}
+
+/// The one mechanism every file result of an execution receipt agrees on.
+///
+/// `read_run_report` already rejects an execute report whose file results
+/// carry no mechanism or an inadmissible one, through
+/// `reject_inadmissible_report_mechanisms`, but it does not require them to
+/// agree. A receipt mixing rails describes no single rail, so it cannot be
+/// summarized as one and fails closed here rather than having one mechanism
+/// picked for it (#8254).
+fn execution_receipt_mechanism(report: &RunReport) -> Result<ExecutionMechanism> {
+    let mut mechanisms: Vec<ExecutionMechanism> =
+        report.file_results.iter().filter_map(|result| result.mechanism).collect();
+    mechanisms.sort_unstable();
+    mechanisms.dedup();
+    match mechanisms.as_slice() {
+        [mechanism] => Ok(*mechanism),
+        [] => {
+            bail!("execution rail receipt names no execution mechanism, so it cannot claim a rail")
+        }
+        many => bail!(
+            "execution rail receipt mixes execution mechanisms ({}), so it describes no single rail",
+            many.iter().map(|mechanism| mechanism.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+    }
 }
 
 fn build_compatibility_debt_state(
@@ -1867,6 +1959,7 @@ fn unavailable_rail(reason: &str) -> CompatibilityRailState {
         reason: reason.into(),
         schema_version: None,
         evidence_refs: Vec::new(),
+        mechanism: None,
     }
 }
 
@@ -1874,12 +1967,14 @@ fn available_rail(
     schema_version: &str,
     reason: String,
     evidence_refs: Vec<String>,
+    mechanism: Option<ExecutionMechanism>,
 ) -> CompatibilityRailState {
     CompatibilityRailState {
         availability: CompatibilityRailAvailability::Available,
         reason,
         schema_version: Some(schema_version.into()),
         evidence_refs,
+        mechanism,
     }
 }
 
@@ -3229,12 +3324,21 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     let t_dir = run_tree.join("t");
     let script = validate_runner_script(&t_dir, config.runner)?;
     install_t_perl_wrapper(&run_tree)?;
+    // The scheduler runs against the disposable run copy; its built perl at
+    // the run-tree root is untouched by `install_t_perl_wrapper` (#15138).
+    let scheduler_perl = resolve_scheduler_perl(&run_tree, config.host_perl.as_deref())?;
+    // The receipt records the interpreter identity deterministically per
+    // prepared tree: the terminal-admission gate compares parse and compile
+    // reports, and the run-copy path carries a per-run nonce. Resolving
+    // against the canonical tree keeps the recorded identity identical to
+    // the discovery phase and applies the same validation (#15138).
+    let receipt_host_perl = resolve_scheduler_perl(&perl_tree, config.host_perl.as_deref())?;
     let dumptests_args = if selected_tests.is_empty() {
         profile_runner_args(config.profile, &t_dir, config.runner)?
     } else {
         selected_tests.clone()
     };
-    let dumptests_output = invoke_dumptests(&config.host_perl, &t_dir, &script, &dumptests_args)?;
+    let dumptests_output = invoke_dumptests(&scheduler_perl, &t_dir, &script, &dumptests_args)?;
     let discovered = filter_discovered_tests(
         parse_dumptests_output(&dumptests_output.stdout)?,
         &selected_tests,
@@ -3248,7 +3352,7 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
     }
 
     let output = invoke_harness_run(
-        &config.host_perl,
+        &scheduler_perl,
         &t_dir,
         &script,
         &dumptests_args,
@@ -3274,6 +3378,7 @@ pub fn run_mode(config: RunConfig) -> Result<()> {
         config: &config,
         perl_tree: &perl_tree,
         run_tree: &run_tree,
+        host_perl: &receipt_host_perl,
         observation: &observation,
     });
     let output_path =
@@ -3434,138 +3539,6 @@ fn remove_stale_diagnostics_sidecar(report_output_path: &Path) -> Result<()> {
 /// Stub for future report rendering.
 pub fn report() -> Result<()> {
     bail!("perl-core-harness report is not implemented until run receipts exist")
-}
-
-/// Check or update a checked-in Perl core harness baseline.
-pub fn baseline(config: BaselineConfig) -> Result<()> {
-    let report_path = config
-        .report
-        .clone()
-        .unwrap_or_else(|| default_run_report_path(config.mode, config.profile));
-    let baseline_path = config
-        .baseline
-        .clone()
-        .unwrap_or_else(|| default_baseline_path(config.mode, config.profile));
-    let report = read_run_report(&report_path)?;
-    // Terminal admission precedes any count semantics (#6884): only a clean
-    // exit or a recognized runner/mode completion state proves process
-    // completion, however green the file and assertion counts look. The
-    // execute-mode recognition keeps the #3451 selected-base receipt flow
-    // working instead of permanently misclassifying it as instrument failure.
-    let terminal = transition::TerminalProcessOutcome::from_harness_status(
-        report.harness_status,
-        report.runner,
-        report.mode,
-    );
-    if !terminal.is_scoreable() {
-        bail!(
-            "perl-core-harness baseline refuses {} with runner terminal status {:?}: process completion is not proven ({})",
-            report_path.display(),
-            report.harness_status,
-            terminal.not_proven_reason()
-        );
-    }
-    reject_v2_options_without_series(&config)?;
-
-    if let Some(series_path) = config.series.as_ref() {
-        let series = read_series_manifest(series_path)?;
-        validate_series_manifest(&series)?;
-        if config.accept {
-            let previous = if let Some(path) = config.previous_baseline.as_ref() {
-                Some(read_compile_baseline_v2(path)?)
-            } else if baseline_path.is_file() {
-                Some(read_compile_baseline_v2(&baseline_path)?)
-            } else {
-                None
-            };
-            let retirements = config
-                .boundary_retirements
-                .as_ref()
-                .map(|path| read_boundary_retirements(path))
-                .transpose()?
-                .unwrap_or_default();
-            let accepted = baseline_v2_from_report(
-                &report,
-                &series,
-                &config,
-                previous.as_ref(),
-                &retirements,
-            )?;
-            write_compile_baseline_v2(&baseline_path, &accepted)?;
-            tracing::info!(
-                "perl-core-harness: accepted {} {} v2 baseline",
-                accepted.mode,
-                accepted.profile
-            );
-            tracing::info!("wrote {}", baseline_path.display());
-            return Ok(());
-        }
-
-        let baseline = read_compile_baseline_v2(&baseline_path)?;
-        let identities = required_v2_identities(&config)?;
-        validate_v2_identities_against_series(&identities, &series)?;
-        let retirements = config
-            .boundary_retirements
-            .as_ref()
-            .map(|path| read_boundary_retirements(path))
-            .transpose()?
-            .unwrap_or_default();
-        let comparison = compare_baseline_v2_with_identities(
-            &baseline,
-            &report,
-            &series,
-            Some(&identities),
-            config.accepted_transition_id.as_deref(),
-            &retirements,
-        );
-        if !comparison.is_clean() {
-            bail_baseline_comparison(&comparison)?;
-        }
-        tracing::info!(
-            "perl-core-harness: v2 baseline check passed for {} {}",
-            report.mode,
-            report.profile
-        );
-        return Ok(());
-    }
-
-    if config.accept {
-        let baseline = baseline_from_report(&report)?;
-        write_compile_baseline(&baseline_path, &baseline)?;
-        tracing::info!(
-            "perl-core-harness: accepted {} {} baseline",
-            baseline.mode,
-            baseline.profile
-        );
-        tracing::info!("wrote {}", baseline_path.display());
-        return Ok(());
-    }
-
-    let baseline = read_compile_baseline(&baseline_path)?;
-    let comparison = compare_baseline(&baseline, &report);
-    if !comparison.is_clean() {
-        let details = comparison
-            .violations
-            .iter()
-            .map(|violation| {
-                let path = violation.path.as_deref().unwrap_or("-");
-                format!("{:?} {path}: {}", violation.kind, violation.message)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        bail!(
-            "perl-core-harness baseline check failed with {} violation(s):\n{}",
-            comparison.violations.len(),
-            details
-        );
-    }
-
-    tracing::info!(
-        "perl-core-harness: baseline check passed for {} {}",
-        report.mode,
-        report.profile
-    );
-    Ok(())
 }
 
 /// Run a manual real-tree discovery + parse/compile smoke and write receipts.
@@ -3827,6 +3800,54 @@ fn canonicalize_existing_dir(path: &Path, label: &str) -> Result<PathBuf> {
     path.canonicalize().with_context(|| format!("canonicalizing {label}: {}", path.display()))
 }
 
+/// Resolve the interpreter that runs the upstream scheduler (`t/TEST` or
+/// `t/harness --dumptests`).
+///
+/// Upstream `make test` semantics run the scheduler under the tree's own
+/// built perl, so `$TREE/perl` is the default. An explicit `--host-perl`
+/// override wins but must name an existing file. A prepared tree without a
+/// built perl fails closed with a named error instead of silently falling
+/// back to a version-mismatched system perl (#15138).
+fn resolve_scheduler_perl(perl_tree: &Path, host_perl: Option<&Path>) -> Result<PathBuf> {
+    if let Some(override_perl) = host_perl {
+        if !override_perl.is_file() {
+            bail!(
+                "explicit --host-perl override does not exist or is not a file: {}",
+                override_perl.display()
+            );
+        }
+        // Scheduler commands run with cwd set to the tree's t/ directory, so
+        // a relative override would silently resolve against the wrong base.
+        return override_perl.canonicalize().with_context(|| {
+            format!("canonicalizing --host-perl override: {}", override_perl.display())
+        });
+    }
+    // Upstream `make test` semantics: the scheduler runs under the prepared
+    // tree's own built perl — `perl.exe` where that is the platform name.
+    let tree_perl = perl_tree.join(format!("perl{}", std::env::consts::EXE_SUFFIX));
+    if !tree_perl.is_file() {
+        bail!(
+            "prepared Perl tree has no built perl at {}; pass --host-perl to override with a version-matched interpreter",
+            tree_perl.display()
+        );
+    }
+    Ok(tree_perl)
+}
+
+/// Record a path in a public receipt without host identity: project-rooted
+/// paths are stored relative to the repository root, anything else verbatim
+/// (the public-evidence gate fail-closes on absolute paths it can see).
+fn receipt_path_display(path: &Path) -> String {
+    let display = match project_root() {
+        Ok(root) => {
+            let root = root.canonicalize().unwrap_or(root);
+            path.strip_prefix(&root).unwrap_or(path).display().to_string()
+        }
+        Err(_) => path.display().to_string(),
+    };
+    display.replace('\\', "/")
+}
+
 fn validate_runner_script(t_dir: &Path, runner: HarnessRunner) -> Result<PathBuf> {
     if !t_dir.is_dir() {
         bail!("prepared Perl tree is missing t/ directory: {}", t_dir.display());
@@ -3996,14 +4017,9 @@ fn default_discovery_path(profile: HarnessProfile) -> PathBuf {
     root.join("target").join("perl-core").join("discovery").join(format!("{profile}.json"))
 }
 
-fn default_run_report_path(mode: HarnessMode, profile: HarnessProfile) -> PathBuf {
+pub(crate) fn default_run_report_path(mode: HarnessMode, profile: HarnessProfile) -> PathBuf {
     let root = project_root().unwrap_or_else(|_| PathBuf::from("."));
     root.join("target").join("perl-core").join("reports").join(format!("{profile}-{mode}.json"))
-}
-
-fn default_baseline_path(mode: HarnessMode, profile: HarnessProfile) -> PathBuf {
-    let root = project_root().unwrap_or_else(|_| PathBuf::from("."));
-    root.join(".ci").join("perl-core-harness").join(format!("{profile}-{mode}-baseline.json"))
 }
 
 fn default_prepare_output_dir(perl_ref: &str) -> PathBuf {
@@ -4061,10 +4077,25 @@ fn write_run_report(path: &Path, report: &RunReport) -> Result<()> {
         .with_context(|| format!("writing run report {}", path.display()))
 }
 
-fn read_run_report(path: &Path) -> Result<RunReport> {
+pub(crate) fn read_run_report(path: &Path) -> Result<RunReport> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading run report {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("decoding run report {}", path.display()))
+    let report: RunReport = serde_json::from_str(&raw)
+        .with_context(|| format!("decoding run report {}", path.display()))?;
+    reject_inadmissible_report_mechanisms(&report)
+        .with_context(|| format!("run report {}", path.display()))?;
+    Ok(report)
+}
+
+/// Refuse a run report whose per-file execution-mechanism claims are not
+/// admissible for its mode.
+///
+/// A report is what becomes a checked-in baseline and what the ratchet compares
+/// against, so the mechanism contract has to hold wherever a report is decoded
+/// or accepted — not only where a runner-record line is (#14363).
+pub(crate) fn reject_inadmissible_report_mechanisms(report: &RunReport) -> Result<()> {
+    validate_file_result_mechanisms(report.mode, &report.file_results)
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
 }
 
 fn write_direct_diagnostics_receipt(path: &Path, receipt: &DirectDiagnosticReceipt) -> Result<()> {
@@ -4075,22 +4106,6 @@ fn write_direct_diagnostics_receipt(path: &Path, receipt: &DirectDiagnosticRecei
     let json = serde_json::to_string_pretty(receipt).context("serializing direct diagnostics")?;
     fs::write(path, format!("{json}\n"))
         .with_context(|| format!("writing direct diagnostics {}", path.display()))
-}
-
-fn read_compile_baseline(path: &Path) -> Result<CompileBaseline> {
-    let raw =
-        fs::read_to_string(path).with_context(|| format!("reading baseline {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("decoding baseline {}", path.display()))
-}
-
-fn write_compile_baseline(path: &Path, baseline: &CompileBaseline) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        let context = format!("creating baseline directory {}", parent.display());
-        fs::create_dir_all(parent).context(context)?;
-    }
-    let json = serde_json::to_string_pretty(baseline).context("serializing compile baseline")?;
-    fs::write(path, format!("{json}\n"))
-        .with_context(|| format!("writing baseline {}", path.display()))
 }
 
 fn write_prepare_receipt(path: &Path, receipt: &PrepareReceipt) -> Result<()> {
@@ -4121,1005 +4136,6 @@ fn write_gap_map(path: &Path, gap_map: &GapMap) -> Result<()> {
     let json = serde_json::to_string_pretty(gap_map).context("serializing gap map")?;
     fs::write(path, format!("{json}\n"))
         .with_context(|| format!("writing gap map {}", path.display()))
-}
-
-fn baseline_from_report(report: &RunReport) -> Result<CompileBaseline> {
-    let mut baseline = CompileBaseline {
-        schema_version: COMPILE_BASELINE_SCHEMA_VERSION.to_string(),
-        report_schema_version: report.schema_version.clone(),
-        mode: report.mode,
-        profile: report.profile,
-        files_total: report.summary.files_total,
-        files_passed: report.summary.files_passed,
-        files_failed: report.summary.files_failed,
-        tap_assertions_total: report.summary.tap_assertions_total,
-        tap_assertions_passed: report.summary.tap_assertions_passed,
-        buckets: report.buckets.clone(),
-        expected_failures: report.failures.clone(),
-        file_results: report.file_results.clone(),
-        semantic_boundaries: Some(report.semantic_boundaries.clone()),
-    };
-    sort_baseline(&mut baseline);
-    let mut validation = validate_report_bucket_shape(report);
-    validation.extend(validate_semantic_boundary_shape(report));
-    if !validation.is_empty() {
-        let details = validation
-            .iter()
-            .map(|violation| {
-                let path = violation.path.as_deref().unwrap_or("-");
-                format!("{:?} {path}: {}", violation.kind, violation.message)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        bail!("cannot accept baseline with invalid receipt shape:\n{details}");
-    }
-    Ok(baseline)
-}
-
-fn baseline_v2_from_report(
-    report: &RunReport,
-    series: &SeriesManifest,
-    config: &BaselineConfig,
-    previous: Option<&CompileBaselineV2>,
-    retirements: &[BoundaryRetirement],
-) -> Result<CompileBaselineV2> {
-    let identities = required_v2_identities(config)?;
-    validate_report_against_series(report, series, config.mode)?;
-    validate_v2_identities_against_series(&identities, series)?;
-    ensure_valid_report_shape(report)?;
-    let accepted_boundary_violations =
-        validate_accepted_semantic_boundary_inventory(&report.semantic_boundaries);
-    if !accepted_boundary_violations.is_empty() {
-        bail_baseline_comparison(&BaselineComparison { violations: accepted_boundary_violations })?;
-    }
-    let file_membership =
-        report.file_results.iter().map(|result| result.path.clone()).collect::<BTreeSet<_>>();
-    let expected_membership = series.normalized_manifest.iter().cloned().collect::<BTreeSet<_>>();
-    if file_membership != expected_membership {
-        bail!(
-            "report file membership does not exactly match comparison series {}",
-            series.series_id
-        );
-    }
-    if let Some(previous) = previous {
-        if previous.series_id != series.series_id || previous.manifest_hash != series.manifest_hash
-        {
-            bail!("previous baseline does not belong to the current comparison series");
-        }
-        let transition_id = config.accepted_transition_id.as_deref().ok_or_else(|| {
-            color_eyre::eyre::eyre!(
-                "boundary or baseline transitions require --accepted-transition-id"
-            )
-        })?;
-        let transition_violations = compare_boundary_transition(
-            previous,
-            &report.semantic_boundaries,
-            retirements,
-            transition_id,
-            series,
-            report,
-        );
-        if !transition_violations.is_empty() {
-            bail_baseline_comparison(&BaselineComparison { violations: transition_violations })?;
-        }
-    } else if !retirements.is_empty() {
-        bail!("boundary retirements require a previous v2 baseline");
-    }
-
-    let mut file_results = report.file_results.clone();
-    let mut expected_failures = report.failures.clone();
-    let mut semantic_boundaries = report.semantic_boundaries.clone();
-    file_results.sort_by(|left, right| left.path.cmp(&right.path));
-    expected_failures.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then_with(|| left.bucket.cmp(&right.bucket))
-            .then_with(|| left.phase.cmp(&right.phase))
-    });
-    semantic_boundaries.sort_by_key(semantic_boundary_key);
-
-    Ok(CompileBaselineV2 {
-        schema_version: COMPILE_BASELINE_V2_SCHEMA_VERSION.to_string(),
-        report_schema_version: report.schema_version.clone(),
-        series_id: series.series_id.clone(),
-        manifest_hash: series.manifest_hash.clone(),
-        repository_commit: series.repository_commit.clone(),
-        perl_resolved_ref: series.perl_resolved_ref.clone(),
-        preparation_receipt_id: series.preparation_receipt_id.clone(),
-        compiler_subject_identity: identities.compiler_subject_identity,
-        invocation_identity: identities.invocation_identity,
-        capability_identity: identities.capability_identity,
-        environment_identity: identities.environment_identity,
-        source_report_digest: report_digest(report)?,
-        accepted_transition_id: config.accepted_transition_id.clone(),
-        evidence_bundle: config.evidence_bundle.clone(),
-        mode: report.mode,
-        profile: report.profile,
-        runner: report.runner,
-        files_total: file_results.len(),
-        file_membership: file_results.iter().map(|result| result.path.clone()).collect(),
-        files_passed: report.summary.files_passed,
-        files_failed: report.summary.files_failed,
-        tap_assertions_total: report.summary.tap_assertions_total,
-        tap_assertions_passed: report.summary.tap_assertions_passed,
-        buckets: report.buckets.clone(),
-        expected_failures,
-        file_results,
-        semantic_boundaries,
-        boundary_retirements: retirements.to_vec(),
-    })
-}
-
-struct V2Identities {
-    compiler_subject_identity: String,
-    invocation_identity: String,
-    capability_identity: String,
-    environment_identity: String,
-}
-
-fn required_v2_identities(config: &BaselineConfig) -> Result<V2Identities> {
-    Ok(V2Identities {
-        compiler_subject_identity: required_identity(
-            config.compiler_subject_identity.as_deref(),
-            "compiler subject",
-        )?,
-        invocation_identity: required_identity(
-            config.invocation_identity.as_deref(),
-            "invocation",
-        )?,
-        capability_identity: required_identity(
-            config.capability_identity.as_deref(),
-            "capability",
-        )?,
-        environment_identity: required_identity(
-            config.environment_identity.as_deref(),
-            "environment",
-        )?,
-    })
-}
-
-fn required_identity(value: Option<&str>, name: &str) -> Result<String> {
-    let value = value.filter(|value| !value.trim().is_empty()).ok_or_else(|| {
-        color_eyre::eyre::eyre!("baseline v2 requires a non-empty {name} identity")
-    })?;
-    Ok(value.to_string())
-}
-
-fn reject_v2_options_without_series(config: &BaselineConfig) -> Result<()> {
-    let has_v2_option = config.previous_baseline.is_some()
-        || config.boundary_retirements.is_some()
-        || config.compiler_subject_identity.is_some()
-        || config.invocation_identity.is_some()
-        || config.capability_identity.is_some()
-        || config.environment_identity.is_some()
-        || config.accepted_transition_id.is_some()
-        || config.evidence_bundle.is_some();
-    if config.series.is_none() && has_v2_option {
-        bail!("baseline v2 options require a comparison-series manifest");
-    }
-    if config.accepted_transition_id.as_deref().is_some_and(|id| id.trim().is_empty()) {
-        bail!("baseline v2 transition identity must not be empty");
-    }
-    if config.boundary_retirements.is_some() && config.accepted_transition_id.is_none() {
-        bail!("boundary retirement receipts require --accepted-transition-id");
-    }
-    Ok(())
-}
-
-fn validate_v2_identities_against_series(
-    identities: &V2Identities,
-    series: &SeriesManifest,
-) -> Result<()> {
-    if identities.compiler_subject_identity != series.compiler_subject_identity
-        || identities.invocation_identity != series.invocation_identity
-        || identities.capability_identity != series.capability_identity
-        || identities.environment_identity != series.environment_identity
-    {
-        bail!("baseline v2 identity inputs do not match the comparison series");
-    }
-    Ok(())
-}
-
-fn ensure_valid_report_shape(report: &RunReport) -> Result<()> {
-    let mut validation = validate_report_bucket_shape(report);
-    validation.extend(validate_semantic_boundary_shape(report));
-    if !validation.is_empty() {
-        let details = validation
-            .iter()
-            .map(|violation| {
-                let path = violation.path.as_deref().unwrap_or("-");
-                format!("{:?} {path}: {}", violation.kind, violation.message)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        bail!("cannot accept baseline with invalid receipt shape:\n{details}");
-    }
-    validate_result_summary_shape(
-        report.summary.files_total,
-        report.summary.files_passed,
-        report.summary.files_failed,
-        report.summary.tap_assertions_total,
-        report.summary.tap_assertions_passed,
-        &report.file_results,
-        "run report",
-    )
-}
-
-fn validate_result_summary_shape(
-    files_total: usize,
-    files_passed: usize,
-    files_failed: usize,
-    tap_assertions_total: usize,
-    tap_assertions_passed: usize,
-    file_results: &[RunFileResult],
-    subject: &str,
-) -> Result<()> {
-    if files_passed + files_failed != files_total {
-        bail!("{subject} file counts do not add up to files_total");
-    }
-    if tap_assertions_passed > tap_assertions_total {
-        bail!("{subject} passed assertions exceed tap_assertions_total");
-    }
-    if file_results.len() != files_total {
-        bail!("{subject} file_results length does not match files_total");
-    }
-    let mut paths = BTreeSet::new();
-    let mut passed_files = 0;
-    let mut failed_files = 0;
-    let mut assertions_total = 0;
-    let mut assertions_passed = 0;
-    for result in file_results {
-        let Some(path) = normalize_test_path(&result.path) else {
-            bail!("{subject} contains an invalid test path");
-        };
-        if !paths.insert(path) {
-            bail!("{subject} contains duplicate file results");
-        }
-        match result.status {
-            RunnerStatus::Pass => passed_files += 1,
-            RunnerStatus::Fail => failed_files += 1,
-        }
-        if result.assertions_passed > result.assertions_total {
-            bail!("{subject} has a file with passed assertions exceeding its total");
-        }
-        assertions_total += result.assertions_total;
-        assertions_passed += result.assertions_passed;
-    }
-    if passed_files != files_passed || failed_files != files_failed {
-        bail!("{subject} file statuses do not match its summary counts");
-    }
-    if assertions_total != tap_assertions_total || assertions_passed != tap_assertions_passed {
-        bail!("{subject} file assertions do not match its summary counts");
-    }
-    Ok(())
-}
-
-fn validate_report_against_series(
-    report: &RunReport,
-    series: &SeriesManifest,
-    mode: HarnessMode,
-) -> Result<()> {
-    if report.commit != series.repository_commit {
-        bail!("measured report commit does not match comparison series");
-    }
-    if report.perl_ref != series.perl_resolved_ref {
-        bail!("measured report Perl ref does not match comparison series");
-    }
-    if report.runner != series.runner {
-        bail!("measured report runner does not match comparison series");
-    }
-    if report.profile != series.profile {
-        bail!("measured report profile does not match comparison series");
-    }
-    if report.mode != mode {
-        bail!("measured report mode does not match requested baseline mode");
-    }
-    if report.schema_version != RUN_REPORT_SCHEMA_VERSION {
-        bail!("measured report schema is not the supported run-report schema");
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn compare_baseline_v2(
-    baseline: &CompileBaselineV2,
-    report: &RunReport,
-    series: &SeriesManifest,
-) -> BaselineComparison {
-    compare_baseline_v2_with_identities(baseline, report, series, None, None, &[])
-}
-
-fn compare_baseline_v2_with_identities(
-    baseline: &CompileBaselineV2,
-    report: &RunReport,
-    series: &SeriesManifest,
-    identities: Option<&V2Identities>,
-    transition_id: Option<&str>,
-    retirements: &[BoundaryRetirement],
-) -> BaselineComparison {
-    let mut violations = Vec::new();
-    violations.extend(validate_persisted_boundary_retirements(baseline, Some(series)));
-    violations.extend(validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries));
-    if baseline.schema_version != COMPILE_BASELINE_V2_SCHEMA_VERSION {
-        violations.push(violation(
-            BaselineViolationKind::SchemaMismatch,
-            None,
-            format!(
-                "baseline schema {} does not match {}",
-                baseline.schema_version, COMPILE_BASELINE_V2_SCHEMA_VERSION
-            ),
-        ));
-    }
-    if baseline.series_id != series.series_id || baseline.manifest_hash != series.manifest_hash {
-        violations.push(violation(
-            BaselineViolationKind::SeriesMismatch,
-            None,
-            "baseline does not reference the supplied comparison series",
-        ));
-    }
-    if baseline.repository_commit != series.repository_commit
-        || baseline.perl_resolved_ref != series.perl_resolved_ref
-        || baseline.preparation_receipt_id != series.preparation_receipt_id
-    {
-        violations.push(violation(
-            BaselineViolationKind::PreparationIdentityMismatch,
-            None,
-            "baseline preparation or source identity differs from the comparison series",
-        ));
-    }
-    if baseline.report_schema_version != report.schema_version
-        || baseline.mode != report.mode
-        || baseline.profile != report.profile
-        || baseline.runner != report.runner
-        || baseline.repository_commit != report.commit
-        || baseline.perl_resolved_ref != report.perl_ref
-    {
-        violations.push(violation(
-            BaselineViolationKind::MeasuredSubjectMismatch,
-            None,
-            "current report is not the measured subject declared by the v2 baseline",
-        ));
-    }
-    if report_digest(report).map(|digest| digest != baseline.source_report_digest).unwrap_or(true) {
-        violations.push(violation(
-            BaselineViolationKind::MeasuredSubjectMismatch,
-            None,
-            "current report digest differs from the v2 baseline subject",
-        ));
-    }
-    if let Some(identities) = identities
-        && (baseline.compiler_subject_identity != identities.compiler_subject_identity
-            || baseline.invocation_identity != identities.invocation_identity
-            || baseline.capability_identity != identities.capability_identity
-            || baseline.environment_identity != identities.environment_identity)
-    {
-        violations.push(violation(
-            BaselineViolationKind::MeasuredSubjectMismatch,
-            None,
-            "current identity inputs differ from the v2 baseline measured subject",
-        ));
-    }
-    let current_membership =
-        report.file_results.iter().map(|result| result.path.as_str()).collect::<BTreeSet<_>>();
-    let series_membership =
-        series.normalized_manifest.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    for path in series_membership.difference(&current_membership) {
-        violations.push(violation(
-            BaselineViolationKind::MissingExpectedFile,
-            Some((*path).to_string()),
-            "comparison series file is missing from the current report",
-        ));
-    }
-    for path in current_membership.difference(&series_membership) {
-        violations.push(violation(
-            BaselineViolationKind::UnexpectedFile,
-            Some((*path).to_string()),
-            "current report contains a file outside the immutable comparison series",
-        ));
-    }
-    if baseline.file_membership != series.normalized_manifest
-        || baseline.files_total != series.normalized_manifest.len()
-    {
-        violations.push(violation(
-            BaselineViolationKind::ManifestMismatch,
-            None,
-            "baseline file membership does not equal the comparison-series manifest",
-        ));
-    }
-    let legacy = CompileBaseline {
-        schema_version: COMPILE_BASELINE_SCHEMA_VERSION.to_string(),
-        report_schema_version: baseline.report_schema_version.clone(),
-        mode: baseline.mode,
-        profile: baseline.profile,
-        files_total: baseline.files_total,
-        files_passed: baseline.files_passed,
-        files_failed: baseline.files_failed,
-        tap_assertions_total: baseline.tap_assertions_total,
-        tap_assertions_passed: baseline.tap_assertions_passed,
-        buckets: baseline.buckets.clone(),
-        expected_failures: baseline.expected_failures.clone(),
-        file_results: baseline.file_results.clone(),
-        semantic_boundaries: Some(baseline.semantic_boundaries.clone()),
-    };
-    violations.extend(
-        compare_baseline(&legacy, report)
-            .violations
-            .into_iter()
-            .filter(|violation| violation.kind != BaselineViolationKind::SemanticBoundary),
-    );
-    violations.extend(compare_boundary_transition(
-        baseline,
-        &report.semantic_boundaries,
-        retirements,
-        transition_id.unwrap_or(""),
-        series,
-        report,
-    ));
-    BaselineComparison { violations }
-}
-
-fn compare_boundary_transition(
-    previous: &CompileBaselineV2,
-    current: &[ObservedSemanticBoundary],
-    retirements: &[BoundaryRetirement],
-    transition_id: &str,
-    series: &SeriesManifest,
-    report: &RunReport,
-) -> Vec<BaselineViolation> {
-    let mut sorted_current = current.to_vec();
-    sorted_current.sort_by_key(semantic_boundary_key);
-    let previous_by_key = previous
-        .semantic_boundaries
-        .iter()
-        .map(|boundary| (semantic_boundary_key(boundary), boundary))
-        .collect::<BTreeMap<_, _>>();
-    let current_by_key = sorted_current
-        .iter()
-        .map(|boundary| (semantic_boundary_key(boundary), boundary))
-        .collect::<BTreeMap<_, _>>();
-    let retirement_keys = retirements
-        .iter()
-        .map(|retirement| SemanticBoundaryKey {
-            path: retirement.path.clone(),
-            id: retirement.id.clone(),
-            source_start: retirement.source_start,
-            source_end: retirement.source_end,
-        })
-        .collect::<BTreeSet<_>>();
-    let current_report_digest = report_digest(report);
-    let mut violations = Vec::new();
-    for key in previous_by_key.keys() {
-        if !current_by_key.contains_key(key) && !retirement_keys.contains(key) {
-            violations.push(violation(
-                BaselineViolationKind::BoundaryRemovedWithoutRetirement,
-                Some(key.path.clone()),
-                "accepted semantic boundary disappeared without a retirement receipt",
-            ));
-        }
-    }
-    if previous.semantic_boundaries != sorted_current && transition_id.trim().is_empty() {
-        violations.push(violation(
-            BaselineViolationKind::SemanticBoundary,
-            None,
-            "semantic-boundary changes require a reviewed transition identity",
-        ));
-    }
-    for retirement in retirements {
-        let retirement_key = SemanticBoundaryKey {
-            path: retirement.path.clone(),
-            id: retirement.id.clone(),
-            source_start: retirement.source_start,
-            source_end: retirement.source_end,
-        };
-        let retirement_digest_matches = current_report_digest
-            .as_ref()
-            .is_ok_and(|digest| digest == &retirement.source_report_digest);
-        if retirement.schema_version != BOUNDARY_RETIREMENT_SCHEMA_VERSION
-            || retirement.transition_id != transition_id
-            || retirement.replacement_issue.trim().is_empty()
-            || retirement.evidence_bundle.trim().is_empty()
-            || retirement.series_id != series.series_id
-            || retirement.manifest_hash != series.manifest_hash
-            || retirement.measurement_sha != report.commit
-            || !retirement_digest_matches
-        {
-            let message = if current_report_digest.is_err() {
-                "cannot validate retirement: failed to compute current report digest"
-            } else {
-                "boundary retirement receipt is incomplete, stale, or uses the wrong measured subject"
-            };
-            violations.push(violation(
-                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
-                Some(retirement.path.clone()),
-                message,
-            ));
-        }
-        if !previous_by_key.contains_key(&retirement_key) {
-            violations.push(violation(
-                BaselineViolationKind::BoundaryRetirementReferencesUnknownBoundary,
-                Some(retirement.path.clone()),
-                "retirement receipt references a boundary absent from the previous baseline",
-            ));
-        }
-        if current_by_key.contains_key(&retirement_key) {
-            violations.push(violation(
-                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
-                Some(retirement.path.clone()),
-                "retirement receipt references a boundary still present in the current report",
-            ));
-        }
-    }
-    violations
-}
-
-fn validate_persisted_boundary_retirements(
-    baseline: &CompileBaselineV2,
-    series: Option<&SeriesManifest>,
-) -> Vec<BaselineViolation> {
-    let mut violations = Vec::new();
-    for retirement in &baseline.boundary_retirements {
-        let transition_matches = baseline
-            .accepted_transition_id
-            .as_deref()
-            .is_some_and(|transition_id| transition_id == retirement.transition_id);
-        let series_matches = series.is_none_or(|series| {
-            retirement.series_id == series.series_id
-                && retirement.manifest_hash == series.manifest_hash
-        });
-        if retirement.schema_version != BOUNDARY_RETIREMENT_SCHEMA_VERSION
-            || retirement.path.trim().is_empty()
-            || retirement.id.trim().is_empty()
-            || retirement.source_start >= retirement.source_end
-            || retirement.series_id != baseline.series_id
-            || retirement.manifest_hash != baseline.manifest_hash
-            || retirement.measurement_sha != baseline.repository_commit
-            || retirement.source_report_digest != baseline.source_report_digest
-            || !transition_matches
-            || retirement.replacement_issue.trim().is_empty()
-            || retirement.evidence_bundle.trim().is_empty()
-            || !series_matches
-        {
-            violations.push(violation(
-                BaselineViolationKind::BoundaryRetirementReceiptMismatch,
-                Some(retirement.path.clone()),
-                "persisted boundary retirement does not match the baseline and comparison-series identity",
-            ));
-        }
-    }
-    if !baseline.boundary_retirements.is_empty() && baseline.accepted_transition_id.is_none() {
-        violations.push(violation(
-            BaselineViolationKind::BoundaryRetirementReceiptMismatch,
-            None,
-            "persisted boundary retirements require the baseline accepted transition identity",
-        ));
-    }
-    violations
-}
-
-#[derive(serde::Serialize)]
-struct StableRunReportDigest<'a> {
-    schema_version: &'a str,
-    commit: &'a str,
-    perl_ref: &'a str,
-    runner: HarnessRunner,
-    mode: HarnessMode,
-    profile: HarnessProfile,
-    harness_status: Option<i32>,
-    summary: &'a RunSummary,
-    buckets: &'a BTreeMap<String, usize>,
-    file_results: &'a [RunFileResult],
-    failures: &'a [RunFailure],
-    semantic_boundaries: &'a [ObservedSemanticBoundary],
-}
-
-fn report_digest(report: &RunReport) -> Result<String> {
-    let mut stable = report.clone();
-    stable.file_results.sort_by(|left, right| left.path.cmp(&right.path));
-    stable.failures.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then_with(|| left.bucket.cmp(&right.bucket))
-            .then_with(|| left.phase.cmp(&right.phase))
-    });
-    stable.semantic_boundaries.sort_by_key(semantic_boundary_key);
-    // Temporary paths, host Perl, and wall-clock timestamps are deliberately absent.
-    // Keep this field-by-field representation explicit so receipt identity does not
-    // depend on the full RunReport envelope or its disposable execution metadata.
-    let digest_input = StableRunReportDigest {
-        schema_version: &stable.schema_version,
-        commit: &stable.commit,
-        perl_ref: &stable.perl_ref,
-        runner: stable.runner,
-        mode: stable.mode,
-        profile: stable.profile,
-        harness_status: stable.harness_status,
-        summary: &stable.summary,
-        buckets: &stable.buckets,
-        file_results: &stable.file_results,
-        failures: &stable.failures,
-        semantic_boundaries: &stable.semantic_boundaries,
-    };
-    let bytes = serde_json::to_vec(&digest_input)
-        .context("serializing stable field-by-field report digest")?;
-    Ok(hex_lower(&Sha256::digest(bytes)))
-}
-
-fn read_compile_baseline_v2(path: &Path) -> Result<CompileBaselineV2> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("reading v2 baseline {}", path.display()))?;
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .with_context(|| format!("decoding baseline envelope {}", path.display()))?;
-    parse_compile_baseline_v2(value, &path.display().to_string())
-}
-
-fn parse_compile_baseline_v2(value: serde_json::Value, label: &str) -> Result<CompileBaselineV2> {
-    let schema =
-        value.get("schema_version").and_then(serde_json::Value::as_str).unwrap_or("missing");
-    if schema == COMPILE_BASELINE_SCHEMA_VERSION {
-        bail!("historical compile baseline v1 is readable but non-authoritative; migrate it to v2");
-    }
-    if schema != COMPILE_BASELINE_V2_SCHEMA_VERSION {
-        bail!("unsupported compile baseline schema: {schema}");
-    }
-    if !value.as_object().is_some_and(|object| object.contains_key("semantic_boundaries")) {
-        bail!(
-            "{:?}: migrated v2 baseline must declare semantic_boundaries, including an empty list",
-            BaselineViolationKind::MissingBoundaryInventory
-        );
-    }
-    let baseline: CompileBaselineV2 =
-        serde_json::from_value(value).with_context(|| format!("decoding v2 baseline {label}"))?;
-    let mut violations = validate_persisted_boundary_retirements(&baseline, None);
-    violations.extend(validate_accepted_semantic_boundary_inventory(&baseline.semantic_boundaries));
-    if !violations.is_empty() {
-        bail_baseline_comparison(&BaselineComparison { violations })?;
-    }
-    Ok(baseline)
-}
-
-fn write_compile_baseline_v2(path: &Path, baseline: &CompileBaselineV2) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating baseline directory {}", parent.display()))?;
-    }
-    let json = serde_json::to_string_pretty(baseline).context("serializing compile baseline v2")?;
-    fs::write(path, format!("{json}\n"))
-        .with_context(|| format!("writing v2 baseline {}", path.display()))
-}
-
-fn read_boundary_retirements(path: &Path) -> Result<Vec<BoundaryRetirement>> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("reading boundary retirements {}", path.display()))?;
-    serde_json::from_str(&raw)
-        .with_context(|| format!("decoding boundary retirements {}", path.display()))
-}
-
-fn bail_baseline_comparison(comparison: &BaselineComparison) -> Result<()> {
-    let details = comparison
-        .violations
-        .iter()
-        .map(|violation| {
-            let path = violation.path.as_deref().unwrap_or("-");
-            format!("{:?} {path}: {}", violation.kind, violation.message)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    bail!(
-        "perl-core-harness baseline transition/check failed with {} violation(s):\n{}",
-        comparison.violations.len(),
-        details
-    )
-}
-
-fn sort_baseline(baseline: &mut CompileBaseline) {
-    baseline.file_results.sort_by(|left, right| left.path.cmp(&right.path));
-    baseline.expected_failures.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
-            .then_with(|| left.bucket.cmp(&right.bucket))
-            .then_with(|| left.phase.cmp(&right.phase))
-    });
-    if let Some(boundaries) = &mut baseline.semantic_boundaries {
-        boundaries.sort_by_key(semantic_boundary_key);
-    }
-}
-
-fn compare_baseline(baseline: &CompileBaseline, report: &RunReport) -> BaselineComparison {
-    let mut violations = Vec::new();
-
-    if baseline.schema_version != COMPILE_BASELINE_SCHEMA_VERSION {
-        violations.push(violation(
-            BaselineViolationKind::SchemaMismatch,
-            None,
-            format!(
-                "baseline schema {} does not match {}",
-                baseline.schema_version, COMPILE_BASELINE_SCHEMA_VERSION
-            ),
-        ));
-    }
-    if baseline.report_schema_version != RUN_REPORT_SCHEMA_VERSION {
-        violations.push(violation(
-            BaselineViolationKind::SchemaMismatch,
-            None,
-            format!(
-                "baseline report schema {} does not match {}",
-                baseline.report_schema_version, RUN_REPORT_SCHEMA_VERSION
-            ),
-        ));
-    }
-    if report.schema_version != baseline.report_schema_version {
-        violations.push(violation(
-            BaselineViolationKind::SchemaMismatch,
-            None,
-            format!(
-                "report schema {} does not match baseline report schema {}",
-                report.schema_version, baseline.report_schema_version
-            ),
-        ));
-    }
-    if baseline.mode != report.mode {
-        violations.push(violation(
-            BaselineViolationKind::ModeMismatch,
-            None,
-            format!("baseline mode {} does not match report mode {}", baseline.mode, report.mode),
-        ));
-    }
-    if baseline.profile != report.profile {
-        violations.push(violation(
-            BaselineViolationKind::ProfileMismatch,
-            None,
-            format!(
-                "baseline profile {} does not match report profile {}",
-                baseline.profile, report.profile
-            ),
-        ));
-    }
-
-    violations.extend(validate_report_bucket_shape(report));
-    violations.extend(validate_semantic_boundary_shape(report));
-    violations.extend(compare_file_results(baseline, report));
-    violations.extend(compare_failure_buckets(baseline, report));
-    violations.extend(compare_summary_assertions(baseline, report));
-    violations.extend(compare_semantic_boundaries(baseline, report));
-
-    BaselineComparison { violations }
-}
-
-fn compare_semantic_boundaries(
-    baseline: &CompileBaseline,
-    report: &RunReport,
-) -> Vec<BaselineViolation> {
-    let Some(accepted_boundaries) = &baseline.semantic_boundaries else {
-        return Vec::new();
-    };
-    let mut baseline_by_key = BTreeMap::new();
-    let mut current_by_key = BTreeMap::new();
-    let mut violations = Vec::new();
-
-    for boundary in accepted_boundaries {
-        let key = semantic_boundary_key(boundary);
-        if baseline_by_key.insert(key.clone(), boundary).is_some() {
-            violations.push(violation(
-                BaselineViolationKind::SemanticBoundary,
-                Some(boundary.path.clone()),
-                format!("baseline contains duplicate semantic boundary key: {}", boundary.id),
-            ));
-        }
-    }
-    for boundary in &report.semantic_boundaries {
-        let key = semantic_boundary_key(boundary);
-        if current_by_key.insert(key, boundary).is_some() {
-            violations.push(violation(
-                BaselineViolationKind::SemanticBoundary,
-                Some(boundary.path.clone()),
-                format!("current report contains duplicate semantic boundary key: {}", boundary.id),
-            ));
-        }
-    }
-
-    for (key, current) in &current_by_key {
-        let Some(accepted) = baseline_by_key.get(key) else {
-            violations.push(violation(
-                BaselineViolationKind::SemanticBoundary,
-                Some(current.path.clone()),
-                format!(
-                    "current semantic boundary is not accepted by the baseline: {}",
-                    current.id
-                ),
-            ));
-            continue;
-        };
-        if accepted != current {
-            violations.push(violation(
-                BaselineViolationKind::SemanticBoundary,
-                Some(current.path.clone()),
-                format!(
-                    "current semantic boundary changed from the accepted baseline: {}",
-                    current.id
-                ),
-            ));
-        }
-    }
-
-    violations
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct SemanticBoundaryKey {
-    path: String,
-    id: String,
-    source_start: usize,
-    source_end: usize,
-}
-
-fn semantic_boundary_key(boundary: &ObservedSemanticBoundary) -> SemanticBoundaryKey {
-    SemanticBoundaryKey {
-        path: boundary.path.clone(),
-        id: boundary.id.clone(),
-        source_start: boundary.source_span.start,
-        source_end: boundary.source_span.end,
-    }
-}
-
-fn compare_file_results(baseline: &CompileBaseline, report: &RunReport) -> Vec<BaselineViolation> {
-    let baseline_results = baseline
-        .file_results
-        .iter()
-        .map(|result| (result.path.as_str(), result))
-        .collect::<BTreeMap<_, _>>();
-    let report_results = report
-        .file_results
-        .iter()
-        .map(|result| (result.path.as_str(), result))
-        .collect::<BTreeMap<_, _>>();
-    let expected_failure_paths = baseline
-        .expected_failures
-        .iter()
-        .map(|failure| failure.path.as_str())
-        .collect::<BTreeSet<_>>();
-    let report_failure_paths =
-        report.failures.iter().map(|failure| failure.path.as_str()).collect::<BTreeSet<_>>();
-    let mut violations = Vec::new();
-
-    for (path, baseline_result) in &baseline_results {
-        let Some(report_result) = report_results.get(path) else {
-            violations.push(violation(
-                BaselineViolationKind::MissingExpectedFile,
-                Some((*path).to_string()),
-                "baseline file is missing from current report",
-            ));
-            continue;
-        };
-
-        if baseline_result.status == RunnerStatus::Pass
-            && report_result.status == RunnerStatus::Fail
-        {
-            violations.push(violation(
-                BaselineViolationKind::PreviouslyPassingFileFailed,
-                Some((*path).to_string()),
-                "file passed in baseline but fails in current report",
-            ));
-        }
-        if report_result.assertions_passed < baseline_result.assertions_passed {
-            violations.push(violation(
-                BaselineViolationKind::AssertionRegression,
-                Some((*path).to_string()),
-                format!(
-                    "assertions passed regressed from {} to {}",
-                    baseline_result.assertions_passed, report_result.assertions_passed
-                ),
-            ));
-        }
-        if report_result.assertions_total < baseline_result.assertions_total {
-            violations.push(violation(
-                BaselineViolationKind::AssertionRegression,
-                Some((*path).to_string()),
-                format!(
-                    "assertions total regressed from {} to {}",
-                    baseline_result.assertions_total, report_result.assertions_total
-                ),
-            ));
-        }
-    }
-
-    for report_failure in &report_failure_paths {
-        if !baseline_results.contains_key(report_failure)
-            || !expected_failure_paths.contains(report_failure)
-        {
-            violations.push(violation(
-                BaselineViolationKind::UnexpectedNewFailure,
-                Some((*report_failure).to_string()),
-                "current report contains a failure not accepted by the baseline",
-            ));
-        }
-    }
-
-    violations
-}
-
-fn compare_failure_buckets(
-    baseline: &CompileBaseline,
-    report: &RunReport,
-) -> Vec<BaselineViolation> {
-    let mut violations = Vec::new();
-    for (bucket, current_count) in &report.buckets {
-        let baseline_count = baseline.buckets.get(bucket).copied().unwrap_or(0);
-        if *current_count > baseline_count {
-            violations.push(violation(
-                BaselineViolationKind::BucketCountIncreased,
-                None,
-                format!("bucket {bucket} increased from {baseline_count} to {current_count}"),
-            ));
-        }
-    }
-    violations
-}
-
-fn compare_summary_assertions(
-    baseline: &CompileBaseline,
-    report: &RunReport,
-) -> Vec<BaselineViolation> {
-    let mut violations = Vec::new();
-    if report.summary.tap_assertions_passed < baseline.tap_assertions_passed {
-        violations.push(violation(
-            BaselineViolationKind::AssertionRegression,
-            None,
-            format!(
-                "passed assertions regressed from {} to {}",
-                baseline.tap_assertions_passed, report.summary.tap_assertions_passed
-            ),
-        ));
-    }
-    if report.summary.tap_assertions_total < baseline.tap_assertions_total {
-        violations.push(violation(
-            BaselineViolationKind::AssertionRegression,
-            None,
-            format!(
-                "total assertions regressed from {} to {}",
-                baseline.tap_assertions_total, report.summary.tap_assertions_total
-            ),
-        ));
-    }
-    violations
-}
-
-fn validate_report_bucket_shape(report: &RunReport) -> Vec<BaselineViolation> {
-    let mut violations = Vec::new();
-    let failure_paths =
-        report.failures.iter().map(|failure| failure.path.as_str()).collect::<BTreeSet<_>>();
-    for failure in &report.failures {
-        if failure.bucket.trim().is_empty() {
-            violations.push(violation(
-                BaselineViolationKind::UnbucketedFailure,
-                Some(failure.path.clone()),
-                "failure has an empty bucket",
-            ));
-        } else if failure.bucket == "unknown" {
-            violations.push(violation(
-                BaselineViolationKind::UnknownBucket,
-                Some(failure.path.clone()),
-                "failure is bucketed as unknown",
-            ));
-        }
-    }
-    for result in &report.file_results {
-        if result.status == RunnerStatus::Fail && !failure_paths.contains(result.path.as_str()) {
-            violations.push(violation(
-                BaselineViolationKind::UnbucketedFailure,
-                Some(result.path.clone()),
-                "failing file has no failure bucket record",
-            ));
-        }
-    }
-    violations
-}
-
-fn violation(
-    kind: BaselineViolationKind,
-    path: Option<String>,
-    message: impl Into<String>,
-) -> BaselineViolation {
-    BaselineViolation { kind, path, message: message.into() }
 }
 
 struct BuildSmokeReportInput<'a> {
@@ -5332,122 +4348,6 @@ fn collect_smoke_report_failures(
     }
 }
 
-fn validate_semantic_boundary_shape(report: &RunReport) -> Vec<BaselineViolation> {
-    validate_semantic_boundary_inventory(&report.semantic_boundaries)
-}
-
-fn validate_semantic_boundary_inventory(
-    boundaries: &[ObservedSemanticBoundary],
-) -> Vec<BaselineViolation> {
-    let mut violations = Vec::new();
-    let mut keys = BTreeSet::new();
-    for boundary in boundaries {
-        let path = Some(boundary.path.clone());
-        let mut add = |message: &str| {
-            violations.push(violation(
-                BaselineViolationKind::SemanticBoundary,
-                path.clone(),
-                message,
-            ));
-        };
-
-        if !keys.insert(semantic_boundary_key(boundary)) {
-            add("semantic boundary inventory contains a duplicate key");
-        }
-
-        if boundary.path.trim().is_empty() {
-            add("semantic boundary has an empty path");
-        }
-        if boundary.id.trim().is_empty() {
-            add("semantic boundary has an empty stable id");
-        }
-        if boundary.reason.trim().is_empty() {
-            add("semantic boundary has an empty reason");
-        }
-        if boundary.source_kind.trim().is_empty() {
-            add("semantic boundary has an empty source kind");
-        }
-        if boundary.owner_workstream.trim().is_empty() {
-            add("semantic boundary has no owning workstream");
-        }
-        if boundary.supporting_test.trim().is_empty() {
-            add("semantic boundary has no supporting test");
-        }
-        if boundary.source_span.start > boundary.source_span.end {
-            add("semantic boundary source span is reversed");
-        }
-
-        match boundary.disposition {
-            SemanticBoundaryDisposition::SourceLockedCompatibility => {
-                if boundary.lock_scope != SemanticBoundaryLockScope::PathAndSource {
-                    add("source-locked compatibility boundary must use a path_and_source lock");
-                }
-                if boundary.confidence != SemanticBoundaryConfidence::Exact {
-                    add("source-locked compatibility boundary must have exact confidence");
-                }
-                if boundary.blocks_compilation {
-                    add("source-locked compatibility boundary must not block compilation");
-                }
-            }
-            SemanticBoundaryDisposition::Unknown => {
-                add("unknown semantic boundary disposition is not admissible");
-                if boundary.confidence != SemanticBoundaryConfidence::Unresolved {
-                    add("unknown semantic boundary must have unresolved confidence");
-                }
-                if !boundary.blocks_compilation {
-                    add("unknown semantic boundary must block compilation");
-                }
-            }
-            SemanticBoundaryDisposition::Unsupported => {
-                if boundary.confidence != SemanticBoundaryConfidence::Unresolved {
-                    add("unsupported semantic boundary must have unresolved confidence");
-                }
-                if !boundary.blocks_compilation {
-                    add("unsupported semantic boundary must block compilation");
-                }
-            }
-            SemanticBoundaryDisposition::ImplementedStatic
-            | SemanticBoundaryDisposition::StaticallyClassified
-            | SemanticBoundaryDisposition::OrdinaryRuntime
-            | SemanticBoundaryDisposition::DeferredRuntime
-            | SemanticBoundaryDisposition::DeferredLifecycle => {
-                if boundary.blocks_compilation {
-                    add("non-blocking semantic boundary disposition cannot block compilation");
-                }
-            }
-            SemanticBoundaryDisposition::GovernedCompileTimeDynamic => {}
-        }
-    }
-    violations
-}
-
-fn validate_accepted_semantic_boundary_inventory(
-    boundaries: &[ObservedSemanticBoundary],
-) -> Vec<BaselineViolation> {
-    let mut violations = validate_semantic_boundary_inventory(boundaries);
-    for boundary in boundaries {
-        let path = Some(boundary.path.clone());
-        if matches!(
-            boundary.disposition,
-            SemanticBoundaryDisposition::Unknown | SemanticBoundaryDisposition::Unsupported
-        ) {
-            violations.push(violation(
-                BaselineViolationKind::SemanticBoundary,
-                path.clone(),
-                "accepted baseline cannot contain unknown or unsupported semantic boundaries",
-            ));
-        }
-        if boundary.blocks_compilation {
-            violations.push(violation(
-                BaselineViolationKind::SemanticBoundary,
-                path,
-                "accepted baseline cannot contain a compile-blocking semantic boundary",
-            ));
-        }
-    }
-    violations
-}
-
 fn path_to_string(path: &Path) -> String {
     path.display().to_string()
 }
@@ -5582,15 +4482,41 @@ fn read_runner_records(path: &Path) -> Result<Vec<RunnerRecord>> {
         if trimmed.is_empty() {
             continue;
         }
-        let record = serde_json::from_str(trimmed).with_context(|| {
+        let record: RunnerRecord = serde_json::from_str(trimmed).with_context(|| {
             format!("decoding runner record {} in {}", index + 1, path.display())
         })?;
+        reject_inadmissible_mechanism(&record)
+            .with_context(|| format!("runner record {} in {}", index + 1, path.display()))?;
         records.push(record);
     }
     if records.is_empty() {
         bail!("runner context contained no records: {}", path.display());
     }
     Ok(records)
+}
+
+/// Refuse a runner record whose execution-mechanism claim is not admissible.
+///
+/// Ingestion is the point where an edited or hand-written receipt would
+/// otherwise enter the report as though the runner had produced it, so the
+/// mechanism contract is enforced here as well as at write time (#8254).
+fn reject_inadmissible_mechanism(record: &RunnerRecord) -> Result<()> {
+    validate_execution_mechanism(&record.mode, record.mechanism)
+        .map_err(|violation| color_eyre::eyre::eyre!("{violation}"))
+}
+
+/// The rail a run's configured mode can currently produce.
+///
+/// Used only where a discovered test yielded no runner record at all: there is
+/// no receipt to read a mechanism from, and the failure still belongs to the
+/// rail the run selected. The only executor wired to `execute` is the
+/// selected-fixture replay scaffold; a future EIR rail names its own mechanism
+/// on the receipt and does not reach this fallback.
+fn mode_mechanism(mode: HarnessMode) -> Option<ExecutionMechanism> {
+    match mode {
+        HarnessMode::Parse | HarnessMode::Compile => None,
+        HarnessMode::Execute => Some(ExecutionMechanism::FixtureReplay),
+    }
 }
 
 fn read_runner_records_or_empty(path: &Path) -> Result<Vec<RunnerRecord>> {
@@ -5609,6 +4535,8 @@ struct BuildRunReportInput<'a> {
     config: &'a RunConfig,
     perl_tree: &'a Path,
     run_tree: &'a Path,
+    /// Resolved scheduler-interpreter identity recorded in the report.
+    host_perl: &'a Path,
     observation: &'a UpstreamObservationSet,
 }
 
@@ -5634,6 +4562,9 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     status: record.status,
                     assertions_passed: record.assertions_passed,
                     assertions_total: record.assertions_total,
+                    // Read from the receipt, never inferred from the run's
+                    // mode: the receipt is what actually names its rail.
+                    mechanism: record.mechanism,
                 });
                 if record.status == RunnerStatus::Fail {
                     let bucket = record.bucket.clone().unwrap_or_else(|| "unknown".to_string());
@@ -5664,6 +4595,9 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
                     status: RunnerStatus::Fail,
                     assertions_passed: 0,
                     assertions_total: 1,
+                    // No receipt exists to read, and the failure still belongs
+                    // to the rail this run selected.
+                    mechanism: mode_mechanism(input.config.mode),
                 });
                 let bucket = "harness_prepare".to_string();
                 *buckets.entry(bucket.clone()).or_insert(0) += 1;
@@ -5690,9 +4624,9 @@ fn build_run_report(input: BuildRunReportInput<'_>) -> RunReport {
         commit: current_commit(),
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         perl_ref: perl_tree_ref(input.perl_tree),
-        prepared_tree: input.perl_tree.display().to_string(),
-        run_tree: input.run_tree.display().to_string(),
-        host_perl: input.config.host_perl.display().to_string(),
+        prepared_tree: receipt_path_display(input.perl_tree),
+        run_tree: receipt_path_display(input.run_tree),
+        host_perl: receipt_path_display(input.host_perl),
         runner: input.config.runner,
         mode: input.config.mode,
         profile: input.config.profile,
@@ -6147,7 +5081,7 @@ mod tests {
     fn execute_mode_requires_explicit_selected_tests() -> TestResult {
         let config = RunConfig {
             perl_tree: PathBuf::from("unused"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -6169,7 +5103,7 @@ mod tests {
     fn execute_mode_rejects_non_allowlisted_test_selection() -> TestResult {
         let config = RunConfig {
             perl_tree: PathBuf::from("unused"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -6198,7 +5132,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let config = RunConfig {
             perl_tree: temp.path().join("perl"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -6214,6 +5148,7 @@ mod tests {
         ];
         let records = vec![
             RunnerRecord {
+                mechanism: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/ok.t".into(),
@@ -6237,6 +5172,7 @@ mod tests {
                 }],
             },
             RunnerRecord {
+                mechanism: None,
                 schema_version: "perl_core_harness.runner_record.v1".into(),
                 mode: "parse".into(),
                 path: "base/bad.t".into(),
@@ -6256,6 +5192,7 @@ mod tests {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &run_tree,
+            host_perl: Path::new("perl"),
             observation: &observation,
         });
 
@@ -6283,7 +5220,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let config = RunConfig {
             perl_tree: temp.path().join("perl"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Compile,
             profile: HarnessProfile::Base,
@@ -6307,6 +5244,7 @@ mod tests {
             supporting_test: "base/ok.t".into(),
         };
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -6325,6 +5263,7 @@ mod tests {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &temp.path().join("run"),
+            host_perl: Path::new("perl"),
             observation: &observation,
         });
 
@@ -6337,6 +5276,7 @@ mod tests {
     fn duplicate_upstream_records_fail_closed_instead_of_silently_collapsing() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "compile".into(),
             path: path.into(),
@@ -6395,6 +5335,7 @@ mod tests {
     fn malformed_upstream_record_paths_fail_closed_before_report_assembly() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "not-a-normalized-test.txt".into(),
@@ -6428,7 +5369,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let config = RunConfig {
             perl_tree: temp.path().join("perl"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -6442,6 +5383,7 @@ mod tests {
             DiscoveredTest { path: "base/gap.t".into(), root: "base".into() },
         ];
         let upstream_only = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -6474,6 +5416,7 @@ mod tests {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &temp.path().join("run"),
+            host_perl: Path::new("perl"),
             observation: &observation,
         });
         assert_eq!(report.summary.files_total, 2);
@@ -6496,6 +5439,7 @@ mod tests {
     fn equal_payload_upstream_and_probe_rows_stay_distinct_authority_rows() -> TestResult {
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let payload = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/ok.t".into(),
@@ -6547,6 +5491,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let discovered = vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }];
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -6591,6 +5536,7 @@ mod tests {
         // A leftover passing row for this subject from a previous run, still
         // present because stale-context removal failed.
         let stale_row = RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/gap.t".into(),
@@ -6631,6 +5577,7 @@ mod tests {
         let discovered = vec![DiscoveredTest { path: "base/gap.t".into(), root: "base".into() }];
         let observation = settle_test_observation(HarnessMode::Parse, &discovered, &[], Some(0))?;
         let record = |path: &str| RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: path.into(),
@@ -6744,6 +5691,7 @@ mod tests {
             },
             buckets: BTreeMap::new(),
             file_results: vec![RunFileResult {
+                mechanism: None,
                 path: "base/ok.t".into(),
                 status: RunnerStatus::Pass,
                 assertions_passed: 1,
@@ -7169,6 +6117,50 @@ mod tests {
         Ok(())
     }
 
+    /// The V2 decode gate guards `baseline --series … --check` and
+    /// `validate-current-authority`. A hand-edited V2 artifact is exactly how a
+    /// forged claim would arrive, so the gate needs its own control (#14363).
+    #[test]
+    fn compile_baseline_v2_decode_rejects_an_inadmissible_mechanism() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        let config = sample_baseline_v2_config();
+        let baseline =
+            baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])?;
+
+        // Honest control first: the real artifact decodes.
+        let honest = serde_json::to_value(&baseline)?;
+        parse_compile_baseline_v2(honest, "honest")?;
+
+        // A compile baseline executes nothing, so any mechanism is a claim its
+        // rail never made.
+        let mut tampered = baseline.clone();
+        for result in &mut tampered.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let Err(error) = parse_compile_baseline_v2(serde_json::to_value(&tampered)?, "tampered")
+        else {
+            bail!("a compile V2 baseline claiming execution evidence must not decode");
+        };
+        if !format!("{error:?}").contains("only execution receipts may carry") {
+            bail!("unexpected mislabelling error: {error:?}");
+        }
+
+        // An execute-mode baseline claiming a rail nothing backs.
+        let mut forged = baseline;
+        forged.mode = HarnessMode::Execute;
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let Err(error) = parse_compile_baseline_v2(serde_json::to_value(&forged)?, "forged") else {
+            bail!("a V2 baseline claiming an unsupported rail must not decode");
+        };
+        if !format!("{error:?}").contains("no current rail can supply") {
+            bail!("unexpected forgery error: {error:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn compile_baseline_v2_rejects_an_extra_passing_file() -> TestResult {
         let discovery = sample_discovery_report();
@@ -7178,6 +6170,7 @@ mod tests {
             baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])?;
         let mut report = sample_compile_report();
         report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Pass,
             assertions_passed: 1,
@@ -7231,6 +6224,46 @@ mod tests {
     }
 
     #[test]
+    fn compile_baseline_v2_rejects_missing_or_blank_identity_inputs() -> TestResult {
+        let discovery = sample_discovery_report();
+        let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
+        for (label, value) in [
+            ("compiler subject", None),
+            ("invocation", None),
+            ("capability", None),
+            ("environment", None),
+            ("compiler subject", Some(" \t")),
+            ("invocation", Some(" \t")),
+            ("capability", Some(" \t")),
+            ("environment", Some(" \t")),
+        ] {
+            let mut config = sample_baseline_v2_config();
+            let value = value.map(str::to_owned);
+            match label {
+                "compiler subject" => config.compiler_subject_identity = value,
+                "invocation" => config.invocation_identity = value,
+                "capability" => config.capability_identity = value,
+                "environment" => config.environment_identity = value,
+                _ => bail!("unexpected identity label: {label}"),
+            }
+
+            let Err(error) =
+                baseline_v2_from_report(&sample_compile_report(), &series, &config, None, &[])
+            else {
+                bail!("{label} identity input must fail closed");
+            };
+            let expected = format!("baseline v2 requires a non-empty {label} identity");
+            let observed = error.to_string();
+            if observed != expected {
+                bail!(
+                    "unexpected {label} identity error: expected {expected:?}, observed {observed:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn compile_baseline_v2_requires_report_shape_validation() -> TestResult {
         let discovery = sample_discovery_report();
         let series = build_series_manifest(&discovery, &sample_series_config(), "now".into())?;
@@ -7264,6 +6297,108 @@ mod tests {
         replay.semantic_boundaries.reverse();
         if report_digest(&report)? != report_digest(&replay)? {
             bail!("volatile paths, timestamps, and record order changed the report digest");
+        }
+        Ok(())
+    }
+
+    // Parity anchor for the baseline authority (#5213).
+    //
+    // `report_digest` hashes a field-by-field `StableRunReportDigest` through serde,
+    // so the digest depends on that struct's field order and on which fields are
+    // included. Every other digest test here asserts only relational properties --
+    // that two reports agree, or that they differ -- and those all keep passing if a
+    // refactor silently reorders or drops a digest field. Pinning the value makes
+    // that class of change fail loudly.
+    #[test]
+    fn report_digest_is_pinned_for_a_fixed_fixture() -> TestResult {
+        let report = sample_compile_report();
+        let expected = "bbb3c20bd41372fcfe6211c790c574ecbb35842e1ab7bbcf1c882055aeb5cb2a";
+        if report_digest(&report)? != expected {
+            bail!(
+                "stable report digest framing changed: expected {expected}, observed {}",
+                report_digest(&report)?
+            );
+        }
+        Ok(())
+    }
+
+    // Negative control for the pin above: a semantic field must still move the digest,
+    // so the golden cannot be satisfied by a constant or a degenerate hash input.
+    #[test]
+    fn pinned_report_digest_still_responds_to_semantic_change() -> TestResult {
+        let report = sample_compile_report();
+        let mut regressed = report.clone();
+        regressed.summary.files_passed = 1;
+        regressed.summary.files_failed = 1;
+        if report_digest(&report)? == report_digest(&regressed)? {
+            bail!("a summary regression did not change the stable report digest");
+        }
+        Ok(())
+    }
+
+    // Parity anchor for baseline comparison ordering (#5213).
+    //
+    // `compare_baseline` runs its scalar schema/mode/profile checks and then extends
+    // the violation list from six functions in a fixed sequence: bucket shape,
+    // boundary shape, file results, failure buckets, summary assertions, semantic
+    // boundaries. `bail_baseline_comparison` joins the result in that order into the
+    // operator-facing error, so the sequence is user-visible. Every other test here
+    // asserts only that a violation of some kind is present, which stays true under
+    // any permutation.
+    //
+    // The fixture deliberately makes all six contribute at least one violation.
+    // `Vec::extend` of an empty iterator is a no-op wherever it sits, so a fixture
+    // where contributing and non-contributing checks alternate cannot observe a swap
+    // of two adjacent calls -- the realistic accident when moving this code. With
+    // every call contributing, each of the five adjacent transpositions changes the
+    // pinned sequence.
+    //
+    // The pin is the exact `{kind} {path}: {message}` line that
+    // `bail_baseline_comparison` emits, so violation text and path attribution are
+    // anchored too, not just the ordering of kinds.
+    #[test]
+    fn baseline_comparison_violation_order_is_pinned() -> TestResult {
+        let baseline = baseline_from_report(&sample_compile_report())?;
+        let mut report = sample_compile_report();
+        // scalar checks
+        report.mode = HarnessMode::Execute;
+        report.profile = HarnessProfile::Comp;
+        // bucket shape (a failing file with no failure record) and file results
+        report.file_results[0].status = RunnerStatus::Fail;
+        // failure buckets
+        report.buckets.insert("compile_error".into(), 1);
+        // summary assertions
+        report.summary.tap_assertions_passed = 0;
+        // boundary shape (empty reason) and semantic boundaries (not accepted)
+        let mut boundary = sample_semantic_boundary();
+        boundary.reason = String::new();
+        report.semantic_boundaries = vec![boundary];
+
+        let comparison = compare_baseline(&baseline, &report);
+        let observed = comparison
+            .violations
+            .iter()
+            .map(|violation| {
+                let path = violation.path.as_deref().unwrap_or("-");
+                format!("{:?} {path}: {}", violation.kind, violation.message)
+            })
+            .collect::<Vec<_>>();
+        let expected = [
+            "ModeMismatch -: baseline mode compile does not match report mode execute",
+            "ProfileMismatch -: baseline profile base does not match report profile comp",
+            "UnbucketedFailure base/lex.t: failing file has no failure bucket record",
+            "SemanticBoundary base/ok.t: semantic boundary has an empty reason",
+            "PreviouslyPassingFileFailed base/lex.t: file passed in baseline but fails in current report",
+            "BucketCountIncreased -: bucket compile_error increased from 0 to 1",
+            "AssertionRegression -: passed assertions regressed from 2 to 0",
+            "SemanticBoundary base/ok.t: current semantic boundary is not accepted by the baseline: runtime_symbolic_reference",
+        ]
+        .map(str::to_string)
+        .to_vec();
+        if observed != expected {
+            bail!(
+                "baseline violation order changed:\nexpected {expected:#?}\nobserved {observed:#?}"
+            );
         }
         Ok(())
     }
@@ -7894,6 +7029,7 @@ mod tests {
         let mut report = sample_compile_report();
         let baseline = baseline_from_report(&report)?;
         report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -7952,6 +7088,7 @@ mod tests {
         let baseline = baseline_from_report(&baseline_report)?;
         let mut current_report = baseline_report.clone();
         current_report.file_results.push(RunFileResult {
+            mechanism: None,
             path: "base/new.t".into(),
             status: RunnerStatus::Fail,
             assertions_passed: 0,
@@ -8068,6 +7205,11 @@ mod tests {
             let report_path = temp.path().join(name);
             let mut report = sample_compile_report();
             report.mode = mode;
+            // Keep the fixture consistent with the mode under test: the
+            // subject here is the terminal status, not the mechanism.
+            for result in &mut report.file_results {
+                result.mechanism = mode_mechanism(mode);
+            }
             report.harness_status = status;
             write_run_report(&report_path, &report)?;
 
@@ -8353,7 +7495,7 @@ mod tests {
 
         let config = RunConfig {
             perl_tree: temp.path().join("prepared"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -8364,6 +7506,7 @@ mod tests {
         };
         let discovered = vec![DiscoveredTest { path: "base/if.t".into(), root: "base".into() }];
         let records = vec![RunnerRecord {
+            mechanism: None,
             schema_version: "perl_core_harness.runner_record.v1".into(),
             mode: "parse".into(),
             path: "base/if.t".into(),
@@ -8381,6 +7524,7 @@ mod tests {
             config: &config,
             perl_tree: temp.path(),
             run_tree: &run_tree,
+            host_perl: Path::new("perl"),
             observation: &observation,
         });
         write_run_report(&run_path, &report)?;
@@ -8411,12 +7555,14 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: None,
                     path: "base/lex.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
                     assertions_total: 1,
                 },
                 RunFileResult {
+                    mechanism: None,
                     path: "base/ok.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 1,
@@ -9028,6 +8174,118 @@ mod tests {
     }
 
     #[test]
+    fn a_published_series_names_its_execution_rail_as_fixture_replay() -> TestResult {
+        // End-to-end over the real loader: before #14763 the execute receipt's
+        // mechanism was validated and then dropped, so the published series
+        // said only `available` and left "scaffold, not evaluated" to prose.
+        let temp = tempfile::tempdir()?;
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let baseline = baseline_v2_from_report(
+            &sample_compile_report(),
+            &series,
+            &sample_baseline_v2_config(),
+            None,
+            &[],
+        )?;
+        let series_path = temp.path().join("series.json");
+        let parse_path = temp.path().join("parse.json");
+        let compile_path = temp.path().join("compile.json");
+        let baseline_path = temp.path().join("baseline.json");
+        let execute_path = temp.path().join("execute.json");
+        let accepted_path = temp.path().join("accepted-baseline.json");
+        let index_path = temp.path().join("bundle").join("index.json");
+        let normalized = index_path
+            .parent()
+            .ok_or_else(|| color_eyre::eyre::eyre!("missing bundle parent"))?
+            .join("normalized");
+        fs::create_dir_all(&normalized)?;
+        fs::write(&series_path, serde_json::to_string_pretty(&series)?)?;
+        write_run_report(&parse_path, &sample_parse_report())?;
+        write_run_report(&compile_path, &sample_compile_report())?;
+        write_compile_baseline_v2(&baseline_path, &baseline)?;
+        write_compile_baseline_v2(&accepted_path, &baseline)?;
+
+        // The execute receipt has to answer to the same series identity the
+        // rail loader checks, otherwise it is rejected before the mechanism
+        // is ever read.
+        let mut execute = sample_execute_report();
+        execute.commit = series.repository_commit.clone();
+        execute.perl_ref = series.perl_resolved_ref.clone();
+        execute.profile = series.profile;
+        execute.runner = series.runner;
+        write_run_report(&execute_path, &execute)?;
+
+        fs::write(
+            normalized.join("semantic-boundaries.json"),
+            serde_json::to_string_pretty(&baseline.semantic_boundaries)?,
+        )?;
+        fs::write(normalized.join("compile.json"), fs::read_to_string(&compile_path)?)?;
+        let mut index = sample_boundary_bundle().index;
+        index.series_id = series.series_id.clone();
+        index.manifest_hash = series.manifest_hash.clone();
+        index.repository_commit = series.repository_commit.clone();
+        index.profile = series.profile;
+        index.perl_resolved_ref = series.perl_resolved_ref.clone();
+        index.artifacts = vec![
+            EvidenceBundleArtifact {
+                kind: "semantic_boundaries".into(),
+                logical_path: "normalized/semantic-boundaries.json".into(),
+            },
+            EvidenceBundleArtifact {
+                kind: "compile_report".into(),
+                logical_path: "normalized/compile.json".into(),
+            },
+        ];
+        fs::write(&index_path, serde_json::to_string_pretty(&index)?)?;
+
+        let state = load_compatibility_state(CompatibilityLoadConfig {
+            inputs: vec![CompatibilitySeriesInput {
+                series_manifest: series_path,
+                parse_report: parse_path,
+                compile_report: normalized.join("compile.json"),
+                compile_baseline: baseline_path,
+                accepted_baseline: Some(accepted_path),
+                evidence_bundle: index_path,
+                boundary_registry: None,
+                cluster_history: None,
+                execute_report: Some(execute_path),
+                current_authority: None,
+            }],
+            repository_commit: "abc".into(),
+        })?;
+
+        let published = &state.series[0];
+        assert_eq!(published.execution.availability, CompatibilityRailAvailability::Available);
+        assert_eq!(
+            published.execution.mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "an available execution rail must name the rail that produced it"
+        );
+        assert_eq!(
+            published.current_observation.execution.mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "the observation a consumer reads must carry it too"
+        );
+        // The rails that would imply evaluation stay absent and name nothing.
+        assert_eq!(published.eir.availability, CompatibilityRailAvailability::NotAvailable);
+        assert!(published.eir.mechanism.is_none());
+        assert!(published.differential_oracle.mechanism.is_none());
+        assert!(published.curated_gold.mechanism.is_none());
+
+        // The mechanism has to survive the wire, since that is where every
+        // downstream consumer reads it.
+        let encoded = serde_json::to_string_pretty(&state)?;
+        assert!(encoded.contains("\"mechanism\": \"fixture_replay\""), "{encoded}");
+        let decoded: CompilerCompatibilityState = serde_json::from_str(&encoded)?;
+        assert_eq!(decoded, state);
+        Ok(())
+    }
+
+    #[test]
     fn compatibility_transition_classifies_regression_without_lowering_ratchet() -> TestResult {
         let series = build_series_manifest(
             &sample_discovery_report(),
@@ -9163,36 +8421,42 @@ mod tests {
             buckets: BTreeMap::new(),
             file_results: vec![
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/cond.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
                     assertions_total: 4,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/if.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
                     assertions_total: 2,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/num.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 56,
                     assertions_total: 56,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/pat.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 2,
                     assertions_total: 2,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/translate.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 257,
                     assertions_total: 257,
                 },
                 RunFileResult {
+                    mechanism: Some(ExecutionMechanism::FixtureReplay),
                     path: "base/while.t".into(),
                     status: RunnerStatus::Pass,
                     assertions_passed: 4,
@@ -9263,7 +8527,7 @@ mod tests {
     fn sample_smoke_config(modes: Vec<HarnessMode>) -> SmokeConfig {
         SmokeConfig {
             perl_tree: PathBuf::from("/tmp/perl"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes,
@@ -9307,6 +8571,132 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scheduler_perl_defaults_to_the_prepared_tree_built_perl() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+        let tree_perl = perl_tree.join("perl");
+        fs::write(&tree_perl, "sentinel built perl\n")?;
+
+        let resolved = resolve_scheduler_perl(&perl_tree, None)?;
+
+        assert_eq!(resolved, tree_perl);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_perl_explicit_override_wins() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        let override_perl = temp.path().join("version-matched-perl");
+        fs::write(&override_perl, "sentinel override perl\n")?;
+
+        let resolved = resolve_scheduler_perl(&perl_tree, Some(&override_perl))?;
+
+        assert_eq!(resolved, override_perl.canonicalize()?);
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_perl_override_is_canonicalized_for_the_t_dir_cwd() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        let override_perl = temp.path().join("version-matched-perl");
+        fs::write(&override_perl, "sentinel override perl\n")?;
+        let dotted = temp.path().join(".").join("version-matched-perl");
+
+        let resolved = resolve_scheduler_perl(&perl_tree, Some(&dotted))?;
+
+        assert_eq!(resolved, override_perl.canonicalize()?);
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_path_display_records_project_paths_without_host_identity() -> TestResult {
+        let root = project_root()?.canonicalize()?;
+        let inside = root.join("target").join("perl-core").join("smoke").join("base");
+        let recorded = receipt_path_display(&inside);
+        assert_eq!(recorded, "target/perl-core/smoke/base", "unexpected: {recorded}");
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_path_display_keeps_paths_outside_the_project_verbatim() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let outside = temp.path().join("prepared-perl").join("perl");
+        let recorded = receipt_path_display(&outside);
+        assert_eq!(recorded, outside.display().to_string().replace('\\', "/"));
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_perl_missing_tree_perl_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+
+        let Err(err) = resolve_scheduler_perl(&perl_tree, None) else {
+            bail!("a prepared tree without a built perl must fail closed");
+        };
+
+        let text = err.to_string();
+        assert!(text.contains("prepared Perl tree has no built perl at"), "unexpected: {text}");
+        assert!(text.contains("--host-perl"), "unexpected: {text}");
+        Ok(())
+    }
+
+    #[test]
+    fn scheduler_perl_missing_override_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = temp.path().join("prepared-perl");
+        fs::create_dir_all(&perl_tree)?;
+        fs::write(perl_tree.join("perl"), "sentinel built perl\n")?;
+        let missing_override = temp.path().join("missing-perl");
+
+        let Err(err) = resolve_scheduler_perl(&perl_tree, Some(&missing_override)) else {
+            bail!("a missing --host-perl override must fail closed");
+        };
+
+        assert!(
+            err.to_string().contains("explicit --host-perl override does not exist"),
+            "unexpected: {err}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_runs_scheduler_under_the_tree_built_perl_by_default() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree(temp.path())?;
+        let tree_perl = perl_tree.join("perl");
+        fs::write(&tree_perl, "#!/bin/sh\nexec /bin/sh \"$@\"\n")?;
+        set_executable(&tree_perl)?;
+        let output = temp.path().join("discovery.json");
+
+        discover(DiscoverConfig {
+            perl_tree: perl_tree.clone(),
+            host_perl: None,
+            runner: HarnessRunner::Test,
+            profile: HarnessProfile::Base,
+            output: Some(output.clone()),
+        })?;
+
+        let raw = fs::read_to_string(output)?;
+        let report: DiscoveryReport = serde_json::from_str(&raw)?;
+        assert_eq!(report.host_perl, perl_tree.canonicalize()?.join("perl").display().to_string());
+        assert_eq!(
+            report.tests,
+            vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }]
+        );
+        Ok(())
+    }
+
     #[cfg(unix)]
     #[test]
     fn discover_invokes_dumptests_and_writes_manifest() -> TestResult {
@@ -9316,7 +8706,7 @@ mod tests {
 
         discover(DiscoverConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             output: Some(output.clone()),
@@ -9328,7 +8718,12 @@ mod tests {
         assert_eq!(report.runner, HarnessRunner::Test);
         assert_eq!(report.profile, HarnessProfile::Base);
         assert_eq!(report.prepared_tree, perl_tree.canonicalize()?.display().to_string());
-        assert_eq!(report.host_perl, "/bin/sh");
+        // The override is recorded in its canonicalized form: the true
+        // interpreter identity, resolvable from the scheduler's t/ cwd.
+        assert_eq!(
+            report.host_perl,
+            PathBuf::from("/bin/sh").canonicalize()?.display().to_string()
+        );
         assert_eq!(
             report.tests,
             vec![DiscoveredTest { path: "base/ok.t".into(), root: "base".into() }]
@@ -9346,7 +8741,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -9377,7 +8772,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -9411,7 +8806,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -9439,7 +8834,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Compile,
             profile: HarnessProfile::Base,
@@ -9474,7 +8869,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -9494,7 +8889,432 @@ mod tests {
         assert_eq!(report.summary.tap_assertions_passed, 2);
         assert_eq!(report.file_results[0].path, "base/if.t");
         assert_eq!(report.file_results[0].assertions_total, 2);
+        assert_eq!(
+            report.file_results[0].mechanism,
+            Some(ExecutionMechanism::FixtureReplay),
+            "the report must say which rail produced these assertions"
+        );
+        assert!(
+            raw.contains(r#""mechanism": "fixture_replay""#),
+            "the published report must name the mechanism on the wire: {raw}"
+        );
         assert!(!perl_tree.join("t").join("perl").exists(), "source Perl tree must not be mutated");
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_report_that_relabels_its_mechanism_fails_closed() -> TestResult {
+        // The report — not the runner-record JSONL — is what becomes a
+        // checked-in baseline and what the ratchet compares against. Editing
+        // one field of it must not upgrade a scaffold claim.
+        let temp = tempfile::tempdir()?;
+        for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+            let mut forged = sample_execute_report();
+            for result in &mut forged.file_results {
+                result.mechanism = Some(mechanism);
+            }
+            let path = temp.path().join(format!("{mechanism}-report.json"));
+            write_run_report(&path, &forged)?;
+
+            let Err(error) = read_run_report(&path) else {
+                bail!("a report claiming {mechanism} must not be readable");
+            };
+            let text = format!("{error:?}");
+            if !text.contains("no current rail can supply") {
+                bail!("unexpected report-read error for {mechanism}: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_report_that_drops_its_mechanism_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut stripped = sample_execute_report();
+        for result in &mut stripped.file_results {
+            result.mechanism = None;
+        }
+        let path = temp.path().join("stripped-report.json");
+        write_run_report(&path, &stripped)?;
+
+        let Err(error) = read_run_report(&path) else {
+            bail!("an execute report with no mechanism must not be readable");
+        };
+        let text = format!("{error:?}");
+        if !text.contains("does not declare an execution mechanism") {
+            bail!("unexpected report-read error: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_execute_report_is_refused_at_decode_and_acceptance() -> TestResult {
+        // Every per-row rule passes vacuously on an empty collection, so an
+        // empty execute artifact would otherwise be admitted while naming no
+        // rail for anything (#14363, reported in review on #14364).
+        let temp = tempfile::tempdir()?;
+        let mut empty = sample_execute_report();
+        empty.file_results.clear();
+        empty.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+        let path = temp.path().join("empty-execute-report.json");
+        write_run_report(&path, &empty)?;
+
+        let Err(decode_error) = read_run_report(&path) else {
+            bail!("an empty execute report must not decode");
+        };
+        if !format!("{decode_error:?}").contains("names no execution mechanism for anything") {
+            bail!("unexpected decode error: {decode_error:?}");
+        }
+
+        let Err(accept_error) = baseline_from_report(&empty) else {
+            bail!("an empty execute report must not be acceptable as a baseline");
+        };
+        if !format!("{accept_error:?}").contains("names no execution mechanism for anything") {
+            bail!("unexpected acceptance error: {accept_error:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_compile_report_stays_admissible() -> TestResult {
+        // Scope boundary: whether an empty observation of any mode is evidence
+        // is a separate pre-existing question (#14375). This contract refuses
+        // only the execute case, where emptiness means no rail is named.
+        let temp = tempfile::tempdir()?;
+        let mut empty = sample_compile_report();
+        empty.file_results.clear();
+        empty.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+        let path = temp.path().join("empty-compile-report.json");
+        write_run_report(&path, &empty)?;
+
+        read_run_report(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn accepting_a_baseline_from_a_relabelled_report_fails_closed() -> TestResult {
+        // `baseline --accept` copies file_results straight into the baseline,
+        // so an unvalidated report would mint a forged checked-in artifact.
+        let mut forged = sample_execute_report();
+        for result in &mut forged.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+
+        let Err(error) = baseline_from_report(&forged) else {
+            bail!("a forged report must not be acceptable as a baseline");
+        };
+        if !error.to_string().contains("no current rail can supply") {
+            bail!("unexpected baseline-accept error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reading_a_hand_edited_baseline_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let mut baseline = baseline_from_report(&sample_execute_report())?;
+        for result in &mut baseline.file_results {
+            result.mechanism = Some(ExecutionMechanism::EirExecution);
+        }
+        let path = temp.path().join("forged-baseline.json");
+        write_compile_baseline(&path, &baseline)?;
+
+        let Err(error) = read_compile_baseline(&path) else {
+            bail!("a hand-edited baseline must not be readable");
+        };
+        let text = format!("{error:?}");
+        if !text.contains("no current rail can supply") {
+            bail!("unexpected baseline-read error: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_checked_in_execute_baseline_declares_fixture_replay() -> TestResult {
+        // The durable artifact this PR stamps must itself satisfy the contract.
+        let root = project_root()?;
+        let baseline = read_compile_baseline(
+            &root.join(".ci").join("perl-core-harness").join("base-execute-baseline.json"),
+        )?;
+
+        if baseline.file_results.is_empty() {
+            bail!("checked-in execute baseline has no file results");
+        }
+        for result in &baseline.file_results {
+            if result.mechanism != Some(ExecutionMechanism::FixtureReplay) {
+                bail!(
+                    "checked-in execute baseline does not classify {}: {:?}",
+                    result.path,
+                    result.mechanism
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_execution_rail_carries_the_mechanism_its_receipt_declares() -> TestResult {
+        // Before #14763 this receipt produced a bare `available` rail whose
+        // only hint was the reason sentence; the mechanism was read, validated,
+        // and then dropped.
+        use perl_core_harness_types::{CompatibilityRailRole, validate_rail_mechanism};
+
+        let mechanism = execution_receipt_mechanism(&sample_execute_report())?;
+        assert_eq!(mechanism, ExecutionMechanism::FixtureReplay);
+
+        let rail = available_rail(
+            RUN_REPORT_SCHEMA_VERSION,
+            format!("selected execution receipt validated; mechanism {mechanism}"),
+            vec!["bundle:bundle-1".into()],
+            Some(mechanism),
+        );
+        if let Err(violation) = validate_rail_mechanism(CompatibilityRailRole::Execution, &rail) {
+            bail!("derived execution rail is inadmissible: {violation}");
+        }
+        assert_eq!(rail.mechanism, Some(ExecutionMechanism::FixtureReplay));
+        Ok(())
+    }
+
+    #[test]
+    fn the_published_schema_states_the_same_rail_rule_as_the_validator() -> TestResult {
+        // The schema is the contract a consumer validates against. If it and
+        // `validate_rail_mechanism` disagree, one of them is decoration —
+        // which is how the mechanism came to live in prose in the first place.
+        use perl_core_harness_types::{CompatibilityRailRole, SUPPORTED_EXECUTION_MECHANISMS};
+
+        let root = project_root()?;
+        let schema: serde_json::Value = serde_json::from_str(&fs::read_to_string(
+            root.join("schemas").join("compiler_compatibility.v1.schema.json"),
+        )?)?;
+        let defs = &schema["$defs"];
+
+        let published: Vec<&str> = defs["rail"]["properties"]["mechanism"]["enum"]
+            .as_array()
+            .ok_or_else(|| color_eyre::eyre::eyre!("rail.mechanism publishes no enum"))?
+            .iter()
+            .map(|tag| tag.as_str().unwrap_or_default())
+            .collect();
+        let known: Vec<&str> =
+            ExecutionMechanism::ALL.iter().map(|mechanism| mechanism.as_str()).collect();
+        if published != known {
+            bail!("schema publishes mechanisms {published:?}, but the enum is {known:?}");
+        }
+
+        for (def, role) in [
+            ("selected_execution_rail", CompatibilityRailRole::Execution),
+            ("eir_rail", CompatibilityRailRole::Eir),
+            ("differential_oracle_rail", CompatibilityRailRole::DifferentialOracle),
+        ] {
+            let expected = role
+                .admissible_mechanism()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{role} rail declares no mechanism"))?;
+            let published = defs[def]["allOf"][1]["properties"]["mechanism"]["const"]
+                .as_str()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{def} pins no mechanism"))?;
+            if published != expected.as_str() {
+                bail!("schema pins {def} to {published}, but the validator admits {expected}");
+            }
+        }
+
+        // Rails representing no execution must be forbidden a mechanism, not
+        // merely left unconstrained.
+        if defs["non_execution_rail"]["allOf"][1]["not"]["required"][0] != "mechanism" {
+            bail!("schema does not forbid a mechanism on rails representing no execution");
+        }
+
+        // "Has evidence" must mean the same thing in both contracts. `stale`
+        // evidence exists but is not current, so it keeps its mechanism.
+        let evidence: Vec<&str> =
+            defs["execution_like_rail"]["allOf"][1]["if"]["properties"]["availability"]["enum"]
+                .as_array()
+                .ok_or_else(|| color_eyre::eyre::eyre!("schema pins no evidence-bearing states"))?
+                .iter()
+                .map(|state| state.as_str().unwrap_or_default())
+                .collect();
+        if evidence != ["available", "partial", "stale"] {
+            bail!(
+                "schema treats {evidence:?} as evidence-bearing; the validator uses available, partial, and stale"
+            );
+        }
+
+        // A rail whose mechanism is not yet supported must be unable to carry
+        // evidence in the schema too, or a schema-only consumer would accept
+        // evaluation evidence the producer refuses to emit.
+        for (def, role) in [
+            ("selected_execution_rail", CompatibilityRailRole::Execution),
+            ("eir_rail", CompatibilityRailRole::Eir),
+            ("differential_oracle_rail", CompatibilityRailRole::DifferentialOracle),
+        ] {
+            let mechanism = role
+                .admissible_mechanism()
+                .ok_or_else(|| color_eyre::eyre::eyre!("{role} rail declares no mechanism"))?;
+            let supported = SUPPORTED_EXECUTION_MECHANISMS.contains(&mechanism);
+            let constrained = defs[def]["allOf"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|entry| entry["$ref"] == "#/$defs/unsupported_execution_rail");
+            if supported == constrained {
+                bail!(
+                    "{def} carries mechanism {mechanism} (supported={supported}) but its \
+                     not_available constraint is {constrained}; the schema and \
+                     SUPPORTED_EXECUTION_MECHANISMS disagree about which rails may hold evidence"
+                );
+            }
+        }
+        if defs["unsupported_execution_rail"]["properties"]["availability"]["const"]
+            != "not_available"
+        {
+            bail!("the unsupported-rail constraint does not pin availability to not_available");
+        }
+
+        // Every rail slot the schema declares must be one the Rust walk
+        // reaches. The debt rails were bound to `non_execution_rail` here while
+        // `validate_series_rail_mechanisms` never visited them, so the two
+        // contracts disagreed about a slot neither test noticed. Pinning the
+        // slot inventory makes a newly added rail fail here until it is wired
+        // into the walk, rather than silently escaping it.
+        let mut slots: Vec<String> = Vec::new();
+        for (def_name, def) in
+            defs.as_object().ok_or_else(|| color_eyre::eyre::eyre!("schema has no $defs"))?
+        {
+            let Some(properties) = def["properties"].as_object() else {
+                continue;
+            };
+            for (property, value) in properties {
+                if let Some(reference) = value["$ref"].as_str()
+                    && reference.ends_with("rail")
+                {
+                    slots.push(format!("{def_name}.{property}"));
+                }
+            }
+        }
+        slots.sort();
+        let walked = [
+            "debt.history",
+            "debt.registry",
+            "observation.curated_gold",
+            "observation.differential_oracle",
+            "observation.eir",
+            "observation.execution",
+            "series.curated_gold",
+            "series.differential_oracle",
+            "series.eir",
+            "series.execution",
+        ];
+        if slots != walked {
+            bail!(
+                "schema declares rail slots {slots:?}, but validate_series_rail_mechanisms walks \
+                 {walked:?}; wire the new slot into the walk before publishing it"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_of_another_schema_cannot_claim_a_current_rail() -> TestResult {
+        // The rail publishes RUN_REPORT_SCHEMA_VERSION as its own identity, so
+        // accepting a report that declares a different one would relabel it
+        // current.
+        let temp = tempfile::tempdir()?;
+        let series = build_series_manifest(
+            &sample_discovery_report(),
+            &sample_series_config(),
+            "2026-07-02T00:00:00Z".into(),
+        )?;
+        let mut execute = sample_execute_report();
+        execute.commit = series.repository_commit.clone();
+        execute.perl_ref = series.perl_resolved_ref.clone();
+        execute.profile = series.profile;
+        execute.runner = series.runner;
+        execute.schema_version = "perl_core_harness.report.v0".into();
+
+        let path = temp.path().join("execute.json");
+        fs::write(&path, serde_json::to_string_pretty(&execute)?)?;
+        let Err(error) = load_execution_rail(&path, &series, "bundle-1") else {
+            bail!("a report of another schema must not produce a current rail");
+        };
+        assert!(error.to_string().contains("not the supported run-report schema"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_naming_no_mechanism_cannot_claim_a_rail() -> TestResult {
+        // `read_run_report` rejects this shape on decode, so the rail
+        // derivation is not the only guard — but it must not be a hole either:
+        // a receipt that names nothing summarizes to nothing.
+        let mut report = sample_execute_report();
+        for result in &mut report.file_results {
+            result.mechanism = None;
+        }
+        let Err(error) = execution_receipt_mechanism(&report) else {
+            bail!("a receipt naming no mechanism must not produce a rail");
+        };
+        assert!(error.to_string().contains("names no execution mechanism"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_execution_receipt_mixing_mechanisms_fails_closed() -> TestResult {
+        // A receipt spanning two rails describes neither. Summarizing it as one
+        // would let a single relabeled file move the whole rail.
+        let mut report = sample_execute_report();
+        report.file_results[0].mechanism = Some(ExecutionMechanism::EirExecution);
+        let Err(error) = execution_receipt_mechanism(&report) else {
+            bail!("a receipt mixing mechanisms must not produce one rail");
+        };
+        let rendered = error.to_string();
+        assert!(rendered.contains("mixes execution mechanisms"), "{rendered}");
+        assert!(rendered.contains("fixture_replay"), "{rendered}");
+        assert!(rendered.contains("eir_execution"), "{rendered}");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_execute_refuses_a_runner_that_hides_its_mechanism() -> TestResult {
+        // A runner that emits execute receipts without naming its rail fails
+        // the run rather than producing a report whose 2 assertions read as
+        // evaluated work (#8254).
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test(temp.path())?;
+        let runner = write_fake_unclassified_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        let error = match run_mode(RunConfig {
+            perl_tree,
+            host_perl: Some(PathBuf::from("/bin/sh")),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) {
+            Err(error) => error,
+            Ok(()) => bail!("an unclassified execute receipt must not produce a report"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("does not declare an execution mechanism") {
+            bail!("unexpected run error: {text}");
+        }
+        if output.exists() {
+            bail!("no report should be published from inadmissible receipts");
+        }
         Ok(())
     }
 
@@ -9508,7 +9328,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -9534,7 +9354,7 @@ mod tests {
 
         run_mode(RunConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Execute,
             profile: HarnessProfile::Base,
@@ -9587,7 +9407,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -9623,7 +9443,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Comp,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -9666,7 +9486,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree: perl_tree.clone(),
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Run,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -9709,7 +9529,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Parse],
@@ -9741,7 +9561,7 @@ mod tests {
 
         smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Compile],
@@ -9773,7 +9593,7 @@ mod tests {
 
         let Err(err) = smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Compile],
@@ -9807,7 +9627,7 @@ mod tests {
 
         let Err(err) = smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Compile],
@@ -9837,7 +9657,7 @@ mod tests {
 
         let Err(err) = smoke(SmokeConfig {
             perl_tree: temp.path().join("missing"),
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -9860,7 +9680,7 @@ mod tests {
 
         let Err(err) = smoke(SmokeConfig {
             perl_tree,
-            host_perl: PathBuf::from("perl"),
+            host_perl: None,
             runner: HarnessRunner::Test,
             profile: HarnessProfile::Base,
             modes: vec![HarnessMode::Parse, HarnessMode::Compile],
@@ -9885,7 +9705,7 @@ mod tests {
 
         let Err(err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -9927,7 +9747,7 @@ exit 7
 
         let Err(err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -9966,7 +9786,7 @@ exit 7
 
         let Err(err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10017,7 +9837,7 @@ exit 7
 
         let Err(_err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10047,7 +9867,7 @@ exit 7
 
         run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10085,7 +9905,7 @@ exit 7
 
         run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10120,7 +9940,7 @@ exit 7
 
         run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10149,7 +9969,7 @@ exit 7
 
         let Err(err) = run_mode(RunConfig {
             perl_tree,
-            host_perl: PathBuf::from("/bin/sh"),
+            host_perl: Some(PathBuf::from("/bin/sh")),
             runner: HarnessRunner::Test,
             mode: HarnessMode::Parse,
             profile: HarnessProfile::Base,
@@ -10392,6 +10212,11 @@ fi
 set -eu
 script="${1:-unknown.t}"
 mode="${PERL_LSP_HARNESS_MODE:-execute}"
+# Mirror the real runner: only execution receipts name their rail.
+mechanism=''
+if [ "$mode" = "execute" ]; then
+  mechanism=',"mechanism":"fixture_replay"'
+fi
 mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
 case "$script" in
   *base/cond.t)
@@ -10400,7 +10225,7 @@ case "$script" in
     printf 'ok 2 - operator ne\n'
     printf 'ok 3 - operator ==\n'
     printf 'ok 4 - operator !=\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/while.t)
     printf '1..4\n'
@@ -10408,7 +10233,7 @@ case "$script" in
     printf 'ok 2\n'
     printf 'ok 3\n'
     printf 'ok 4\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":4,"assertions_total":4,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/num.t)
     printf '1..56\n'
@@ -10417,13 +10242,13 @@ case "$script" in
       printf 'ok %s\n' "$i"
       i=$((i + 1))
     done
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":56,"assertions_total":56,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":56,"assertions_total":56,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/pat.t)
     printf '1..2\n'
     printf 'ok 1 - match regex\n'
     printf 'ok 2 - match regex\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *base/translate.t)
     printf '1..257\n'
@@ -10435,15 +10260,92 @@ case "$script" in
       assertion=$((assertion + 1))
     done
     printf 'ok 257 - native_to_unicode of large number\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":257,"assertions_total":257,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":257,"assertions_total":257,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
   *)
     printf '1..2\n'
     printf 'ok 1 - if eq\n'
     printf 'ok 2 - if ne\n'
-    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+    printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null%s}\n' "$mode" "$script" "$mechanism" >> "$PERL_LSP_HARNESS_CONTEXT"
     ;;
 esac
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_mode_execute_refuses_a_runner_that_declares_the_wrong_mode() -> TestResult {
+        // A record's mechanism is checked against the mode the *record*
+        // declares, while the published report takes its mode from the run
+        // config. A stale runner declaring `compile` during an execute run
+        // would otherwise pass ingestion with no mechanism and be published as
+        // execute evidence — a report this crate's own reader would then
+        // refuse to reopen (#14363, reported in review on #14364).
+        let temp = tempfile::tempdir()?;
+        let perl_tree = write_fake_perl_tree_with_base_if_test(temp.path())?;
+        let runner = write_fake_wrong_mode_execute_runner(temp.path())?;
+        let output = temp.path().join("execute-report.json");
+
+        let error = match run_mode(RunConfig {
+            perl_tree,
+            host_perl: Some(PathBuf::from("/bin/sh")),
+            runner: HarnessRunner::Test,
+            mode: HarnessMode::Execute,
+            profile: HarnessProfile::Base,
+            tests: vec!["base/if.t".into()],
+            output: Some(output.clone()),
+            runner_binary: Some(runner),
+            diagnostic_probes: true,
+        }) {
+            Err(error) => error,
+            Ok(()) => bail!("a wrong-mode runner record must not produce a report"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("declares compile mode during a execute run") {
+            bail!("unexpected wrong-mode error: {text}");
+        }
+        if output.exists() {
+            bail!("no report should be published from a wrong-mode observation");
+        }
+        Ok(())
+    }
+
+    /// An execute runner whose record declares `compile` — the mode the run did
+    /// not select — and therefore carries no mechanism.
+    #[cfg(unix)]
+    fn write_fake_wrong_mode_execute_runner(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-execute-wrong-mode.sh");
+        let body = r#"#!/bin/sh
+set -eu
+script="${1:-unknown.t}"
+mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
+printf '1..2\n'
+printf 'ok 1 - if eq\n'
+printf 'ok 2 - if ne\n'
+printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"compile","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
+"#;
+        fs::write(&runner, body)?;
+        set_executable(&runner)?;
+        Ok(runner)
+    }
+
+    /// An execute runner that produces TAP but hides which rail produced it.
+    #[cfg(unix)]
+    fn write_fake_unclassified_execute_runner(root: &Path) -> TestResult<PathBuf> {
+        let runner = root.join("fake-runner-execute-unclassified.sh");
+        let body = r#"#!/bin/sh
+set -eu
+script="${1:-unknown.t}"
+mode="${PERL_LSP_HARNESS_MODE:-execute}"
+mkdir -p "$(dirname "$PERL_LSP_HARNESS_CONTEXT")"
+printf '1..2\n'
+printf 'ok 1 - if eq\n'
+printf 'ok 2 - if ne\n'
+printf '{"schema_version":"perl_core_harness.runner_record.v1","mode":"%s","path":"%s","status":"pass","assertions_passed":2,"assertions_total":2,"bucket":null,"first_diagnostic":null}\n' "$mode" "$script" >> "$PERL_LSP_HARNESS_CONTEXT"
 "#;
         fs::write(&runner, body)?;
         set_executable(&runner)?;
@@ -10898,6 +10800,35 @@ exit 1
 
     fn triage_config(bundle: PathBuf, output: PathBuf) -> TriageConfig {
         TriageConfig { bundle, output, history: None, write_history: false, check_history: false }
+    }
+
+    #[test]
+    fn triage_refuses_a_bundle_whose_report_over_claims_its_evidence() -> TestResult {
+        // Triage decodes the bundle's compile report and clusters it into
+        // durable failure-cluster and history artifacts. A report claiming
+        // execution evidence its rail never produced must not reach them.
+        let temp = tempfile::tempdir()?;
+        let mut report = two_file_parse_failure_report();
+        report.mode = HarnessMode::Compile;
+        for result in &mut report.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+        let bundle = write_triage_bundle(temp.path(), &report)?;
+        let output = temp.path().join("triage");
+
+        let error = match triage(triage_config(bundle, output.clone())) {
+            Err(error) => error,
+            Ok(()) => bail!("a compile report claiming execution evidence must not be clustered"),
+        };
+
+        let text = format!("{error:?}");
+        if !text.contains("only execution receipts may carry") {
+            bail!("unexpected triage error: {text}");
+        }
+        if output.join("failure-clusters.json").exists() {
+            bail!("no cluster artifact should be written from an inadmissible report");
+        }
+        Ok(())
     }
 
     #[test]
@@ -11530,16 +11461,20 @@ exit 1
             RUN_REPORT_SCHEMA_VERSION,
             "selected execution receipt validated".into(),
             vec!["bundle:bundle-1".into()],
+            Some(ExecutionMechanism::FixtureReplay),
         );
         assert_eq!(available.availability, CompatibilityRailAvailability::Available);
         assert_eq!(available.schema_version.as_deref(), Some(RUN_REPORT_SCHEMA_VERSION));
         assert_eq!(available.evidence_refs, vec!["bundle:bundle-1"]);
+        assert_eq!(available.mechanism, Some(ExecutionMechanism::FixtureReplay));
 
         let unavailable = unavailable_rail("no execution receipt was supplied");
         assert_eq!(unavailable.availability, CompatibilityRailAvailability::NotAvailable);
         // An unavailable rail must not advertise a schema or borrow evidence.
         assert!(unavailable.schema_version.is_none());
         assert!(unavailable.evidence_refs.is_empty());
+        // Nor may it name a rail: a mechanism without evidence is a claim.
+        assert!(unavailable.mechanism.is_none());
     }
 }
 

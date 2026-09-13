@@ -143,23 +143,30 @@ impl DebounceClock for SystemClock {
 }
 
 #[cfg(test)]
-struct ManualClock(Mutex<u64>);
+struct ManualClock {
+    millis: Mutex<u64>,
+    after_advance: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
 
 #[cfg(test)]
 impl ManualClock {
     fn new() -> Self {
-        Self(Mutex::new(0))
+        Self { millis: Mutex::new(0), after_advance: Mutex::new(None) }
     }
 
     fn advance_millis(&self, millis: u64) {
-        *self.0.lock() += millis;
+        *self.millis.lock() += millis;
+        let observer = self.after_advance.lock().take();
+        if let Some(observer) = observer {
+            observer();
+        }
     }
 }
 
 #[cfg(test)]
 impl DebounceClock for ManualClock {
     fn now_millis(&self) -> u64 {
-        *self.0.lock()
+        *self.millis.lock()
     }
 
     fn wait_until(
@@ -168,7 +175,7 @@ impl DebounceClock for ManualClock {
         guard: &mut MutexGuard<'_, IntakeState>,
         deadline_millis: u64,
     ) {
-        while *self.0.lock() < deadline_millis && !guard.shutting_down {
+        while *self.millis.lock() < deadline_millis && !guard.shutting_down {
             cv.wait(guard);
         }
     }
@@ -541,8 +548,11 @@ impl FileWatcherDebouncer {
         }
 
         let shared = &self.shared;
-        let now = shared.clock.now_millis();
+        // Read the clock under the state lock: a manual-clock advance between
+        // the read and the lock would schedule against a stale `now`. This
+        // keeps the established state-then-clock lock order.
         let mut guard = shared.state.lock();
+        let now = shared.clock.now_millis();
 
         if guard.shutting_down {
             shared.stats.rejected_after_shutdown_total.fetch_add(1, Ordering::Relaxed);
@@ -936,6 +946,9 @@ mod tests {
         }
 
         fn advance(&self, millis: u64) {
+            // Serialize clock changes and notifications with the worker's
+            // predicate check and wait registration to avoid a lost wakeup.
+            let _state = self.shared.state.lock();
             self.clock.advance_millis(millis);
             self.shared.intake_cv.notify_all();
             self.shared.handoff_cv.notify_all();
@@ -971,6 +984,37 @@ mod tests {
         let sink_delivered = Arc::clone(&delivered);
         let sink = move |uris: Vec<String>| sink_delivered.lock().push(uris);
         (delivered, sink)
+    }
+
+    #[test]
+    fn manual_clock_advance_holds_waiter_state_lock() -> Result<(), String> {
+        let harness = Harness::with_sink(|_| {});
+        harness.debouncer.shutdown_now();
+        if !harness.workers_joined() {
+            return Err("workers must be joined before observing notifier lock ownership".into());
+        }
+
+        let observer_ran = Arc::new(AtomicBool::new(false));
+        let state_was_locked = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&observer_ran);
+        let locked = Arc::clone(&state_was_locked);
+        let shared = Arc::clone(&harness.shared);
+        *harness.clock.after_advance.lock() = Some(Box::new(move || {
+            locked.store(shared.state.try_lock().is_none(), Ordering::SeqCst);
+            observed.store(true, Ordering::SeqCst);
+        }));
+
+        harness.advance(101);
+        if !observer_ran.load(Ordering::SeqCst) {
+            return Err("clock advancement observer did not execute".into());
+        }
+        if harness.clock.now_millis() != 101 {
+            return Err("the real harness must advance virtual time to 101".into());
+        }
+        if !state_was_locked.load(Ordering::SeqCst) {
+            return Err("virtual time advanced without the waiter's state lock".into());
+        }
+        Ok(())
     }
 
     #[test]
@@ -1258,21 +1302,37 @@ mod tests {
 
         // Trip BEFORE any dispatch so the very first batch panics mid-flight
         // with follow-up batches already queued behind it.
+        const STRANDED_STRANDS: usize = 5;
         *panic_gate.lock() = true;
-        for i in 0..5usize {
+        for i in 0..STRANDED_STRANDS {
             harness.debouncer.try_schedule(&format!("file:///strand{i}.pl"));
         }
         harness.advance(101);
+        // The degraded flag is stored BEFORE the dispatcher's accounting drain
+        // (flag-first is what stops intake from racing the drain), so waiting
+        // on `!is_operational()` alone can release while `panic_dropped_total`
+        // and the zeroed counters are still mid-drain on a preempted runner.
+        // Wait for the full drain postcondition the assertions below rely on.
         harness.wait_for(
-            || !harness.debouncer.is_operational(),
-            "degraded flag after panicking dispatch",
+            || {
+                let pressure = harness.debouncer.pressure();
+                !harness.debouncer.is_operational()
+                    && pressure.panic_dropped_total == STRANDED_STRANDS as u64
+                    && pressure.pending_subjects == 0
+                    && pressure.outboxed_batches == 0
+                    && pressure.active_subjects == 0
+            },
+            "degraded flag with fully drained, truthful accounting after panicking dispatch",
         );
 
         // Truthful transition: in-flight batch (2) plus queued batches (3)
         // were dropped AND COUNTED, and pressure reports true zeros instead
         // of phantom retention.
         let pressure = harness.debouncer.pressure();
-        assert_eq!(pressure.panic_dropped_total, 5, "in-flight + queued subjects counted");
+        assert_eq!(
+            pressure.panic_dropped_total, STRANDED_STRANDS as u64,
+            "in-flight + queued subjects counted"
+        );
         assert_eq!(pressure.pending_subjects, 0, "no phantom pending after panic");
         assert_eq!(pressure.outboxed_batches, 0, "no phantom queued after panic");
         assert_eq!(pressure.active_subjects, 0);

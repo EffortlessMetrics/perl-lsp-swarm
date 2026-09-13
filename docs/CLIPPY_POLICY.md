@@ -20,9 +20,49 @@ Every governed lint has exactly one current state:
 - `debt`: the exact Cargo level exists and current debt rows own the bounded exceptions.
 - `tracked`: the lint is catalogued but absent from Cargo.
 - `planned`: the lint is unavailable before a future product MSRV.
-- `deferred_due`: the lint is already available, but an owner, reason, review date, and intended next state explicitly bound the remaining work.
+- `deferred_due`: the lint is already available, but an owner, reason, review date, and intended next state explicitly bind the remaining work.
 
 A lint cannot appear in two states. A Cargo lint without a ledger entry fails, as does an active ledger entry missing from Cargo. Due lints cannot remain ordinary planned work indefinitely.
+
+### Split-tool coverage
+
+One invariant sometimes needs a row in both `[workspace.lints.rust]` and `[workspace.lints.clippy]`, because rustc and Clippy each cover part of the surface. The rows share a name but are distinct governed identities, and neither is redundant:
+
+| identity | covers | silent on |
+|---|---|---|
+| `rust::let_underscore_lock` | `std::sync` mutex and read/write guards | all `parking_lot` guards |
+| `clippy::let_underscore_lock` | borrowed `parking_lot` mutex and read/write guards | the standard-library guards Clippy uplifted to rustc, and `parking_lot`'s owned arc guards |
+
+Deleting either row uncovers real lock types rather than removing a duplicate, so both are pinned in the checker's required dispositions and cannot be demoted without an explicit policy change. Their coverage boundary is measured against the selected toolchain — not asserted from the ledger — by the lock-partition tests in `xtask/src/tasks/check_lint_policy/tests/lock_partition.rs`.
+
+Split-tool coverage does not imply *complete* coverage. Both rows match exactly one shape — `let _ = <expr>` whose type is a known borrowed guard — and these discards mean the same thing but are silently accepted by both:
+
+```rust
+let _ = shared.lock_arc();                  // owned guard
+drop(mutex.lock());                         // same discard, different syntax
+let _ = MutexGuard::map(guard, |v| &mut v.0); // mapped guard
+```
+
+#14579 measured each form against the selected toolchain and ruled on where it belongs:
+
+| discard | measured on the selected toolchain | owner |
+|---|---|---|
+| owned `*_arc` guard | reported by `clippy::let_underscore_must_use`; the guard type is `#[must_use]` | that row — tracked in the ledger, activated by #11240 after #11236 |
+| mapped guard | reported by `clippy::let_underscore_must_use` | same row |
+| `drop(m.lock())` | reported by no Clippy lint at any group level | #11236's deliberate-discard contract, which already rejects `drop(lock())` as synchronization and will need a non-Clippy instrument for it |
+
+The owned-guard family is production-reachable — the workspace enables `arc_lock` and `perl-workspace`'s `workspace_index` holds an `ArcMutexGuard` — and it is covered once #11240 lands; nothing lock-specific is missing from that path. `drop(mutex.lock())` is the rewrite a contributor reaches for when the lint blocks them, exactly the dishonest repair the invariant exists to prevent. It is not given a lock-only syntactic check ahead of the contract that owns every `drop(...)` discard, and the tree holds zero such sites today. The lock-partition tests assert all three boundaries in the direction they were measured: the lock rows still miss every form, `let_underscore_must_use` still sees the first two, and the every-group sweep still sees nothing on the third. A toolchain that moves any of them fails the matching test, and the failure means this section and the ruling get revisited rather than that anything regressed.
+
+A row whose lint is already deny-by-default upstream is still stated explicitly. The default is the toolchain's current choice, not this repository's contract, and an upstream level change would otherwise remove the invariant silently.
+
+### What the ledger does and does not enforce
+
+`cargo xtask check-lint-policy` compares the workspace-root `Cargo.toml` against the ledger. That is the whole of its reach, and the required-disposition pins inherit the same boundary: they guarantee a governed row cannot be deleted, downgraded, or demoted **in those two files**. Two things sit outside it and are not caught by any current repository check:
+
+- a crate-level `#![allow(...)]` for a governed lint — the strict Clippy gates run `-D warnings`, which respects an `allow` rather than piercing it (only `--force-warn`, used for measurement sweeps, does that);
+- a member crate replacing `[lints] workspace = true` with its own table that omits a governed row.
+
+This is a property of the mechanism, not of any one lint, and closing it means a separate check over member manifests and source attributes. Read a pin as "the workspace policy cannot silently lose this row," not as "no crate can opt out."
 
 ## Workspace posture
 
@@ -72,7 +112,7 @@ fn generated_lookup(table: &[usize], index: usize) -> usize {
 }
 ```
 
-A temporary repository debt row records `lint`, `level`, `path`, `owner`, `reason`, and `review_after`. Empty, expired, unowned, pathless, level-inconsistent, or orphaned debt fails the policy check. An unchanged count cannot hide one finding replacing another.
+A temporary repository debt row records `lint`, `level`, `path`, `owner`, `reason`, and `review_after`. Empty, malformed, unowned, pathless, level-inconsistent, or orphaned debt fails the policy check. A passed `review_after` remains structurally valid candidate policy and appears as `ReviewOverdue` in `cargo xtask policy cadence`; crossing that date does not change `check-lint-policy`'s exit status. An unchanged count cannot hide one finding replacing another.
 
 ## Toolchain currentness
 
@@ -96,8 +136,8 @@ Run the policy check before changing Cargo lint levels, Clippy configuration, de
 cargo xtask check-lint-policy
 ```
 
-The command prints deterministic active, debt, tracked, future-planned, and due-deferred populations. Unknown fields, malformed versions, duplicate identities, stale deferrals, reintroduced test carveouts, or missing policy inputs are non-success.
+The command prints deterministic active, debt, tracked, configuration-empty-by-design, future-planned, and due-deferred populations. Unknown fields, malformed versions or lifecycle dates, duplicate identities, reintroduced test carveouts, or missing policy inputs are non-success. Review-dated debt and deferrals also appear in `cargo xtask policy cadence --as-of <date>`; overdue state creates owner work there without making an unchanged candidate fail.
 
 ## Protected fields
 
-`clippy::disallowed_fields` is active at deny, while `clippy.toml` deliberately carries an empty `disallowed-fields` set. This proves the mechanism is live; it does not claim any parser, LSP, DAP, or workspace field is protected yet. [`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md) owns the reviewed field-selection programme.
+`clippy::disallowed_fields` is active at deny, while `clippy.toml` deliberately carries an empty `disallowed-fields` set. The active ledger row therefore carries `configuration_state = "empty-by-design"`; `check-lint-policy` rejects a missing hook, an unmarked empty set, a stale empty marker, and any populated production selector before the separately governed selector contract lands. This proves the mechanism is live with a configured selector denominator of zero and a protected-seam denominator of zero. It does not claim that any parser, LSP, DAP, or workspace field is protected. [`CLIPPY_PROTECTED_FIELDS.md`](CLIPPY_PROTECTED_FIELDS.md) owns the reviewed field-selection programme.

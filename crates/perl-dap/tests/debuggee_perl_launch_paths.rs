@@ -25,6 +25,13 @@ struct EnvGuard {
 }
 
 impl EnvGuard {
+    #[cfg(windows)]
+    fn remove(key: &'static str) -> Self {
+        let previous = env::var_os(key);
+        unsafe { env::remove_var(key) };
+        Self { key, previous }
+    }
+
     fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
         let previous = env::var_os(key);
         unsafe { env::set_var(key, value) };
@@ -97,7 +104,7 @@ fn observe_pin_with_session(
 }
 
 #[test]
-#[serial(dap_debuggee_environment)]
+#[serial]
 #[allow(clippy::print_stderr)]
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
     let Some(source_perl) = find_configured_or_path_pipe_perl()? else {
@@ -117,8 +124,9 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
         }
     }
     let ambient = controls.path().join(if cfg!(windows) { "perl.exe" } else { "perl" });
-    let pinned =
-        controls.path().join(if cfg!(windows) { "pinned-perl.exe" } else { "pinned-perl" });
+    // Keep the copied pin's basename within the adapter's strict Perl-name
+    // contract while still making it distinct from the ambient `perl` copy.
+    let pinned = controls.path().join(if cfg!(windows) { "perl5.exe" } else { "perl5" });
     fs::copy(&source_perl, &ambient)?;
     fs::copy(&source_perl, &pinned)?;
     for binary in [&ambient, &pinned] {
@@ -158,6 +166,47 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
             &format!("configured {launch_path}"),
         )
         .map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
+#[test]
+#[cfg(windows)]
+#[serial]
+fn windows_pipe_launch_configures_perl_debugger_transport() -> Result<(), Box<dyn Error>> {
+    let locator = Command::new("where.exe").arg("perl").output()?;
+    if !locator.status.success() {
+        std::io::Write::write_all(
+            &mut std::io::stderr(),
+            b"SKIP windows_pipe_launch_configures_perl_debugger_transport: Perl unavailable\n",
+        )?;
+        return Ok(());
+    }
+    let perl = String::from_utf8_lossy(&locator.stdout)
+        .lines()
+        .map(str::trim)
+        .map(PathBuf::from)
+        .find(|candidate| candidate.is_file())
+        .ok_or("where.exe returned no Perl executable")?;
+    let workspace = tempfile::tempdir()?;
+    let script = workspace.path().join("pipe-transport.pl");
+    fs::write(
+        &script,
+        "use strict;\nuse warnings;\nmy $executed = 41;\n$executed++;\nprint \"executed\\n\";\n",
+    )?;
+    let _emacs_guard = EnvGuard::remove("EMACS");
+    let mut session = DapWorkflowSession::new_with_perl(workflow_timeout(), Some(&perl))?;
+    let script_text = script.to_string_lossy().into_owned();
+    session.launch_pinned(&perl, &script_text)?;
+    session.set_breakpoints_checked(&script_text, &[5])?;
+    session.configuration_done()?;
+    let stopped = session.wait_stopped_with_frame()?;
+    if stopped.line != 5 {
+        return Err(format!("pipe launch stopped at unexpected line {}", stopped.line).into());
+    }
+    let (value, _) = session.evaluate_expression("$executed", stopped.frame_id)?;
+    if value.split_whitespace().last() != Some("42") {
+        return Err(format!("debuggee did not execute the expected program: {value}").into());
     }
     Ok(())
 }
