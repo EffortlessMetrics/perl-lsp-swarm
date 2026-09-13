@@ -6,7 +6,7 @@ use super::{empty_debt, test_root};
 use color_eyre::eyre::{Result, bail};
 use toml::Value;
 
-const REQUIRED: [&str; 10] = [
+const REQUIRED: &[&str] = &[
     "rust::const_item_interior_mutations",
     "rust::function_casts_as_integer",
     "clippy::same_length_and_capacity",
