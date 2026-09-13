@@ -268,3 +268,73 @@ fn strict_stdout_parser_rejects_stray_logs_and_lf_only_frames() -> Result<()> {
     );
     Ok(())
 }
+
+fn open_definition_terminal_fixture(client: &mut RealProcessClient) -> Result<&'static str> {
+    let uri = "file:///workspace/definition-terminal.pl";
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1,
+            "text": "package Foo;\nsub bar { return 1; }\npackage main;\nFoo::bar();\n# Foo::bar is not a call\n"
+        }}),
+    )?;
+    Ok(uri)
+}
+
+fn require_empty_definition_response(id: Value, line: u32, character: u32) -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-definition-empty"))?;
+    let uri = open_definition_terminal_fixture(&mut client)?;
+    let response = client.request(
+        id.clone(),
+        "textDocument/definition",
+        json!({"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}),
+        timeout(),
+    )?;
+    assert_response_id(&response, &id)?;
+    ensure!(response.get("error").is_none(), "legitimate empty definition errored: {response}");
+    ensure!(
+        response.get("result").is_some_and(Value::is_null),
+        "empty definition must have an explicit null result: {response}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-definition-empty"))
+}
+
+#[test]
+fn definition_in_comment_completes_with_null() -> Result<()> {
+    require_empty_definition_response(json!(51), 4, 7)
+}
+
+#[test]
+fn definition_on_package_prefix_completes_with_null() -> Result<()> {
+    require_empty_definition_response(json!("51"), 3, 1)
+}
+
+#[test]
+fn definition_on_callable_retains_exact_location() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-definition-location"))?;
+    let uri = open_definition_terminal_fixture(&mut client)?;
+    let id = json!("definition-bar");
+    let response = client.request(
+        id.clone(),
+        "textDocument/definition",
+        json!({"textDocument": {"uri": uri}, "position": {"line": 3, "character": 6}}),
+        timeout(),
+    )?;
+    assert_response_id(&response, &id)?;
+    let locations = response
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("callable must return definition locations: {response}"))?;
+    ensure!(locations.len() == 1, "expected one definition of Foo::bar: {response}");
+    let location = locations.first().ok_or_else(|| anyhow::anyhow!("missing bar location"))?;
+    ensure!(location.get("uri") == Some(&json!(uri)), "wrong definition document: {response}");
+    ensure!(
+        location.pointer("/range/start/line") == Some(&json!(1)),
+        "definition must point to the bar declaration on line 1: {response}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-definition-location"))
+}
