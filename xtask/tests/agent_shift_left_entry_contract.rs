@@ -662,7 +662,7 @@ fn negated_markdown_obligations_fail_closed() {
 ## Shift-left claim admission
 Before the first delegated mutation, retain a coherent claim and semantic owner.
 The acceptance surface doesn’t matter, the proof ceiling may be omitted, and no
-negative control is needed. Current authority and production seam are optional.
+negative control is needed. Current authority is optional, and the production seam is optional.
 The mutation owner is optional, one writer is not required. It is not a stage
 record, lease, scheduler, or tracked frontier.
 ## Entry route
