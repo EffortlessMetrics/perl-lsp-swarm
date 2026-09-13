@@ -139,13 +139,13 @@ notes = "nested/multi-argument call seed; exact call trees are later work"
 id = "heredoc.bare-eof"
 family = "heredoc"
 source = "tests/fixtures/sources/heredoc/bare-eof.pl"
-classification = "unsupported-candidate"
+classification = "valid"
 execution_modes = ["embedded"]
 observation_owner = "8419"
 expected_outcome_owner = "8220"
 newline = "lf"
 disposition = "provisional-observation"
-notes = "depends on #8220; opener is recognized, body capture is a known limitation"
+notes = "#8220 selected the supported contract: the opener owns its body, which becomes node content and leaves the parsed text"
 
 [[fixtures]]
 id = "heredoc.q-placeholder"
