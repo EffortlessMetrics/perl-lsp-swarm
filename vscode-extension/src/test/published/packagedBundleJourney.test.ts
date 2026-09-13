@@ -716,7 +716,10 @@ suite('Packaged VSIX bundled-server journey', function () {
       ] as const;
       const providerFailures = providerResults.filter(
         ([label, result]) =>
-          result.status === 'error' || (label === 'rename' && result.status === 'unsafe_refusal'),
+          result.status === 'error' ||
+          (label === 'rename' &&
+            (result.status === 'unsafe_refusal' ||
+              (readinessReady && result.status !== 'applied_text_edits_verified'))),
       );
       const lifecycleExpectations: Array<[string, string]> = [
         ['binary_resolution_source', 'bundled'],
@@ -818,6 +821,9 @@ suite('Packaged VSIX bundled-server journey', function () {
         assertProviderSucceeded(label, result);
       }
       assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
+      if (readinessReady) {
+        assert.equal(rename.status, 'applied_text_edits_verified', JSON.stringify(rename));
+      }
     } finally {
       try {
         if (fixtureDocument && !fixtureDocument.isClosed) {
