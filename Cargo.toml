@@ -8,6 +8,12 @@ members = [
     # Tier 1 leaf — no parser/workspace/LSP/DAP deps. Dependency contract
     # asserted in tests/dependency_contract.rs.
     "crates/perl-source-identity",
+    # perl-evidence-envelope: evidence_envelope.v1 core types and deterministic
+    # envelope identity (#15057). Tier 1 leaf — no parser/workspace/LSP/DAP
+    # deps; depends on perl-source-identity for ContentDigest/ProjectId.
+    # publish = false: internal evidence infrastructure until it has
+    # consumers. Dependency contract asserted in tests/dependency_contract.rs.
+    "crates/perl-evidence-envelope",
     # perl-operation-trace: ephemeral operation_trace.v1 correlation identity,
     # event vocabulary, and bounded in-memory recorder (#15021). Tier 1 leaf
     # — serde only, no parser/workspace/LSP/DAP/hash-function deps.
@@ -242,6 +248,11 @@ perl-ast-v2 = { path = "crates/perl-ast-v2", version = "0.17.0" }
 perl-token = { path = "crates/perl-token", version = "0.17.0" }
 # perl-source-identity: source_identity.v1 core types (#7652). No internal deps.
 perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0" }
+# perl-evidence-envelope: evidence_envelope.v1 core types (#15057). Direct
+# dependencies are serde, sha2, and perl-source-identity (ContentDigest,
+# ProjectId) — the last being its only internal one. Exact closure asserted
+# by crates/perl-evidence-envelope/tests/dependency_contract.rs.
+perl-evidence-envelope = { path = "crates/perl-evidence-envelope", version = "0.17.0" }
 # perl-operation-trace: operation_trace.v1 correlation identity/event/recorder
 # contract (#15021). No internal deps.
 perl-operation-trace = { path = "crates/perl-operation-trace", version = "0.17.0" }

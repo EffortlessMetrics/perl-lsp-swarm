@@ -1,0 +1,9 @@
+project: vscode
+component: Developer experience
+kind: Changed
+body: Report Issue now separates showing, copying, and filing — copying the support packet no longer opens the browser, the packet can be inspected in an editor tab first, and clipboard or packet failures stay bounded without blocking the issue form.
+time: 2026-08-29T20:35:00Z
+custom:
+  PR: 13815
+  Slug: vscode-report-issue-inspect-copy-open
+  Breaking: "no"

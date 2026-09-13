@@ -13,9 +13,9 @@ For the post-harness runtime and provider-promotion phase, see the
 
 | Capability | Status | Evidence |
 |---|---|---|
-| Prepared-tree discovery | Working | `cargo xtask perl-core-harness discover --perl-tree <prepared-perl5> --host-perl <perl> --profile base` writes discovery JSON |
-| Parse mode | Working | `cargo xtask perl-core-harness run --mode parse --perl-tree <prepared-perl5> --host-perl <perl> --profile base` installs a `t/perl` compatibility wrapper, emits synthetic TAP through `perl-core-test-runner`, and writes a JSON report |
-| Compile mode | Working | `cargo xtask perl-core-harness run --mode compile --perl-tree <prepared-perl5> --host-perl <perl> --profile base` parses clean files, lowers HIR, projects compile effects, fails on compile-effect dynamic boundaries, and writes a JSON report |
+| Prepared-tree discovery | Working | `cargo xtask perl-core-harness discover --perl-tree <prepared-perl5> --profile base` writes discovery JSON |
+| Parse mode | Working | `cargo xtask perl-core-harness run --mode parse --perl-tree <prepared-perl5> --profile base` installs a `t/perl` compatibility wrapper, emits synthetic TAP through `perl-core-test-runner`, and writes a JSON report |
+| Compile mode | Working | `cargo xtask perl-core-harness run --mode compile --perl-tree <prepared-perl5> --profile base` parses clean files, lowers HIR, projects compile effects, fails on compile-effect dynamic boundaries, and writes a JSON report |
 | Compile-mode base baseline | Ratcheted scaffold | `.ci/perl-core-harness/base-compile-baseline.json` protects the generated two-file base fixture against newly failing files, unknown buckets, bucket growth, and assertion regressions |
 | Real upstream Perl base smoke | Advisory integrated | `perl-core-harness prepare --ref <pinned-ref>` prepares upstream Perl under `target/perl-core`, then `perl-core-harness smoke --profile base --modes parse,compile` writes discovery, parse, compile, gap-map, and smoke receipts |
 | Real upstream Perl comp smoke | Advisory integrated | `perl-core-harness smoke --profile comp --modes parse,compile` uses the same receipt path for the `comp` profile, and run 28711942840 recorded 25 discovered files, parse 18/25, compile 8/25, and bucketed `parse_recovery` / `compile_effect` gaps |
@@ -85,7 +85,6 @@ The current execute receipt commands are explicit and allowlisted:
 ```bash
 cargo xtask perl-core-harness run \
   --perl-tree <prepared-perl5> \
-  --host-perl perl \
   --runner test \
   --mode execute \
   --profile base \
@@ -93,7 +92,6 @@ cargo xtask perl-core-harness run \
 
 cargo xtask perl-core-harness run \
   --perl-tree <prepared-perl5> \
-  --host-perl perl \
   --runner test \
   --mode execute \
   --profile base \
