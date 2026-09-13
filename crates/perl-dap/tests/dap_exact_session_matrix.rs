@@ -1422,12 +1422,13 @@ fn process_is_alive(pid: u32) -> Result<bool> {
         let mut exit_code = 0;
         // SAFETY: handle is valid and exit_code points to writable stack memory.
         let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+        let query_error = if queried { None } else { Some(io::Error::last_os_error()) };
+        // SAFETY: handle was returned by OpenProcess above and is closed exactly once here.
         let close_ok = unsafe { CloseHandle(handle) } != 0;
         if !queried {
-            return Err(anyhow!(
-                "querying delayed debuggee PID {pid}: {}",
-                io::Error::last_os_error()
-            ));
+            let error =
+                query_error.ok_or_else(|| anyhow!("GetExitCodeProcess failed without an error"))?;
+            return Err(anyhow!("querying delayed debuggee PID {pid}: {}", error));
         }
         if !close_ok {
             return Err(anyhow!(
@@ -1437,7 +1438,17 @@ fn process_is_alive(pid: u32) -> Result<bool> {
         }
         Ok(exit_code == STILL_ACTIVE)
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat"))
+            .with_context(|| format!("checking delayed debuggee process {pid}"))?;
+        let state = stat
+            .rsplit_once(") ")
+            .and_then(|(_, rest)| rest.chars().next())
+            .ok_or_else(|| anyhow!("malformed /proc/{pid}/stat process record"))?;
+        Ok(state != 'Z')
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
         let output = Command::new("ps")
             .args(["-p", &pid.to_string(), "-o", "stat="])

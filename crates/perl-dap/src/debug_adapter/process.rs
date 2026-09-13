@@ -677,6 +677,17 @@ impl DebugAdapter {
                 // launch must leave the currently active reader valid for its existing session.
                 if !self.prepare_replacement_session() {
                     let cleanup = Self::terminate_child_process(&mut child);
+                    if !cleanup {
+                        match self.rejected_child.lock() {
+                            Ok(mut guard) if guard.is_none() => *guard = Some(child),
+                            Ok(_) => {
+                                return Err("Cannot retain the rejected debugger process because another unconfirmed process is already retained".to_string());
+                            }
+                            Err(_) => {
+                                return Err("Cannot retain the rejected debugger process because its ownership state is unavailable".to_string());
+                            }
+                        }
+                    }
                     return Err(if cleanup {
                         "Cannot replace the active debugger session because its process cleanup was not confirmed"
                             .to_string()
@@ -1905,7 +1916,19 @@ impl DebugAdapter {
 
                 // Reset existing process/tcp attachment state before switching to PID mode.
                 self.begin_session_generation();
-                self.clear_active_session_state();
+                if !self.clear_active_session_state() {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(
+                            "Cannot attach while an earlier debugger process cleanup remains unconfirmed"
+                                .to_string(),
+                        ),
+                    };
+                }
 
                 if let Ok(mut guard) = self.attached_pid.lock() {
                     *guard = Some(pid);
@@ -2134,11 +2157,34 @@ impl DebugAdapter {
 
     /// Clear active process session, TCP session, and PID-attach mode state.
     pub(super) fn clear_active_session_state(&self) -> bool {
-        Self::clear_active_session_state_with_state(
+        let active_cleanup = Self::clear_active_session_state_with_state(
             &self.session,
             &self.tcp_session,
             &self.attached_pid,
-        )
+        );
+        let rejected_cleanup =
+            self.clear_rejected_child_with_terminator(Self::terminate_child_process);
+        active_cleanup && rejected_cleanup
+    }
+
+    fn clear_rejected_child_with_terminator(
+        &self,
+        mut terminate: impl FnMut(&mut Child) -> bool,
+    ) -> bool {
+        match self.rejected_child.lock() {
+            Ok(mut guard) => {
+                let Some(child) = guard.as_mut() else {
+                    return true;
+                };
+                if terminate(child) {
+                    *guard = None;
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        }
     }
 
     /// Advance the session generation and tear down the prior active session.
@@ -2298,16 +2344,18 @@ impl DebugAdapter {
         if has_active_session && let Some(ref sender) = self.event_sender {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
-        self.clear_active_session_state();
+        let cleanup_succeeded = self.clear_active_session_state();
         self.close_terminal_session_generation("disconnect");
 
         DapMessage::Response {
             seq,
             request_seq,
-            success: true,
+            success: cleanup_succeeded,
             command: "disconnect".to_string(),
             body: None,
-            message: None,
+            message: (!cleanup_succeeded).then(|| {
+                "Session invalidated, but debugger process cleanup remains unconfirmed".to_string()
+            }),
         }
     }
 
@@ -2336,16 +2384,18 @@ impl DebugAdapter {
                 terminated_body,
             );
         }
-        self.clear_active_session_state();
+        let cleanup_succeeded = self.clear_active_session_state();
         self.close_terminal_session_generation("terminated");
 
         DapMessage::Response {
             seq,
             request_seq,
-            success: true,
+            success: cleanup_succeeded,
             command: "terminate".to_string(),
             body: None,
-            message: None,
+            message: (!cleanup_succeeded).then(|| {
+                "Session invalidated, but debugger process cleanup remains unconfirmed".to_string()
+            }),
         }
     }
 
@@ -2624,7 +2674,18 @@ impl DebugAdapter {
             }
         };
 
-        self.clear_active_session_state();
+        if !self.clear_active_session_state() {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "restart".to_string(),
+                body: None,
+                message: Some(
+                    "Cannot restart while debugger process cleanup remains unconfirmed".to_string(),
+                ),
+            };
+        }
         self.handle_launch(seq, request_seq, Some(launch_args))
     }
 }
@@ -2797,6 +2858,36 @@ mod tests {
         }
         if adapter.session.lock().map_err(|_| "session lock poisoned")?.is_some() {
             return Err("successful retry retained the child owner".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_replacement_child_is_retained_across_failed_cleanup() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        let child = DebugAdapter::spawn_noop_child_for_test()
+            .map_err(|error| format!("spawning rejected child: {error}"))?;
+        if let Ok(mut guard) = adapter.rejected_child.lock() {
+            *guard = Some(child);
+        } else {
+            return Err("rejected-child lock was poisoned".to_string());
+        }
+
+        if adapter.clear_rejected_child_with_terminator(|_| false) {
+            return Err("injected rejected-child cleanup unexpectedly succeeded".to_string());
+        }
+        if adapter.rejected_child.lock().map_err(|_| "rejected-child lock was poisoned")?.is_none()
+        {
+            return Err("failed cleanup dropped the rejected child owner".to_string());
+        }
+        if !adapter.clear_rejected_child_with_terminator(|child| {
+            child.kill().is_ok() && child.wait().is_ok()
+        }) {
+            return Err("retrying rejected-child cleanup failed".to_string());
+        }
+        if adapter.rejected_child.lock().map_err(|_| "rejected-child lock was poisoned")?.is_some()
+        {
+            return Err("successful rejected-child cleanup retained its owner".to_string());
         }
         Ok(())
     }

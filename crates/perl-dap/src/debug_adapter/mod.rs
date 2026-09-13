@@ -131,6 +131,9 @@ pub struct DebugAdapter {
     seq: Arc<Mutex<i64>>,
     /// Active debug session (process-based)
     session: Arc<Mutex<Option<DebugSession>>>,
+    /// A replacement child whose cleanup was not confirmed; retained so a
+    /// later terminal cleanup can retry it instead of losing ownership.
+    rejected_child: Arc<Mutex<Option<Child>>>,
     /// Attached process ID for PID-based attach mode
     attached_pid: Arc<Mutex<Option<u32>>>,
     /// TCP attach session (for connecting to running debugger)
@@ -260,6 +263,7 @@ impl DebugAdapter {
         Self {
             seq: Arc::new(Mutex::new(0)),
             session: Arc::new(Mutex::new(None)),
+            rejected_child: Arc::new(Mutex::new(None)),
             attached_pid: Arc::new(Mutex::new(None)),
             tcp_session: Arc::new(Mutex::new(None)),
             breakpoints: BreakpointStore::new(),
