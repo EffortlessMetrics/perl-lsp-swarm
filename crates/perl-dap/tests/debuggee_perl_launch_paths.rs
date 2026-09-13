@@ -119,7 +119,7 @@ fn copy_adjacent_dlls(source_perl: &Path, destination_dir: &Path) -> Result<(), 
 fn prepare_native_perl_fixture(
     source_perl: &Path,
     destination: &Path,
-) -> Result<Option<(PathBuf, PathBuf)>, Box<dyn Error>> {
+) -> Result<Option<(PathBuf, PathBuf, PathBuf)>, Box<dyn Error>> {
     let Some(staged_perl) = stage_perl_library_layout(source_perl, destination)? else {
         return Ok(None);
     };
@@ -127,7 +127,7 @@ fn prepare_native_perl_fixture(
     copy_adjacent_dlls(source_perl, staged_bin)?;
     let pinned = staged_bin.join("perl5.exe");
     fs::copy(&staged_perl, &pinned)?;
-    Ok(Some((staged_perl, pinned)))
+    Ok(Some((staged_perl, pinned, destination.join("perl-install").join("lib"))))
 }
 
 struct EnvGuard {
@@ -219,6 +219,11 @@ fn observe_pin_with_session(
 #[allow(clippy::print_stderr)]
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
     let Some(source_perl) = find_configured_or_path_pipe_perl()? else {
+        let strict = env::var_os("PERL_LSP_DAP_REQUIRE_PERL")
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        if strict {
+            return Err("strict launch-path proof found no pipe-capable Perl candidate".into());
+        }
         eprintln!(
             "SKIP all_convenience_launch_paths_reach_the_pinned_interpreter: Perl unavailable"
         );
@@ -226,17 +231,18 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
     };
     let controls = tempfile::tempdir()?;
     #[cfg(windows)]
-    let (ambient, pinned) =
-        if let Some(fixture) = prepare_native_perl_fixture(&source_perl, controls.path())? {
-            fixture
-        } else {
-            let ambient = controls.path().join("perl.exe");
-            let pinned = controls.path().join("perl5.exe");
-            fs::copy(&source_perl, &ambient)?;
-            fs::copy(&source_perl, &pinned)?;
-            copy_adjacent_dlls(&source_perl, controls.path())?;
-            (ambient, pinned)
-        };
+    let (ambient, pinned) = if let Some((ambient, pinned, _)) =
+        prepare_native_perl_fixture(&source_perl, controls.path())?
+    {
+        (ambient, pinned)
+    } else {
+        let ambient = controls.path().join("perl.exe");
+        let pinned = controls.path().join("perl5.exe");
+        fs::copy(&source_perl, &ambient)?;
+        fs::copy(&source_perl, &pinned)?;
+        copy_adjacent_dlls(&source_perl, controls.path())?;
+        (ambient, pinned)
+    };
     #[cfg(not(windows))]
     let (ambient, pinned) = {
         let ambient = controls.path().join("perl");
@@ -292,25 +298,34 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
 #[test]
 #[cfg(windows)]
 #[serial]
+#[allow(clippy::print_stderr)]
 fn copied_native_fixture_requires_staged_core_library() -> Result<(), Box<dyn Error>> {
-    let source = find_configured_or_path_pipe_perl()?
-        .ok_or("strict fixture proof found no pipe-capable Perl candidate")?;
+    let Some(source) = find_configured_or_path_pipe_perl()? else {
+        return Err("strict fixture proof found no pipe-capable Perl candidate".into());
+    };
     let controls = tempfile::tempdir()?;
-    let (ambient, pinned) = prepare_native_perl_fixture(&source, controls.path())?
-        .ok_or("selected fixture candidate is not a native MSWin32 build")?;
+    let Some((_ambient, pinned, staged_lib)) =
+        prepare_native_perl_fixture(&source, controls.path())?
+    else {
+        eprintln!(
+            "SKIP copied_native_fixture_requires_staged_core_library: native Perl unavailable"
+        );
+        return Ok(());
+    };
     probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false)
         .map_err(|reason| format!("staged native fixture was not pipe-usable: {reason}"))?;
 
-    let staged_install =
-        ambient.parent().and_then(Path::parent).ok_or("staged Perl has no installation root")?;
-    let staged_lib = staged_install.join("lib");
-    fs::remove_dir_all(&staged_lib)?;
+    let backup = controls.path().join("staged-lib-backup");
+    fs::rename(&staged_lib, &backup)?;
     let failure = probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false)
         .err()
         .ok_or("copied fixture unexpectedly found perl5db without staged core library")?;
     if !failure.to_ascii_lowercase().contains("perl5db") {
         return Err(format!("missing staged library lost its diagnostic: {failure}").into());
     }
+    fs::rename(&backup, &staged_lib)?;
+    probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false)
+        .map_err(|reason| format!("restored staged library was not pipe-usable: {reason}"))?;
     Ok(())
 }
 
