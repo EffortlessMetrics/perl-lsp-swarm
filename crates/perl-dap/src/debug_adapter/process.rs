@@ -4,11 +4,10 @@ use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
     Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
     DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
-    TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
-    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, emit_event_safe, error_re,
-    exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
-    thread, warning_re,
+    Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, TcpAttachConfig,
+    TcpAttachSession, TerminateArguments, TerminationState, Value, Write, ansi_escape_re,
+    catalog_has_feature, context_re, die_suffix_re, error_re, exception_re, json, lock_or_recover,
+    module_path_to_name, prompt_re, security, stack_frame_re, thread, warning_re,
 };
 #[cfg(unix)]
 use nix::sys::signal::{self, Signal};
@@ -22,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::sync_channel;
 
-use super::sync_utils::{GuardedDispatchResult, dispatch_event_generation_guarded};
+use super::sync_utils::{EventSender, GuardedDispatchResult};
 use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
@@ -31,6 +30,15 @@ mod perl_spawn;
 use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
+
+fn emit_event_safe(
+    sender: &EventSender,
+    seq: &Mutex<i64>,
+    event: &str,
+    body: Option<Value>,
+) -> bool {
+    sender.send_event(seq, event, body) != super::sync_utils::EventDispatchResult::Disconnected
+}
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 
@@ -595,6 +603,34 @@ impl DebugAdapter {
         oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
         let mut cmd = oracle.into_command();
         cmd.arg("-d");
+
+        // Strawberry Perl's Windows debugger selects its console transport when
+        // EMACS is absent, even when all three stdio handles are pipes.  Mark
+        // this owned pipe launch explicitly; the variable is scoped to the
+        // child and does not change the adapter's process environment or the
+        // user's argv/launch configuration.  ReadLine must also use its dummy
+        // interface: its console backend otherwise calls GetConsoleMode on a
+        // pipe and raises an exception inside an otherwise valid debuggee.
+        #[cfg(windows)]
+        {
+            cmd.env("EMACS", "1");
+            // Read the effective child environment, including Windows' case-
+            // insensitive variable names, rather than replacing user options.
+            // perl5db parses options left-to-right: the final debugger-only
+            // ReadLine switch wins without changing the program's PERL_RL.
+            let mut perl_db_opts = cmd
+                .get_envs()
+                .find_map(|(key, value)| {
+                    key.to_str()
+                        .is_some_and(|key| key.eq_ignore_ascii_case("PERLDB_OPTS"))
+                        .then_some(value)
+                        .flatten()
+                })
+                .unwrap_or_default()
+                .to_os_string();
+            perl_db_opts.push(" ReadLine=0");
+            cmd.env("PERLDB_OPTS", perl_db_opts);
+        }
 
         // Perl debugger stops on the first line by default
         let _ = stop_on_entry; // currently unused
@@ -2129,7 +2165,14 @@ impl DebugAdapter {
         // Settle broker waiters before terminating the child so EOF cannot
         // win the race and replace the client-requested disconnect reason.
         self.operation_broker.settle_all("disconnect");
-        if let Some(ref sender) = self.event_sender {
+        // `terminate` closes the active session and already reserves the
+        // terminal event.  VS Code commonly follows it with `disconnect`; do
+        // not emit a second event for that already-closed session.  A plain
+        // disconnect of an active session still owns the terminal event.
+        let has_active_session = lock_or_recover(&self.session, "debug_adapter.session").is_some()
+            || lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid").is_some()
+            || lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some();
+        if has_active_session && let Some(ref sender) = self.event_sender {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         self.clear_active_session_state();
@@ -2505,17 +2548,12 @@ fn terminated_delivery_is_current(
 }
 
 /// Emit interpolated logpoint text on the debug console.
-fn emit_logpoint_messages(
-    sender: Option<&SyncSender<DapMessage>>,
-    seq: &Mutex<i64>,
-    messages: Vec<String>,
-) {
+fn emit_logpoint_messages(sender: Option<&EventSender>, seq: &Mutex<i64>, messages: Vec<String>) {
     let Some(sender) = sender else {
         return;
     };
     for message in messages {
-        emit_event_safe(
-            sender,
+        let _ = sender.send_event(
             seq,
             "output",
             Some(json!({
@@ -2527,7 +2565,7 @@ fn emit_logpoint_messages(
 }
 
 pub(super) fn emit_terminated_event(
-    sender: &SyncSender<DapMessage>,
+    sender: &EventSender,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
@@ -2553,7 +2591,7 @@ pub(super) fn emit_terminated_event(
 /// event instead of an unbounded blocking send publishing it into the
 /// replacement's conversation after validation passed.
 pub(super) fn emit_terminated_event_guarded(
-    sender: &SyncSender<DapMessage>,
+    sender: &EventSender,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
@@ -2570,13 +2608,14 @@ pub(super) fn emit_terminated_event_guarded(
         return false;
     }
     !matches!(
-        dispatch_event_generation_guarded(sender, seq, "terminated", body, stale),
+        sender.send_event_generation_guarded(seq, "terminated", body, stale),
         GuardedDispatchResult::Disconnected
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::sync_utils::EventSender;
     use super::{
         DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
@@ -2766,7 +2805,7 @@ mod tests {
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
             Arc::new(Mutex::new(super::TerminationState { generation: 1, emitted: false }));
-        let first_sender = sender.clone();
+        let first_sender = EventSender::new(sender.clone());
         let first_seq = seq.clone();
         let first_guard = termination_state.clone();
         let first = std::thread::spawn(move || {
@@ -2778,7 +2817,8 @@ mod tests {
                 Some(serde_json::json!({"reason": "debugger_eof"})),
             )
         });
-        let second = emit_terminated_event(&sender, &seq, &termination_state, None, None);
+        let second_sender = EventSender::new(sender.clone());
+        let second = emit_terminated_event(&second_sender, &seq, &termination_state, None, None);
         let first = first.join().map_err(|_| "termination worker panicked".to_string())?;
         if first == second {
             return Err(format!(
@@ -2815,7 +2855,7 @@ mod tests {
             Mutex::new(super::TerminationState { generation: 2, emitted: false });
 
         if emit_terminated_event(
-            &sender,
+            &EventSender::new(sender.clone()),
             &seq,
             &termination_state,
             Some(1),
@@ -2828,7 +2868,7 @@ mod tests {
         }
 
         if !emit_terminated_event(
-            &sender,
+            &EventSender::new(sender.clone()),
             &seq,
             &termination_state,
             Some(2),
@@ -2872,7 +2912,7 @@ mod tests {
 
         // A delivery under the now-current generation is still acknowledged.
         if !emit_terminated_event(
-            &sender,
+            &EventSender::new(sender.clone()),
             &seq,
             &termination_state,
             Some(4),
