@@ -113,7 +113,10 @@ impl Checkpointable for PerlLexer<'_> {
         }
         checkpoint.ensure_complete()?;
         checkpoint.identity().matches_target(
-            self.input,
+            || {
+                self.content_digest
+                    .get_or_init(|| crate::checkpoint::compute_content_digest(self.input))
+            },
             &self.config,
             self.qw_recovery_enabled,
             self.emit_heredoc_body_tokens,
@@ -316,16 +319,48 @@ mod tests {
     }
 
     #[test]
-    fn stale_generation_fails_closed() {
+    fn stale_generation_fails_closed() -> Result<(), String> {
         let source = "my $x = 1;";
-        let mut lexer = PerlLexer::new(source);
-        lexer.bind_generation(SourceGeneration::known("1"));
-        let checkpoint = lexer.checkpoint();
-        lexer.bind_generation(SourceGeneration::known("2"));
-        assert_eq!(
-            lexer.validate_restore(&checkpoint),
-            Err(CheckpointRestoreError::WrongGeneration)
-        );
+        let mut checkpoint_source = PerlLexer::new(source);
+        checkpoint_source.bind_generation(SourceGeneration::known("1"));
+        let checkpoint = checkpoint_source.checkpoint();
+        let mut target = PerlLexer::new(source);
+        target.bind_generation(SourceGeneration::known("2"));
+        crate::checkpoint::reset_diagnostic_digest_counter();
+        if target.validate_restore(&checkpoint) != Err(CheckpointRestoreError::WrongGeneration) {
+            return Err("stale generation did not fail closed".to_string());
+        }
+        let (bytes, calls) = crate::checkpoint::diagnostic_digest_counter();
+        if (bytes, calls) != (0, 0) {
+            return Err(format!(
+                "stale generation computed target digest: calls={calls} bytes={bytes}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn restore_reuses_target_content_digest() -> Result<(), String> {
+        let source = "package RestoreCache;\nmy $value = 1;\n";
+        let mut source_lexer = PerlLexer::new(source);
+        source_lexer.next_token().ok_or_else(|| "source ended before checkpoint".to_string())?;
+        source_lexer.bind_generation(SourceGeneration::known("restore-generation"));
+        let checkpoint = source_lexer.checkpoint();
+
+        crate::checkpoint::reset_diagnostic_digest_counter();
+        let mut target = PerlLexer::new(source);
+        target.bind_generation(SourceGeneration::known("restore-generation"));
+        target.restore(&checkpoint).map_err(|error| error.to_string())?;
+        target.restore(&checkpoint).map_err(|error| error.to_string())?;
+
+        let (bytes, calls) = crate::checkpoint::diagnostic_digest_counter();
+        if calls != 1 || bytes != source.len() {
+            return Err(format!(
+                "expected one target digest over {} bytes, observed calls={calls} bytes={bytes}",
+                source.len()
+            ));
+        }
+        Ok(())
     }
 
     #[test]

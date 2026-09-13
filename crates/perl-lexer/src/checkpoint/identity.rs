@@ -233,15 +233,18 @@ pub enum CheckpointRestoreError {
 }
 
 impl LexerCheckpointIdentity {
-    pub(crate) fn matches_target(
+    pub(crate) fn matches_target<'a, ContentProvider>(
         &self,
-        source: &str,
+        content: ContentProvider,
         config: &LexerConfig,
         qw_recovery_enabled: bool,
         emit_heredoc_body_tokens: bool,
         logical_source: Option<&LogicalSourceId>,
         generation: &SourceGeneration,
-    ) -> Result<(), CheckpointRestoreError> {
+    ) -> Result<(), CheckpointRestoreError>
+    where
+        ContentProvider: FnOnce() -> &'a ContentDigest,
+    {
         if self.schema != CHECKPOINT_SCHEMA_VERSION {
             return Err(CheckpointRestoreError::UnknownSchema);
         }
@@ -259,7 +262,7 @@ impl LexerCheckpointIdentity {
                 if captured == target && !captured.is_empty() => {}
             _ => return Err(CheckpointRestoreError::WrongGeneration),
         }
-        if self.content != ContentDigest::of_bytes(source.as_bytes()) {
+        if self.content != *content() {
             return Err(CheckpointRestoreError::WrongContent);
         }
         let target_policy = LexerPolicyIdentity::from_construction(
