@@ -17,6 +17,7 @@ mod real_process;
 use anyhow::{Context, Result, bail, ensure};
 use real_process::RealProcessClient;
 use serde_json::{Value, json};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 const URI: &str = "file:///document-lifecycle.pl";
@@ -51,6 +52,10 @@ fn request_success(
 }
 
 fn initialize(client: &mut RealProcessClient) -> Result<()> {
+    initialize_with_root(client, None)
+}
+
+fn initialize_with_root(client: &mut RealProcessClient, root_uri: Option<&str>) -> Result<()> {
     let result = request_success(
         client,
         "initialize",
@@ -61,7 +66,8 @@ fn initialize(client: &mut RealProcessClient) -> Result<()> {
                 "name": "perl-lsp-document-lifecycle",
                 "version": "1"
             },
-            "rootUri": null,
+            "rootUri": root_uri,
+            "workspaceFolders": root_uri.map(|uri| json!([{ "uri": uri, "name": "fixture" }])),
             "capabilities": {
                 "general": {
                     "positionEncodings": ["utf-16"]
@@ -83,6 +89,10 @@ fn initialize(client: &mut RealProcessClient) -> Result<()> {
     client.notify("initialized", json!({}))
 }
 
+fn file_uri(path: &Path) -> String {
+    format!("file:///{}", path.display().to_string().replace('\\', "/"))
+}
+
 fn finish(client: &mut RealProcessClient) -> Result<()> {
     let result = request_success(client, "shutdown", "shutdown", Value::Null)?;
     ensure!(result.is_null(), "shutdown must return null: {result}");
@@ -97,11 +107,15 @@ fn finish(client: &mut RealProcessClient) -> Result<()> {
 }
 
 fn did_open(client: &mut RealProcessClient, version: i32, text: &str) -> Result<()> {
+    did_open_uri(client, URI, version, text)
+}
+
+fn did_open_uri(client: &mut RealProcessClient, uri: &str, version: i32, text: &str) -> Result<()> {
     client.notify(
         "textDocument/didOpen",
         json!({
             "textDocument": {
-                "uri": URI,
+                "uri": uri,
                 "languageId": "perl",
                 "version": version,
                 "text": text
@@ -111,11 +125,20 @@ fn did_open(client: &mut RealProcessClient, version: i32, text: &str) -> Result<
 }
 
 fn did_change(client: &mut RealProcessClient, version: i32, text: &str) -> Result<()> {
+    did_change_uri(client, URI, version, text)
+}
+
+fn did_change_uri(
+    client: &mut RealProcessClient,
+    uri: &str,
+    version: i32,
+    text: &str,
+) -> Result<()> {
     client.notify(
         "textDocument/didChange",
         json!({
             "textDocument": {
-                "uri": URI,
+                "uri": uri,
                 "version": version
             },
             "contentChanges": [
@@ -171,6 +194,14 @@ fn wait_for_current_parse_tokens(
     client: &mut RealProcessClient,
     id_prefix: &str,
 ) -> Result<Vec<u64>> {
+    wait_for_current_parse_tokens_uri(client, URI, id_prefix)
+}
+
+fn wait_for_current_parse_tokens_uri(
+    client: &mut RealProcessClient,
+    uri: &str,
+    id_prefix: &str,
+) -> Result<Vec<u64>> {
     let deadline = Instant::now() + timeout();
     let mut attempt = 0u32;
     let mut last_result;
@@ -182,7 +213,7 @@ fn wait_for_current_parse_tokens(
             &id,
             "textDocument/semanticTokens/full",
             json!({
-                "textDocument": { "uri": URI }
+                "textDocument": { "uri": uri }
             }),
         )?;
         let has_live_result = result.get("resultId").and_then(Value::as_str).is_some();
@@ -230,6 +261,22 @@ fn diagnostic_items(client: &mut RealProcessClient, id: &str) -> Result<Vec<Valu
         .and_then(Value::as_array)
         .cloned()
         .context("pull diagnostic report omitted items")
+}
+
+fn diagnostic_report_uri(
+    client: &mut RealProcessClient,
+    uri: &str,
+    id: &str,
+    previous_result_id: Option<&str>,
+) -> Result<Value> {
+    let mut params = json!({
+        "textDocument": { "uri": uri },
+        "identifier": "perl-lsp",
+    });
+    if let Some(previous_result_id) = previous_result_id {
+        params["previousResultId"] = json!(previous_result_id);
+    }
+    request_success(client, id, "textDocument/diagnostic", params)
 }
 
 fn diagnostic_fingerprint(item: &Value) -> Result<String> {
@@ -322,6 +369,128 @@ fn parser_diagnostic_classifier_rejects_policy_codes_and_wrong_sources() -> Resu
         "malformed diagnostic code kind was silently accepted"
     );
     Ok(())
+}
+
+#[test]
+fn pull_diagnostics_identity_is_bound_to_exact_process_workspace_facts() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    let root_uri = file_uri(client.workspace_path());
+    let stable_uri = file_uri(&client.workspace_path().join("stable.pl"));
+    let changing_uri = file_uri(&client.workspace_path().join("changing.pl"));
+    let healthy = "package Stable;\nsub stable { return 1; }\n";
+    std::fs::write(client.workspace_path().join("stable.pl"), healthy)?;
+    std::fs::write(client.workspace_path().join("changing.pl"), healthy)?;
+    initialize_with_root(&mut client, Some(&root_uri))?;
+
+    did_open_uri(&mut client, &stable_uri, 1, healthy)?;
+    did_open_uri(&mut client, &changing_uri, 1, healthy)?;
+
+    let stable_first =
+        diagnostic_report_uri(&mut client, &stable_uri, "diagnostics-stable-first", None)?;
+    let changing_first =
+        diagnostic_report_uri(&mut client, &changing_uri, "diagnostics-changing-first", None)?;
+    ensure!(stable_first.get("kind").and_then(Value::as_str) == Some("full"));
+    ensure!(changing_first.get("kind").and_then(Value::as_str) == Some("full"));
+    let stable_id = stable_first
+        .get("resultId")
+        .and_then(Value::as_str)
+        .context("stable diagnostic report omitted resultId")?
+        .to_owned();
+    let changing_id = changing_first
+        .get("resultId")
+        .and_then(Value::as_str)
+        .context("changing diagnostic report omitted resultId")?
+        .to_owned();
+    ensure!(stable_id != changing_id, "different documents need distinct result IDs");
+
+    let stable_unchanged = diagnostic_report_uri(
+        &mut client,
+        &stable_uri,
+        "diagnostics-stable-unchanged",
+        Some(&stable_id),
+    )?;
+    let changing_unchanged = diagnostic_report_uri(
+        &mut client,
+        &changing_uri,
+        "diagnostics-changing-unchanged",
+        Some(&changing_id),
+    )?;
+    ensure!(stable_unchanged.get("kind").and_then(Value::as_str) == Some("unchanged"));
+    ensure!(changing_unchanged.get("kind").and_then(Value::as_str) == Some("unchanged"));
+    ensure!(stable_unchanged.get("resultId").and_then(Value::as_str) == Some(stable_id.as_str()));
+    ensure!(
+        changing_unchanged.get("resultId").and_then(Value::as_str) == Some(changing_id.as_str())
+    );
+
+    let stable_with_changing_id = diagnostic_report_uri(
+        &mut client,
+        &stable_uri,
+        "diagnostics-stable-swapped",
+        Some(&changing_id),
+    )?;
+    let changing_with_stable_id = diagnostic_report_uri(
+        &mut client,
+        &changing_uri,
+        "diagnostics-changing-swapped",
+        Some(&stable_id),
+    )?;
+    ensure!(stable_with_changing_id.get("kind").and_then(Value::as_str) == Some("full"));
+    ensure!(changing_with_stable_id.get("kind").and_then(Value::as_str) == Some("full"));
+    ensure!(
+        stable_with_changing_id.get("resultId").and_then(Value::as_str) == Some(stable_id.as_str())
+    );
+    ensure!(
+        changing_with_stable_id.get("resultId").and_then(Value::as_str)
+            == Some(changing_id.as_str())
+    );
+
+    did_change_uri(&mut client, &changing_uri, 2, "package Stable;\nsub broken {\n")?;
+    let _ = wait_for_current_parse_tokens_uri(
+        &mut client,
+        &changing_uri,
+        "diagnostic-facts-after-edit",
+    )?;
+    let stable_after_edit = diagnostic_report_uri(
+        &mut client,
+        &stable_uri,
+        "diagnostics-stable-after-edit",
+        Some(&stable_id),
+    )?;
+    let changing_after_edit = diagnostic_report_uri(
+        &mut client,
+        &changing_uri,
+        "diagnostics-changing-after-edit",
+        Some(&changing_id),
+    )?;
+    ensure!(stable_after_edit.get("kind").and_then(Value::as_str) == Some("full"));
+    let stable_after_edit_id = stable_after_edit
+        .get("resultId")
+        .and_then(Value::as_str)
+        .context("stable post-edit diagnostic report omitted resultId")?;
+    ensure!(stable_after_edit_id != stable_id);
+    let stable_items = stable_after_edit
+        .get("items")
+        .and_then(Value::as_array)
+        .context("stable post-edit report omitted items")?;
+    for item in stable_items {
+        ensure!(!is_parser_diagnostic(item)?, "stable source gained a parser diagnostic: {item}");
+    }
+
+    ensure!(changing_after_edit.get("kind").and_then(Value::as_str) == Some("full"));
+    let changing_after_edit_id = changing_after_edit
+        .get("resultId")
+        .and_then(Value::as_str)
+        .context("changing post-edit diagnostic report omitted resultId")?;
+    ensure!(changing_after_edit_id != changing_id);
+    ensure!(
+        changing_after_edit
+            .get("items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty()),
+        "edited source must publish diagnostics: {changing_after_edit}"
+    );
+
+    finish(&mut client)
 }
 
 #[test]
