@@ -31,6 +31,12 @@ fn check_policy_message(receipt: Option<Value>, expected_evidence: &str) -> Resu
         .and_then(Value::as_str)
         .map(str::to_owned);
     let mut argument = json!({"provider": "hover"});
+    if expected_detail.is_some() {
+        let fields =
+            argument.as_object_mut().ok_or_else(|| anyhow::anyhow!("expected argument object"))?;
+        fields.insert("receipt_id".to_string(), json!("caller-receipt-marker"));
+        fields.insert("scenario".to_string(), json!("caller-scenario-marker"));
+    }
     if let Some(receipt) = receipt {
         let prior =
             client.request(json!("prior-hover"), "textDocument/hover", json!({}), timeout())?;
@@ -80,6 +86,18 @@ fn check_policy_message(receipt: Option<Value>, expected_evidence: &str) -> Resu
             !policy.contains(&detail) && message.matches(&detail).count() == 1,
             "request detail must not be duplicated or labeled as policy: {message}"
         );
+        for (field, marker) in
+            [("receipt_id", "caller-receipt-marker"), ("scenario", "caller-scenario-marker")]
+        {
+            ensure!(
+                evidence.contains(marker) && !policy.contains(marker),
+                "caller context must remain outside static policy: {message}"
+            );
+            ensure!(
+                result.get(field).and_then(Value::as_str) == Some(marker),
+                "structured caller context must be preserved: {result}"
+            );
+        }
         ensure!(
             result.pointer("/request_receipt/user_message").and_then(Value::as_str)
                 == Some(detail.as_str()),

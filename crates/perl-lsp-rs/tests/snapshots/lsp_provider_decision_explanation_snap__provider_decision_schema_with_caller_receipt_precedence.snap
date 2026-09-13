@@ -34,7 +34,7 @@ copyable_payload:
   scenario: provider-decision-schema
   schema_version: provider_decision_bug_report.v1
   support_tier_link: "docs/project/status/SUPPORT_TIERS.md#claim-rows"
-  user_message: "Attached request freshness: fresh.\nRequest detail: Caller supplied receipt won over the persisted completion trace.\nProvider policy summary:\nCompletion used fallback.\nProvider policy selected a conservative fallback path.\nFact source: compiler facts.\nConfidence: high. Freshness: fresh.\nDynamic boundary: no.\nFallback: legacy provider.\nReceipt: completion-schema-snapshot.\nScenario: provider-decision-schema."
+  user_message: "Attached request freshness: fresh.\nRequest detail: Caller supplied receipt won over the persisted completion trace.\nReceipt: completion-schema-snapshot.\nScenario: provider-decision-schema.\nProvider policy summary:\nCompletion used fallback.\nProvider policy selected a conservative fallback path.\nFact source: compiler facts.\nConfidence: high. Freshness: fresh.\nDynamic boundary: no.\nFallback: legacy provider.\nReceipt: docs/project/status/provider_confidence_matrix.md#completion.\nScenario: ux_scenario_28_mojolicious_completion_ranking."
   workspace_root_class: single_root
   workspace_root_hash: "<workspace-root-hash>"
 decision: fallback
@@ -60,4 +60,4 @@ request_receipt:
   user_message: Caller supplied receipt won over the persisted completion trace.
 scenario: provider-decision-schema
 schema_version: provider_decision.v1
-user_message: "Attached request freshness: fresh.\nRequest detail: Caller supplied receipt won over the persisted completion trace.\nProvider policy summary:\nCompletion used fallback.\nProvider policy selected a conservative fallback path.\nFact source: compiler facts.\nConfidence: high. Freshness: fresh.\nDynamic boundary: no.\nFallback: legacy provider.\nReceipt: completion-schema-snapshot.\nScenario: provider-decision-schema."
+user_message: "Attached request freshness: fresh.\nRequest detail: Caller supplied receipt won over the persisted completion trace.\nReceipt: completion-schema-snapshot.\nScenario: provider-decision-schema.\nProvider policy summary:\nCompletion used fallback.\nProvider policy selected a conservative fallback path.\nFact source: compiler facts.\nConfidence: high. Freshness: fresh.\nDynamic boundary: no.\nFallback: legacy provider.\nReceipt: docs/project/status/provider_confidence_matrix.md#completion.\nScenario: ux_scenario_28_mojolicious_completion_ranking."
