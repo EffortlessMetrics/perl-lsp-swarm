@@ -24,12 +24,12 @@
 //! | `"building"` | `"partial"` |
 //! | `"none"`     | `"none"`    |
 //!
-//! Exception: the `empty` tier's terminal return hardcodes `index_state = "none"`
-//! regardless of the actual coordinator state (the index is irrelevant when no
-//! symbol exists under the cursor).  H-B is skipped for `empty` rows.  The
-//! qualified-name prefix guard (#1849) also answers `empty` but reports the
-//! observed index state, so the skip is permissive rather than an assertion that
-//! `empty` implies `"none"`.
+//! The `empty` tier now reports the access mode actually observed (#14156), so an
+//! empty answer over a complete index is a fresh, trustworthy negative rather
+//! than one indistinguishable from an absent index. A later open-document edit
+//! can still invalidate a captured full state at receipt time (#14163); H-B is
+//! skipped for `empty` rows because the tier is reached from several access modes,
+//! including the qualified-name prefix guard (#1849).
 //!
 //! If the assertion fails the harness reports the discrepancy so the caller
 //! can fix `set_index_building` (or drop the "building" column and document why).
@@ -297,7 +297,7 @@ use warnings;
     ///
     /// - H-A: Receipt `uri`/`line`/`character` match what was sent (binding check).
     /// - H-B: Receipt `index_state` matches the expected value for `intended_state_label`
-    ///   (skipped for `empty` tier, which hardcodes `"none"` regardless of coordinator state).
+    ///   (skipped for `empty` tier, which can be reached from several access modes).
     fn measure(
         fixture_id: &'static str,
         intended_state_label: &'static str,
@@ -348,18 +348,11 @@ use warnings;
 
         // H-B: observed index_state matches the intended label — for non-empty tiers.
         //
-        // The `empty` tier's terminal return in references.rs hardcodes
-        // `index_state = "none"` regardless of coordinator state.  This is an
-        // implementation shortcut: when there is no symbol under the cursor the
-        // index state is irrelevant.  We skip H-B for empty rows to avoid a false
-        // assertion; the `observed_state` column in the matrix will show "none" for
-        // these rows, which is documented behaviour, not a harness bug.
-        //
-        // Not every `empty` row reports "none" any more: the qualified-name
-        // prefix guard (#1849) also answers `empty`, and it reports the index
-        // state it actually observed, because a symbol *does* exist under that
-        // cursor — just not the one being searched for.  The skip below is
-        // therefore permissive, not a claim that `empty` implies "none".
+        // The `empty` tier can be reached from several access modes (including
+        // the qualified-name prefix guard, #1849), and a request-local edit may
+        // also downgrade a captured full state at receipt time. We skip H-B for
+        // empty rows to avoid a false assertion; the `observed_state` column
+        // still records the state the receipt reported.
         let observed_state =
             receipt.get("index_state").and_then(Value::as_str).unwrap_or("").to_string();
         let answering_tier =
@@ -1533,12 +1526,14 @@ use warnings;
         receipt_fallback_state: String,
         /// Live receipt `confidence` (`"high"` | `"low"`).
         receipt_confidence: String,
-        /// Live receipt `freshness`. NOTE: production currently hardcodes this
-        /// to the constant `"fresh"` regardless of real document/index
-        /// generation state (see `references.rs::record_references_provider_decision_trace`)
-        /// — this replay reports the field as-is and does not claim it tracks
-        /// genuine staleness; see `references_representative_replay_genuine_stale_generation_downgrades_index_state`
-        /// for the real staleness proof, which uses `index_state` instead.
+        /// Live receipt `freshness`. Since #14156 this is derived from the
+        /// answering tier and the observed `index_state`, not a constant: tiers
+        /// reading live compiler facts or the live open buffer report `"fresh"`,
+        /// and index-backed tiers report `"fresh"` only under a full index. This
+        /// replay reports the field as-is; the discriminating proof for the
+        /// derivation lives in `references.rs`
+        /// (`handle_references_derives_receipt_freshness_from_the_answering_tier`
+        /// and `handle_references_preserves_full_index_state_through_the_empty_tier`).
         receipt_freshness: String,
         /// Live receipt `fact_source` (producer, e.g. `"semantic_fact"`, `"fallback"`).
         receipt_fact_source: String,
@@ -2875,12 +2870,12 @@ use warnings;
     /// (`test_index_file_in_building_state` -> `test_simulate_indexing_complete`
     /// -> `test_replace_document_without_index`), applied to real project
     /// content instead of a synthetic snippet. Confirms the live downgrade via
-    /// `index_state` (the receipt's `freshness` field is currently a
-    /// hardcoded `"fresh"` constant in production and does not vary with
-    /// staleness — see the `ReplayRow::receipt_freshness` doc comment; this
-    /// replay cannot and does not assert a freshness *value* change, only the
-    /// `index_state` downgrade and the resulting inability to reach
-    /// `semantic_source_backed`).
+    /// `index_state`. This replay asserts the `index_state` downgrade and the
+    /// resulting inability to reach `semantic_source_backed`; it deliberately
+    /// does not assert a `freshness` value, because a stale index alone does not
+    /// force a non-fresh receipt — the same-file semantic analyzer answers from
+    /// the live buffer and is genuinely fresh (#14156). The freshness derivation
+    /// is proven directly in `references.rs` instead.
     #[test]
     fn references_representative_replay_genuine_stale_generation_downgrades_index_state()
     -> Result<(), Box<dyn std::error::Error>> {
