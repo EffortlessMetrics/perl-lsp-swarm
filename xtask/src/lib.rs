@@ -5,6 +5,7 @@
 extern crate self as xtask;
 
 pub mod actual_host_receipt;
+pub mod ast_v2_lifecycle_audit;
 pub mod branch_deletion_admission;
 pub mod cargo_rustc_wrappers;
 pub mod ci_route_plan;
