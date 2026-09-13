@@ -88,14 +88,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_limitation_paths_are_omitted() {
+    fn empty_limitation_paths_are_omitted() -> Result<(), Box<dyn std::error::Error>> {
         let lim = ModelLimitation {
             id: "parse-failed:lib/App.pm".to_string(),
             kind: "parse_failure".to_string(),
             message: "could not parse".to_string(),
             paths: Vec::new(),
         };
-        let json = serde_json::to_string(&lim).unwrap();
+        let json = serde_json::to_string(&lim)?;
         assert!(!json.contains("paths"));
+        Ok(())
     }
 }

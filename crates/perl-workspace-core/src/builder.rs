@@ -178,6 +178,7 @@ fn extract_dist_metadata(
                         "`{relative_path}`: {:?} at line {:?}: {}",
                         finding.kind, finding.line, finding.detail
                     ),
+                    paths: vec![relative_path.to_string()],
                 });
             }
             match outcome.state {
