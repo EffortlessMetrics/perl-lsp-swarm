@@ -3939,7 +3939,7 @@ fn degraded_guidance_annotation(packet: &Value) -> Option<String> {
     Some(format!(
         "::warning title={}::{}",
         escape_cmd(&format!("ripr review guidance {status}")),
-        escape_cmd(&format!(
+        escape_cmd_data(&format!(
             "Review guidance did not complete, so the seam set for this run is not the whole picture: {reason}"
         ))
     ))
@@ -4764,6 +4764,17 @@ fn escape_cmd(value: &str) -> String {
         .replace('\n', "%0A")
         .replace(',', "%2C")
         .replace(':', "%3A")
+}
+
+/// Escape the *data* half of a workflow command — the text after `::`.
+///
+/// The runner unescapes only `%25`, `%0D` and `%0A` there; `%3A` and `%2C` are
+/// unescaped for `key=value` *properties* only. Running message text through
+/// [`escape_cmd`] therefore renders literal `%3A`/`%2C` in the annotation, which
+/// defeats the point of a message a human is meant to read. Use this for message
+/// bodies and keep [`escape_cmd`] for property values such as `title=`.
+fn escape_cmd_data(value: &str) -> String {
+    value.replace('%', "%25").replace('\r', "%0D").replace('\n', "%0A")
 }
 
 fn bullet_list(values: &[String]) -> String {
@@ -9472,11 +9483,88 @@ paths = ["archive/["]
         // Without this the run emits nothing at all, which is byte-for-byte how
         // a PR with no gaps presents.
         assert!(!rendered.text.is_empty(), "a degraded pass must not render as a clean run");
+        // The message is command *data*: the runner unescapes only %25/%0D/%0A
+        // there, so `,` and `:` must reach it literally or the operator reads
+        // "%2C"/"%3A" in the annotation.
         assert_eq!(
             rendered.text.trim_end(),
-            "::warning title=ripr review guidance incomplete::Review guidance did not complete%2C \
-             so the seam set for this run is not the whole picture%3A ripr timed out after 600s"
+            "::warning title=ripr review guidance incomplete::Review guidance did not complete, \
+             so the seam set for this run is not the whole picture: ripr timed out after 600s"
         );
+        Ok(())
+    }
+
+    /// The message is command data, not a property. Escaping it with the
+    /// property escaper renders literal `%3A`/`%2C` to the operator, so this
+    /// pins the two escapers apart at the one seam that mixes them.
+    #[test]
+    fn render_annotations_does_not_property_escape_the_degraded_message() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "error",
+            json!([{
+                "kind": "tool_error",
+                "message": "failed to spawn ripr: No such file, giving up",
+                "path": null
+            }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+        let (title, message) = rendered
+            .text
+            .trim_end()
+            .trim_start_matches("::warning title=")
+            .split_once("::")
+            .ok_or_else(|| eyre!("annotation did not split into title and message"))?;
+
+        assert!(message.contains("failed to spawn ripr: No such file, giving up"));
+        assert!(!message.contains("%3A"), "message must not be property-escaped: {message}");
+        assert!(!message.contains("%2C"), "message must not be property-escaped: {message}");
+        // The title is a property and stays property-escaped.
+        assert_eq!(title, "ripr review guidance error");
+        Ok(())
+    }
+
+    /// `%` still has to be escaped in the data half, or the runner eats it as
+    /// the start of an escape sequence.
+    #[test]
+    fn render_annotations_escapes_percent_in_the_degraded_message() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([{ "kind": "tool_error", "message": "budget 90% exhausted", "path": null }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("budget 90%25 exhausted"));
+        Ok(())
+    }
+
+    /// Pins selection order. With one `tool_error` per receipt today both
+    /// first-match and last-match agree, so nothing else here would catch a
+    /// change of rule.
+    #[test]
+    fn render_annotations_reports_the_first_tool_error_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([
+                { "kind": "tool_error", "message": "first recorded failure", "path": null },
+                { "kind": "tool_error", "message": "later cascading failure", "path": null }
+            ]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("first recorded failure"));
+        assert!(!rendered.text.contains("later cascading failure"));
         Ok(())
     }
 
