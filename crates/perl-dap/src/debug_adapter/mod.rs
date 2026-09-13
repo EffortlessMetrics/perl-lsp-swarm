@@ -89,7 +89,7 @@ use patterns::{
     prompt_re, regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
-use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
+use sync_utils::{EventSender, lock_or_recover};
 
 #[derive(Debug, Default)]
 struct TerminationState {
@@ -144,7 +144,7 @@ pub struct DebugAdapter {
     /// no failure path that reuses an id.
     thread_counter: Arc<AtomicI32>,
     /// Bounded output channel for sending events to client
-    event_sender: Option<SyncSender<DapMessage>>,
+    event_sender: Option<EventSender>,
     /// Ensures competing session shutdown paths emit one terminal event per session.
     termination_state: Arc<Mutex<TerminationState>>,
     /// Bounded history of debugger output for stack/variable/evaluate parsing
@@ -288,7 +288,7 @@ impl DebugAdapter {
     /// types.  Use `sync_channel(EVENT_QUEUE_CAPACITY)` or any capacity large
     /// enough for the test's event volume.
     pub fn set_event_sender(&mut self, sender: SyncSender<DapMessage>) {
-        self.event_sender = Some(sender);
+        self.event_sender = Some(EventSender::new(sender));
     }
 
     /// Configure the workspace boundary used to validate launch/attach paths.
@@ -465,7 +465,7 @@ impl DebugAdapter {
     /// when the queue is full); all other events apply backpressure.
     fn send_event(&self, event: &str, body: Option<Value>) {
         if let Some(ref sender) = self.event_sender {
-            dispatch_event(sender, &self.seq, event, body);
+            let _ = sender.send_event(&self.seq, event, body);
         }
     }
 

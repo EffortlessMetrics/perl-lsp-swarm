@@ -10,7 +10,7 @@ import { jest } from '@jest/globals';
 
 export const Uri = {
   parse: (value: string) => ({ toString: () => value, fsPath: value }),
-  file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path }),
+  file: (path: string) => ({ toString: () => `file://${path}`, fsPath: path, scheme: 'file' }),
 };
 
 export class ThemeColor {
@@ -21,6 +21,13 @@ export class Position {
   constructor(
     public readonly line: number,
     public readonly character: number,
+  ) {}
+}
+
+export class Location {
+  constructor(
+    public readonly uri: unknown,
+    public readonly range: unknown,
   ) {}
 }
 
@@ -275,9 +282,9 @@ export const workspace = {
     update: jest.fn(),
   })),
   createFileSystemWatcher: jest.fn(() => ({
-    onDidCreate: jest.fn(),
-    onDidChange: jest.fn(),
-    onDidDelete: jest.fn(),
+    onDidCreate: jest.fn(() => ({ dispose: jest.fn() })),
+    onDidChange: jest.fn(() => ({ dispose: jest.fn() })),
+    onDidDelete: jest.fn(() => ({ dispose: jest.fn() })),
     dispose: jest.fn(),
   })),
   onDidOpenTextDocument: jest.fn(() => ({ dispose: jest.fn() })),
@@ -292,6 +299,7 @@ export const workspace = {
   ),
   asRelativePath: jest.fn((uri: { fsPath: string }) => uri.fsPath),
   textDocuments: [],
+  decode: jest.fn(async (content: Uint8Array) => Buffer.from(content).toString('utf8')),
   findFiles: jest.fn(async () => []),
   openTextDocument: jest.fn(async (value: string | { fsPath: string }) => ({
     uri: typeof value === 'string' ? { fsPath: value } : value,

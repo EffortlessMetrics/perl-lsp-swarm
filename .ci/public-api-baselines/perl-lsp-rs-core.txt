@@ -473,6 +473,7 @@ pub fn perl_lsp_rs_core::config::WorkspaceConfig::get_system_inc_probe_outcome(&
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::parse_perl5lib(value: &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::peek_system_inc(&self) -> (alloc::vec::Vec<std::path::PathBuf>, perl_lsp_rs_core::config::SystemIncProbeSnapshot)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::peek_system_inc_probe(&self) -> perl_lsp_rs_core::config::SystemIncProbeSnapshot
+pub fn perl_lsp_rs_core::config::WorkspaceConfig::preserve_metadata_state_from(&mut self, previous: &Self)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_declared_dependencies(&mut self, workspace_root: &std::path::Path)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_dependency_include_paths(&mut self, workspace_root: &std::path::Path)
 pub fn perl_lsp_rs_core::config::WorkspaceConfig::refresh_dependency_include_paths_with_declaration(&mut self, workspace_root: &std::path::Path, declaration_present: core::option::Option<bool>)

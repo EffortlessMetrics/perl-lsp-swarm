@@ -12,16 +12,14 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from release_archive_members import ArchiveMemberError, selected_member_digest
+
 SCHEMA = "perl_lsp.release_package_evidence.v1"
 HEX40 = __import__("re").compile(r"^[0-9a-f]{40}$")
 
 
 class PackageEvidenceError(ValueError):
     """Package lineage could not be proven."""
-
-
-def digest_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
 
 
 def digest(path: Path) -> str:
@@ -48,31 +46,11 @@ def load(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def archive_member(archive: Path, name: str) -> bytes:
-    # Duplicate member names are refused: both zipfile and tarfile silently
-    # resolve a duplicated name to the last entry, so evidence could be taken
-    # from a member that installers and extractors may not select the same way.
-    if archive.name.endswith(".zip"):
-        with zipfile.ZipFile(archive) as bundle:
-            matches = [info for info in bundle.infolist() if info.filename == name]
-            if not matches:
-                raise PackageEvidenceError(f"archive member is missing: {name}")
-            if len(matches) > 1:
-                raise PackageEvidenceError(f"archive has duplicate members: {name}")
-            return bundle.read(matches[0])
-    with tarfile.open(archive, "r:gz") as bundle:
-        matches = [member for member in bundle.getmembers() if member.name == name]
-        if not matches:
-            raise PackageEvidenceError(f"archive member is missing: {name}")
-        if len(matches) > 1:
-            raise PackageEvidenceError(f"archive has duplicate members: {name}")
-        member = matches[0]
-        if member.issym() or member.islnk():
-            raise PackageEvidenceError(f"archive member is a link, not a file: {name}")
-        handle = bundle.extractfile(member)
-        if handle is None:
-            raise PackageEvidenceError(f"archive member is not a file: {name}")
-        return handle.read()
+def archive_member_digest(archive: Path, name: str) -> str:
+    try:
+        return selected_member_digest(archive, name)
+    except ArchiveMemberError as error:
+        raise PackageEvidenceError(str(error)) from error
 
 
 def build(
@@ -134,7 +112,7 @@ def build(
         # 7-Zip receives the expanded Windows file list and stores flat names;
         # tar receives the package directory and retains its top-level prefix.
         member_path = file_name if "windows" in target else f"{package_dir.name}/{file_name}"
-        if digest_bytes(archive_member(archive, member_path)) != post_strip:
+        if archive_member_digest(archive, member_path) != post_strip:
             raise PackageEvidenceError(f"archive member differs from packaged bytes: {member_path}")
         evidence.append(
             {
