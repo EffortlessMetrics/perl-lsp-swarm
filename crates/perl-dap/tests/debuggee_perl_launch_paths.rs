@@ -104,23 +104,30 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), Box<dyn Error
 }
 
 #[cfg(windows)]
-fn prepare_native_perl_fixture(
-    source_perl: &Path,
-    destination: &Path,
-) -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
-    let staged_perl = stage_perl_library_layout(source_perl, destination)?
-        .ok_or("selected Perl is not a native MSWin32 build")?;
-    let staged_bin = staged_perl.parent().ok_or("staged Perl has no bin directory")?;
+fn copy_adjacent_dlls(source_perl: &Path, destination_dir: &Path) -> Result<(), Box<dyn Error>> {
     let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
     for entry in fs::read_dir(source_dir)? {
         let entry = entry?;
         if entry.path().extension().and_then(|extension| extension.to_str()) == Some("dll") {
-            fs::copy(entry.path(), staged_bin.join(entry.file_name()))?;
+            fs::copy(entry.path(), destination_dir.join(entry.file_name()))?;
         }
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn prepare_native_perl_fixture(
+    source_perl: &Path,
+    destination: &Path,
+) -> Result<Option<(PathBuf, PathBuf)>, Box<dyn Error>> {
+    let Some(staged_perl) = stage_perl_library_layout(source_perl, destination)? else {
+        return Ok(None);
+    };
+    let staged_bin = staged_perl.parent().ok_or("staged Perl has no bin directory")?;
+    copy_adjacent_dlls(source_perl, staged_bin)?;
     let pinned = staged_bin.join("perl5.exe");
     fs::copy(&staged_perl, &pinned)?;
-    Ok((staged_perl, pinned))
+    Ok(Some((staged_perl, pinned)))
 }
 
 struct EnvGuard {
@@ -220,18 +227,14 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
     let controls = tempfile::tempdir()?;
     #[cfg(windows)]
     let (ambient, pinned) =
-        if let Some(staged_perl) = stage_perl_library_layout(&source_perl, controls.path())? {
-            let staged_bin =
-                staged_perl.parent().ok_or("staged Perl has no bin directory")?.to_path_buf();
-            let pinned = staged_bin.join("perl5.exe");
-            let ambient = staged_perl;
-            fs::copy(&ambient, &pinned)?;
-            (ambient, pinned)
+        if let Some(fixture) = prepare_native_perl_fixture(&source_perl, controls.path())? {
+            fixture
         } else {
             let ambient = controls.path().join("perl.exe");
             let pinned = controls.path().join("perl5.exe");
             fs::copy(&source_perl, &ambient)?;
             fs::copy(&source_perl, &pinned)?;
+            copy_adjacent_dlls(&source_perl, controls.path())?;
             (ambient, pinned)
         };
     #[cfg(not(windows))]
@@ -242,17 +245,6 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
         fs::copy(&source_perl, &pinned)?;
         (ambient, pinned)
     };
-    #[cfg(windows)]
-    {
-        let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
-        let destination_dir = ambient.parent().ok_or("ambient Perl has no parent directory")?;
-        for entry in fs::read_dir(source_dir)? {
-            let entry = entry?;
-            if entry.path().extension().and_then(|extension| extension.to_str()) == Some("dll") {
-                fs::copy(entry.path(), destination_dir.join(entry.file_name()))?;
-            }
-        }
-    }
     // Keep the copied pin's basename within the adapter's strict Perl-name
     // contract while still making it distinct from the ambient copy.
     for binary in [&ambient, &pinned] {
@@ -301,11 +293,11 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
 #[cfg(windows)]
 #[serial]
 fn copied_native_fixture_requires_staged_core_library() -> Result<(), Box<dyn Error>> {
-    let source = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV)
-        .ok_or("strict fixture proof requires a configured native Perl pin")?;
-    let source = PathBuf::from(source);
+    let source = find_configured_or_path_pipe_perl()?
+        .ok_or("strict fixture proof found no pipe-capable Perl candidate")?;
     let controls = tempfile::tempdir()?;
-    let (ambient, pinned) = prepare_native_perl_fixture(&source, controls.path())?;
+    let (ambient, pinned) = prepare_native_perl_fixture(&source, controls.path())?
+        .ok_or("selected fixture candidate is not a native MSWin32 build")?;
     probe_debuggee_perl_for_test(&pinned, Duration::from_secs(10), false)
         .map_err(|reason| format!("staged native fixture was not pipe-usable: {reason}"))?;
 
