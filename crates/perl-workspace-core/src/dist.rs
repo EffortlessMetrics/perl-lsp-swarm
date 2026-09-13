@@ -256,7 +256,9 @@ fn starts_bare_regex(chars: &[char], class: &[CpanfileChar], index: usize) -> bo
         }
         let previous = chars[cursor];
         if !is_identifier_char(previous) {
-            return !matches!(previous, ')' | ']' | '}');
+            // `//` is the defined-or operator, not an empty regex followed by a
+            // division: `$x // 'default'` must not swallow to the next `/`.
+            return !matches!(previous, ')' | ']' | '}' | '/');
         }
         let mut start = cursor + 1;
         while start > 0 && is_identifier_char(chars[start - 1]) {
@@ -1402,6 +1404,8 @@ mod tests {
             "$#{$b} / 2",
             "$list[0] / 2",
             "'10' / 2",
+            "$ENV{X} // 'default'",
+            "$x // 2",
         ] {
             let content = format!("my $n = {expression};\nrequires 'Kept';\n");
             let facts = parse_cpanfile(FileId::new("cpanfile", &Digest::of("x")), &content);
