@@ -1,7 +1,13 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { BinaryDownloader, detectMusl } from './downloader';
+import {
+  BinaryDownloader,
+  classifyWindowsArm64Support,
+  detectMusl,
+  isAndroidEnvironment,
+  isTermuxEnvironment,
+} from './downloader';
 
 const SERVER_DEBUG_TEST_COMMAND = 'perl.debugTest';
 export const VSCODE_DEBUG_TEST_COMMAND = 'perl-lsp.debugTest';
@@ -18,38 +24,41 @@ function packagedDapTargetDirectoryForContext(
   context: vscode.ExtensionContext,
   isExecutable: (filePath: string) => boolean,
 ): string | undefined {
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
+  const hostTargets =
+    process.platform === 'linux' && arch && !isAndroidEnvironment() && !isTermuxEnvironment()
+      ? [`${detectMusl() ? 'alpine' : 'linux'}-${arch}`]
+      : process.platform === 'darwin' && arch
+        ? [`darwin-${arch}`]
+        : process.platform === 'win32' && arch
+          ? arch === 'arm64'
+            ? [
+                'win32-arm64',
+                ...(classifyWindowsArm64Support() === 'windows-11-or-newer' ? ['win32-x64'] : []),
+              ]
+            : ['win32-x64']
+          : [];
+  const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+
   let packagedTarget: unknown;
   try {
     const packageJson = JSON.parse(
       fs.readFileSync(path.join(context.extensionPath, 'package.json'), 'utf8'),
     ) as { __metadata?: { targetPlatform?: unknown } };
     packagedTarget = packageJson.__metadata?.targetPlatform;
-    if (typeof packagedTarget === 'string') {
-      if (/^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)) {
-        return packagedTarget;
-      }
+    if (
+      typeof packagedTarget === 'string' &&
+      /^(?:linux|alpine|darwin|win32)-(?:x64|arm64)$/.test(packagedTarget)
+    ) {
+      return hostTargets.includes(packagedTarget) ? packagedTarget : undefined;
     }
   } catch {
     // Development test fixtures may omit package.json; inspect known payloads.
   }
 
-  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : undefined;
-  const hostTargets =
-    process.platform === 'linux' && arch
-      ? [`${detectMusl() ? 'alpine' : 'linux'}-${arch}`]
-      : process.platform === 'darwin' && arch
-        ? [`darwin-${arch}`]
-        : process.platform === 'win32' && arch
-          ? [`win32-${arch}`]
-          : [];
-  const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
-  const packagedCandidates = hostTargets.filter((target) =>
+  return hostTargets.find((target) =>
     isExecutable(path.join(context.extensionPath, 'bin', target, dapName)),
   );
-  if (packagedCandidates.length === 1) {
-    return packagedCandidates[0];
-  }
-  return undefined;
 }
 
 // ---------------------------------------------------------------------------
