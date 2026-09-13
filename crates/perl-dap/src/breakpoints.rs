@@ -131,6 +131,22 @@ pub struct BreakpointHitOutcome {
     pub log_messages: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EngineBreakpointHitOutcome {
+    pub(crate) matched: bool,
+    pub(crate) should_stop: bool,
+    pub(crate) log_messages: Vec<String>,
+    pub(crate) hit_breakpoint_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EngineInstallation {
+    source_path: String,
+    session_generation: u64,
+    source_digest: String,
+    line: i64,
+}
+
 fn parse_hit_condition_operand(raw: &str) -> Option<u64> {
     raw.trim().parse::<u64>().ok()
 }
@@ -295,6 +311,9 @@ pub struct BreakpointStore {
     breakpoints: Arc<Mutex<HashMap<String, Vec<BreakpointRecord>>>>,
     /// Next breakpoint ID (monotonically increasing)
     next_id: Arc<Mutex<i64>>,
+    /// Engine acknowledgements are owned by the same store as static records,
+    /// so replacement and runtime attribution cannot observe split state.
+    engine_installations: Arc<Mutex<HashMap<i64, EngineInstallation>>>,
     /// Counts visits to the source read boundary, shared by clones of this store.
     #[cfg(test)]
     source_read_attempts: Arc<std::sync::atomic::AtomicUsize>,
@@ -314,8 +333,55 @@ impl BreakpointStore {
         Self {
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
             next_id: Arc::new(Mutex::new(1)),
+            engine_installations: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
             source_read_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// Record an engine acknowledgement only if the adapter ID still names
+    /// the requested source and line. Callers supply the broker/session
+    /// generation and source digest after the external wait has completed.
+    pub(crate) fn mark_engine_installed(
+        &self,
+        id: i64,
+        source_path: &str,
+        line: i64,
+        session_generation: u64,
+        source_digest: String,
+    ) -> bool {
+        let breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(records) = breakpoints_map.get(source_path) else {
+            return false;
+        };
+        if !records.iter().any(|record| record.id == id && record.verified && record.line == line) {
+            return false;
+        }
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        installations.insert(
+            id,
+            EngineInstallation {
+                source_path: source_path.to_string(),
+                session_generation,
+                source_digest,
+                line,
+            },
+        );
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_engine_installations_for_source(&self, source_path: &str) {
+        let breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let ids: Vec<i64> = breakpoints_map
+            .get(source_path)
+            .into_iter()
+            .flatten()
+            .map(|record| record.id)
+            .collect();
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        for id in ids {
+            installations.remove(&id);
         }
     }
 
@@ -388,7 +454,17 @@ impl BreakpointStore {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
         let mut next_id = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Clear existing breakpoints for this source (REPLACE semantics)
+        // Clear existing breakpoints and their engine acknowledgements as one
+        // replacement boundary. The records lock is held through removal so
+        // a late acknowledgement cannot commit against the old record set.
+        if let Some(old_records) = breakpoints_map.get(&source_path) {
+            let old_ids = old_records.iter().map(|record| record.id).collect::<Vec<_>>();
+            let mut installations =
+                self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+            for id in old_ids {
+                installations.remove(&id);
+            }
+        }
         breakpoints_map.remove(&source_path);
 
         let mut records = Vec::new();
@@ -591,6 +667,50 @@ impl BreakpointStore {
     /// conditions. For logpoints, execution continues after emitting output.
     pub fn register_breakpoint_hit(&self, source_path: &str, line: i64) -> BreakpointHitOutcome {
         self.register_breakpoint_hit_with_variables(source_path, line, None)
+    }
+
+    /// Register a runtime hit while requiring a current engine acknowledgement.
+    pub(crate) fn register_engine_breakpoint_hit(
+        &self,
+        source_path: &str,
+        line: i64,
+        session_generation: u64,
+        source_digest: &str,
+    ) -> EngineBreakpointHitOutcome {
+        let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        let mut outcome = EngineBreakpointHitOutcome::default();
+        for (stored_path, records) in &mut *breakpoints_map {
+            if !file_paths_match(stored_path, source_path) {
+                continue;
+            }
+            for record in records {
+                let Some(installation) = installations.get(&record.id) else { continue };
+                if installation.session_generation != session_generation
+                    || !file_paths_match(&installation.source_path, source_path)
+                    || installation.line != line
+                    || installation.source_digest != source_digest
+                    || record.line != line
+                    || !record.verified
+                {
+                    continue;
+                }
+                outcome.matched = true;
+                record.hit_count = record.hit_count.saturating_add(1);
+                if !evaluate_hit_condition(record.hit_condition.as_deref(), record.hit_count)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if let Some(message) = record.log_message.clone() {
+                    outcome.log_messages.push(message);
+                } else {
+                    outcome.should_stop = true;
+                    outcome.hit_breakpoint_ids.push(record.id);
+                }
+            }
+        }
+        outcome
     }
 
     /// Register a breakpoint hit with optional variable interpolation.
@@ -1665,5 +1785,47 @@ EOF
                 .contains("Conditional breakpoint expression is invalid"),
             "stored message must include condition-invalid note"
         );
+    }
+
+    #[test]
+    fn engine_installation_rejects_stale_generation_and_digest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+        let args = SetBreakpointsArguments {
+            source: Source { path: Some(source_path.clone()), name: Some("script.pl".to_string()) },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 5,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        };
+        let response = store.set_breakpoints(&args);
+        let id = response.first().ok_or("missing breakpoint response")?.id;
+        let digest = perl_source_identity::ContentDigest::of_bytes(&std::fs::read(&source_path)?)
+            .to_string();
+        if !store.mark_engine_installed(id, &source_path, 5, 7, digest.clone()) {
+            return Err("engine installation was not committed".into());
+        }
+        if store.register_engine_breakpoint_hit(&source_path, 5, 8, &digest).matched {
+            return Err("stale session generation matched an engine breakpoint".into());
+        }
+        if store.register_engine_breakpoint_hit(&source_path, 5, 7, "changed").matched {
+            return Err("changed source digest matched an engine breakpoint".into());
+        }
+        let outcome = store.register_engine_breakpoint_hit(&source_path, 5, 7, &digest);
+        if !outcome.should_stop || outcome.hit_breakpoint_ids != vec![id] {
+            return Err(
+                format!("current installation did not produce its sole ID: {outcome:?}").into()
+            );
+        }
+        store.clear_engine_installations_for_source(&source_path);
+        if store.register_engine_breakpoint_hit(&source_path, 5, 7, &digest).matched {
+            return Err("replaced source retained the old engine installation".into());
+        }
+        Ok(())
     }
 }
