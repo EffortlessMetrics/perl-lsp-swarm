@@ -1182,17 +1182,35 @@ fn split_flow(text: &str, line: usize) -> Result<Vec<String>, MetaYmlFinding> {
 
 // ── Fact normalization (mirrors dist::parse_meta_json) ──────────────────────
 
+/// How an explicit YAML null reads at one field position.
+#[derive(Clone, Copy)]
+enum NullMeaning {
+    /// A null *field value* declares absence — the same null doctrine the
+    /// module already applies to prerequisite versions. Nothing was dropped,
+    /// so nothing is reported.
+    DeclaresAbsence,
+    /// A null *sequence item* still occupies a declared position in that
+    /// sequence. Discarding it silently would be exactly the drop this rule
+    /// forbids, so it is reported like any other non-scalar item.
+    OccupiesPosition,
+}
+
 /// Normalize one recognized field position that must hold a scalar.
 ///
-/// An explicit YAML null declares absence and stays silent — the same null
-/// doctrine the rest of the module uses for prerequisite versions. A
-/// collection-typed value, by contrast, is a declared value this normalizer
-/// cannot represent: it yields a finding so the value is reported rather than
-/// dropped without trace.
-fn scalar_field(value: &Yaml, what: &str, findings: &mut Vec<MetaYmlFinding>) -> Option<String> {
+/// A collection-typed value is a declared value this normalizer cannot
+/// represent: it yields a finding so the value is reported rather than dropped
+/// without trace. An explicit null is read according to `null_meaning`, which
+/// distinguishes "this field declares absence" from "this sequence slot was
+/// declared and holds something unusable".
+fn scalar_field(
+    value: &Yaml,
+    what: &str,
+    null_meaning: NullMeaning,
+    findings: &mut Vec<MetaYmlFinding>,
+) -> Option<String> {
     match value {
         Yaml::Scalar(s) => Some(s.clone()),
-        Yaml::Null => None,
+        Yaml::Null if matches!(null_meaning, NullMeaning::DeclaresAbsence) => None,
         other => {
             findings.push(MetaYmlFinding::new(
                 MetaYmlFindingKind::UnsupportedValueShape,
@@ -1213,7 +1231,7 @@ fn root_string(
     findings: &mut Vec<MetaYmlFinding>,
 ) -> Option<String> {
     let value = root.iter().find(|(k, _)| k == key).map(|(_, v)| v)?;
-    scalar_field(value, &format!("`{key}`"), findings)
+    scalar_field(value, &format!("`{key}`"), NullMeaning::DeclaresAbsence, findings)
 }
 
 fn root_licenses(root: &[(String, Yaml)], findings: &mut Vec<MetaYmlFinding>) -> Vec<String> {
@@ -1222,20 +1240,27 @@ fn root_licenses(root: &[(String, Yaml)], findings: &mut Vec<MetaYmlFinding>) ->
     };
     match value {
         // v2: an array of license strings. A non-scalar item cannot become a
-        // license fact, so it is reported instead of filtered away.
+        // license fact, so it is reported instead of filtered away — including
+        // an explicit null, which still claims a slot in the declared list.
         Yaml::Seq(items) => items
             .iter()
             .enumerate()
             .filter_map(|(index, item)| {
-                scalar_field(item, &format!("`license` item {index}"), findings)
+                scalar_field(
+                    item,
+                    &format!("`license` item {index}"),
+                    NullMeaning::OccupiesPosition,
+                    findings,
+                )
             })
             .collect(),
         // v1.4: a single string.
         Yaml::Scalar(s) => vec![s.clone()],
         // A map-typed `license` is neither spelling; report it rather than
-        // returning an empty license set that looks like "none declared".
+        // returning an empty license set that looks like "none declared". A
+        // null field value declares absence and stays silent.
         other => {
-            let _ = scalar_field(other, "`license`", findings);
+            let _ = scalar_field(other, "`license`", NullMeaning::DeclaresAbsence, findings);
             Vec::new()
         }
     }
@@ -1933,6 +1958,10 @@ build_requires:
             ("map-typed item after a good one", "license:\n  - perl_5\n  - X: Y\n", vec!["perl_5"]),
             ("sequence-typed item", "license:\n  - [perl_5]\n", vec![]),
             ("map-typed value", "license:\n  a: b\n", vec![]),
+            // A null ITEM occupies a declared slot in the list, unlike a null
+            // field value; dropping it silently is the same defect.
+            ("null item", "license: [null]\n", vec![]),
+            ("null item after a good one", "license: [perl_5, ~]\n", vec!["perl_5"]),
         ] {
             let outcome = parse_meta_yml(fid(), input);
             assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{label}: {:?}", outcome.findings);
@@ -1966,7 +1995,7 @@ build_requires:
             ("v2 flow sequence", "license: [perl_5, gpl_2]\n"),
             ("v1.4 scalar", "license: perl_5\n"),
             ("explicit null value", "license: ~\n"),
-            ("explicit null item", "license: [null]\n"),
+            ("explicit null name", "name: ~\nversion: 1\n"),
             ("absent field", "name: X\n"),
         ] {
             let outcome = parse_meta_yml(fid(), input);
@@ -1980,6 +2009,34 @@ build_requires:
                 outcome.findings
             );
         }
+    }
+
+    /// The null distinction, pinned side by side (#15544 review): the SAME
+    /// null spelling is silent as a field value and reported as a sequence
+    /// item, because only the item occupies a declared position.
+    #[test]
+    fn null_is_absence_as_a_field_value_but_a_reported_drop_as_a_sequence_item() {
+        let shape_findings = |input: &str| {
+            parse_meta_yml(fid(), input)
+                .findings
+                .into_iter()
+                .filter(|f| f.kind == MetaYmlFindingKind::UnsupportedValueShape)
+                .count()
+        };
+
+        assert_eq!(shape_findings("license: ~\n"), 0, "a null field value declares absence");
+        assert_eq!(shape_findings("license: [~]\n"), 1, "a null item occupies a declared slot");
+
+        // Every null spelling behaves the same way in item position.
+        assert_eq!(
+            shape_findings("license: [null, Null, NULL, ~]\n"),
+            4,
+            "each declared null slot is reported"
+        );
+
+        // ...and the facts stay honest: nothing is invented to fill the slot.
+        let facts = must_some_with(parse_meta_yml(fid(), "license: [null, ~]\n").facts, "facts");
+        assert!(facts.licenses.is_empty(), "a reported null yields no license fact");
     }
 
     /// The same honesty rule at the sibling scalar fields normalized through
