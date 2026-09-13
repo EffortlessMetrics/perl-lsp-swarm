@@ -43,10 +43,10 @@ impl ImportExtractor {
 
     fn walk(node: &Node, file_id: FileId, out: &mut Vec<ImportSpec>) {
         // Handle `use` statements directly.
-        if let NodeKind::Use { module, args, .. } = &node.kind {
-            if let Some(spec) = Self::classify_use(module, args, file_id, node) {
-                out.push(spec);
-            }
+        if let NodeKind::Use { module, args, .. } = &node.kind
+            && let Some(spec) = Self::classify_use(module, args, file_id, node)
+        {
+            out.push(spec);
         }
 
         // Detect standalone `ClassName->import(...)` method calls where
@@ -699,10 +699,10 @@ impl ImportExtractor {
 
     /// Remove surrounding single or double quotes from a string.
     fn unquote(s: &str) -> &str {
-        if (s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')) {
-            if s.len() >= 2 {
-                return &s[1..s.len() - 1];
-            }
+        if ((s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')))
+            && s.len() >= 2
+        {
+            return &s[1..s.len() - 1];
         }
         s
     }

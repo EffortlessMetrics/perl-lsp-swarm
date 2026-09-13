@@ -152,12 +152,12 @@ pub(super) fn handle_assignment<'a>(
 
     // Optimization: Handle simple scalar assignment directly to avoid double lookup
     // (mark_initialized + analyze_node both perform lookups)
-    if let NodeKind::Variable { sigil, name } = &lhs.kind {
-        if !name.contains("::") && !is_builtin_global(sigil, name) {
-            if analyzer.initialize_and_use_variable_parts_in_context(scope, sigil, name, context) {
-                return true;
-            }
-        }
+    if let NodeKind::Variable { sigil, name } = &lhs.kind
+        && !name.contains("::")
+        && !is_builtin_global(sigil, name)
+        && analyzer.initialize_and_use_variable_parts_in_context(scope, sigil, name, context)
+    {
+        return true;
     }
 
     // Then analyze LHS

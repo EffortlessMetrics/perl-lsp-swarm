@@ -692,10 +692,10 @@ impl TypeInferenceEngine {
 
             NodeKind::MethodCall { object, method, .. } => {
                 // Detect ClassName->new() pattern and return Object("ClassName")
-                if method == "new" {
-                    if let NodeKind::Identifier { name } = &object.kind {
-                        return Ok(Object(name.clone()));
-                    }
+                if method == "new"
+                    && let NodeKind::Identifier { name } = &object.kind
+                {
+                    return Ok(Object(name.clone()));
                 }
                 // Consult the same accessor/method return-fact tables used by
                 // `infer_expr_fact_in_env` so that type inference for method calls
