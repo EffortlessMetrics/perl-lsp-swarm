@@ -1809,6 +1809,12 @@ mod tests {
             .arg("-d")
             .arg("-e")
             .arg("1")
+            // `perl -d -e` is interactive by default and waits for a
+            // debugger command when stdin is null (notably on Strawberry
+            // Perl). The availability probe asks whether the debugger can
+            // start and exit, so use Perl's documented non-interactive mode;
+            // the deadline still protects against a probe that hangs anyway.
+            .env("PERLDB_OPTS", "NonStop")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -2114,6 +2120,25 @@ mod tests {
             "a probe that cannot be spawned must be an instrument failure naming the failed \
              spawn, not a measured refusal; got {reason:?}"
         );
+    }
+
+    /// The real configured Perl instrument must pass the same bounded probe
+    /// that gates the live reload fixtures. This is deliberately separate
+    /// from the synthetic controls: removing the non-interactive debugger
+    /// option makes Strawberry Perl wait at its null-stdin prompt and turns
+    /// this direct availability assertion into a timeout.
+    #[test]
+    fn required_live_perl_availability_probe_is_usable() -> TestResult {
+        // `live_perl_or_not_proven` performs the one real probe and only
+        // returns an oracle after it reports `Usable`. With the required
+        // environment enabled, an unavailable or timed-out probe is an
+        // error rather than a permitted skip.
+        let Some(_oracle) =
+            live_perl_or_not_proven("required_live_perl_availability_probe_is_usable")?
+        else {
+            return Ok(());
+        };
+        Ok(())
     }
 
     /// An unavailable instrument under `PERL_LSP_REQUIRE_LIVE_PERL=1` still
