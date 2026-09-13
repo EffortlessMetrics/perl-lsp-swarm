@@ -1242,6 +1242,34 @@ table users => sub {
     }
 
     #[test]
+    fn deferred_method_body_table_call_does_not_consume_the_builder() {
+        // The `Method` arm has two jobs: record compile-time import events, and
+        // keep a deferred `table` call from executing. The nested-import tests
+        // only pin the first — with the arm deleted, the catch-all still
+        // records imports through descent — so this pins the second.
+        let facts = candidate_facts(
+            r#"
+package My::ORM::Table::User;
+use DBIx::QuickORM type => 'table';
+
+method install_later {
+    table deferred => sub {
+        column deferred_id => sub { primary_key };
+    };
+}
+
+table users => sub {
+    column id => sub { primary_key };
+};
+1;
+"#,
+        );
+
+        assert!(has_name(&facts, "My::ORM::Table::User::id"));
+        assert!(!has_name(&facts, "My::ORM::Table::User::deferred_id"));
+    }
+
+    #[test]
     fn db_name_does_not_replace_the_logical_field_name() {
         let facts = candidate_facts(
             r#"
