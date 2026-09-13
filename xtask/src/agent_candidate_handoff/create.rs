@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use super::check::{CheckReport, check_staged, describe_failure};
+use super::check::{CheckReport, MAX_DECLARED_PARENTS, check_staged, describe_failure};
 use super::git::{git_version, is_full_object_id, run_git, run_git_with_stdin};
 use super::hygiene::{
     is_proof_id, is_repository_identity, repository_identity_from_remote, scan_secrets,
@@ -605,6 +605,21 @@ pub fn read_commit_identity(
         }
     }
 
+    // The ceiling is the format's, so the producer owes it the same answer the
+    // validator gives, and owes it *before* doing per-parent work. Resolving
+    // first would spawn one Git process per declared parent on a commit the
+    // format is going to refuse anyway, which a crafted header block can make
+    // arbitrarily expensive.
+    if parents.len() > MAX_DECLARED_PARENTS {
+        return Err((
+            HandoffOutcome::UnsupportedObjectClass,
+            format!(
+                "commit {commit} records {} parents, above the {MAX_DECLARED_PARENTS} ceiling",
+                parents.len()
+            ),
+        ));
+    }
+
     let mut parent_trees = Vec::with_capacity(parents.len());
     for parent in &parents {
         parent_trees.push(resolve_tree(repository, parent)?);
@@ -653,7 +668,13 @@ fn parse_commit_person(
     let close = value[open..].find('>').map(|index| open + index).ok_or_else(malformed)?;
     let name = value[..open].to_string();
     let email = value[open + 2..close].to_string();
-    let date = value[close + 1..].trim().to_string();
+    // `date` is documented as the object's own bytes, so the separator is
+    // validated rather than trimmed away: exactly one space follows `>`, and
+    // everything after it is kept as written. Trimming here normalised an
+    // unusual-but-real date, and because `check` reruns this same parse the
+    // producer and the validator agreed on the normalised value while the
+    // manifest disagreed with the commit object.
+    let date = value[close + 1..].strip_prefix(' ').ok_or_else(malformed)?.to_string();
     if date.is_empty() {
         return Err(malformed());
     }

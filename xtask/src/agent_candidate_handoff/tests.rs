@@ -2560,6 +2560,117 @@ fn a_commit_recording_a_singular_header_twice_is_refused() -> Result<()> {
     Ok(())
 }
 
+/// A commit above the parent ceiling is refused before any parent is resolved.
+///
+/// `MAX_DECLARED_PARENTS` is the format's ceiling, but only `check` enforced it.
+/// `read_commit_identity` resolved every declared parent first, one `git
+/// rev-parse` per header, and a header block is cheap to write and unbounded in
+/// length — so a commit the format was always going to refuse could make the
+/// producer spawn arbitrarily many processes before refusing it.
+///
+/// The parents here are well-formed but absent object ids, which is what makes
+/// this control test the *ordering* rather than merely the refusal: resolving
+/// first reports `MissingObject` for the first absent parent, while enforcing
+/// the ceiling first reports `UnsupportedObjectClass`. Reverting the guard
+/// flips the observed class, so the assertion cannot pass for the old order.
+#[test]
+fn a_commit_above_the_parent_ceiling_is_refused_before_resolving_parents() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let tree = fixture.git(&["rev-parse", "HEAD^{tree}"])?.trim().to_string();
+
+    let author = "author Fixture Author <fixture@example.invalid> 1600000000 +0000";
+    let committer = "committer Fixture Author <fixture@example.invalid> 1600000000 +0000";
+    // Distinct, syntactically valid, and deliberately absent from the object
+    // database, so a producer that resolves before counting must fail on the
+    // first one instead of on the ceiling.
+    let parents: String = (0..=super::check::MAX_DECLARED_PARENTS)
+        .map(|index| format!("parent {:040x}\n", index + 1))
+        .collect();
+    let raw_commit = format!("tree {tree}\n{parents}{author}\n{committer}\n\nover the ceiling\n");
+
+    fs::write(fixture.path().join("raw-commit.bin"), raw_commit.as_bytes())?;
+    let commit = fixture
+        .git(&["hash-object", "-t", "commit", "-w", "--literally", "--", "raw-commit.bin"])?
+        .trim()
+        .to_string();
+    fixture.git(&["update-ref", "refs/heads/main", &commit])?;
+
+    let destination = Destination::new()?;
+    let Err((outcome, detail)) = create_handoff(&request(&fixture, &destination)) else {
+        bail!("a commit above the parent ceiling must not reach a published envelope");
+    };
+    assert_eq!(
+        outcome,
+        HandoffOutcome::UnsupportedObjectClass,
+        "the ceiling must be enforced before any parent is resolved: {detail}"
+    );
+    assert!(
+        detail.contains(&super::check::MAX_DECLARED_PARENTS.to_string()),
+        "the refusal must name the ceiling it enforced: {detail}"
+    );
+    assert!(!destination.envelope().exists(), "a refused export publishes nothing");
+
+    // Anti-vacuity: a merge commit at the ceiling's legal side still exports, so
+    // this control cannot pass for a producer that refuses every parent list.
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    fixture.git(&["checkout", "-b", "side"])?;
+    fixture.write("side.txt", b"side\n")?;
+    fixture.commit("side change")?;
+    fixture.git(&["checkout", "main"])?;
+    fixture.write("main.txt", b"main\n")?;
+    fixture.commit("main change")?;
+    fixture.git(&["merge", "--no-ff", "-m", "merge side", "side"])?;
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert_eq!(manifest.candidate.parents.len(), 2, "the anti-vacuity case must be a real merge");
+    Ok(())
+}
+
+/// A commit date carrying unusual whitespace is retained as the object wrote it.
+///
+/// `CommitPerson::date` is documented as the raw Git date preserved verbatim,
+/// but the parser applied `trim()`, so a date with leading or trailing
+/// whitespace reached the manifest as different bytes than the commit holds.
+/// `check` reruns this same parse against the imported object, so producer and
+/// validator agreed on the normalised value and no dimension could observe the
+/// disagreement — the same shape as the `%B` trailing-newline defect.
+#[test]
+fn a_commit_date_with_unusual_whitespace_is_retained_verbatim() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.write("a.txt", b"a\n")?;
+    fixture.commit("root")?;
+    let tree = fixture.git(&["rev-parse", "HEAD^{tree}"])?.trim().to_string();
+
+    // One trailing space inside the author date. Git writes the header back
+    // byte for byte under `--literally`, so the object really does hold it.
+    let author = "author Fixture Author <fixture@example.invalid> 1600000000 +0000 ";
+    let committer = "committer Fixture Author <fixture@example.invalid> 1600000000 +0000";
+    let raw_commit = format!("tree {tree}\n{author}\n{committer}\n\nwhitespace in the date\n");
+
+    fs::write(fixture.path().join("raw-commit.bin"), raw_commit.as_bytes())?;
+    let commit = fixture
+        .git(&["hash-object", "-t", "commit", "-w", "--literally", "--", "raw-commit.bin"])?
+        .trim()
+        .to_string();
+    fixture.git(&["update-ref", "refs/heads/main", &commit])?;
+
+    let destination = Destination::new()?;
+    let manifest = export_valid(&fixture, &destination)?;
+    assert_eq!(
+        manifest.candidate.author.date, "1600000000 +0000 ",
+        "the author date must be the object's own bytes, not a trimmed projection"
+    );
+    assert_eq!(
+        manifest.candidate.committer.date, "1600000000 +0000",
+        "an ordinary committer date is unchanged by retaining the separator rule"
+    );
+    Ok(())
+}
+
 /// A credential shaped like a proof id is refused, not admitted as well-formed.
 ///
 /// `is_proof_id` accepts lowercase alphanumerics with `.`, `_`, and `-` up to
