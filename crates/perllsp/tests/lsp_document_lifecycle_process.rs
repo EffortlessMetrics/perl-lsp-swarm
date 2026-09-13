@@ -79,8 +79,7 @@ fn initialize_with_root(client: &mut RealProcessClient, root_uri: Option<&str>) 
                         "relatedDocumentSupport": true
                     }
                 }
-            },
-            "workspaceFolders": null
+            }
         }),
     )?;
     ensure!(
