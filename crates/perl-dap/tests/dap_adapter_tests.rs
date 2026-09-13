@@ -339,12 +339,14 @@ mod dap_phase2_tests {
             _ => anyhow::bail!("expected evaluate response"),
         }
 
-        // Side effects opt-in bypasses safety validator but still requires an active session.
+        // Side effects opt-in bypasses the safety validator in the explicit REPL
+        // context, but still requires an active session.
         let no_session = adapter.handle_request(
             2,
             "evaluate",
             Some(json!({
                 "expression": "system('echo ok')",
+                "context": "repl",
                 "allowSideEffects": true
             })),
         );
