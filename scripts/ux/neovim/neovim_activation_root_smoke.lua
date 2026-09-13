@@ -373,37 +373,138 @@ local ROOT_CASES = {
 -- shipped as if it were proven. The groups are read, not flattened in place —
 -- `config.root_markers` is emitted verbatim as `root_marker_groups`, and the
 -- nesting is what makes the Perl markers equal priority above `.git`.
-local function configured_markers()
-  local markers = {}
-  for _, group in ipairs(config.root_markers) do
-    if type(group) == 'table' then
-      for _, marker in ipairs(group) do
-        markers[marker] = true
-      end
-    else
-      markers[group] = true
-    end
-  end
-  return markers
-end
-
 -- The no-marker boundary cell is deliberately outside this denominator: it
 -- exercises the absence of every marker rather than any one of them.
-local function report_uncovered_markers(proven_markers)
+local function uncovered_markers(groups, proven)
   local uncovered = {}
-  for marker in pairs(configured_markers()) do
-    if not proven_markers[marker] then
-      table.insert(uncovered, marker)
+  local seen = {}
+  for _, group in ipairs(groups) do
+    local entries = type(group) == 'table' and group or { group }
+    for _, marker in ipairs(entries) do
+      if not proven[marker] and not seen[marker] then
+        seen[marker] = true
+        table.insert(uncovered, marker)
+      end
     end
   end
   table.sort(uncovered)
-  for _, marker in ipairs(uncovered) do
-    table.insert(
-      failures,
-      ('configured root marker %s: no root case proved it'):format(marker)
-    )
+  return uncovered
+end
+
+-- `textDocument/definition` may answer with a single Location, an array of
+-- Location, or LocationLink entries that name the target as `targetUri`. Every
+-- legal shape is normalized to the ordered list of paths the server offered;
+-- anything else is a malformed success and must not be indexed blindly.
+local function definition_targets(definition)
+  if definition == nil then
+    return {}, nil
+  end
+  if type(definition) ~= 'table' then
+    return {}, ('textDocument/definition returned %s, not a Location'):format(type(definition))
+  end
+  -- A bare Location is an object rather than an array; wrapping it lets both
+  -- shapes walk the same path.
+  local entries = definition
+  if definition.uri ~= nil or definition.targetUri ~= nil then
+    entries = { definition }
+  end
+  local targets = {}
+  for _, entry in ipairs(entries) do
+    if type(entry) ~= 'table' then
+      return {}, ('textDocument/definition returned a %s entry'):format(type(entry))
+    end
+    local target_uri = entry.uri or entry.targetUri
+    if type(target_uri) ~= 'string' then
+      return {}, 'textDocument/definition entry has no string target uri'
+    end
+    table.insert(targets, normalize(vim.uri_to_fname(target_uri)))
+  end
+  return targets, nil
+end
+
+-- The whole array is searched: a server may legally answer with several
+-- locations, and the expected module need not be first. When it is absent the
+-- first offered location is recorded, so the envelope names what the server
+-- actually said rather than an empty observation.
+local function select_definition_target(targets, expected)
+  for _, target in ipairs(targets) do
+    if target == expected then
+      return expected
+    end
+  end
+  return targets[1] or ''
+end
+
+-- The two normalizers above are the only thing standing between a legal but
+-- unexpected server answer and a wrong verdict, so the run falsifies them
+-- before it trusts them. Failures land in `failures` like any other contract
+-- violation: a broken instrument must not report a proven matrix.
+local function check_instrument()
+  local first = normalize(vim.uri_to_fname('file:///probe/other/RootProbe.pm'))
+  local wanted = normalize(vim.uri_to_fname('file:///probe/lib/RootProbe.pm'))
+
+  local function targets_of(definition)
+    local targets, malformed = definition_targets(definition)
+    if malformed then
+      return 'malformed'
+    end
+    return table.concat(targets, ',')
+  end
+
+  local function selected(definition)
+    local targets, malformed = definition_targets(definition)
+    if malformed then
+      return 'malformed'
+    end
+    return select_definition_target(targets, wanted)
+  end
+
+  local array_expected_second = {
+    { uri = 'file:///probe/other/RootProbe.pm' },
+    { uri = 'file:///probe/lib/RootProbe.pm' },
+  }
+  local link_array = {
+    { targetUri = 'file:///probe/other/RootProbe.pm' },
+    { targetUri = 'file:///probe/lib/RootProbe.pm' },
+  }
+
+  local controls = {
+    { 'a bare Location is a single target', targets_of({ uri = 'file:///probe/lib/RootProbe.pm' }), wanted },
+    { 'an array keeps server order', targets_of(array_expected_second), first .. ',' .. wanted },
+    { 'a LocationLink array is read through targetUri', targets_of(link_array), first .. ',' .. wanted },
+    { 'an absent result has no target', targets_of(nil), '' },
+    { 'a non-table result is malformed', targets_of('file:///probe/lib/RootProbe.pm'), 'malformed' },
+    { 'a non-table entry is malformed', targets_of({ 'file:///probe/lib/RootProbe.pm' }), 'malformed' },
+    { 'a non-string uri is malformed', targets_of({ { uri = 7 } }), 'malformed' },
+    -- The falsifier this control exists for: selecting `targets[1]`
+    -- unconditionally fails a root whose expected target is not first.
+    { 'the expected target is found anywhere in the array', selected(array_expected_second), wanted },
+    { 'the expected target is found in a LocationLink array', selected(link_array), wanted },
+    { 'an unexpected answer is recorded deterministically', selected({ { uri = 'file:///probe/other/RootProbe.pm' } }), first },
+    {
+      'an unexercised marker is reported',
+      table.concat(uncovered_markers({ { 'cpanfile', 'dist.ini' }, '.git' }, { cpanfile = true, ['.git'] = true }), ','),
+      'dist.ini',
+    },
+    {
+      'a fully exercised configuration reports nothing',
+      table.concat(uncovered_markers({ { 'cpanfile' }, '.git' }, { cpanfile = true, ['.git'] = true }), ','),
+      '',
+    },
+  }
+
+  for _, control in ipairs(controls) do
+    local name, observed, expected = control[1], control[2], control[3]
+    if observed ~= expected then
+      table.insert(
+        failures,
+        ('instrument control %q: expected %q, observed %q'):format(name, expected, observed)
+      )
+    end
   end
 end
+
+check_instrument()
 
 local function request(client, bufnr, method, params)
   local response = client:request_sync(method, params, 10000, bufnr)
@@ -462,26 +563,8 @@ local function evaluate_root_case(case)
     textDocument = { uri = vim.uri_from_fname(entry) },
     position = { line = 2, character = 6 },
   })
-  -- `textDocument/definition` may answer with a single Location, an array of
-  -- Location, or LocationLink entries that name the target as `targetUri`.
-  -- Anything else is a malformed success and must not be indexed blindly.
-  local definition_uri = ''
-  local malformed = nil
-  if definition ~= nil and type(definition) ~= 'table' then
-    malformed = ('textDocument/definition returned %s, not a Location'):format(type(definition))
-  else
-    local location = definition and (definition[1] or definition) or nil
-    if location ~= nil and type(location) ~= 'table' then
-      malformed = ('textDocument/definition returned a %s entry'):format(type(location))
-    else
-      local target_uri = location and (location.uri or location.targetUri) or nil
-      if target_uri ~= nil and type(target_uri) ~= 'string' then
-        malformed = 'textDocument/definition target uri is not a string'
-      elseif target_uri then
-        definition_uri = normalize(vim.uri_to_fname(target_uri))
-      end
-    end
-  end
+  local targets, malformed = definition_targets(definition)
+  local definition_uri = select_definition_target(targets, expected_module)
 
   -- Content oracle: the indexed symbol names which root actually won. The
   -- identically-named `probe_marker` exists in every candidate root, so only
@@ -576,7 +659,9 @@ end
 
 -- Coverage is judged on proven rows, not on the case list: a marker whose only
 -- case failed is no better covered than one that was never exercised.
-report_uncovered_markers(proven_markers)
+for _, marker in ipairs(uncovered_markers(config.root_markers, proven_markers)) do
+  table.insert(failures, ('configured root marker %s: no root case proved it'):format(marker))
+end
 
 -- Single-file/no-marker behaviour stays an observed cell rather than an
 -- assumption: it is recorded, not asserted, and carries no semantic claim.
