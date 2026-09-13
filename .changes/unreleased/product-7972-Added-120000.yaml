@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: "`publication_sync_manifest.v1` is now a versioned contract with a typed Rust model and a read-only `cargo xtask publication-sync plan` command (#7972). Planning binds the prepared swarm commit S and the release base R to digest-verified release inputs, proves the declared reconciliation receipt is the one that reconciled exactly those two commits, and fails closed on unknown action/class tokens, duplicate or parent/child-ambiguous projection rows, unresolvable row authority, exclusions that would withhold product or test work, unevidenced invariants, and live-control claims backed only by checked-in source. It emits a deterministic pass/blocked/not_proven receipt carrying a structure-sensitive manifest digest, and mutates no branch or tree."
+time: 2026-09-02T12:00:00Z
+custom:
+  PR: "7972"
+  Slug: publication-sync-manifest-planning-model
+  Breaking: "no"
