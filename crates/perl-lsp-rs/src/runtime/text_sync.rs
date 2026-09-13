@@ -675,8 +675,8 @@ impl LspServer {
                 .iter()
                 .enumerate()
                 .map(|(i, change)| {
-                    serde_json::from_value::<lsp_types::TextDocumentContentChangeEvent>(
-                        change.clone(),
+                    <lsp_types::TextDocumentContentChangeEvent as serde::Deserialize>::deserialize(
+                        change,
                     )
                     .map_err(|_| {
                         tracing::error!(
