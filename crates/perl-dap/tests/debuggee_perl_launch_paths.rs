@@ -15,9 +15,65 @@ use serial_test::serial;
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+
+#[cfg(windows)]
+fn stage_perl_library_layout(
+    source_perl: &Path,
+    destination: &Path,
+) -> Result<std::ffi::OsString, Box<dyn Error>> {
+    let output = Command::new(source_perl)
+        .args([
+            "-MConfig",
+            "-e",
+            "print join(\"\\n\", grep { defined($_) && length($_) } @Config{qw(privlib archlib sitelib sitearch vendorlib vendorarch)})",
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot query Perl library layout: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    let mut staged_roots = Vec::new();
+    for (index, raw_root) in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|root| !root.is_empty())
+        .enumerate()
+    {
+        let root = PathBuf::from(raw_root);
+        if !root.is_dir() {
+            continue;
+        }
+        let staged = destination.join(format!("perl-lib-{index}"));
+        copy_directory(&root, &staged)?;
+        staged_roots.push(staged);
+    }
+    if staged_roots.is_empty() {
+        return Err("selected Perl reported no usable library roots".into());
+    }
+    Ok(std::env::join_paths(staged_roots)?)
+}
+
+#[cfg(windows)]
+fn copy_directory(source: &Path, destination: &Path) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory(&source_path, &destination_path)?;
+        } else {
+            fs::copy(source_path, destination_path)?;
+        }
+    }
+    Ok(())
+}
 
 struct EnvGuard {
     key: &'static str,
@@ -114,7 +170,14 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
         return Ok(());
     };
     let controls = tempfile::tempdir()?;
-    if cfg!(windows) {
+    #[cfg(windows)]
+    let _library_guard = {
+        let library_root = controls.path().join("staged-libraries");
+        let library_path = stage_perl_library_layout(&source_perl, &library_root)?;
+        EnvGuard::set("PERL_LSP_DAP_TEST_LIBRARY_PATH", &library_path)
+    };
+    #[cfg(windows)]
+    {
         let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
         for entry in fs::read_dir(source_dir)? {
             let entry = entry?;

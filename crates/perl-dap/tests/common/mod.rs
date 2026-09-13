@@ -1961,6 +1961,13 @@ fn probe_debuggee_perl_with_options_and_barrier(
             .env_remove("PERL5OPT")
             .env("LC_ALL", "C")
             .env("TZ", "UTC");
+        // The copied-interpreter fixture may provide a temporary, faithfully
+        // staged core library tree. Production probes still remove inherited
+        // PERL5LIB; this test-only escape hatch supplies the fixture's own
+        // library roots explicitly to the child process.
+        if let Some(fixture_library_path) = std::env::var_os("PERL_LSP_DAP_TEST_LIBRARY_PATH") {
+            command.env("PERL5LIB", fixture_library_path);
+        }
         if let Some(descendant_pid_file) = descendant_pid_file {
             command.env("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE", descendant_pid_file);
             command.env(
