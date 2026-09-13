@@ -3470,3 +3470,43 @@ created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
+
+# -----------------------------------------------------------------------------
+# PR #14815 adds bare-name tool-availability admission to
+# perl-subprocess-runtime. Two of the 17 receipt findings are non-executable
+# and independently defensible exclusions, scoped here one by one: the
+# availability/tests.rs lines are the test module's own type alias and
+# fixture field (ripr#1428 test-harness plumbing), and the os_runtime/mod.rs
+# lines are pub(crate) use re-export declarations with no executable
+# behavior. The executable findings in availability.rs (11
+# reachable_unrevealed) and path_selection.rs (2 no_static_path match arms)
+# are deliberately NOT suppressed: test presence cannot establish
+# infection/propagation under the strict ripr#1429 reading, so that
+# production limitation stays NOT_PROVEN until the producer prerequisite
+# (#15133/#15215) resolves it.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-availability-test-plumbing"
+kind = "test_receipt_surface"
+paths = ["crates/perl-subprocess-runtime/src/availability/tests.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1428"
+reason = "PR #14815: 2 no_static_path probes on the availability test module's own type alias and TempTree fixture field — test-harness plumbing with no executable behavior (ripr#1428 class), exercised by the 15 availability policy tests in the same file. Scoped independently to the test file only; no production path is covered."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1428 distinguishes test plumbing from production seams."
+
+[[suppress]]
+id = "ripr-suppress-os-runtime-reexport-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-subprocess-runtime/src/os_runtime/mod.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14815: 2 no_static_path probes on pub(crate) use re-export declaration lines in os_runtime/mod.rs — no executable behavior, reach:no on a declaration (declaration_line_no_static_path ripr#1429 class). Scoped independently to the re-export module only."
+created = "2026-09-09"
+review_after = "2026-09-16"
+expires = "2026-09-23"
+removal_criteria = "Remove when ripr#1429 resolves declaration-line probes via constructor-call paths."

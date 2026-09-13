@@ -1677,16 +1677,92 @@ fn external_critic_requested_for_legacy_engine() {
 fn test_command_exists_behavior() {
     let provider = ExecuteCommandProvider::new();
 
-    // Test with a command that definitely exists
-    let exists = provider.command_exists("echo");
-    // Note: We can't assert true here because the mutation test replaces return value
-    // But we can verify it returns a boolean (this always passes but validates function call)
-    assert!(matches!(exists, true | false), "Should return a boolean");
+    // A name that cannot be installed must report absent. The previous form of
+    // this test asserted only `matches!(exists, true | false)`, which no
+    // implementation can fail.
+    assert!(
+        !provider.command_exists("definitely_nonexistent_command_12345"),
+        "a name that is not installed must report absent"
+    );
 
-    // Test with a command that definitely doesn't exist
-    let exists = provider.command_exists("definitely_nonexistent_command_12345");
-    // This should be false, but mutation testing may change the logic
-    assert!(matches!(exists, true | false), "Should return a boolean");
+    // Opposite direction: tightening admission must not report a genuinely
+    // installed tool absent. `sh` is required to exist on POSIX, and it lives
+    // in a system directory rather than the test's working directory.
+    #[cfg(unix)]
+    assert!(
+        provider.command_exists("sh"),
+        "a tool installed in an absolute PATH directory must remain available"
+    );
+}
+
+/// The module must expose exactly one bare-name availability authority.
+///
+/// `ExecuteCommandProvider::command_exists` (which gated the test runners) and
+/// the free `command_exists` (which gates the external critic, `detect_tool`
+/// capability advertisement, and the perlcritic diagnostics paths) previously
+/// used different resolvers with different admission rules. They must now agree
+/// on every input, including the inputs that distinguish the two policies.
+#[test]
+fn test_command_exists_probes_share_one_authority() {
+    let provider = ExecuteCommandProvider::new();
+
+    let mut names = vec![
+        "sh",
+        "perlcritic",
+        "perltidy",
+        "yath",
+        "prove",
+        "perl",
+        "definitely_nonexistent_command_12345",
+        "./perlcritic",
+        "tools/perlcritic",
+    ];
+    // An absolute path to a real executable is the input the two historical
+    // resolvers answered differently: a `which`-style lookup validates it in
+    // place and says "available", while the admission policy refuses it as not
+    // a bare name. Without a row like this, a reintroduced second resolver
+    // would agree everywhere the two policies happen to coincide.
+    #[cfg(unix)]
+    names.push("/bin/sh");
+
+    for name in names {
+        assert_eq!(
+            provider.command_exists(name),
+            super::provider::command_exists(name),
+            "the instance and free availability probes disagreed on {name:?}; \
+             the module must have one admission policy"
+        );
+    }
+}
+
+/// A path-bearing input is not a `PATH` lookup and must be refused.
+///
+/// This is the row that discriminates the current authority from the previous
+/// `which::which` implementation: `which` accepts a path-bearing argument and
+/// validates it in place, so an absolute or workspace-relative path answered
+/// "available". Availability here means "found in an absolute PATH directory",
+/// and an explicit configured path carries its own trust policy at its own call
+/// site rather than borrowing this probe's answer.
+#[test]
+fn test_command_exists_refuses_path_bearing_input() {
+    let provider = ExecuteCommandProvider::new();
+
+    // A cwd-relative spelling must never resolve against the workspace.
+    assert!(!provider.command_exists("./sh"), "a cwd-relative name must be refused");
+    assert!(!provider.command_exists("tools/sh"), "a nested relative name must be refused");
+
+    // An absolute path to a real executable is still not a bare name.
+    #[cfg(unix)]
+    {
+        assert!(
+            std::path::Path::new("/bin/sh").exists(),
+            "precondition: /bin/sh exists on this host"
+        );
+        assert!(
+            !provider.command_exists("/bin/sh"),
+            "an absolute path is not a bare PATH name and must be refused here"
+        );
+    }
 }
 
 #[test]

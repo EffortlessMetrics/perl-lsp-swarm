@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "External-tool availability checks now share one policy and refuse tools found only through relative PATH entries or the server's current directory. Put installed tools in an absolute PATH directory outside the server's current directory. Unix process-launch behavior is unchanged."
+time: 2026-09-09T04:55:00Z
+custom:
+  PR: "14815"
+  Slug: tool-availability-admission
+  Breaking: "yes"
