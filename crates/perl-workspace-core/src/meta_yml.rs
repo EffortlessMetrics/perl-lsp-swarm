@@ -442,11 +442,13 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
 /// the optional explicit-indentation digit and chomping indicator in either
 /// order (YAML 1.2.2 section 8.1.1), then end of line or a comment.
 ///
-/// A plain scalar that merely begins with one of those indicators — the
-/// unquoted version range `>= 1.0`, say — is not a header. Refusing it as a
-/// block scalar would misname the mechanism; it falls through to the shared
-/// plain-scalar admission check instead, which is what already refuses the
-/// same spelling inside a flow collection.
+/// A value that merely begins with one of those indicators — the unquoted
+/// version range `>= 1.0`, say — is not a header, and `false` here means
+/// malformed rather than unsupported: the caller refuses it as a broken
+/// block-scalar header, since a block node admits no plain-scalar production
+/// (YAML 1.2.2 `ns-plain-first`). Only inside a flow collection is the same
+/// spelling genuinely a rejected plain scalar, refused by the shared
+/// admission check in [`unquote`].
 fn is_block_scalar_header(value: &str) -> bool {
     let mut chars = value.chars();
     if !matches!(chars.next(), Some('|' | '>')) {
@@ -1259,6 +1261,9 @@ fn scalar_field(
     }
 }
 
+/// Normalize one recognized root field that holds a plain scalar (`name`,
+/// `version`, `abstract`). An absent key yields `None` without a finding; a
+/// present but unrepresentable value is reported through [`scalar_field`].
 fn root_string(
     root: &[(String, Yaml)],
     key: &str,
@@ -1268,6 +1273,10 @@ fn root_string(
     scalar_field(value, &format!("`{key}`"), NullMeaning::DeclaresAbsence, findings)
 }
 
+/// Normalize `license`, which v2 spells as a sequence of names and v1.4 as a
+/// single string. Every declared entry that cannot become a license fact is
+/// reported rather than filtered away; see [`NullMeaning`] for why a null
+/// item is reported while a null field value is not.
 fn root_licenses(root: &[(String, Yaml)], findings: &mut Vec<MetaYmlFinding>) -> Vec<String> {
     let Some((_, value)) = root.iter().find(|(k, _)| k == "license") else {
         return Vec::new();
