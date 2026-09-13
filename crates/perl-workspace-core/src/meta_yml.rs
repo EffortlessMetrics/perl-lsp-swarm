@@ -33,9 +33,13 @@
 //! silent fallback: anchors/aliases, YAML tags, merge keys, block scalars
 //! (`|` / `>`), and multiple documents are reported as findings and refuse
 //! the parse. A `BlockScalar` finding names an actual block-scalar header
-//! (the indicator plus its optional indentation/chomping indicators); a plain
-//! scalar that merely starts with `|` or `>`, such as an unquoted `>= 1.0`,
-//! refuses through plain-scalar admission in block and flow context alike.
+//! (the indicator plus its optional indentation/chomping indicators) — valid
+//! YAML this parser declines. A value that merely opens with `|` or `>`, such
+//! as an unquoted `>= 1.0`, is malformed rather than unsupported, and the two
+//! contexts differ: in a block node no plain-scalar production is available,
+//! so it is a broken block-scalar header, while the same spelling inside a
+//! flow collection really is a rejected plain scalar. Both refuse; each says
+//! which.
 //! A document can also parse while a recognized field carries a value shape
 //! that cannot become a fact — a map-typed `license` entry, say. That is not a
 //! syntax failure, so the parse succeeds, but the unusable value yields an
@@ -403,15 +407,29 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
         let value_part = split_key(scalar_or_map, line.number, false)?
             .map(|(_, rest)| rest)
             .unwrap_or_else(|| scalar_or_map.to_string());
-        // Only an actual header refuses here. A plain scalar that merely
-        // starts with one of those indicators (`Foo: >= 1.0`) is a
-        // plain-scalar admission refusal, reported by the shared scalar
-        // decoder with the kind that names its real mechanism.
-        if is_block_scalar_header(value_part.trim_start()) {
+        // A real header is the supported-feature refusal: valid YAML this
+        // parser declines, so `BlockScalar` (and with it `Unsupported`).
+        let value_trimmed = value_part.trim_start();
+        if is_block_scalar_header(value_trimmed) {
             return Err(MetaYmlFinding::new(
                 MetaYmlFindingKind::BlockScalar,
                 Some(line.number),
                 "block scalars ('|' / '>') are not supported",
+            ));
+        }
+        // Anything else opening with an indicator is malformed, not merely
+        // unsupported. Every line reaching this scan is a block node, and
+        // YAML 1.2.2 `ns-plain-first` excludes indicators from starting a
+        // plain scalar, so no plain-scalar production is available here: an
+        // unquoted `>= 1.0` is a broken block-scalar header, not a rejected
+        // plain scalar. Name that mechanism rather than falling through to
+        // the shared admission check, whose message describes the flow-context
+        // rule this value never reached.
+        if value_trimmed.starts_with(['|', '>']) {
+            return Err(MetaYmlFinding::new(
+                MetaYmlFindingKind::MalformedSyntax,
+                Some(line.number),
+                "a block-scalar indicator ('|' / '>') opens this value but does not form a valid block-scalar header, and an indicator cannot begin a plain scalar",
             ));
         }
     }
@@ -1931,33 +1949,55 @@ build_requires:
         }
     }
 
-    /// #15169(2): a plain scalar that merely starts with `>` or `|` is a
-    /// plain-scalar admission refusal, not a block scalar. The mechanism must
-    /// be named honestly, and identically in block and flow context.
+    /// #15169(2): an indicator-leading value that is not a real header is
+    /// malformed, not an unsupported feature — so it must not be reported as
+    /// a `BlockScalar`, whose state claims well-formed YAML.
+    ///
+    /// The mechanism differs by context, and the message must not blur them
+    /// (#15544 review, corroborated against PyYAML 6.0.1: block context raises
+    /// "while scanning a block scalar", flow context "while scanning for the
+    /// next token"). In a block node YAML 1.2.2 `ns-plain-first` leaves no
+    /// plain-scalar production available, so the value is a broken block-scalar
+    /// header; only in flow context is it genuinely a rejected plain scalar.
     #[test]
-    fn indicator_leading_plain_scalars_refuse_as_scalar_admission_not_block_scalars() {
+    fn indicator_leading_values_are_malformed_and_name_their_real_mechanism() {
+        // Block nodes: mapping value, nested mapping value, sequence item.
         for input in [
             "Foo: >= 1.0\n",
             "Foo: |= 1.0\n",
             "requires:\n  Foo: >= 1.0\n",
             "license:\n  - >= 1.0\n",
-            "requires: { Foo: >= 1.0 }\n",
         ] {
             let outcome = parse_meta_yml(fid(), input);
             assert_non_success(
                 &outcome,
                 MetaYmlFindingKind::MalformedSyntax,
-                &format!("{input:?}: indicator-leading plain scalar"),
+                &format!("{input:?}: broken block-scalar header"),
             );
             assert!(
                 !outcome.findings.iter().any(|f| f.kind == MetaYmlFindingKind::BlockScalar),
-                "{input:?}: must not be misreported as a block scalar, got {:?}",
+                "{input:?}: not a supported-feature refusal, got {:?}",
+                outcome.findings
+            );
+            assert!(
+                outcome.findings.iter().any(|f| f.detail.contains("block-scalar header")),
+                "{input:?}: block context must name the header mechanism, got {:?}",
                 outcome.findings
             );
         }
 
-        // Quoting preserves the range: the admission rule refuses spelling,
-        // not the value, so the supported spelling still parses.
+        // Flow context is the one place the plain-scalar admission rule really
+        // is the mechanism, and it is reported as such.
+        let outcome = parse_meta_yml(fid(), "requires: { Foo: >= 1.0 }\n");
+        assert_non_success(&outcome, MetaYmlFindingKind::MalformedSyntax, "flow plain scalar");
+        assert!(
+            outcome.findings.iter().any(|f| f.detail.contains("unquoted scalar")),
+            "flow context must name plain-scalar admission, got {:?}",
+            outcome.findings
+        );
+
+        // Quoting preserves the range in either context: these rules refuse a
+        // spelling, not the value.
         let outcome = parse_meta_yml(fid(), "requires:\n  Foo: '>= 1.0'\n");
         assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{:?}", outcome.findings);
         let facts = must_some_with(outcome.facts, "facts");
