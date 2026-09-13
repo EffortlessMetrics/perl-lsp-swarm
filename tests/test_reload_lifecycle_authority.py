@@ -70,6 +70,52 @@ def read(rel: str) -> str:
     return (ROOT / rel).read_text(encoding="utf-8")
 
 
+def workflow_run_commands(text: str) -> tuple[str, ...]:
+    """Parsed `run:` commands, borrowed rather than reimplemented.
+
+    `tests/test_writer_authority_transfer_contract.py` already owns this parser
+    and `tests/test_active_authority_contract.py` already consumes it this way.
+    A second copy here would be a second authority on what "the workflow
+    actually executes" -- the exact duplication this repository rejects.
+    """
+    import importlib.util
+
+    helper_path = ROOT / "tests" / "test_writer_authority_transfer_contract.py"
+    spec = importlib.util.spec_from_file_location("_writer_authority_helper", helper_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load the run-command parser from {helper_path}")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper.workflow_run_commands(text)
+
+
+def workflow_event_paths(text: str, event: str) -> tuple[str, ...]:
+    """Extract `on.<event>.paths` for one event only.
+
+    Scoping per event is deliberate: a whole-file substring search stays green
+    when a path is dropped from `pull_request` but kept under `push`, which
+    silently disables candidate-time or post-merge enforcement.
+    """
+    on_block = re.search(r"^on:\n((?:[ \t].*\n|\n)*)", text, re.MULTILINE)
+    if on_block is None:
+        return ()
+    event_block = re.search(
+        rf"^  {re.escape(event)}:\n((?:    .*\n|\n)*)", on_block.group(1), re.MULTILINE
+    )
+    if event_block is None:
+        return ()
+    paths_block = re.search(
+        r"^    paths:\n((?:      - .*\n)*)", event_block.group(1), re.MULTILINE
+    )
+    if paths_block is None:
+        return ()
+    return tuple(
+        line.strip().removeprefix("- ").strip().strip("'\"")
+        for line in paths_block.group(1).splitlines()
+        if line.strip()
+    )
+
+
 def markdown_docs() -> list[Path]:
     found: list[Path] = []
     for root in DOC_ROOTS:
@@ -329,27 +375,110 @@ class ReloadLifecycleWorkflowWiringTest(unittest.TestCase):
         cls.workflow = read(WORKFLOW)
 
     def test_workflow_runs_this_suite(self) -> None:
-        self.assertIn(
-            f"python3 -m unittest {SELF_TEST}",
-            self.workflow,
-            "the workflow must invoke this suite as a contiguous command",
+        """Assert on parsed `run:` commands, never on raw workflow text.
+
+        The workflow quotes this command inside a comment, so a whole-file
+        substring search stays green even if the real `run:` step is replaced
+        with `echo skipped` -- precisely the orphaned-guard failure this test
+        exists to prevent.
+        """
+        commands = workflow_run_commands(self.workflow)
+        self.assertTrue(commands, "the workflow declares no run commands")
+        self.assertTrue(
+            any(f"python3 -m unittest {SELF_TEST}" in command for command in commands),
+            "the workflow must execute this suite in a run command, not merely name it",
         )
 
-    def test_workflow_triggers_on_every_surface_it_guards(self) -> None:
-        for surface in (SPEC, SPEC_CATALOG, DOC_INDEX, DAP_RELOAD_ADR, SELF_TEST, WORKFLOW):
-            self.assertIn(
-                f"'{surface}'",
-                self.workflow,
-                f"{surface} can change without running this gate",
-            )
+    def test_every_guarded_surface_fires_both_events(self) -> None:
+        """One-sided path removal silently disables candidate- or merge-time enforcement."""
+        guarded = {SPEC, SPEC_CATALOG, DOC_INDEX, DAP_RELOAD_ADR, SELF_TEST, WORKFLOW}
+        for event in ("pull_request", "push"):
+            with self.subTest(event=event):
+                self.assertEqual(
+                    set(workflow_event_paths(self.workflow, event)),
+                    guarded,
+                    f"the {event} filter must list exactly the surfaces this suite reads",
+                )
 
-    def test_workflow_guards_both_event_kinds(self) -> None:
-        self.assertIn("pull_request:", self.workflow)
-        self.assertIn("push:", self.workflow)
+
+class DetectorSelfTest(unittest.TestCase):
+    """Mutation-test this file's own detectors before trusting them on the real spec.
+
+    Findings 1 and 2 above were both guard defects, not contract defects. A
+    detector that silently matches nothing, or that a comment can satisfy, is the
+    failure mode most likely to make everything else here decorative.
+    """
+
+    def test_authority_marker_needs_its_own_line(self) -> None:
+        self.assertIsNotNone(AUTHORITY_MARKER.search("RELOAD-LIFECYCLE-AUTHORITY: v1"))
+        for prose in (
+            "may carry the `RELOAD-LIFECYCLE-AUTHORITY` marker above",
+            "see RELOAD-LIFECYCLE-AUTHORITY: v1 in that file",
+            "<!-- RELOAD-LIFECYCLE-AUTHORITY: v1 -->",
+        ):
+            with self.subTest(prose=prose):
+                self.assertIsNone(
+                    AUTHORITY_MARKER.search(prose),
+                    "an inline mention must not claim authority",
+                )
+
+    def test_identity_row_detector_parses_columns(self) -> None:
+        row = "| RL-I07 workspace runtime generation | #10013 (landed) | implemented | `X` in `y` |"
+        parsed = IDENTITY_ROW.findall(row)
+        self.assertEqual(len(parsed), 1)
+        identifier, name, owner, today, realisation = parsed[0]
+        self.assertEqual(identifier, "RL-I07")
+        self.assertEqual(name, "workspace runtime generation")
+        self.assertEqual(owner, "#10013 (landed)")
+        self.assertEqual(today, "implemented")
+        self.assertEqual(realisation, "`X` in `y`")
+
+    def test_contiguous_detects_gaps_and_duplicates(self) -> None:
+        self.assertEqual(contiguous(["RL-R01", "RL-R02"], "RL-R"), [])
+        self.assertTrue(contiguous(["RL-R01", "RL-R03"], "RL-R"))
+        self.assertTrue(contiguous(["RL-R01", "RL-R01"], "RL-R"))
+        self.assertTrue(contiguous([], "RL-R"))
+
+    def test_claimed_type_names_reads_only_backticked_camel_case(self) -> None:
         self.assertEqual(
-            self.workflow.count(f"- '{SPEC}'"),
-            2,
-            "the spec path must appear in both the pull_request and push filters",
+            claimed_type_names("`DocumentState` / `ParsedSnapshot` in `crates/perl-lsp-rs`"),
+            ["DocumentState", "ParsedSnapshot"],
+        )
+        self.assertEqual(claimed_type_names("no type today"), [])
+        self.assertEqual(claimed_type_names("`perl-dap` owns it"), [])
+        self.assertEqual(claimed_type_names("DocumentState without backticks"), [])
+
+    def test_event_path_detector_scopes_to_one_event(self) -> None:
+        text = (
+            "on:\n"
+            "  pull_request:\n"
+            "    branches: [main]\n"
+            "    paths:\n"
+            "      - 'a.md'\n"
+            "      - 'b.md'\n"
+            "  push:\n"
+            "    branches: [main]\n"
+            "    paths:\n"
+            "      - 'a.md'\n"
+        )
+        self.assertEqual(workflow_event_paths(text, "pull_request"), ("a.md", "b.md"))
+        self.assertEqual(workflow_event_paths(text, "push"), ("a.md",))
+        self.assertEqual(workflow_event_paths(text, "schedule"), ())
+
+    def test_run_command_detector_ignores_comments(self) -> None:
+        text = (
+            "jobs:\n"
+            "  check:\n"
+            "    steps:\n"
+            "      - name: Check\n"
+            "        # run: python3 -m unittest tests/real.py\n"
+            "        run: echo skipped\n"
+        )
+        commands = workflow_run_commands(text)
+        self.assertIn("echo skipped", commands)
+        self.assertFalse(
+            any("unittest" in command for command in commands),
+            "a commented-out command must not count as executed",
         )
 
 
