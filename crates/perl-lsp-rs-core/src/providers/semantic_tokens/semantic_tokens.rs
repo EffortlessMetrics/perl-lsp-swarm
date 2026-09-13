@@ -1975,48 +1975,179 @@ mod tests {
         );
     }
 
+    /// Decode the source text of every token painted with `kind` in `source`.
+    ///
+    /// Shared by the heredoc-injection tests so boundary and recovery cases read
+    /// one production projection instead of each rebuilding a private decoder.
+    fn painted_tokens(source: &str, kind: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let mut parser = Parser::new(source);
+        let ast = parser.parse()?;
+        let kind = *legend().map.get(kind).ok_or("semantic-token kind missing")?;
+        let lines: Vec<&str> = source.split('\n').collect();
+        let mut line = 0u32;
+        let mut column = 0u32;
+        let mut result = Vec::new();
+        for [delta_line, delta_column, length, token_type, _modifiers] in
+            collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
+        {
+            if delta_line == 0 {
+                column = column.saturating_add(delta_column);
+            } else {
+                line = line.saturating_add(delta_line);
+                column = delta_column;
+            }
+            if token_type == kind {
+                let source_line = lines.get(line as usize).ok_or("token line missing")?;
+                // `column` and `length` are UTF-16 code units, because `pos16`
+                // accumulates `len_utf16`. Decoding with `chars()` would conflate
+                // code units with scalar values and mis-slice any line holding an
+                // astral character, so slice the UTF-16 form itself.
+                let utf16: Vec<u16> = source_line.encode_utf16().collect();
+                let end = (column as usize).saturating_add(length as usize);
+                let slice = utf16.get(column as usize..end).ok_or("token range out of bounds")?;
+                result.push(String::from_utf16(slice)?);
+            }
+        }
+        Ok(result)
+    }
+
     #[test]
     fn complete_heredoc_vectors_preserve_injected_language_boundaries()
     -> Result<(), Box<dyn std::error::Error>> {
-        let painted = |source: &str,
-                       kind: &str|
-         -> Result<Vec<String>, Box<dyn std::error::Error>> {
-            let mut parser = Parser::new(source);
-            let ast = parser.parse()?;
-            let kind = *legend().map.get(kind).ok_or("semantic-token kind missing")?;
-            let lines: Vec<&str> = source.split('\n').collect();
-            let mut line = 0u32;
-            let mut column = 0u32;
-            let mut result = Vec::new();
-            for [delta_line, delta_column, length, token_type, _modifiers] in
-                collect_semantic_tokens(&ast, source, &|offset| pos16(source, offset))
-            {
-                if delta_line == 0 {
-                    column = column.saturating_add(delta_column);
-                } else {
-                    line = line.saturating_add(delta_line);
-                    column = delta_column;
-                }
-                if token_type == kind {
-                    let source_line = lines.get(line as usize).ok_or("token line missing")?;
-                    result.push(
-                        source_line.chars().skip(column as usize).take(length as usize).collect(),
-                    );
-                }
-            }
-            Ok(result)
-        };
-
         let sql = "my $sql = <<SQL;\nSELECT id FROM users WHERE id = 1;\nSQL\n";
-        assert_eq!(painted(sql, "sql_heredoc_keyword")?, vec!["SELECT", "FROM", "WHERE"]);
+        assert_eq!(painted_tokens(sql, "sql_heredoc_keyword")?, vec!["SELECT", "FROM", "WHERE"]);
 
         let json = "my $json = <<JSON;\n{\"name\": \"Ada\", \"nested-key\": 1, \"not a key\": true}\nJSON\n";
         assert_eq!(
-            painted(json, "json_heredoc_key")?,
+            painted_tokens(json, "json_heredoc_key")?,
             vec!["\"name\"", "\"nested-key\"", "\"not a key\""]
         );
-        assert!(!painted(json, "json_heredoc_key")?.iter().any(|token| token == "value"));
+        assert!(!painted_tokens(json, "json_heredoc_key")?.iter().any(|token| token == "value"));
         Ok(())
+    }
+
+    #[test]
+    fn json_heredoc_recovers_a_later_key_after_a_colon_miss()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `"bad and "` closes but no colon follows, so it is not a key. Its
+        // closing quote is also the quote that opens the only real key on the
+        // line. The scanner must resume one byte past the rejected candidate's
+        // opening quote rather than past its closing quote; consuming the closing
+        // quote swallows `"good"` and paints nothing at all (#7538 finding 1).
+        let source = "my $json = <<JSON;\n{\"bad and \"good\": 1}\nJSON\n";
+
+        let keys = painted_tokens(source, "json_heredoc_key")?;
+
+        assert_eq!(
+            keys,
+            vec!["\"good\""],
+            "the key after a rejected candidate must survive, and the candidate must not be painted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn json_heredoc_unterminated_tail_keeps_earlier_keys() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A trailing candidate with no unescaped closing quote ends the scan. It
+        // must neither retract the keys already painted before it nor paint the
+        // unterminated tail as a key.
+        //
+        // Honest bound on what this discriminates: it fails if the tail is painted
+        // or if the scan panics, but it cannot distinguish the `break` at the
+        // no-closing-quote branch from a reset-and-continue there, because the
+        // earlier key is pushed before the tail is ever reached and both choices
+        // then yield the same output. The reason `break` is correct is an argument
+        // about reachability, not about this output: the candidate-local `escaped`
+        // state starts false right after a real quote, so finding no unescaped
+        // quote in the remaining suffix proves none exists, and a later key needs
+        // two. The reset alternative is also what makes a `"\""\""...` body
+        // quadratic, which is why the production comment prefers `break`.
+        let source = "my $json = <<JSON;\n{\"a\": 1, \"unterminated\nJSON\n";
+
+        let keys = painted_tokens(source, "json_heredoc_key")?;
+
+        assert_eq!(keys, vec!["\"a\""], "an unterminated tail must not retract or widen keys");
+        Ok(())
+    }
+
+    #[test]
+    fn json_heredoc_recovery_holds_across_an_astral_character()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The same colon-miss recovery, but with a non-BMP character ahead of the
+        // surviving key on the line. The emitted column and length are UTF-16 code
+        // units, so `U+1F600` (two units, one scalar) is exactly where a decoder
+        // that confuses the two reports the wrong span.
+        let source = "my $json = <<JSON;\n{\"\u{1F600} and \"good\": 1}\nJSON\n";
+
+        let keys = painted_tokens(source, "json_heredoc_key")?;
+
+        assert_eq!(keys, vec!["\"good\""], "astral text must not shift the recovered key span");
+        Ok(())
+    }
+
+    #[test]
+    fn json_heredoc_colon_miss_rescan_charges_the_budget() {
+        // The colon-miss reset deliberately rescans the bytes inside the rejected
+        // candidate, so those bytes are visited twice. Re-visiting must charge the
+        // traversal budget, or a body of quoted non-keys performs work that
+        // neither the budget nor cancellation can observe. Both bodies below are
+        // the same length and hold one real key; only the first forces a rescan,
+        // so an unmetered rescan would make their admission counts equal.
+        let rescan = "{\"bad and \"good\": 1}";
+        let no_rescan = "{\"bad_and_good\": 11}";
+        assert_eq!(rescan.len(), no_rescan.len(), "the comparison needs equal-length bodies");
+
+        let admissions = |body: &str| -> usize {
+            let unlimited = SemanticTokensTraversalControl::unlimited();
+            let mut traversal = TraversalState { control: &unlimited, work_done: 0 };
+            let mut out = Vec::new();
+            let result = tokenize_json_body(
+                body,
+                body,
+                0,
+                &|offset| pos16(body, offset),
+                &legend(),
+                &mut out,
+                &mut traversal,
+            );
+            assert_eq!(result, Ok(()), "an unlimited budget must complete the scan");
+            traversal.work_done
+        };
+
+        let rescan_work = admissions(rescan);
+        let plain_work = admissions(no_rescan);
+
+        // Exact totals, deliberately not a `rescan_work > plain_work` inequality.
+        // That inequality cannot discriminate: it survives dropping a whole scan
+        // loop's admissions, because a rescanning body runs two candidate scans
+        // and so charges more either way (the same mutation moves these totals to
+        // 17 and 15, where the inequality still holds). Pinning both totals is
+        // what actually fails when any one loop stops charging. 32 = 31 scanner
+        // admissions + 1 from `push_line_contained_segments` for the accepted
+        // single-line key; 22 = 21 + 1.
+        assert_eq!(rescan_work, 32, "every byte position the scanner visits charges once");
+        assert_eq!(plain_work, 22, "every byte position the scanner visits charges once");
+
+        // The budget must also stop the scan, not merely count it. `plain_work` is
+        // derived above rather than hardcoded, and is below the rescan body's cost.
+        let never_cancelled = || false;
+        let control = SemanticTokensTraversalControl::new(&never_cancelled, Some(plain_work));
+        let mut traversal = TraversalState { control: &control, work_done: 0 };
+        let mut out = Vec::new();
+
+        let result = tokenize_json_body(
+            rescan,
+            rescan,
+            0,
+            &|offset| pos16(rescan, offset),
+            &legend(),
+            &mut out,
+            &mut traversal,
+        );
+
+        assert_eq!(result, Err(TraversalStop::BudgetExhausted));
+        assert_eq!(traversal.work_done, plain_work, "the scan must stop exactly at the budget");
     }
 
     #[test]
