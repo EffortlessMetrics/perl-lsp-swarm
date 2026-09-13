@@ -7,6 +7,8 @@ import type {
 import {
   findMigrationRows,
   isValidCompatibilityWindow,
+  migrationEraCoversVersion,
+  parseMigrationEra,
   parseMigrationVersion,
   validateMigrationRegistry,
 } from './configurationMigrationRegistry';
@@ -133,11 +135,18 @@ type RowSelection =
   | { kind: keyof typeof INVALID_REASON_CODES };
 
 /**
- * The registry deliberately allows several rows per `old_key` — its uniqueness key spans
- * the version window and value shape, so one setting can carry a row per historical era.
- * This interpreter has no historical-era input and therefore cannot choose between eras, so an
- * ambiguous match is reported as such rather than silently resolved to whichever row
- * happens to sort first.
+ * The registry deliberately allows several rows per `old_key`, one per historical era.
+ *
+ * Where several eras declare the same key at the same scope, the applicable one is chosen
+ * by the registry envelope's own `source_public_release` — the single authoritative
+ * statement of which public release this migration reads settings from. No historical
+ * identity is taken from the caller: a second source-release input could disagree with the
+ * envelope's, and there would be no way to say which of the two was policy.
+ *
+ * Era coverage disambiguates only. A lone same-scope row is selected exactly as before, so
+ * interpretation of a single-era registry does not depend on release comparison at all.
+ * When coverage does not yield exactly one row the result stays ambiguous rather than
+ * resolving to whichever row happens to sort first.
  */
 function selectMigrationRow(
   registry: ConfigurationMigrationRegistry,
@@ -149,14 +158,28 @@ function selectMigrationRow(
   }
 
   const scopedRows = keyRows.filter((row) => row.old_scope === input.source_scope);
-  const row = scopedRows[0];
-  if (row === undefined) {
+  const onlyScopedRow = scopedRows[0];
+  if (onlyScopedRow === undefined) {
     return { kind: 'scope_not_permitted' };
   }
-  if (scopedRows.length > 1) {
+  if (scopedRows.length === 1) {
+    return { kind: 'selected', row: onlyScopedRow };
+  }
+
+  const sourceRelease = parseMigrationVersion(registry.source_public_release);
+  if (sourceRelease === null) {
     return { kind: 'ambiguous' };
   }
-  return { kind: 'selected', row };
+
+  const applicableRows = scopedRows.filter((row) => {
+    const era = parseMigrationEra(row);
+    return era !== null && migrationEraCoversVersion(era, sourceRelease);
+  });
+  const applicableRow = applicableRows[0];
+  if (applicableRows.length !== 1 || applicableRow === undefined) {
+    return { kind: 'ambiguous' };
+  }
+  return { kind: 'selected', row: applicableRow };
 }
 
 export function interpretLegacyConfiguration(

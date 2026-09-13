@@ -1,7 +1,12 @@
 import {
   type ConfigurationMigrationRegistry,
+  type ConfigurationMigrationRow,
   V018_CONFIGURATION_MIGRATIONS,
   findMigrationRows,
+  migrationEraCoversVersion,
+  parseMigrationEra,
+  parseMigrationEraBound,
+  parseMigrationVersion,
   serializeMigrationRegistry,
   validateMigrationRegistry,
 } from '../configurationMigrationRegistry';
@@ -79,6 +84,122 @@ describe('public-beta configuration migration registry', () => {
     expect(validateMigrationRegistry(registry)).toContain(
       'overlapping historical migration subject: perl-lsp.mcp.servers',
     );
+  });
+
+  /** Push a second row for the shipped key, varying only the fields a test names. */
+  const withSecondEra = (
+    overrides: Partial<ConfigurationMigrationRow>,
+  ): ConfigurationMigrationRegistry => {
+    const registry = cloneRegistry();
+    const first = registry.rows[0];
+    if (first === undefined) {
+      throw new Error('the shipped registry must define one row');
+    }
+    registry.rows.push({ ...first, migration_id: 'second_era', ...overrides });
+    return registry;
+  };
+
+  const OVERLAP_ERROR = 'overlapping historical migration subject: perl-lsp.mcp.servers';
+
+  test('admits disjoint historical eras for one key at one scope', () => {
+    // The whole point of a versioned registry: one setting may carry a row per era. The
+    // shipped row covers 0.17.0-0.17.x, so 0.15.0-0.16.x sits entirely below it.
+    expect(
+      validateMigrationRegistry(
+        withSecondEra({ introduced_version: '0.15.0', last_supported_version: '0.16.x' }),
+      ),
+    ).toEqual([]);
+  });
+
+  test('rejects eras that overlap without sharing an exact window', () => {
+    // 0.15.0-0.17.x against the shipped 0.17.0-0.17.x: different text, same releases
+    // claimed twice. Exact-tuple comparison certified this pair as valid.
+    expect(
+      validateMigrationRegistry(
+        withSecondEra({ introduced_version: '0.15.0', last_supported_version: '0.17.x' }),
+      ),
+    ).toContain(OVERLAP_ERROR);
+  });
+
+  test('rejects an era overlapping the shipped one by a single release', () => {
+    // Minimal overlap: 0.17.0 is the only release both eras claim. A comparison that
+    // tested only whether one window started inside the other would let this through.
+    expect(
+      validateMigrationRegistry(
+        withSecondEra({ introduced_version: '0.14.0', last_supported_version: '0.17.0' }),
+      ),
+    ).toContain(OVERLAP_ERROR);
+  });
+
+  test('a minor-series upper bound admits every patch it contains', () => {
+    // 0.17.9 must count as inside the shipped 0.17.x era, so an era opening there
+    // overlaps. Treating `0.17.x` as the literal string, or as 0.17.0, would not.
+    expect(
+      validateMigrationRegistry(
+        withSecondEra({ introduced_version: '0.17.9', last_supported_version: '0.18.0' }),
+      ),
+    ).toContain(OVERLAP_ERROR);
+  });
+
+  test('does not treat rows at different scopes as competing eras', () => {
+    // Two scopes are two subjects; the reader picks between them by scope, not by era,
+    // so identical windows there are not a registry defect.
+    expect(
+      validateMigrationRegistry(
+        withSecondEra({ old_scope: 'user', warning_reason_code: 'legacy_other_scope' }),
+      ),
+    ).toEqual([]);
+  });
+
+  test.each([
+    ['0.17', 'a two-part version is not a bound'],
+    ['0.x.0', 'only the patch position may be a wildcard'],
+    ['x', 'a bare wildcard names no series'],
+    ['0.17.*', 'the wildcard spelling is `x`'],
+    ['0.17.0-rc.1', 'a release era is not a prerelease'],
+    ['v0.17.0', 'one bound must have one spelling'],
+    ['latest', 'a moving target is not a historical bound'],
+    ['', 'an empty bound admits nothing'],
+  ])('rejects %s as an era bound (%s)', (bound) => {
+    expect(validateMigrationRegistry(withSecondEra({ introduced_version: bound }))).toContain(
+      'migration historical era is not a valid window: second_era',
+    );
+  });
+
+  test('accepts both spellings the grammar does admit', () => {
+    expect(parseMigrationEraBound('0.17.0')).toMatchObject({ kind: 'exact' });
+    expect(parseMigrationEraBound('0.17.x')).toMatchObject({
+      kind: 'minor_series',
+      major: '0',
+      minor: '17',
+    });
+  });
+
+  test('rejects an inverted era rather than silently admitting no release', () => {
+    expect(
+      validateMigrationRegistry(
+        withSecondEra({ introduced_version: '0.16.0', last_supported_version: '0.15.0' }),
+      ),
+    ).toContain('migration historical era is not a valid window: second_era');
+  });
+
+  test('the shipped registry declares a valid era covering its own source release', () => {
+    // Guards the seeded row against the new grammar: if 0.17.0-0.17.x stopped parsing, or
+    // stopped covering source_public_release, every live interpretation would change.
+    expect(validateMigrationRegistry(V018_CONFIGURATION_MIGRATIONS)).toEqual([]);
+
+    const row = V018_CONFIGURATION_MIGRATIONS.rows[0];
+    const sourceRelease = parseMigrationVersion(
+      V018_CONFIGURATION_MIGRATIONS.source_public_release,
+    );
+    if (row === undefined || sourceRelease === null) {
+      throw new Error('the shipped registry must define one row and a parsable source release');
+    }
+    const era = parseMigrationEra(row);
+    if (era === null) {
+      throw new Error('the shipped row must declare a valid era');
+    }
+    expect(migrationEraCoversVersion(era, sourceRelease)).toBe(true);
   });
 
   test.each(['target_release', 'source_public_release'] as const)(
