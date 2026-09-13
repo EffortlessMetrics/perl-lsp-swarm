@@ -175,6 +175,49 @@ fn a_retained_option_hash_publishes_only_the_installed_name() -> Result<(), Stri
 }
 
 #[test]
+fn a_retained_option_hash_publishes_no_other_option_value() -> Result<(), String> {
+    // Dropping the option *name* is not enough: every option in a retained hash
+    // still carried its value through. `-prefix` names a fragment, so `pre_` is
+    // not a symbol any more than `_ok` is in the affix hashes that are skipped
+    // outright. Only `-as` carries an installed name.
+    let source = "use Module foo => { -as => 'bar', -prefix => 'pre_' };\n";
+    assert_clean_parse(source);
+    let file = lower(source);
+
+    let specs = file.compile_environment.import_specs(FileId(0));
+    let spec = import_spec_for(&specs, "Module")
+        .ok_or_else(|| format!("no import spec for Module in {specs:?}"))?;
+
+    assert_eq!(
+        spec.symbols,
+        ImportSymbols::Explicit(vec!["bar".to_string()]),
+        "only the -as value is an installed name"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_repeated_as_option_publishes_only_the_effective_name() -> Result<(), String> {
+    // A Perl hash literal keeps the last value for a repeated key, so this
+    // installs `second`. Keeping both would publish a name the importer never
+    // receives — the same over-claim, reached through duplicate keys.
+    let source = "use Module foo => { -as => 'first', -as => 'second' };\n";
+    assert_clean_parse(source);
+    let file = lower(source);
+
+    let specs = file.compile_environment.import_specs(FileId(0));
+    let spec = import_spec_for(&specs, "Module")
+        .ok_or_else(|| format!("no import spec for Module in {specs:?}"))?;
+
+    assert_eq!(
+        spec.symbols,
+        ImportSymbols::Explicit(vec!["second".to_string()]),
+        "a repeated key keeps its last value"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_rename_beside_other_requested_names_keeps_them() -> Result<(), String> {
     // The control against over-correcting: dropping the renamed name must not
     // disturb the plain names either side of it in the same import list.

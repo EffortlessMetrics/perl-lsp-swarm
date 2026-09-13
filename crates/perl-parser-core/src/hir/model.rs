@@ -2549,6 +2549,54 @@ fn is_renamed_by_following_options(args: &[String], index: usize) -> bool {
     false
 }
 
+/// The index of the one value a retained per-symbol option hash installs.
+///
+/// Only `-as` carries an installed name. The affix options carry a *fragment*,
+/// so `-prefix => 'pre_'` names nothing a consumer could resolve, and every
+/// other option configures the import rather than naming it — dropping the
+/// option name while keeping its value would publish exactly the fragment the
+/// skipped affix hashes exist to avoid.
+///
+/// A Perl hash literal keeps the last value for a repeated key, so the last
+/// `-as` wins. A value that is missing, or is itself punctuation, installs
+/// nothing.
+fn effective_as_value_index(args: &[String], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut effective = None;
+    let mut index = open;
+    while let Some(token) = args.get(index) {
+        match token.trim() {
+            "{" => depth = depth.saturating_add(1),
+            "}" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            "-" if depth == 1 && opens_as_pair_with_a_name(args, index) => {
+                effective = Some(index + 3);
+            }
+            _ => {}
+        }
+        index = index.saturating_add(1);
+    }
+    effective
+}
+
+/// Whether `index` starts an `-as => <name>` pair whose value could be a name.
+///
+/// The parser splits `-as` into `-` then `as`, so the pair spans four tokens. A
+/// value that is punctuation is a malformed or truncated pair and installs
+/// nothing.
+fn opens_as_pair_with_a_name(args: &[String], index: usize) -> bool {
+    let token = |offset: usize| args.get(index + offset).map(|token| token.trim());
+
+    token(0) == Some("-")
+        && token(1) == Some("as")
+        && token(2) == Some("=>")
+        && token(3).is_some_and(|value| !matches!(value, "}" | "," | "-" | "=>" | "{"))
+}
+
 /// The `use` argument tokens that are not part of a module configuration hash.
 ///
 /// A standalone `{ ... }` in an import list configures the module — `use M 'a',
@@ -2574,9 +2622,11 @@ fn is_renamed_by_following_options(args: &[String], index: usize) -> bool {
 pub fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
     let mut kept = Vec::new();
     let mut skip_depth = 0usize;
-    // Brace depth inside a retained per-symbol option hash, so its option names
-    // can be dropped without affecting dashed tokens anywhere else in the list.
+    // Brace depth inside a retained per-symbol option hash, and the one index in
+    // it that names an installed symbol. Everything else in such a hash is
+    // configuration: option names, and the values of options other than `-as`.
     let mut option_depth = 0usize;
+    let mut installed_name_index = None;
     for (index, arg) in args.iter().enumerate() {
         let trimmed = arg.trim();
         if skip_depth > 0 {
@@ -2590,16 +2640,19 @@ pub fn arguments_outside_configuration_hashes(args: &[String]) -> Vec<&str> {
         if trimmed == "{" {
             if opens_per_symbol_options(args, index) {
                 option_depth = option_depth.saturating_add(1);
+                if option_depth == 1 {
+                    installed_name_index = effective_as_value_index(args, index);
+                }
             } else {
                 skip_depth = 1;
                 continue;
             }
         } else if trimmed == "}" {
             option_depth = option_depth.saturating_sub(1);
-        } else if option_depth > 0
-            && index > 0
-            && args.get(index - 1).map(|previous| previous.trim()) == Some("-")
-        {
+            if option_depth == 0 {
+                installed_name_index = None;
+            }
+        } else if option_depth > 0 && Some(index) != installed_name_index {
             continue;
         } else if option_depth == 0 && is_renamed_by_following_options(args, index) {
             continue;
