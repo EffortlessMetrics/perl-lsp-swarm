@@ -205,7 +205,8 @@
         "connection_closed",
         "output_admitted",
         "protocol_initialized",
-        "request_registered"
+        "request_registered",
+        "terminal_selected"
       ],
       "relations": [
         "terminal_requires_registered"

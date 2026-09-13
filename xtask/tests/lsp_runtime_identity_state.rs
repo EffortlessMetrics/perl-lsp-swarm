@@ -42,8 +42,7 @@ fn row_mut<'a>(
 
 fn reject(value: &Value, needle: &str) -> Result<()> {
     let raw = encode(value)?;
-    let error = validate_str(&raw)
-        .expect_err("mutated identity/state vocabulary must fail closed");
+    let error = validate_str(&raw).expect_err("mutated identity/state vocabulary must fail closed");
     let rendered = format!("{error:#}");
     assert!(rendered.contains(needle), "expected error containing {needle:?}; got {rendered}");
     Ok(())
@@ -156,10 +155,7 @@ fn request_progress_and_reverse_domains_remain_independent() -> Result<()> {
         .ok_or_else(|| eyre!("missing relations"))?;
     relations
         .retain(|row| row.get("id").and_then(Value::as_str) != Some("request_independent_reverse"));
-    reject(
-        &changed,
-        "request_key|independent_of|reverse_request_key",
-    )
+    reject(&changed, "request_key|independent_of|reverse_request_key")
 }
 
 #[test]
@@ -261,6 +257,54 @@ fn generic_machine_vocabulary_rejects_domain_types() -> Result<()> {
     row_mut(&mut changed, "states", "id", "running")?
         .insert("proposition".into(), Value::String("Perl provider running".into()));
     reject(&changed, "forbidden generic-domain term")
+}
+
+#[test]
+fn relationship_semantics_reject_unlisted_extra_key() -> Result<()> {
+    let mut changed = value()?;
+    let relations = changed
+        .get_mut("relations")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("missing relations"))?;
+    let mut extra = relations.first().cloned().ok_or_else(|| eyre!("empty relations"))?;
+    let extra = extra.as_object_mut().ok_or_else(|| eyre!("relation is not an object"))?;
+    extra.insert("id".into(), Value::String("extra_relationship".into()));
+    extra.insert("kind".into(), Value::String("permits".into()));
+    extra.insert("to".into(), Value::String("client_consumed".into()));
+    relations.push(Value::Object(extra.clone()));
+    reject(&changed, "relationship semantics denominator mismatch")
+}
+
+#[test]
+fn journey_requires_relation_endpoints_in_facts() -> Result<()> {
+    let mut changed = value()?;
+    let journey = row_mut(&mut changed, "journeys", "id", "ordinary_success")?;
+    let facts = journey
+        .get_mut("facts")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| eyre!("missing journey facts"))?;
+    facts.retain(|fact| fact.as_str() != Some("output_write_committed"));
+    reject(&changed, "requires relation flush_requires_write endpoints in facts")
+}
+
+#[test]
+fn generic_boundary_rejects_forbidden_product_terms() -> Result<()> {
+    for (field, text) in [
+        ("currentness_law", "Perl-specific boundary"),
+        ("one_authority", "Perl-specific authority"),
+    ] {
+        let mut changed = value()?;
+        if field == "currentness_law" {
+            object_mut(&mut changed, "/generic_boundary")?
+                .insert(field.into(), Value::String(text.into()));
+            reject(&changed, "generic_boundary.currentness_law")?;
+        } else {
+            object_mut(&mut changed, "/generic_boundary/one_authority")?
+                .insert("law".into(), Value::String(text.into()));
+            reject(&changed, "generic_boundary.one_authority")?;
+        }
+    }
+    Ok(())
 }
 
 #[test]

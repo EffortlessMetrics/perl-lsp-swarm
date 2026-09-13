@@ -168,6 +168,11 @@ impl Vocabulary {
                 bail!("missing required relationship {required}");
             }
         }
+        exact_strings(
+            "relationship semantics",
+            relation_keys.iter().map(String::as_str),
+            REQUIRED_RELATION_KEYS,
+        )?;
 
         for term in &self.ambiguous_terms {
             if term.replacements.len() < 2 {
@@ -217,6 +222,23 @@ impl Vocabulary {
                         "journey {} rejected relation {} is neither forbids_inference nor independent_of",
                         journey.id,
                         rejected
+                    );
+                }
+            }
+            for relation_id in &journey.relations {
+                let relation = self
+                    .relations
+                    .iter()
+                    .find(|row| row.id == *relation_id)
+                    .ok_or_else(|| eyre!("missing journey relation {relation_id}"))?;
+                if relation.kind == RelationKind::Requires
+                    && (!journey.facts.contains(&relation.from_id)
+                        || !journey.facts.contains(&relation.to))
+                {
+                    bail!(
+                        "journey {} requires relation {} endpoints in facts",
+                        journey.id,
+                        relation.id
                     );
                 }
             }
@@ -338,6 +360,14 @@ fn reject_product_terms(vocabulary: &Vocabulary) -> Result<()> {
         ("states", serde_json::to_value(&vocabulary.states)?),
         ("relations", serde_json::to_value(&vocabulary.relations)?),
         ("ambiguous_terms", serde_json::to_value(&vocabulary.ambiguous_terms)?),
+        (
+            "generic_boundary.one_authority",
+            serde_json::to_value(&vocabulary.generic_boundary.one_authority)?,
+        ),
+        (
+            "generic_boundary.currentness_law",
+            Value::String(vocabulary.generic_boundary.currentness_law.clone()),
+        ),
         ("journeys", serde_json::to_value(&vocabulary.journeys)?),
     ] {
         scan_strings(label, &value, forbidden)?;
