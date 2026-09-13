@@ -92,6 +92,15 @@ pub struct PullDiagnosticsContext {
     /// `None` means no root authority could be established: the report stays
     /// valid but can never carry a reusable result ID (#7480).
     pub identity_root_key: Option<String>,
+    /// Filesystem path of the same owning root that produced
+    /// [`Self::identity_root_key`], used only to express the document's logical
+    /// path *relative to that root* (#15555).
+    ///
+    /// Kept separate from the root key on purpose. The key is the root's durable
+    /// authority material; this is local evidence for relativization and must
+    /// never itself become identity input. `None` is treated exactly like a
+    /// missing root authority: no reusable result ID.
+    pub identity_root_path: Option<PathBuf>,
     /// Current project-fact (workspace index) generation, when the fact tier
     /// is live and fresh for this document. `None` encodes the explicit
     /// not-ready/unavailable fact state.
@@ -117,6 +126,7 @@ impl PullDiagnosticsContext {
             configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            identity_root_path: None,
             facts_generation: None,
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
@@ -144,6 +154,7 @@ impl PullDiagnosticsContext {
             configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            identity_root_path: None,
             facts_generation: None,
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
@@ -173,6 +184,7 @@ impl PullDiagnosticsContext {
             configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            identity_root_path: None,
             facts_generation: None,
             projection: DiagnosticProjectionFragment {
                 position_encoding: PullPositionEncoding::Utf16,
@@ -199,6 +211,7 @@ impl std::fmt::Debug for PullDiagnosticsContext {
             .field("configuration_generation", &self.configuration_generation)
             .field("markup_message_support", &self.markup_message_support)
             .field("identity_root_key", &self.identity_root_key)
+            .field("identity_root_path", &self.identity_root_path)
             .field("facts_generation", &self.facts_generation)
             .field("projection", &self.projection)
             .field("workspace_index", &"<WorkspaceIndex>")

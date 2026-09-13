@@ -285,6 +285,9 @@ impl PullDiagnosticsOrchestrator {
         // Absent authority stays absent: the report is then served in full
         // without a reusable result ID instead of minting an unsound one.
         let root_key = workspace_root.as_ref().map(|path| path.to_string_lossy().into_owned());
+        // Same resolution as the key, kept as a path so the document's logical
+        // path can be expressed relative to the root the key names (#15555).
+        let identity_root_path = workspace_root.clone();
 
         // Get include paths for the document
         let include_paths: Vec<String> = server
@@ -339,6 +342,7 @@ impl PullDiagnosticsOrchestrator {
             configuration_generation: project_config_generation_for_doc(server, uri),
             markup_message_support,
             identity_root_key: root_key,
+            identity_root_path,
             facts_generation,
             projection: DiagnosticProjectionFragment {
                 position_encoding: match position_encoding {
@@ -2235,11 +2239,18 @@ impl LspServer {
                     .into_iter()
                     .map(|p| p.to_string_lossy().into_owned())
                     .collect();
-                identity_context.identity_root_key = self
+                // One resolution feeds both: the root key is the root's identity
+                // material, the root path is local evidence used only to express
+                // the document's path relative to that root (#15555). Resolving
+                // twice could disagree and silently rebase the logical path onto
+                // a different root than the one the key names.
+                let identity_root = self
                     .folder_for_doc_uri(uri_str)
                     .and_then(|folder| folder.path.or_else(|| source_path_from_uri(&folder.uri)))
-                    .or_else(|| self.root_path.lock().clone())
-                    .map(|path| path.to_string_lossy().into_owned());
+                    .or_else(|| self.root_path.lock().clone());
+                identity_context.identity_root_key =
+                    identity_root.as_ref().map(|path| path.to_string_lossy().into_owned());
+                identity_context.identity_root_path = identity_root;
                 #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
                 {
                     identity_context.facts_generation = workspace_index_tier_enabled

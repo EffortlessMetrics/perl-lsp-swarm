@@ -22,6 +22,7 @@
 //! authority before it reaches the wire.
 
 use std::collections::BTreeSet;
+use std::path::{Component, Path};
 
 use perl_lsp_rs_core::config::CriticEngine;
 use perl_lsp_rs_core::tooling::perl_critic::{
@@ -29,7 +30,10 @@ use perl_lsp_rs_core::tooling::perl_critic::{
     DiagnosticFactIdentity, DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions,
     DiagnosticSourceIdentity, NativeCriticProfile,
 };
-use perl_source_identity::{ContentDigest, LogicalSourceId, ProjectId, WorkspaceRootId};
+use perl_source_identity::{
+    ContentDigest, LogicalPathError, LogicalSourceId, ProjectId, RootRelativeLogicalPath,
+    WorkspaceRootId,
+};
 
 use super::PullDiagnosticsContext;
 
@@ -97,13 +101,33 @@ impl PullPositionEncoding {
 ///
 /// A report in this state is still returned in full — LSP result IDs are
 /// optional — but it must never come back as `Unchanged`.
+///
+/// `#[non_exhaustive]` for the same reason `SourceOrigin` and
+/// `PhysicalSourceRole` are in `perl-source-identity`: the set of reasons a
+/// subject cannot be reused grows as more of the subject becomes typed, and each
+/// new reason should not be a breaking change for downstream matchers.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NotReusable {
     /// No owning workspace/folder authority could be established for the
-    /// document, so the logical source identity cannot be formed.
+    /// document, so the logical source identity cannot be formed. A root key the
+    /// server never resolved is not substituted by the standalone fallback.
     MissingRootAuthority,
     /// The accepted critic policy contradicts its engine's requirements.
     PolicyIncomplete(CriticPolicyIdentityError),
+    /// The document URI could not be decoded to a filesystem path, so it cannot
+    /// be positioned relative to any root (#15555).
+    SourcePathUnavailable,
+    /// The document path names no file — it is a filesystem root — so there is no
+    /// logical source to identify.
+    SourcePathHasNoFileName,
+    /// A path segment is not valid UTF-8, so it has no identity-bearing
+    /// spelling. Refused rather than passed through `to_string_lossy`, which
+    /// maps distinct files onto one spelling.
+    SourcePathNotRepresentable,
+    /// The root-relative spelling is not a canonical logical path. Carries the
+    /// typed reason; [`LogicalPathError`] deliberately holds no path material.
+    SourcePathNotCanonical(LogicalPathError),
 }
 
 impl std::fmt::Display for NotReusable {
@@ -114,6 +138,17 @@ impl std::fmt::Display for NotReusable {
             }
             Self::PolicyIncomplete(error) => {
                 write!(f, "critic policy identity incomplete: {error}")
+            }
+            Self::SourcePathUnavailable => {
+                f.write_str("document URI does not decode to a filesystem path")
+            }
+            Self::SourcePathHasNoFileName => f.write_str("document path names no file"),
+            Self::SourcePathNotRepresentable => {
+                f.write_str("document path contains a segment that is not valid UTF-8")
+            }
+            // `error` carries no path material, so this stays leak-free.
+            Self::SourcePathNotCanonical(error) => {
+                write!(f, "document has no canonical root-relative logical path: {error}")
             }
         }
     }
@@ -165,7 +200,7 @@ impl PullReportResultId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullReportSubject {
     root_id: WorkspaceRootId,
-    relative_path: String,
+    logical_path: RootRelativeLogicalPath,
     content_digest: ContentDigest,
     document_generation: Option<u64>,
     engine: CriticEngine,
@@ -197,13 +232,7 @@ pub fn pull_report_subject(
     document_generation: Option<u64>,
     context: &PullDiagnosticsContext,
 ) -> Result<PullReportSubject, NotReusable> {
-    let Some(root_key) = context.identity_root_key.as_deref() else {
-        return Err(NotReusable::MissingRootAuthority);
-    };
-
-    let project = ProjectId::from_canonical_name(PULL_IDENTITY_PROJECT);
-    let root_id = WorkspaceRootId::from_project_and_root_key(&project, root_key);
-    let relative_path = root_relative_path(uri);
+    let (root_id, logical_path) = root_and_logical_path(uri, context)?;
 
     // Mirror `add_native_critic_diagnostics`: the effective native profile is
     // the configured spelling parsed leniently with the same Strict fallback.
@@ -228,7 +257,7 @@ pub fn pull_report_subject(
         exclude: context.native_critic_exclude.iter().cloned().collect(),
         resolver_roots: context.include_paths.iter().cloned().collect(),
         root_id,
-        relative_path,
+        logical_path,
         document_generation,
         engine: context.critic_engine,
         profile,
@@ -308,7 +337,7 @@ impl PullReportSubject {
         };
         let inner = DiagnosticResultIdentityInput::new(
             DiagnosticSourceIdentity::new(
-                LogicalSourceId::from_root_and_path(&self.root_id, &self.relative_path),
+                LogicalSourceId::from_root_and_logical_path(&self.root_id, &self.logical_path),
                 self.content_digest.clone(),
                 self.document_generation,
             ),
@@ -354,12 +383,95 @@ const PULL_REPORT_IDENTITY_V1_TAG: &str = "perl-lsp:pull-report-identity:v1";
 /// Forward-slash separated, no leading slash. Documents outside any root fall
 /// back to their absolute URI path; the value only ever feeds the digested
 /// logical-source ID and never appears in a public result ID.
-fn root_relative_path(uri: &str) -> String {
-    let path = url::Url::parse(uri)
-        .ok()
-        .map(|parsed| parsed.path().trim_start_matches('/').to_string())
-        .unwrap_or_else(|| uri.to_string());
-    path.replace('\\', "/")
+/// Resolve the root authority and the document's path *relative to that root*.
+///
+/// Both halves come out of one decision so the pair is always coherent: the
+/// returned logical path is relative to exactly the root the returned
+/// [`WorkspaceRootId`] names. Minting a root ID from the workspace folder while
+/// spelling the path relative to something else would satisfy the type checker
+/// and still describe no real source.
+///
+/// Replaces a derivation that took `url::Url::path()` — the *host absolute*
+/// path — stripped its leading slash and called the result root-relative. That
+/// bound the host layout into the logical source (`/home/alice/proj/lib/App.pm`
+/// and `/home/bob/proj/lib/App.pm` became different logical sources for the same
+/// file) and, when URI parsing failed, passed the raw string through so `..`,
+/// absolute and empty forms reached the digest verbatim.
+///
+/// Two cases, both root-relative:
+///
+/// - **owned** — the document sits inside the owning workspace root, so the root
+///   key is the folder authority and the logical path is the document's path
+///   relative to it. This is the case the fix is for.
+/// - **standalone** — no workspace root owns the document (it lies outside every
+///   root, or none was resolved). Its own directory is then the only root
+///   authority available, so the logical path is the bare file name. Host
+///   location moves into the *root key*, where this composer's keys already live
+///   pending the #4832 authority bridge, instead of into the logical source,
+///   which must stay root-relative. Behavior is preserved for these documents:
+///   they keep a reusable result ID rather than losing one.
+///
+/// Absent root authority is still absent (#7480): a missing root key yields
+/// [`NotReusable::MissingRootAuthority`] rather than a standalone identity.
+fn root_and_logical_path(
+    uri: &str,
+    context: &PullDiagnosticsContext,
+) -> Result<(WorkspaceRootId, RootRelativeLogicalPath), NotReusable> {
+    let Some(root_key) = context.identity_root_key.as_deref() else {
+        return Err(NotReusable::MissingRootAuthority);
+    };
+    let project = ProjectId::from_canonical_name(PULL_IDENTITY_PROJECT);
+    let document_path =
+        perl_uri::source_path_from_uri_or_path(uri).ok_or(NotReusable::SourcePathUnavailable)?;
+
+    // Owned: the resolved root contains the document.
+    if let Some(root_path) = context.identity_root_path.as_deref()
+        && let Ok(relative) = document_path.strip_prefix(root_path)
+        && let Some(spelling) = forward_slash_spelling(relative)
+    {
+        let logical_path = RootRelativeLogicalPath::parse(&spelling)
+            .map_err(NotReusable::SourcePathNotCanonical)?;
+        return Ok((WorkspaceRootId::from_project_and_root_key(&project, root_key), logical_path));
+    }
+
+    // Standalone: the document's own directory is its root. Requiring an
+    // absolute path keeps relative, traversal-only and empty material out —
+    // such input names no directory that could serve as a root authority.
+    if !document_path.is_absolute() {
+        return Err(NotReusable::SourcePathNotCanonical(LogicalPathError::LeadingSeparator));
+    }
+    let parent = document_path.parent().ok_or(NotReusable::SourcePathHasNoFileName)?;
+    let file_name = document_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(NotReusable::SourcePathNotRepresentable)?;
+    let standalone_root_key =
+        parent.to_str().ok_or(NotReusable::SourcePathNotRepresentable)?.to_owned();
+    let logical_path =
+        RootRelativeLogicalPath::parse(file_name).map_err(NotReusable::SourcePathNotCanonical)?;
+    Ok((WorkspaceRootId::from_project_and_root_key(&project, &standalone_root_key), logical_path))
+}
+
+/// Spell `relative` with forward slashes, or `None` if it is not a plain descent.
+///
+/// Built from typed [`Component`] values rather than by rewriting separators in a
+/// string: anything that is not an ordinary segment (`..`, `.`, a root, a Windows
+/// prefix) makes the path unusable here instead of being folded into something
+/// that merely looks canonical. A non-UTF-8 segment is also rejected, because
+/// `to_string_lossy` maps distinct files onto one spelling.
+fn forward_slash_spelling(relative: &Path) -> Option<String> {
+    let mut spelling = String::new();
+    for component in relative.components() {
+        let Component::Normal(segment) = component else {
+            return None;
+        };
+        let segment = segment.to_str()?;
+        if !spelling.is_empty() {
+            spelling.push('/');
+        }
+        spelling.push_str(segment);
+    }
+    Some(spelling)
 }
 
 fn push_set(output: &mut String, name: &str, values: &BTreeSet<String>) {
@@ -397,12 +509,23 @@ mod tests {
         DiagnosticProjectionFragment { position_encoding: encoding, markup_messages: markup }
     }
 
+    /// Build a context whose root key and root path describe the *same* root,
+    /// which is what the production resolution guarantees.
     fn context_with(root: Option<&str>) -> PullDiagnosticsContext {
         let mut context = PullDiagnosticsContext::new();
         context.identity_root_key = root.map(str::to_string);
+        context.identity_root_path = root.map(std::path::PathBuf::from);
         // Live fact-store state for the baseline subject.
         context.facts_generation = Some(13);
         context.projection = projection(PullPositionEncoding::Utf16, false);
+        context
+    }
+
+    /// A context whose root key and root path are deliberately independent, for
+    /// the cases that need to vary one without the other.
+    fn context_with_split_root(key: Option<&str>, path: Option<&str>) -> PullDiagnosticsContext {
+        let mut context = context_with(key);
+        context.identity_root_path = path.map(std::path::PathBuf::from);
         context
     }
 
@@ -415,12 +538,19 @@ mod tests {
             .expect("test context must form a complete subject")
     }
 
-    const URI_A: &str = "file:///ws-a/lib/Mod.pm";
+    /// Root A and a document inside it. The URI must actually sit under
+    /// [`ROOT_A`]: the composer now positions the document relative to its
+    /// owning root instead of treating the host path as the logical path.
+    const ROOT_A: &str = "/tmp/ws-a";
+    const URI_A: &str = "file:///tmp/ws-a/lib/Mod.pm";
+    /// Root B holding a document at the *same* relative path as [`URI_A`].
+    const ROOT_B: &str = "/tmp/ws-b";
+    const URI_B: &str = "file:///tmp/ws-b/lib/Mod.pm";
     const CONTENT: &str = "my $x = 1;\n";
 
     #[test]
     fn identical_subjects_compose_identical_ids() {
-        let context = context_with(Some("/tmp/ws-a"));
+        let context = context_with(Some(ROOT_A));
         let first = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
         let second = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
         assert_eq!(first, second);
@@ -428,7 +558,7 @@ mod tests {
 
     #[test]
     fn composed_ids_parse_under_current_schema_only() {
-        let context = context_with(Some("/tmp/ws-a"));
+        let context = context_with(Some(ROOT_A));
         let id = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
         assert_eq!(PullReportResultId::from_wire(id.as_str()), Some(id));
 
@@ -462,12 +592,15 @@ mod tests {
 
     #[test]
     fn every_load_bearing_fragment_moves_the_id() {
-        let baseline_context = context_with(Some("/tmp/ws-a"));
+        let baseline_context = context_with(Some(ROOT_A));
         let baseline = subject_for(&baseline_context, URI_A, CONTENT).compose().ok().unwrap();
 
         // Owning root authority.
+        // Same relative path (`lib/Mod.pm`) and identical bytes in a different
+        // root must not share an ID. Both documents sit inside their own root,
+        // so this now exercises real root ownership rather than two host paths.
         let moved =
-            subject_for(&context_with(Some("/tmp/ws-b")), URI_A, CONTENT).compose().ok().unwrap();
+            subject_for(&context_with(Some(ROOT_B)), URI_B, CONTENT).compose().ok().unwrap();
         assert_ne!(baseline, moved, "two roots with equal bytes must not share an ID");
 
         // Content revision.
@@ -558,7 +691,7 @@ mod tests {
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
         // Logical document identity: equal bytes and counters, different path.
-        let moved = subject_for(&baseline_context, "file:///ws-a/lib/Other.pm", CONTENT)
+        let moved = subject_for(&baseline_context, "file:///tmp/ws-a/lib/Other.pm", CONTENT)
             .compose()
             .ok()
             .unwrap();
@@ -576,8 +709,12 @@ mod tests {
 
     #[test]
     fn public_id_is_bounded_and_path_free() {
-        let context = context_with(Some("/tmp/ws-a/private-root-name"));
-        let id = pull_report_subject(URI_A, CONTENT, Some(1), &context)
+        // A private-looking root that genuinely contains the document, so the
+        // subject composes and the assertions below test leakage rather than
+        // accidentally testing a refusal.
+        let context = context_with(Some("/tmp/private-root-name/ws-a"));
+        let uri = "file:///tmp/private-root-name/ws-a/lib/Mod.pm";
+        let id = pull_report_subject(uri, CONTENT, Some(1), &context)
             .ok()
             .unwrap()
             .compose()
@@ -597,7 +734,7 @@ mod tests {
 
     #[test]
     fn legacy_engine_pins_native_profile_but_carries_policy_digest() {
-        let mut context = context_with(Some("/tmp/ws-a"));
+        let mut context = context_with(Some(ROOT_A));
         context.critic_engine = CriticEngine::Legacy;
         let baseline = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
 
@@ -613,5 +750,151 @@ mod tests {
         // is supplied from the pinned built-in policy domain.
         let subject = pull_report_subject(URI_A, CONTENT, Some(1), &context);
         assert!(subject.is_ok(), "legacy engine subject must be complete");
+    }
+
+    // ── Root-relative logical path (#15555) ───────────────────────────────────
+
+    /// The defect this claim fixes. The old derivation used the document's host
+    /// absolute path, so the *same logical file* in two checkout locations of the
+    /// same logical root produced different IDs. With a genuinely root-relative
+    /// path, the checkout location drops out.
+    #[test]
+    fn identical_logical_source_in_two_checkout_locations_composes_one_id() {
+        // Same project, same root authority key, same relative path and bytes —
+        // only the host location of the checkout differs.
+        let alice = context_with_split_root(Some("shared-root-key"), Some("/home/alice/proj"));
+        let bob = context_with_split_root(Some("shared-root-key"), Some("/home/bob/proj"));
+
+        let from_alice =
+            subject_for(&alice, "file:///home/alice/proj/lib/App.pm", CONTENT).compose().ok();
+        let from_bob =
+            subject_for(&bob, "file:///home/bob/proj/lib/App.pm", CONTENT).compose().ok();
+
+        assert_eq!(
+            from_alice, from_bob,
+            "the host checkout location must not change the logical source identity"
+        );
+        assert!(from_alice.is_some(), "both subjects must compose");
+    }
+
+    /// Negative control for the test above: it must not pass by making every
+    /// document identical. A different relative path under the same root still
+    /// has to move the ID.
+    #[test]
+    fn different_relative_paths_under_one_root_still_differ() {
+        let context = context_with(Some(ROOT_A));
+        let first = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        let second =
+            subject_for(&context, "file:///tmp/ws-a/lib/Other.pm", CONTENT).compose().ok().unwrap();
+        assert_ne!(first, second, "distinct relative paths must not share an ID");
+    }
+
+    /// A document no workspace root owns keeps a reusable ID — behavior is not
+    /// regressed — but it is identified relative to its own directory, so the
+    /// host location lands in the root key rather than in the logical source.
+    ///
+    /// Two files sharing a directory must still differ, and the same file name in
+    /// two different directories must still differ.
+    #[test]
+    fn standalone_documents_are_identified_relative_to_their_own_directory() {
+        let context = context_with(Some(ROOT_A));
+
+        let outside = subject_for(&context, "file:///elsewhere/lib/Mod.pm", CONTENT).compose().ok();
+        assert!(outside.is_some(), "a document outside the root must keep a reusable ID");
+
+        let sibling =
+            subject_for(&context, "file:///elsewhere/lib/Other.pm", CONTENT).compose().ok();
+        assert_ne!(outside, sibling, "two files in one standalone directory must differ");
+
+        let same_name_elsewhere =
+            subject_for(&context, "file:///other-place/lib/Mod.pm", CONTENT).compose().ok();
+        assert_ne!(
+            outside, same_name_elsewhere,
+            "one file name in two directories must not collapse to one identity"
+        );
+    }
+
+    /// A root key with no root path cannot position the document inside the root,
+    /// so the document is treated as standalone rather than refused.
+    #[test]
+    fn missing_root_path_falls_back_to_standalone_identity() {
+        let with_path = context_with(Some(ROOT_A));
+        let without_path = context_with_split_root(Some(ROOT_A), None);
+
+        let owned = subject_for(&with_path, URI_A, CONTENT).compose().ok();
+        let standalone = subject_for(&without_path, URI_A, CONTENT).compose().ok();
+
+        assert!(standalone.is_some(), "a known root key must still yield a reusable ID");
+        assert_ne!(
+            owned, standalone,
+            "root-relative and standalone identities describe different subjects"
+        );
+    }
+
+    /// Absent root authority stays absent (#7480): the standalone fallback must
+    /// not quietly manufacture authority the server never established.
+    #[test]
+    fn standalone_fallback_does_not_manufacture_missing_root_authority() {
+        let context = context_with(None);
+        assert_eq!(
+            pull_report_subject("file:///elsewhere/lib/Mod.pm", CONTENT, Some(1), &context),
+            Err(NotReusable::MissingRootAuthority)
+        );
+    }
+
+    /// The fail-open fallback the old derivation had: when URI parsing failed it
+    /// passed the raw string through, so traversal, relative and empty forms
+    /// reached the durable digest verbatim. Such material names no directory that
+    /// could serve as a root, so none of it may compose.
+    #[test]
+    fn relative_and_traversal_material_never_composes() {
+        let context = context_with(Some(ROOT_A));
+        for uri in ["../../etc/passwd", "lib/../secret.pm", "lib/Mod.pm", ""] {
+            let outcome = pull_report_subject(uri, CONTENT, Some(1), &context);
+            assert!(
+                outcome.is_err(),
+                "{uri:?} must not produce a reusable subject, got {outcome:?}"
+            );
+        }
+    }
+
+    /// Negative control for the test above: an absolute path that genuinely names
+    /// a file does compose, as a standalone document. The refusals above must come
+    /// from the material being unusable, not from refusing everything.
+    #[test]
+    fn absolute_document_paths_still_compose() {
+        let context = context_with(Some(ROOT_A));
+        for uri in ["/absolute/not/a/uri.pm", "file:///tmp/other/Mod.pm"] {
+            let outcome = pull_report_subject(uri, CONTENT, Some(1), &context);
+            assert!(outcome.is_ok(), "{uri:?} names a real file and must compose, got {outcome:?}");
+        }
+    }
+
+    /// Refusals must not echo the material they refused — it is exactly the
+    /// material most likely to be a host path.
+    #[test]
+    fn refusal_text_does_not_leak_document_or_root_paths() {
+        let context = context_with(Some("/home/alice/private-root"));
+        // Relative material is refused, and the refusal must not echo it.
+        let outcome = pull_report_subject("../alice-secrets/creds.pm", CONTENT, Some(1), &context);
+        let error = outcome.expect_err("relative material must be refused");
+        let rendered = format!("{error} / {error:?}");
+        assert!(!rendered.contains("alice"), "must not leak path material: {rendered}");
+        assert!(!rendered.contains("creds"), "must not leak file name: {rendered}");
+        assert!(!rendered.contains("secrets"), "must not leak directory name: {rendered}");
+    }
+
+    /// Percent-encoded URIs decode to the real filename, so the logical path is
+    /// the name a user would recognize rather than its wire spelling. The two
+    /// equivalent spellings of one document must therefore agree.
+    #[test]
+    fn equivalent_uri_spellings_describe_one_logical_source() {
+        let context = context_with(Some(ROOT_A));
+        let encoded =
+            subject_for(&context, "file:///tmp/ws-a/lib/My%20File.pm", CONTENT).compose().ok();
+        let decoded =
+            subject_for(&context, "file:///tmp/ws-a/lib/My File.pm", CONTENT).compose().ok();
+        assert_eq!(encoded, decoded, "one document must have one logical source identity");
+        assert!(encoded.is_some(), "a space in a filename must still compose");
     }
 }

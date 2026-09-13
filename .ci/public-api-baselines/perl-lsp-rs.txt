@@ -141,6 +141,7 @@ pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::configuration
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
+pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::identity_root_path: core::option::Option<std::path::PathBuf>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::include_paths: alloc::vec::Vec<alloc::string::String>
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::markup_message_support: bool
 pub perl_lsp::features::diagnostics::pull::PullDiagnosticsContext::native_critic_exclude: alloc::vec::Vec<alloc::string::String>
@@ -164,9 +165,12 @@ pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_works
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::get_workspace_diagnostics_with_context(&self, documents: &std::collections::hash::map::HashMap<alloc::string::String, perl_lsp::state::DocumentState>, previous_result_ids: alloc::vec::Vec<(lsp_types::uri::Uri, alloc::string::String)>, context: &perl_lsp::features::diagnostics::pull::PullDiagnosticsContext) -> lsp_types::workspace_diagnostic::WorkspaceDiagnosticReport
 pub fn perl_lsp::features::diagnostics::pull::PullDiagnosticsProvider::new() -> Self
 pub mod perl_lsp::features::diagnostics::report_identity
-pub enum perl_lsp::features::diagnostics::report_identity::NotReusable
 pub perl_lsp::features::diagnostics::report_identity::NotReusable::MissingRootAuthority
 pub perl_lsp::features::diagnostics::report_identity::NotReusable::PolicyIncomplete(perl_lsp_rs_core::tooling::perl_critic::result_identity::CriticPolicyIdentityError)
+pub perl_lsp::features::diagnostics::report_identity::NotReusable::SourcePathHasNoFileName
+pub perl_lsp::features::diagnostics::report_identity::NotReusable::SourcePathNotCanonical(perl_source_identity::logical_path::LogicalPathError)
+pub perl_lsp::features::diagnostics::report_identity::NotReusable::SourcePathNotRepresentable
+pub perl_lsp::features::diagnostics::report_identity::NotReusable::SourcePathUnavailable
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::clone(&self) -> perl_lsp::features::diagnostics::report_identity::NotReusable
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::NotReusable) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -197,9 +201,12 @@ pub fn perl_lsp::features::diagnostics::report_identity::PullReportSubject::eq(&
 pub fn perl_lsp::features::diagnostics::report_identity::PullReportSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const perl_lsp::features::diagnostics::report_identity::PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16
 pub fn perl_lsp::features::diagnostics::report_identity::pull_report_subject(uri: &str, content: &str, document_generation: core::option::Option<u64>, context: &perl_lsp::features::diagnostics::pull::PullDiagnosticsContext) -> core::result::Result<perl_lsp::features::diagnostics::report_identity::PullReportSubject, perl_lsp::features::diagnostics::report_identity::NotReusable>
-pub enum perl_lsp::features::diagnostics::NotReusable
 pub perl_lsp::features::diagnostics::NotReusable::MissingRootAuthority
 pub perl_lsp::features::diagnostics::NotReusable::PolicyIncomplete(perl_lsp_rs_core::tooling::perl_critic::result_identity::CriticPolicyIdentityError)
+pub perl_lsp::features::diagnostics::NotReusable::SourcePathHasNoFileName
+pub perl_lsp::features::diagnostics::NotReusable::SourcePathNotCanonical(perl_source_identity::logical_path::LogicalPathError)
+pub perl_lsp::features::diagnostics::NotReusable::SourcePathNotRepresentable
+pub perl_lsp::features::diagnostics::NotReusable::SourcePathUnavailable
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::clone(&self) -> perl_lsp::features::diagnostics::report_identity::NotReusable
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::eq(&self, other: &perl_lsp::features::diagnostics::report_identity::NotReusable) -> bool
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -221,6 +228,7 @@ pub perl_lsp::features::diagnostics::PullDiagnosticsContext::configuration_gener
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::critic_engine: perl_lsp_rs_core::config::CriticEngine
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::facts_generation: core::option::Option<u64>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::identity_root_key: core::option::Option<alloc::string::String>
+pub perl_lsp::features::diagnostics::PullDiagnosticsContext::identity_root_path: core::option::Option<std::path::PathBuf>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::include_paths: alloc::vec::Vec<alloc::string::String>
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::markup_message_support: bool
 pub perl_lsp::features::diagnostics::PullDiagnosticsContext::native_critic_exclude: alloc::vec::Vec<alloc::string::String>
