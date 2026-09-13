@@ -104,7 +104,7 @@ impl LifecycleProcess {
         stdin.flush().context("failed to flush LSP message")
     }
 
-    fn response(&self, id: u64, timeout: Duration) -> Result<Value> {
+    fn response(&self, id: &Value, timeout: Duration) -> Result<Value> {
         let deadline = Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -118,7 +118,7 @@ impl LifecycleProcess {
 
             match self.messages.recv_timeout(remaining.min(Duration::from_millis(250))) {
                 Ok(Ok(message))
-                    if message.get("id").and_then(Value::as_u64) == Some(id)
+                    if message.get("id") == Some(id)
                         && (message.get("result").is_some() || message.get("error").is_some()) =>
                 {
                     ensure!(
@@ -142,6 +142,96 @@ impl LifecycleProcess {
                         "server stdout reader disconnected before response id={id}\n{}",
                         self.render_stderr_tail()
                     );
+                }
+            }
+        }
+    }
+
+    fn strict_response(&self, id: &Value, timeout: Duration) -> Result<Value> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                bail!(
+                    "timed out after {}ms waiting for strict response id={id}\n{}",
+                    timeout.as_millis(),
+                    self.render_stderr_tail()
+                );
+            }
+
+            match self.messages.recv_timeout(remaining.min(Duration::from_millis(250))) {
+                Ok(Ok(message))
+                    if message.get("result").is_some() || message.get("error").is_some() =>
+                {
+                    let observed_id = message.get("id");
+                    ensure!(
+                        observed_id == Some(id),
+                        "unexpected terminal response while waiting for id={id}: {message:#}"
+                    );
+                    ensure!(
+                        message.get("jsonrpc").and_then(Value::as_str) == Some("2.0"),
+                        "response id={id} did not carry the JSON-RPC 2.0 envelope: \
+                         {message:#}\n{}",
+                        self.render_stderr_tail()
+                    );
+                    return Ok(message);
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    bail!(
+                        "server stdout reader failed before strict response id={id}: {error}\n{}",
+                        self.render_stderr_tail()
+                    );
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    bail!(
+                        "server stdout reader disconnected before strict response id={id}\n{}",
+                        self.render_stderr_tail()
+                    );
+                }
+            }
+        }
+    }
+
+    fn notification_for_uri_version(
+        &self,
+        method: &str,
+        uri: &str,
+        version: i64,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                bail!(
+                    "timed out after {}ms waiting for {method} for {uri}\n{}",
+                    timeout.as_millis(),
+                    self.render_stderr_tail()
+                );
+            }
+            match self.messages.recv_timeout(remaining.min(Duration::from_millis(250))) {
+                Ok(Ok(message))
+                    if message.get("method").and_then(Value::as_str) == Some(method)
+                        && message.pointer("/params/uri").and_then(Value::as_str) == Some(uri)
+                        && message.pointer("/params/version").and_then(Value::as_i64)
+                            == Some(version) =>
+                {
+                    return Ok(message);
+                }
+                Ok(Ok(message))
+                    if message.get("result").is_some() || message.get("error").is_some() =>
+                {
+                    bail!("unexpected terminal response while waiting for {method}: {message:#}");
+                }
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => {
+                    bail!("server stdout reader failed waiting for {method}: {error}")
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    bail!("server stdout reader disconnected waiting for {method}");
                 }
             }
         }
@@ -171,6 +261,39 @@ impl LifecycleProcess {
     }
 
     fn join_readers(&mut self, timeout: Duration) -> Result<()> {
+        self.join_reader_threads(timeout)?;
+
+        while let Ok(message) = self.messages.try_recv() {
+            if let Err(error) = message {
+                bail!("server emitted invalid LSP output: {error}\n{}", self.render_stderr_tail());
+            }
+        }
+        Ok(())
+    }
+
+    fn join_readers_strict(&mut self, timeout: Duration) -> Result<()> {
+        self.join_reader_threads(timeout)?;
+
+        while let Ok(message) = self.messages.try_recv() {
+            match message {
+                Ok(message)
+                    if message.get("result").is_some() || message.get("error").is_some() =>
+                {
+                    bail!("unexpected terminal response after expected responses: {message:#}");
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    bail!(
+                        "server emitted invalid LSP output: {error}\n{}",
+                        self.render_stderr_tail()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn join_reader_threads(&mut self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         loop {
             let stdout_finished =
@@ -188,17 +311,11 @@ impl LifecycleProcess {
             }
             thread::sleep(Duration::from_millis(10));
         }
-
         if let Some(handle) = self.stdout_thread.take() {
             handle.join().map_err(|_| anyhow!("stdout reader thread panicked"))?;
         }
         if let Some(handle) = self.stderr_thread.take() {
             handle.join().map_err(|_| anyhow!("stderr reader thread panicked"))?;
-        }
-        while let Ok(message) = self.messages.try_recv() {
-            if let Err(error) = message {
-                bail!("server emitted invalid LSP output: {error}\n{}", self.render_stderr_tail());
-            }
         }
         Ok(())
     }
@@ -309,7 +426,8 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
             "capabilities": {}
         }
     }))?;
-    let initialize = server.response(1, INITIALIZE_TIMEOUT)?;
+    let initialize_id = json!(1);
+    let initialize = server.response(&initialize_id, INITIALIZE_TIMEOUT)?;
     ensure!(
         initialize.get("error").is_none_or(Value::is_null),
         "initialize returned an error: {initialize:#}"
@@ -324,14 +442,15 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
         "method": "initialized",
         "params": {}
     }))?;
+    let shutdown_id = json!("00123-π");
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": shutdown_id.clone(),
         "method": "shutdown",
         "params": null
     }))?;
 
-    let shutdown = server.response(2, REQUEST_TIMEOUT)?;
+    let shutdown = server.response(&shutdown_id, REQUEST_TIMEOUT)?;
     ensure!(
         shutdown.get("error").is_none_or(Value::is_null),
         "shutdown returned an error: {shutdown:#}"
@@ -360,5 +479,210 @@ fn stdio_lifecycle_exits_zero_after_shutdown() -> Result<()> {
         "server exited unsuccessfully after shutdown -> exit: {status}\n{stderr_tail}"
     );
 
+    Ok(())
+}
+
+const NAVIGATION_MODULE_V1: &str = "package Target;\nsub old_target { 1 }\n1;\n";
+const NAVIGATION_MODULE_V2: &str = "package Target;\n\nsub old_target { 1 }\n1;\n";
+const NAVIGATION_CLIENT_V1: &str = "use lib 'lib';\nuse Target;\nTarget::old_target();\n";
+
+fn file_uri(path: &Path) -> Result<String> {
+    Url::from_file_path(path)
+        .map(|uri| uri.to_string())
+        .map_err(|()| anyhow!("failed to convert {} to a file URI", path.display()))
+}
+
+fn exact_definition(response: &Value, expected_uri: &str, expected_line: u64) -> Result<()> {
+    ensure!(response.get("error").is_none_or(Value::is_null), "definition failed: {response:#}");
+    let result = response
+        .get("result")
+        .and_then(Value::as_array)
+        .context("definition response result was not an array")?;
+    ensure!(result.len() == 1, "expected one definition, got {result:#?}");
+    let location = result.first().context("definition result was empty")?;
+    let uri = location
+        .pointer("/uri")
+        .and_then(Value::as_str)
+        .context("definition result omitted uri")?;
+    let line = location
+        .pointer("/range/start/line")
+        .and_then(Value::as_u64)
+        .context("definition result omitted range start line")?;
+    let start_character = location
+        .pointer("/range/start/character")
+        .and_then(Value::as_u64)
+        .context("definition result omitted range start character")?;
+    let end_character = location
+        .pointer("/range/end/character")
+        .and_then(Value::as_u64)
+        .context("definition result omitted range end character")?;
+    let end_line = location
+        .pointer("/range/end/line")
+        .and_then(Value::as_u64)
+        .context("definition result omitted range end line")?;
+    ensure!(uri == expected_uri, "definition URI drifted: expected {expected_uri}, got {uri}");
+    ensure!(line == expected_line, "definition line drifted: expected {expected_line}, got {line}");
+    ensure!(
+        end_line == expected_line,
+        "definition end line drifted: expected {expected_line}, got {end_line}"
+    );
+    ensure!(
+        start_character == 0,
+        "definition start column drifted: expected 0, got {start_character} ({location:#})"
+    );
+    ensure!(
+        end_character == 20,
+        "definition end column drifted: expected 20, got {end_character} ({location:#})"
+    );
+    Ok(())
+}
+
+fn definition_after_readiness(
+    server: &mut LifecycleProcess,
+    client_uri: &str,
+    module_uri: &str,
+    expected_line: u64,
+    first_request_id: u64,
+) -> Result<()> {
+    for attempt in 0_u64..8 {
+        let request_id = first_request_id + attempt;
+        let request_id_value = json!(request_id);
+        server.send(&json!({
+            "jsonrpc": "2.0", "id": request_id_value.clone(), "method": "textDocument/definition", "params": {
+                "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+            }
+        }))?;
+        let response = server.strict_response(&request_id_value, REQUEST_TIMEOUT)?;
+        // Retry only missing or superseded facts; a stale successful location must fail.
+        let transient = response.pointer("/error/code").and_then(Value::as_i64) == Some(-32800)
+            || response.pointer("/result").and_then(Value::as_array).is_some_and(Vec::is_empty);
+        if transient {
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
+        exact_definition(&response, module_uri, expected_line)?;
+        return Ok(());
+    }
+    bail!("definition never produced the expected current result for {client_uri} -> {module_uri}")
+}
+
+#[test]
+fn stdio_navigation_matches_exact_request_and_current_edit() -> Result<()> {
+    ensure!(
+        binary_available(),
+        "perllsp binary is not available; build it before running exact-process proof"
+    );
+    let configured_binary = std::env::var("PERL_LSP_BIN").context(
+        "exact-process navigation proof requires PERL_LSP_BIN to name the candidate binary",
+    )?;
+    ensure!(
+        !configured_binary.trim().is_empty(),
+        "PERL_LSP_BIN must not be empty for exact-process navigation proof"
+    );
+    let binary = canonical_executable(&configured_binary)?;
+    ensure!(
+        binary.is_file(),
+        "PERL_LSP_BIN does not identify a regular executable: {}",
+        binary.display()
+    );
+    let binary_path = binary.to_str().context("candidate binary path was not valid UTF-8")?;
+    let workspace = TempDir::new().context("failed to create navigation workspace")?;
+    let lib = workspace.path().join("lib");
+    std::fs::create_dir_all(&lib).context("failed to create navigation lib directory")?;
+    let module = lib.join("Target.pm");
+    let client = workspace.path().join("main.pl");
+    std::fs::write(&module, NAVIGATION_MODULE_V1).context("failed to write module fixture")?;
+    std::fs::write(&client, NAVIGATION_CLIENT_V1).context("failed to write client fixture")?;
+    let root_uri = file_uri(workspace.path())?;
+    let module_uri = file_uri(&module)?;
+    let client_uri = file_uri(&client)?;
+    let mut server = LifecycleProcess::spawn(binary_path, workspace.path())?;
+
+    let initialize_id = json!(1);
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": initialize_id.clone(), "method": "initialize",
+        "params": { "processId": null, "rootUri": root_uri, "workspaceFolders": null, "capabilities": {} }
+    }))?;
+    let initialize = server.response(&initialize_id, INITIALIZE_TIMEOUT)?;
+    ensure!(
+        initialize.get("error").is_none_or(Value::is_null),
+        "initialize failed: {initialize:#}"
+    );
+    server.send(&json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }))?;
+    server.send(&json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": module_uri, "languageId": "perl", "version": 1, "text": NAVIGATION_MODULE_V1 }
+        }
+    }))?;
+    server.notification_for_uri_version(
+        "textDocument/publishDiagnostics",
+        &module_uri,
+        1,
+        REQUEST_TIMEOUT,
+    )?;
+    server.send(&json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
+            "textDocument": { "uri": client_uri, "languageId": "perl", "version": 1, "text": NAVIGATION_CLIENT_V1 }
+        }
+    }))?;
+    server.notification_for_uri_version(
+        "textDocument/publishDiagnostics",
+        &client_uri,
+        1,
+        REQUEST_TIMEOUT,
+    )?;
+    definition_after_readiness(&mut server, &client_uri, &module_uri, 1, 2)?;
+
+    let numeric_definition_id = json!(123);
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": numeric_definition_id.clone(), "method": "textDocument/definition", "params": {
+            "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+        }
+    }))?;
+    let wrong_id = json!("123");
+    let mismatch_text = server
+        .strict_response(&wrong_id, REQUEST_TIMEOUT)
+        .err()
+        .context("strict response matching unexpectedly accepted a numeric ID as a string")?
+        .to_string();
+    ensure!(
+        mismatch_text.contains("unexpected terminal response")
+            && mismatch_text.contains("\"123\"")
+            && mismatch_text.contains("\"id\": 123"),
+        "numeric/string ID mismatch error lost expected or observed identity: {mismatch_text}"
+    );
+    let string_definition_id = json!("definition-π");
+    server.send(&json!({
+        "jsonrpc": "2.0", "id": string_definition_id.clone(), "method": "textDocument/definition", "params": {
+            "textDocument": { "uri": client_uri }, "position": { "line": 2, "character": 10 }
+        }
+    }))?;
+    let string_definition = server.strict_response(&string_definition_id, REQUEST_TIMEOUT)?;
+    exact_definition(&string_definition, &module_uri, 1)?;
+
+    server.send(&json!({
+        "jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+            "textDocument": { "uri": module_uri, "version": 2 },
+            "contentChanges": [{ "text": NAVIGATION_MODULE_V2 }]
+        }
+    }))?;
+    server.notification_for_uri_version(
+        "textDocument/publishDiagnostics",
+        &module_uri,
+        2,
+        REQUEST_TIMEOUT,
+    )?;
+    let expected_current_line = 2;
+    definition_after_readiness(&mut server, &client_uri, &module_uri, expected_current_line, 10)?;
+
+    let shutdown_id = json!(100);
+    server.send(&json!({ "jsonrpc": "2.0", "id": shutdown_id.clone(), "method": "shutdown", "params": null }))?;
+    let shutdown = server.strict_response(&shutdown_id, REQUEST_TIMEOUT)?;
+    ensure!(shutdown.get("error").is_none_or(Value::is_null), "shutdown failed: {shutdown:#}");
+    server.send(&json!({ "jsonrpc": "2.0", "method": "exit", "params": null }))?;
+    let status = server.wait_for_exit(EXIT_TIMEOUT)?;
+    server.close_stdin();
+    server.join_readers_strict(READER_TIMEOUT)?;
+    ensure!(status.success(), "navigation server exited unsuccessfully: {status}");
     Ok(())
 }

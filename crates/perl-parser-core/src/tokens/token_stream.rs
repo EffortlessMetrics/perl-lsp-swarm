@@ -501,7 +501,7 @@ impl<'a> TokenStream<'a> {
 
         let boundary = self.peek_boundary.clone();
         if let (TokenStreamInner::Lexer(lexer), Some(boundary)) = (&mut self.inner, boundary) {
-            if !lexer.can_restore(&boundary) {
+            if lexer.restore(&boundary).is_err() {
                 return ContextualOpResult::FallbackRequired {
                     reason: ContextualFallbackReason::NoCheckpointAuthority,
                 };
@@ -509,7 +509,6 @@ impl<'a> TokenStream<'a> {
             // Restore the exact complete state captured before the head token
             // was produced (including heredoc queues, quote operators, and
             // delimiter stacks), then force the requested context.
-            lexer.restore(&boundary);
             lexer.set_mode(expected_context);
             self.clear_lookahead();
             return ContextualOpResult::AppliedLive;
@@ -590,10 +589,9 @@ impl<'a> TokenStream<'a> {
         let TokenStreamInner::Lexer(lexer) = &mut self.inner else {
             return Ok(());
         };
-        if !lexer.can_restore(&boundary) {
+        if lexer.restore(&boundary).is_err() {
             return Err(ContextualFallbackReason::NoCheckpointAuthority);
         }
-        lexer.restore(&boundary);
         Ok(())
     }
 
