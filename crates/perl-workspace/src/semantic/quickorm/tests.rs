@@ -694,6 +694,44 @@ table "users" => sub {};
 }
 
 #[test]
+fn empty_and_whitespace_table_names_do_not_emit_qorm_table()
+-> Result<(), Box<dyn std::error::Error>> {
+    for table_name in ["''", "\"\"", "'   '", "\"  \""] {
+        let source = format!(
+            "package User; use DBIx::QuickORM type => 'table'; table {table_name} => sub {{}};"
+        );
+        assert!(
+            generated_facts_from_source(&source)?.is_empty(),
+            "a delimiter-only name is not source-backed evidence: {source}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn non_ascii_interpolated_table_name_remains_dynamic() -> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        r#"use utf8; package User; use DBIx::QuickORM type => 'table'; table "$π" => sub {};"#,
+    )?;
+
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
+fn single_quoted_non_ascii_sigil_name_remains_conservatively_excluded()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The anchor classifier does not distinguish quote style; single-quoted literals are outside
+    // the bounded pilot's support claim.
+    let facts = generated_facts_from_source(
+        r#"use utf8; package User; use DBIx::QuickORM type => 'table'; table '$π' => sub {};"#,
+    )?;
+
+    assert!(facts.is_empty());
+    Ok(())
+}
+
+#[test]
 fn percent_in_double_quoted_table_name_remains_static() -> Result<(), Box<dyn std::error::Error>> {
     let facts = generated_facts_from_source(
         r#"

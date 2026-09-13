@@ -505,20 +505,28 @@ fn is_builder_name(name: &str) -> bool {
 
 fn static_table_name_anchor<'a>(node: &'a Node, source: Option<&str>) -> Option<&'a Node> {
     match &node.kind {
-        NodeKind::String { value, .. }
-            if !value.trim().is_empty()
-                && source
-                    .and_then(|text| text.get(node.location.start..node.location.end))
-                    .map_or_else(
-                        || !contains_unescaped_interpolation(value),
-                        |raw| !contains_unescaped_interpolation(raw),
-                    ) =>
-        {
-            Some(node)
+        NodeKind::String { value, .. } => {
+            let raw = source
+                .and_then(|text| text.get(node.location.start..node.location.end))
+                .unwrap_or(value);
+            let literal = string_literal_inner_text(raw);
+            (!literal.trim().is_empty() && !contains_unescaped_interpolation(raw)).then_some(node)
         }
         NodeKind::Identifier { name } if is_static_identifier(name) => Some(node),
         NodeKind::Binary { op, left, .. } if op == "=>" => static_table_name_anchor(left, source),
         _ => None,
+    }
+}
+
+fn string_literal_inner_text(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    match (bytes.first(), bytes.last()) {
+        (Some(quote), Some(closing_quote))
+            if value.len() >= 2 && quote == closing_quote && matches!(*quote, b'\'' | b'"') =>
+        {
+            &value[1..value.len() - 1]
+        }
+        _ => value,
     }
 }
 
@@ -548,11 +556,12 @@ fn contains_unescaped_interpolation(value: &str) -> bool {
 /// `$;`, `$=`, `$.`, `$~`, `$<`, `$>`, `$%`, `$(`, `$)`, `$|`, `$*`, `$$`,
 /// `$[`, `$]`.
 ///
-/// The set is closed on purpose: anything outside it (including non-ASCII name
-/// starts) is treated as literal text, so admitting a new special form requires
-/// a falsifier test alongside the addition here.
+/// Identifier starts are Unicode-aware: under `use utf8` a Perl identifier may
+/// begin with any Unicode word character, so those are interpolation, not literal
+/// text. The punctuation/special-variable set below is closed on purpose, so
+/// admitting a new special form requires a falsifier test alongside the addition.
 fn is_perl_interpolation_name_start(character: &char) -> bool {
-    character.is_ascii_alphanumeric()
+    character.is_alphanumeric()
         || matches!(
             character,
             '_' | '{'
