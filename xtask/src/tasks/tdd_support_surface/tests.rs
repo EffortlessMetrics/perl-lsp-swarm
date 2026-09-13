@@ -974,6 +974,60 @@ fn alternate_cfg_definitions_of_one_name_are_refused() -> Result<()> {
     Ok(())
 }
 
+/// `--propose` emits a pasteable ledger row, so every string it prints must be
+/// a valid TOML literal. A discovered cfg is normalized to `feature="x"`, and
+/// interpolating that into `"{}"` terminates the string early — the skeleton
+/// looks right and will not parse. Four live rows carry such a cfg.
+#[test]
+fn proposed_rows_are_valid_toml_for_quoted_values() -> Result<()> {
+    // The exact shape discovery produces for a feature gate.
+    let cfg = toml_string("feature=\"lsp-compat\"");
+    let row = format!("[[entry]]\ncfg = {cfg}\n");
+    let parsed: toml::Value = toml::from_str(&row)
+        .map_err(|error| color_eyre::eyre::eyre!("proposed row is not valid TOML: {error}"))?;
+    let seen = parsed["entry"][0]["cfg"].as_str().unwrap_or_default();
+    if seen != "feature=\"lsp-compat\"" {
+        bail!("round-trip changed the cfg value: {seen:?}");
+    }
+    // Authored prose can carry a backslash or a quote just as easily.
+    let prose = toml_string(r#"close when the `a"b\c` path lands"#);
+    let doc: toml::Value = toml::from_str(&format!("exit_condition = {prose}\n"))
+        .map_err(|error| color_eyre::eyre::eyre!("escaped prose is not valid TOML: {error}"))?;
+    if doc["exit_condition"].as_str() != Some(r#"close when the `a"b\c` path lands"#) {
+        bail!("round-trip changed authored prose: {doc:?}");
+    }
+    Ok(())
+}
+
+/// In a grouped use tree, `self` republishes the prefix itself. Its exported
+/// name is the prefix's final segment, so treating it generically inventories
+/// a `self` row, governs a path that does not exist, and leaves the real
+/// module ungoverned.
+#[test]
+fn a_grouped_self_reexport_is_named_for_its_prefix() -> Result<()> {
+    let parsed: syn::File = syn::parse_str("pub use api::{self, Widget};\n")?;
+    let syn::Item::Use(node) = &parsed.items[0] else { bail!("fixture is not a use item") };
+    let mut out = Vec::new();
+    collect_use_tree(&node.tree, Vec::new(), &mut out)?;
+    let names: Vec<&str> = out.iter().map(|(_, name)| name.as_str()).collect();
+    if names.iter().any(|name| *name == "self") {
+        bail!("`self` must not become an exported name: {out:?}");
+    }
+    if !names.contains(&"api") || !names.contains(&"Widget") {
+        bail!("`pub use api::{{self, Widget}}` publishes `api` and `Widget`, got {out:?}");
+    }
+    // The prefix re-export keeps the prefix as its own origin, not `api::api`.
+    let api_origin = out
+        .iter()
+        .find(|(_, name)| name == "api")
+        .map(|(origin, _)| origin.as_str())
+        .unwrap_or_default();
+    if api_origin != "api" {
+        bail!("`self` origin must be the prefix itself, got {api_origin:?}");
+    }
+    Ok(())
+}
+
 /// Authored prose reaches a Markdown cell, so a `|` or a newline in an
 /// `exit_condition` would silently reshape the generated table instead of
 /// failing — and the projection would still pass its own currentness check

@@ -409,6 +409,20 @@ impl Sink {
 /// Resolve a re-export's origin (as written in `pub use`) to the crate path
 /// of the item it names. `crate::a::B` is absolute; `self::`/bare `a::B` is
 /// relative to the module the `pub use` sits in.
+/// Render a value as a TOML string literal, quotes included.
+///
+/// `--propose` emits a pasteable ledger row, so every string it prints must be
+/// a valid TOML literal. Interpolating raw text into `"{}"` breaks on the first
+/// quote: a discovered cfg is normalized to `feature="lsp-compat"`, which
+/// printed that way yields `cfg = "feature="lsp-compat""` and terminates the
+/// string early. Inherited authored fields (`behavior`, `exit_condition`,
+/// `replacement_owner`, `proof_command`) carry the same hazard. Delegating to
+/// the `toml` serializer escapes quotes, backslashes and control characters by
+/// the format's own rules rather than a hand-rolled approximation.
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
+}
+
 /// Escape authored prose for a Markdown table cell.
 ///
 /// `exit_condition` is free text an author writes per row. A `|` in it would
@@ -769,6 +783,25 @@ fn collect_use_tree(
             collect_use_tree(&path.tree, next, out)
         }
         syn::UseTree::Name(name) => {
+            // `pub use api::{self, Widget};` republishes the prefix itself. Its
+            // exported name is the prefix's final segment, not the literal
+            // `self`, so treating it generically would inventory a `self` row
+            // and govern a path that does not exist while `api` went ungoverned.
+            if name.ident == "self" {
+                let Some(exported) = prefix.iter().rev().find(|part| part.as_str() != "self")
+                else {
+                    // A bare `pub use self;` names nothing to republish.
+                    return Ok(());
+                };
+                let origin = prefix
+                    .iter()
+                    .filter(|part| part.as_str() != "self")
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("::");
+                out.push((origin, exported.clone()));
+                return Ok(());
+            }
             out.push((origin_of(&prefix, &name.ident.to_string()), name.ident.to_string()));
             Ok(())
         }
@@ -1724,10 +1757,10 @@ fn propose(discovered: &[Discovered], ledger: &Ledger, edges: &[ConsumerEdge]) -
             consumers.iter().map(|name| format!("\"{name}\"")).collect::<Vec<_>>().join(", ");
         println!();
         println!("[[entry]]");
-        println!("id = \"{}\"", item.id);
-        println!("api_kind = \"{}\"", item.api_kind);
-        println!("path = \"{}\"", item.path);
-        println!("cfg = \"{}\"", item.cfg);
+        println!("id = {}", toml_string(&item.id));
+        println!("api_kind = {}", toml_string(&item.api_kind));
+        println!("path = {}", toml_string(&item.path));
+        println!("cfg = {}", toml_string(&item.cfg));
         match owner {
             Some(owner_row) => {
                 let member_name = item.path.rsplit("::").next().unwrap_or(item.path.as_str());
@@ -1737,17 +1770,20 @@ fn propose(discovered: &[Discovered], ledger: &Ledger, edges: &[ConsumerEdge]) -
                     _ => "Variant",
                 };
                 println!(
-                    "behavior = \"{noun} `{member_name}` of `{}`; governed with its owning type.\"",
-                    item.owner
+                    "behavior = {}",
+                    toml_string(&format!(
+                        "{noun} `{member_name}` of `{}`; governed with its owning type.",
+                        item.owner
+                    ))
                 );
                 println!("consumers = [{consumers_toml}]");
-                println!("consumer_class = \"{}\"", owner_row.consumer_class);
-                println!("compatibility = \"{}\"", owner_row.compatibility);
-                println!("disposition = \"{}\"", owner_row.disposition);
-                println!("replacement_owner = \"{}\"", owner_row.replacement_owner);
+                println!("consumer_class = {}", toml_string(&owner_row.consumer_class));
+                println!("compatibility = {}", toml_string(&owner_row.compatibility));
+                println!("disposition = {}", toml_string(&owner_row.disposition));
+                println!("replacement_owner = {}", toml_string(&owner_row.replacement_owner));
                 println!("owner_issue = {}", owner_row.owner_issue);
-                println!("exit_condition = \"{}\"", owner_row.exit_condition);
-                println!("proof_command = \"{}\"", owner_row.proof_command);
+                println!("exit_condition = {}", toml_string(&owner_row.exit_condition));
+                println!("proof_command = {}", toml_string(&owner_row.proof_command));
             }
             None => {
                 println!("behavior = \"TODO: what this item does today\"");
