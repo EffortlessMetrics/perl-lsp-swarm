@@ -83,7 +83,7 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
 #[cfg(windows)]
 #[serial(dap_debuggee_environment)]
 #[allow(clippy::print_stderr)]
-fn pinned_native_probe_uses_piped_stdio_bootstrap() -> Result<(), Box<dyn Error>> {
+fn configured_perl_probe_uses_windows_stdio_bootstrap() -> Result<(), Box<dyn Error>> {
     let _emacs = EnvGuard::remove("EMACS");
     let _perl_rl = EnvGuard::remove("PERL_RL");
     let _perl_db_opts = EnvGuard::remove("PERLDB_OPTS");
@@ -91,12 +91,12 @@ fn pinned_native_probe_uses_piped_stdio_bootstrap() -> Result<(), Box<dyn Error>
         if env::var_os(common::REQUIRE_PERL_ENV).is_some_and(|value| value == "1") {
             return Err("PERL_LSP_DAP_REQUIRE_PERL=1 but no pipe-capable Perl is available".into());
         }
-        eprintln!("SKIP pinned_native_probe_uses_piped_stdio_bootstrap: Perl unavailable");
+        eprintln!("SKIP configured_perl_probe_uses_windows_stdio_bootstrap: Perl unavailable");
         return Ok(());
     };
     let _pin = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pin.as_os_str());
     let resolved = probe_debuggee_perl_for_test(&pin, Duration::from_secs(10), false)
-        .map_err(|reason| format!("pinned native Perl was rejected: {reason}"))?;
+        .map_err(|reason| format!("configured Perl was rejected: {reason}"))?;
     let expected = fs::canonicalize(&pin)?;
     if fs::canonicalize(&resolved.binary)? != expected {
         return Err(format!(
@@ -107,7 +107,7 @@ fn pinned_native_probe_uses_piped_stdio_bootstrap() -> Result<(), Box<dyn Error>
         .into());
     }
     if resolved.identity.trim().is_empty() {
-        return Err("native resolver returned no debugger identity".into());
+        return Err("configured Perl probe returned no debugger identity".into());
     }
     Ok(())
 }
