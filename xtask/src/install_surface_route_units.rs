@@ -39,8 +39,23 @@ pub const DEFAULT_REGISTRY_RELATIVE_PATH: &str = "policy/install-surface-registr
 /// the release graph.
 const TOPOLOGY_AUTHORITY: &str = "#6067";
 
-/// Product/executable identity authority (`policy/product-identity.toml`).
-const PRODUCT_AUTHORITY: &str = "#6855";
+/// Product, binary, crate, extension, and artifact identity authority.
+///
+/// Taken from the live owner table in
+/// `docs/project/status/release_trust_invariants.md` — the generated projection of
+/// `policy/release-trust-invariants.v1.json` — where #6744 is `current`. #10831's
+/// prose points at #6855 instead, but #6855 is a closed *child* of #6744 (its own
+/// body reads "Parents: #6601, #6744") that owns canonical identity guidance rather
+/// than the identity contract, so the registry is the better authority for which
+/// issue owns product identity.
+const PRODUCT_AUTHORITY: &str = "#6744";
+
+/// The identity-guidance child of [`PRODUCT_AUTHORITY`], accepted alongside it.
+///
+/// Two registry rows cite it today. It owns the canonical product/package/executable
+/// projection, so a row citing it is citing product-identity evidence — unlike the
+/// topology, workflow and currentness authorities this gate must reject.
+const PRODUCT_IDENTITY_GUIDANCE_AUTHORITY: &str = "#6855";
 
 /// The artifact shape a registry row names.
 ///
@@ -523,10 +538,11 @@ struct RouteRule {
 
 /// Authorities that establish which product a surface carries.
 ///
-/// #10831's architecture ruling routes product and executable identity to #6855
-/// (`policy/product-identity.toml`). A row must cite it for a managed-pair rule to
-/// treat the package as carrying the product.
-const PRODUCT_RELATION_AUTHORITIES: &[&str] = &[PRODUCT_AUTHORITY];
+/// A row must cite one of these for a managed-pair rule to treat the package as
+/// carrying the product. Topology, release, workflow and currentness authorities are
+/// deliberately absent: they say who owns the row, not what it carries.
+const PRODUCT_RELATION_AUTHORITIES: &[&str] =
+    &[PRODUCT_AUTHORITY, PRODUCT_IDENTITY_GUIDANCE_AUTHORITY];
 
 /// Dispositions under which a row is a settled, currently-owned surface.
 const SETTLED_ACTIVE: &[RegistryDisposition] =
@@ -1220,6 +1236,18 @@ mod tests {
     fn editor_package_needs_product_relation_evidence() {
         let settled_package = settled_with_product_relation("editor_package", "vscode_marketplace");
         assert_eq!(unit_of(&settled_package), RouteProductUnit::ManagedEditorPair);
+
+        // Both product-identity authorities satisfy the gate: #6744 owns the identity
+        // contract and #6855 owns its canonical guidance projection.
+        for authority in [PRODUCT_AUTHORITY, PRODUCT_IDENTITY_GUIDANCE_AUTHORITY] {
+            let mut subject = settled("editor_package", "vscode_marketplace");
+            subject.authority_refs.push(authority.to_string());
+            assert_eq!(
+                unit_of(&subject),
+                RouteProductUnit::ManagedEditorPair,
+                "{authority} should satisfy the product-relation gate"
+            );
+        }
 
         let mut without_authority = settled_package.clone();
         without_authority.authority_refs.clear();
