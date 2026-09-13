@@ -534,6 +534,48 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         self.assertIn("FAIL_REVIEW_MISSING", summary)
         self.assertIn(HEAD, summary)
 
+    def test_packet_covering_no_governed_row_cannot_decide_the_result(self) -> None:
+        # A packet is evidence for a governed row, not an applicability result.
+        # A valid packet must not turn PASS_NOT_APPLICABLE into a review claim,
+        # and a malformed one must not fail work it has no bearing on.
+        good = self.write_packet(
+            "unrelated-good.json", packet_body("semantic_close_authority", HEAD)
+        )
+        receipt = self.evaluate(UNRELATED_CHANGED, [good])
+        self.assertEqual(atr.PASS_NOT_APPLICABLE, receipt["result"])
+        self.assertTrue(receipt["packets"][0]["unused"])
+
+        broken = self.packets_dir / "unrelated-broken.json"
+        broken.write_text("{not json", encoding="utf-8")
+        self.assertEqual(
+            atr.PASS_NOT_APPLICABLE,
+            self.evaluate(UNRELATED_CHANGED, [broken])["result"],
+        )
+
+    def test_covering_packet_still_reaches_the_result_through_its_row(self) -> None:
+        # Control for the test above: suppressing the global fold must not make
+        # a packet that does cover a governed row stop counting.
+        good = self.write_packet(
+            "covering.json", packet_body("semantic_close_authority", HEAD)
+        )
+        receipt = self.evaluate(GOVERNED_CHANGED, [good])
+        self.assertEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+        self.assertFalse(receipt["packets"][0]["unused"])
+
+    def test_every_declared_falsifier_needs_its_own_negative_control(self) -> None:
+        # Checking only that each control names a declared falsifier lets a
+        # packet declare several, audit one, and pass on a sample.
+        body = packet_body("semantic_close_authority", HEAD)
+        body["challenge"]["falsifiers"].append(
+            {"id": "F2", "stage": "review", "statement": "Second falsifier."}
+        )
+        partial = self.write_packet("partial-audit.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [partial])
+        self.assertNotEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+        self.assertEqual(
+            atr.FAIL_FIRST_FALSIFIER_MISSING, receipt["packets"][0]["verdict"]
+        )
+
     def test_cli_self_test_flag_runs_green(self) -> None:
         buffer = io.StringIO()
         with redirect_stdout(buffer):

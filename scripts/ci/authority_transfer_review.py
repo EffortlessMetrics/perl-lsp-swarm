@@ -514,6 +514,21 @@ def validate_packet(
     negative_controls = packet.get("negative_controls")
     if not isinstance(negative_controls, list) or not negative_controls:
         return fail(FAIL_FIRST_FALSIFIER_MISSING, "negative_controls_absent")
+    # Coverage runs both ways. Checking only that each supplied control names a
+    # declared falsifier lets a packet declare several falsifiers, audit one,
+    # and still pass -- the audited one becomes a sample rather than the
+    # complete negative-control set the closed contract requires.
+    audited_ids = {
+        control.get("falsifier_id")
+        for control in negative_controls
+        if isinstance(control, dict)
+    }
+    unaudited = [fid for fid in falsifier_ids if fid not in audited_ids]
+    if unaudited:
+        return fail(
+            FAIL_FIRST_FALSIFIER_MISSING,
+            f"falsifier_without_negative_control ({unaudited[0]})",
+        )
     for control in negative_controls:
         if not isinstance(control, dict):
             return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "malformed_negative_control")
@@ -796,8 +811,22 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
 
     profiles = doc.get("profile") if isinstance(doc.get("profile"), dict) else {}
     classify_packets(packets, governed, profiles, inputs["repository"])
+    # A packet is evidence for a governed row, not an applicability result of
+    # its own. When nothing governed changed there is no row for it to be
+    # evidence for, and folding it in anyway let packet presence decide the
+    # outcome: a valid packet turned PASS_NOT_APPLICABLE into
+    # PASS_CURRENT_REVIEW, and a malformed one failed work it had no bearing
+    # on. Such packets are reported as unused instead.
+    #
+    # Deliberately narrow. Once a governed row exists every packet still folds
+    # in, because a packet too broken to be classified never reaches a row and
+    # suppressing it would replace its specific typed reason -- malformed
+    # artifact, unbound subject -- with a bare FAIL_REVIEW_MISSING.
     for packet in packets:
-        global_results.append(packet["verdict"])
+        packet["unused"] = not governed
+    if governed:
+        for packet in packets:
+            global_results.append(packet["verdict"])
 
     verdict_rows: list[dict[str, Any]] = []
     for row in governed:
@@ -865,6 +894,9 @@ def _public_packet_view(packet: dict[str, Any]) -> dict[str, Any]:
         "covered_surfaces": packet["covered_surfaces"],
         "profile": packet["profile"],
         "head_binding": packet["head_binding"],
+        # True when the packet covered no governed row in this evaluation, so
+        # it contributed no evidence to the terminal result.
+        "unused": bool(packet.get("unused", False)),
     }
 
 
