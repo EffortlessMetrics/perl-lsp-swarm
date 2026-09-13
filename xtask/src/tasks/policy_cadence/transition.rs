@@ -138,11 +138,17 @@ impl TimeBoundRecord {
     /// Whether the candidate differs from the accepted base in any field this
     /// validator governs. A record nobody touched must not newly fail an
     /// unrelated candidate.
+    ///
+    /// `invalid_reason` is compared too, and it is not redundant: it is derived
+    /// from fields this validator does not carry directly, so deleting a
+    /// required falsifier turns a valid base record into an invalid candidate
+    /// while every other compared field stays equal.
     fn differs_from(&self, base: &Self) -> bool {
         self.review_after != base.review_after
             || self.expires != base.expires
             || self.evidence != base.evidence
             || self.disposition != base.disposition
+            || self.invalid_reason != base.invalid_reason
     }
 }
 
@@ -174,6 +180,13 @@ pub struct TransitionRow {
 struct TransitionReceipt {
     schema_version: &'static str,
     base: String,
+    /// How the candidate side was read. The base is pinned to a tree object,
+    /// but in this local check mode the candidate comes from live working-tree
+    /// reads that are not atomic with each other, so a receipt taken during a
+    /// concurrent edit can describe no single candidate tree. Recording it
+    /// keeps the receipt honest about its own subject; routed enforcement
+    /// (#7053 T2) evaluates a pinned candidate commit instead.
+    candidate_source: &'static str,
     /// This command checks a transition; it does not measure domain debt.
     measures_domain_debt: bool,
     rows: Vec<TransitionRow>,
@@ -284,16 +297,27 @@ fn build_receipt(root: &Path, base: &str) -> Result<TransitionReceipt> {
     let base_tree = resolve_base_tree(root, base)?;
     let mut rows = Vec::new();
     for (path, project) in SOURCES {
-        let base_records = match read_base(root, path, &base_tree)? {
+        let base_text = read_base(root, path, &base_tree)?;
+        let candidate_text = read_candidate(root, path)?;
+        let base_records = match &base_text {
             Some(text) => {
-                project(&text).with_context(|| format!("parsing {path} at base {base}"))?
+                project(text).with_context(|| format!("parsing {path} at base {base}"))?
             }
             None => Vec::new(),
         };
-        let candidate_records = match read_candidate(root, path)? {
-            Some(text) => project(&text).with_context(|| format!("parsing candidate {path}"))?,
+        let candidate_records = match &candidate_text {
+            Some(text) => project(text).with_context(|| format!("parsing candidate {path}"))?,
             None => Vec::new(),
         };
+        // A registered policy source that the accepted base carried and the
+        // candidate does not is a decommission decision, not a silent no-op:
+        // without this the whole file's date movements escape review by moving
+        // or deleting the file. #4092 settled the same question for the Changie
+        // config — absence is never authority to infer decommissioning.
+        if base_text.is_some() && candidate_text.is_none() {
+            rows.push(removed_source_row(path, base_records.len()));
+            continue;
+        }
         rows.extend(compare(&base_records, &candidate_records));
     }
     rows.sort_by(|left, right| {
@@ -303,6 +327,7 @@ fn build_receipt(root: &Path, base: &str) -> Result<TransitionReceipt> {
     Ok(TransitionReceipt {
         schema_version: SCHEMA_VERSION,
         base: base.to_string(),
+        candidate_source: "working_tree",
         measures_domain_debt: false,
         rows,
         violations,
@@ -362,16 +387,117 @@ fn read_candidate(root: &Path, path: &str) -> Result<Option<String>> {
 
 fn compare(base: &[TimeBoundRecord], candidate: &[TimeBoundRecord]) -> Vec<TransitionRow> {
     let mut rows = Vec::new();
+    let mut reported_ambiguous: Vec<(String, String)> = Vec::new();
     for record in candidate {
-        let prior = base.iter().find(|item| item.key() == record.key());
+        // A repeated identity has no single accepted predecessor, so its
+        // transition cannot be judged: joining to the first match would compare
+        // against an arbitrary base row. Fail closed rather than guess.
+        if occurrences(candidate, record) > 1 || occurrences(base, record) > 1 {
+            let key = (record.source_kind.clone(), record.record_id.clone());
+            if !reported_ambiguous.contains(&key) {
+                reported_ambiguous.push(key);
+                rows.push(ambiguous_identity_row(record));
+            }
+            continue;
+        }
+        let prior = base
+            .iter()
+            .find(|item| item.key() == record.key())
+            .or_else(|| renamed_predecessor(base, candidate, record));
         rows.push(evaluate(prior, record));
     }
     for record in base {
-        if !candidate.iter().any(|item| item.key() == record.key()) {
-            rows.push(removed_row(record));
+        if occurrences(base, record) > 1 {
+            continue;
         }
+        if candidate.iter().any(|item| item.key() == record.key()) {
+            continue;
+        }
+        // Skip a record already judged under its new name; emitting a Removed
+        // row too would report one record twice.
+        if candidate.iter().any(|item| {
+            renamed_predecessor(base, candidate, item)
+                .is_some_and(|prior| prior.key() == record.key())
+        }) {
+            continue;
+        }
+        rows.push(removed_row(record));
     }
     rows
+}
+
+/// Re-identify a candidate record that matches no base identity but carries the
+/// exact evidence of a record this candidate dropped.
+///
+/// Renaming must not launder an extension. Without this, dropping
+/// `ripr-total-burndown` and adding `ripr-total-burndown-2026h2` with a later
+/// date and byte-identical evidence reads as an unrelated removal plus a new
+/// record, and both pass — the #6216 incident with one extra field edited.
+///
+/// Byte-identical evidence is a precise re-identification signal rather than a
+/// name heuristic, and it is the signal that matters here: an author who has
+/// genuinely re-measured holds new evidence and has no reason to rename.
+fn renamed_predecessor<'a>(
+    base: &'a [TimeBoundRecord],
+    candidate: &[TimeBoundRecord],
+    record: &TimeBoundRecord,
+) -> Option<&'a TimeBoundRecord> {
+    let evidence = record.evidence.as_deref().filter(|text| !text.trim().is_empty())?;
+    base.iter().find(|prior| {
+        prior.source_kind == record.source_kind
+            && prior.evidence.as_deref() == Some(evidence)
+            && !candidate.iter().any(|item| item.key() == prior.key())
+    })
+}
+
+fn removed_source_row(path: &str, base_record_count: usize) -> TransitionRow {
+    TransitionRow {
+        record_id: path.to_string(),
+        source_kind: "registered_source".to_string(),
+        source_path: path.to_string(),
+        owner: String::new(),
+        review_movement: TimeMovement::Removed,
+        expiry_movement: TimeMovement::Removed,
+        disposition: ReviewDisposition::NotProven,
+        evidence_state: EvidenceState::NotProven,
+        verdict: TransitionVerdict::Violation,
+        reason: Some(format!(
+            "the accepted base carried this registered policy source with {base_record_count} \
+             time-bound record(s) and the candidate does not; decommissioning it is an explicit \
+             reviewed decision, not an absence"
+        )),
+        base_review_after: None,
+        candidate_review_after: None,
+        base_expires: None,
+        candidate_expires: None,
+    }
+}
+
+fn occurrences(records: &[TimeBoundRecord], record: &TimeBoundRecord) -> usize {
+    records.iter().filter(|item| item.key() == record.key()).count()
+}
+
+fn ambiguous_identity_row(record: &TimeBoundRecord) -> TransitionRow {
+    TransitionRow {
+        record_id: record.record_id.clone(),
+        source_kind: record.source_kind.clone(),
+        source_path: record.source_path.clone(),
+        owner: record.owner.clone(),
+        review_movement: TimeMovement::Invalid,
+        expiry_movement: TimeMovement::Invalid,
+        disposition: disposition_of(record.disposition.as_deref()),
+        evidence_state: EvidenceState::Invalid,
+        verdict: TransitionVerdict::Violation,
+        reason: Some(
+            "the record identity appears more than once in its source, so no single accepted \
+             predecessor exists to compare against"
+                .to_string(),
+        ),
+        base_review_after: None,
+        candidate_review_after: record.review_after.clone(),
+        base_expires: None,
+        candidate_expires: record.expires.clone(),
+    }
 }
 
 fn evaluate(base: Option<&TimeBoundRecord>, candidate: &TimeBoundRecord) -> TransitionRow {
@@ -550,20 +676,53 @@ fn evidence_state_of(
 /// can rewrite them without running anything. Requiring a subject the base
 /// evidence did not carry is what makes "fresh" mean measured-again rather
 /// than merely edited.
+///
+/// A run id is admitted only where a run-context word introduces it. A bare
+/// decimal is not self-identifying: a measured count such as
+/// `active_unresolved=123456789` is long enough to look like a run id, and
+/// admitting it would let a changed metric authorize a later date while the
+/// accepted commit, digest, and run all stayed the same. Digests are
+/// self-identifying by shape and need no context.
+///
+/// Tokens keep `_` so a field name stays one word: `active_unresolved` must not
+/// decay into a bare `unresolved` that could pass as run context.
 fn subject_tokens(text: &str) -> BTreeSet<String> {
-    text.split(|character: char| !character.is_ascii_alphanumeric())
-        .filter(|token| is_subject_token(token))
-        .map(str::to_ascii_lowercase)
-        .collect()
+    let mut tokens = BTreeSet::new();
+    let mut previous: Option<String> = None;
+    for raw in text
+        .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|token| !token.is_empty())
+    {
+        let lowered = raw.to_ascii_lowercase();
+        if is_digest_token(raw) {
+            tokens.insert(lowered.clone());
+        } else if is_run_id(raw) && previous.as_deref().is_some_and(is_run_context) {
+            // Namespaced so a run id can never collide with a digest spelling.
+            tokens.insert(format!("run:{lowered}"));
+        }
+        previous = Some(lowered);
+    }
+    tokens
 }
 
-fn is_subject_token(token: &str) -> bool {
+/// A 40-hex commit or a 64-hex content digest.
+fn is_digest_token(token: &str) -> bool {
     let hex = |length: usize| {
         token.len() == length && token.chars().all(|character| character.is_ascii_hexdigit())
     };
-    // 40-hex commit, 64-hex digest, or a run id. Nine digits keeps a bare
-    // eight-digit date out of the subject set.
-    hex(40) || hex(64) || (token.len() >= 9 && token.chars().all(|c| c.is_ascii_digit()))
+    hex(40) || hex(64)
+}
+
+/// Nine digits keeps a bare eight-digit date out of the subject set.
+fn is_run_id(token: &str) -> bool {
+    token.len() >= 9 && token.chars().all(|character| character.is_ascii_digit())
+}
+
+fn is_run_context(previous: &str) -> bool {
+    matches!(
+        previous,
+        "run" | "runs" | "run_id" | "job" | "jobs" | "job_id" | "workflow" | "workflow_run"
+    )
 }
 
 fn write_output(root: &Path, path: &Path, contents: &str) -> Result<()> {
@@ -814,6 +973,124 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows.iter().filter(|r| r.verdict == TransitionVerdict::Violation).count(), 1);
         assert_eq!(rows.iter().filter(|r| r.verdict == TransitionVerdict::Pass).count(), 1);
+    }
+
+    /// A measured count is not a measured subject. Changing only a long metric
+    /// value leaves the accepted commit, digest, and run untouched, so it must
+    /// not authorize a later date.
+    #[test]
+    fn a_changed_metric_count_is_not_a_fresh_subject() {
+        let base =
+            quality("2026-09-16", "2026-09-30", BASE_EVIDENCE, Some("renew_with_new_evidence"));
+        let recounted =
+            BASE_EVIDENCE.replace("active_unresolved=5037", "active_unresolved=123456789");
+        assert_ne!(recounted, BASE_EVIDENCE, "fixture must actually change the text");
+        let candidate =
+            quality("2026-10-16", "2026-10-30", &recounted, Some("renew_with_new_evidence"));
+        let row = verdict(&base, &candidate);
+        assert_eq!(row.evidence_state, EvidenceState::Stale);
+        assert_eq!(row.verdict, TransitionVerdict::Violation);
+    }
+
+    /// Deleting a required falsifier makes a valid record invalid without
+    /// touching any date, the evidence, or the disposition.
+    #[test]
+    fn clearing_a_required_falsifier_is_a_changed_record() {
+        let base = quality("2026-09-16", "2026-09-30", BASE_EVIDENCE, Some("narrow"));
+        let mut candidate = base.clone();
+        candidate.invalid_reason =
+            Some("quality exception disposition requires a non-empty falsifier".to_string());
+        assert!(candidate.differs_from(&base));
+        let row = verdict(&base, &candidate);
+        assert_eq!(row.evidence_state, EvidenceState::Invalid);
+        assert_eq!(row.verdict, TransitionVerdict::Violation);
+    }
+
+    /// The quality projection must actually derive that invalid state from the
+    /// committed schema, so the guard above is reachable from a real ledger.
+    #[test]
+    fn the_quality_projection_reports_a_missing_falsifier() -> Result<()> {
+        let ledger = r#"
+[[exception]]
+id = "fixture"
+owner = "team"
+scope = "fixture"
+evidence = "receipt"
+review_after = "2026-09-16"
+expires = "2026-09-30"
+disposition = "narrow"
+"#;
+        let records = quality_records(ledger)?;
+        assert_eq!(records.len(), 1);
+        assert!(
+            records[0].invalid_reason.as_deref().is_some_and(|reason| reason.contains("falsifier"))
+        );
+        Ok(())
+    }
+
+    /// A repeated identity has no single accepted predecessor, so it must fail
+    /// closed instead of silently comparing against an arbitrary base row.
+    #[test]
+    fn a_duplicated_record_identity_cannot_be_judged() {
+        let base = quality("2026-09-16", "2026-09-30", BASE_EVIDENCE, Some("narrow"));
+        let duplicate = quality("2026-12-01", "2026-12-31", BASE_EVIDENCE, Some("narrow"));
+        let rows = compare(std::slice::from_ref(&base), &[duplicate.clone(), duplicate.clone()]);
+        assert_eq!(rows.len(), 1, "one ambiguity row per identity: {rows:?}");
+        assert_eq!(rows[0].verdict, TransitionVerdict::Violation);
+        assert!(
+            rows[0].reason.as_deref().is_some_and(|reason| reason.contains("more than once")),
+            "{:?}",
+            rows[0].reason
+        );
+    }
+
+    /// Renaming a record must not launder an extension past the gate. The
+    /// evidence is the thing an author cannot fake without re-measuring, so a
+    /// dropped record whose exact evidence reappears under a new id is the same
+    /// record and its date movement is judged as such.
+    #[test]
+    fn renaming_a_record_does_not_launder_an_extension() {
+        let base = quality("2026-09-16", "2026-09-30", BASE_EVIDENCE, Some("narrow"));
+        let mut renamed = quality("2027-03-31", "2027-03-31", BASE_EVIDENCE, Some("let_expire"));
+        renamed.record_id = "ripr-total-burndown-2026h2".to_string();
+
+        let rows = compare(std::slice::from_ref(&base), std::slice::from_ref(&renamed));
+        assert_eq!(rows.len(), 1, "the rename is one record, not a removal plus an addition");
+        assert_eq!(rows[0].review_movement, TimeMovement::Extended);
+        assert_eq!(rows[0].evidence_state, EvidenceState::Unchanged);
+        assert_eq!(rows[0].verdict, TransitionVerdict::Violation);
+    }
+
+    /// A genuinely new record is still not an extension, so re-identification
+    /// must not fire on one that carries its own distinct evidence.
+    #[test]
+    fn a_genuinely_new_record_is_not_treated_as_a_rename() {
+        let base = quality("2026-09-16", "2026-09-30", BASE_EVIDENCE, Some("narrow"));
+        let mut added = quality(
+            "2027-03-31",
+            "2027-03-31",
+            "measured at head 7777777777777777777777777777777777777777",
+            Some("narrow"),
+        );
+        added.record_id = "a-distinct-claim".to_string();
+
+        let rows = compare(std::slice::from_ref(&base), &[base.clone(), added]);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.verdict == TransitionVerdict::Pass), "{rows:?}");
+    }
+
+    /// Moving or deleting a registered policy source must not take its date
+    /// movements out of review. #4092 settled the same question for the Changie
+    /// config: absence is never authority to infer decommissioning.
+    #[test]
+    fn losing_a_registered_source_is_a_reviewed_decision() {
+        let row = removed_source_row("policy/quality-gate-exceptions.toml", 2);
+        assert_eq!(row.verdict, TransitionVerdict::Violation);
+        assert!(
+            row.reason.as_deref().is_some_and(|reason| reason.contains("reviewed decision")),
+            "{:?}",
+            row.reason
+        );
     }
 
     #[test]
