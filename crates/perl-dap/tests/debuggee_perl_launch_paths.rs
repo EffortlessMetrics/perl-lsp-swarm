@@ -88,7 +88,10 @@ fn configured_perl_probe_uses_windows_stdio_bootstrap() -> Result<(), Box<dyn Er
     let _perl_rl = EnvGuard::remove("PERL_RL");
     let _perl_db_opts = EnvGuard::remove("PERLDB_OPTS");
     let Some(pin) = find_configured_or_path_pipe_perl()? else {
-        if env::var_os(common::REQUIRE_PERL_ENV).is_some_and(|value| value == "1") {
+        if env::var(common::REQUIRE_PERL_ENV)
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
             return Err("PERL_LSP_DAP_REQUIRE_PERL=1 but no pipe-capable Perl is available".into());
         }
         eprintln!("SKIP configured_perl_probe_uses_windows_stdio_bootstrap: Perl unavailable");
@@ -137,7 +140,7 @@ fn observe_pin_with_session(
 }
 
 #[test]
-#[serial]
+#[serial(dap_debuggee_environment)]
 #[allow(clippy::print_stderr)]
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
     let Some(source_perl) = find_configured_or_path_pipe_perl()? else {
@@ -205,7 +208,7 @@ fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box
 
 #[test]
 #[cfg(windows)]
-#[serial]
+#[serial(dap_debuggee_environment)]
 fn windows_pipe_launch_configures_perl_debugger_transport() -> Result<(), Box<dyn Error>> {
     let locator = Command::new("where.exe").arg("perl").output()?;
     if !locator.status.success() {
