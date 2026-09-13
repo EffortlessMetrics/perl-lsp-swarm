@@ -2187,6 +2187,7 @@ impl TransformationPlan {
             return Ok(TransformationResult::AppliedExact {
                 output: output.clone(),
                 work: observation.work,
+                evaluated: EvaluatedUnderLaw(()),
             });
         }
         // A partial application is legal only under a law that declares
@@ -2273,6 +2274,7 @@ impl TransformationPlan {
             output: output.clone(),
             work: observation.work,
             residual: residual.clone(),
+            evaluated: EvaluatedUnderLaw(()),
         })
     }
 
@@ -2361,6 +2363,29 @@ pub enum EquivalenceOutcome {
     /// Equivalence was not proven, for the named reason.
     NotProven(String),
 }
+
+/// Witness that an applied result was derived by [`TransformationPlan::evaluate_under_law`].
+///
+/// The inner field is private, so no value of this type can be produced outside
+/// this module. That is what makes the two applied variants *underivable* by a
+/// caller rather than merely discouraged: external code can still match them
+/// (with `..`) and read their fields, but cannot construct one, so an applied
+/// result always carries the evaluation that produced it.
+///
+/// Every other variant stays freely constructible. A caller fabricating a
+/// refusal or an `InvalidOutput` claims less than the evidence supports, which
+/// is safe; fabricating an applied result claims more, which is not.
+///
+/// The witness cannot be produced outside this module, so an applied result
+/// cannot be fabricated:
+///
+/// ```compile_fail
+/// use xtask::compiler_transformation_contract::EvaluatedUnderLaw;
+/// // The inner field is private to the contract module.
+/// let _fabricated = EvaluatedUnderLaw(());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvaluatedUnderLaw(());
 
 /// Declared residual boundary of a partially applied plan.
 ///
@@ -2474,6 +2499,8 @@ pub enum TransformationResult {
         output: StageSubject,
         /// Measured work.
         work: WorkReceipt,
+        /// Witness that evaluation, not a caller, produced this result.
+        evaluated: EvaluatedUnderLaw,
     },
     /// A law-declared independent subplan was applied, with a named residual.
     AppliedWithDeclaredResidualBoundary {
@@ -2483,6 +2510,8 @@ pub enum TransformationResult {
         work: WorkReceipt,
         /// Declared residual boundary.
         residual: ResidualBoundary,
+        /// Witness that evaluation, not a caller, produced this result.
+        evaluated: EvaluatedUnderLaw,
     },
     /// A precondition was not proven exactly.
     RefusedPreconditionUnproven {
@@ -3314,6 +3343,27 @@ mod tests {
         ])
     }
 
+    /// Drive a real residual-applied result through `evaluate_under_law`.
+    ///
+    /// The applied variants carry a private witness, so a test cannot fabricate
+    /// one — which is the point of the witness. This derives it the only way
+    /// any caller can, which also keeps the vocabulary census honest: the tag
+    /// it contributes comes from evaluation, not from a hand-built value.
+    fn driven_residual_result() -> Result<TransformationResult> {
+        let law = shape_fixtures::effect_free_control_law()?;
+        let plan = shape_fixtures::effect_free_control_plan()?;
+        let mut partial = shape_fixtures::conforming_observation(&plan, &law)?;
+        partial.applied_operations = [operation_id("eir:block:0002")].into_iter().collect();
+        partial.work = WorkReceipt { useful_operations: 1, elapsed_micros: 300 };
+        partial.output = Some(subplan_output(&plan, "unreachable-blocks"));
+        partial.residual = Some(ResidualBoundary::new(
+            "unreachable-blocks",
+            &["unreachable-edges"],
+            "edges left untouched",
+        )?);
+        plan.evaluate_under_law(&law, &partial)
+    }
+
     fn subplan_output(plan: &TransformationPlan, name: &str) -> super::StageSubject {
         match plan.subplans.get(name) {
             Some(binding) => binding.expected_output.clone(),
@@ -4090,15 +4140,7 @@ mod tests {
         let mut result_tags = BTreeSet::new();
         for result in [
             plan.evaluate(&observation(&plan, &law))?,
-            TransformationResult::AppliedWithDeclaredResidualBoundary {
-                output: plan.expected_output.clone(),
-                work: WorkReceipt { useful_operations: 1, elapsed_micros: 1 },
-                residual: ResidualBoundary::new(
-                    "unreachable-edges",
-                    &["unreachable-blocks"],
-                    "blocks left untouched",
-                )?,
-            },
+            driven_residual_result()?,
             TransformationResult::RefusedPreconditionUnproven {
                 precondition: plan.preconditions[0].id.clone(),
             },

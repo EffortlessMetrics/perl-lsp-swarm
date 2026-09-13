@@ -1,6 +1,6 @@
 # Native CPANTS-compatible catalog v1
 
-> Generated from `crates/perl-kwalitee/distribution_kwalitee_catalog.v1.toml`.
+> Generated from `crates/perl-release-readiness/distribution_kwalitee_catalog.v1.toml`.
 > Do not edit this table independently.
 
 ## Contract
