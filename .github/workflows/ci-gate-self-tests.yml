@@ -73,6 +73,7 @@ on:
       - '.github/workflows/ripr.yml'
       - '.github/workflows/ripr-infra-retry.yml'
       - 'scripts/ci/classify-ripr-lane-termination'
+      - 'scripts/ci/test_ripr_cache_authority_15055.py'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
       # Toolchain guard for bash entrypoints (issue #12593): the coverage
       # consistency test scans every cargo-invoking scripts/*.sh, so any
@@ -84,6 +85,7 @@ on:
       - '.github/run_all_tests.sh'
       - 'scripts/tests/test-cargo-toolchain-guard.sh'
       - 'scripts/tests/test-cargo-safe-toolchain-guard.sh'
+      - 'scripts/tests/test-fuzz-bounded.sh'
       - 'rust-toolchain.toml'
       - 'Cargo.toml'
       - '.github/workflows/publish-dry-run.yml'
@@ -499,6 +501,36 @@ jobs:
             echo "The guard contract regressed — a bash entrypoint could again hand builds to a cargo older than the workspace rust-version and surface it as a manifest parse error. Check the step output above." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  fuzz-bounded-discovery-self-test:
+    name: fuzz-bounded discovery self-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Syntax-check the wrapper
+        run: bash -n scripts/fuzz-bounded
+
+      - name: Run stubbed LF/CRLF discovery fixtures
+        run: bash scripts/tests/test-fuzz-bounded.sh
+
+      - name: Summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          if [ "$JOB_STATUS" = "success" ]; then
+            echo "## fuzz-bounded discovery self-test passed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The wrapper (issue #15059) accepts declared targets from LF and CRLF Python metadata, forwards the caller argv unmodified to cargo-fuzz, rejects unknown names before execution, and cannot print the success banner when metadata fails or yields no bin targets. Fixtures stub cargo/python and do not compile fuzz binaries." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## fuzz-bounded discovery self-test FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Target-name discovery at the Git Bash / Python boundary regressed. Check the fixture output above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   ripr-lane-termination-classifier-self-test:
     name: ripr lane-termination classifier self-test
     runs-on: ubuntu-24.04
@@ -510,6 +542,9 @@ jobs:
 
       - name: Run ripr termination classifier + bounded-retry self-test
         run: bash scripts/tests/test-classify-ripr-lane-termination.sh
+
+      - name: Run RIPR cache-writer authority self-test
+        run: python3 -m unittest scripts/ci/test_ripr_cache_authority_15055.py
 
       - name: Summary
         if: always()

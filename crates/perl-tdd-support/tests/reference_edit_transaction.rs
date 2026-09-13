@@ -27,6 +27,8 @@
 //!
 //! [#7344]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7344
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+
 use perl_position_tracking::{LineRecordTable, SeparatorKind};
 use perl_tdd_support::reference_edit::{
     REFERENCE_EDIT_COORDINATE_MODEL_ID, ReferenceByteMapSegment, ReferenceEdit, ReferenceEditError,
