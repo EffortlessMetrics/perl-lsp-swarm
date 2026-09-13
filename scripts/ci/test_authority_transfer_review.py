@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -539,6 +540,66 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             status = atr.main(["--self-test"])
         self.assertEqual(atr.EXIT_PASS, status)
         self.assertIn("self-test passed", buffer.getvalue())
+
+
+class WorkflowShellContractTests(unittest.TestCase):
+    """The evaluator is only as good as the input the workflow hands it.
+
+    Two shipped defects lived in the workflow shell rather than in Python, so
+    the suite above could not see them: an abort-on-symlink guard that fired on
+    every pull request because this repository tracks a symlink, and a
+    changed-file diff that hid governed renames. These pin the input contract.
+    """
+
+    WORKFLOW = (
+        Path(__file__).resolve().parents[2]
+        / ".github"
+        / "workflows"
+        / "authority-transfer-review.yml"
+    )
+
+    def setUp(self) -> None:
+        self.text = self.WORKFLOW.read_text(encoding="utf-8")
+
+    def test_changed_file_diff_disables_rename_detection(self) -> None:
+        # With git's default rename detection, moving a governed file out of
+        # its surface emits only the destination, so the governed row never
+        # appears and the run reports PASS_NOT_APPLICABLE for a change that
+        # removed governed authority.
+        self.assertIn("--no-renames", self.text)
+        self.assertIn("core.quotePath=false", self.text)
+
+    def test_candidate_symlinks_are_removed_not_rejected(self) -> None:
+        # This repository tracks crates/tree-sitter-perl/test/corpus as a
+        # symlink, so every archive of every head contains one. An abort on
+        # presence failed the job on every pull request and the evaluator
+        # never ran. Removal keeps the no-traversal guarantee without that.
+        self.assertIn("-type l -print -delete", self.text)
+        self.assertNotIn(
+            "Candidate tree contains symlink entries; refusing", self.text
+        )
+
+    def test_repository_still_tracks_the_symlink_this_guards_against(self) -> None:
+        # Control for the test above: if the tracked symlink ever disappears,
+        # the reasoning behind removal-over-rejection should be re-examined
+        # rather than silently inherited.
+        repo = self.WORKFLOW.parents[2]
+        listing = subprocess.run(
+            ["git", "ls-files", "-s"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        symlinks = [
+            line.split("\t", 1)[1]
+            for line in listing.splitlines()
+            if line.startswith("120000 ")
+        ]
+        self.assertTrue(
+            symlinks,
+            "no tracked symlink remains; revisit the candidate-tree guard",
+        )
 
 
 if __name__ == "__main__":

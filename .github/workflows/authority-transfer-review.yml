@@ -115,11 +115,22 @@ jobs:
           mkdir -p "$CANDIDATE_TREE"
           git archive "$HEAD_SHA" | tar -x -C "$CANDIDATE_TREE"
           # `git archive | tar` preserves symlink entries, and the trusted
-          # validator's read calls would follow them into the predictable
-          # base checkout. Reject any linked input so the verdict can only
-          # reflect the candidate's own tree.
+          # validator's read calls would follow them out of the extracted
+          # tree into the predictable base checkout. Remove every link so
+          # the verdict can only reflect the candidate's own regular files.
+          #
+          # Removal, not rejection: this repository legitimately tracks a
+          # symlink (crates/tree-sitter-perl/test/corpus), so every archive
+          # of every head contains one. Aborting on its presence failed the
+          # job on every pull request and the evaluator never ran at all.
+          # Deleting is also the stronger guarantee — nothing is left to
+          # follow — and the denominator this walk reads
+          # (policy/review-surfaces.toml and its projection) are regular
+          # files that no link participates in.
+          removed="$(find "$CANDIDATE_TREE" -type l -print -delete | wc -l)"
+          printf 'removed %s symlink entries from the bounded candidate tree\n' "$removed"
           if find "$CANDIDATE_TREE" -type l -print -quit | grep -q .; then
-            echo "::error::Candidate tree contains symlink entries; refusing to follow linked content as bounded data"
+            echo "::error::Candidate tree still contains symlink entries after removal"
             exit 3
           fi
 
@@ -148,7 +159,13 @@ jobs:
           # binding; the evaluator would then report a clean verdict over a
           # governed change it never saw. Undecodable bytes still reach the
           # evaluator as bytes, where strict decoding fails them closed.
-          git -c core.quotePath=false diff --name-only "$MERGE_BASE" "$HEAD_SHA" > "$CHANGED_LIST"
+          # --no-renames is load-bearing. With rename detection on (git's
+          # default), moving a governed file out of its surface emits only
+          # the destination path, so the governed row never appears and the
+          # evaluator reports PASS_NOT_APPLICABLE for a change that removed
+          # governed authority. --no-renames emits both sides.
+          git -c core.quotePath=false diff --no-renames --name-only \
+            "$MERGE_BASE" "$HEAD_SHA" > "$CHANGED_LIST"
 
       - name: Publish advisory Authority Transfer Review context
         if: github.event_name == 'pull_request_target'
