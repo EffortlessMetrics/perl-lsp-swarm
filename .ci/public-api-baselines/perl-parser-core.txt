@@ -561,6 +561,10 @@ pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::clone(&self)
 pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub type perl_parser_core::engine::regex_retention::RegexParseOutput::Target = perl_parser_core::syntax::error::ParseOutput
 pub fn perl_parser_core::engine::regex_retention::RegexParseOutput::deref(&self) -> &Self::Target
+pub struct perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::begin(source: &'source str) -> Self
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::engine::regex_retention::parse_source_with_cancellation_and_regex_analysis(source: &str, cancellation_flag: alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> perl_parser_core::engine::regex_retention::RegexParseOutput
 pub fn perl_parser_core::engine::regex_retention::parse_source_with_regex_analysis(source: &str) -> perl_parser_core::engine::regex_retention::RegexParseOutput
 pub fn perl_parser_core::engine::regex_retention::parse_tokens_with_regex_analysis(tokens: alloc::vec::Vec<perl_token::token::Token>, source: &str) -> perl_parser_core::engine::regex_retention::RegexParseOutput
@@ -4357,6 +4361,10 @@ pub perl_parser_core::RetainedRegexPatternAnalysis::structural: perl_regex::vali
 pub fn perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis::clone(&self) -> perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis
 pub fn perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RetainedRegexPatternAnalysis::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::RetainedRegexSession<'source>
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::begin(source: &'source str) -> Self
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::finish(self, ast: core::option::Option<&mut perl_ast::ast::Node>) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisTable
+pub fn perl_parser_core::engine::regex_retention::RetainedRegexSession<'source>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::SourceRegion
 pub perl_parser_core::SourceRegion::end: usize
 pub perl_parser_core::SourceRegion::kind: perl_parser_core::SourceRegionKind
