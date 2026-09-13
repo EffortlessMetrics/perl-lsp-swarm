@@ -134,7 +134,64 @@ pub(super) fn finalize_cancellation_state(request_id: Option<&Value>) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::method_supports_cancellation;
+    use super::{
+        JsonRpcRequest, LspServer, Value, handle_cancel_notification, method_supports_cancellation,
+        register_request_cancellation,
+    };
+    use serde_json::json;
+
+    fn cancellation_request(id: Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "$/cancelRequest".to_string(),
+            params: Some(json!({ "id": id })),
+        }
+    }
+
+    fn hover_request() -> JsonRpcRequest {
+        JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/hover".to_string(),
+            params: Some(json!({})),
+        }
+    }
+
+    #[test]
+    fn scheduler_pending_cancel_survives_pre_registration_and_settlement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let numeric = Value::from(71003_i64);
+        let string = Value::from("71003-string");
+
+        server.mark_request_pending(&crate::protocol::JsonRpcId::Integer(71003));
+        if !handle_cancel_notification(&server, &cancellation_request(numeric.clone())) {
+            return Err("cancel notification was not handled".into());
+        }
+        let cancelled = register_request_cancellation(&server, Some(&numeric), &hover_request())
+            .ok_or("pending cancellation was not observed before token registration")?;
+        if cancelled.error.as_ref().map(|error| error.code) != Some(-32800) {
+            return Err("pending cancellation did not produce request-cancelled".into());
+        }
+
+        if !handle_cancel_notification(&server, &cancellation_request(string.clone())) {
+            return Err("string cancel notification was not handled".into());
+        }
+        if register_request_cancellation(&server, Some(&string), &hover_request()).is_some() {
+            return Err("unrelated string ID was incorrectly cancelled".into());
+        }
+        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+            .remove_request(&crate::protocol::JsonRpcId::String("71003-string".to_string()));
+
+        server.clear_request_pending(&crate::protocol::JsonRpcId::Integer(71003));
+        if register_request_cancellation(&server, Some(&numeric), &hover_request()).is_some() {
+            return Err("settled numeric ID retained cancellation state".into());
+        }
+        crate::cancellation::GLOBAL_CANCELLATION_REGISTRY
+            .remove_request(&crate::protocol::JsonRpcId::Integer(71003));
+        Ok(())
+    }
 
     #[test]
     fn hierarchy_and_formatting_methods_are_registered_for_cancellation()
