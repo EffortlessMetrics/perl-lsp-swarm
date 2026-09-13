@@ -747,21 +747,10 @@ fn run_disconnect_without_session(session: &mut ExactSession, budget: Duration) 
     }
     // Close the client side of stdio and require the adapter to honor the
     // successful no-session disconnect naturally before fallback teardown.
+    // `require_natural_exit` drains the complete stream while checking the
+    // child, so a late fabricated terminated event cannot pass unnoticed.
     session.stdin.take();
-    let deadline = Instant::now() + budget;
-    loop {
-        match session.child.try_wait().context("polling pre-launch disconnect exit")? {
-            Some(status) if status.success() => break,
-            Some(status) => {
-                return Err(anyhow!("pre-launch disconnect exited unsuccessfully: {status}"));
-            }
-            None if Instant::now() >= deadline => {
-                return Err(anyhow!("pre-launch disconnect did not exit within {budget:?}"));
-            }
-            None => thread::sleep(Duration::from_millis(25)),
-        }
-    }
-    Ok(())
+    session.require_natural_exit(budget)
 }
 
 /// Fold a row's protocol outcome AND its teardown into one verdict: failed
