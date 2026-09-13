@@ -403,8 +403,13 @@ fn compare(base: &[TimeBoundRecord], candidate: &[TimeBoundRecord]) -> Vec<Trans
         let prior = base
             .iter()
             .find(|item| item.key() == record.key())
-            .or_else(|| renamed_predecessor(base, candidate, record));
-        rows.push(evaluate(prior, record));
+            .map(RenameLink::Unique)
+            .unwrap_or_else(|| renamed_predecessor(base, candidate, record));
+        match prior {
+            RenameLink::Unique(prior) => rows.push(evaluate(Some(prior), record)),
+            RenameLink::None => rows.push(evaluate(None, record)),
+            RenameLink::Ambiguous => rows.push(ambiguous_rename_row(record)),
+        }
     }
     for record in base {
         if occurrences(base, record) > 1 {
@@ -416,8 +421,10 @@ fn compare(base: &[TimeBoundRecord], candidate: &[TimeBoundRecord]) -> Vec<Trans
         // Skip a record already judged under its new name; emitting a Removed
         // row too would report one record twice.
         if candidate.iter().any(|item| {
-            renamed_predecessor(base, candidate, item)
-                .is_some_and(|prior| prior.key() == record.key())
+            matches!(
+                renamed_predecessor(base, candidate, item),
+                RenameLink::Unique(prior) if prior.key() == record.key()
+            )
         }) {
             continue;
         }
@@ -437,17 +444,63 @@ fn compare(base: &[TimeBoundRecord], candidate: &[TimeBoundRecord]) -> Vec<Trans
 /// Byte-identical evidence is a precise re-identification signal rather than a
 /// name heuristic, and it is the signal that matters here: an author who has
 /// genuinely re-measured holds new evidence and has no reason to rename.
+///
+/// Two dropped records can share copy-pasted evidence, which makes the link
+/// ambiguous. That case fails closed rather than taking the first match: this
+/// module never guesses a predecessor, and picking one here could compare a
+/// later date against the wrong accepted record.
+enum RenameLink<'a> {
+    /// No dropped record carries this candidate's evidence.
+    None,
+    /// Exactly one dropped record does.
+    Unique(&'a TimeBoundRecord),
+    /// More than one does, so the predecessor cannot be determined.
+    Ambiguous,
+}
+
 fn renamed_predecessor<'a>(
     base: &'a [TimeBoundRecord],
     candidate: &[TimeBoundRecord],
     record: &TimeBoundRecord,
-) -> Option<&'a TimeBoundRecord> {
-    let evidence = record.evidence.as_deref().filter(|text| !text.trim().is_empty())?;
-    base.iter().find(|prior| {
+) -> RenameLink<'a> {
+    let Some(evidence) = record.evidence.as_deref().filter(|text| !text.trim().is_empty()) else {
+        return RenameLink::None;
+    };
+    let mut dropped = base.iter().filter(|prior| {
         prior.source_kind == record.source_kind
             && prior.evidence.as_deref() == Some(evidence)
             && !candidate.iter().any(|item| item.key() == prior.key())
-    })
+    });
+    let Some(first) = dropped.next() else {
+        return RenameLink::None;
+    };
+    if dropped.next().is_some() {
+        return RenameLink::Ambiguous;
+    }
+    RenameLink::Unique(first)
+}
+
+fn ambiguous_rename_row(record: &TimeBoundRecord) -> TransitionRow {
+    TransitionRow {
+        record_id: record.record_id.clone(),
+        source_kind: record.source_kind.clone(),
+        source_path: record.source_path.clone(),
+        owner: record.owner.clone(),
+        review_movement: TimeMovement::Invalid,
+        expiry_movement: TimeMovement::Invalid,
+        disposition: disposition_of(record.disposition.as_deref()),
+        evidence_state: EvidenceState::Invalid,
+        verdict: TransitionVerdict::Violation,
+        reason: Some(
+            "this record matches no accepted identity and carries evidence shared by more than \
+             one record the candidate dropped, so its predecessor cannot be determined"
+                .to_string(),
+        ),
+        base_review_after: None,
+        candidate_review_after: record.review_after.clone(),
+        base_expires: None,
+        candidate_expires: record.expires.clone(),
+    }
 }
 
 fn removed_source_row(path: &str, base_record_count: usize) -> TransitionRow {
@@ -1059,6 +1112,32 @@ disposition = "narrow"
         assert_eq!(rows[0].review_movement, TimeMovement::Extended);
         assert_eq!(rows[0].evidence_state, EvidenceState::Unchanged);
         assert_eq!(rows[0].verdict, TransitionVerdict::Violation);
+    }
+
+    /// Copy-pasted evidence across two dropped records makes the predecessor
+    /// ambiguous. Taking the first match could compare a later date against the
+    /// wrong accepted record, so the link fails closed like every other
+    /// ambiguity here.
+    #[test]
+    fn an_ambiguous_rename_predecessor_cannot_be_judged() {
+        let mut first = quality("2026-09-16", "2026-09-30", BASE_EVIDENCE, Some("narrow"));
+        first.record_id = "burndown-a".to_string();
+        let mut second = quality("2026-01-01", "2026-02-01", BASE_EVIDENCE, Some("narrow"));
+        second.record_id = "burndown-b".to_string();
+        let mut renamed = quality("2027-03-31", "2027-03-31", BASE_EVIDENCE, Some("narrow"));
+        renamed.record_id = "burndown-merged".to_string();
+
+        let rows = compare(&[first, second], std::slice::from_ref(&renamed));
+        let judged = rows
+            .iter()
+            .find(|row| row.record_id == "burndown-merged")
+            .expect("the renamed record is judged");
+        assert_eq!(judged.verdict, TransitionVerdict::Violation);
+        assert!(
+            judged.reason.as_deref().is_some_and(|reason| reason.contains("cannot be determined")),
+            "{:?}",
+            judged.reason
+        );
     }
 
     /// A genuinely new record is still not an extension, so re-identification
