@@ -575,6 +575,66 @@ fn increasing_change_publishes_current_parse_and_stale_change_is_ignored() -> Re
 }
 
 #[test]
+fn malformed_mixed_did_change_preserves_predecessor_and_recovers() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    initialize(&mut client)?;
+
+    did_open(
+        &mut client,
+        1,
+        "package Admission;
+sub predecessor_symbol { return 1; }
+",
+    )?;
+    let _predecessor_tokens = wait_for_current_parse_tokens(&mut client, "tokens-admission-v1")?;
+    let predecessor_names = document_symbol_names(&mut client, "symbols-admission-v1")?;
+    ensure!(
+        predecessor_names.iter().any(|name| name.contains("predecessor_symbol")),
+        "predecessor symbol was not visible: {predecessor_names:?}"
+    );
+
+    client.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": { "uri": URI, "version": 2 },
+            "contentChanges": [
+                { "text": "package Admission;\nsub rejected_symbol { return 2; }\n" },
+                { "text": 7 }
+            ]
+        }),
+    )?;
+    let _after_malformed_tokens =
+        wait_for_current_parse_tokens(&mut client, "tokens-admission-malformed")?;
+    let after_malformed_names = document_symbol_names(&mut client, "symbols-admission-malformed")?;
+    ensure!(
+        after_malformed_names.iter().any(|name| name.contains("predecessor_symbol")),
+        "malformed change displaced predecessor symbol: {after_malformed_names:?}"
+    );
+    ensure!(
+        !after_malformed_names.iter().any(|name| name.contains("rejected_symbol")),
+        "malformed change published rejected symbol: {after_malformed_names:?}"
+    );
+
+    did_change(&mut client, 2, "package Admission;\nsub recovery_symbol { return 3; }\n")?;
+    let _recovery_tokens = wait_for_current_parse_tokens(&mut client, "tokens-admission-recovery")?;
+    let recovery_names = document_symbol_names(&mut client, "symbols-admission-recovery")?;
+    ensure!(
+        recovery_names.iter().any(|name| name.contains("recovery_symbol")),
+        "same-version recovery symbol was not published: {recovery_names:?}"
+    );
+    ensure!(
+        !recovery_names.iter().any(|name| name.contains("predecessor_symbol")),
+        "predecessor symbol survived valid recovery: {recovery_names:?}"
+    );
+    ensure!(
+        !recovery_names.iter().any(|name| name.contains("rejected_symbol")),
+        "rejected symbol survived valid recovery: {recovery_names:?}"
+    );
+
+    finish(&mut client)
+}
+
+#[test]
 fn close_after_settled_parse_removes_authority_and_reopen_starts_fresh() -> Result<()> {
     let mut client = RealProcessClient::spawn_exact()?;
     initialize(&mut client)?;
