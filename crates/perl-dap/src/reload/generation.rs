@@ -408,6 +408,52 @@ mod tests {
         assert_eq!(unchanged.generation(), clock.current());
     }
 
+    /// `is_contiguous` is the predicate the wire projector states its
+    /// publishing invariant with, so it needs a discriminator at its own
+    /// boundary rather than only through the projector: an advance is
+    /// contiguous exactly when it lands on the successor, and the values
+    /// on either side of that boundary are refused.
+    #[test]
+    fn contiguity_discriminates_at_the_successor_boundary() {
+        let start = RuntimeModuleGeneration::new(7);
+
+        assert!(
+            GenerationAdvance::forged(start, start.next(), true, OP).is_contiguous(),
+            "the successor is the one contiguous advance"
+        );
+        assert!(
+            !GenerationAdvance::forged(start, start, true, OP).is_contiguous(),
+            "standing still while claiming an advance is not one step"
+        );
+        assert!(
+            !GenerationAdvance::forged(start, start.next().next(), true, OP).is_contiguous(),
+            "skipping a generation is not one step"
+        );
+        assert!(
+            !GenerationAdvance::forged(start, RuntimeModuleGeneration::new(6), true, OP)
+                .is_contiguous(),
+            "a decreasing transition is not one step"
+        );
+
+        // The unchanged branch asks the opposite question: staying put is
+        // contiguous, moving is not.
+        assert!(
+            GenerationAdvance::forged(start, start, false, OP).is_contiguous(),
+            "an unchanged outcome stays where it started"
+        );
+        assert!(
+            !GenerationAdvance::forged(start, start.next(), false, OP).is_contiguous(),
+            "an unchanged outcome cannot have moved"
+        );
+
+        // At the saturating ceiling the successor is the ceiling itself, so
+        // an exhausted advance still reports one contiguous step and stays
+        // publishable.
+        let exhausted = RuntimeModuleGeneration(u64::MAX);
+        assert_eq!(exhausted.next(), exhausted);
+        assert!(GenerationAdvance::forged(exhausted, exhausted, true, OP).is_contiguous());
+    }
+
     #[test]
     fn exhaustion_never_reuses_a_generation() {
         let exhausted = RuntimeModuleGeneration(u64::MAX);
