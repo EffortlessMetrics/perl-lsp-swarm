@@ -1621,6 +1621,12 @@ sub boom {
     scenario.then("both documents return unchanged reports");
     assert_eq!(DocumentDiagnosticFlow::kind(&stable_unchanged), Some("unchanged"));
     assert_eq!(DocumentDiagnosticFlow::kind(&changing_unchanged), Some("unchanged"));
+    assert_ne!(stable_id, changing_id, "different documents must receive distinct result IDs");
+    assert_eq!(stable_unchanged.get("resultId").and_then(Value::as_str), Some(stable_id.as_str()));
+    assert_eq!(
+        changing_unchanged.get("resultId").and_then(Value::as_str),
+        Some(changing_id.as_str())
+    );
 
     // A prior result ID is bound to the complete report subject. Swapping IDs
     // between documents must therefore produce full reports for both requests,
@@ -1631,6 +1637,14 @@ sub boom {
         .request(Some(stable_id.as_str()))?;
     assert_eq!(DocumentDiagnosticFlow::kind(&stable_with_changing_id), Some("full"));
     assert_eq!(DocumentDiagnosticFlow::kind(&changing_with_stable_id), Some("full"));
+    assert_ne!(
+        stable_with_changing_id.get("resultId").and_then(Value::as_str),
+        Some(changing_id.as_str())
+    );
+    assert_ne!(
+        changing_with_stable_id.get("resultId").and_then(Value::as_str),
+        Some(stable_id.as_str())
+    );
 
     scenario.when("introducing a syntax regression in only one document");
     harness.change_full(&changing_uri, 2, broken)?;
@@ -1655,7 +1669,7 @@ sub boom {
     assert_eq!(
         diagnostic_error_count(&stable_after_edit),
         0,
-        "the unchanged document should remain diagnostically clean"
+        "the unchanged document should remain free of syntax errors"
     );
 
     assert_eq!(DocumentDiagnosticFlow::kind(&changing_after_edit), Some("full"));
