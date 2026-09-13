@@ -193,3 +193,34 @@ impl LspServer {
         self.progress_token_to_request.lock().insert(token.to_string(), request_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::LspServer;
+    use crate::protocol::JsonRpcId;
+
+    #[test]
+    fn pending_cancel_is_observed_but_unknown_cancel_is_ignored()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let pending = JsonRpcId::Integer(71_001);
+        let unknown = JsonRpcId::Integer(71_002);
+
+        server.mark_request_pending(&pending);
+        server.mark_cancelled_if_pending(&pending);
+        if !server.is_cancelled(&pending) {
+            return Err("pending request cancellation was not recorded".into());
+        }
+
+        server.mark_cancelled_if_pending(&unknown);
+        if server.is_cancelled(&unknown) {
+            return Err("unknown request cancellation was recorded".into());
+        }
+
+        server.clear_request_pending(&pending);
+        if server.is_cancelled(&pending) {
+            return Err("settled request cancellation was not cleared".into());
+        }
+        Ok(())
+    }
+}
