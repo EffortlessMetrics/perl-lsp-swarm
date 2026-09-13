@@ -23,6 +23,12 @@ workflow = ".github/workflows/semantic-close-containment.yml"
 required = false
 contract_role = "advisory-workflow-shape"
 
+[[check]]
+name = "Authority Transfer Review"
+workflow = ".github/workflows/authority-transfer-review.yml"
+required = false
+contract_role = "advisory-workflow-shape"
+
 # `[[checks]]` is the emitted status-context inventory. The fields answer
 # different questions and must not be inferred from each other:
 #
@@ -231,6 +237,19 @@ policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
 reason = "CP00 containment guard (#10413) fails internally contradictory terminal close relations and NOT_PROVEN evidence before semantic evaluation; required-promotion review stays under #10168."
+
+[[checks]]
+name = "Authority Transfer Review"
+producer = "repository-job"
+workflow = ".github/workflows/authority-transfer-review.yml"
+job = "authority-transfer-review"
+workflow_result = "propagate"
+events = ["pull_request_target", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "Advisory exact-head review-evidence context (#11795) over the #11793 governed-surface denominator; missing, stale, or denominator-invalidated evidence stays non-green. Required promotion is owned by #11796 and is not claimed here."
 
 [[checks]]
 name = "Public API Surface (facade PR)"

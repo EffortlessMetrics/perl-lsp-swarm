@@ -1,0 +1,9 @@
+project: product
+component: Repository tooling
+kind: Added
+body: "Advisory `Authority Transfer Review` CI context (#11795). For every pull request targeting main, a trusted base-branch evaluator resolves the changed paths against the checked #11793 review-surface denominator and reports one typed terminal verdict per governed surface row: `PASS_NOT_APPLICABLE` when no governed surface changed, `PASS_CURRENT_REVIEW` when every governed row carries an `agent_review_packet.v1` document bound to the exact evaluated head, and typed `FAIL_*`/`NOT_PROVEN_*` otherwise. A CODEOWNERS match, approving review state, resolved threads, bot comment, or green check never satisfies the review proposition. The check executes only base-branch code with `contents: read`; the candidate tree is consumed strictly as bounded data and is additionally walked by the same #11793 invariant set, so a denominator-invalidated candidate cannot publish a valid-looking context. Missing, stale, out-of-bounds, and undecodable inputs stay non-green rather than degrading to a pass. Advisory and non-required: required-enforcement promotion remains owned by #11796."
+time: 2026-09-05T00:00:00Z
+custom:
+  PR: "14791"
+  Slug: advisory-authority-transfer-review-11795
+  Breaking: "no"
