@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: Preserve document generation, readiness and completion streams when text synchronization rejects an overlong line.
+time: 2026-09-13T17:36:48Z
+custom:
+  PR: "15533"
+  Slug: line-bound-before-document-effects
+  Breaking: "no"
