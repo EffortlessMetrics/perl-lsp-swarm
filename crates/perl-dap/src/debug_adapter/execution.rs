@@ -883,8 +883,10 @@ mod thread_identity_tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
         }
     }

@@ -19,6 +19,8 @@ use std::io::{self, BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+use syn::spanned::Spanned;
+use syn::visit::{self, Visit};
 use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestry};
 
 #[cfg(test)]
@@ -886,9 +888,9 @@ fn write_pr_evidence(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
     let attribution_scope = metadata
         .as_ref()
         .and_then(|metadata| dependency_attribution_scope(metadata, &changed_paths).ok());
-    let production_surface = metadata
-        .as_ref()
-        .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
+    let production_surface = metadata.as_ref().and_then(|metadata| {
+        production_surface_from_metadata(repo, metadata, &changed_paths, &head_sha).ok()
+    });
     let attribution = attribution_scope.as_ref().and_then(AttributionScope::applied);
     // The findings payload is unbounded (#12860: 2.1GB observed) — ingest it by
     // streaming one finding at a time into the summary buckets instead of
@@ -1646,8 +1648,10 @@ impl RiprFindingBuckets {
         // No resolvable path — and no compiled-into-production view — is
         // never non-production: the structural filter, like #6260, must not
         // take a fail-open shortcut on ambiguous input.
-        let non_production_kind = ripr_finding_path(finding)
-            .and_then(|path| classify_non_production(production_surface, &path));
+        let finding_line = ripr_finding_line(finding);
+        let non_production_kind = ripr_finding_path(finding).and_then(|path| {
+            classify_non_production_at_line(production_surface, &path, finding_line)
+        });
         // Path suppression is checked BEFORE the classification guard (#1346).
         // A finding whose classification is unrecognized must still be suppressed if its
         // path matches a policy rule — skipping only path-unknown findings, not
@@ -2246,7 +2250,7 @@ const NON_PRODUCTION_BASIS: &str = "compiled_into_workspace_artifacts";
 
 /// Graph source recorded alongside the basis so receipts stay honest about
 /// where the compiled-into-production decision came from.
-const NON_PRODUCTION_SOURCE: &str = "cargo_metadata_target_membership";
+const NON_PRODUCTION_SOURCE: &str = "cargo_metadata_target_membership_and_immutable_head_ast_spans";
 
 /// Why a finding path is structurally non-production for the new-gap basis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2256,6 +2260,8 @@ enum NonProductionKind {
     /// A file under a Cargo integration-test directory that no production
     /// artifact compiles.
     IntegrationTest,
+    /// An item inside an inline module guarded by the exact `cfg(test)`.
+    InlineTest,
 }
 
 /// The compiled-into-production view of the workspace (#12267 review repair).
@@ -2280,10 +2286,12 @@ enum NonProductionKind {
 ///
 /// Limitations, kept honest by the receipt stamp: the closure is textual, not
 /// a cargo build graph — `include!`, macro-generated module paths, and
-/// multi-line `#[path]` attributes are not followed, and `#[cfg(test)] mod`
-/// declarations inside production files over-include their siblings (the safe
-/// direction). A `tests/`-located file compiled through an unfollowed
-/// mechanism would be misclassified as non-production.
+/// multi-line `#[path]` attributes are not followed. Inline test attribution
+/// is also conservative: only parsed exact `#[cfg(test)]` module interiors
+/// with a usable finding line are excluded; source parse/read failures and
+/// ambiguous predicates remain in the blocking basis. A `tests/`-located file
+/// compiled through an unfollowed mechanism would be misclassified as
+/// non-production.
 #[derive(Debug, Clone)]
 struct ProductionSurface {
     /// Normalized (forward-slash) absolute host path of the workspace root,
@@ -2292,6 +2300,7 @@ struct ProductionSurface {
     /// Repo-relative normalized paths of files compiled into production
     /// workspace artifacts.
     production_paths: BTreeSet<String>,
+    inline_test_ranges: BTreeMap<String, Vec<(usize, usize)>>,
 }
 
 impl ProductionSurface {
@@ -2300,6 +2309,7 @@ impl ProductionSurface {
         ProductionSurface {
             repo_root: repo_root.to_string(),
             production_paths: production_paths.iter().map(|path| path.to_string()).collect(),
+            inline_test_ranges: BTreeMap::new(),
         }
     }
 }
@@ -2346,9 +2356,18 @@ fn repo_relative_surface_path(surface: &ProductionSurface, raw_path: &str) -> Op
 /// cannot be resolved against the repository root) is never non-production:
 /// the gate keeps failing closed on ambiguous input, the same convention as
 /// #6260 and the dependency-graph filter.
+#[cfg(test)]
 fn classify_non_production(
     surface: Option<&ProductionSurface>,
     raw_path: &str,
+) -> Option<NonProductionKind> {
+    classify_non_production_at_line(surface, raw_path, None)
+}
+
+fn classify_non_production_at_line(
+    surface: Option<&ProductionSurface>,
+    raw_path: &str,
+    line: Option<u64>,
 ) -> Option<NonProductionKind> {
     let surface = surface?;
     let path = repo_relative_surface_path(surface, raw_path)?;
@@ -2360,13 +2379,26 @@ fn classify_non_production(
     {
         return Some(NonProductionKind::IntegrationTest);
     }
+    if let Some(line) = line.and_then(|line| usize::try_from(line).ok())
+        && surface
+            .inline_test_ranges
+            .get(&path)
+            .is_some_and(|ranges| ranges.iter().any(|(start, end)| *start < line && line < *end))
+    {
+        return Some(NonProductionKind::InlineTest);
+    }
     None
 }
 
 /// Build the production surface from cargo metadata and the repo checkout.
 /// Errors mean the surface could not be established; callers must then skip
 /// non-production classification entirely rather than guess.
-fn production_surface_from_metadata(repo: &Path, metadata: &Value) -> Result<ProductionSurface> {
+fn production_surface_from_metadata(
+    repo: &Path,
+    metadata: &Value,
+    changed_paths: &[String],
+    head_sha: &str,
+) -> Result<ProductionSurface> {
     let root = metadata
         .get("workspace_root")
         .and_then(Value::as_str)
@@ -2376,7 +2408,11 @@ fn production_surface_from_metadata(repo: &Path, metadata: &Value) -> Result<Pro
         .get("packages")
         .and_then(Value::as_array)
         .ok_or_else(|| eyre!("cargo metadata missing packages array"))?;
-    let mut surface = ProductionSurface { repo_root: root, production_paths: BTreeSet::new() };
+    let mut surface = ProductionSurface {
+        repo_root: root,
+        production_paths: BTreeSet::new(),
+        inline_test_ranges: BTreeMap::new(),
+    };
     let mut scan_queue: Vec<String> = Vec::new();
     for package in packages {
         let manifest = package.get("manifest_path").and_then(Value::as_str);
@@ -2438,7 +2474,57 @@ fn production_surface_from_metadata(repo: &Path, metadata: &Value) -> Result<Pro
         bail!("cargo metadata resolved no workspace production sources");
     }
     scan_include_closure(repo, &mut surface.production_paths, scan_queue);
+    surface.inline_test_ranges = changed_paths
+        .iter()
+        .map(|path| normalize_repo_relative_path(path))
+        .filter(|path| surface.production_paths.contains(path))
+        .filter_map(|path| {
+            let spec = format!("{head_sha}:{path}");
+            let source = run_git_output(repo, &["show", spec.as_str()]).ok()?;
+            let ranges = inline_cfg_test_ranges(&source);
+            (!ranges.is_empty()).then_some((path, ranges))
+        })
+        .collect();
     Ok(surface)
+}
+
+/// Locate only inline modules whose condition is exactly `cfg(test)`. Parsing
+/// failures and predicates that may also hold in production are deliberately
+/// ignored so the caller keeps those findings in the blocking basis.
+fn inline_cfg_test_ranges(source: &str) -> Vec<(usize, usize)> {
+    let Ok(file) = syn::parse_file(source) else { return Vec::new() };
+    let mut collector = InlineCfgTestRangeCollector::default();
+    collector.visit_file(&file);
+    collector.ranges
+}
+
+#[derive(Default)]
+struct InlineCfgTestRangeCollector {
+    ranges: Vec<(usize, usize)>,
+}
+
+impl<'ast> Visit<'ast> for InlineCfgTestRangeCollector {
+    fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
+        let guarded = module.attrs.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute.parse_args::<syn::Path>().is_ok_and(|path| path.is_ident("test"))
+        });
+        if guarded && module.content.is_some() {
+            let start = module
+                .attrs
+                .iter()
+                .map(Spanned::span)
+                .chain(std::iter::once(module.span()))
+                .map(|span| span.start().line)
+                .min()
+                .unwrap_or(module.span().start().line);
+            let end = module.span().end().line;
+            if start < end {
+                self.ranges.push((start, end));
+            }
+        }
+        visit::visit_item_mod(self, module);
+    }
 }
 
 /// Follow `#[path = "…"]` includes and plain `mod name;` declarations from the
@@ -3337,9 +3423,14 @@ fn fallback_guidance_comments(
             })
         })
         .unwrap_or(AttributionScope::NoChangedPackage);
-    let production_surface = metadata
-        .as_ref()
-        .and_then(|metadata| production_surface_from_metadata(repo, metadata).ok());
+    let production_surface = metadata.as_ref().and_then(|metadata| {
+        let changed_paths = diff_receipt
+            .as_ref()
+            .map(|diff| committed_diff_entry_paths(&diff.entries))
+            .unwrap_or_default();
+        let head_sha = revision_sha(repo, &options.head).ok()?;
+        production_surface_from_metadata(repo, metadata, &changed_paths, &head_sha).ok()
+    });
     let head_extents =
         diff_receipt.as_ref().map(|diff| HeadLineExtents::from_committed_diff(repo, diff));
 
@@ -3506,9 +3597,10 @@ fn fallback_seam_decision(
     if head_extents.is_some_and(|extents| extents.finding_is_outside_head(finding)) {
         return FallbackSeamDecision::Ignore;
     }
-    if ripr_finding_path(finding)
-        .is_some_and(|path| classify_non_production(production_surface, &path).is_some())
-    {
+    let finding_line = ripr_finding_line(finding);
+    if ripr_finding_path(finding).is_some_and(|path| {
+        classify_non_production_at_line(production_surface, &path, finding_line).is_some()
+    }) {
         return FallbackSeamDecision::Ignore;
     }
     if let Some(attribution) = attribution
@@ -5916,6 +6008,150 @@ esac
     }
 
     #[test]
+    fn inline_cfg_test_ranges_exclude_only_strict_module_interior() -> Result<()> {
+        let source = r##"// #[cfg(test)]
+pub const LOOKALIKE: &str = "#[cfg(test)]";
+#[cfg(test)]
+mod tests {
+    fn helper() {}
+    const TEXT: &str = "#[cfg(test)]";
+}
+fn product_with_local_test_module() {
+    #[cfg(test)]
+    mod local_tests {
+        fn helper() {}
+    }
+    let production = 1;
+}
+#[cfg(any(test, feature = "extra"))]
+mod maybe_tests {
+    fn product_when_featured() {}
+}
+"##;
+        let ranges = inline_cfg_test_ranges(source);
+        let mut surface = ProductionSurface::from_parts("/ws", &["src/lib.rs"]);
+        surface.inline_test_ranges.insert("src/lib.rs".to_string(), ranges);
+
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(4))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("inline cfg(test) helper was not excluded"));
+        }
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(5))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("inline cfg(test) module interior was not excluded"));
+        }
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(11))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("block-local inline cfg(test) helper was not excluded"));
+        }
+        for line in [1, 2, 7, 9, 12, 13, 16, 17, 18] {
+            if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(line)).is_some() {
+                return Err(eyre!("line {line} was incorrectly classified as test-only"));
+            }
+        }
+        if !inline_cfg_test_ranges("#[cfg(test)] mod broken {").is_empty() {
+            return Err(eyre!("malformed source was classified as test-only"));
+        }
+
+        let check = json!({
+            "summary": { "weakly_exposed": 0, "reachable_unrevealed": 2, "no_static_path": 0 },
+            "findings": [
+                { "classification": "reachable_unrevealed", "seam": { "file": "src/lib.rs", "line": 2 } },
+                { "classification": "reachable_unrevealed", "seam": { "file": "src/lib.rs", "line": 4 } }
+            ]
+        });
+        let counts = ripr_pr_summary_counts(
+            &check,
+            check.get("summary").and_then(Value::as_object),
+            &no_suppressions(),
+            None,
+            None,
+            Some(&surface),
+        );
+        if counts.reachable_unrevealed != 1 || counts.non_production_excluded != 1 {
+            return Err(eyre!(
+                "inline test filtering changed product counts: reachable={}, excluded={}",
+                counts.reachable_unrevealed,
+                counts.non_production_excluded
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn inline_ranges_use_head_blob_and_filter_fallback_guidance() -> Result<()> {
+        let repo = tempfile::tempdir()?;
+        init_git_repo(repo.path())?;
+        fs::create_dir(repo.path().join("src"))?;
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn product() {}\n#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n",
+        )?;
+        run_git(repo.path(), &["add", "src/lib.rs"])?;
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "source",
+            ],
+        )?;
+        let head = run_git(repo.path(), &["rev-parse", "HEAD"])?;
+        // The working tree deliberately diverges from the evaluated commit.
+        fs::write(
+            repo.path().join("src/lib.rs"),
+            "pub fn product() {}\nmod tests {\n    fn helper() {}\n}\n",
+        )?;
+        let metadata = json!({
+            "workspace_root": repo.path().display().to_string(),
+            "packages": [{
+                "manifest_path": repo.path().join("Cargo.toml").display().to_string(),
+                "targets": [{
+                    "kind": ["lib"],
+                    "src_path": repo.path().join("src/lib.rs").display().to_string()
+                }]
+            }]
+        });
+        let changed = vec!["src/lib.rs".to_string()];
+        let surface = production_surface_from_metadata(repo.path(), &metadata, &changed, &head)?;
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(4))
+            != Some(NonProductionKind::InlineTest)
+        {
+            return Err(eyre!("classifier did not use the immutable head blob"));
+        }
+        if classify_non_production_at_line(Some(&surface), "src/lib.rs", Some(1)).is_some() {
+            return Err(eyre!("product line was classified as test-only"));
+        }
+        let finding = json!({
+            "classification": "reachable_unrevealed",
+            "seam": { "file": "src/lib.rs", "line": 4 }
+        });
+        if !matches!(
+            fallback_seam_decision(&finding, &no_suppressions(), None, None, Some(&surface),),
+            FallbackSeamDecision::Ignore
+        ) {
+            return Err(eyre!("fallback guidance did not share inline filtering"));
+        }
+        if !surface.inline_test_ranges.contains_key("src/lib.rs") {
+            return Err(eyre!("head source did not populate inline ranges"));
+        }
+        // An unavailable evaluated blob is conservative and leaves the finding counted.
+        let missing =
+            production_surface_from_metadata(repo.path(), &metadata, &changed, "missing")?;
+        if classify_non_production_at_line(Some(&missing), "src/lib.rs", Some(4)).is_some() {
+            return Err(eyre!("missing head blob produced a test-only exclusion"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn command_root_arg_allows_repo_relative_root() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
@@ -6574,6 +6810,44 @@ paths = ["archive/["]
             &json!({
                 "classification": "no_static_path",
                 "probe": {"file": "xtask/src/tasks/check_tautology/detect.rs"}
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn panic_debt_declaration_suppression_matches_no_static_path_only() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let paths = [
+            "xtask/src/no_panic_debt/check.rs",
+            "xtask/src/no_panic_debt/discover.rs",
+            "xtask/src/no_panic_debt/join.rs",
+            "xtask/src/no_panic_debt/model.rs",
+            "xtask/src/no_panic_debt/vocabulary.rs",
+        ];
+
+        for path in paths {
+            assert!(
+                suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "no_static_path", "probe": {"file": path}})
+                ),
+                "no_static_path on {path} must match the #13397 declaration suppression"
+            );
+            assert!(
+                !suppression_matches_finding(
+                    &rules,
+                    &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+                ),
+                "reachable_unrevealed on {path} must remain visible"
+            );
+        }
+        assert!(!suppression_matches_finding(
+            &rules,
+            &json!({
+                "classification": "no_static_path",
+                "probe": {"file": "xtask/src/utils.rs"}
             })
         ));
         Ok(())
@@ -7570,7 +7844,8 @@ paths = ["archive/["]
                 }
             ]
         });
-        let surface = production_surface_from_metadata(Path::new("/nonexistent"), &metadata)?;
+        let surface =
+            production_surface_from_metadata(Path::new("/nonexistent"), &metadata, &[], "HEAD")?;
         assert!(surface.production_paths.contains("xtask/tests/support/cli_harness.rs"));
         assert!(!surface.production_paths.contains("xtask/tests/it.rs"));
         assert_eq!(

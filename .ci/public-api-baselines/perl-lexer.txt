@@ -63,7 +63,6 @@ pub fn perl_lexer::builtins::phf_lookup::get_param_names(function_name: &str) ->
 pub fn perl_lexer::builtins::phf_lookup::is_builtin(function_name: &str) -> bool
 pub fn perl_lexer::builtins::phf_lookup::try_get_param_names(function_name: &str) -> core::option::Option<&'static [&'static str]>
 pub mod perl_lexer::checkpoint
-pub enum perl_lexer::checkpoint::CheckpointContext
 pub perl_lexer::checkpoint::CheckpointContext::Format
 pub perl_lexer::checkpoint::CheckpointContext::Format::start_position: usize
 pub perl_lexer::checkpoint::CheckpointContext::Heredoc
@@ -80,6 +79,23 @@ pub perl_lexer::checkpoint::CheckpointContext::Regex::flags_position: core::opti
 pub fn perl_lexer::checkpoint::CheckpointContext::clone(&self) -> perl_lexer::checkpoint::CheckpointContext
 pub fn perl_lexer::checkpoint::CheckpointContext::eq(&self, other: &perl_lexer::checkpoint::CheckpointContext) -> bool
 pub fn perl_lexer::checkpoint::CheckpointContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_lexer::checkpoint::CheckpointNewlinePolicy::SourceExact
+pub fn perl_lexer::CheckpointNewlinePolicy::clone(&self) -> perl_lexer::CheckpointNewlinePolicy
+pub fn perl_lexer::CheckpointNewlinePolicy::eq(&self, other: &perl_lexer::CheckpointNewlinePolicy) -> bool
+pub fn perl_lexer::CheckpointNewlinePolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_lexer::checkpoint::CheckpointRestoreError::IncompleteState
+pub perl_lexer::checkpoint::CheckpointRestoreError::InvalidUtf8Boundary
+pub perl_lexer::checkpoint::CheckpointRestoreError::Invalidated
+pub perl_lexer::checkpoint::CheckpointRestoreError::UnknownSchema
+pub perl_lexer::checkpoint::CheckpointRestoreError::UnsupportedBoundary
+pub perl_lexer::checkpoint::CheckpointRestoreError::WrongConfiguration
+pub perl_lexer::checkpoint::CheckpointRestoreError::WrongContent
+pub perl_lexer::checkpoint::CheckpointRestoreError::WrongGeneration
+pub perl_lexer::checkpoint::CheckpointRestoreError::WrongSource
+pub fn perl_lexer::CheckpointRestoreError::clone(&self) -> perl_lexer::CheckpointRestoreError
+pub fn perl_lexer::CheckpointRestoreError::eq(&self, other: &perl_lexer::CheckpointRestoreError) -> bool
+pub fn perl_lexer::CheckpointRestoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::CheckpointRestoreError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::checkpoint::CheckpointCache
 pub fn perl_lexer::CheckpointCache::add(&mut self, checkpoint: perl_lexer::LexerCheckpoint)
 pub fn perl_lexer::CheckpointCache::apply_edit(&mut self, start: usize, old_len: usize, new_len: usize)
@@ -99,39 +115,64 @@ pub perl_lexer::checkpoint::CheckpointDiff::prototype_state_changed: bool
 pub fn perl_lexer::checkpoint::CheckpointDiff::has_state_changes(&self) -> bool
 pub fn perl_lexer::checkpoint::CheckpointDiff::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::checkpoint::LexerCheckpoint
-pub perl_lexer::checkpoint::LexerCheckpoint::after_arrow: bool
-pub perl_lexer::checkpoint::LexerCheckpoint::after_newline: bool
-pub perl_lexer::checkpoint::LexerCheckpoint::after_sub: bool
-pub perl_lexer::checkpoint::LexerCheckpoint::after_var_subscript: bool
-pub perl_lexer::checkpoint::LexerCheckpoint::context: perl_lexer::checkpoint::CheckpointContext
-pub perl_lexer::checkpoint::LexerCheckpoint::current_pos: perl_position_tracking::position::Position
-pub perl_lexer::checkpoint::LexerCheckpoint::current_quote_op: core::option::Option<perl_lexer::checkpoint::QuoteOperatorCheckpoint>
-pub perl_lexer::checkpoint::LexerCheckpoint::delimiter_stack: alloc::vec::Vec<char>
-pub perl_lexer::checkpoint::LexerCheckpoint::emit_heredoc_body_tokens: bool
-pub perl_lexer::checkpoint::LexerCheckpoint::eof_emitted: bool
-pub perl_lexer::checkpoint::LexerCheckpoint::hash_brace_depth: usize
-pub perl_lexer::checkpoint::LexerCheckpoint::in_prototype: bool
-pub perl_lexer::checkpoint::LexerCheckpoint::line_start_offset: usize
-pub perl_lexer::checkpoint::LexerCheckpoint::mode: perl_lexer::mode::LexerMode
-pub perl_lexer::checkpoint::LexerCheckpoint::paren_depth: usize
-pub perl_lexer::checkpoint::LexerCheckpoint::parse_interpolation: bool
-pub perl_lexer::checkpoint::LexerCheckpoint::pending_heredocs: alloc::vec::Vec<perl_lexer::checkpoint::PendingHeredocCheckpoint>
-pub perl_lexer::checkpoint::LexerCheckpoint::position: usize
-pub perl_lexer::checkpoint::LexerCheckpoint::prototype_depth: usize
-pub perl_lexer::checkpoint::LexerCheckpoint::qw_recovery_enabled: bool
+pub fn perl_lexer::LexerCheckpoint::after_arrow(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::after_newline(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::after_sub(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::after_var_subscript(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::apply_edit(&mut self, start: usize, old_len: usize, new_len: usize)
 pub fn perl_lexer::LexerCheckpoint::at_position(position: usize) -> Self
+pub fn perl_lexer::LexerCheckpoint::behavior_state_changed(&self, other: &Self) -> bool
+pub fn perl_lexer::LexerCheckpoint::context(&self) -> &perl_lexer::checkpoint::CheckpointContext
+pub fn perl_lexer::LexerCheckpoint::current_pos(&self) -> perl_position_tracking::position::Position
+pub fn perl_lexer::LexerCheckpoint::current_quote_op(&self) -> core::option::Option<&perl_lexer::checkpoint::QuoteOperatorCheckpoint>
+pub fn perl_lexer::LexerCheckpoint::delimiter_stack(&self) -> &[char]
 pub fn perl_lexer::LexerCheckpoint::diff(&self, other: &Self) -> perl_lexer::checkpoint::CheckpointDiff
+pub fn perl_lexer::LexerCheckpoint::emit_heredoc_body_tokens(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::eof_emitted(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::hash_brace_depth(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::identity(&self) -> &perl_lexer::LexerCheckpointIdentity
+pub fn perl_lexer::LexerCheckpoint::in_prototype(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::is_at_start(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::is_invalidated(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::is_timeout_sensitive(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::is_valid_for(&self, input: &str) -> bool
+pub fn perl_lexer::LexerCheckpoint::line_start_offset(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::mode(&self) -> perl_lexer::mode::LexerMode
 pub fn perl_lexer::LexerCheckpoint::new() -> Self
+pub fn perl_lexer::LexerCheckpoint::origin(source: &str) -> Self
+pub fn perl_lexer::LexerCheckpoint::origin_with_config(source: &str, config: perl_lexer::config::LexerConfig) -> Self
+pub fn perl_lexer::LexerCheckpoint::paren_depth(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::parse_interpolation(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::pending_heredocs(&self) -> &[perl_lexer::checkpoint::PendingHeredocCheckpoint]
+pub fn perl_lexer::LexerCheckpoint::position(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::prototype_depth(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::qw_recovery_enabled(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::rebind_to_source(&mut self, source: &str, generation: perl_source_identity::generation::SourceGeneration) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub fn perl_lexer::LexerCheckpoint::try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool
 pub fn perl_lexer::LexerCheckpoint::clone(&self) -> perl_lexer::LexerCheckpoint
 pub fn perl_lexer::LexerCheckpoint::eq(&self, other: &perl_lexer::LexerCheckpoint) -> bool
 pub fn perl_lexer::LexerCheckpoint::default() -> Self
 pub fn perl_lexer::LexerCheckpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lexer::LexerCheckpoint::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::checkpoint::LexerCheckpointIdentity
+pub fn perl_lexer::LexerCheckpointIdentity::content(&self) -> &perl_source_identity::digest::ContentDigest
+pub fn perl_lexer::LexerCheckpointIdentity::generation(&self) -> &perl_source_identity::generation::SourceGeneration
+pub fn perl_lexer::LexerCheckpointIdentity::logical_source(&self) -> core::option::Option<&perl_source_identity::ids::LogicalSourceId>
+pub fn perl_lexer::LexerCheckpointIdentity::newline_policy(&self) -> perl_lexer::CheckpointNewlinePolicy
+pub fn perl_lexer::LexerCheckpointIdentity::policy(&self) -> &perl_lexer::LexerPolicyIdentity
+pub fn perl_lexer::LexerCheckpointIdentity::schema(&self) -> u32
+pub fn perl_lexer::LexerCheckpointIdentity::clone(&self) -> perl_lexer::LexerCheckpointIdentity
+pub fn perl_lexer::LexerCheckpointIdentity::eq(&self, other: &perl_lexer::LexerCheckpointIdentity) -> bool
+pub fn perl_lexer::LexerCheckpointIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::checkpoint::LexerPolicyIdentity
+pub fn perl_lexer::LexerPolicyIdentity::emit_heredoc_body_tokens(&self) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::has_symbol_table(&self) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::interpolation_enabled(&self) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::lookahead_limit(&self) -> usize
+pub fn perl_lexer::LexerPolicyIdentity::qw_recovery_enabled(&self) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::clone(&self) -> perl_lexer::LexerPolicyIdentity
+pub fn perl_lexer::LexerPolicyIdentity::eq(&self, other: &perl_lexer::LexerPolicyIdentity) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::checkpoint::PendingHeredocCheckpoint
 pub perl_lexer::checkpoint::PendingHeredocCheckpoint::allow_indent: bool
 pub perl_lexer::checkpoint::PendingHeredocCheckpoint::body_start: usize
@@ -147,13 +188,15 @@ pub perl_lexer::checkpoint::QuoteOperatorCheckpoint::start_pos: usize
 pub fn perl_lexer::checkpoint::QuoteOperatorCheckpoint::clone(&self) -> perl_lexer::checkpoint::QuoteOperatorCheckpoint
 pub fn perl_lexer::checkpoint::QuoteOperatorCheckpoint::eq(&self, other: &perl_lexer::checkpoint::QuoteOperatorCheckpoint) -> bool
 pub fn perl_lexer::checkpoint::QuoteOperatorCheckpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lexer::checkpoint::CHECKPOINT_SCHEMA_VERSION: u32
 pub trait perl_lexer::checkpoint::Checkpointable
 pub fn perl_lexer::checkpoint::Checkpointable::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
 pub fn perl_lexer::checkpoint::Checkpointable::checkpoint(&self) -> perl_lexer::LexerCheckpoint
-pub fn perl_lexer::checkpoint::Checkpointable::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
-pub fn perl_lexer::PerlLexer<'_>::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
+pub fn perl_lexer::checkpoint::Checkpointable::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
+pub fn perl_lexer::checkpoint::Checkpointable::validate_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub fn perl_lexer::PerlLexer<'_>::checkpoint(&self) -> perl_lexer::LexerCheckpoint
-pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
+pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
+pub fn perl_lexer::PerlLexer<'_>::validate_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub mod perl_lexer::config
 pub struct perl_lexer::config::LexerConfig
 pub perl_lexer::config::LexerConfig::max_lookahead: usize
@@ -349,6 +392,23 @@ pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> 
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_lexer::CheckpointNewlinePolicy::SourceExact
+pub fn perl_lexer::CheckpointNewlinePolicy::clone(&self) -> perl_lexer::CheckpointNewlinePolicy
+pub fn perl_lexer::CheckpointNewlinePolicy::eq(&self, other: &perl_lexer::CheckpointNewlinePolicy) -> bool
+pub fn perl_lexer::CheckpointNewlinePolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_lexer::CheckpointRestoreError::IncompleteState
+pub perl_lexer::CheckpointRestoreError::InvalidUtf8Boundary
+pub perl_lexer::CheckpointRestoreError::Invalidated
+pub perl_lexer::CheckpointRestoreError::UnknownSchema
+pub perl_lexer::CheckpointRestoreError::UnsupportedBoundary
+pub perl_lexer::CheckpointRestoreError::WrongConfiguration
+pub perl_lexer::CheckpointRestoreError::WrongContent
+pub perl_lexer::CheckpointRestoreError::WrongGeneration
+pub perl_lexer::CheckpointRestoreError::WrongSource
+pub fn perl_lexer::CheckpointRestoreError::clone(&self) -> perl_lexer::CheckpointRestoreError
+pub fn perl_lexer::CheckpointRestoreError::eq(&self, other: &perl_lexer::CheckpointRestoreError) -> bool
+pub fn perl_lexer::CheckpointRestoreError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lexer::CheckpointRestoreError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lexer::LexerError
 pub perl_lexer::LexerError::HeredocError
 pub perl_lexer::LexerError::HeredocError::position: usize
@@ -454,39 +514,55 @@ pub fn perl_lexer::CheckpointCache::is_empty(&self) -> bool
 pub fn perl_lexer::CheckpointCache::len(&self) -> usize
 pub fn perl_lexer::CheckpointCache::new(max_checkpoints: usize) -> Self
 pub struct perl_lexer::LexerCheckpoint
-pub perl_lexer::LexerCheckpoint::after_arrow: bool
-pub perl_lexer::LexerCheckpoint::after_newline: bool
-pub perl_lexer::LexerCheckpoint::after_sub: bool
-pub perl_lexer::LexerCheckpoint::after_var_subscript: bool
-pub perl_lexer::LexerCheckpoint::context: perl_lexer::checkpoint::CheckpointContext
-pub perl_lexer::LexerCheckpoint::current_pos: perl_position_tracking::position::Position
-pub perl_lexer::LexerCheckpoint::current_quote_op: core::option::Option<perl_lexer::checkpoint::QuoteOperatorCheckpoint>
-pub perl_lexer::LexerCheckpoint::delimiter_stack: alloc::vec::Vec<char>
-pub perl_lexer::LexerCheckpoint::emit_heredoc_body_tokens: bool
-pub perl_lexer::LexerCheckpoint::eof_emitted: bool
-pub perl_lexer::LexerCheckpoint::hash_brace_depth: usize
-pub perl_lexer::LexerCheckpoint::in_prototype: bool
-pub perl_lexer::LexerCheckpoint::line_start_offset: usize
-pub perl_lexer::LexerCheckpoint::mode: perl_lexer::mode::LexerMode
-pub perl_lexer::LexerCheckpoint::paren_depth: usize
-pub perl_lexer::LexerCheckpoint::parse_interpolation: bool
-pub perl_lexer::LexerCheckpoint::pending_heredocs: alloc::vec::Vec<perl_lexer::checkpoint::PendingHeredocCheckpoint>
-pub perl_lexer::LexerCheckpoint::position: usize
-pub perl_lexer::LexerCheckpoint::prototype_depth: usize
-pub perl_lexer::LexerCheckpoint::qw_recovery_enabled: bool
+pub fn perl_lexer::LexerCheckpoint::after_arrow(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::after_newline(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::after_sub(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::after_var_subscript(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::apply_edit(&mut self, start: usize, old_len: usize, new_len: usize)
 pub fn perl_lexer::LexerCheckpoint::at_position(position: usize) -> Self
+pub fn perl_lexer::LexerCheckpoint::behavior_state_changed(&self, other: &Self) -> bool
+pub fn perl_lexer::LexerCheckpoint::context(&self) -> &perl_lexer::checkpoint::CheckpointContext
+pub fn perl_lexer::LexerCheckpoint::current_pos(&self) -> perl_position_tracking::position::Position
+pub fn perl_lexer::LexerCheckpoint::current_quote_op(&self) -> core::option::Option<&perl_lexer::checkpoint::QuoteOperatorCheckpoint>
+pub fn perl_lexer::LexerCheckpoint::delimiter_stack(&self) -> &[char]
 pub fn perl_lexer::LexerCheckpoint::diff(&self, other: &Self) -> perl_lexer::checkpoint::CheckpointDiff
+pub fn perl_lexer::LexerCheckpoint::emit_heredoc_body_tokens(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::eof_emitted(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::hash_brace_depth(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::identity(&self) -> &perl_lexer::LexerCheckpointIdentity
+pub fn perl_lexer::LexerCheckpoint::in_prototype(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::is_at_start(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::is_invalidated(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::is_timeout_sensitive(&self) -> bool
 pub fn perl_lexer::LexerCheckpoint::is_valid_for(&self, input: &str) -> bool
+pub fn perl_lexer::LexerCheckpoint::line_start_offset(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::mode(&self) -> perl_lexer::mode::LexerMode
 pub fn perl_lexer::LexerCheckpoint::new() -> Self
+pub fn perl_lexer::LexerCheckpoint::origin(source: &str) -> Self
+pub fn perl_lexer::LexerCheckpoint::origin_with_config(source: &str, config: perl_lexer::config::LexerConfig) -> Self
+pub fn perl_lexer::LexerCheckpoint::paren_depth(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::parse_interpolation(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::pending_heredocs(&self) -> &[perl_lexer::checkpoint::PendingHeredocCheckpoint]
+pub fn perl_lexer::LexerCheckpoint::position(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::prototype_depth(&self) -> usize
+pub fn perl_lexer::LexerCheckpoint::qw_recovery_enabled(&self) -> bool
+pub fn perl_lexer::LexerCheckpoint::rebind_to_source(&mut self, source: &str, generation: perl_source_identity::generation::SourceGeneration) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub fn perl_lexer::LexerCheckpoint::try_apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) -> bool
 pub fn perl_lexer::LexerCheckpoint::clone(&self) -> perl_lexer::LexerCheckpoint
 pub fn perl_lexer::LexerCheckpoint::eq(&self, other: &perl_lexer::LexerCheckpoint) -> bool
 pub fn perl_lexer::LexerCheckpoint::default() -> Self
 pub fn perl_lexer::LexerCheckpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_lexer::LexerCheckpoint::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::LexerCheckpointIdentity
+pub fn perl_lexer::LexerCheckpointIdentity::content(&self) -> &perl_source_identity::digest::ContentDigest
+pub fn perl_lexer::LexerCheckpointIdentity::generation(&self) -> &perl_source_identity::generation::SourceGeneration
+pub fn perl_lexer::LexerCheckpointIdentity::logical_source(&self) -> core::option::Option<&perl_source_identity::ids::LogicalSourceId>
+pub fn perl_lexer::LexerCheckpointIdentity::newline_policy(&self) -> perl_lexer::CheckpointNewlinePolicy
+pub fn perl_lexer::LexerCheckpointIdentity::policy(&self) -> &perl_lexer::LexerPolicyIdentity
+pub fn perl_lexer::LexerCheckpointIdentity::schema(&self) -> u32
+pub fn perl_lexer::LexerCheckpointIdentity::clone(&self) -> perl_lexer::LexerCheckpointIdentity
+pub fn perl_lexer::LexerCheckpointIdentity::eq(&self, other: &perl_lexer::LexerCheckpointIdentity) -> bool
+pub fn perl_lexer::LexerCheckpointIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::LexerConfig
 pub perl_lexer::LexerConfig::max_lookahead: usize
 pub perl_lexer::LexerConfig::parse_interpolation: bool
@@ -501,6 +577,15 @@ pub fn perl_lexer::config::LexerConfig::permits_lookahead_offset(&self, offset: 
 pub fn perl_lexer::config::LexerConfig::clone(&self) -> perl_lexer::config::LexerConfig
 pub fn perl_lexer::config::LexerConfig::default() -> Self
 pub fn perl_lexer::config::LexerConfig::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lexer::LexerPolicyIdentity
+pub fn perl_lexer::LexerPolicyIdentity::emit_heredoc_body_tokens(&self) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::has_symbol_table(&self) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::interpolation_enabled(&self) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::lookahead_limit(&self) -> usize
+pub fn perl_lexer::LexerPolicyIdentity::qw_recovery_enabled(&self) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::clone(&self) -> perl_lexer::LexerPolicyIdentity
+pub fn perl_lexer::LexerPolicyIdentity::eq(&self, other: &perl_lexer::LexerPolicyIdentity) -> bool
+pub fn perl_lexer::LexerPolicyIdentity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::LocalSymbolTable
 pub fn perl_lexer::symbol_table::LocalSymbolTable::is_empty(&self) -> bool
 pub fn perl_lexer::symbol_table::LocalSymbolTable::is_known_sub(&self, name: &str) -> bool
@@ -510,6 +595,8 @@ pub fn perl_lexer::symbol_table::LocalSymbolTable::clone(&self) -> perl_lexer::s
 pub fn perl_lexer::symbol_table::LocalSymbolTable::default() -> perl_lexer::symbol_table::LocalSymbolTable
 pub fn perl_lexer::symbol_table::LocalSymbolTable::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_lexer::PerlLexer<'a>
+pub fn perl_lexer::PerlLexer<'_>::bind_generation(&mut self, generation: perl_source_identity::generation::SourceGeneration)
+pub fn perl_lexer::PerlLexer<'_>::bind_logical_source(&mut self, logical_source: perl_source_identity::ids::LogicalSourceId)
 pub fn perl_lexer::PerlLexer<'a>::collect_tokens(&mut self) -> alloc::vec::Vec<perl_lexer::token::Token>
 pub fn perl_lexer::PerlLexer<'a>::enter_format_mode(&mut self)
 pub fn perl_lexer::PerlLexer<'a>::next_token(&mut self) -> core::option::Option<perl_lexer::token::Token>
@@ -520,9 +607,9 @@ pub fn perl_lexer::PerlLexer<'a>::with_body_tokens(input: &'a str) -> Self
 pub fn perl_lexer::PerlLexer<'a>::with_config_and_body_tokens(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
 pub fn perl_lexer::PerlLexer<'a>::new(input: &'a str) -> Self
 pub fn perl_lexer::PerlLexer<'a>::with_config(input: &'a str, config: perl_lexer::config::LexerConfig) -> Self
-pub fn perl_lexer::PerlLexer<'_>::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
 pub fn perl_lexer::PerlLexer<'_>::checkpoint(&self) -> perl_lexer::LexerCheckpoint
-pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
+pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
+pub fn perl_lexer::PerlLexer<'_>::validate_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub struct perl_lexer::PositionTracker<'a>
 pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::byte_to_position(&self, byte: usize) -> perl_position_tracking::position::Position
 pub fn perl_lexer::tokenizer::token_wrapper::PositionTracker<'a>::new(source: &'a str) -> Self
@@ -548,6 +635,7 @@ pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> 
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lexer::CHECKPOINT_SCHEMA_VERSION: u32
 pub const perl_lexer::DAP_COMPLETION_KEYWORDS: &[&str]
 pub const perl_lexer::KEYWORDS: &[&str]
 pub const perl_lexer::LEXER_KEYWORDS: &[&str]
@@ -561,10 +649,11 @@ pub static perl_lexer::BUILTIN_SIGS: phf::map::Map<&'static str, &'static [&'sta
 pub trait perl_lexer::Checkpointable
 pub fn perl_lexer::Checkpointable::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
 pub fn perl_lexer::Checkpointable::checkpoint(&self) -> perl_lexer::LexerCheckpoint
-pub fn perl_lexer::Checkpointable::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
-pub fn perl_lexer::PerlLexer<'_>::can_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> bool
+pub fn perl_lexer::Checkpointable::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
+pub fn perl_lexer::Checkpointable::validate_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub fn perl_lexer::PerlLexer<'_>::checkpoint(&self) -> perl_lexer::LexerCheckpoint
-pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint)
+pub fn perl_lexer::PerlLexer<'_>::restore(&mut self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
+pub fn perl_lexer::PerlLexer<'_>::validate_restore(&self, checkpoint: &perl_lexer::LexerCheckpoint) -> core::result::Result<(), perl_lexer::CheckpointRestoreError>
 pub fn perl_lexer::builtin_count() -> usize
 pub fn perl_lexer::code_slice(text: &str) -> &str
 pub fn perl_lexer::create_builtin_signatures() -> &'static std::collections::hash::map::HashMap<&'static str, perl_lexer::builtins::builtin_signatures::BuiltinSignature>

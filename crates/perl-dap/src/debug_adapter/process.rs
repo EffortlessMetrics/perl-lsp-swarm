@@ -2,11 +2,11 @@
 
 use super::logpoint::{DrainStep, LogpointDrain, LogpointStep, PendingLogpoint};
 use super::{
-    Arc, BreakpointHitOutcome, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS,
-    DapEvent, DapMessage, DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
-    Instant, Mutex, Read, RestartArguments, ResumeMode, Source, StackFrame, Stdio, SyncSender,
-    TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState, Value, Write,
-    ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, emit_event_safe, error_re,
+    Arc, BufRead, BufReader, Child, DEBUG_SESSION_TERMINATE_WAIT_MS, DapEvent, DapMessage,
+    DebugAdapter, DebugSession, DebugState, DisconnectArguments, Duration,
+    EngineBreakpointHitOutcome, Instant, Mutex, Read, RestartArguments, ResumeMode, Source,
+    StackFrame, Stdio, TcpAttachConfig, TcpAttachSession, TerminateArguments, TerminationState,
+    Value, Write, ansi_escape_re, catalog_has_feature, context_re, die_suffix_re, error_re,
     exception_re, json, lock_or_recover, module_path_to_name, prompt_re, security, stack_frame_re,
     thread, warning_re,
 };
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::sync_channel;
 
-use super::sync_utils::{GuardedDispatchResult, dispatch_event_generation_guarded};
+use super::sync_utils::{EventSender, GuardedDispatchResult};
 use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
@@ -31,6 +31,15 @@ mod perl_spawn;
 use super::variable_cache::VariableCache;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
+
+fn emit_event_safe(
+    sender: &EventSender,
+    seq: &Mutex<i64>,
+    event: &str,
+    body: Option<Value>,
+) -> bool {
+    sender.send_event(seq, event, body) != super::sync_utils::EventDispatchResult::Disconnected
+}
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 
@@ -698,6 +707,34 @@ impl DebugAdapter {
         let mut cmd = oracle.into_command();
         cmd.arg("-d");
 
+        // Strawberry Perl's Windows debugger selects its console transport when
+        // EMACS is absent, even when all three stdio handles are pipes.  Mark
+        // this owned pipe launch explicitly; the variable is scoped to the
+        // child and does not change the adapter's process environment or the
+        // user's argv/launch configuration.  ReadLine must also use its dummy
+        // interface: its console backend otherwise calls GetConsoleMode on a
+        // pipe and raises an exception inside an otherwise valid debuggee.
+        #[cfg(windows)]
+        {
+            cmd.env("EMACS", "1");
+            // Read the effective child environment, including Windows' case-
+            // insensitive variable names, rather than replacing user options.
+            // perl5db parses options left-to-right: the final debugger-only
+            // ReadLine switch wins without changing the program's PERL_RL.
+            let mut perl_db_opts = cmd
+                .get_envs()
+                .find_map(|(key, value)| {
+                    key.to_str()
+                        .is_some_and(|key| key.eq_ignore_ascii_case("PERLDB_OPTS"))
+                        .then_some(value)
+                        .flatten()
+                })
+                .unwrap_or_default()
+                .to_os_string();
+            perl_db_opts.push(" ReadLine=0");
+            cmd.env("PERLDB_OPTS", perl_db_opts);
+        }
+
         // Perl debugger stops on the first line by default
         let _ = stop_on_entry; // currently unused
 
@@ -718,6 +755,13 @@ impl DebugAdapter {
         let debuggee_cwd = std::path::absolute(cmd.get_current_dir().unwrap_or(Path::new(".")))
             .map_err(|error| format!("Cannot resolve debugger working directory: {error}"))?;
         cmd.current_dir(&debuggee_cwd);
+        let launch_source_path = {
+            let path = Path::new(program);
+            if path.is_absolute() { path.to_path_buf() } else { debuggee_cwd.join(path) }
+        };
+        let launch_source_digest = std::fs::read(&launch_source_path)
+            .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
+            .map_err(|error| format!("Cannot snapshot launched source identity: {error}"))?;
 
         // Allocate the execution-context id BEFORE spawning: a launch that
         // cannot mint a fresh id must fail without side effects.
@@ -729,11 +773,27 @@ impl DebugAdapter {
             );
         };
 
+        // A previously rejected replacement remains the sole owner of an
+        // unconfirmed child. Do not spawn another child until terminal
+        // cleanup has retried that owner successfully.
+        if lock_or_recover(&self.rejected_child, "debug_adapter.rejected_child").is_some() {
+            return Err(
+                "Cannot replace the active debugger session while a rejected process cleanup remains unconfirmed"
+                    .to_string(),
+            );
+        }
+
         match cmd.spawn() {
-            Ok(child) => {
+            Ok(mut child) => {
                 // Only advance the session generation once spawning has succeeded. A rejected
                 // launch must leave the currently active reader valid for its existing session.
-                self.prepare_replacement_session();
+                if !self.prepare_replacement_session() {
+                    let cleanup = Self::terminate_child_process(&mut child);
+                    return Err(self.reject_spawned_replacement_child(child, cleanup));
+                }
+                if let Ok(mut identity) = self.launch_source_identity.lock() {
+                    *identity = Some((launch_source_path.clone(), launch_source_digest.clone()));
+                }
 
                 let session = DebugSession {
                     process: child,
@@ -742,8 +802,10 @@ impl DebugAdapter {
                     stack_frame_arguments: HashMap::new(),
                     variable_cache: VariableCache::default(),
                     thread_id,
+                    debuggee_cwd: debuggee_cwd.clone(),
                     last_resume_mode: ResumeMode::Unknown,
                     entry_stop_pending: stop_on_entry,
+                    initial_stop_pending: !stop_on_entry,
                     stopped_generation: 0,
                 };
 
@@ -763,6 +825,57 @@ impl DebugAdapter {
 
                 // Start output reader thread
                 self.start_output_reader(debuggee_cwd);
+
+                // Replay source breakpoints admitted before launch after the
+                // reader is ready to capture each engine acknowledgement.
+                // The pending DAP records keep their original IDs; clients
+                // learn that installation completed through changed events.
+                let installed_source_breakpoints = self
+                    .launch_source_identity
+                    .lock()
+                    .ok()
+                    .and_then(|identity| identity.as_ref().map(|(path, _)| path.clone()))
+                    .map(|source_path| {
+                        let raw_key = source_path.to_string_lossy().into_owned();
+                        let canonical_key = source_path
+                            .canonicalize()
+                            .ok()
+                            .map(|path| path.to_string_lossy().into_owned());
+                        let (source_key, records) = {
+                            let raw_records = self.breakpoints.get_breakpoints(&raw_key);
+                            if raw_records.is_empty() {
+                                if let Some(canonical_key) = canonical_key {
+                                    let canonical_records =
+                                        self.breakpoints.get_breakpoints(&canonical_key);
+                                    (canonical_key, canonical_records)
+                                } else {
+                                    (raw_key, raw_records)
+                                }
+                            } else {
+                                (raw_key, raw_records)
+                            }
+                        };
+                        self.install_stored_source_breakpoints(&source_key, &records)
+                    })
+                    .unwrap_or_default();
+                if installed_source_breakpoints.ambiguous {
+                    return Err(if installed_source_breakpoints.cleanup_succeeded {
+                        "Debugger session was invalidated because a source breakpoint acknowledgement was ambiguous"
+                            .to_string()
+                    } else {
+                        "Debugger session was invalidated but cleanup was not confirmed after an ambiguous source breakpoint acknowledgement"
+                            .to_string()
+                    });
+                }
+                for id in installed_source_breakpoints.installed {
+                    self.send_event(
+                        "breakpoint",
+                        Some(serde_json::json!({
+                            "reason": "changed",
+                            "breakpoint": { "id": id, "verified": true }
+                        })),
+                    );
+                }
 
                 // Start debuggee watchdog if a wall-clock timeout was configured (#4640).
                 // The watchdog kills the perl -d process if it is still alive after
@@ -1336,6 +1449,7 @@ impl DebugAdapter {
                             let mut should_auto_continue = false;
                             let mut stop_reason = "step".to_string();
                             let mut logpoint_messages: Vec<String> = Vec::new();
+                            let mut hit_breakpoint_ids = Vec::new();
 
                             // Snapshot source authority before acquiring the session lock.
                             let observed_workspace_root =
@@ -1383,6 +1497,20 @@ impl DebugAdapter {
                                         s.stack_frame_arguments.clear();
                                     }
 
+                                    if was_running
+                                        && s.initial_stop_pending
+                                        && matches!(s.last_resume_mode, ResumeMode::Unknown)
+                                    {
+                                        // Perl pauses at the first executable line before
+                                        // configurationDone. Retain that pause for an
+                                        // acknowledged breakpoint on the same line; the
+                                        // configurationDone handler will publish it only after
+                                        // correlating the engine installation.
+                                        s.state = DebugState::Stopped;
+                                        s.last_resume_mode = ResumeMode::Unknown;
+                                        continue;
+                                    }
+
                                     if was_running {
                                         let has_source_frame =
                                             !current_file.is_empty() && current_line > 0;
@@ -1410,16 +1538,19 @@ impl DebugAdapter {
                                         ) && !current_file.is_empty()
                                             && current_line > 0
                                         {
-                                            DebugAdapter::register_observed_breakpoint_hit(
+                                            DebugAdapter::register_observed_engine_breakpoint_hit(
                                                 &breakpoints,
                                                 &current_file,
                                                 i64::from(current_line),
                                                 observed_workspace_root.as_deref(),
                                                 &debuggee_cwd,
+                                                session_generation,
                                             )
                                         } else {
-                                            BreakpointHitOutcome::default()
+                                            EngineBreakpointHitOutcome::default()
                                         };
+                                        hit_breakpoint_ids =
+                                            breakpoint_outcome.hit_breakpoint_ids.clone();
 
                                         if s.entry_stop_pending && !has_authoritative_source_frame {
                                             // Do not publish an entry stop with a fabricated
@@ -1570,11 +1701,17 @@ impl DebugAdapter {
                                     sender,
                                     &seq,
                                     "stopped",
-                                    Some(json!({
-                                        "reason": stop_reason,
-                                        "threadId": thread_id,
-                                        "allThreadsStopped": true
-                                    })),
+                                    Some({
+                                        let mut body = json!({
+                                            "reason": stop_reason,
+                                            "threadId": thread_id,
+                                            "allThreadsStopped": true
+                                        });
+                                        if !hit_breakpoint_ids.is_empty() {
+                                            body["hitBreakpointIds"] = json!(hit_breakpoint_ids);
+                                        }
+                                        body
+                                    }),
                                 )
                             {
                                 tracing::warn!(
@@ -2019,7 +2156,19 @@ impl DebugAdapter {
 
                 // Reset existing process/tcp attachment state before switching to PID mode.
                 self.begin_session_generation();
-                self.clear_active_session_state();
+                if !self.clear_active_session_state() {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "attach".to_string(),
+                        body: None,
+                        message: Some(
+                            "Cannot attach while an earlier debugger process cleanup remains unconfirmed"
+                                .to_string(),
+                        ),
+                    };
+                }
 
                 if let Ok(mut guard) = self.attached_pid.lock() {
                     *guard = Some(pid);
@@ -2144,7 +2293,20 @@ impl DebugAdapter {
                         // The TCP session is fully connected and has a reader before it becomes
                         // the active session, so a failed attach does not invalidate an existing
                         // session's generation.
-                        self.prepare_replacement_session();
+                        if !self.prepare_replacement_session() {
+                            let _ = session.disconnect();
+                            return DapMessage::Response {
+                                seq,
+                                request_seq,
+                                success: false,
+                                command: "attach".to_string(),
+                                body: None,
+                                message: Some(
+                                    "Cannot replace the active debugger session because its process cleanup was not confirmed"
+                                        .to_string(),
+                                ),
+                            };
+                        }
                         // Store session
                         if let Ok(mut guard) = self.tcp_session.lock() {
                             *guard = Some(session);
@@ -2234,53 +2396,135 @@ impl DebugAdapter {
     }
 
     /// Clear active process session, TCP session, and PID-attach mode state.
-    pub(super) fn clear_active_session_state(&self) {
-        Self::clear_active_session_state_with_state(
+    pub(super) fn clear_active_session_state(&self) -> bool {
+        let active_cleanup = Self::clear_active_session_state_with_state(
             &self.session,
             &self.tcp_session,
             &self.attached_pid,
         );
+        let rejected_cleanup =
+            self.clear_rejected_child_with_terminator(Self::terminate_child_process);
+        active_cleanup && rejected_cleanup
+    }
+
+    fn clear_rejected_child_with_terminator(
+        &self,
+        mut terminate: impl FnMut(&mut Child) -> bool,
+    ) -> bool {
+        match self.rejected_child.lock() {
+            Ok(mut guard) => {
+                let Some(child) = guard.as_mut() else {
+                    return true;
+                };
+                if terminate(child) {
+                    *guard = None;
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn try_retain_rejected_child(&self, child: Child) -> Result<(), Child> {
+        let mut guard = lock_or_recover(&self.rejected_child, "debug_adapter.rejected_child");
+        if guard.is_some() {
+            Err(child)
+        } else {
+            *guard = Some(child);
+            Ok(())
+        }
+    }
+
+    fn reject_spawned_replacement_child(&self, mut child: Child, cleanup: bool) -> String {
+        if cleanup {
+            return "Cannot replace the active debugger session because its process cleanup was not confirmed"
+                .to_string();
+        }
+        match self.try_retain_rejected_child(child) {
+            Ok(()) => {
+                "Cannot replace the active debugger session; cleanup of both processes was not confirmed"
+                    .to_string()
+            }
+            Err(returned_child) => {
+                child = returned_child;
+                let _ = Self::terminate_child_process(&mut child);
+                "Cannot retain the rejected debugger process because another unconfirmed process is already retained"
+                    .to_string()
+            }
+        }
     }
 
     /// Advance the session generation and tear down the prior active session.
     ///
     /// Callers invoke this only after a replacement launch or attach has
-    /// successfully completed its external setup, so rejected replacements
-    /// leave the existing session untouched.
-    fn prepare_replacement_session(&self) {
+    /// successfully completed its external setup. A spawn failure leaves the
+    /// existing session valid; a cleanup-blocked replacement invalidates the
+    /// protocol state while retaining process ownership for retry.
+    fn prepare_replacement_session(&self) -> bool {
         self.begin_session_generation();
-        self.clear_active_session_state();
+        self.clear_active_session_state()
     }
 
     pub(super) fn clear_active_session_state_with_state(
         session: &Arc<Mutex<Option<DebugSession>>>,
         tcp_session: &Arc<Mutex<Option<TcpAttachSession>>>,
         attached_pid: &Arc<Mutex<Option<u32>>>,
-    ) {
+    ) -> bool {
+        Self::clear_active_session_state_with_terminator(
+            session,
+            tcp_session,
+            attached_pid,
+            Self::terminate_child_process,
+        )
+    }
+
+    fn clear_active_session_state_with_terminator(
+        session: &Arc<Mutex<Option<DebugSession>>>,
+        tcp_session: &Arc<Mutex<Option<TcpAttachSession>>>,
+        attached_pid: &Arc<Mutex<Option<u32>>>,
+        mut terminate: impl FnMut(&mut Child) -> bool,
+    ) -> bool {
+        let mut cleanup_succeeded = true;
         // Terminate the debug session
-        if let Ok(mut guard) = session.lock()
-            && let Some(mut active_session) = guard.take()
-        {
-            if !Self::terminate_child_process(&mut active_session.process) {
-                tracing::warn!("Failed to ensure debug session process termination");
+        match session.lock() {
+            Ok(mut guard) => {
+                if let Some(active_session) = guard.as_mut() {
+                    if terminate(&mut active_session.process) {
+                        active_session.state = DebugState::Terminated;
+                        let _ = guard.take();
+                    } else {
+                        tracing::warn!("Failed to ensure debug session process termination");
+                        cleanup_succeeded = false;
+                        // Retain the Child handle so a later owner can retry the
+                        // bounded reap instead of silently dropping an unconfirmed
+                        // live process.
+                        active_session.state = DebugState::Terminated;
+                    }
+                }
             }
-            active_session.state = DebugState::Terminated;
+            Err(_) => cleanup_succeeded = false,
         }
 
         // Disconnect TCP session if active
         if let Ok(mut guard) = tcp_session.lock()
             && let Some(ref mut tcp_session) = *guard
+            && tcp_session.disconnect().is_err()
         {
-            let _ = tcp_session.disconnect();
+            cleanup_succeeded = false;
         }
-        if let Ok(mut guard) = tcp_session.lock() {
-            *guard = None;
+        match tcp_session.lock() {
+            Ok(mut guard) => *guard = None,
+            Err(_) => cleanup_succeeded = false,
         }
 
         // Clear PID attach mode.
-        if let Ok(mut guard) = attached_pid.lock() {
-            *guard = None;
+        match attached_pid.lock() {
+            Ok(mut guard) => *guard = None,
+            Err(_) => cleanup_succeeded = false,
         }
+        cleanup_succeeded
     }
 
     fn clear_active_session_state_for_generation(
@@ -2360,19 +2604,28 @@ impl DebugAdapter {
         // Settle broker waiters before terminating the child so EOF cannot
         // win the race and replace the client-requested disconnect reason.
         self.operation_broker.settle_all("disconnect");
-        if let Some(ref sender) = self.event_sender {
+        // `terminate` closes the active session and already reserves the
+        // terminal event.  VS Code commonly follows it with `disconnect`; do
+        // not emit a second event for that already-closed session.  A plain
+        // disconnect of an active session still owns the terminal event.
+        let has_active_session = lock_or_recover(&self.session, "debug_adapter.session").is_some()
+            || lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid").is_some()
+            || lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some();
+        if has_active_session && let Some(ref sender) = self.event_sender {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
-        self.clear_active_session_state();
+        let cleanup_succeeded = self.clear_active_session_state();
         self.close_terminal_session_generation("disconnect");
 
         DapMessage::Response {
             seq,
             request_seq,
-            success: true,
+            success: cleanup_succeeded,
             command: "disconnect".to_string(),
             body: None,
-            message: None,
+            message: (!cleanup_succeeded).then(|| {
+                "Session invalidated, but debugger process cleanup remains unconfirmed".to_string()
+            }),
         }
     }
 
@@ -2401,16 +2654,18 @@ impl DebugAdapter {
                 terminated_body,
             );
         }
-        self.clear_active_session_state();
+        let cleanup_succeeded = self.clear_active_session_state();
         self.close_terminal_session_generation("terminated");
 
         DapMessage::Response {
             seq,
             request_seq,
-            success: true,
+            success: cleanup_succeeded,
             command: "terminate".to_string(),
             body: None,
-            message: None,
+            message: (!cleanup_succeeded).then(|| {
+                "Session invalidated, but debugger process cleanup remains unconfirmed".to_string()
+            }),
         }
     }
 
@@ -2469,13 +2724,42 @@ impl DebugAdapter {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
+        let mut startup_breakpoint_ids = Vec::new();
+        let mut startup_thread_id = None;
+        let startup_generation = self.current_session_generation();
+        let startup_workspace =
+            lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
         if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
             && let Some(stdin) = session.process.stdin.as_mut()
         {
-            if stop_on_entry {
-                // The output reader emits the entry stopped event after capturing the
-                // initial context. Request the current source location for any debugger
-                // that did not include a parseable context in that first stop.
+            if !stop_on_entry
+                && session.initial_stop_pending
+                && let Some(frame) = session.stack_frames.first().cloned()
+            {
+                let outcome = Self::register_observed_engine_breakpoint_hit(
+                    &self.breakpoints,
+                    &frame.source.path,
+                    i64::from(frame.line),
+                    startup_workspace.as_deref(),
+                    &session.debuggee_cwd,
+                    startup_generation,
+                );
+                if outcome.should_stop {
+                    startup_breakpoint_ids = outcome.hit_breakpoint_ids;
+                    startup_thread_id = Some(session.thread_id);
+                    session.state = DebugState::Stopped;
+                    session.last_resume_mode = ResumeMode::Unknown;
+                    session.initial_stop_pending = false;
+                }
+            }
+
+            if startup_thread_id.is_some() {
+                // The implicit startup pause already corresponds to an
+                // acknowledged breakpoint. Publish it without sending `c`.
+            } else if stop_on_entry {
+                // The reader owns entry-stop publication after ordered native
+                // context and prompt evidence. List the current source
+                // location so the IDE can display it.
                 let _ = stdin.write_all(b"l\n");
                 let _ = stdin.flush();
             } else {
@@ -2484,11 +2768,22 @@ impl DebugAdapter {
                 // ResumeMode::RunToBreakpoint signals the output reader to
                 // silently skip non-breakpoint stops (the implicit first-line
                 // stop) and auto-continue until a user breakpoint is hit.
+                session.initial_stop_pending = false;
                 session.state = DebugState::Running;
                 session.last_resume_mode = ResumeMode::RunToBreakpoint;
                 let _ = stdin.write_all(b"c\n");
                 let _ = stdin.flush();
             }
+        }
+
+        if let Some(thread_id) = startup_thread_id {
+            let mut body = json!({
+                "reason": "breakpoint",
+                "threadId": thread_id,
+                "allThreadsStopped": true
+            });
+            body["hitBreakpointIds"] = json!(startup_breakpoint_ids);
+            self.send_event("stopped", Some(body));
         }
 
         DapMessage::Response {
@@ -2690,7 +2985,18 @@ impl DebugAdapter {
             }
         };
 
-        self.clear_active_session_state();
+        if !self.clear_active_session_state() {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "restart".to_string(),
+                body: None,
+                message: Some(
+                    "Cannot restart while debugger process cleanup remains unconfirmed".to_string(),
+                ),
+            };
+        }
         self.handle_launch(seq, request_seq, Some(launch_args))
     }
 }
@@ -2737,17 +3043,12 @@ fn terminated_delivery_is_current(
 }
 
 /// Emit interpolated logpoint text on the debug console.
-fn emit_logpoint_messages(
-    sender: Option<&SyncSender<DapMessage>>,
-    seq: &Mutex<i64>,
-    messages: Vec<String>,
-) {
+fn emit_logpoint_messages(sender: Option<&EventSender>, seq: &Mutex<i64>, messages: Vec<String>) {
     let Some(sender) = sender else {
         return;
     };
     for message in messages {
-        emit_event_safe(
-            sender,
+        let _ = sender.send_event(
             seq,
             "output",
             Some(json!({
@@ -2759,7 +3060,7 @@ fn emit_logpoint_messages(
 }
 
 pub(super) fn emit_terminated_event(
-    sender: &SyncSender<DapMessage>,
+    sender: &EventSender,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
@@ -2785,7 +3086,7 @@ pub(super) fn emit_terminated_event(
 /// event instead of an unbounded blocking send publishing it into the
 /// replacement's conversation after validation passed.
 pub(super) fn emit_terminated_event_guarded(
-    sender: &SyncSender<DapMessage>,
+    sender: &EventSender,
     seq: &Mutex<i64>,
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
@@ -2802,13 +3103,14 @@ pub(super) fn emit_terminated_event_guarded(
         return false;
     }
     !matches!(
-        dispatch_event_generation_guarded(sender, seq, "terminated", body, stale),
+        sender.send_event_generation_guarded(seq, "terminated", body, stale),
         GuardedDispatchResult::Disconnected
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::sync_utils::EventSender;
     use super::{
         BufReader, DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, has_prompt_prefix,
@@ -2820,6 +3122,117 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn failed_child_cleanup_retains_owner_until_retry() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let expected_pid = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.process.id())
+            .ok_or("test session was not installed")?;
+
+        let failed = DebugAdapter::clear_active_session_state_with_terminator(
+            &adapter.session,
+            &adapter.tcp_session,
+            &adapter.attached_pid,
+            |_| false,
+        );
+        if failed {
+            return Err("injected failed cleanup was reported as successful".to_string());
+        }
+        let retained = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.process.id());
+        if retained != Some(expected_pid) {
+            return Err(format!(
+                "failed cleanup dropped the owned child: expected {expected_pid}, got {retained:?}"
+            ));
+        }
+        let retained_state = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.state.clone());
+        if retained_state != Some(DebugState::Terminated) {
+            return Err("failed cleanup left the retained session resumable".to_string());
+        }
+
+        if !adapter.clear_active_session_state() {
+            return Err("retrying real child cleanup failed".to_string());
+        }
+        if adapter.session.lock().map_err(|_| "session lock poisoned")?.is_some() {
+            return Err("successful retry retained the child owner".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_replacement_child_is_retained_across_failed_cleanup() -> Result<(), String> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let active_pid = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.process.id())
+            .ok_or("active session was not installed")?;
+        if DebugAdapter::clear_active_session_state_with_terminator(
+            &adapter.session,
+            &adapter.tcp_session,
+            &adapter.attached_pid,
+            |_| false,
+        ) {
+            return Err("injected active cleanup unexpectedly succeeded".to_string());
+        }
+        let replacement = DebugAdapter::spawn_noop_child_for_test()
+            .map_err(|error| format!("spawning replacement child: {error}"))?;
+        let replacement_pid = replacement.id();
+        let rejection = adapter.reject_spawned_replacement_child(replacement, false);
+        if !rejection.contains("both processes") {
+            return Err("production rejection path did not retain replacement child".to_string());
+        }
+        let retained_active_pid = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.process.id());
+        if retained_active_pid != Some(active_pid) {
+            return Err("failed active cleanup lost its original child owner".to_string());
+        }
+        let retained_replacement_pid = adapter
+            .rejected_child
+            .lock()
+            .map_err(|_| "rejected-child lock was poisoned")?
+            .as_ref()
+            .map(|child| child.id());
+        if retained_replacement_pid != Some(replacement_pid) {
+            return Err("failed replacement cleanup lost its child owner".to_string());
+        }
+
+        if !adapter.clear_active_session_state() {
+            return Err("retrying cleanup of both child owners failed".to_string());
+        }
+        if adapter.session.lock().map_err(|_| "session lock poisoned")?.is_some()
+            || adapter
+                .rejected_child
+                .lock()
+                .map_err(|_| "rejected-child lock was poisoned")?
+                .is_some()
+        {
+            return Err("successful retry retained a child owner".to_string());
+        }
+        Ok(())
+    }
 
     #[test]
     fn context_then_prompt_preserves_current_suspension_frame_id() -> Result<(), String> {
@@ -2892,8 +3305,10 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
             entry_stop_pending: true,
+            initial_stop_pending: false,
             stopped_generation: 0,
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
@@ -3009,6 +3424,14 @@ mod tests {
         {
             return Err(format!("failed to configure fixture breakpoint: {configured:?}"));
         }
+        let source_digest = perl_source_identity::ContentDigest::of_bytes(
+            &std::fs::read(&source_path)
+                .map_err(|error| format!("failed to read breakpoint fixture: {error}"))?,
+        )
+        .to_string();
+        if !adapter.breakpoints.mark_engine_installed(1, &source_path, 5, 0, source_digest) {
+            return Err("failed to acknowledge fixture breakpoint installation".into());
+        }
 
         let script = "printf 'main::(%s:1):\\timplicit\\nDB<1>\\nIMPLICIT_DONE\\n' \"$1\" >&2; read -r release; if [ -n \"$release\" ]; then printf 'UNEXPECTED_COMMAND:%s\\n' \"$release\" >&2; exit 1; fi; printf 'main::(%s:5):\\tactual\\nDB<2>\\nACTUAL_DONE\\n' \"$1\" >&2";
         let child = Command::new("sh")
@@ -3026,8 +3449,10 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::RunToBreakpoint,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
@@ -3151,8 +3576,10 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
             entry_stop_pending: true,
+            initial_stop_pending: false,
             stopped_generation: 0,
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
@@ -3220,8 +3647,10 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
@@ -3300,8 +3729,10 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
             entry_stop_pending: true,
+            initial_stop_pending: false,
             stopped_generation: 0,
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
@@ -3715,8 +4146,10 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: PathBuf::from("/tmp"),
             last_resume_mode: ResumeMode::Unknown,
             entry_stop_pending: true,
+            initial_stop_pending: false,
             stopped_generation: 0,
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
@@ -3840,8 +4273,10 @@ mod tests {
                 stack_frame_arguments: HashMap::new(),
                 variable_cache: VariableCache::default(),
                 thread_id: 1,
+                debuggee_cwd: PathBuf::from("/tmp"),
                 last_resume_mode: ResumeMode::Unknown,
                 entry_stop_pending: true,
+                initial_stop_pending: false,
                 stopped_generation: 0,
             });
             adapter.start_output_reader(PathBuf::from("/tmp"));
@@ -4103,7 +4538,7 @@ mod tests {
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
             Arc::new(Mutex::new(super::TerminationState { generation: 1, emitted: false }));
-        let first_sender = sender.clone();
+        let first_sender = EventSender::new(sender.clone());
         let first_seq = seq.clone();
         let first_guard = termination_state.clone();
         let first = std::thread::spawn(move || {
@@ -4115,7 +4550,8 @@ mod tests {
                 Some(serde_json::json!({"reason": "debugger_eof"})),
             )
         });
-        let second = emit_terminated_event(&sender, &seq, &termination_state, None, None);
+        let second_sender = EventSender::new(sender.clone());
+        let second = emit_terminated_event(&second_sender, &seq, &termination_state, None, None);
         let first = first.join().map_err(|_| "termination worker panicked".to_string())?;
         if first == second {
             return Err(format!(
@@ -4152,7 +4588,7 @@ mod tests {
             Mutex::new(super::TerminationState { generation: 2, emitted: false });
 
         if emit_terminated_event(
-            &sender,
+            &EventSender::new(sender.clone()),
             &seq,
             &termination_state,
             Some(1),
@@ -4165,7 +4601,7 @@ mod tests {
         }
 
         if !emit_terminated_event(
-            &sender,
+            &EventSender::new(sender.clone()),
             &seq,
             &termination_state,
             Some(2),
@@ -4209,7 +4645,7 @@ mod tests {
 
         // A delivery under the now-current generation is still acknowledged.
         if !emit_terminated_event(
-            &sender,
+            &EventSender::new(sender.clone()),
             &seq,
             &termination_state,
             Some(4),
@@ -4770,8 +5206,10 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
@@ -4889,8 +5327,10 @@ mod tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);

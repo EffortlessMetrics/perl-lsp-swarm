@@ -786,40 +786,40 @@ fn decode_evaluate_path(reported: &str) -> Result<String, String> {
         Ok(trimmed.to_string())
     }?;
 
-    if let Some((prefix, payload)) = decoded.split_once(" '") {
-        if prefix.trim().parse::<u64>().is_ok() {
-            let mut path = String::with_capacity(payload.len());
-            let mut characters = payload.chars();
-            let mut closed = false;
-            while let Some(character) = characters.next() {
-                match character {
-                    '\\' => match characters.next() {
-                        Some('\\') => path.push('\\'),
-                        Some('\'') => path.push('\''),
-                        Some(other) => {
-                            return Err(format!(
-                                "unsupported perl5db ordinal escape \\{other} in {decoded:?}"
-                            ));
-                        }
-                        None => {
-                            return Err(format!("trailing perl5db ordinal escape in {decoded:?}"));
-                        }
-                    },
-                    '\'' => {
-                        closed = true;
-                        break;
+    if let Some((prefix, payload)) = decoded.split_once(" '")
+        && prefix.trim().parse::<u64>().is_ok()
+    {
+        let mut path = String::with_capacity(payload.len());
+        let mut characters = payload.chars();
+        let mut closed = false;
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => match characters.next() {
+                    Some('\\') => path.push('\\'),
+                    Some('\'') => path.push('\''),
+                    Some(other) => {
+                        return Err(format!(
+                            "unsupported perl5db ordinal escape \\{other} in {decoded:?}"
+                        ));
                     }
-                    other => path.push(other),
+                    None => {
+                        return Err(format!("trailing perl5db ordinal escape in {decoded:?}"));
+                    }
+                },
+                '\'' => {
+                    closed = true;
+                    break;
                 }
+                other => path.push(other),
             }
-            if !closed || characters.any(|character| !character.is_whitespace()) {
-                return Err(format!("unclosed perl5db ordinal path {decoded:?}"));
-            }
-            if path.is_empty() {
-                return Err(format!("empty perl5db ordinal path {decoded:?}"));
-            }
-            return Ok(path);
         }
+        if !closed || characters.any(|character| !character.is_whitespace()) {
+            return Err(format!("unclosed perl5db ordinal path {decoded:?}"));
+        }
+        if path.is_empty() {
+            return Err(format!("empty perl5db ordinal path {decoded:?}"));
+        }
+        return Ok(path);
     }
     Ok(decoded)
 }
@@ -1494,9 +1494,9 @@ pub const DEBUGGEE_PERL_OVERRIDE_ENV: &str = "PERL_LSP_DAP_DEBUGGEE_PERL";
 
 /// Wall-clock budget for one [`probe_debuggee_perl`] attempt.
 ///
-/// A working perl5db emits its banner well inside a second; a broken one
-/// (native MSWin32 builds at piped bootstrap) hangs forever, so the budget is
-/// what bounds the probe.
+/// A working perl5db emits its banner well inside a second; an interpreter
+/// that cannot bootstrap its debugger over pipes may hang, so the budget
+/// bounds the probe.
 const DEBUGGEE_PROBE_BUDGET: Duration = Duration::from_secs(10);
 
 /// A debuggee interpreter proven able to run a real debugger session over
@@ -1538,11 +1538,10 @@ fn debuggee_perl_candidates() -> Vec<PathBuf> {
 
     let mut candidates = vec![PathBuf::from("perl")];
 
-    // Windows: add well-known MSYS-family perl locations. The cataloged root
-    // cause (#12594 item 6b) is that native MSWin32 perl5db builds cannot run
-    // over piped stdio, while MSYS/cygwin-flavored builds can; these paths are
+    // Windows: add well-known MSYS-family perl locations. These paths are
     // only PROPOSALS — every candidate still has to pass the conformance
-    // probe before it is trusted. Environments with other layouts should set
+    // probe, including the native piped-stdio bootstrap, before it is
+    // trusted. Environments with other layouts should set
     // [`DEBUGGEE_PERL_OVERRIDE_ENV`].
     if cfg!(windows) {
         if let Some(system_drive) = std::env::var_os("SystemDrive") {
@@ -1974,6 +1973,19 @@ fn probe_debuggee_perl_with_options_and_barrier(
             .env_remove("PERL5OPT")
             .env("LC_ALL", "C")
             .env("TZ", "UTC");
+        // Keep the resolver probe on the same native Windows stdio path as a
+        // real adapter launch. Strawberry's perl5db selects its console
+        // transport unless EMACS is set, and ReadLine must not query console
+        // handles when the child is attached to pipes. Preserve caller
+        // PERLDB_OPTS and append the debugger-only override, matching the
+        // production launcher in debug_adapter/process.rs.
+        #[cfg(windows)]
+        {
+            command.env("EMACS", "1");
+            let mut perl_db_opts = std::env::var_os("PERLDB_OPTS").unwrap_or_default();
+            perl_db_opts.push(" ReadLine=0");
+            command.env("PERLDB_OPTS", perl_db_opts);
+        }
         if let Some(descendant_pid_file) = descendant_pid_file {
             command.env("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE", descendant_pid_file);
             command.env(
@@ -1999,17 +2011,15 @@ fn probe_debuggee_perl_with_options_and_barrier(
         }
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
         #[cfg(all(test, windows))]
-        if publication_barrier {
-            if let Err(error) = resume_suspended_probe_process(&child) {
-                let cleanup =
-                    terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
-                return Err(fail(format!(
-                    "cannot resume probe process for publication barrier: {error}{}",
-                    cleanup
-                        .err()
-                        .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
-                )));
-            }
+        if publication_barrier && let Err(error) = resume_suspended_probe_process(&child) {
+            let cleanup =
+                terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+            return Err(fail(format!(
+                "cannot resume probe process for publication barrier: {error}{}",
+                cleanup
+                    .err()
+                    .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+            )));
         }
         #[cfg(test)]
         if let Some(descendant_pid_file) = descendant_pid_file {

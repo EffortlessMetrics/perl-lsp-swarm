@@ -170,12 +170,22 @@ function loadRegisteredJourney(
   const sourceRoot = path.join(directory, 'src');
   const sourcePath = path.join(sourceRoot, 'test', 'published', 'packagedBundleJourney.test.ts');
   const supportSourcePath = path.join(sourceRoot, 'test', 'published', 'journeySupport.ts');
+  const suspensionSourcePath = path.join(
+    sourceRoot,
+    'test',
+    'published',
+    'windowsOwnedSuspension.ts',
+  );
   const serverVersionSourcePath = path.join(sourceRoot, 'packagedServerVersion.ts');
   const adapterSourcePath = path.join(sourceRoot, 'testAdapter.ts');
   fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
   fs.copyFileSync(
     path.resolve(__dirname, '../../src/test/published/journeySupport.ts'),
     supportSourcePath,
+  );
+  fs.copyFileSync(
+    path.resolve(__dirname, '../../src/test/published/windowsOwnedSuspension.ts'),
+    suspensionSourcePath,
   );
   fs.copyFileSync(
     path.resolve(__dirname, '../../src/packagedServerVersion.ts'),
@@ -191,6 +201,7 @@ function loadRegisteredJourney(
         path.resolve(__dirname, '../../node_modules/typescript/lib/tsc.js'),
         sourcePath,
         supportSourcePath,
+        suspensionSourcePath,
         serverVersionSourcePath,
         adapterSourcePath,
         '--rootDir',
@@ -235,8 +246,13 @@ function loadRegisteredJourney(
   const previousTest = (globalThis as { test?: unknown }).test;
   (globalThis as { suite?: unknown }).suite = (_name: string, callback: () => void) =>
     callback.call({ timeout: () => undefined });
-  (globalThis as { test?: unknown }).test = (_name: string, callback: RegisteredJourney) => {
-    journey = callback;
+  (globalThis as { test?: unknown }).test = (name: string, callback: RegisteredJourney) => {
+    if (
+      name === 'records bundled identity, provider use, edit re-query, and safe mutation outcomes'
+    ) {
+      if (journey) throw new Error('packaged LSP journey registered more than once');
+      journey = callback;
+    }
   };
   try {
     jest.isolateModules(() => {

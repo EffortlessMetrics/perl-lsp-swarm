@@ -6,6 +6,8 @@ on:
     branches: [main, master]
     paths:
       - 'vscode-extension/**'
+      - 'scripts/tests/windows-owned-suspend.ps1'
+      - 'scripts/tests/test-windows-owned-suspend.ps1'
       - '.github/workflows/vscode-managed-binary-smoke.yml'
   schedule:
     - cron: '0 13 * * 1'
@@ -51,6 +53,19 @@ jobs:
       - name: Verify TypeScript 7 compiler authority
         run: npm run typecheck:authority
 
+      - name: Prove owned Windows suspension and failure cleanup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          node scripts/governed-tsc.js -p tsconfig.published-smoke.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/windows-owned-suspension.test.js scripts/windows-owned-suspension-lifecycle.test.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../scripts/tests/test-windows-owned-suspend.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '[Console]::InputEncoding = [Text.UTF8Encoding]::new($true); & ../scripts/tests/test-windows-owned-suspend.ps1'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Compile extension
         run: npm run bundle
 
@@ -64,6 +79,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # The real-client settlement fixture is Linux-only here so the
+          # existing host job gains one focused production-boundary lane
+          # without expanding the OS matrix.
+          PERL_LSP_REAL_CLIENT_SETTLEMENT: '1'
         run: xvfb-run -a npm run test:integration
 
       - name: Package current extension for Windows published smoke
