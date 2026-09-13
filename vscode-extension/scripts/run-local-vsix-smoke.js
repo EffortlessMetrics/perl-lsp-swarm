@@ -57,6 +57,274 @@ function runPublishedSmoke(env, runner = spawnSync) {
   };
 }
 
+function testExplorerSmokeEnv(baseEnv, revision, vsixPath, vsixSha256) {
+  const explorerLabel = `${smokeSourceLabel()}-test-explorer`;
+  const env = {
+    ...baseEnv,
+    PERL_LSP_CURRENT_SOURCE_SHA: revision,
+    PERL_LSP_SERVER_SOURCE_SHA: serverSourceRevision || revision,
+    PERL_LSP_PUBLISHED_EXTENSION_SOURCE: 'vsix',
+    PERL_LSP_PUBLISHED_VSIX_PATH: vsixPath,
+    PERL_LSP_SMOKE_SOURCE_LABEL: explorerLabel,
+    PERL_LSP_TEST_EXPLORER_SMOKE: '1',
+    PERL_LSP_TEST_EXPLORER_RECEIPT: path.join(
+      receiptsRoot(),
+      explorerLabel,
+      smokePlatformLabel(),
+      'test_explorer_journey_receipt.json',
+    ),
+    PERL_LSP_SERVER_ARTIFACT_SHA256:
+      serverPath && fs.existsSync(serverPath) ? sha256File(serverPath) : '',
+    PERL_LSP_VSIX_SHA256: vsixSha256,
+  };
+  delete env.PERL_LSP_CURRENT_SOURCE_SMOKE;
+  delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
+  delete env.PERL_LSP_HEALTH_CHECK_FAILURE_SMOKE;
+  delete env.PERL_LSP_HEALTH_CHECK_RECOVERY_SMOKE;
+  delete env.PERL_LSP_ACTIVATION_FAILURE_SMOKE;
+  delete env.PERL_LSP_ACTIVATION_FAILURE_LEG;
+  delete env.PERL_LSP_CRASH_RECOVERY_SMOKE;
+  delete env.PERL_LSP_CRASH_RECOVERY_LEG;
+  delete env.PERL_LSP_TEST_EXPLORER_JOURNEY;
+  delete env.PERL_LSP_FIRST_HOUR_ONLY;
+  delete env.PERL_LSP_FIRST_HOUR_RECEIPT;
+  delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+  return env;
+}
+
+function validateTestExplorerReceipt({
+  receiptFile,
+  expectedRevision,
+  expectedServerSourceSha,
+  expectedServerArtifactSha256,
+  expectedVsixSha256,
+  readFile = (file) => fs.readFileSync(file, 'utf8'),
+  exists = (file) => fs.existsSync(file),
+}) {
+  if (!exists(receiptFile)) {
+    return { ok: false, violations: ['Test Explorer child did not write its completion receipt'] };
+  }
+  let receipt;
+  try {
+    receipt = JSON.parse(readFile(receiptFile));
+  } catch (error) {
+    return {
+      ok: false,
+      violations: [
+        `Test Explorer child receipt was not valid JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ],
+    };
+  }
+  const violations = [];
+  if (receipt?.schema_version !== 'test_explorer_journey.v1') {
+    violations.push('Test Explorer child receipt has an unexpected schema');
+  }
+  if (receipt?.outcome !== 'completed') violations.push('Test Explorer child did not complete');
+  if (receipt?.source_revision !== expectedRevision) {
+    violations.push('Test Explorer child source revision is not this candidate');
+  }
+  if (receipt?.server_source_revision !== expectedServerSourceSha) {
+    violations.push('Test Explorer child server revision is not the staged server');
+  }
+  if (
+    receipt?.server_artifact_sha256 !== expectedServerArtifactSha256 ||
+    !/^[0-9a-f]{64}$/i.test(String(receipt?.server_artifact_sha256 ?? ''))
+  ) {
+    violations.push('Test Explorer child server artifact digest is not the staged server');
+  }
+  if (receipt?.binary_resolution_source !== 'bundled') {
+    violations.push('Test Explorer child did not report the bundled server as its source');
+  }
+  if (receipt?.binary_resolution_status !== 'ok') {
+    violations.push('Test Explorer child did not report successful server resolution');
+  }
+  if (
+    typeof receipt?.binary_resolution_path !== 'string' ||
+    receipt.binary_resolution_path.length === 0
+  ) {
+    violations.push('Test Explorer child did not report the selected server path');
+  }
+  if (receipt?.binary_resolution_sha256 !== receipt?.server_artifact_sha256) {
+    violations.push('Test Explorer child selected a server with a different digest');
+  }
+  if (!expectedVsixSha256 || receipt?.vsix_sha256 !== expectedVsixSha256) {
+    violations.push('Test Explorer child VSIX digest is not the package this run created');
+  }
+  if (
+    typeof receipt?.fixture !== 'string' ||
+    receipt.fixture.length === 0 ||
+    typeof receipt?.test_zero !== 'string' ||
+    receipt.test_zero.length === 0
+  ) {
+    violations.push('Test Explorer child receipt is missing selected fixture evidence');
+  } else if (path.normalize(receipt.fixture) !== path.normalize(receipt.test_zero)) {
+    violations.push('Test Explorer child receipt selected a different test than its fixture');
+  }
+  return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
+}
+
+function hasCandidateIdentity(env) {
+  return [
+    env.PERL_LSP_CANDIDATE_ID,
+    env.PERL_LSP_ARTIFACT_SET_ID,
+    env.PERL_LSP_CURRENT_SOURCE_SHA,
+    env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
+  ].some((value) => typeof value === 'string' && value.trim().length > 0);
+}
+
+function hasCompleteCandidateIdentity(env) {
+  return [
+    env.PERL_LSP_CANDIDATE_ID,
+    env.PERL_LSP_ARTIFACT_SET_ID,
+    env.PERL_LSP_CURRENT_SOURCE_SHA,
+    env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
+  ].every((value) => typeof value === 'string' && value.trim().length > 0);
+}
+
+function candidateManifestConstructionRequested(env = process.env) {
+  return env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST === '1';
+}
+
+function requireCandidateManifestConstructionInputs(env, revision) {
+  if (
+    typeof env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST === 'string' &&
+    env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST.trim()
+  ) {
+    throw new Error(
+      'candidate manifest construction cannot be combined with a supplied artifact manifest',
+    );
+  }
+  const fields = {
+    candidateId: env.PERL_LSP_CANDIDATE_ID,
+    artifactSetId: env.PERL_LSP_ARTIFACT_SET_ID,
+    frozenProductSha: env.PERL_LSP_CURRENT_SOURCE_SHA,
+  };
+  const missing = Object.entries(fields)
+    .filter(([, value]) => typeof value !== 'string' || value.trim() === '')
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(
+      `candidate manifest construction requires candidate ID, artifact-set ID, and frozen product SHA; missing ${missing.join(', ')}`,
+    );
+  }
+  if (fields.frozenProductSha.trim() !== revision) {
+    throw new Error(
+      `candidate manifest frozen product SHA ${fields.frozenProductSha.trim()} does not match source revision ${revision}`,
+    );
+  }
+  return {
+    candidateId: fields.candidateId.trim(),
+    artifactSetId: fields.artifactSetId.trim(),
+    frozenProductSha: fields.frozenProductSha.trim(),
+  };
+}
+
+function constructCandidateArtifactManifest(
+  env,
+  revision,
+  platform,
+  vsixSha256,
+  bundledServerSha256,
+) {
+  if (!candidateManifestConstructionRequested(env)) {
+    return undefined;
+  }
+  const identity = requireCandidateManifestConstructionInputs(env, revision);
+  return JSON.stringify({
+    candidate_id: identity.candidateId,
+    frozen_product_sha: identity.frozenProductSha,
+    artifact_set_id: identity.artifactSetId,
+    platform,
+    vsix_sha256: vsixSha256,
+    bundled_server_sha256: bundledServerSha256,
+  });
+}
+
+function interpretTestExplorerExit(smokeRun, childReceipt, childEnv = {}) {
+  if (smokeRun.phase === 'compile') {
+    return {
+      status: 'failed',
+      exit_code: smokeRun.result.status ?? null,
+      reason: smokeRun.result.error
+        ? 'published_smoke_compile_spawn_failed'
+        : 'published_smoke_compile_failed',
+    };
+  }
+  if (smokeRun.result.error || smokeRun.result.status !== 0) {
+    const interpreted = interpretBehavioralSmokeExit({
+      status: smokeRun.result.status,
+      spawnError: smokeRun.result.error,
+      candidateBound: hasCandidateIdentity(childEnv),
+      completeCandidateIdentity: hasCompleteCandidateIdentity(childEnv),
+      platform: process.platform,
+      receiptsRoot: receiptsRoot(),
+    });
+    return interpreted.reason === 'published_extension_smoke_failed'
+      ? { ...interpreted, reason: 'test_explorer_journey_failed' }
+      : interpreted;
+  }
+  if (!childReceipt.ok) {
+    return {
+      status: 'not_proven',
+      exit_code: 0,
+      reason: 'test_explorer_child_receipt_did_not_bind_this_run',
+      violations: childReceipt.violations,
+    };
+  }
+  return {
+    status: 'pass',
+    exit_code: 0,
+    reason: 'test_explorer_child_completed',
+    fixture: childReceipt.receipt.fixture,
+    test_zero: childReceipt.receipt.test_zero,
+  };
+}
+
+/**
+ * @param {NodeJS.ProcessEnv} baseEnv
+ * @param {string} revision
+ * @param {string} vsixPath
+ * @param {string} vsixSha256
+ * @param {(env: NodeJS.ProcessEnv) => {phase: string, result: {status: number | null, error?: Error}}} [runner]
+ */
+function runTestExplorerJourneyStage(
+  baseEnv,
+  revision,
+  vsixPath,
+  vsixSha256,
+  runner = (env) => runPublishedSmoke(env),
+) {
+  const env = testExplorerSmokeEnv(baseEnv, revision, vsixPath, vsixSha256);
+  const receiptFile = env.PERL_LSP_TEST_EXPLORER_RECEIPT;
+  try {
+    for (const staleReceipt of [receiptFile, hostResolutionFailurePath()]) {
+      fs.rmSync(staleReceipt, { force: true });
+    }
+  } catch (error) {
+    return {
+      status: 'not_proven',
+      exit_code: null,
+      reason: `unable to clear the previous Test Explorer or host-resolution receipt: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  const smokeRun = runner(env);
+  const childReceipt =
+    smokeRun.phase === 'child' && smokeRun.result.status === 0
+      ? validateTestExplorerReceipt({
+          receiptFile,
+          expectedRevision: revision,
+          expectedServerSourceSha: serverSourceRevision || revision,
+          expectedServerArtifactSha256: env.PERL_LSP_SERVER_ARTIFACT_SHA256,
+          expectedVsixSha256: vsixSha256,
+        })
+      : { ok: false, violations: ['Test Explorer child did not complete successfully'] };
+  return interpretTestExplorerExit(smokeRun, childReceipt, env);
+}
+
 function gitRevision() {
   const result = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
   if (result.status !== 0) {
@@ -189,6 +457,7 @@ function writeJsonAtomic(destination, value) {
  *   violations?: string[],
  *   post_host_exit_processes?: string[],
  *   transition?: unknown,
+ *   candidate_bound?: boolean,
  * }} SmokeStage
  */
 
@@ -208,6 +477,7 @@ function writeJsonAtomic(destination, value) {
  *     package_creation: SmokeStage,
  *     package_inventory: SmokeStage,
  *     behavioral_smoke: SmokeStage,
+ *     test_explorer_journey?: SmokeStage,
  *     activation_failure_journey: SmokeStage,
  *     crash_recovery_journey: SmokeStage,
  *   },
@@ -323,6 +593,10 @@ function computeOverallStatus(stages, instrumentFailure = null, cleanupFailure =
     activationFailure.status !== 'pass' &&
     activationFailure.status !== 'not_run'
   ) {
+    return 'not_proven';
+  }
+  const testExplorer = stages.test_explorer_journey;
+  if (testExplorer && testExplorer.status !== 'pass' && testExplorer.status !== 'not_run') {
     return 'not_proven';
   }
   const crashRecovery = stages.crash_recovery_journey;
@@ -498,13 +772,21 @@ function interpretTransitionResult(
   };
 }
 
-function runInventoryTransition(env, expectedRevision, vsixPath) {
+function inventoryTransitionArgs(env, vsixPath) {
   const scriptPath = path.join(__dirname, 'check-vsix-inventory-transition.js');
   const args = [scriptPath, '--vsix', vsixPath];
   const explicitBase = (env.PERL_LSP_PACKAGE_BASE_SHA || '').trim();
-  if (explicitBase) {
+  const pullRequestBase = (env.PERL_LSP_PACKAGE_PR_BASE_SHA || '').trim();
+  if ((env.PERL_LSP_PACKAGE_BASE_MODE || '').trim() === 'pull_request') {
+    args.push('--merge-base-with', pullRequestBase);
+  } else if (explicitBase) {
     args.push('--base', explicitBase);
   }
+  return args;
+}
+
+function runInventoryTransition(env, expectedRevision, vsixPath) {
+  const args = inventoryTransitionArgs(env, vsixPath);
   const result = spawnSync(process.execPath, args, {
     cwd: root,
     env,
@@ -604,6 +886,7 @@ function validateChildSmokeReceipt({
       `first-hour receipt outcome is ${JSON.stringify(receipt.outcome)}, not completed`,
     );
   }
+
   if (!Array.isArray(receipt.failures) || receipt.failures.length > 0) {
     violations.push('first-hour receipt reported failures');
   }
@@ -657,6 +940,132 @@ function validateChildSmokeReceipt({
   return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
 }
 
+function verifiedCandidateReceiptPath() {
+  return path.join(
+    receiptsRoot(),
+    smokeSourceLabel(),
+    smokePlatformLabel(),
+    'verified_child_receipt.json',
+  );
+}
+
+/**
+ * @returns {{ok: boolean, receipt?: any, source_receipt?: any, violations?: string[]}}
+ */
+function validateVerifiedCandidateReceipt({
+  receiptFile,
+  env,
+  expectedVsixSha256,
+  expectedBundledServerSha256,
+  sourceReceiptFile,
+  expectedPlatform,
+}) {
+  try {
+    const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
+    const violations = [];
+    const allowedStatuses = new Set(['pass', 'limited', 'blocked', 'not_proven']);
+    if (receipt.schema_version !== 'verified_child_receipt.v1') {
+      violations.push('verified child receipt schema is not verified_child_receipt.v1');
+    }
+    if (receipt.receipt_schema_version !== 'installed_acceptance.v1') {
+      violations.push('verified child receipt is not an installed acceptance envelope');
+    }
+    if (!allowedStatuses.has(receipt.status)) {
+      violations.push('verified child receipt has an invalid or missing bounded status');
+    }
+    for (const [field, expected] of [
+      ['candidate_id', env.PERL_LSP_CANDIDATE_ID],
+      ['frozen_product_sha', env.PERL_LSP_CURRENT_SOURCE_SHA],
+      ['artifact_set_id', env.PERL_LSP_ARTIFACT_SET_ID],
+    ]) {
+      if (receipt[field] !== expected) {
+        violations.push(`verified child ${field} does not bind this candidate`);
+      }
+    }
+    if (receipt.status === 'blocked') {
+      violations.push(
+        `verified child status ${JSON.stringify(receipt.status)} is not executable evidence`,
+      );
+    }
+    if (!receipt.source_receipt_sha256 || !sourceReceiptFile) {
+      violations.push('verified child receipt does not bind its packaged source receipt');
+    } else if (receipt.source_receipt_sha256 !== sha256File(sourceReceiptFile)) {
+      violations.push('verified child source receipt digest does not match this run');
+    }
+    if (receipt.artifact_hashes?.vsix_sha256 !== expectedVsixSha256) {
+      violations.push("verified child VSIX digest is not this run's package");
+    }
+    if (receipt.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
+      violations.push("verified child bundled-server digest is not this run's server");
+    }
+    let sourceReceipt;
+    try {
+      sourceReceipt = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+    } catch (error) {
+      violations.push(
+        `packaged source receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (sourceReceipt?.repository_sha !== env.PERL_LSP_CURRENT_SOURCE_SHA) {
+      violations.push('packaged source receipt does not bind this candidate source');
+    }
+    if (sourceReceipt?.artifact_hashes?.vsix_sha256 !== expectedVsixSha256) {
+      violations.push("packaged source receipt VSIX digest is not this run's package");
+    }
+    if (sourceReceipt?.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
+      violations.push("packaged source receipt bundled-server digest is not this run's server");
+    }
+    const expectedBundleMarker =
+      expectedPlatform === 'windows' ? 'win32-x64' : `${expectedPlatform}-x64`;
+    const sourceStartup = sourceReceipt?.startup;
+    const sourceIdentity = sourceReceipt?.server_identity;
+    const sourceRequests = sourceReceipt?.requests;
+    const providerKeys = ['completion', 'hover', 'definition', 'references', 'symbols'];
+    if (
+      !sourceReceipt ||
+      sourceReceipt.outcome !== 'not_proven' ||
+      !Array.isArray(sourceReceipt.product_blockers) ||
+      sourceReceipt.product_blockers.length !== 0 ||
+      sourceIdentity?.source !== 'packaged_vsix_bundle' ||
+      sourceIdentity?.startup_source !== 'bundled' ||
+      typeof sourceIdentity.path !== 'string' ||
+      !sourceIdentity.path.replaceAll('\\', '/').split('/').includes(expectedBundleMarker) ||
+      sourceStartup?.lifecycle_state !== 'running' ||
+      sourceStartup?.binary_resolution_status !== 'ok' ||
+      sourceStartup?.server_start_status !== 'ok' ||
+      sourceStartup?.initialize_status !== 'ok' ||
+      !sourceRequests?.after_edit ||
+      sourceRequests.after_edit.status !== 'ok' ||
+      sourceRequests.after_edit.immediate_requery?.status !== 'ok' ||
+      !sourceRequests.immediate ||
+      providerKeys.some((key) => sourceRequests.immediate[key]?.status !== 'ok') ||
+      sourceReceipt.shutdown !== 'stopped'
+    ) {
+      violations.push(
+        'packaged source receipt does not prove the bounded packaged startup/provider/edit journey',
+      );
+    }
+    return violations.length > 0
+      ? { ok: false, violations }
+      : { ok: true, receipt, source_receipt: sourceReceipt };
+  } catch (error) {
+    return {
+      ok: false,
+      violations: [
+        `verified child receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      ],
+    };
+  }
+}
+
+function observedVscodeVersion(childReceipt, constructedManifest) {
+  if (!childReceipt?.ok) return undefined;
+  if (constructedManifest && 'source_receipt' in childReceipt) {
+    return childReceipt.source_receipt?.vscode_version;
+  }
+  return childReceipt.receipt?.environment?.vscode_version;
+}
+
 /** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
 const HOST_RESOLUTION_FAILURE_RECEIPT = 'vscode_host_resolution_failure.json';
 // Reserved by runPublishedSmoke.ts for the candidate-bound platform boundary.
@@ -705,6 +1114,7 @@ function readHostResolutionFailureReceipt(
  *   status?: number | null,
  *   spawnError?: Error | undefined,
  *   candidateBound?: boolean,
+ *   completeCandidateIdentity?: boolean,
  *   platform?: string,
  *   receiptsRoot?: string,
  *   exists?: ((file: string) => boolean) | undefined,
@@ -721,6 +1131,7 @@ function interpretBehavioralSmokeExit({
   status = null,
   spawnError,
   candidateBound = false,
+  completeCandidateIdentity = false,
   platform = process.platform,
   receiptsRoot: root = receiptsRoot(),
   exists,
@@ -760,6 +1171,7 @@ function interpretBehavioralSmokeExit({
   if (
     candidateBound &&
     platform !== 'linux' &&
+    (!completeCandidateIdentity || platform !== 'win32') &&
     status === CANDIDATE_PLATFORM_UNAVAILABLE_EXIT_CODE
   ) {
     return {
@@ -801,6 +1213,7 @@ const CHECK_STAGE_ORDER = [
   'package_creation',
   'package_inventory',
   'behavioral_smoke',
+  'test_explorer_journey',
   'activation_failure_journey',
   'crash_recovery_journey',
 ];
@@ -809,9 +1222,16 @@ const CHECK_STAGE_LABELS = {
   package_creation: 'package creation',
   package_inventory: 'package inventory',
   behavioral_smoke: 'behavioral smoke',
+  test_explorer_journey: 'Test Explorer journey',
   activation_failure_journey: 'activation-failure journey',
   crash_recovery_journey: 'crash-recovery journey',
 };
+
+function checkStageOrder(stages) {
+  return stages.test_explorer_journey
+    ? CHECK_STAGE_ORDER
+    : CHECK_STAGE_ORDER.filter((key) => key !== 'test_explorer_journey');
+}
 
 /** The receipt's typed stage vocabulary, rendered as English. */
 const CHECK_VERDICT_WORDS = {
@@ -832,7 +1252,11 @@ const CHECK_PACKAGE_STAGES = ['package_creation', 'package_inventory'];
  * recovery journey would otherwise read entirely green on a red check, which
  * is the misreading this projection exists to remove.
  */
-const CHECK_JOURNEY_STAGES = ['activation_failure_journey', 'crash_recovery_journey'];
+const CHECK_JOURNEY_STAGES = [
+  'test_explorer_journey',
+  'activation_failure_journey',
+  'crash_recovery_journey',
+];
 
 function checkVerdictWord(status) {
   return CHECK_VERDICT_WORDS[status] ?? String(status);
@@ -937,6 +1361,7 @@ function checkHeadline(receipt) {
   for (const key of CHECK_JOURNEY_STAGES) {
     const stage = stages[key];
     if (!stage) {
+      if (key === 'test_explorer_journey') continue;
       segments.push(`${CHECK_STAGE_LABELS[key]} absent from the receipt`);
       continue;
     }
@@ -960,12 +1385,15 @@ function checkHeadline(receipt) {
 
 /** Stages that carry no verdict yet, so the summary can say what is still owed. */
 function checkRemainingProof(stages) {
-  return CHECK_STAGE_ORDER.filter((key) => {
-    const status = stages[key]?.status;
-    return status === 'not_run' || status === 'not_proven';
-  }).map(
-    (key) => `${CHECK_STAGE_LABELS[key]} (${stages[key].status}): ${checkStageDetail(stages[key])}`,
-  );
+  return checkStageOrder(stages)
+    .filter((key) => {
+      const status = stages[key]?.status;
+      return status === 'not_run' || status === 'not_proven';
+    })
+    .map(
+      (key) =>
+        `${CHECK_STAGE_LABELS[key]} (${stages[key].status}): ${checkStageDetail(stages[key])}`,
+    );
 }
 
 /** Workflow-command data escaping, per GitHub's documented encoding. */
@@ -994,7 +1422,7 @@ function composeCheckSummary(receipt) {
   const stages = receipt.stages ?? {};
   const headline = checkHeadline(receipt);
   const overall = receipt.overall ?? 'not_proven';
-  const present = CHECK_STAGE_ORDER.filter((key) => stages[key]);
+  const present = checkStageOrder(stages).filter((key) => stages[key]);
 
   const annotations = [
     `::notice title=VS Code smoke::${escapeAnnotationData(`${receipt.source_label ?? 'unknown'}: ${headline}`)}`,
@@ -1011,7 +1439,7 @@ function composeCheckSummary(receipt) {
     );
   }
 
-  const displayed = CHECK_STAGE_ORDER.filter(
+  const displayed = checkStageOrder(stages).filter(
     (key) => stages[key] || CHECK_JOURNEY_STAGES.includes(key),
   );
   const rows = displayed.map(
@@ -1864,6 +2292,10 @@ function activationFailureLegEnv(baseEnv, leg, fault, context) {
   delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
   delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
   delete env.PERL_LSP_CURRENT_SOURCE_SHA;
+  delete env.PERL_LSP_CANDIDATE_ID;
+  delete env.PERL_LSP_ARTIFACT_SET_ID;
+  delete env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST;
+  delete env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST;
   return env;
 }
 
@@ -2088,6 +2520,10 @@ function crashRecoveryLegEnv(baseEnv, leg, context) {
   delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
   delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
   delete env.PERL_LSP_CURRENT_SOURCE_SHA;
+  delete env.PERL_LSP_CANDIDATE_ID;
+  delete env.PERL_LSP_ARTIFACT_SET_ID;
+  delete env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST;
+  delete env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST;
   delete env.PERL_LSP_ACTIVATION_FAILURE_SMOKE;
   delete env.PERL_LSP_ACTIVATION_FAILURE_LEG;
   delete env.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE;
@@ -2336,6 +2772,10 @@ function main() {
 
   const destination = receiptPath(revision);
   const receipt = initialReceipt(revision);
+  const testExplorerRequested = process.env.PERL_LSP_TEST_EXPLORER_JOURNEY === '1';
+  if (testExplorerRequested) {
+    receipt.stages.test_explorer_journey = { status: 'not_run', reason: 'not_started' };
+  }
   persistReceipt(destination, receipt);
 
   const failInstrument = (error) => {
@@ -2389,6 +2829,9 @@ function main() {
         `Server source revision ${serverSourceRevision} does not match extension source revision ${revision}`,
       );
     }
+    if (candidateManifestConstructionRequested(process.env)) {
+      requireCandidateManifestConstructionInputs(process.env, revision);
+    }
   } catch (error) {
     failInstrument(error);
     return concludeRun(receipt);
@@ -2401,11 +2844,13 @@ function main() {
   const runStageBody = () => {
     try {
       restoreStagedServer = stageServerForPackage(serverPath);
+      /** @type {NodeJS.ProcessEnv} */
       const packageEnv = {
         ...process.env,
         PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
         PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
       };
+      delete packageEnv.PERL_LSP_TEST_EXPLORER_JOURNEY;
       const packageResult = runNpm(
         ['exec', '--offline', '--no', '--', 'vsce', 'package'],
         packageEnv,
@@ -2475,10 +2920,22 @@ function main() {
       receipt.stages.package_creation = { status: 'pass', exit_code: 0 };
       persistReceipt(destination, receipt);
 
+      const constructedManifest = constructCandidateArtifactManifest(
+        process.env,
+        revision,
+        process.platform === 'win32' ? 'windows' : process.platform,
+        receipt.vsix.sha256,
+        sha256File(serverPath),
+      );
+      if (constructedManifest !== undefined) {
+        packageEnv.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = constructedManifest;
+      }
+
       receipt.stages.package_inventory = runInventoryTransition(packageEnv, revision, vsixPath);
       persistReceipt(destination, receipt);
 
       if (shouldRunBehavioralSmoke(receipt.stages)) {
+        /** @type {NodeJS.ProcessEnv} */
         const smokeEnv = {
           ...process.env,
           PERL_LSP_CURRENT_SOURCE_SHA: revision,
@@ -2493,12 +2950,26 @@ function main() {
           PERL_LSP_SMOKE_SOURCE_LABEL: smokeSourceLabel(),
           PERL_LSP_VSIX_SHA256: receipt.vsix.sha256 ?? '',
         };
+        if (constructedManifest !== undefined) {
+          smokeEnv.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = constructedManifest;
+          smokeEnv.PERL_LSP_PACKAGED_BUNDLE_SMOKE = '1';
+          delete smokeEnv.PERL_LSP_CURRENT_SOURCE_SMOKE;
+          delete smokeEnv.PERL_LSP_FIRST_HOUR_ONLY;
+          delete smokeEnv.PERL_LSP_FIRST_HOUR_RECEIPT;
+          delete smokeEnv.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+        }
+        // The first-hour child is one leg of the combined candidate run. Keep
+        // its selector exclusive so the second Test Explorer leg can reuse the
+        // same staged VSIX after this process completes.
+        delete smokeEnv.PERL_LSP_TEST_EXPLORER_SMOKE;
+        delete smokeEnv.PERL_LSP_TEST_EXPLORER_JOURNEY;
 
         // Clear any receipt left by an earlier run so a stale artifact can
         // never be mistaken for this run's behavioral evidence.
         const childReceiptFile = childReceiptPath();
         try {
           fs.rmSync(childReceiptFile, { force: true });
+          fs.rmSync(verifiedCandidateReceiptPath(), { force: true });
           fs.rmSync(hostResolutionFailurePath(), { force: true });
         } catch (error) {
           receipt.stages.behavioral_smoke = {
@@ -2529,34 +3000,60 @@ function main() {
           receipt.stages.behavioral_smoke = interpretBehavioralSmokeExit({
             status: smokeResult.status,
             spawnError: smokeResult.error,
-            candidateBound: Boolean(smokeEnv.PERL_LSP_CURRENT_SOURCE_SHA),
+            candidateBound: hasCandidateIdentity(smokeEnv),
+            completeCandidateIdentity: hasCompleteCandidateIdentity(smokeEnv),
             platform: process.platform,
             receiptsRoot: receiptsRoot(),
           });
         } else if (smokeResult.status === 0) {
-          const childReceipt = validateChildSmokeReceipt({
-            receiptFile: childReceiptFile,
-            expectedRevision: revision,
-            expectedVsixSha256: receipt.vsix.sha256,
-            expectedServerSourceSha: serverSourceRevision,
-            // Mirror the child's own default so an unset matrix version is not
-            // reported as an identity mismatch.
-            expectedVscodeVersion: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
-            expectedSourceLabel: receipt.source_label,
-          });
+          const childReceipt =
+            constructedManifest !== undefined
+              ? validateVerifiedCandidateReceipt({
+                  receiptFile: verifiedCandidateReceiptPath(),
+                  env: smokeEnv,
+                  expectedVsixSha256: receipt.vsix.sha256,
+                  expectedBundledServerSha256: sha256File(serverPath),
+                  sourceReceiptFile: path.join(
+                    path.dirname(verifiedCandidateReceiptPath()),
+                    'packaged_bundle_journey_receipt.json',
+                  ),
+                  expectedPlatform: process.platform === 'win32' ? 'windows' : process.platform,
+                })
+              : validateChildSmokeReceipt({
+                  receiptFile: childReceiptFile,
+                  expectedRevision: revision,
+                  expectedVsixSha256: receipt.vsix.sha256,
+                  expectedServerSourceSha: serverSourceRevision,
+                  // Mirror the child's own default so an unset matrix version is not
+                  // reported as an identity mismatch.
+                  expectedVscodeVersion:
+                    (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+                  expectedSourceLabel: receipt.source_label,
+                });
           receipt.stages.behavioral_smoke = childReceipt.ok
-            ? { status: 'pass', exit_code: 0 }
+            ? {
+                status: 'pass',
+                exit_code: 0,
+                candidate_bound:
+                  constructedManifest !== undefined || hasCompleteCandidateIdentity(smokeEnv),
+              }
             : {
                 status: 'not_proven',
                 exit_code: 0,
                 reason: 'child_receipt_did_not_bind_this_run',
-                violations: childReceipt.violations,
+                ...(childReceipt.violations ? { violations: childReceipt.violations } : {}),
               };
           if (childReceipt.ok) {
             // Propagate the launched runtime version the bound child
             // observed; downstream exactness claims must bind to this, never
             // to the requested selector alone.
-            receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
+            const observedVersion = observedVscodeVersion(
+              childReceipt,
+              constructedManifest !== undefined,
+            );
+            if (observedVersion) {
+              receipt.observed_vscode_version = observedVersion;
+            }
           }
         }
       } else {
@@ -2570,6 +3067,20 @@ function main() {
                   receipt.stages.package_inventory.classification ||
                   'not_proven'
                 }`,
+        };
+      }
+
+      if (testExplorerRequested && shouldRunBehavioralSmoke(receipt.stages)) {
+        receipt.stages.test_explorer_journey = runTestExplorerJourneyStage(
+          packageEnv,
+          revision,
+          vsixPath,
+          receipt.vsix.sha256 ?? '',
+        );
+      } else if (testExplorerRequested) {
+        receipt.stages.test_explorer_journey = {
+          status: 'not_run',
+          reason: 'package_not_behavior_safe',
         };
       }
 
@@ -2640,6 +3151,8 @@ module.exports = {
   CRASH_RECOVERY_RECEIPTS,
   activationFailureLegEnv,
   bundleTargetForPlatform,
+  candidateManifestConstructionRequested,
+  constructCandidateArtifactManifest,
   childReceiptPath,
   composeActivationRecoveryReceipt,
   composeCheckSummary,
@@ -2650,8 +3163,15 @@ module.exports = {
   finalizeSmokeRun,
   initialReceipt,
   interpretBehavioralSmokeExit,
+  interpretTestExplorerExit,
   runPublishedSmoke,
+  runTestExplorerJourneyStage,
+  testExplorerSmokeEnv,
+  validateTestExplorerReceipt,
+  validateVerifiedCandidateReceipt,
+  observedVscodeVersion,
   interpretTransitionResult,
+  inventoryTransitionArgs,
   publishCheckSummary,
   writeProjectionLine,
   readHostResolutionFailureReceipt,

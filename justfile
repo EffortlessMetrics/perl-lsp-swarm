@@ -2053,26 +2053,26 @@ coverage-proof base='origin/main':
         --test ripr_new_gap_gate_workflow
     "$HOME/.cargo/bin/rustup" run nightly cargo llvm-cov report --lcov --output-path target/lcov.info \
         --ignore-filename-regex '(^|/)(archive|tests|benches|examples)(/|$)|(^|/)build\.rs$|(^|/)crates/tree-sitter-perl-c/|(^|/)crates/perl-dap/src/main\.rs$'
-    cargo xtask coverage-baseline \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
         --scope workspace-lib-xtask-quality
-    cargo xtask coverage-baseline \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask coverage-baseline \
         --lcov target/lcov.info \
         --receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --patch-base "{{base}}" \
         --scope workspace-lib-xtask-quality \
         --check
-    cargo xtask quality-gate \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask quality-gate \
         --mode enforce-patch-coverage \
         --coverage-receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
         --receipt target/receipts/quality/quality-gate-coverage.json \
         --summary target/receipts/quality/quality-gate-coverage.md
-    cargo xtask quality-gate \
+    "$HOME/.cargo/bin/rustup" run nightly cargo xtask quality-gate \
         --mode enforce-patch-coverage \
         --coverage-receipt target/receipts/quality/coverage-baseline.json \
         --codecov codecov.yml \
@@ -3015,31 +3015,27 @@ perl-core-prepare REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
           --ref {{REF}} \
           --output-dir target/perl-core/upstream/{{REF}}
 
-perl-core-discover-base PERL_TREE HOST_PERL="perl":
+perl-core-discover-base PERL_TREE:
     cargo run -p xtask -- perl-core-harness discover \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base
 
-perl-core-parse-base PERL_TREE HOST_PERL="perl":
+perl-core-parse-base PERL_TREE:
     cargo run -p xtask -- perl-core-harness run \
           --mode parse \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base
 
-perl-core-compile-base PERL_TREE HOST_PERL="perl":
+perl-core-compile-base PERL_TREE:
     cargo run -p xtask -- perl-core-harness run \
           --mode compile \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base
 
-perl-core-compile-base-ratchet PERL_TREE HOST_PERL="perl":
+perl-core-compile-base-ratchet PERL_TREE:
     cargo run -p xtask -- perl-core-harness run \
           --mode compile \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base
     cargo run -p xtask -- perl-core-harness baseline \
           --mode compile \
@@ -3048,24 +3044,21 @@ perl-core-compile-base-ratchet PERL_TREE HOST_PERL="perl":
           --baseline .ci/perl-core-harness/base-compile-baseline.json \
           --check
 
-perl-core-real-base-smoke PERL_TREE HOST_PERL="perl":
+perl-core-real-base-smoke PERL_TREE:
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile base \
           --modes parse,compile
 
-perl-core-real-comp-smoke PERL_TREE HOST_PERL="perl":
+perl-core-real-comp-smoke PERL_TREE:
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile comp \
           --modes parse,compile
 
-perl-core-real-run-smoke PERL_TREE HOST_PERL="perl":
+perl-core-real-run-smoke PERL_TREE:
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree {{PERL_TREE}} \
-          --host-perl {{HOST_PERL}} \
           --profile run \
           --modes parse,compile
 
@@ -3075,7 +3068,6 @@ perl-core-integrated-base REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
           --output-dir target/perl-core/upstream/{{REF}}
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree target/perl-core/upstream/{{REF}}/perl5 \
-          --host-perl perl \
           --profile base \
           --modes parse,compile \
           --perl-ref {{REF}} \
@@ -3087,7 +3079,6 @@ perl-core-integrated-comp REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
           --output-dir target/perl-core/upstream/{{REF}}
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree target/perl-core/upstream/{{REF}}/perl5 \
-          --host-perl perl \
           --profile comp \
           --modes parse,compile \
           --perl-ref {{REF}} \
@@ -3099,7 +3090,6 @@ perl-core-integrated-run REF="b62845c7186b0b6a8e4e83419e6b5ef64ceef3ed":
           --output-dir target/perl-core/upstream/{{REF}}
     cargo run -p xtask -- perl-core-harness smoke \
           --perl-tree target/perl-core/upstream/{{REF}}/perl5 \
-          --host-perl perl \
           --profile run \
           --modes parse,compile \
           --perl-ref {{REF}} \

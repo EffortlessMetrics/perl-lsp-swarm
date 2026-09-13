@@ -23,8 +23,23 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn workspace() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
-    let canonical = tmp.path().canonicalize()?;
+    let canonical = normalize_canonical(tmp.path().canonicalize()?);
     Ok((tmp, canonical))
+}
+// fs::canonicalize on Windows returns a verbatim `\?\`-prefixed path; the
+// validator's contract (perl-parser-core path_security) compares against the
+// stripped form, so tests must speak the same shape (#15420).
+fn normalize_canonical(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\UNC\")) {
+            return PathBuf::from(format!(r"\\{}", stripped));
+        }
+        if let Some(stripped) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
 }
 
 // ===========================================================================
@@ -138,7 +153,7 @@ fn dap_absolute_inside_workspace_is_valid() -> TestResult {
     std::fs::write(&file, "1;")?;
 
     let result = validate_path(&file, ws)?;
-    assert!(result.starts_with(ws.canonicalize()?));
+    assert!(result.starts_with(normalize_canonical(ws.canonicalize()?)));
     Ok(())
 }
 
@@ -315,7 +330,7 @@ fn dap_symlink_within_workspace_is_valid() -> TestResult {
     std::os::unix::fs::symlink(&target, &link)?;
 
     let result = validate_path(Path::new("alias/script.pl"), ws)?;
-    assert!(result.starts_with(ws.canonicalize()?));
+    assert!(result.starts_with(normalize_canonical(ws.canonicalize()?)));
     Ok(())
 }
 

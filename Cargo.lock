@@ -1829,11 +1829,13 @@ dependencies = [
  "perl-ast-v2",
  "perl-parser-core",
  "perl-position-tracking",
+ "perl-source-identity",
  "perl-tdd-support",
  "perl-token",
  "phf",
  "proptest",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
  "unicode-ident",
@@ -2072,7 +2074,6 @@ dependencies = [
 name = "perl-parser-pest"
 version = "0.17.0"
 dependencies = [
- "perl-tdd-support",
  "pest",
  "pest_derive",
  "regex",
@@ -2113,6 +2114,7 @@ version = "0.17.0"
 dependencies = [
  "criterion",
  "perl-ast",
+ "perl-parser-core",
  "proptest",
 ]
 
@@ -2307,6 +2309,7 @@ dependencies = [
  "perl-pod",
  "perl-pragma",
  "perl-symbol",
+ "perl-test-must",
  "serde",
  "serde_json",
 ]

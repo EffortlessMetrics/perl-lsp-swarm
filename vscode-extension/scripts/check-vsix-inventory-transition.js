@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const { spawnSync } = require('child_process');
-const AdmZip = require('adm-zip');
+const yauzl = require('yauzl');
 const {
   bundleTargetForPackagedFile,
   classifyInventoryViolations,
@@ -32,15 +32,21 @@ const DECLARATION_KEYS = [
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 function parseArgs(argv) {
-  const result = { base: '', receipt: '', vsix: '' };
+  const result = { base: '', mergeBaseWith: '', receipt: '', vsix: '' };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === '--base' || argument === '--receipt' || argument === '--vsix') {
+    if (
+      argument === '--base' ||
+      argument === '--merge-base-with' ||
+      argument === '--receipt' ||
+      argument === '--vsix'
+    ) {
       const value = argv[index + 1];
       if (!value) {
         throw new Error(`${argument} requires a value`);
       }
-      result[argument.slice(2)] = value;
+      const key = argument === '--merge-base-with' ? 'mergeBaseWith' : argument.slice(2);
+      result[key] = value;
       index += 1;
     } else {
       throw new Error(`Unknown argument: ${argument}`);
@@ -116,17 +122,42 @@ function ensureDistinctBase(candidateSha, baseSha, source = 'base revision') {
   return baseSha;
 }
 
-function resolveBaseRevision(candidateSha, explicitBase = '') {
+function assertFullSha(value, label) {
+  if (!/^[0-9a-f]{40}$/.test(value)) {
+    throw new Error(`${label} must be a full lowercase commit SHA, got ${JSON.stringify(value)}`);
+  }
+}
+
+function resolvePullRequestMergeBase(candidateSha, eventBaseSha, dependencies = {}) {
+  const resolve = dependencies.resolveRevision || resolveRevision;
+  const mergeBase = dependencies.runGitOptional || runGitOptional;
+  const requested = eventBaseSha.trim();
+  assertFullSha(requested, 'pull request base revision');
+  const eventBase = resolve(requested);
+  return ensureDistinctBase(
+    candidateSha,
+    mergeBase(['merge-base', candidateSha, eventBase]),
+    'pull request merge base',
+  );
+}
+
+function resolveBaseRevision(candidateSha, explicitBase = '', pullRequestBase = '') {
   const requested = explicitBase.trim() || (process.env.PERL_LSP_PACKAGE_BASE_SHA || '').trim();
+  const eventBase =
+    pullRequestBase.trim() || (process.env.PERL_LSP_PACKAGE_PR_BASE_SHA || '').trim();
+  if (requested && eventBase) {
+    throw new Error(
+      'cannot provide both an accepted base revision and a pull request base revision',
+    );
+  }
   if (requested) {
     // An explicit base (including an all-zero placeholder) is an operator
     // claim: reject it loudly rather than silently falling back.
-    if (!/^[0-9a-f]{40}$/.test(requested)) {
-      throw new Error(
-        `requested base revision must be a full lowercase commit SHA, got ${JSON.stringify(requested)}`,
-      );
-    }
+    assertFullSha(requested, 'requested base revision');
     return ensureDistinctBase(candidateSha, resolveRevision(requested), 'requested base revision');
+  }
+  if (eventBase) {
+    return resolvePullRequestMergeBase(candidateSha, eventBase);
   }
 
   const mergeBase = runGitOptional(['merge-base', 'HEAD', 'origin/main']);
@@ -196,18 +227,22 @@ const VSIX_PAYLOAD_PREFIX = 'extension/';
  * make the two disagree; only the archive is the artifact that ships.
  *
  * @param {string} vsixPath
- * @returns {{
+ * @returns {Promise<{
  *   inventory: { schema_version: number, total_files: number, total_bytes: number, files: Record<string, number> },
  *   archive_sha256: string,
  *   metadata_entries: string[],
- * }}
+ * }>}
  */
-function collectArchiveInventory(vsixPath) {
+async function collectArchiveInventory(vsixPath) {
   const archiveBytes = fs.readFileSync(vsixPath);
 
   let zip;
   try {
-    zip = new AdmZip(archiveBytes);
+    zip = await yauzl.fromBufferPromise(archiveBytes, {
+      lazyEntries: true,
+      decodeStrings: false,
+      validateEntrySizes: true,
+    });
   } catch (error) {
     throw new Error(
       `unable to read VSIX archive ${vsixPath}: ${error instanceof Error ? error.message : String(error)}`,
@@ -220,49 +255,56 @@ function collectArchiveInventory(vsixPath) {
   const metadataEntries = [];
   const seen = new Set();
 
-  for (const entry of zip.getEntries()) {
-    const rawName = String(entry.entryName);
-    if (seen.has(rawName)) {
-      throw new Error(`VSIX archive contains a duplicate entry name: ${JSON.stringify(rawName)}`);
-    }
-    seen.add(rawName);
-    if (entry.isDirectory) {
-      continue;
-    }
-    const declaredSize = entry.header.size;
-    assertNonNegativeSafeInteger(
-      declaredSize,
-      `VSIX archive entry ${JSON.stringify(rawName)} size`,
-    );
-    let payload;
-    try {
-      payload = entry.getData();
-    } catch (error) {
-      throw new Error(
-        `unable to read VSIX archive entry ${JSON.stringify(rawName)}: ${error instanceof Error ? error.message : String(error)}`,
+  try {
+    for await (const entry of zip.eachEntry()) {
+      const rawName = Buffer.from(entry.fileName).toString('utf8');
+      if (seen.has(rawName)) {
+        throw new Error(`VSIX archive contains a duplicate entry name: ${JSON.stringify(rawName)}`);
+      }
+      seen.add(rawName);
+      if (rawName.endsWith('/')) {
+        continue;
+      }
+      const declaredSize = entry.uncompressedSize;
+      assertNonNegativeSafeInteger(
+        declaredSize,
+        `VSIX archive entry ${JSON.stringify(rawName)} size`,
       );
+      let payload;
+      try {
+        const stream = await zip.openReadStreamPromise(entry);
+        const chunks = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        payload = Buffer.concat(chunks);
+      } catch (error) {
+        throw new Error(
+          `unable to read VSIX archive entry ${JSON.stringify(rawName)}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (payload.length !== declaredSize) {
+        throw new Error(
+          `VSIX archive entry ${JSON.stringify(rawName)} payload size ${payload.length} does not match header size ${declaredSize}`,
+        );
+      }
+      const payloadCrc = zlib.crc32(payload) >>> 0;
+      if (payloadCrc !== entry.crc32 >>> 0) {
+        throw new Error(
+          `VSIX archive entry ${JSON.stringify(rawName)} CRC mismatch: payload ${payloadCrc} versus header ${entry.crc32 >>> 0}`,
+        );
+      }
+      if (!rawName.startsWith(VSIX_PAYLOAD_PREFIX)) {
+        // `[Content_Types].xml` and `extension.vsixmanifest` are vsce packaging
+        // metadata; they are outside the inventory baseline's claim but are
+        // still named in the receipt and covered by the whole-archive digest.
+        metadataEntries.push(rawName);
+        continue;
+      }
+      const file = rawName.slice(VSIX_PAYLOAD_PREFIX.length);
+      assertCanonicalPackagePath(file);
+      entries.push({ file, bytes: declaredSize });
     }
-    if (payload.length !== declaredSize) {
-      throw new Error(
-        `VSIX archive entry ${JSON.stringify(rawName)} payload size ${payload.length} does not match header size ${declaredSize}`,
-      );
-    }
-    const payloadCrc = zlib.crc32(payload) >>> 0;
-    if (payloadCrc !== entry.header.crc >>> 0) {
-      throw new Error(
-        `VSIX archive entry ${JSON.stringify(rawName)} CRC mismatch: payload ${payloadCrc} versus header ${entry.header.crc >>> 0}`,
-      );
-    }
-    if (!rawName.startsWith(VSIX_PAYLOAD_PREFIX)) {
-      // `[Content_Types].xml` and `extension.vsixmanifest` are vsce packaging
-      // metadata; they are outside the inventory baseline's claim but are
-      // still named in the receipt and covered by the whole-archive digest.
-      metadataEntries.push(rawName);
-      continue;
-    }
-    const file = rawName.slice(VSIX_PAYLOAD_PREFIX.length);
-    assertCanonicalPackagePath(file);
-    entries.push({ file, bytes: declaredSize });
+  } finally {
+    zip.close();
   }
 
   if (entries.length === 0) {
@@ -617,7 +659,7 @@ function notProvenReceipt({ candidateSha = null, baseSha = null, reason }) {
   };
 }
 
-function main() {
+async function main() {
   let args = { base: '', receipt: '' };
   /** @type {string | null} */
   let candidateSha = null;
@@ -629,14 +671,14 @@ function main() {
     args = parseArgs(process.argv.slice(2));
     candidateSha = resolveRevision('HEAD');
     receiptPath = args.receipt ? path.resolve(args.receipt) : defaultReceiptPath(candidateSha);
-    baseSha = resolveBaseRevision(candidateSha, args.base);
+    baseSha = resolveBaseRevision(candidateSha, args.base, args.mergeBaseWith);
 
     if (!args.vsix) {
       throw new Error(
         '--vsix must point to the exact package this candidate produced; the worktree projection cannot authorize a transition',
       );
     }
-    const archive = collectArchiveInventory(path.resolve(args.vsix));
+    const archive = await collectArchiveInventory(path.resolve(args.vsix));
     const actual = archive.inventory;
     const baseDocument = readBaselineAtRevision(baseSha);
     const candidateDocument = readCandidateBaseline();
@@ -696,7 +738,12 @@ function main() {
 }
 
 if (require.main === module) {
-  process.exit(main());
+  main()
+    .then((code) => process.exit(code))
+    .catch((error) => {
+      process.stderr.write(`${boundedError(error)}\n`);
+      process.exitCode = 2;
+    });
 }
 
 module.exports = {
@@ -710,6 +757,9 @@ module.exports = {
   parseDeclarationDocument,
   parseInventoryDocument,
   projectInventory,
+  parseArgs,
+  resolveBaseRevision,
+  resolvePullRequestMergeBase,
   semanticInventorySha256,
   validateDeclaration,
   validateInventoryObject,

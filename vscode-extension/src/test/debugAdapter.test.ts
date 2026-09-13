@@ -20,6 +20,7 @@ import {
   VSCODE_DEBUG_TEST_COMMAND,
   VSCODE_RUN_TEST_COMMAND,
 } from '../debugAdapter';
+import * as downloader from '../downloader';
 import { hostManagedCompatibilityKeys } from '../downloader';
 import { managedNamespaceDir } from '../managedStorageIdentity';
 
@@ -40,11 +41,11 @@ interface LaunchJson {
   configurations: LaunchConfiguration[];
 }
 
-function makeContext(storagePath?: string): vscode.ExtensionContext {
+function makeContext(storagePath?: string, extensionPath?: string): vscode.ExtensionContext {
   const dir = storagePath ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dap-test-'));
   return {
     globalStorageUri: { fsPath: dir } as vscode.Uri,
-    extensionPath: dir,
+    extensionPath: extensionPath ?? dir,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
 }
@@ -59,11 +60,21 @@ function buildDapExecutableArgs(value: unknown): string[] {
   );
 }
 
-function required<T>(value: T | undefined, label: string): T {
-  if (value === undefined) {
+function required<T>(value: T | undefined | null, label: string): T {
+  if (value === undefined || value === null) {
     throw new Error(`Missing ${label}`);
   }
   return value;
+}
+
+function currentBundledDapDirectory(extensionDir: string): string {
+  const platform =
+    process.platform === 'linux'
+      ? downloader.detectMusl()
+        ? 'alpine'
+        : 'linux'
+      : process.platform;
+  return path.join(extensionDir, 'bin', `${platform}-${process.arch}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +262,389 @@ describe('PerlDebugAdapterDescriptorFactory', () => {
 
     expect(result).toBeDefined();
     expect(result.command).toBe(dapPath);
+  });
+
+  test('prefers the packaged perl-dap over a stale ambient adapter', () => {
+    const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
+    const bundledDir = currentBundledDapDirectory(extensionDir);
+    const ambientDir = fs.mkdtempSync(path.join(tmpDir, 'ambient-'));
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const bundledPath = path.join(bundledDir, dapName);
+    fs.mkdirSync(bundledDir, { recursive: true });
+    fs.writeFileSync(bundledPath, 'bundled dap');
+    fs.writeFileSync(path.join(ambientDir, dapName), 'stale ambient dap');
+    const managedDir = managedNamespaceDir(tmpDir, hostManagedCompatibilityKeys()[0]!)!;
+    fs.mkdirSync(managedDir, { recursive: true });
+    const managedPath = path.join(managedDir, dapName);
+    fs.writeFileSync(managedPath, 'stale managed dap');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(bundledPath, 0o755);
+      fs.chmodSync(path.join(ambientDir, dapName), 0o755);
+      fs.chmodSync(managedPath, 0o755);
+    }
+
+    const ctx = makeContext(tmpDir, extensionDir);
+    const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+    const originalPath = process.env.PATH;
+    const originalHome = process.env.HOME;
+    const originalCargo = process.env.CARGO_HOME;
+    process.env.PATH = ambientDir;
+    process.env.HOME = tmpDir;
+    process.env.CARGO_HOME = tmpDir;
+    try {
+      const result = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(result).toBeDefined();
+      expect(result.command).toBe(bundledPath);
+    } finally {
+      for (const [name, value] of [
+        ['PATH', originalPath],
+        ['HOME', originalHome],
+        ['CARGO_HOME', originalCargo],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  });
+
+  const packagedHostCases = [
+    {
+      name: 'GNU x64',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'linux-x64',
+      expected: 'linux-x64',
+    },
+    {
+      name: 'GNU arm64',
+      platform: 'linux',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'linux-arm64',
+      expected: 'linux-arm64',
+    },
+    {
+      name: 'Alpine x64',
+      platform: 'linux',
+      arch: 'x64',
+      musl: true,
+      metadata: 'alpine-x64',
+      expected: 'alpine-x64',
+    },
+    {
+      name: 'Alpine arm64',
+      platform: 'linux',
+      arch: 'arm64',
+      musl: true,
+      metadata: 'alpine-arm64',
+      expected: 'alpine-arm64',
+    },
+    {
+      name: 'Windows x64',
+      platform: 'win32',
+      arch: 'x64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: 'win32-x64',
+    },
+    {
+      name: 'Windows arm64',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-arm64',
+      expected: 'win32-arm64',
+      windowsSupport: 'windows-11-or-newer',
+    },
+    {
+      name: 'Windows arm64 selects emulated x64 on Windows 11',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: 'win32-x64',
+      windowsSupport: 'windows-11-or-newer',
+    },
+    {
+      name: 'Windows arm64 rejects emulated x64 on Windows 10',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: undefined,
+      windowsSupport: 'windows-10-or-earlier',
+    },
+    {
+      name: 'Windows arm64 rejects emulated x64 on unknown build',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'win32-x64',
+      expected: undefined,
+      windowsSupport: 'unknown',
+    },
+    {
+      name: 'Darwin x64',
+      platform: 'darwin',
+      arch: 'x64',
+      musl: false,
+      metadata: 'darwin-x64',
+      expected: 'darwin-x64',
+    },
+    {
+      name: 'Darwin arm64',
+      platform: 'darwin',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'darwin-arm64',
+      expected: 'darwin-arm64',
+    },
+    {
+      name: 'Alpine metadata on GNU',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'alpine-x64',
+      expected: undefined,
+    },
+    {
+      name: 'GNU metadata on Alpine',
+      platform: 'linux',
+      arch: 'x64',
+      musl: true,
+      metadata: 'linux-x64',
+      expected: undefined,
+    },
+    {
+      name: 'same-filename wrong OS',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'darwin-x64',
+      expected: undefined,
+    },
+    {
+      name: 'same-filename wrong architecture',
+      platform: 'linux',
+      arch: 'arm64',
+      musl: false,
+      metadata: 'linux-x64',
+      expected: undefined,
+    },
+    {
+      name: 'Android refuses ordinary Linux package',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'linux-x64',
+      environment: 'android',
+      expected: undefined,
+    },
+    {
+      name: 'Termux refuses ordinary Linux package',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: 'linux-x64',
+      environment: 'termux',
+      expected: undefined,
+    },
+    {
+      name: 'unsupported host architecture',
+      platform: 'linux',
+      arch: 'ia32',
+      musl: false,
+      metadata: 'linux-x64',
+      expected: undefined,
+    },
+    {
+      name: 'missing metadata uses GNU host',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: undefined,
+      expected: 'linux-x64',
+    },
+    {
+      name: 'local VSIX undefined target uses Alpine host',
+      platform: 'linux',
+      arch: 'x64',
+      musl: true,
+      metadata: 'undefined',
+      expected: 'alpine-x64',
+    },
+    {
+      name: 'Windows 11 arm64 missing metadata prefers native payload',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: undefined,
+      expected: 'win32-arm64',
+      windowsSupport: 'windows-11-or-newer',
+    },
+    {
+      name: 'Windows arm64 missing native metadata falls back to emulated payload',
+      platform: 'win32',
+      arch: 'arm64',
+      musl: false,
+      metadata: undefined,
+      expected: 'win32-x64',
+      windowsSupport: 'windows-11-or-newer',
+      removeTargets: ['win32-arm64'],
+    },
+    {
+      name: 'malformed package JSON uses host payload',
+      platform: 'linux',
+      arch: 'x64',
+      musl: false,
+      metadata: undefined,
+      malformed: true,
+      expected: 'linux-x64',
+    },
+  ];
+
+  test.each(packagedHostCases)('packaged factory: $name', (row) => {
+    const originalPlatform = required(
+      Object.getOwnPropertyDescriptor(process, 'platform'),
+      'platform descriptor',
+    );
+    const originalArch = required(
+      Object.getOwnPropertyDescriptor(process, 'arch'),
+      'arch descriptor',
+    );
+    const extensionDir = path.join(tmpDir, 'extension');
+    const targets = [
+      'linux-x64',
+      'linux-arm64',
+      'alpine-x64',
+      'alpine-arm64',
+      'darwin-x64',
+      'darwin-arm64',
+      'win32-x64',
+      'win32-arm64',
+    ];
+    const payloadPath = (target: string): string =>
+      path.join(
+        extensionDir,
+        'bin',
+        target,
+        target.startsWith('win32-') ? 'perl-dap.exe' : 'perl-dap',
+      );
+    // Both compatible and incompatible files exist, including identical names
+    // on Darwin/Linux. A missing wrong-target file cannot make refusal pass.
+    for (const target of targets) {
+      const file = payloadPath(target);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      if (!row.removeTargets?.includes(target)) {
+        fs.writeFileSync(file, `${target} packaged adapter`);
+        fs.chmodSync(file, 0o755);
+      }
+    }
+    fs.writeFileSync(
+      path.join(extensionDir, 'package.json'),
+      row.malformed ? '{' : JSON.stringify({ __metadata: { targetPlatform: row.metadata } }),
+    );
+    const managedPath = path.join(
+      tmpDir,
+      row.platform === 'win32' ? 'managed-dap.exe' : 'managed-dap',
+    );
+    fs.writeFileSync(managedPath, 'compatible fallback adapter');
+    fs.chmodSync(managedPath, 0o755);
+    // Managed resolution is a separate contract. This fixture proves which
+    // actual file the registered factory selects, not managed namespace policy.
+    const managedSpy = jest
+      .spyOn(downloader.BinaryDownloader, 'getLocalDapPath')
+      .mockReturnValue(managedPath);
+    const muslSpy = jest.spyOn(downloader, 'detectMusl').mockReturnValue(row.musl);
+    const windowsSupportSpy = jest
+      .spyOn(downloader, 'classifyWindowsArm64Support')
+      .mockReturnValue((row.windowsSupport ?? 'not-applicable') as downloader.WindowsArm64Support);
+    const androidSpy = jest
+      .spyOn(downloader, 'isAndroidEnvironment')
+      .mockReturnValue(row.environment === 'android');
+    const termuxSpy = jest
+      .spyOn(downloader, 'isTermuxEnvironment')
+      .mockReturnValue(row.environment === 'termux');
+    const vscodeApi = require('vscode') as { workspace: { getConfiguration: jest.Mock } };
+    const getConfiguration = vscodeApi.workspace.getConfiguration;
+    const previousConfiguration = getConfiguration.getMockImplementation();
+    // A conflicting managed-download override must not select a packaged ABI.
+    getConfiguration.mockImplementation(() => ({
+      get: (key: string) => {
+        if (key !== 'linuxLibc') throw new Error(`Unexpected configuration key: ${key}`);
+        return row.musl ? 'gnu' : 'musl';
+      },
+    }));
+    try {
+      Object.defineProperty(process, 'platform', { value: row.platform, configurable: true });
+      Object.defineProperty(process, 'arch', { value: row.arch, configurable: true });
+      const factory = new PerlDebugAdapterDescriptorFactory(makeContext(tmpDir, extensionDir));
+      const result = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(result.command).toBe(row.expected ? payloadPath(row.expected) : managedPath);
+      if (row.expected) expect(managedSpy).not.toHaveBeenCalled();
+      else expect(managedSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+      Object.defineProperty(process, 'arch', originalArch);
+      managedSpy.mockRestore();
+      muslSpy.mockRestore();
+      windowsSupportSpy.mockRestore();
+      androidSpy.mockRestore();
+      termuxSpy.mockRestore();
+      if (previousConfiguration) getConfiguration.mockImplementation(previousConfiguration);
+      else getConfiguration.mockReset();
+    }
+  });
+
+  test('finds the packaged perl-dap with no ambient search path', () => {
+    const extensionDir = fs.mkdtempSync(path.join(tmpDir, 'extension-'));
+    const bundledDir = currentBundledDapDirectory(extensionDir);
+    const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+    const bundledPath = path.join(bundledDir, dapName);
+    fs.mkdirSync(bundledDir, { recursive: true });
+    fs.writeFileSync(bundledPath, 'bundled dap');
+    if (process.platform !== 'win32') {
+      fs.chmodSync(bundledPath, 0o755);
+    }
+
+    const ctx = makeContext(tmpDir, extensionDir);
+    const factory = new PerlDebugAdapterDescriptorFactory(ctx);
+    const originalPath = process.env.PATH;
+    const originalHome = process.env.HOME;
+    const originalCargo = process.env.CARGO_HOME;
+    process.env.PATH = '';
+    process.env.HOME = tmpDir;
+    process.env.CARGO_HOME = tmpDir;
+    try {
+      const result = factory.createDebugAdapterDescriptor(
+        {} as unknown as vscode.DebugSession,
+        undefined,
+      ) as vscode.DebugAdapterExecutable;
+      expect(result).toBeDefined();
+      expect(result.command).toBe(bundledPath);
+    } finally {
+      for (const [name, value] of [
+        ['PATH', originalPath],
+        ['HOME', originalHome],
+        ['CARGO_HOME', originalCargo],
+      ] as const) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
   });
 
   test('descriptor includes RUST_LOG=debug environment variable', () => {
