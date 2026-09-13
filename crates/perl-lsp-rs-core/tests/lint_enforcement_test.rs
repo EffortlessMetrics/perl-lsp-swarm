@@ -11,7 +11,7 @@
 //! These tests read the actual source files via `CARGO_MANIFEST_DIR` so they would
 //! catch any future accidental removal of the directives.
 
-use perl_test_must::{must, must_some, must_some_with};
+use perl_tdd_support::{must, must_some, must_some_with};
 use std::fs;
 
 /// Returns the path to perl-lsp-rs-core's `lib.rs`.

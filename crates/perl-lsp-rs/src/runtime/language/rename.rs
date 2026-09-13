@@ -775,32 +775,16 @@ impl LspServer {
             return true;
         }
 
-        // Otherwise ask the question `references.rs` asks, with the classifier
-        // it shares with `navigation.rs`: is the cursor on the token that names
-        // the symbol we are about to act on?
-        #[cfg(feature = "workspace")]
-        if let Ok(fqn_regex) = super::navigation::get_fqn_regex() {
-            let (line_start, line_text) = crate::util::line_window_around_offset(&doc.text, offset);
-            let cursor_in_line = offset.saturating_sub(line_start);
-            match super::navigation::fqn_component_at_cursor(fqn_regex, line_text, cursor_in_line) {
-                // A package component never names the callable: the `Alpha` in
-                // `Alpha::target()` resolves to the sub `target`.
-                Some(super::navigation::FqnCursorComponent::Prefix) => return true,
-                // Nor does a *final* component whose text disagrees with the
-                // resolved key. In `Some::Module->new()` the qualified-name
-                // match stops at the `->`, so `Module` is that match's final
-                // component while the key names the method `new` — renaming
-                // from the receiver would edit `new`.
-                Some(super::navigation::FqnCursorComponent::Final { name, .. })
-                    if resolved.as_ref().is_some_and(|key| name.as_str() != &*key.name) =>
-                {
-                    return true;
-                }
-                Some(super::navigation::FqnCursorComponent::Final { .. }) | None => {}
-            }
-        }
-
-        false
+        // Otherwise ask the question `references.rs` asks, through the predicate
+        // the two now share (#14757): is the cursor on the token that names the
+        // symbol we are about to act on? A package prefix and an arrow receiver
+        // both resolve to a callable the cursor is not on, and renaming from
+        // either would edit a symbol the user never pointed at.
+        super::navigation::cursor_is_off_named_symbol(
+            &doc.text,
+            offset,
+            resolved.as_ref().map(|key| &*key.name),
+        )
     }
 
     /// True when `offset` falls inside the name of a `package` declaration.
