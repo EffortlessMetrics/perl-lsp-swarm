@@ -61,15 +61,15 @@ fn assert_restored_token_stream_matches_fresh(source: &str) -> Result<()> {
         .stored_checkpoints
         .iter()
         .find(|stored| {
-            stored.live.position > 0
-                && stored.live.position < source.len()
+            stored.live.position() > 0
+                && stored.live.position() < source.len()
                 && !stored.live.is_timeout_sensitive()
         })
         .ok_or_else(|| anyhow::anyhow!("fixture must retain a restorable checkpoint"))?;
     let prefix_len = fresh_lexed
         .tokens
         .iter()
-        .position(|token| token.start >= checkpoint.live.position)
+        .position(|token| token.start >= checkpoint.live.position())
         .unwrap_or(fresh_lexed.tokens.len());
     let restored = super::lex::lex_from_live_checkpoint(source, &line_index, &checkpoint.live)?;
 
