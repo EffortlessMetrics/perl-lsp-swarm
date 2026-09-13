@@ -4,6 +4,9 @@
 //! review and expiry dates at an explicit date so owners see work before a
 //! governing validator changes state.
 
+mod clippy;
+mod tautology;
+
 use crate::tasks::file_policy;
 use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, eyre};
@@ -200,6 +203,8 @@ fn build_receipt(root: &Path, as_of: NaiveDate) -> Result<CadenceReceipt> {
     raw.extend(quality_obligations(root)?);
     raw.extend(scenario_obligations(root)?);
     raw.extend(non_rust_obligations(root)?);
+    raw.extend(clippy::obligations(root)?);
+    raw.extend(tautology::obligations(root)?);
     raw.extend(registered_obligations(root)?);
     let mut obligations = raw.into_iter().map(|item| classify(item, as_of)).collect::<Vec<_>>();
     obligations.sort_by(|left, right| {
@@ -628,6 +633,7 @@ falsifier = "fresh coverage reaches target"
         assert_eq!(serde_json::to_vec_pretty(&first)?, serde_json::to_vec_pretty(&second)?);
         assert!(first.obligations.iter().any(|item| item.source_kind == "quality_gate_exception"));
         assert!(first.obligations.iter().any(|item| item.source_kind == "non_rust_allowlist"));
+        assert!(first.obligations.iter().any(|item| item.source_kind == "clippy_deferred_due"));
         // Current main removed the expired Scenario 67 waivers. The registry
         // retains the four historical obligations without restoring them to
         // the governing fixture or treating their debt as proven current.

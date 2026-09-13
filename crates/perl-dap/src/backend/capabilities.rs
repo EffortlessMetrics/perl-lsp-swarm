@@ -6,6 +6,7 @@
 //! `perl-dap` to advertise control commands the peer never offered.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Who owns stepping/control in an external-peer session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -378,6 +379,178 @@ pub(crate) fn peer_bridge_hover_admission(
 /// profile cannot advertise one thing and enforce another.
 pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
 
+/// The #9581 secondary-capability floor: one explicit unsupported disposition
+/// per floored request.
+///
+/// Seven `initialize` capability fields — `supportsCompletionsRequest`,
+/// `supportsModulesRequest`, `supportsLoadedSourcesRequest`,
+/// `supportsRestartRequest`, `supportsValueFormattingOptions`,
+/// `supportsBreakpointLocationsRequest`, and `supportsCancelRequest` — are
+/// forced `false` in every mode (native launch, TCP attach, and both mirror
+/// peer surfaces) until that field's own exact-behavior receipt passes (#9581).
+/// Each row is independent: one field's gate evidence never widens another, and
+/// no row is derived from `supports_core`, catalog maturity, handler presence,
+/// or another mode's support.
+///
+/// While a field is floored, its request is rejected by the dispatcher *before*
+/// any handler runs, so the floored path can perform no debugger I/O, process
+/// action, or state mutation, and a missing/unavailable session can never
+/// masquerade as a successful empty result (#9581). Re-enable is per field,
+/// owned by the per-feature implementation/proof issues named in each message.
+pub(crate) fn secondary_capability_floor_message(command: &str) -> Option<String> {
+    let (capability, gate) = match command {
+        "completions" => {
+            ("supportsCompletionsRequest", "#9021 + #9046 + #9050 + #8581 + #9582 + #9584")
+        }
+        "modules" => ("supportsModulesRequest", "#8581 + #7667/#8668 + #9585 + #9586"),
+        "loadedSources" => ("supportsLoadedSourcesRequest", "#8581 + #7667/#8668 + #9585 + #9586"),
+        "restart" => {
+            ("supportsRestartRequest", "#9051 + #8691/#8703 + #8974 + #9587 + #8726 + #7568")
+        }
+        "breakpointLocations" => {
+            ("supportsBreakpointLocationsRequest", "#10524 + #2300 + #9021 + #7566")
+        }
+        "cancel" => ("supportsCancelRequest", "#9074 + #8712 + #7568"),
+        _ => return None,
+    };
+    Some(format!(
+        "`{command}` is unsupported: `{capability}` is false for this adapter \
+         (#9581 secondary-capability floor; exact semantics unproven, \
+         re-enable gate: {gate}). The request was rejected before any debugger \
+         interaction, so no state was read or changed."
+    ))
+}
+
+/// The `ValueFormat` families whose `format` option is floored (#9581):
+/// `variables` and `evaluate`.
+///
+/// `setVariable` and `setExpression` have their own capability authorities
+/// (#8354 exact-mutation proof and the #9568 promotion boundary,
+/// respectively): their requests are refused at those gates before the
+/// ValueFormat floor is consulted, so enumerating them here would hijack the
+/// refusal order.
+///
+/// Requests without a `format` option (or with a default-equivalent one) keep
+/// their independently supported contract; only a *non-default* request
+/// (`hex: true`, the pinned schema's single property) is rejected, and it is
+/// rejected before any debugger/value mutation (#9581). Re-enable gate:
+/// #9050 + #8364 + #9070 + #7342/#7345 + #9588 + #9590.
+pub(crate) fn unproven_value_format_requested(command: &str, arguments: Option<&Value>) -> bool {
+    matches!(command, "variables" | "evaluate")
+        && arguments
+            .and_then(|arguments| arguments.get("format"))
+            .and_then(|format| format.get("hex"))
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
+fn value_format_unknown_field(command: &str, arguments: Option<&Value>) -> Option<String> {
+    if !matches!(command, "variables" | "evaluate") {
+        return None;
+    }
+    arguments
+        .and_then(|arguments| arguments.get("format"))
+        .and_then(Value::as_object)
+        .and_then(|format| format.keys().find(|key| key.as_str() != "hex"))
+        .cloned()
+}
+
+fn value_format_invalid_message(command: &str, field: &str) -> String {
+    format!(
+        "`{command}`: Invalid arguments: `format` contains unknown field `{field}`; the pinned DAP ValueFormat schema only permits `hex`"
+    )
+}
+
+/// The explicit unsupported disposition for a floored `format` option (#9581).
+pub(crate) fn value_format_unsupported_message(command: &str) -> String {
+    format!(
+        "`{command}` is unsupported: a non-default `format` option was sent while \
+         `supportsValueFormattingOptions` is false for this adapter (#9581 \
+         secondary-capability floor; re-enable gate: #9050 + #8364 + #9070 + \
+         #7342/#7345 + #9588 + #9590). The request was rejected before any \
+         debugger interaction; resend without `format` for the default \
+         presentation."
+    )
+}
+
+/// The one #9581 floor decision for a request, combining both floored
+/// families: the six secondary requests and a non-default `format` option on
+/// the four ValueFormat families.
+///
+/// Every production surface — the native dispatch seams
+/// (`DebugAdapter::secondary_capability_floor_response`) and both peer
+/// frontends (`secondary_floor_response`) — applies this single function at
+/// its own sanctioned seam and constructs only its own refusal response from
+/// it, so the two families cannot drift apart between surfaces.
+pub(crate) fn capability_floor_message(command: &str, arguments: Option<&Value>) -> Option<String> {
+    if let Some(message) = secondary_capability_floor_message(command) {
+        return Some(message);
+    }
+    if let Some(field) = value_format_unknown_field(command, arguments) {
+        return Some(value_format_invalid_message(command, &field));
+    }
+    if unproven_value_format_requested(command, arguments) {
+        return Some(value_format_unsupported_message(command));
+    }
+    None
+}
+
+/// Whether an exact native-launch `setVariable` mutation path has been proven
+/// (#8354).
+///
+/// DAP's `supportsSetVariable` is a promise that a `setVariable` request
+/// assigns a named variable inside a *stopped* session through a correlated,
+/// read-back-verified broker transaction with retained-currentness and public
+/// evidence. `perl-dap` has no such path yet: the live handler screens textual
+/// target/value input and writes raw perl5db commands without exact target
+/// resolution, scalar RHS parsing, correlated read-back, or the atomic
+/// value-authority transition the mutation contract requires. Advertising the
+/// capability would invite editors to mutate a paused program through an
+/// uncorrelated textual command channel.
+///
+/// Flipping this to `true` requires the complete re-enable gate recorded on
+/// #8354 (wire/option contract, exact target resolution, scalar RHS parse,
+/// serialized broker transaction, correlated read-back, atomic value-authority
+/// transition, and the #8368 same-candidate exact public proof with #7363/#7364
+/// promotion). Nothing else — not `dap.core`, not backend `set_variable`, not
+/// handler/type presence, not `DebugBackendCapabilities::full()`, not
+/// setExpression evidence — may widen it.
+pub(crate) const EXACT_SET_VARIABLE_MUTATION_PROVEN: bool = false;
+
+/// The single authority for the advertised `supportsSetVariable` value.
+///
+/// This deliberately consumes no catalog flag, backend flag, or handler-presence
+/// signal. `setVariable` support is gated on a proof that does not exist yet, so
+/// the value is derived from [`EXACT_SET_VARIABLE_MUTATION_PROVEN`] alone
+/// (#8354).
+#[must_use]
+pub(crate) const fn advertises_set_variable() -> bool {
+    EXACT_SET_VARIABLE_MUTATION_PROVEN
+}
+
+/// Refusal message used when a `setVariable` request is declined (#8354).
+pub(crate) const SET_VARIABLE_UNSUPPORTED_MESSAGE: &str = "setVariable is not supported: \
+     supportsSetVariable is advertised false because perl-dap has no exact mutation path yet \
+     (#8354)";
+
+/// Whether a mode must refuse this `setVariable` request as unsupported.
+///
+/// The invariant every mode holds: **a mode refuses every `setVariable` request
+/// exactly when it does not advertise `supportsSetVariable`.** While the
+/// capability is closed this is unconditional — unlike hover (#9573) there is no
+/// request subset that stays legitimate, so the gate fires before argument
+/// parsing, target/value screening, reference lookup, or any broker traffic.
+///
+/// `advertised_set_variable` is the value the mode puts on the wire, so
+/// advertisement and enforcement can never disagree. Passing it explicitly (the
+/// hover-promotion pattern) keeps the gate provable in both directions without
+/// mutating the authority constant: if a mode's advertisement ever opens, its
+/// refusal must close, and vice versa (#8354).
+#[must_use]
+pub(crate) const fn refuse_set_variable(advertised_set_variable: bool) -> bool {
+    !advertised_set_variable
+}
+
 /// Whether the custom inline-values extension has a proven, versioned
 /// negotiation contract (#9089).
 ///
@@ -593,13 +766,18 @@ pub fn intersect_dap_capabilities(
             && catalog.core
             && backend.evaluate,
         supports_evaluate: catalog.core && backend.evaluate,
-        supports_set_variable: catalog.core && backend.set_variable,
+        // #8354: setVariable is gated on an exact mutation proof that does not
+        // exist yet. The catalog ∩ backend intersection still applies (decision
+        // D6) so that re-enabling the gate cannot over-advertise, but neither
+        // conjunct can widen the capability on its own.
+        supports_set_variable: advertises_set_variable() && catalog.core && backend.set_variable,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some_with;
 
     /// Authority-binding contract (#9578 review): each `advertises_*`
     /// accessor reads exactly its own per-capability proof authority, and the
@@ -615,10 +793,10 @@ mod tests {
         // the removed authority in its own assertions.
         let source =
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
-        let source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("module source always has a production half");
+        let source = must_some_with(
+            source.split("#[cfg(test)]").next(),
+            "module source always has a production half",
+        );
 
         let bindings = [
             ("advertises_function_breakpoints", "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN"),
@@ -654,10 +832,10 @@ mod tests {
     fn every_optional_breakpoint_authority_floors_at_false() {
         let source =
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
-        let source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("module source always has a production half");
+        let source = must_some_with(
+            source.split("#[cfg(test)]").next(),
+            "module source always has a production half",
+        );
         for authority in [
             "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN",
             "OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN",
@@ -678,15 +856,15 @@ mod tests {
     /// body breaks the exact-atom equality.
     fn accessor_return_atom(source: &str, accessor: &str) -> String {
         let signature = format!("fn {accessor}()");
-        let start = source
-            .find(&signature)
-            .unwrap_or_else(|| panic!("{accessor} must stay defined in capabilities.rs"));
-        let open = source[start..].find('{').expect("accessor body brace") + start;
-        let close = source[open..].find('}').expect("accessor body close") + open;
+        let start = must_some_with(
+            source.find(&signature),
+            format!("{accessor} must stay defined in capabilities.rs"),
+        );
+        let open = must_some_with(source[start..].find('{'), "accessor body brace") + start;
+        let close = must_some_with(source[open..].find('}'), "accessor body close") + open;
         let body = &source[open + 1..close];
 
         let mut stripped = String::with_capacity(body.len());
-        let mut in_block_comment = false;
         for line in body.lines() {
             let mut rest = line;
             while !rest.is_empty() {
@@ -701,7 +879,6 @@ mod tests {
                         let block_comment = block_comment.unwrap_or_default();
                         stripped.push_str(&rest[..block_comment]);
                         rest = &rest[block_comment + 2..];
-                        in_block_comment = true;
                     }
                     // A line comment (or a line comment preceding a block
                     // comment start): the rest of the line is commentary.
@@ -740,7 +917,14 @@ mod tests {
         assert!(n.supports_log_points);
         assert!(n.supports_function_breakpoints);
         assert!(n.supports_data_breakpoints);
-        assert!(n.supports_set_variable);
+        // #8354: setVariable is excluded from "everything" for the same reason
+        // hover is: its exact mutation proof does not exist yet, so a fully
+        // capable catalog and backend must still not advertise it.
+        assert!(
+            !n.supports_set_variable,
+            "an exact setVariable mutation proof does not exist (#8354); \
+             catalog.core and backend.set_variable must not widen it"
+        );
         // General evaluation is available with a full catalog and backend...
         assert!(n.supports_evaluate);
         // ...but hover stays closed regardless: it is a narrower promise than
@@ -826,6 +1010,64 @@ mod tests {
             !advertises_evaluate_for_hovers(),
             "the single hover authority must report false until #9573's re-enable gate passes"
         );
+    }
+
+    /// The #8354 floor: no catalog/backend combination may advertise setVariable.
+    #[test]
+    fn set_variable_capability_is_closed_for_every_catalog_and_backend_combination() {
+        let catalogs = [
+            all_catalog(),
+            CatalogDapFlags { core: false, ..all_catalog() },
+            CatalogDapFlags {
+                core: true,
+                breakpoints_basic: false,
+                hit_condition: false,
+                logpoints: false,
+                watchpoints: false,
+                function_breakpoints: false,
+            },
+        ];
+        let backends = [
+            DebugBackendCapabilities::full(),
+            DebugBackendCapabilities::none(),
+            DebugBackendCapabilities::ptkdb_v1_defaults(),
+            // A backend that claims set-variable but nothing else: the exact
+            // shape that would tempt `catalog.core && backend.set_variable`
+            // into a true.
+            DebugBackendCapabilities { set_variable: true, ..DebugBackendCapabilities::none() },
+        ];
+
+        for catalog in &catalogs {
+            for backend in &backends {
+                let n = intersect_dap_capabilities(catalog, backend);
+                assert!(
+                    !n.supports_set_variable,
+                    "setVariable advertised for catalog {catalog:?} + backend {backend:?}"
+                );
+            }
+        }
+
+        assert!(
+            !advertises_set_variable(),
+            "the single setVariable authority must report false until #8354's \
+             re-enable gate passes"
+        );
+    }
+
+    /// #8354 promotion safety: refusal follows advertisement in BOTH directions.
+    ///
+    /// The gate constant is `false` today, so testing only the current value
+    /// would leave the promotion path unproven. Passing the advertised value
+    /// explicitly exercises the flipped state without mutating the constant:
+    /// while a mode advertises false it refuses every request; if a promoted
+    /// mode advertises true it must stop refusing. Anything else republishes
+    /// the capability-versus-behaviour contradiction #8354 removes.
+    #[test]
+    fn set_variable_refusal_tracks_the_advertised_capability_in_both_directions() {
+        // Closed: every request is refused, independent of its content.
+        assert!(refuse_set_variable(false));
+        // Open: the refusal must disappear exactly when advertisement opens.
+        assert!(!refuse_set_variable(true));
     }
 
     /// #9573 promotion safety: refusal follows advertisement in BOTH directions.
@@ -920,6 +1162,129 @@ mod tests {
             "closing hover must not disable general evaluate; watch/repl/clipboard depend on it"
         );
         assert!(!n.supports_evaluate_for_hovers);
+    }
+
+    /// #9581: every floored request names its own capability and its own gate,
+    /// and the floor never widens beyond the six secondary requests.
+    #[test]
+    fn secondary_capability_floor_rows_are_independent_and_explicit() {
+        let floored = [
+            ("completions", "supportsCompletionsRequest"),
+            ("modules", "supportsModulesRequest"),
+            ("loadedSources", "supportsLoadedSourcesRequest"),
+            ("restart", "supportsRestartRequest"),
+            ("breakpointLocations", "supportsBreakpointLocationsRequest"),
+            ("cancel", "supportsCancelRequest"),
+        ];
+        for (command, capability) in floored {
+            let message = secondary_capability_floor_message(command)
+                .unwrap_or_else(|| format!("`{command}` must be floored (#9581)"));
+            assert!(
+                message.contains(capability),
+                "`{command}` disposition must name its own capability row: {message}"
+            );
+            assert!(
+                message.contains("unsupported") && message.contains("#9581"),
+                "`{command}` disposition must be explicit unsupported: {message}"
+            );
+        }
+
+        // Core launch/breakpoint/stack/variable/control families stay outside
+        // the floor (#9581 scope).
+        for open in [
+            "initialize",
+            "launch",
+            "attach",
+            "setBreakpoints",
+            "setFunctionBreakpoints",
+            "threads",
+            "stackTrace",
+            "scopes",
+            "variables",
+            "setVariable",
+            "continue",
+            "next",
+            "stepIn",
+            "stepOut",
+            "pause",
+            "evaluate",
+            "configurationDone",
+            "disconnect",
+            "terminate",
+            "source",
+        ] {
+            assert!(
+                secondary_capability_floor_message(open).is_none(),
+                "`{open}` must not be floored by the secondary-capability floor"
+            );
+        }
+    }
+
+    /// #9581: only a non-default `format` on the two authority-less ValueFormat
+    /// families is floored (setVariable/setExpression are refused by their own
+    /// #8354/#9568 authorities first); absent/default-equivalent formats keep
+    /// the independent contract, and other requests are never format-floored.
+    #[test]
+    fn value_format_floor_rejects_only_non_default_format_on_the_four_families() {
+        for command in ["variables", "evaluate"] {
+            assert!(unproven_value_format_requested(
+                command,
+                Some(&serde_json::json!({ "format": { "hex": true } }))
+            ));
+            assert!(!unproven_value_format_requested(command, None));
+            assert!(!unproven_value_format_requested(command, Some(&serde_json::json!({}))));
+            assert!(!unproven_value_format_requested(
+                command,
+                Some(&serde_json::json!({ "format": {} }))
+            ));
+            assert!(!unproven_value_format_requested(
+                command,
+                Some(&serde_json::json!({ "format": { "hex": false } }))
+            ));
+        }
+        assert!(!unproven_value_format_requested(
+            "stackTrace",
+            Some(&serde_json::json!({ "format": { "hex": true } }))
+        ));
+
+        let message = value_format_unsupported_message("variables");
+        assert!(message.contains("supportsValueFormattingOptions"));
+        assert!(message.contains("#9581"));
+    }
+
+    #[test]
+    fn value_format_unknown_fields_are_rejected_before_flooring() {
+        let args = serde_json::json!({
+            "expression": "$x",
+            "format": { "hex": true, "radix": 16 }
+        });
+        let message = must_some_with(
+            capability_floor_message("evaluate", Some(&args)),
+            "unknown ValueFormat fields must be rejected",
+        );
+        assert!(message.contains("Invalid arguments"), "unexpected message: {message}");
+        assert!(message.contains("radix"), "unexpected message: {message}");
+        assert!(!message.contains("non-default `format` option"));
+    }
+
+    /// #9581: the combined floor decision every surface applies is exactly the
+    /// composition of the two floored families — a floored secondary row, a
+    /// non-default `format` on a ValueFormat family, and nothing else.
+    #[test]
+    fn capability_floor_message_combines_both_floored_families() {
+        assert!(capability_floor_message("restart", None).is_some());
+        assert!(
+            capability_floor_message(
+                "evaluate",
+                Some(&serde_json::json!({ "expression": "$x", "format": { "hex": true } }))
+            )
+            .is_some()
+        );
+        assert!(capability_floor_message("threads", None).is_none());
+        assert!(
+            capability_floor_message("evaluate", Some(&serde_json::json!({ "expression": "$x" })))
+                .is_none()
+        );
     }
 
     #[test]

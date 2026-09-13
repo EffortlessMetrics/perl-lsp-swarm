@@ -297,3 +297,5 @@ instrumentation. An unchanged remote wait is `IN_FLIGHT`.
 - finding repair → `address-review-comments` with one writer
 - current review → `verify-live-ci`
 - changed authority/scope/claim → `prepare-issue`
+
+> Self-authored reversible corrections follow the canonical [correction and disclosure contract](../../../docs/agents/DEVELOPMENT_METHOD.md); this reference does not override higher-precedence instructions.

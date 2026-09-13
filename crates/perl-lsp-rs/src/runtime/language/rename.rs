@@ -25,8 +25,11 @@ use perl_lexer::is_rename_keyword;
 use perl_lsp_rs_core::providers::navigation::rename_shadow::{
     RenamePackagePilotIneligibleReason, RenamePackagePilotResult, rename_package_pilot_proof,
 };
-use perl_lsp_rs_core::providers::rename::{
-    RenameOptions, RenameProvider, TextEdit as RenameEdit, is_in_comment, is_in_string,
+use perl_lsp_rs_core::providers::rename::{RenameOptions, RenameProvider, TextEdit as RenameEdit};
+#[cfg(feature = "workspace")]
+use perl_module::is_module_identifier_char;
+use perl_parser_core::syntax::source_context::{
+    RangeClassification, SourceRegionIndex, SourceRegionKind,
 };
 #[cfg(feature = "workspace")]
 use perl_semantic_facts::{EntityId, FileId, PlannedEdit};
@@ -190,22 +193,58 @@ fn add_qualified_document_rename_edits<F>(
 ) where
     F: Fn(usize) -> (u32, u32),
 {
+    if !source.contains(qualified_name) {
+        return;
+    }
+
+    // Generation-bound lexical evidence built from the same immutable source
+    // string this scan reads (#5003/#4964): classification and text can never
+    // come from different generations, for live, indexed, and disk documents
+    // alike.
+    let region_index = SourceRegionIndex::build(source);
+
+    let mut skipped_unproven_region = 0_usize;
+    let mut skipped_boundary = 0_usize;
+
     for (match_start, _) in source.match_indices(qualified_name) {
-        let before_ok = source
-            .get(..match_start)
-            .and_then(|prefix| prefix.chars().next_back())
-            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':' && ch != '\'');
         let name_start = match_start + package_len + "::".len();
         let name_end = name_start + symbol_len;
-        let after_ok = source
-            .get(name_end..)
-            .and_then(|suffix| suffix.chars().next())
-            .is_none_or(|ch| !ch.is_alphanumeric() && ch != '_' && ch != ':' && ch != '\'');
-        if !before_ok
-            || !after_ok
-            || is_in_comment(name_start, source)
-            || is_in_string(name_start, source)
-        {
+        if name_end > source.len() {
+            continue;
+        }
+
+        // Whole candidate range — package, separator, and symbol — must be
+        // proven `Code`. Ambiguous spans, recovery input, comments, POD,
+        // literals, quote-likes, regex bodies, heredocs, and `__DATA__` all
+        // fail closed: a textual `Pkg::name` shape is not evidence that it
+        // refers to the renamed entity (#4964).
+        if !matches!(
+            region_index.classify_range(match_start, name_end),
+            RangeClassification::Proven { kind: SourceRegionKind::Code }
+        ) {
+            skipped_unproven_region += 1;
+            continue;
+        }
+
+        // Decode adjacent scalar values before applying the canonical Perl
+        // identifier class. A raw UTF-8 continuation byte is not a character
+        // boundary: it may be the tail of a Unicode package/identifier that
+        // contains this ASCII-looking substring.
+        //
+        // A preceding `$`/`@`/`%` makes the match a sigiled *package variable*
+        // that shares the sub's name (`$My::Pkg::target`, cf.
+        // `$File::Find::name`) — a different entity, so the edit would rebind
+        // a variable reference on textual coincidence alone. `&` is excluded
+        // deliberately: `&My::Pkg::target` is a real call of the renamed sub.
+        let before_ok = source[..match_start].chars().next_back().is_none_or(|ch| {
+            !is_module_identifier_char(ch) && ch != ':' && ch != '\'' && !is_perl_sigil(ch)
+        });
+        let after_ok = source[name_end..]
+            .chars()
+            .next()
+            .is_none_or(|ch| !is_module_identifier_char(ch) && ch != ':' && ch != '\'');
+        if !before_ok || !after_ok {
+            skipped_boundary += 1;
             continue;
         }
 
@@ -223,6 +262,21 @@ fn add_qualified_document_rename_edits<F>(
             },
             "newText": new_name_bare
         }));
+    }
+
+    if skipped_unproven_region > 0 {
+        tracing::debug!(
+            uri = %edit_uri,
+            skipped_unproven_region,
+            "qualified rename fallback skipped candidates whose region is not proven code (#4964)"
+        );
+    }
+    if skipped_boundary > 0 {
+        tracing::debug!(
+            uri = %edit_uri,
+            skipped_boundary,
+            "qualified rename fallback skipped candidates failing boundary validation (#4964)"
+        );
     }
 }
 
@@ -311,14 +365,20 @@ impl LspServer {
         let mut live_document_keys = BTreeSet::new();
         let mut indexed_document_keys = BTreeSet::new();
 
+        // Lexical evidence for the request document, derived from the same
+        // text generation this scan reads (#4964).
+        let request_region_index = SourceRegionIndex::build(&request_doc.text);
+
         let mut line_start = 0_usize;
         for line in request_doc.text.split_inclusive('\n') {
             if let Some((name_start, name_end)) =
                 range_starts_with_sub_declaration_name(line, line_start, key.name.as_ref())
                 && crate::declaration::current_package_at(request_ast, name_start)
                     == key.pkg.as_ref()
-                && !is_in_comment(name_start, &request_doc.text)
-                && !is_in_string(name_start, &request_doc.text)
+                && matches!(
+                    request_region_index.classify_range(name_start, name_end),
+                    RangeClassification::Proven { kind: SourceRegionKind::Code }
+                )
             {
                 let (start_line, start_char) = self.offset_to_pos16(request_doc, name_start);
                 let (end_line, end_char) = self.offset_to_pos16(request_doc, name_end);
@@ -715,32 +775,16 @@ impl LspServer {
             return true;
         }
 
-        // Otherwise ask the question `references.rs` asks, with the classifier
-        // it shares with `navigation.rs`: is the cursor on the token that names
-        // the symbol we are about to act on?
-        #[cfg(feature = "workspace")]
-        if let Ok(fqn_regex) = super::navigation::get_fqn_regex() {
-            let (line_start, line_text) = crate::util::line_window_around_offset(&doc.text, offset);
-            let cursor_in_line = offset.saturating_sub(line_start);
-            match super::navigation::fqn_component_at_cursor(fqn_regex, line_text, cursor_in_line) {
-                // A package component never names the callable: the `Alpha` in
-                // `Alpha::target()` resolves to the sub `target`.
-                Some(super::navigation::FqnCursorComponent::Prefix) => return true,
-                // Nor does a *final* component whose text disagrees with the
-                // resolved key. In `Some::Module->new()` the qualified-name
-                // match stops at the `->`, so `Module` is that match's final
-                // component while the key names the method `new` — renaming
-                // from the receiver would edit `new`.
-                Some(super::navigation::FqnCursorComponent::Final { name, .. })
-                    if resolved.as_ref().is_some_and(|key| name.as_str() != &*key.name) =>
-                {
-                    return true;
-                }
-                Some(super::navigation::FqnCursorComponent::Final { .. }) | None => {}
-            }
-        }
-
-        false
+        // Otherwise ask the question `references.rs` asks, through the predicate
+        // the two now share (#14757): is the cursor on the token that names the
+        // symbol we are about to act on? A package prefix and an arrow receiver
+        // both resolve to a callable the cursor is not on, and renaming from
+        // either would edit a symbol the user never pointed at.
+        super::navigation::cursor_is_off_named_symbol(
+            &doc.text,
+            offset,
+            resolved.as_ref().map(|key| &*key.name),
+        )
     }
 
     /// True when `offset` falls inside the name of a `package` declaration.
@@ -2829,11 +2873,18 @@ mod tests {
         let source = concat!(
             "My::Pkg::target();\n",
             "My::Pkg::target();\n",
+            "&My::Pkg::target();\n",
             "Other::My::Pkg::target();\n",
+            "λMy::Pkg::target();\n",
+            "My::Pkg::targetλ();\n",
             "My::Pkg::target_suffix();\n",
             "My::Pkg::target::child();\n",
             "Other'My::Pkg::target();\n",
             "My::Pkg::target'child();\n",
+            "my $My::Pkg::target;\n",
+            "local $My::Pkg::target;\n",
+            "@My::Pkg::target = ();\n",
+            "%My::Pkg::target = ();\n",
             "# My::Pkg::target();\n",
             "my $s = \"My::Pkg::target()\";\n",
         );
@@ -2856,8 +2907,9 @@ mod tests {
         let edits = grouped.get(uri).ok_or("missing qualified call edits")?;
         assert_eq!(
             edits.len(),
-            2,
-            "only standalone qualified calls outside comments and strings should be edited"
+            3,
+            "only standalone qualified calls (including the `&` call form) outside comments, \
+             strings, and sigiled variable references should be edited"
         );
         assert!(
             edits.iter().all(|edit| edit.get("newText").and_then(Value::as_str) == Some("renamed")),
@@ -2879,7 +2931,7 @@ mod tests {
         let deduped_edits = grouped.get(uri).ok_or("missing deduped qualified call edits")?;
         assert_eq!(
             deduped_edits.len(),
-            2,
+            3,
             "re-scanning the same document must not produce duplicate edits"
         );
 

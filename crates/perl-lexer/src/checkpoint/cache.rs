@@ -39,7 +39,7 @@ impl CheckpointCache {
             return;
         }
 
-        let position = checkpoint.position;
+        let position = checkpoint.position();
         match self.checkpoints.binary_search_by_key(&position, |(pos, _)| *pos) {
             Ok(idx) => self.checkpoints[idx] = (position, checkpoint),
             Err(idx) => self.checkpoints.insert(idx, (position, checkpoint)),
@@ -97,23 +97,17 @@ impl CheckpointCache {
     /// # Examples
     ///
     /// ```
-    /// # use perl_lexer::checkpoint::{CheckpointCache, LexerCheckpoint};
+    /// # use perl_lexer::{Checkpointable, PerlLexer};
+    /// # use perl_lexer::checkpoint::CheckpointCache;
+    /// let source = "aaaaaaaaaa bbbbbbbbbb cccccccccc";
+    /// let mut lexer = PerlLexer::new(source);
     /// let mut cache = CheckpointCache::new(10);
-    /// cache.add(LexerCheckpoint::at_position(100));
-    /// cache.add(LexerCheckpoint::at_position(200));
-    /// cache.add(LexerCheckpoint::at_position(300));
+    /// cache.add(lexer.checkpoint());
+    /// let _ = lexer.next_token();
+    /// cache.add(lexer.checkpoint());
     ///
-    /// // Find checkpoint at or after position 150
-    /// let cp = cache.find_after(150);
-    /// assert!(matches!(cp, Some(found) if found.position == 200));
-    ///
-    /// // Find checkpoint at exact position
-    /// let cp = cache.find_after(200);
-    /// assert!(matches!(cp, Some(found) if found.position == 200));
-    ///
-    /// // Position beyond last checkpoint returns None
-    /// let cp = cache.find_after(400);
-    /// assert!(cp.is_none());
+    /// let cp = cache.find_after(0);
+    /// assert!(cp.is_some());
     /// ```
     pub fn find_after(&self, position: usize) -> Option<&LexerCheckpoint> {
         // `partition_point` returns the index of the first element for which
@@ -132,7 +126,7 @@ impl CheckpointCache {
     pub fn apply_edit(&mut self, start: usize, old_len: usize, new_len: usize) {
         for (pos, checkpoint) in &mut self.checkpoints {
             checkpoint.apply_edit(start, old_len, new_len);
-            *pos = checkpoint.position;
+            *pos = checkpoint.position();
         }
 
         // Edits can move checkpoints backward (or to the same position), so

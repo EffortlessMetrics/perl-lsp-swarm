@@ -585,11 +585,9 @@ mod tests {
                 index += 1;
             }
             if bytes.get(index..).is_some_and(|tail| tail.starts_with(b"//")) {
-                let Some(newline) =
-                    bytes.get(index..).and_then(|tail| tail.iter().position(|byte| *byte == b'\n'))
-                else {
-                    return None;
-                };
+                let newline = bytes
+                    .get(index..)
+                    .and_then(|tail| tail.iter().position(|byte| *byte == b'\n'))?;
                 index += newline + 1;
                 continue;
             }
@@ -722,13 +720,13 @@ mod tests {
             let visibility_start = skip_declaration_trivia(rest, 0)?;
             rest = &rest[visibility_start..];
             if rest.starts_with('(') {
-                let Some(close) = visibility_close(rest) else { return None };
+                let close = visibility_close(rest)?;
                 let after_visibility = skip_declaration_trivia(&rest[close + 1..], 0)?;
                 rest = &rest[close + 1 + after_visibility..];
             }
         }
 
-        let Some(after_mod) = rest.strip_prefix("mod") else { return None };
+        let after_mod = rest.strip_prefix("mod")?;
         if !after_mod.chars().next().is_some_and(char::is_whitespace) {
             return None;
         }
@@ -741,7 +739,7 @@ mod tests {
                 || rest[offset..].starts_with("/*"))
             .then_some(offset)
         });
-        let Some(name_end) = name_end else { return None };
+        let name_end = name_end?;
         if name_end == 0 {
             return None;
         }
@@ -1712,6 +1710,48 @@ pub(crate) mod visible { const KEEP: &str = "visible/production"; }
         assert!(stripped.contains("production/after"));
         assert!(stripped.contains("pub(crate) mod visible"));
         assert!(stripped.contains("visible/production"));
+    }
+
+    /// Outer attributes may intervene between `#[cfg(test)]` and the module
+    /// declaration — notably `#[path = "..."]` on external modules, a live
+    /// repo shape (`runtime/dispatch/request_lifecycle.rs`). The scanner must
+    /// consume the whole attribute run with the test module, otherwise the
+    /// declaration and any test-only sends in the external file remain
+    /// visible to the inventory scan.
+    #[test]
+    fn strip_test_modules_consumes_intervening_path_attributes() {
+        let source = r#"
+#[cfg(test)]
+#[path = "tests/attributed_external.rs"]
+mod attributed_external;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "tests/visible_attributed_external.rs"]
+pub(crate) mod visible_attributed_external; fn after_visible() { send("production/after-visible"); }
+#[cfg(test)]
+#[path = concat!(
+    "tests/",
+    "multiline_attributed_external.rs",
+)]
+mod multiline_attributed_external;
+#[cfg(test)]
+#[path = "tests/inline_after_path.rs"]
+mod inline_after_path { const TEST_ONLY: &str = "test-only/inline-after-path"; } fn after_inline() { send("production/after-inline"); }
+fn production() { send("production/after"); }
+"#;
+
+        let stripped = strip_test_modules(source);
+        for test_only in [
+            "mod attributed_external",
+            "mod visible_attributed_external",
+            "mod multiline_attributed_external",
+            "test-only/inline-after-path",
+        ] {
+            assert!(!stripped.contains(test_only), "test-only source leaked: {test_only}");
+        }
+        assert!(stripped.contains("production/after-visible"));
+        assert!(stripped.contains("production/after-inline"));
+        assert!(stripped.contains("production/after"));
     }
 
     #[test]

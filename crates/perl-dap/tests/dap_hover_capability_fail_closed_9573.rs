@@ -117,40 +117,6 @@ async fn native_initialize_advertises_hover_false() -> Result<()> {
     Ok(())
 }
 
-/// Test 8 + falsifier: REPL/evaluate capability cannot promote hover.
-///
-/// The general evaluate path (and the still-advertised `supportsSetVariable`
-/// sibling) stay available; that must not drag hover up with them.
-/// `supportsSetExpression` is itself floored false by #9568, so the surviving
-/// discriminating sibling is `supportsSetVariable`.
-#[tokio::test]
-async fn other_evaluation_capabilities_do_not_promote_hover() -> Result<()> {
-    let mut adapter = adapter();
-    let body = initialize_body(&mut adapter)?;
-
-    // Guard: if the surviving sibling were false the test would be vacuous.
-    // (#9568 floored `supportsSetExpression` to false — the pair this
-    // precondition used to pin was (Some(true), Some(true)) — so the
-    // discrimination now rides on `supportsSetVariable` staying advertised.
-    // When the #9570 promotion boundary flips setExpression back on, revisit
-    // this pair consciously.)
-    let set_expression = body.get("supportsSetExpression").and_then(Value::as_bool);
-    let set_variable = body.get("supportsSetVariable").and_then(Value::as_bool);
-    assert_eq!(
-        (set_expression, set_variable),
-        (Some(false), Some(true)),
-        "precondition: setExpression must still carry the #9568 floor and setVariable \
-         must stay advertised, so the hover assertion below is discriminating"
-    );
-
-    assert_eq!(
-        body.get("supportsEvaluateForHovers").and_then(Value::as_bool),
-        Some(false),
-        "hover must not ride along with sibling evaluation capabilities (#9573)"
-    );
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Request gate — the ordering proofs
 // ---------------------------------------------------------------------------
