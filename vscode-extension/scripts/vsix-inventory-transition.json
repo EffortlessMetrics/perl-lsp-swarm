@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "owner_issue": 15451,
-  "reason": "Issue #15451 records the packaged DAP target-selection repair: compatible Windows ARM64 payloads prefer native ARM64, with Windows 11 x64 emulation only when supported; missing metadata follows the ordered host payload candidates. This candidate package measures three intentional archive changes: package.json (-155 bytes), snippets/launch.json (-348 bytes), and out/extension.js (-107 bytes), for a total -610-byte transition from the accepted base. Installed behavior remains an independent proof stage.",
+  "owner_issue": 8109,
+  "reason": "Issue #8109 removes unsupported PID attach suggestions while preserving legacy input for deterministic refusal. The measured archive changes package.json (-155 bytes), snippets/launch.json (-348 bytes), and out/extension.js (-107 bytes), totaling -610 bytes from the accepted base. Installed behavior remains an independent proof stage.",
   "base_baseline_file_sha256": "97e252c780703cdac57817eb53c68e62fe8d8454364c4689569126f8dd7882f2",
   "candidate_baseline_file_sha256": "c0c0779673867b800781d2ac816e4ea5c722be347bfc4855fd591bb403e21520",
   "base_inventory_sha256": "4330c8d298776388ded382fe8ce8b3e810a47adf54cd214f25c5df4c0d033956",
