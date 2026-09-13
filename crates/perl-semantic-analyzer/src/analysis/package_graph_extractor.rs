@@ -38,10 +38,10 @@
 use crate::analysis::symbol::{FrameworkKind, classify_framework_module};
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::{AnchorId, Confidence, FileId, PackageEdge, PackageEdgeKind, Provenance};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 /// The framework DSL keyword a call spelling would mean, if it were the DSL.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DslKeyword {
     /// `extends 'Base'` — inheritance.
     Extends,
@@ -83,6 +83,14 @@ impl DslImports {
         }
     }
 
+    /// Record that this package grants `keyword`.
+    fn set(&mut self, keyword: DslKeyword) {
+        match keyword {
+            DslKeyword::Extends => self.extends = true,
+            DslKeyword::With => self.with = true,
+        }
+    }
+
     /// Accumulate another activation in the same package.
     fn merge(&mut self, other: Self) {
         self.extends |= other.extends;
@@ -108,7 +116,7 @@ impl PackageGraphExtractor {
         // `sub extends` shadows the import regardless of where it appears
         // relative to the call. Collect those first.
         let mut shadows =
-            ShadowScan { current_package: "main".to_string(), shadowed: FxHashSet::default() };
+            ShadowScan { current_package: "main".to_string(), shadowed: FxHashMap::default() };
         shadows.walk(ast);
 
         let mut state = ExtractorState {
@@ -127,8 +135,8 @@ impl PackageGraphExtractor {
 struct ShadowScan {
     /// Current package context.
     current_package: String,
-    /// `(package, keyword)` pairs where a local subroutine shadows the DSL.
-    shadowed: FxHashSet<(String, DslKeyword)>,
+    /// Keywords shadowed by a local subroutine, per package.
+    shadowed: FxHashMap<String, DslImports>,
 }
 
 impl ShadowScan {
@@ -161,7 +169,7 @@ impl ShadowScan {
             }
             NodeKind::Subroutine { name: Some(sub_name), .. } => {
                 if let Some(keyword) = dsl_keyword_for(sub_name) {
-                    self.shadowed.insert((self.current_package.clone(), keyword));
+                    self.shadowed.entry(self.current_package.clone()).or_default().set(keyword);
                 }
             }
             _ => {}
@@ -188,8 +196,8 @@ struct ExtractorState {
     current_package: String,
     /// DSL keywords activated so far, per package, in source order.
     activated: FxHashMap<String, DslImports>,
-    /// `(package, keyword)` pairs shadowed by a local subroutine.
-    shadowed: FxHashSet<(String, DslKeyword)>,
+    /// Keywords shadowed by a local subroutine, per package.
+    shadowed: FxHashMap<String, DslImports>,
     /// Accumulated edges.
     edges: Vec<PackageEdge>,
 }
@@ -366,7 +374,7 @@ impl ExtractorState {
     /// at or before this point in the source, and that the package does not
     /// define a subroutine of the same name that would shadow the import.
     fn dsl_call_is_framework(&self, keyword: DslKeyword) -> bool {
-        if self.shadowed.contains(&(self.current_package.clone(), keyword)) {
+        if self.shadowed.get(&self.current_package).is_some_and(|imports| imports.grants(keyword)) {
             return false;
         }
         self.activated.get(&self.current_package).is_some_and(|imports| imports.grants(keyword))
