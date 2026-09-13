@@ -200,16 +200,19 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root)
     workflow = root / args.workflow
-    if not workflow.is_file():
+    try:
+        workflow_text = workflow.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
         # Without the candidate workflow the declared/undeclared split cannot be
-        # made, so absence cannot be classified. Refuse instead of guessing.
+        # made, so absence cannot be classified. Refuse instead of guessing, and
+        # read rather than stat-then-read so an unreadable file is the same typed
+        # refusal as a missing one.
         print(
-            f"error: candidate workflow {args.workflow} is not a readable file; "
-            "proof presence cannot be classified",
+            f"error: candidate workflow {args.workflow} is not a readable file "
+            f"({error}); proof presence cannot be classified",
             file=sys.stderr,
         )
         return 2
-    workflow_text = workflow.read_text(encoding="utf-8", errors="replace")
 
     rows = classify_all(root, workflow_text, proofs)
     report = render_report(rows)
