@@ -142,7 +142,14 @@ pub fn compute_delta_from_trees(
         ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let paths = parse_name_status_z(&stdout)?;
+    let mut paths = parse_name_status_z(&stdout)?;
+    paths.sort_by(|left, right| {
+        (&left.path, &left.status, &left.renamed_from).cmp(&(
+            &right.path,
+            &right.status,
+            &right.renamed_from,
+        ))
+    });
     Ok(ChildDelta {
         bound_parent_tree: parent_tree.to_string(),
         bound_child_tree: child_tree.to_string(),
@@ -152,13 +159,17 @@ pub fn compute_delta_from_trees(
 }
 
 fn parse_name_status_z(stdout: &str) -> Result<Vec<DeltaPath>, String> {
-    let fields = stdout.split('\0').filter(|field| !field.is_empty());
+    let mut fields: Vec<&str> = stdout.split('\0').collect();
+    if fields.last() == Some(&"") {
+        fields.pop();
+    }
     let mut paths = Vec::new();
-    let mut fields = fields.peekable();
+    let mut fields = fields.into_iter();
     while let Some(status_token) = fields.next() {
-        let Some(first_letter) = status_token.chars().next() else {
-            continue;
-        };
+        let first_letter = status_token
+            .chars()
+            .next()
+            .ok_or_else(|| format!("malformed diff-tree status token {status_token:?}"))?;
         let status = DeltaStatus::parse(first_letter)
             .ok_or_else(|| format!("unrecognized diff-tree status {status_token:?}"))?;
         let first_path = fields.next().ok_or("diff-tree entry ended before its path")?;
@@ -175,6 +186,42 @@ fn parse_name_status_z(stdout: &str) -> Result<Vec<DeltaPath>, String> {
         paths.push(DeltaPath { status, path, renamed_from });
     }
     Ok(paths)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_rename_and_copy_entries() {
+        assert_eq!(
+            parse_name_status_z("R100\0old\0new"),
+            Ok(vec![DeltaPath {
+                status: DeltaStatus::Renamed,
+                path: "new".to_string(),
+                renamed_from: Some("old".to_string()),
+            }])
+        );
+        assert_eq!(
+            parse_name_status_z("C75\0old\0new"),
+            Ok(vec![DeltaPath {
+                status: DeltaStatus::Renamed,
+                path: "new".to_string(),
+                renamed_from: Some("old".to_string()),
+            }])
+        );
+    }
+
+    #[test]
+    fn refuses_empty_status_token() {
+        let error = parse_name_status_z("\0");
+
+        assert!(matches!(
+            error,
+            Err(error)
+                if error.contains("malformed diff-tree status token") && error.contains("\"\"")
+        ));
+    }
 }
 
 /// Refuse any delta row outside the declared edge scope. Scope entries are

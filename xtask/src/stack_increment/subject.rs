@@ -7,7 +7,7 @@
 //! labels, and check names are structurally incapable of creating an edge.
 
 use super::{
-    ChildDelta, PROTECTED_MAIN_NOT_EVALUATED, STACK_INCREMENT_PRODUCER,
+    ChildDelta, DeltaStatus, PROTECTED_MAIN_NOT_EVALUATED, STACK_INCREMENT_PRODUCER,
     STACK_INCREMENT_SUBJECT_SCHEMA, sha256_hex, validate_nonempty, validate_sha40,
 };
 use serde::{Deserialize, Serialize};
@@ -307,6 +307,28 @@ pub fn validate_subject(subject: &StackIncrementSubjectV1) -> Result<(), StackSu
             "child-only delta is not bound to both endpoint trees",
         ));
     }
+    for (index, row) in subject.delta.paths.iter().enumerate() {
+        if row.path.is_empty() {
+            return Err(refuse("malformed_subject", format!("delta path {index} is empty")));
+        }
+        match row.status {
+            DeltaStatus::Renamed if !matches!(row.renamed_from.as_deref(), Some(source) if !source.is_empty()) =>
+            {
+                return Err(refuse(
+                    "malformed_subject",
+                    format!("renamed delta path {index} must carry a non-empty renamed_from"),
+                ));
+            }
+            DeltaStatus::Renamed => {}
+            _ if row.renamed_from.is_some() => {
+                return Err(refuse(
+                    "malformed_subject",
+                    format!("non-renamed delta path {index} must not carry renamed_from"),
+                ));
+            }
+            _ => {}
+        }
+    }
     let recomputed = super::delta_fingerprint(
         &subject.delta.bound_parent_tree,
         &subject.delta.bound_child_tree,
@@ -327,9 +349,17 @@ pub fn validate_subject(subject: &StackIncrementSubjectV1) -> Result<(), StackSu
 /// parent/child tree pair.
 #[must_use]
 pub fn subject_digest(subject: &StackIncrementSubjectV1) -> String {
+    let mut canonical = subject.clone();
+    canonical.delta.paths.sort_by(|left, right| {
+        (&left.path, &left.status, &left.renamed_from).cmp(&(
+            &right.path,
+            &right.status,
+            &right.renamed_from,
+        ))
+    });
     // Serialization of these structs is deterministic: struct fields serialize
-    // in declaration order and every collection is ordered.
-    match serde_json::to_vec(subject) {
+    // in declaration order and the delta paths are canonicalized above.
+    match serde_json::to_vec(&canonical) {
         Ok(bytes) => sha256_hex(&bytes),
         // These payloads derive from plain owned strings and integers; a
         // serialization failure would be a programming defect surfaced by the

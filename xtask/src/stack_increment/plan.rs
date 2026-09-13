@@ -103,11 +103,13 @@ pub fn derive_selectors(
         let Some(scope) = gate_scopes.iter().find(|scope| &scope.gate_id == gate_id) else {
             continue;
         };
-        let matched_path = delta
-            .paths
-            .iter()
-            .map(|row| row.path.as_str())
-            .find(|path| path_in_scope(path, &scope.path_prefixes));
+        let matched_path = delta.paths.iter().find_map(|row| {
+            if path_in_scope(&row.path, &scope.path_prefixes) {
+                Some(row.path.as_str())
+            } else {
+                row.renamed_from.as_deref().filter(|path| path_in_scope(path, &scope.path_prefixes))
+            }
+        });
         let selector = match matched_path {
             Some(path) => GateSelectorInput {
                 gate_id: gate_id.clone(),
@@ -147,10 +149,19 @@ fn path_in_scope(path: &str, prefixes: &[String]) -> bool {
 pub fn selector_binding_digest(delta_fingerprint: &str, gate_scopes: &[StackGateScope]) -> String {
     let mut input = Vec::new();
     input.extend_from_slice(delta_fingerprint.as_bytes());
-    for scope in gate_scopes {
+    let mut canonical_scopes: Vec<(&str, Vec<&str>)> = gate_scopes
+        .iter()
+        .map(|scope| {
+            let mut prefixes: Vec<&str> = scope.path_prefixes.iter().map(String::as_str).collect();
+            prefixes.sort_unstable();
+            (scope.gate_id.as_str(), prefixes)
+        })
+        .collect();
+    canonical_scopes.sort_unstable();
+    for (gate_id, prefixes) in canonical_scopes {
         input.push(b'\n');
-        input.extend_from_slice(scope.gate_id.as_bytes());
-        for prefix in &scope.path_prefixes {
+        input.extend_from_slice(gate_id.as_bytes());
+        for prefix in prefixes {
             input.push(0);
             input.extend_from_slice(prefix.as_bytes());
         }

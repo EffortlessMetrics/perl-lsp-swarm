@@ -7,7 +7,9 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 
-use super::plan::{STACK_LOCAL_PROFILE, StackGateScope, stack_plan_digest};
+use super::plan::{
+    STACK_LOCAL_PROFILE, StackGateScope, selector_binding_digest, stack_plan_digest,
+};
 use super::result::{
     ChildIncrementStatus, ContextStatus, ParentPrerequisiteState, RunIdentity, StackObservation,
     StackResultInput, StackRowResult, compile_result, render_explanation, validate_result,
@@ -765,6 +767,67 @@ fn ci_stack_increment_sibling_prefix_selects_no_gate() {
 }
 
 #[test]
+fn ci_stack_increment_rename_selects_source_and_destination_gates() {
+    let paths = vec![DeltaPath {
+        status: DeltaStatus::Renamed,
+        path: "crates/destination/new.rs".to_string(),
+        renamed_from: Some("crates/source/old.rs".to_string()),
+    }];
+    let delta = super::ChildDelta {
+        bound_parent_tree: PARENT_TREE(),
+        bound_child_tree: CHILD_TREE(),
+        fingerprint: super::delta_fingerprint(&PARENT_TREE(), &CHILD_TREE(), &paths),
+        paths,
+    };
+    let selectors = super::derive_selectors(
+        &delta,
+        &["source-gate".to_string(), "destination-gate".to_string()],
+        &[
+            StackGateScope {
+                gate_id: "source-gate".to_string(),
+                path_prefixes: vec!["crates/source/".to_string()],
+            },
+            StackGateScope {
+                gate_id: "destination-gate".to_string(),
+                path_prefixes: vec!["crates/destination/".to_string()],
+            },
+        ],
+    );
+
+    assert_eq!(selectors.len(), 2);
+    assert!(selectors.iter().all(|selector| {
+        selector.placement == crate::ci_route_plan::SelectorPlacement::Selected
+            && selector.proof == Some(crate::ci_route_plan::SelectorProof::Applicable)
+    }));
+}
+
+#[test]
+fn ci_stack_increment_selector_binding_digest_is_order_independent() {
+    let left = vec![
+        StackGateScope {
+            gate_id: "z-gate".to_string(),
+            path_prefixes: vec!["z/".to_string(), "a/".to_string()],
+        },
+        StackGateScope {
+            gate_id: "a-gate".to_string(),
+            path_prefixes: vec!["d/".to_string(), "c/".to_string()],
+        },
+    ];
+    let right = vec![
+        StackGateScope {
+            gate_id: "a-gate".to_string(),
+            path_prefixes: vec!["c/".to_string(), "d/".to_string()],
+        },
+        StackGateScope {
+            gate_id: "z-gate".to_string(),
+            path_prefixes: vec!["a/".to_string(), "z/".to_string()],
+        },
+    ];
+
+    assert_eq!(selector_binding_digest("delta", &left), selector_binding_digest("delta", &right));
+}
+
+#[test]
 fn ci_stack_increment_rename_and_copy_scope_checks_both_paths() {
     let edge = StackEdgeDeclaration {
         dependency: EdgeKind::ProgrammeDependency,
@@ -828,6 +891,47 @@ fn ci_stack_increment_edited_artifact_cannot_revalidate_admission() {
     let mut repinned = subject.clone();
     repinned.edge.declared_parent_head_sha = Some(hex40(9));
     assert_eq!(validate_subject(&repinned).unwrap_err().code, "edge_declaration_invalid");
+}
+
+#[test]
+fn ci_stack_increment_serialized_rename_requires_source_path() {
+    let mut serialized = serde_json::to_value(compiled_subject()).unwrap();
+    serialized["delta"]["paths"][0]["status"] = serde_json::Value::String("renamed".to_string());
+    let edited: super::StackIncrementSubjectV1 = serde_json::from_value(serialized).unwrap();
+
+    assert_eq!(validate_subject(&edited).unwrap_err().code, "malformed_subject");
+}
+
+#[test]
+fn ci_stack_increment_subject_digest_canonicalizes_delta_path_order() {
+    let mut left = compiled_subject();
+    let mut right = left.clone();
+    let paths = vec![
+        DeltaPath {
+            status: DeltaStatus::Modified,
+            path: "crates/perl-parser/z.rs".to_string(),
+            renamed_from: None,
+        },
+        DeltaPath {
+            status: DeltaStatus::Modified,
+            path: "crates/perl-parser/a.rs".to_string(),
+            renamed_from: None,
+        },
+    ];
+    left.delta.paths = paths.clone();
+    right.delta.paths = paths.into_iter().rev().collect();
+    left.delta.fingerprint = super::delta_fingerprint(
+        &left.delta.bound_parent_tree,
+        &left.delta.bound_child_tree,
+        &left.delta.paths,
+    );
+    right.delta.fingerprint = super::delta_fingerprint(
+        &right.delta.bound_parent_tree,
+        &right.delta.bound_child_tree,
+        &right.delta.paths,
+    );
+
+    assert_eq!(subject_digest(&left), subject_digest(&right));
 }
 
 /// Result fan-in runs the plan's semantic validator and pins the exact

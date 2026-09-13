@@ -152,6 +152,20 @@ fn ancestry_relation(
     })
 }
 
+fn same_repository_admission(
+    child: &PullRequestFacts,
+    parent: &PullRequestFacts,
+    local_identity: &str,
+) -> bool {
+    let expected_owner = local_identity.split('/').next().unwrap_or_default();
+    !child.is_cross_repository
+        && !parent.is_cross_repository
+        && child.base_repository.name_with_owner == local_identity
+        && child.head_repository_owner.login == expected_owner
+        && parent.base_repository.name_with_owner == local_identity
+        && parent.head_repository_owner.login == expected_owner
+}
+
 /// Assemble a subject input directly from a live PR. Fails closed unless the
 /// child PR carries the exact machine-readable declaration pinned to its
 /// actual base head.
@@ -202,21 +216,19 @@ fn assemble_live_subject_input(repository: &Path, pr: u64) -> Result<StackSubjec
     // (#13360 root cause 6): a fork PR is refused even when its head object
     // happens to exist in the local clone.
     let local_identity = repository_identity(repository)?;
-    let expected_owner = local_identity.split('/').next().unwrap_or_default().to_string();
-    let same_repository = !facts.is_cross_repository
-        && facts.base_repository.name_with_owner == local_identity
-        && facts.head_repository_owner.login == expected_owner
-        && parent_facts.base_repository.name_with_owner == local_identity
-        && parent_facts.head_repository_owner.login == expected_owner;
+    let same_repository = same_repository_admission(&facts, &parent_facts, &local_identity);
     if !same_repository {
         bail!(
-            "live --pr assembly admits only same-repository stacks: child PR #{} derives base \
-             {:?} with head owner {:?}, parent PR #{} derives base {:?} with head owner {:?}, \
-             while the local repository is {local_identity:?}",
+            "live --pr assembly admits only same-repository stacks: child PR #{} \
+             cross_repository={:?}, derives base {:?} with head owner {:?}, parent PR #{} \
+             cross_repository={:?}, derives base {:?} with head owner {:?}, while the local \
+             repository is {local_identity:?}",
             facts.number,
+            facts.is_cross_repository,
             facts.base_repository.name_with_owner,
             facts.head_repository_owner.login,
             parent_facts.number,
+            parent_facts.is_cross_repository,
             parent_facts.base_repository.name_with_owner,
             parent_facts.head_repository_owner.login
         );
@@ -391,5 +403,47 @@ fn run_explain(result_path: &Path) -> Result<()> {
         Ok(())
     } else {
         bail!("advisory context is not green: {:?}", result.context_status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn facts(number: u64, is_cross_repository: bool) -> PullRequestFacts {
+        PullRequestFacts {
+            number,
+            head_ref_name: format!("branch-{number}"),
+            head_ref_oid: format!("head-{number}"),
+            base_ref_oid: format!("base-{number}"),
+            body: None,
+            is_cross_repository,
+            head_repository_owner: GhOwnerLogin { login: "owner".to_string() },
+            base_repository: GhBaseRepository { name_with_owner: "owner/repo".to_string() },
+        }
+    }
+
+    #[test]
+    fn same_repository_admission_refuses_cross_repository_parent() {
+        let child = facts(101, false);
+        let parent = facts(100, true);
+
+        assert!(!same_repository_admission(&child, &parent, "owner/repo"));
+    }
+
+    #[test]
+    fn same_repository_admission_refuses_cross_repository_child() {
+        let child = facts(101, true);
+        let parent = facts(100, false);
+
+        assert!(!same_repository_admission(&child, &parent, "owner/repo"));
+    }
+
+    #[test]
+    fn same_repository_admission_accepts_same_repository_facts() {
+        let child = facts(101, false);
+        let parent = facts(100, false);
+
+        assert!(same_repository_admission(&child, &parent, "owner/repo"));
     }
 }
