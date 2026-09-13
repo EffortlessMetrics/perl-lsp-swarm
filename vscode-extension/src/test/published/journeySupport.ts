@@ -286,6 +286,34 @@ export function providerPosition(
   return document.positionAt(offset);
 }
 
+/** Independent two-occurrence oracle for the packaged daily-driver fixture. */
+export function assertDailyDriverRenameEdits(
+  source: string,
+  edits: ReadonlyArray<{
+    range: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+    };
+    newText: string;
+  }>,
+): void {
+  const lines = source.split('\n');
+  assert.equal(lines[3], 'my $value = 42;', 'rename fixture declaration changed');
+  assert.equal(lines[4], 'print $value;', 'rename fixture use changed');
+  assert.equal(edits.length, 2, 'rename must cover exactly the declaration and use');
+  const ordered = [...edits].sort((left, right) => left.range.start.line - right.range.start.line);
+  for (const [index, edit] of ordered.entries()) {
+    const line = index + 3;
+    const sigilStart = index === 0 ? 3 : 6;
+    assert.equal(edit.range.start.line, line, 'rename changed the wrong occurrence');
+    assert.equal(edit.range.end.line, line, 'rename crosses a line boundary');
+    assert.equal(edit.range.end.character, sigilStart + 6, 'rename changed the wrong span');
+    const includesSigil = edit.range.start.character === sigilStart;
+    assert.ok(includesSigil || edit.range.start.character === sigilStart + 1, 'wrong rename start');
+    assert.equal(edit.newText, includesSigil ? '$renamed_value' : 'renamed_value');
+  }
+}
+
 export function assertProviderSucceeded(label: string, result: ReceiptValue): void {
   assert.notEqual(result.status, 'error', `${label}: ${JSON.stringify(result)}`);
 }
