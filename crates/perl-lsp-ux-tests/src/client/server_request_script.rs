@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::{Map, Value, json};
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// A response that the scripted client should send to a server request.
@@ -148,6 +148,7 @@ struct State {
 
 pub(crate) struct ServerRequestScript {
     state: Arc<Mutex<State>>,
+    state_cv: Arc<Condvar>,
     response_tx: Arc<Mutex<Option<Sender<(usize, ResponsePlan)>>>>,
     dispatcher: Option<std::thread::JoinHandle<()>>,
     workers: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
@@ -156,6 +157,7 @@ pub(crate) struct ServerRequestScript {
 #[derive(Clone)]
 pub(crate) struct ServerRequestObserver {
     state: Arc<Mutex<State>>,
+    state_cv: Arc<Condvar>,
     response_tx: Arc<Mutex<Option<Sender<(usize, ResponsePlan)>>>>,
 }
 
@@ -165,10 +167,12 @@ impl ServerRequestScript {
         script: Vec<ScriptedServerRequest>,
     ) -> Result<(Self, ServerRequestObserver)> {
         let state = Arc::new(Mutex::new(State { script: script.into(), observed: Vec::new() }));
+        let state_cv = Arc::new(Condvar::new());
         let (response_tx, response_rx) = mpsc::channel::<(usize, ResponsePlan)>();
         let response_tx = Arc::new(Mutex::new(Some(response_tx)));
         let workers = Arc::new(Mutex::new(Vec::new()));
         let dispatch_state = state.clone();
+        let dispatch_state_cv = state_cv.clone();
         let dispatch_stdin = stdin.clone();
         let dispatch_workers = workers.clone();
         let dispatcher = std::thread::Builder::new()
@@ -177,21 +181,24 @@ impl ServerRequestScript {
                 while let Ok((index, plan)) = response_rx.recv() {
                     let worker_stdin = dispatch_stdin.clone();
                     let worker_state = dispatch_state.clone();
+                    let worker_state_cv = dispatch_state_cv.clone();
                     let worker = std::thread::Builder::new()
                         .name(format!("ux-scripted-response-{index}"))
                         .spawn(move || {
                             if !plan.delay.is_zero() {
+                                // ux-timing: deliberate-stimulus — the scripted response delay is the behavior under test
                                 std::thread::sleep(plan.delay);
                             }
                             let delivery = match worker_stdin.lock() {
                                 Ok(mut stdin) => match stdin.as_mut() {
-                                    Some(stdin) => match super::write_framed(stdin, &plan.response)
-                                    {
-                                        Ok(()) => ServerRequestDelivery::Sent,
-                                        Err(error) => {
-                                            ServerRequestDelivery::Failed(format!("{error:#}"))
+                                    Some(stdin) => {
+                                        match super::write_framed_to(stdin, &plan.response) {
+                                            Ok(()) => ServerRequestDelivery::Sent,
+                                            Err(error) => {
+                                                ServerRequestDelivery::Failed(format!("{error:#}"))
+                                            }
                                         }
-                                    },
+                                    }
                                     None => ServerRequestDelivery::Failed(
                                         "LSP client stdin is already closed".into(),
                                     ),
@@ -200,7 +207,7 @@ impl ServerRequestScript {
                                     "failed to lock LSP client stdin: {error}"
                                 )),
                             };
-                            set_delivery(&worker_state, index, delivery);
+                            set_delivery(&worker_state, &worker_state_cv, index, delivery);
                         });
                     match worker {
                         Ok(worker) => {
@@ -211,6 +218,7 @@ impl ServerRequestScript {
                         }
                         Err(error) => set_delivery(
                             &dispatch_state,
+                            &dispatch_state_cv,
                             index,
                             ServerRequestDelivery::Failed(format!(
                                 "failed to spawn response worker: {error}"
@@ -220,32 +228,39 @@ impl ServerRequestScript {
                 }
             })
             .context("failed to spawn scripted response dispatcher")?;
-        let observer =
-            ServerRequestObserver { state: state.clone(), response_tx: response_tx.clone() };
-        Ok((Self { state, response_tx, dispatcher: Some(dispatcher), workers }, observer))
+        let observer = ServerRequestObserver {
+            state: state.clone(),
+            state_cv: state_cv.clone(),
+            response_tx: response_tx.clone(),
+        };
+        Ok((Self { state, state_cv, response_tx, dispatcher: Some(dispatcher), workers }, observer))
     }
 
     pub(crate) fn wait(&self, timeout: Duration) -> Result<Vec<ObservedServerRequest>> {
         let deadline = Instant::now() + timeout;
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         loop {
-            let (remaining, observed) = {
-                let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-                (state.script.len(), state.observed.clone())
-            };
-            if let Some(failure) = observed.iter().find_map(|request| match &request.delivery {
-                ServerRequestDelivery::Failed(reason) => {
-                    Some((request.method.clone(), reason.clone()))
-                }
-                _ => None,
-            }) {
+            let remaining = state.script.len();
+            if let Some(failure) =
+                state.observed.iter().find_map(|request| match &request.delivery {
+                    ServerRequestDelivery::Failed(reason) => {
+                        Some((request.method.clone(), reason.clone()))
+                    }
+                    _ => None,
+                })
+            {
+                drop(state);
                 self.join_workers()?;
                 return Err(anyhow!("failed to answer {}: {}", failure.0, failure.1));
             }
-            let scheduled = observed
+            let scheduled = state
+                .observed
                 .iter()
                 .filter(|request| request.delivery == ServerRequestDelivery::Scheduled)
                 .count();
             if remaining == 0 && scheduled == 0 {
+                let observed = state.observed.clone();
+                drop(state);
                 self.join_workers()?;
                 return Ok(observed);
             }
@@ -255,7 +270,12 @@ impl ServerRequestScript {
                     timeout.as_millis()
                 ));
             }
-            std::thread::sleep(Duration::from_millis(10));
+            let wait_for = deadline.saturating_duration_since(Instant::now());
+            state = self
+                .state_cv
+                .wait_timeout(state, wait_for)
+                .unwrap_or_else(|error| error.into_inner())
+                .0;
         }
     }
 
@@ -337,6 +357,7 @@ impl ServerRequestObserver {
             });
             (index, plan)
         };
+        self.state_cv.notify_all();
         if let Some(plan) = plan {
             let send_result = self
                 .response_tx
@@ -347,6 +368,7 @@ impl ServerRequestObserver {
             if send_result.is_none_or(|result| result.is_err()) {
                 set_delivery(
                     &self.state,
+                    &self.state_cv,
                     index,
                     ServerRequestDelivery::Failed("response dispatcher stopped".into()),
                 );
@@ -355,9 +377,15 @@ impl ServerRequestObserver {
     }
 }
 
-fn set_delivery(state: &Arc<Mutex<State>>, index: usize, delivery: ServerRequestDelivery) {
+fn set_delivery(
+    state: &Arc<Mutex<State>>,
+    state_cv: &Arc<Condvar>,
+    index: usize,
+    delivery: ServerRequestDelivery,
+) {
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     if let Some(request) = state.observed.get_mut(index) {
         request.delivery = delivery;
     }
+    state_cv.notify_all();
 }
