@@ -58,6 +58,36 @@ enum PackageImportState {
     NotProven,
 }
 
+impl PackageImportState {
+    /// Whether this state installs the table-class DSL in the package.
+    ///
+    /// Only the proven exact import does. Both other states answer "no" for
+    /// different reasons, which is why this is not the negation of
+    /// [`Self::retracts_candidates`].
+    fn admits_table_builder(self) -> bool {
+        matches!(self, Self::ExactTableImport)
+    }
+
+    /// Whether this state withdraws candidates already collected for the
+    /// package.
+    ///
+    /// Only `NotProven` does. `UnadmittedSingleImport` collected nothing to
+    /// withdraw, which is a different answer from having lost authority it
+    /// held — conflating the two is the single-bit model this slice retires.
+    fn retracts_candidates(self) -> bool {
+        matches!(self, Self::NotProven)
+    }
+}
+
+/// Whether a `use`/`no` names the module this adapter models.
+///
+/// The adapter's identity is one exact module name, matched at four walk
+/// sites. A child namespace such as `DBIx::QuickORM::Util` installs different
+/// names and is not this import.
+fn is_quickorm_module(module: &str) -> bool {
+    module == "DBIx::QuickORM"
+}
+
 #[derive(Debug, Clone, Default)]
 struct QuickOrmWalkCtx {
     current_package: Option<String>,
@@ -83,7 +113,7 @@ impl QuickOrmWalkCtx {
     /// even though the end-of-walk filter would discard its candidates anyway.
     fn table_builder_active(&self) -> bool {
         let package = self.package();
-        self.imports.get(package) == Some(&PackageImportState::ExactTableImport)
+        self.imports.get(package).is_some_and(|state| state.admits_table_builder())
             && !self.consumed_builders.contains(package)
     }
 
@@ -124,7 +154,7 @@ impl QuickOrmWalkCtx {
     /// answer from "lost the authority it had", and collapsing the two is the
     /// single-bit model this containment slice retires.
     fn is_suppressed(&self, package: &str) -> bool {
-        self.imports.get(package) == Some(&PackageImportState::NotProven)
+        self.imports.get(package).is_some_and(|state| state.retracts_candidates())
     }
 }
 
@@ -207,10 +237,10 @@ fn walk_quickorm(
                 ctx.current_package = Some(name.clone());
             }
         }
-        NodeKind::Use { module, args, .. } if module == "DBIx::QuickORM" => {
+        NodeKind::Use { module, args, .. } if is_quickorm_module(module) => {
             ctx.record_import(is_explicit_table_class_import(args));
         }
-        NodeKind::No { module, .. } if module == "DBIx::QuickORM" => {
+        NodeKind::No { module, .. } if is_quickorm_module(module) => {
             ctx.record_unimport();
         }
         NodeKind::ExpressionStatement { expression } if ctx.table_builder_active() => {
@@ -272,10 +302,10 @@ fn record_nested_import_events(node: &Node, ctx: &mut QuickOrmWalkCtx) {
                 ctx.current_package = saved_package;
             }
         }
-        NodeKind::Use { module, args, .. } if module == "DBIx::QuickORM" => {
+        NodeKind::Use { module, args, .. } if is_quickorm_module(module) => {
             ctx.record_import(is_explicit_table_class_import(args));
         }
-        NodeKind::No { module, .. } if module == "DBIx::QuickORM" => {
+        NodeKind::No { module, .. } if is_quickorm_module(module) => {
             ctx.record_unimport();
         }
         _ => {
@@ -698,6 +728,37 @@ mod tests {
             !consumed.is_suppressed("main"),
             "consuming the builder must not suppress the candidates it emitted"
         );
+    }
+
+    /// The two state policies, exhaustively, as pure functions.
+    ///
+    /// Every variant is named against both questions so neither can quietly
+    /// become the other's negation: `UnadmittedSingleImport` answers "no" to
+    /// both, and that middle case is the whole point of having three states.
+    #[test]
+    fn each_import_state_answers_both_policy_questions_separately() {
+        use PackageImportState::{ExactTableImport, NotProven, UnadmittedSingleImport};
+
+        assert!(ExactTableImport.admits_table_builder());
+        assert!(!UnadmittedSingleImport.admits_table_builder());
+        assert!(!NotProven.admits_table_builder());
+
+        assert!(NotProven.retracts_candidates());
+        assert!(!ExactTableImport.retracts_candidates());
+        assert!(!UnadmittedSingleImport.retracts_candidates());
+    }
+
+    /// The adapter's module identity, without the walk.
+    #[test]
+    fn only_the_exact_quickorm_module_name_is_this_adapters_import() {
+        assert!(is_quickorm_module("DBIx::QuickORM"));
+
+        assert!(!is_quickorm_module("DBIx::QuickORM::Util"));
+        assert!(!is_quickorm_module("DBIx::Quick"));
+        assert!(!is_quickorm_module("DBIx::Class"));
+        assert!(!is_quickorm_module("dbix::quickorm"));
+        assert!(!is_quickorm_module("strict"));
+        assert!(!is_quickorm_module(""));
     }
 
     /// The retroactive filter's predicate, asserted without the parser.
