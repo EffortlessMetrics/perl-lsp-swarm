@@ -412,3 +412,5 @@ reports follow [SECURITY.md](SECURITY.md). Contributions are licensed under both
 - [Architecture reference](docs/reference/ARCHITECTURE.md)
 - [Agent contributing guide](docs/how-to/AGENT_CONTRIBUTING.md)
 - [Debugging the LSP server](docs/contributing/DEBUGGING_LSP_SERVER.md)
+
+Dependency version updates use a 14-day admission window. See the [release-age boundary](docs/how-to/DEPENDENCY_MANAGEMENT.md#release-age-boundary) for updater versus npm resolver behavior and security exceptions.
