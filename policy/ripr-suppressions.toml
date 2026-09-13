@@ -3472,6 +3472,48 @@ expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
 
 # -----------------------------------------------------------------------------
+# PR #14650 (#12616) adds the compiler transformation law/plan/result contract
+# vocabulary as one dependency-neutral in-memory module. ripr 0.10.0 reports
+# 140 no_static_path probes in it: 117 family field_construction on
+# declaration lines (the three MAX_* bounds, the six closed `ALL` vocabulary
+# arrays, and pub struct field declarations) and 23 family call_deletion on
+# the newtype identity declarations (LawId, PlanId, OperationId and siblings).
+# These are declaration lines, not executable seams: reach bottoms out because
+# a declaration-line probe has no function body to trace into and the module
+# has no production consumer yet (#12617 is its first) — the same not-yet-
+# wired substrate boundary as the quickorm-api reference-registry entry above,
+# at declaration-line ripr#1429 class.
+#
+# The declarations ARE exercised: the inline suite references MAX_TEXT_LEN 21
+# times and the `ALL` arrays 15 times, and every newtype is constructed by the
+# shape fixtures. The same diff-scoped receipt reports reachable_unrevealed =
+# 0 with 1983 exposed and 578 weakly_exposed probes in this very file, so every
+# owner ripr could reach carries a discriminating test; only the declaration
+# lines are unreachable. The packet also sets requires_targeted_mutation with
+# routing_reason "ripr severe gap", and that routing has already been
+# satisfied: 73 mutations across seventeen waves, each breaking one production
+# guard and each required to turn its own named test red, with none surviving.
+#
+# HONEST SCOPE NOTE: the matcher is path-scoped to the single new file, so a
+# future executable no_static_path seam added there would be masked for this
+# window. The module performs no transformation, emits no edit and does no I/O,
+# so any such addition is itself a contract violation review must catch; the
+# other classifications and the inline suite remain in force meanwhile.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-compiler-transformation-contract-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/compiler_transformation_contract.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14650 (#12616): 140 no_static_path probes on the compiler transformation contract vocabulary — 117 field_construction on declaration lines (MAX_TEXT_LEN, MAX_SELECTED_LOCATIONS, MAX_CANONICAL_TEXT_BYTES, the six closed `ALL` arrays, and pub struct field declarations) and 23 call_deletion on the newtype identity declarations. Declaration-line probes have no function body for ripr to trace into, and the module has no production consumer yet (#12617 is its first), so activation cannot be resolved — the not-yet-wired substrate boundary of ripr-suppress-quickorm-api-reference-registry at declaration-line ripr#1429 class. The declarations are exercised: the inline suite references MAX_TEXT_LEN 21 times and the `ALL` arrays 15 times, and the shape fixtures construct every newtype. The same receipt reports reachable_unrevealed = 0 alongside 1983 exposed and 578 weakly_exposed probes in this file, so every reachable owner carries a discriminating test. The packet's requires_targeted_mutation routing is already satisfied by 73 mutations across seventeen waves, all caught by their own named test. HONEST SCOPE NOTE: path-scoped to the single new file, so a future executable no_static_path seam there would be masked for this window; the module's own contract forbids behavior, so such an addition is a contract violation review must catch. Remove when the module gains its production consumer (then re-scope to that consumer's seams) or when ripr#1429 resolves declaration-line probes via constructor-call paths."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-09-27"
+removal_criteria = "Remove when #12617 wires the first production consumer (re-scope the suppression to that consumer's seams) or when ripr#1429 resolves declaration-line and newtype-declaration probes; narrow immediately if a future receipt reports an executable (non-declaration) no_static_path seam in this file."
+
+# -----------------------------------------------------------------------------
 # Structural access-hop contract declarations (#13619, PR #14611): the same
 # declaration-line ripr#1429 class already accepted for this crate's sibling
 # reachability_operation contract (see
