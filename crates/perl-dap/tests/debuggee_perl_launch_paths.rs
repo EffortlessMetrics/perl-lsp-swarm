@@ -15,7 +15,7 @@ use serial_test::serial;
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -77,6 +77,34 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
         }
     }
     Ok(None)
+}
+
+#[test]
+#[cfg(windows)]
+#[serial(dap_debuggee_environment)]
+fn pinned_native_resolver_uses_piped_stdio_bootstrap() -> Result<(), Box<dyn Error>> {
+    let pin = Path::new(r"C:\Strawberry\perl\bin\perl.exe");
+    if !pin.is_file() {
+        return Err("the native Strawberry Perl control is unavailable".into());
+    }
+    let _pin = EnvGuard::set(DEBUGGEE_PERL_OVERRIDE_ENV, pin.as_os_str());
+    let _emacs = EnvGuard::remove("EMACS");
+    let _perl_rl = EnvGuard::remove("PERL_RL");
+    let _perl_db_opts = EnvGuard::remove("PERLDB_OPTS");
+    let resolved = common::resolve_debuggee_perl().ok_or("pinned native Perl was rejected")?;
+    let expected = fs::canonicalize(pin)?;
+    if fs::canonicalize(&resolved.binary)? != expected {
+        return Err(format!(
+            "resolver selected {} instead of pinned {}",
+            resolved.binary.display(),
+            expected.display()
+        )
+        .into());
+    }
+    if resolved.identity.trim().is_empty() {
+        return Err("native resolver returned no debugger identity".into());
+    }
+    Ok(())
 }
 
 fn observe_pin_with_session(

@@ -1481,9 +1481,9 @@ pub const DEBUGGEE_PERL_OVERRIDE_ENV: &str = "PERL_LSP_DAP_DEBUGGEE_PERL";
 
 /// Wall-clock budget for one [`probe_debuggee_perl`] attempt.
 ///
-/// A working perl5db emits its banner well inside a second; a broken one
-/// (native MSWin32 builds at piped bootstrap) hangs forever, so the budget is
-/// what bounds the probe.
+/// A working perl5db emits its banner well inside a second; an interpreter
+/// that cannot bootstrap its debugger over pipes may hang, so the budget
+/// bounds the probe.
 const DEBUGGEE_PROBE_BUDGET: Duration = Duration::from_secs(10);
 
 /// A debuggee interpreter proven able to run a real debugger session over
@@ -1525,11 +1525,10 @@ fn debuggee_perl_candidates() -> Vec<PathBuf> {
 
     let mut candidates = vec![PathBuf::from("perl")];
 
-    // Windows: add well-known MSYS-family perl locations. The cataloged root
-    // cause (#12594 item 6b) is that native MSWin32 perl5db builds cannot run
-    // over piped stdio, while MSYS/cygwin-flavored builds can; these paths are
+    // Windows: add well-known MSYS-family perl locations. These paths are
     // only PROPOSALS — every candidate still has to pass the conformance
-    // probe before it is trusted. Environments with other layouts should set
+    // probe, including the native piped-stdio bootstrap, before it is
+    // trusted. Environments with other layouts should set
     // [`DEBUGGEE_PERL_OVERRIDE_ENV`].
     if cfg!(windows) {
         if let Some(system_drive) = std::env::var_os("SystemDrive") {
