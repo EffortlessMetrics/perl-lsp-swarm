@@ -173,7 +173,12 @@ Server.options = {
   ---which are more performant but don't advertise it, set to true to force
   ---incremental changes even if server doesn't advertise them
   incremental_changes = false,
-  ---True to debug the lsp client when developing it
+  ---True to debug the lsp client when developing it. Explicit opt-in local
+  ---protocol trace (#11155): verbose logs carry complete protocol payloads
+  ---and can therefore contain source code, file paths and configuration
+  ---values. Disabled by default; never enable it for canonical host or CI
+  ---proof artifacts. config.plugins.lsp.force_verbosity_off suppresses it
+  ---client-wide.
   verbose = false,
 }
 

@@ -62,7 +62,12 @@ local HelpDoc = require "plugins.lsp.helpdoc"
 
 ---Configuration options for the LSP plugin.
 ---@class config.plugins.lsp
----Set to a file path to log all json
+---Absolute path of a file that receives the complete JSON protocol trace.
+---Explicit opt-in local sensitive trace (#11155): LSP traffic carries
+---document text, file paths and configuration values, so this file can
+---contain source code. Empty disables it. Writes are appended with no
+---automatic rotation or retention bound, and it is never enabled for
+---canonical host or CI proof artifacts.
 ---@field log_file string
 ---Setting to true prettyfies json for more readability on the log
 ---but this setting will impact performance so only enable it when
@@ -80,9 +85,14 @@ local HelpDoc = require "plugins.lsp.helpdoc"
 ---@field snippets boolean
 ---Stop servers that aren't needed by any of the open files
 ---@field stop_unneeded_servers boolean
----Send a server stderr output to lite log
+---Send a server stderr output to lite log. Sensitive (#11155): server
+---diagnostics can carry file paths and source fragments. Off by default;
+---retained bytes are bounded and truncation is marked.
 ---@field log_server_stderr boolean
----Force verbosity off even if a server is configured with verbosity on
+---Force verbosity off even if a server is configured with verbosity on.
+---Per-server verbosity (#11155) logs complete protocol payloads, which can
+---contain source code, file paths and configuration values; this switch
+---suppresses that trace client-wide.
 ---@field force_verbosity_off boolean
 ---Yield when reading from LSP which may give you better UI responsiveness
 ---when receiving large responses, but will affect LSP performance.
@@ -158,7 +168,9 @@ config.plugins.lsp = common.merge({
     },
     {
       label = "Log File",
-      description = "Absolute path to a '.log' file for logging all json.",
+      description = "Absolute path to a '.log' file for logging all json. "
+        .. "Sensitive: the trace can contain source code, file paths and "
+        .. "configuration values. Empty disables it; no automatic rotation.",
       path = "log_file",
       type = "FILE",
       filters = {"%.log$"}
@@ -172,14 +184,18 @@ config.plugins.lsp = common.merge({
     },
     {
       label = "Log Standard Error",
-      description = "Send a server stderr output to lite log.",
+      description = "Send a server stderr output to lite log. Sensitive: "
+        .. "server diagnostics can carry file paths and source fragments; "
+        .. "retention is bounded and truncation is marked.",
       path = "log_server_stderr",
       type = "TOGGLE",
       default = false
     },
     {
       label = "Force Verbosity Off",
-      description = "Turn verbosity off even if a server is configured with verbosity on.",
+      description = "Turn verbosity off even if a server is configured with "
+        .. "verbosity on. Sensitive: verbosity logs complete protocol "
+        .. "payloads, which can contain source code and configuration values.",
       path = "force_verbosity_off",
       type = "TOGGLE",
       default = false
