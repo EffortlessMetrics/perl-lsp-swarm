@@ -272,10 +272,10 @@ impl LspServer {
     ///
     /// # Returns
     /// - `Ok(Some(locations))`: Definition location(s) found.
-    /// - `Ok(None)`: No definition found at position.
+    /// - `Ok(Some(Value::Null))` or an empty location array: No definition found.
     ///
     /// # Errors
-    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    /// Returns [`JsonRpcError`] if provided params are invalid.
     pub fn test_handle_definition(
         &self,
         params: Option<Value>,
