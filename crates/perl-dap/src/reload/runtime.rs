@@ -1857,7 +1857,7 @@ mod tests {
                 Err(error) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return DebuggerProbe::InstrumentFailed(format!("wait: {error}"));
+                    return DebuggerProbe::InstrumentFailed(format!("try_wait: {error}"));
                 }
             }
         }
@@ -1868,6 +1868,9 @@ mod tests {
     const PROBE_CONTROL_MODE: &str = "PERL_LSP_DAP_PROBE_CONTROL_MODE";
     /// Directory the armed control child ticks into while it is alive.
     const PROBE_CONTROL_TICK_DIR: &str = "PERL_LSP_DAP_PROBE_CONTROL_TICK_DIR";
+    /// File the armed control child writes its own PID into, so the parent
+    /// can ask the OS what became of it.
+    const PROBE_CONTROL_PID_FILE: &str = "PERL_LSP_DAP_PROBE_CONTROL_PID_FILE";
     /// `--exact` filter naming the control child inside this test binary.
     const PROBE_CONTROL_TEST: &str = "reload::runtime::tests::probe_control_child";
 
@@ -1877,9 +1880,18 @@ mod tests {
     /// somehow escapes its parent still exits on its own.
     const CONTROL_MAX_TICKS: u32 = 600;
     /// The deadline the bounded probe is given against the hang control.
-    /// Generous next to process startup — a slow host must not be able to
-    /// turn this into a flake — and tiny next to the child's own lifetime.
-    const CONTROL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+    ///
+    /// Sized against the thing actually being started, which is *not* a
+    /// small cached `perl.exe`: it is a second copy of this crate's own
+    /// test binary, re-executed. On a contended Windows runner that pays
+    /// process creation plus libtest init plus a real-time AV scan of a
+    /// freshly-exec'd image, so the budget has to clear seconds, not
+    /// milliseconds — if the child has not ticked by the deadline the
+    /// heartbeat assertion below cannot conclude anything and the test
+    /// would fail for being slow rather than for being wrong. Still an
+    /// order of magnitude short of the child's own lifetime, which is what
+    /// keeps the timeout meaningful.
+    const CONTROL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
     /// How long to watch the heartbeat after the probe returns. Long
     /// enough that a surviving child would tick many times.
     const CONTROL_WATCH: std::time::Duration = std::time::Duration::from_secs(2);
@@ -1907,6 +1919,12 @@ mod tests {
                 let ticks = std::path::PathBuf::from(ticks);
                 if std::fs::create_dir_all(&ticks).is_err() {
                     return;
+                }
+                // Publish the PID before ticking: the parent cannot learn
+                // it from `probe_with_deadline`, which owns the `Child`
+                // and never surfaces it.
+                if let Ok(pid_file) = std::env::var(PROBE_CONTROL_PID_FILE) {
+                    let _ = std::fs::write(pid_file, std::process::id().to_string());
                 }
                 for tick in 0..CONTROL_MAX_TICKS {
                     let _ = std::fs::write(ticks.join(tick.to_string()), b"");
@@ -1940,6 +1958,30 @@ mod tests {
         std::fs::read_dir(directory).map(|entries| entries.flatten().count()).unwrap_or(0)
     }
 
+    /// The kernel's view of `pid`, or `None` once the process is fully
+    /// gone from the process table.
+    ///
+    /// A killed-but-unreaped child is not gone: it stays as a zombie,
+    /// holding its entry until its parent waits on it. That is exactly the
+    /// distinction the heartbeat cannot draw — a zombie stops ticking just
+    /// as thoroughly as a reaped child does — so the reap half of the
+    /// claim needs the process table rather than the filesystem.
+    ///
+    /// Linux-only because it reads procfs. The crate's integration suite
+    /// (`tests/debuggee_probe_hygiene.rs`) reaches for `kill -0`/`tasklist`
+    /// to answer the same question more portably; that machinery is not
+    /// reachable from a lib unit test, and procfs answers the narrower
+    /// question here — "gone, or merely dead?" — more precisely, since
+    /// `kill -0` succeeds on a zombie.
+    #[cfg(target_os = "linux")]
+    fn process_state(pid: u32) -> Option<String> {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("State:"))
+            .map(|state| state.trim().to_string())
+    }
+
     /// A probe that never exits is bounded, and its child is killed — not
     /// merely abandoned.
     ///
@@ -1948,7 +1990,7 @@ mod tests {
     /// a prompt instead of exiting parked the whole test binary past the
     /// harness's 60s notice.
     ///
-    /// Three assertions, each falsifiable on its own:
+    /// Four assertions, each falsifiable on its own:
     ///
     /// - a nonzero tick count proves the control child really ran, so a
     ///   renamed or filtered-out control cannot pass this vacuously;
@@ -1956,7 +1998,12 @@ mod tests {
     ///   rather than waiting the child out;
     /// - the frozen heartbeat proves the child is dead, not merely
     ///   unfinished. Delete the `child.kill()` in `probe_with_deadline`
-    ///   and the survivor keeps ticking through the watch window.
+    ///   and the survivor keeps ticking through the watch window;
+    /// - the empty process-table entry proves the child was *reaped*, not
+    ///   just killed. Delete the `child.wait()` and the heartbeat still
+    ///   freezes — a zombie ticks no more than a reaped child does — so
+    ///   without this assertion the reap half of the claim would rest on
+    ///   reading the source rather than on running it.
     #[test]
     fn bounded_probe_kills_a_probe_that_never_exits() -> TestResult {
         let scratch = ScratchDir(std::env::temp_dir().join(format!(
@@ -1969,9 +2016,10 @@ mod tests {
         )));
         let ticks = scratch.0.join("ticks");
         std::fs::create_dir_all(&ticks)?;
+        let pid_file = scratch.0.join("pid");
 
         let mut command = probe_control_command("hang")?;
-        command.env(PROBE_CONTROL_TICK_DIR, &ticks);
+        command.env(PROBE_CONTROL_TICK_DIR, &ticks).env(PROBE_CONTROL_PID_FILE, &pid_file);
 
         let started = std::time::Instant::now();
         let outcome = probe_with_deadline(command, CONTROL_DEADLINE);
@@ -2004,6 +2052,19 @@ mod tests {
             "the heartbeat advanced after the probe returned: the timed-out probe left its \
              child running, so it was abandoned rather than killed"
         );
+
+        // Killed is not the same as reaped. Ask the kernel directly.
+        #[cfg(target_os = "linux")]
+        {
+            let pid: u32 = std::fs::read_to_string(&pid_file)?.trim().parse()?;
+            assert_eq!(
+                process_state(pid),
+                None,
+                "the control child is still in the process table after the probe returned: \
+                 it was killed but never waited on, so the timed-out probe leaks a zombie \
+                 for every hung interpreter it gives up on"
+            );
+        }
         Ok(())
     }
 
@@ -2040,12 +2101,18 @@ mod tests {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
+        // The payload is the reason the caller prints in its NOT_PROVEN
+        // line, so assert on it rather than on the variant alone. Any
+        // other outcome falls through to the same assertion and fails it,
+        // naming what came back instead.
+        let reason = match probe_with_deadline(command, CONTROL_DEADLINE) {
+            DebuggerProbe::InstrumentFailed(reason) => reason,
+            other => format!("{other:?}"),
+        };
         assert!(
-            matches!(
-                probe_with_deadline(command, CONTROL_DEADLINE),
-                DebuggerProbe::InstrumentFailed(_)
-            ),
-            "a probe that cannot be spawned must not be reported as a measured refusal"
+            reason.starts_with("spawn:"),
+            "a probe that cannot be spawned must be an instrument failure naming the failed \
+             spawn, not a measured refusal; got {reason:?}"
         );
     }
 
