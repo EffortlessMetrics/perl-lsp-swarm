@@ -1830,43 +1830,77 @@ pub fn parsed_api_use(text: &str) -> Option<bool> {
 /// Prose is deliberately excluded. An API path written in a sentence is a
 /// documentation reference, not compiled use, and classifying it as code forced
 /// a gating consumer role onto documentation-only files.
+/// The fence a line opens or closes, as `(character, run length, info string)`.
+///
+/// Markdown opens a fenced block with three or more backticks or three or more
+/// tildes, and `rustdoc` follows Markdown. The run length matters as well as the
+/// character: a fence closes only on a run at least as long as the one that
+/// opened it, which is how a block quotes a shorter fence of its own character.
+fn fence_run(trimmed: &str) -> Option<(char, usize, &str)> {
+    let marker =
+        trimmed.chars().next().filter(|character| *character == '`' || *character == '~')?;
+    let length = trimmed.chars().take_while(|character| *character == marker).count();
+    if length < 3 {
+        return None;
+    }
+    // Both fence characters are ASCII, so the character run is also a byte run.
+    Some((marker, length, &trimmed[length..]))
+}
+
 fn rust_doctest_code(block: &str) -> String {
-    const RUST_FENCE_WORDS: [&str; 7] =
-        ["rust", "ignore", "should_panic", "no_run", "compile_fail", "edition2018", "edition2021"];
+    // Every info word `rustdoc` treats as Rust. The edition list tracks the
+    // editions `rustdoc` accepts, not the ones this workspace happens to use —
+    // `edition2024` was missing while the workspace itself is edition 2024, so a
+    // doctest in the crate's own edition was classified as prose and its imports
+    // dropped.
+    const RUST_FENCE_WORDS: [&str; 9] = [
+        "rust",
+        "ignore",
+        "should_panic",
+        "no_run",
+        "compile_fail",
+        "edition2015",
+        "edition2018",
+        "edition2021",
+        "edition2024",
+    ];
     let mut code: Vec<String> = Vec::new();
+    // The fence currently open, as `(character, run length)`. Markdown closes a
+    // fenced block only with the same character and a run at least as long as
+    // the opening one; any other fence line is content of the open block. The
+    // pair was tracked as a single `inside` flag, so the first fence line of
+    // either character closed the block — a `~~~` line inside a Rust ``` block
+    // ended it early and everything after it was dropped.
+    let mut open_fence: Option<(char, usize)> = None;
     let mut inside_rust = false;
-    let mut inside_other = false;
     for line in block.lines() {
         let trimmed = line.trim_start();
-        // `rustdoc` follows Markdown, which opens a fenced block with either
-        // three-or-more backticks or three-or-more tildes. Only backticks were
-        // recognised, so a doctest in a `~~~` fence was compiled by `rustdoc`
-        // and invisible here.
-        let fence = ["```", "~~~"].into_iter().find_map(|marker| trimmed.strip_prefix(marker));
-        if let Some(info) = fence {
-            if inside_rust || inside_other {
-                inside_rust = false;
-                inside_other = false;
-                continue;
+        if let Some((marker, length, info)) = fence_run(trimmed) {
+            match open_fence {
+                Some((open_marker, open_length)) => {
+                    if marker == open_marker && length >= open_length {
+                        open_fence = None;
+                        inside_rust = false;
+                        continue;
+                    }
+                    // A different character, or too short a run, to close what
+                    // is open: fall through and treat the line as content.
+                }
+                None => {
+                    let info = info.trim();
+                    // An empty info string is Rust; otherwise every
+                    // comma-separated word must be one `rustdoc` recognises as
+                    // Rust.
+                    inside_rust = info.is_empty()
+                        || info
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|word| !word.is_empty())
+                            .all(|word| RUST_FENCE_WORDS.contains(&word));
+                    open_fence = Some((marker, length));
+                    continue;
+                }
             }
-            // A longer run of the fence character is still the same fence, and
-            // its info string starts after it.
-            let info = info.trim_start_matches(['`', '~']);
-            let info = info.trim();
-            // An empty info string is Rust; otherwise every comma-separated
-            // word must be one `rustdoc` recognises as Rust.
-            let rust = info.is_empty()
-                || info
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|word| !word.is_empty())
-                    .all(|word| RUST_FENCE_WORDS.contains(&word));
-            if rust {
-                inside_rust = true;
-            } else {
-                inside_other = true;
-            }
-            continue;
         }
         if inside_rust {
             // `# ` hides a line from the rendered docs but not from the
@@ -1881,7 +1915,7 @@ fn rust_doctest_code(block: &str) -> String {
         // those as doctests too. Dropping them would be a false negative in the
         // one direction classification may not take: a real compiled consumer
         // downgraded to a prose mention.
-        if !inside_other && line.starts_with("    ") {
+        if open_fence.is_none() && line.starts_with("    ") {
             code.push(trimmed.strip_prefix("# ").unwrap_or(trimmed).to_string());
         }
     }
@@ -2163,12 +2197,9 @@ const GATING_SCAN_EXCLUDES: [&str; 4] = ["target", ".git", "archive", "node_modu
 /// Failing closed here flagged a 590-line Perl fixture with zero mentions of the
 /// package, which would have forced a meaningless inventory row.
 ///
-/// Parsing is only needed for the forms the token scan cannot see, and any such
-/// import must open a brace directly after one of two crate names, so the
-/// substring prefilter is a sound narrowing rather than a second guess at the
-/// answer. It matters: parsing every Rust file under the scan roots took this
-/// suite from ~1.2s to ~40s, a cost the whole repository's
-/// `cargo test -p xtask --lib` lane would have paid.
+/// Parsing is only needed for the forms the token scan cannot see, and it is
+/// expensive enough to want a prefilter — see [`prefilter_admits`] for what that
+/// costs and why its clauses are sound.
 pub fn reaches_audited_package(text: &str, relative_path: &str) -> bool {
     // This module's own two files name the package in every token form because
     // describing it is their whole job, so the token scan cannot classify them.
@@ -2189,9 +2220,43 @@ pub fn reaches_audited_package(text: &str, relative_path: &str) -> bool {
     if mentions_audited_package(text) {
         return true;
     }
-    let worth_parsing = relative_path.ends_with(".rs")
-        && (text.contains("perl_ast::{") || text.contains("perl_parser_core::{"));
+    // Identifiers, not punctuation. Rust permits whitespace around `::` and does
+    // not require braces, so `use perl_ast :: v2::Node;` and
+    // `use perl_parser_core :: { DiagnosticId };` are valid consumers that name
+    // none of `REFERENCE_TOKENS` — the token scan matches whole words, and
+    // `perl_ast::v2` spaced out is not one. Requiring the exact substrings
+    // `perl_ast::{` / `perl_parser_core::{` then kept the parser from ever
+    // seeing them, so such a file left the denominator with no row and no
+    // error: a formatting choice deciding whether a consumer exists.
+    //
+    // Each clause below is instead the set of *identifiers* an `API_USE_FORM`
+    // alternative cannot be written without, which no spacing or grouping can
+    // remove:
+    //
+    // - `perl_ast_v2::` and `perl_ast::v2` both need `perl_ast` and `v2`;
+    // - `ast_v2::` needs the `ast_v2` token, which `mentions_audited_package`
+    //   has already matched above, so nothing reaching here depends on it;
+    // - the `perl-parser-core` re-export needs that crate's identifier and one
+    //   of the two re-exported type names.
+    //
+    // `the_prefilter_never_hides_a_path_the_parser_would_find` re-derives that
+    // correspondence against the real tree, so an added alternative that this
+    // list does not cover fails rather than silently narrowing discovery.
+    let worth_parsing = relative_path.ends_with(".rs") && prefilter_admits(text);
     worth_parsing && parsed_api_use(text).unwrap_or(false)
+}
+
+/// Whether a file's text could contain an [`API_USE_FORM`] path at all.
+///
+/// A cheap narrowing in front of the parser, not a second opinion about the
+/// answer: parsing every Rust file under the scan roots takes this suite from
+/// ~1.2s to ~40s, a cost the repository's `cargo test -p xtask --lib` lane pays
+/// on every PR. See [`reaches_audited_package`] for the clause-by-clause
+/// correspondence, and its named control for the mechanical check of it.
+fn prefilter_admits(text: &str) -> bool {
+    (text.contains("perl_ast") && text.contains("v2"))
+        || (text.contains("perl_parser_core")
+            && (text.contains("DiagnosticId") || text.contains("MissingKind")))
 }
 
 /// Scan the gating roots for files that reference the audited package.

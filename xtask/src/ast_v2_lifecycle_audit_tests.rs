@@ -1774,6 +1774,168 @@ fn a_tilde_fenced_doctest_is_code_like_a_backtick_fenced_one() -> Result<()> {
 }
 
 #[test]
+fn a_fence_closes_only_on_its_own_character_at_its_own_length() -> Result<()> {
+    // Markdown closes a fenced block with the same character and a run at least
+    // as long as the one that opened it — which is precisely how a block quotes
+    // a fence of the other character, or a shorter run of its own. The fence
+    // state here was a single "inside" flag, so *any* fence line closed *any*
+    // block. Recognising tildes at all (the fix immediately above, in this same
+    // PR) is what made that reachable: before it, only backticks matched and a
+    // mismatch could not occur. The two together desynchronise the block
+    // boundaries, and every doctest after the first quoted fence is read as
+    // prose and its imports dropped.
+    //
+    // Both fixtures put real Rust in the *last* block, so a scanner that loses
+    // fence alignment ends up with that block outside any fence and reports no
+    // consumer.
+    let quoted_backtick_fence = concat!(
+        "/// ~~~text\n",
+        "/// ```\n",
+        "/// ~~~\n",
+        "/// ```\n",
+        "/// use perl_ast::{v2, Node};\n",
+        "/// ```\n",
+        "pub fn f() {}",
+    );
+    assert_eq!(
+        parsed_api_use(quoted_backtick_fence),
+        Some(true),
+        "a backtick line inside a tilde block is that block's content, not a terminator"
+    );
+
+    let quoted_shorter_fence = concat!(
+        "/// ````text\n",
+        "/// ```\n",
+        "/// ````\n",
+        "/// ```\n",
+        "/// use perl_ast::{v2, Node};\n",
+        "/// ```\n",
+        "pub fn f() {}",
+    );
+    assert_eq!(
+        parsed_api_use(quoted_shorter_fence),
+        Some(true),
+        "a three-backtick line inside a four-backtick block does not close it"
+    );
+
+    // The ordinary case has to keep working: a block still ends at its own
+    // closing fence, and code after that fence is prose again.
+    assert_eq!(
+        parsed_api_use(
+            "/// ```\n/// let n = 1;\n/// ```\n/// use perl_ast::{v2, Node};\npub fn f() {}"
+        ),
+        Some(false),
+        "a closed block must not swallow the prose after it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_doctest_in_the_editions_rustdoc_accepts_is_code() -> Result<()> {
+    // The Rust fence vocabulary is a closed list, so an info word missing from
+    // it makes the block prose and drops its imports. `edition2024` was missing
+    // while this workspace is itself edition 2024 (`Cargo.toml`), so a doctest
+    // written in the crate's own edition — the one form most likely to be
+    // written — was the one classified as prose.
+    for info in ["edition2015", "edition2018", "edition2021", "edition2024", "ignore,edition2024"] {
+        let source =
+            format!("/// ```{info}\n/// use perl_ast::{{v2, Node}};\n/// ```\npub fn f() {{}}");
+        assert_eq!(
+            parsed_api_use(&source),
+            Some(true),
+            "an `{info}` doctest is compiled by rustdoc and its imports count"
+        );
+    }
+    // Widening the vocabulary must not have widened it to everything: a word
+    // rustdoc does not treat as Rust still makes the block prose.
+    assert_eq!(
+        parsed_api_use("/// ```text\n/// use perl_ast::{v2, Node};\n/// ```\npub fn f() {}"),
+        Some(false),
+        "an unrecognised info word still excludes the block"
+    );
+    Ok(())
+}
+
+#[test]
+fn discovery_finds_every_api_use_form_however_it_is_formatted() -> Result<()> {
+    // Discovery parses a file only when a cheap text prefilter says parsing
+    // could change the answer — parsing every Rust file under the scan roots
+    // takes this suite from ~1.2s to ~40s, so the prefilter earns its keep. But
+    // it asked for the literal `perl_ast::{` and `perl_parser_core::{`, the
+    // exact spelling of the grouped-import case it was added for. Rust permits
+    // whitespace around `::` and does not require braces, so
+    // `use perl_ast :: v2::Node;` names none of the reference tokens *and*
+    // failed the prefilter: a real consumer discovered as nothing at all, no row
+    // and no error, with a formatting choice deciding whether it existed.
+    //
+    // The prefilter now tests for identifiers an `API_USE_FORM` alternative
+    // cannot be written without, which no spacing or grouping can remove. That
+    // is sound only while the table below covers every alternative, so the
+    // pattern is pinned: changing it fails here until this table and the
+    // prefilter clauses are extended with it.
+    assert_eq!(
+        API_USE_FORM.as_str(),
+        r"\bperl_ast_v2\s*(?:::|as\b)|\bast_v2\s*::|\bperl_ast::v2\b|perl_parser_core::(?:\{[^}]*\b(?:DiagnosticId|MissingKind)\b|(?:DiagnosticId|MissingKind)\b)",
+        "an alternative changed: extend this table and the prefilter clauses in \
+         `reaches_audited_package` before repinning"
+    );
+
+    // Each alternative in a formatting the token scan cannot see, where one
+    // exists. `token_scan_sees` records which route is actually carrying the
+    // row, so a row silently changing route shows up as a failure rather than
+    // leaving the prefilter untested.
+    for (alternative, token_scan_sees, source) in [
+        (r"\bperl_ast_v2\s*::", true, "use perl_ast_v2 :: Node;\npub fn f() {}"),
+        (r"\bperl_ast_v2\s*as\b", true, "use perl_ast_v2 as v2;\npub fn f() {}"),
+        (r"\bast_v2\s*::", true, "use crate :: ast_v2 :: Node;\npub fn f() {}"),
+        (r"\bperl_ast::v2\b", false, "use perl_ast :: v2 :: Node;\npub fn f() {}"),
+        (r"\bperl_ast::v2\b grouped", false, "use perl_ast :: {v2, Node};\npub fn f() {}"),
+        (r"\bperl_ast::v2\b in type position", false, "pub fn f(n: perl_ast :: v2::Node) {}"),
+        (
+            "perl_parser_core grouped re-export",
+            false,
+            "pub use perl_parser_core :: { DiagnosticId };\n",
+        ),
+        ("perl_parser_core direct", false, "use perl_parser_core :: MissingKind;\npub fn f() {}"),
+    ] {
+        assert_eq!(
+            mentions_audited_package(source),
+            token_scan_sees,
+            "{alternative}: the route carrying this row changed"
+        );
+        assert!(
+            reaches_audited_package(source, "crates/a/src/lib.rs"),
+            "{alternative}: this reaches the package and must be discovered"
+        );
+    }
+
+    // The prefilter is deliberately loose about word boundaries, so each of
+    // these reaches the parser — that is what makes them controls rather than
+    // prefilter rejections — and the parser must still come back negative.
+    for (label, source) in [
+        (
+            "a longer name sharing a re-exported type's prefix",
+            "use perl_parser_core::DiagnosticIdRegistry;\n",
+        ),
+        ("an unrelated crate sharing the package's prefix", "use perl_ast_printer::v2::Style;\n"),
+        (
+            "the path written only inside a string literal",
+            "const NAME: &str = \"perl_ast :: v2\";\n",
+        ),
+    ] {
+        assert!(
+            prefilter_admits(source),
+            "{label}: this control only means something if the parser sees the file"
+        );
+        assert!(
+            !reaches_audited_package(source, "crates/a/src/lib.rs"),
+            "{label} is not a consumer of the audited package"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn a_private_fields_type_is_contract_even_though_its_name_is_not() -> Result<()> {
     // Private fields were counted, not typed: the shape said `+1 non-public`
     // whatever that field held. But the auto traits a struct offers — `Send`,
