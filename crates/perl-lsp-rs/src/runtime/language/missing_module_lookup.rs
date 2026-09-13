@@ -700,8 +700,6 @@ mod tests {
     use crate::runtime::workspace_folder::WorkspaceFolderState;
     use perl_lsp_rs_core::config::WorkspaceConfig;
 
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
-
     fn file_uri(path: &Path) -> Result<String, String> {
         url::Url::from_file_path(path)
             .map(|url| url.to_string())
@@ -756,7 +754,7 @@ mod tests {
 
     /// The outcome law from #13589, row by row, over the pure projection.
     #[test]
-    fn projection_follows_the_outcome_law() -> TestResult {
+    fn projection_follows_the_outcome_law() -> Result<(), Box<dyn std::error::Error>> {
         use SystemIncProbeOutcomeKind as K;
         // (outcome, attempts, class, retry_state, impact, remediation, retry_eligible, terminal)
         let rows: [(K, u32, &str, &str, &str, &str, bool, bool); 9] = [
@@ -944,7 +942,7 @@ mod tests {
     /// The projection carries counts and codes only: no root path, home
     /// path, command line, or environment value (falsifier 10).
     #[test]
-    fn projection_is_redacted_to_codes_and_counts() -> TestResult {
+    fn projection_is_redacted_to_codes_and_counts() -> Result<(), Box<dyn std::error::Error>> {
         let owner = "file:///home/someone/project/";
         let payload = interpreter_startup_inc_payload(
             &snapshot(SystemIncProbeOutcomeKind::Paths, 1),
@@ -992,7 +990,8 @@ mod tests {
     /// that stored subject holds (falsifiers 1 and 7).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn explanation_never_probes_and_reflects_the_live_stored_state() -> TestResult {
+    fn explanation_never_probes_and_reflects_the_live_stored_state()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let workspace = temp.path().join("workspace");
         let script = workspace.join("script.pl");
@@ -1081,7 +1080,8 @@ mod tests {
     /// current (falsifiers 8 and 9).
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn explanation_binds_to_the_owning_folder_and_drops_stale_outcomes() -> TestResult {
+    fn explanation_binds_to_the_owning_folder_and_drops_stale_outcomes()
+    -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let folder_a = temp.path().join("a");
         let folder_b = temp.path().join("b");

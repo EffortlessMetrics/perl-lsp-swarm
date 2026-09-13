@@ -6223,6 +6223,67 @@ profile = "recommended"
         Ok(())
     }
 
+    /// The snapshot's retry, terminal, and lookup-impact law over every
+    /// outcome kind and attempt count, stated on literal snapshots so the law
+    /// is pinned independently of how `peek_system_inc` fills the fields
+    /// (#13589 falsifiers 2, 3, 4, 5). Only `TimedOut` below the cap and
+    /// `NotObserved` may retry; `Disabled` is terminal for the configuration
+    /// but never a failure class; `SuccessfulEmpty` participates like `Paths`.
+    #[test]
+    fn system_inc_probe_snapshot_law_holds_on_literal_snapshots() {
+        use SystemIncLookupImpact as I;
+        use SystemIncProbeOutcomeKind as K;
+
+        let literal = |outcome: K, attempts_consumed: u32, system_root_count: Option<usize>| {
+            SystemIncProbeSnapshot {
+                use_system_inc: outcome != K::Disabled,
+                use_perl5lib: false,
+                outcome,
+                attempts_consumed,
+                max_attempts: SYSTEM_INC_PROBE_MAX_ATTEMPTS,
+                system_root_count,
+            }
+        };
+
+        // (outcome, attempts, roots, retry_eligible, terminal, impact)
+        let rows: [(K, u32, Option<usize>, bool, bool, I); 9] = [
+            (K::Disabled, 0, None, false, true, I::Disabled),
+            (K::NotObserved, 0, None, true, false, I::NotObserved),
+            (K::TimedOut, 1, None, true, false, I::OmittedTransient),
+            (K::TimedOut, 2, None, false, true, I::OmittedTerminal),
+            (K::Unavailable, 1, None, false, true, I::OmittedTerminal),
+            (K::IoFailed, 1, None, false, true, I::OmittedTerminal),
+            (K::NonZeroExit, 1, None, false, true, I::OmittedTerminal),
+            (K::SuccessfulEmpty, 1, Some(0), false, true, I::Participated),
+            (K::Paths, 1, Some(3), false, true, I::Participated),
+        ];
+        for (outcome, attempts, roots, eligible, terminal, impact) in rows {
+            let snapshot = literal(outcome, attempts, roots);
+            let label = format!("{outcome:?}/{attempts}");
+            assert_eq!(snapshot.use_system_inc, outcome != K::Disabled, "{label}");
+            assert!(!snapshot.use_perl5lib, "{label}");
+            assert_eq!(snapshot.outcome, outcome, "{label}");
+            assert_eq!(snapshot.attempts_consumed, attempts, "{label}");
+            assert_eq!(snapshot.max_attempts, 2, "{label}: cap is the #12945 constant");
+            assert_eq!(snapshot.system_root_count, roots, "{label}");
+            assert_eq!(snapshot.retry_eligible(), eligible, "{label}");
+            assert_eq!(snapshot.terminal(), terminal, "{label}");
+            assert_eq!(snapshot.lookup_impact(), impact, "{label}");
+            assert_eq!(snapshot.outcome.code(), outcome.code(), "{label}");
+            assert_eq!(snapshot.lookup_impact().code(), impact.code(), "{label}");
+        }
+
+        // The cap is a field, not a constant baked into the law: a snapshot
+        // reporting a larger budget keeps a second timeout retryable, and one
+        // reporting a smaller budget makes the first timeout terminal.
+        let wider = SystemIncProbeSnapshot { max_attempts: 3, ..literal(K::TimedOut, 2, None) };
+        assert!(wider.retry_eligible() && !wider.terminal());
+        assert_eq!(wider.lookup_impact(), I::OmittedTransient);
+        let narrower = SystemIncProbeSnapshot { max_attempts: 1, ..literal(K::TimedOut, 1, None) };
+        assert!(!narrower.retry_eligible() && narrower.terminal());
+        assert_eq!(narrower.lookup_impact(), I::OmittedTerminal);
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn synthetic_exit_status(code: i32) -> std::process::ExitStatus {
         #[cfg(unix)]
