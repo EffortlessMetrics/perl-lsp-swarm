@@ -1,0 +1,10 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Exporter metadata extraction handles UTF-8 word-list delimiters safely while
+  preserving exported names, ordering, and definition filtering (#15249).
+time: '2026-09-10T00:45:20.910886Z'
+custom:
+  Slug: exporter-utf8-boundaries
+  Breaking: 'no'
+  PR: '15252'
