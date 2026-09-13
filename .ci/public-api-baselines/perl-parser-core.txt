@@ -1305,18 +1305,22 @@ pub perl_parser_core::hir::HirExpr::Loop::init: core::option::Option<perl_parser
 pub perl_parser_core::hir::HirExpr::Loop::iterator_binding: core::option::Option<perl_parser_core::hir::HirExprId>
 pub perl_parser_core::hir::HirExpr::Loop::kind: perl_parser_core::hir::LoopKind
 pub perl_parser_core::hir::HirExpr::Loop::update: core::option::Option<perl_parser_core::hir::HirExprId>
+pub perl_parser_core::hir::HirExpr::Match(perl_parser_core::hir::HirRegexMatch)
 pub perl_parser_core::hir::HirExpr::Opaque
 pub perl_parser_core::hir::HirExpr::Opaque::ast_kind: alloc::string::String
 pub perl_parser_core::hir::HirExpr::Readline
 pub perl_parser_core::hir::HirExpr::Readline::filehandle: core::option::Option<alloc::string::String>
 pub perl_parser_core::hir::HirExpr::Readline::source: perl_parser_core::hir::ReadlineSource
+pub perl_parser_core::hir::HirExpr::Regex(perl_parser_core::hir::HirRegex)
 pub perl_parser_core::hir::HirExpr::Return
 pub perl_parser_core::hir::HirExpr::Return::value: core::option::Option<perl_parser_core::hir::HirExprId>
 pub perl_parser_core::hir::HirExpr::Subscript(perl_parser_core::hir::HirSubscript)
+pub perl_parser_core::hir::HirExpr::Substitution(perl_parser_core::hir::HirSubstitution)
 pub perl_parser_core::hir::HirExpr::Ternary
 pub perl_parser_core::hir::HirExpr::Ternary::condition: perl_parser_core::hir::HirExprId
 pub perl_parser_core::hir::HirExpr::Ternary::else_expr: perl_parser_core::hir::HirExprId
 pub perl_parser_core::hir::HirExpr::Ternary::then_expr: perl_parser_core::hir::HirExprId
+pub perl_parser_core::hir::HirExpr::Transliteration(perl_parser_core::hir::HirTransliteration)
 pub perl_parser_core::hir::HirExpr::Unary
 pub perl_parser_core::hir::HirExpr::Unary::mode: perl_parser_core::hir::UnaryMode
 pub perl_parser_core::hir::HirExpr::Unary::op: alloc::string::String
@@ -1358,6 +1362,14 @@ pub const perl_parser_core::hir::HirKind::ALL_KIND_NAMES: &[&'static str]
 pub fn perl_parser_core::hir::HirKind::clone(&self) -> perl_parser_core::hir::HirKind
 pub fn perl_parser_core::hir::HirKind::eq(&self, other: &perl_parser_core::hir::HirKind) -> bool
 pub fn perl_parser_core::hir::HirKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_parser_core::hir::HirRegexTarget::Bound
+pub perl_parser_core::hir::HirRegexTarget::Bound::ast_kind: &'static str
+pub perl_parser_core::hir::HirRegexTarget::Bound::expr: perl_parser_core::hir::HirExprId
+pub perl_parser_core::hir::HirRegexTarget::Bound::kind: perl_parser_core::hir::RegexTargetKind
+pub perl_parser_core::hir::HirRegexTarget::DefaultTopic
+pub fn perl_parser_core::hir::HirRegexTarget::clone(&self) -> perl_parser_core::hir::HirRegexTarget
+pub fn perl_parser_core::hir::HirRegexTarget::eq(&self, other: &perl_parser_core::hir::HirRegexTarget) -> bool
+pub fn perl_parser_core::hir::HirRegexTarget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::hir::HirStmt
 pub perl_parser_core::hir::HirStmt::Expr(perl_parser_core::hir::HirExprId)
 pub perl_parser_core::hir::HirStmt::Let
@@ -1466,6 +1478,15 @@ pub fn perl_parser_core::hir::RegexTargetKind::clone(&self) -> perl_parser_core:
 pub fn perl_parser_core::hir::RegexTargetKind::eq(&self, other: &perl_parser_core::hir::RegexTargetKind) -> bool
 pub fn perl_parser_core::hir::RegexTargetKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::RegexTargetKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub perl_parser_core::hir::ReplacementEvaluation::DoubleEval
+pub perl_parser_core::hir::ReplacementEvaluation::Expression
+pub perl_parser_core::hir::ReplacementEvaluation::Literal
+pub fn perl_parser_core::hir::ReplacementEvaluation::from_modifiers(modifiers: &str) -> Self
+pub fn perl_parser_core::hir::ReplacementEvaluation::is_dynamic(self) -> bool
+pub fn perl_parser_core::hir::ReplacementEvaluation::clone(&self) -> perl_parser_core::hir::ReplacementEvaluation
+pub fn perl_parser_core::hir::ReplacementEvaluation::eq(&self, other: &perl_parser_core::hir::ReplacementEvaluation) -> bool
+pub fn perl_parser_core::hir::ReplacementEvaluation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::ReplacementEvaluation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub perl_parser_core::hir::ScopeKind::Block
 pub perl_parser_core::hir::ScopeKind::EvalString
 pub perl_parser_core::hir::ScopeKind::File
@@ -1904,6 +1925,20 @@ pub perl_parser_core::hir::HirItem::scope_context: core::option::Option<perl_par
 pub fn perl_parser_core::hir::HirItem::clone(&self) -> perl_parser_core::hir::HirItem
 pub fn perl_parser_core::hir::HirItem::eq(&self, other: &perl_parser_core::hir::HirItem) -> bool
 pub fn perl_parser_core::hir::HirItem::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_parser_core::hir::HirRegex::analysis: perl_parser_core::hir::RegexAnalysisAnchor
+pub perl_parser_core::hir::HirRegex::embedded_code: bool
+pub perl_parser_core::hir::HirRegex::modifiers: alloc::string::String
+pub fn perl_parser_core::hir::HirRegex::clone(&self) -> perl_parser_core::hir::HirRegex
+pub fn perl_parser_core::hir::HirRegex::eq(&self, other: &perl_parser_core::hir::HirRegex) -> bool
+pub fn perl_parser_core::hir::HirRegex::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_parser_core::hir::HirRegexMatch::analysis: perl_parser_core::hir::RegexAnalysisAnchor
+pub perl_parser_core::hir::HirRegexMatch::embedded_code: bool
+pub perl_parser_core::hir::HirRegexMatch::modifiers: alloc::string::String
+pub perl_parser_core::hir::HirRegexMatch::negated: bool
+pub perl_parser_core::hir::HirRegexMatch::target: perl_parser_core::hir::HirRegexTarget
+pub fn perl_parser_core::hir::HirRegexMatch::clone(&self) -> perl_parser_core::hir::HirRegexMatch
+pub fn perl_parser_core::hir::HirRegexMatch::eq(&self, other: &perl_parser_core::hir::HirRegexMatch) -> bool
+pub fn perl_parser_core::hir::HirRegexMatch::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub const fn perl_parser_core::hir::HirScopeId::from_index(index: u32) -> Self
 pub const fn perl_parser_core::hir::HirScopeId::index(self) -> u32
 pub fn perl_parser_core::hir::HirScopeId::clone(&self) -> perl_parser_core::hir::HirScopeId
@@ -1927,6 +1962,23 @@ pub perl_parser_core::hir::HirSubscript::subscript: perl_parser_core::hir::HirEx
 pub fn perl_parser_core::hir::HirSubscript::clone(&self) -> perl_parser_core::hir::HirSubscript
 pub fn perl_parser_core::hir::HirSubscript::eq(&self, other: &perl_parser_core::hir::HirSubscript) -> bool
 pub fn perl_parser_core::hir::HirSubscript::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_parser_core::hir::HirSubstitution::analysis: perl_parser_core::hir::RegexAnalysisAnchor
+pub perl_parser_core::hir::HirSubstitution::embedded_code: bool
+pub perl_parser_core::hir::HirSubstitution::modifiers: alloc::string::String
+pub perl_parser_core::hir::HirSubstitution::negated: bool
+pub perl_parser_core::hir::HirSubstitution::replacement: perl_parser_core::hir::ReplacementEvaluation
+pub perl_parser_core::hir::HirSubstitution::target: perl_parser_core::hir::HirRegexTarget
+pub fn perl_parser_core::hir::HirSubstitution::mutates_target(&self) -> bool
+pub fn perl_parser_core::hir::HirSubstitution::clone(&self) -> perl_parser_core::hir::HirSubstitution
+pub fn perl_parser_core::hir::HirSubstitution::eq(&self, other: &perl_parser_core::hir::HirSubstitution) -> bool
+pub fn perl_parser_core::hir::HirSubstitution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_parser_core::hir::HirTransliteration::modifiers: alloc::string::String
+pub perl_parser_core::hir::HirTransliteration::negated: bool
+pub perl_parser_core::hir::HirTransliteration::target: perl_parser_core::hir::HirRegexTarget
+pub fn perl_parser_core::hir::HirTransliteration::mutates_target(&self) -> bool
+pub fn perl_parser_core::hir::HirTransliteration::clone(&self) -> perl_parser_core::hir::HirTransliteration
+pub fn perl_parser_core::hir::HirTransliteration::eq(&self, other: &perl_parser_core::hir::HirTransliteration) -> bool
+pub fn perl_parser_core::hir::HirTransliteration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::hir::HirVariable
 pub perl_parser_core::hir::HirVariable::access: perl_parser_core::hir::AccessMode
 pub perl_parser_core::hir::HirVariable::kind: perl_parser_core::hir::VariableKind
@@ -2148,6 +2200,13 @@ pub perl_parser_core::hir::ReadlineMigrationAdapter::source: perl_parser_core::h
 pub fn perl_parser_core::hir::ReadlineMigrationAdapter::clone(&self) -> perl_parser_core::hir::ReadlineMigrationAdapter
 pub fn perl_parser_core::hir::ReadlineMigrationAdapter::eq(&self, other: &perl_parser_core::hir::ReadlineMigrationAdapter) -> bool
 pub fn perl_parser_core::hir::ReadlineMigrationAdapter::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::hir::RegexAnalysisAnchor
+pub perl_parser_core::hir::RegexAnalysisAnchor::family: perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily
+pub perl_parser_core::hir::RegexAnalysisAnchor::full_range: perl_position_tracking::span::SourceLocation
+pub fn perl_parser_core::hir::RegexAnalysisAnchor::clone(&self) -> perl_parser_core::hir::RegexAnalysisAnchor
+pub fn perl_parser_core::hir::RegexAnalysisAnchor::eq(&self, other: &perl_parser_core::hir::RegexAnalysisAnchor) -> bool
+pub fn perl_parser_core::hir::RegexAnalysisAnchor::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::RegexAnalysisAnchor::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub perl_parser_core::hir::RegexExpr::has_embedded_code: bool
 pub perl_parser_core::hir::RegexExpr::modifiers: alloc::string::String
 pub perl_parser_core::hir::RegexExpr::pattern: alloc::string::String
@@ -3554,6 +3613,14 @@ pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability::eq(&
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability::partial_cmp(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::Match
+pub perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::Regex
+pub perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::Substitution
+pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::accepts(self, operator: perl_parser_core::syntax::quote::RegexFamilyOperator) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_parser_core::syntax::regex_analysis::RegexAnalysisId(_)
 pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisId::index(self) -> usize
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisId::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisId
@@ -3587,6 +3654,7 @@ pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::analy
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_at_offset(&self, offset: usize) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_by_full_range(&self, range: perl_position_tracking::span::SourceLocation) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_by_pattern_range(&self, range: perl_position_tracking::span::SourceLocation) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_enclosed_by(&self, range: perl_position_tracking::span::SourceLocation, family: perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::for_source(source: &str) -> Self
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::is_empty(&self) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::len(&self) -> usize
@@ -4152,6 +4220,14 @@ pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability::eq(&
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability::partial_cmp(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub perl_parser_core::RegexAnalysisFamily::Match
+pub perl_parser_core::RegexAnalysisFamily::Regex
+pub perl_parser_core::RegexAnalysisFamily::Substitution
+pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::accepts(self, operator: perl_parser_core::syntax::quote::RegexFamilyOperator) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::clone(&self) -> perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::eq(&self, other: &perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily) -> bool
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub enum perl_parser_core::SourceRangeClassification
 pub perl_parser_core::SourceRangeClassification::Ambiguous
 pub perl_parser_core::SourceRangeClassification::EmptyBoundary
@@ -4325,6 +4401,7 @@ pub const fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::analy
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_at_offset(&self, offset: usize) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_by_full_range(&self, range: perl_position_tracking::span::SourceLocation) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_by_pattern_range(&self, range: perl_position_tracking::span::SourceLocation) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
+pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::find_enclosed_by(&self, range: perl_position_tracking::span::SourceLocation, family: perl_parser_core::syntax::regex_analysis::RegexAnalysisFamily) -> core::option::Option<&perl_parser_core::syntax::regex_analysis::RegexAnalysisRecord>
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::for_source(source: &str) -> Self
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::is_empty(&self) -> bool
 pub fn perl_parser_core::syntax::regex_analysis::RegexAnalysisTable::len(&self) -> usize

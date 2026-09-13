@@ -20,6 +20,7 @@ const {
   resolvePullRequestMergeBase,
   semanticInventorySha256,
 } = require('./check-vsix-inventory-transition');
+const { currentSourceBundleFiles } = require('./check-vsix-inventory');
 
 function inventory(files, extra = {}) {
   return {
@@ -341,6 +342,44 @@ void test('ignores the staged current-source server while retaining ordinary pac
   );
 
   assert.deepEqual(projected.files, { 'README.md': 2, 'out/extension.js': 8 });
+});
+
+void test('transition projection ignores the exact current-source DAP target too', () => {
+  /** @type {[string, string]} */
+  const currentSourceFiles = /** @type {[string, string]} */ (
+    currentSourceBundleFiles('linux', 'x64', true)
+  );
+  const projected = projectInventory(
+    inventory({
+      'README.md': 2,
+      [currentSourceFiles[0]]: 100,
+      [currentSourceFiles[1]]: 200,
+      'bin/linux-arm64/perl-dap': 300,
+    }),
+    'linux',
+    'x64',
+    currentSourceFiles,
+  );
+
+  assert.deepEqual(projected.files, { 'README.md': 2 });
+});
+
+void test('transition projection keeps an unstaged current-source DAP visible', () => {
+  const currentSourceServer = /** @type {[string]} */ (
+    currentSourceBundleFiles('linux', 'x64', false)
+  );
+  const projected = projectInventory(
+    inventory({
+      'README.md': 2,
+      [currentSourceServer[0]]: 100,
+      'bin/linux-x64/perl-dap': 200,
+    }),
+    'linux',
+    'x64',
+    currentSourceServer,
+  );
+
+  assert.deepEqual(projected.files, { 'README.md': 2, 'bin/linux-x64/perl-dap': 200 });
 });
 
 void test('semantic digests ignore source object insertion order', () => {

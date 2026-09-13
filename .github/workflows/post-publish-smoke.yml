@@ -114,37 +114,77 @@ jobs:
               echo "version=unknown" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            VERSION="$(python3 -c '
+            # A receipt that exists but cannot be read as this schema is a
+            # broken instrument, not a licence to skip. The reads below used to
+            # swallow every decode error into an empty string, and the empty
+            # version was then turned into `should_run=false` with `exit 0`:
+            # the job went green, the smoke test never ran, and nothing said so.
+            # A v2 producer renaming a field would have landed in exactly that
+            # branch (#15332). Refusing out loud is the point — the absence of
+            # a proof has to be as visible as a failed one.
+            #
+            # Note the asymmetry with the missing-file branch above, and what
+            # that branch does and does not establish. A file that is present
+            # but unintelligible means something was published and we cannot
+            # say what, so it fails here. No file at all is weaker evidence
+            # than it looks: it is usually a dry run, which publishes nothing
+            # and is a legitimate skip, but `continue-on-error` on the download
+            # also swallows an artifact-service failure into the same state,
+            # and the step's outcome is `failure` either way. Separating those
+            # needs evidence this job does not have — see #15481. Until then
+            # that branch stays a warning, and it is not proof that nothing
+            # was published.
+            #
+            # The subject is decoded here too, from the same read. The receipt
+            # records the commit the publish actually ran from, and the proof
+            # must execute that exact subject. Falling back to the default
+            # branch would issue a publication verdict using code that changed
+            # after the release — the same class of false proof this workflow
+            # exists to prevent, just moved from "which version" to "which
+            # code".
+            # The decoder writes the two fields to stdout, one per line, and its
+            # reason for refusing to stderr. Keeping the streams apart means
+            # stray interpreter output cannot shift the value lines, and the
+            # printable check below means neither field can supply the other's
+            # line or rewrite itself in transit. Both matter because the shell
+            # is not a faithful pipe: a newline would let one field supply the
+            # next one's line, and command substitution deletes NUL bytes with
+            # only a warning, so `0.<NUL>18.0` would arrive as `0.18.0` and be
+            # certified as a version the receipt never contained.
+            RECEIPT_ERROR="$(mktemp)"
+            RECEIPT_FIELDS="$(python3 -c '
           import json, sys
-          try:
-              with open(sys.argv[1], encoding="utf-8") as handle:
-                  print(json.load(handle).get("version", ""))
-          except Exception:
-              print("")
-          ' "$RECEIPT_PATH")"
-            if [ -z "$VERSION" ]; then
-              echo "::error::Publication receipt at $RECEIPT_PATH carries no usable version."
+
+          expected = "publication_receipt.v1"
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              receipt = json.load(handle)
+          if not isinstance(receipt, dict):
+              raise SystemExit("receipt is not a JSON object")
+          found = receipt.get("schema_version")
+          if found != expected:
+              raise SystemExit(f"schema_version is {found!r}, expected {expected!r}")
+          for field in ("release_version", "subject_sha"):
+              value = receipt.get(field, "")
+              if not isinstance(value, str):
+                  raise SystemExit(f"{field} is {value!r}, expected a string")
+              if not value.isprintable() and value != "":
+                  raise SystemExit(f"{field} is not printable: {value!r}")
+              print(value)
+          ' "$RECEIPT_PATH" 2>"$RECEIPT_ERROR")" || {
+              printf '::error::Publication receipt at %s is not a readable publication_receipt.v1 envelope (%s). Refusing to certify a publication this run cannot describe.\n' \
+                "$RECEIPT_PATH" "$(tr '\n' ' ' < "$RECEIPT_ERROR")"
               echo "should_run=false" >> "$GITHUB_OUTPUT"
               echo "version=unknown" >> "$GITHUB_OUTPUT"
-              exit 0
+              exit 1
+            }
+            VERSION="$(printf '%s\n' "$RECEIPT_FIELDS" | sed -n '1p')"
+            SUBJECT="$(printf '%s\n' "$RECEIPT_FIELDS" | sed -n '2p')"
+            if [ -z "$VERSION" ]; then
+              echo "::error::Publication receipt at $RECEIPT_PATH carries no usable release version."
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              echo "version=unknown" >> "$GITHUB_OUTPUT"
+              exit 1
             fi
-            # The receipt records the commit the publish actually ran from, and
-            # the proof must execute that exact subject. Falling back to the
-            # default branch here would issue a publication verdict using code
-            # that changed after the release — the same class of false proof
-            # this workflow exists to prevent, just moved from "which version"
-            # to "which code". There are no receipts without this field: the
-            # producer has written `subject_sha` in the same printf as the
-            # version since the format was introduced, so its absence means a
-            # corrupt or tampered receipt, not an old one.
-            SUBJECT="$(python3 -c '
-          import json, sys
-          try:
-              with open(sys.argv[1], encoding="utf-8") as handle:
-                  print(json.load(handle).get("subject_sha", ""))
-          except Exception:
-              print("")
-          ' "$RECEIPT_PATH")"
             if ! [[ "$SUBJECT" =~ ^[0-9a-f]{40}$ ]]; then
               echo "::error::Publication receipt carries no usable subject SHA (got '${SUBJECT}'). Refusing to certify ${VERSION} using code that may postdate it."
               echo "should_run=false" >> "$GITHUB_OUTPUT"

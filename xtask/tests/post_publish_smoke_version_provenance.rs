@@ -47,6 +47,9 @@ const PUBLISHED: &str = "0.18.0";
 const DEFAULT_BRANCH: &str = "main";
 /// The commit a publication receipt attests to.
 const PUBLISHED_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+/// The receipt envelope this resolver understands. A receipt written to any
+/// other schema is refused rather than partially read (#15332).
+const SCHEMA: &str = "publication_receipt.v1";
 
 fn project_root() -> PathBuf {
     let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -186,8 +189,53 @@ fn resolve(event: &str, conclusion: &str, receipt: Option<&str>) -> Result<Resol
 
 fn receipt_for(version: &str) -> String {
     format!(
-        r#"{{"version":"{version}","subject_sha":"{PUBLISHED_SHA}","crate_count":34,"publish_run_id":"42"}}"#
+        r#"{{"schema_version":"{SCHEMA}","release_version":"{version}","subject_sha":"{PUBLISHED_SHA}","crate_count":34,"publish_run_id":"42"}}"#
     )
+}
+
+/// The producer's own run block, executed rather than pattern-matched.
+///
+/// Reading the producer's `printf` as text and asserting it mentions the same
+/// field names the consumer reads would pass while the two sides drift in any
+/// way a string match cannot see — quoting, ordering, a field written but left
+/// empty. Running it and feeding the bytes to the consumer cannot.
+fn publish_receipt_run_block() -> Result<String> {
+    let workflow = workflow(PUBLISH_WORKFLOW)?;
+    let steps = steps(&workflow, "verify")?;
+    let index = step_index(&steps, "Write publication receipt")?;
+    steps[index]
+        .get("run")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("step `Write publication receipt` must have a run block"))
+}
+
+/// Execute the publish workflow's receipt writer and return exactly what it
+/// wrote to disk.
+fn produced_receipt(version: &str, subject: &str) -> Result<String> {
+    let dir = tempfile::tempdir().context("creating the producer sandbox")?;
+    let run = publish_receipt_run_block()?;
+    let output = Command::new(bash_executable())
+        .args(["--noprofile", "--norc", "-c", &run])
+        .current_dir(dir.path())
+        .env("CRATES_JSON", r#"["perl-lsp","perl-parser"]"#)
+        .env("PUBLISHED_VERSION", version)
+        .env("SUBJECT_SHA", subject)
+        .env("RUN_ID", "42")
+        .output()
+        .context("executing the receipt writer under Actions bash semantics")?;
+
+    if !output.status.success() {
+        bail!(
+            "the receipt writer must succeed for version {version}, got exit {:?}\n{}{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let written = dir.path().join("receipt").join("publication-receipt.json");
+    fs::read_to_string(&written)
+        .with_context(|| format!("reading the produced receipt at {}", written.display()))
 }
 
 /// The finding itself. A ref that merely looks like a release must not produce
@@ -263,20 +311,240 @@ fn the_ref_cannot_override_the_receipt() -> Result<()> {
     Ok(())
 }
 
-/// A receipt that carries no version is a broken instrument, not a licence to
-/// guess.
+/// A receipt that exists but cannot be read is a broken instrument, and a
+/// broken instrument has to be as visible as a failed one.
+///
+/// This previously asserted the opposite — that each of these skipped with
+/// `exit 0`. That made the resolver green while the smoke test never ran and
+/// nothing in the run said so (#15332). The skip is correct only for an
+/// *absent* receipt, which means nothing was published; a receipt that is
+/// present and unintelligible means something was published and this run
+/// cannot say what.
 #[test]
-fn unusable_receipt_fails_closed() -> Result<()> {
-    for body in [r#"{"subject_sha":"abc"}"#, "not json at all", "{}"] {
+fn an_unreadable_receipt_fails_the_step() -> Result<()> {
+    let cases = [
+        // Corrupt bytes.
+        ("not json at all", "non-JSON body"),
+        // Valid JSON, no envelope, no fields.
+        ("{}", "empty object"),
+        // Valid JSON of the wrong kind entirely.
+        (r#"[{"schema_version":"publication_receipt.v1"}]"#, "JSON array"),
+        // Envelope present, but the payload is not a string.
+        (
+            r#"{"schema_version":"publication_receipt.v1","release_version":18,"subject_sha":"0123456789abcdef0123456789abcdef01234567"}"#,
+            "non-string release_version",
+        ),
+        // Envelope present, release version absent.
+        (
+            r#"{"schema_version":"publication_receipt.v1","subject_sha":"0123456789abcdef0123456789abcdef01234567"}"#,
+            "no release_version",
+        ),
+    ];
+
+    for (body, description) in cases {
         let resolved = resolve("workflow_run", "success", Some(body))?;
-        resolved.assert_step_succeeded(&format!("unusable receipt {body:?}"))?;
+
+        if resolved.output.status.success() {
+            bail!(
+                "a receipt with a {description} must fail the step, got exit 0\n{}",
+                resolved.combined()
+            );
+        }
         if resolved.runs() {
             bail!(
-                "receipt {body:?} must not produce a verdict, got version={:?}\n{}",
+                "a receipt with a {description} must not produce a verdict, got version={:?}\n{}",
                 resolved.version,
                 resolved.combined()
             );
         }
+        if resolved.version.as_deref() == Some(FABRICATED) {
+            bail!("a receipt with a {description} must not yield a version nobody published");
+        }
+    }
+    Ok(())
+}
+
+/// A field cannot smuggle the next field's line.
+///
+/// The decoder hands the resolver one line per field. A `release_version`
+/// carrying an embedded newline would otherwise supply the subject line itself,
+/// and the real `subject_sha` would be read past and ignored — the checkout
+/// would run a commit the receipt does not attest to, which is the exact
+/// false-proof class this workflow exists to prevent.
+#[test]
+fn a_field_cannot_smuggle_the_next_line() -> Result<()> {
+    let smuggled = "1111111111111111111111111111111111111111";
+    let receipt = format!(
+        r#"{{"schema_version":"{SCHEMA}","release_version":"{PUBLISHED}\n{smuggled}","subject_sha":"{PUBLISHED_SHA}"}}"#
+    );
+    let resolved = resolve("workflow_run", "success", Some(&receipt))?;
+
+    if resolved.output.status.success() {
+        bail!("a field containing a line break must fail the step:\n{}", resolved.combined());
+    }
+    if resolved.subject.as_deref() == Some(smuggled) {
+        bail!("a smuggled line reached the checkout as the subject:\n{}", resolved.combined());
+    }
+    if resolved.runs() {
+        bail!("a field containing a line break must not be certified:\n{}", resolved.combined());
+    }
+    Ok(())
+}
+
+/// A character the shell deletes in transit must not rewrite a field.
+///
+/// Bash command substitution drops NUL bytes with only a warning, so a receipt
+/// carrying `0.<NUL>18.0` arrives at the version check as `0.18.0` and passes
+/// it — the resolver would certify a version the receipt does not contain, and
+/// a NUL spliced into a 40-hex subject would likewise arrive as a valid but
+/// different SHA for the checkout. The shell is not a faithful pipe, so the
+/// decoder rejects anything non-printable rather than trusting what survives.
+#[test]
+fn a_deleted_character_cannot_rewrite_a_field() -> Result<()> {
+    // In each case the NUL-stripped form is a perfectly legitimate value, so a
+    // resolver that trusts the shell sees nothing wrong and certifies it.
+    let cases = [
+        (
+            format!(
+                r#"{{"schema_version":"{SCHEMA}","release_version":"0.\u000018.0","subject_sha":"{PUBLISHED_SHA}"}}"#
+            ),
+            "release_version",
+        ),
+        (
+            format!(
+                r#"{{"schema_version":"{SCHEMA}","release_version":"{PUBLISHED}","subject_sha":"1111111111\u00001111111111111111111111111111111"}}"#
+            ),
+            "subject_sha",
+        ),
+    ];
+
+    for (receipt, field) in cases {
+        let resolved = resolve("workflow_run", "success", Some(&receipt))?;
+
+        if resolved.output.status.success() {
+            bail!("a NUL inside {field} must fail the step:\n{}", resolved.combined());
+        }
+        if resolved.runs() {
+            bail!("a NUL inside {field} must not be certified:\n{}", resolved.combined());
+        }
+        // The stripped forms are exactly the values a trusting resolver would
+        // have used, so neither may appear in the outputs.
+        if resolved.version.as_deref() == Some(PUBLISHED) && field == "release_version" {
+            bail!("the resolver certified {PUBLISHED}, which this receipt does not contain");
+        }
+        if resolved.subject.as_deref() == Some(&"1".repeat(40)) {
+            bail!("a NUL-stripped subject reached the checkout");
+        }
+    }
+    Ok(())
+}
+
+/// The finding in #15332. A producer that moves to a new schema — renaming
+/// `release_version`, adding a required field — must not be silently
+/// unreadable to an older consumer.
+///
+/// Before the envelope existed the consumer read `.get("version", "")`,
+/// received `""`, and turned that into `should_run=false` with `exit 0`: a
+/// green run with no smoke test and no diagnostic. This is the case that
+/// distinguishes an envelope-checking consumer from a field-guessing one.
+#[test]
+fn a_future_schema_version_fails_the_step() -> Result<()> {
+    let v2 = format!(
+        r#"{{"schema_version":"publication_receipt.v2","release":"{PUBLISHED}","subject_sha":"{PUBLISHED_SHA}"}}"#
+    );
+    let resolved = resolve("workflow_run", "success", Some(&v2))?;
+
+    if resolved.output.status.success() {
+        bail!("a v2 receipt must fail an unmigrated v1 consumer:\n{}", resolved.combined());
+    }
+    if resolved.runs() {
+        bail!("a v2 receipt must not be smoke-tested:\n{}", resolved.combined());
+    }
+    // The operator has to be able to tell an unreadable receipt from an absent
+    // one without reading the workflow source.
+    if !resolved.combined().contains(SCHEMA) {
+        bail!("the refusal must name the schema it expected:\n{}", resolved.combined());
+    }
+    Ok(())
+}
+
+/// The pre-#15332 receipt shape carries no envelope at all. It must be refused
+/// rather than read on a best-effort basis, or the envelope check is decorative.
+///
+/// This is the one deliberate compatibility break in the change: a publish run
+/// that started before this landed and completes after it fails this resolver
+/// instead of being certified. That is the intended direction — the operator
+/// re-certifies by dispatching this workflow with an explicit version, which
+/// the test below still covers.
+#[test]
+fn a_legacy_receipt_without_an_envelope_is_refused() -> Result<()> {
+    let legacy = format!(
+        r#"{{"version":"{PUBLISHED}","subject_sha":"{PUBLISHED_SHA}","crate_count":34,"publish_run_id":"42"}}"#
+    );
+    let resolved = resolve("workflow_run", "success", Some(&legacy))?;
+
+    if resolved.output.status.success() {
+        bail!("an envelope-less receipt must fail the step:\n{}", resolved.combined());
+    }
+    if resolved.version.as_deref() == Some(PUBLISHED) {
+        bail!("an envelope-less receipt must not be read for its version anyway");
+    }
+    Ok(())
+}
+
+/// The producer and the consumer agree on the envelope, proven by running the
+/// producer and feeding the bytes it wrote to the consumer.
+///
+/// This is the cross-vend guard: renaming a field, changing the schema string,
+/// or reordering the payload on either side alone fails here, in the PR that
+/// does it, rather than during a release.
+#[test]
+fn a_produced_receipt_is_read_by_the_consumer() -> Result<()> {
+    let receipt = produced_receipt(PUBLISHED, PUBLISHED_SHA)?;
+    let resolved = resolve("workflow_run", "success", Some(&receipt))?;
+    resolved.assert_step_succeeded("producer round trip")?;
+
+    if !resolved.runs() {
+        bail!(
+            "the consumer refused the producer's own receipt {receipt:?}:\n{}",
+            resolved.combined()
+        );
+    }
+    if resolved.version.as_deref() != Some(PUBLISHED) {
+        bail!(
+            "expected {PUBLISHED} from the produced receipt {receipt:?}, got {:?}",
+            resolved.version
+        );
+    }
+    if resolved.subject.as_deref() != Some(PUBLISHED_SHA) {
+        bail!(
+            "expected subject {PUBLISHED_SHA} from the produced receipt {receipt:?}, got {:?}",
+            resolved.subject
+        );
+    }
+    Ok(())
+}
+
+/// The producer stamps the envelope, and does not reuse the overloaded
+/// `version` key for the semver.
+///
+/// A receipt whose semver lives under `version` invites the next consumer to
+/// read `version` as the envelope version — the overload that made the original
+/// defect easy to miss.
+#[test]
+fn the_producer_stamps_the_envelope() -> Result<()> {
+    let receipt = produced_receipt(PUBLISHED, PUBLISHED_SHA)?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&receipt).with_context(|| format!("parsing receipt {receipt:?}"))?;
+
+    if parsed.get("schema_version").and_then(serde_json::Value::as_str) != Some(SCHEMA) {
+        bail!("the producer must stamp schema_version={SCHEMA}, wrote {receipt:?}");
+    }
+    if parsed.get("release_version").and_then(serde_json::Value::as_str) != Some(PUBLISHED) {
+        bail!("the producer must record the semver under release_version, wrote {receipt:?}");
+    }
+    if parsed.get("version").is_some() {
+        bail!("the producer must not reuse the overloaded `version` key, wrote {receipt:?}");
     }
     Ok(())
 }
@@ -335,7 +603,9 @@ fn receipted_run_executes_the_published_subject() -> Result<()> {
 /// introduced, so its absence means corruption, not age.
 #[test]
 fn a_receipted_run_without_a_subject_fails_closed() -> Result<()> {
-    let no_subject = format!(r#"{{"version":"{PUBLISHED}","crate_count":34}}"#);
+    let no_subject = format!(
+        r#"{{"schema_version":"{SCHEMA}","release_version":"{PUBLISHED}","crate_count":34}}"#
+    );
     let resolved = resolve("workflow_run", "success", Some(&no_subject))?;
 
     if resolved.output.status.success() {
@@ -355,8 +625,9 @@ fn a_receipted_run_without_a_subject_fails_closed() -> Result<()> {
 #[test]
 fn a_malformed_subject_fails_closed() -> Result<()> {
     for bogus in ["refs/heads/attacker", "0123456", "../../etc", "", "main"] {
-        let receipt =
-            format!(r#"{{"version":"{PUBLISHED}","subject_sha":"{bogus}","crate_count":34}}"#);
+        let receipt = format!(
+            r#"{{"schema_version":"{SCHEMA}","release_version":"{PUBLISHED}","subject_sha":"{bogus}","crate_count":34}}"#
+        );
         let resolved = resolve("workflow_run", "success", Some(&receipt))?;
 
         if resolved.output.status.success() {
