@@ -457,7 +457,12 @@ collapsible_if = "deny"
 # of all measured sites and removal of the workspace allow plus six crate-root
 # and one test-target masks.
 collapsible_match = "deny"
-decimal_bitwise_operands = "warn"
+# decimal_bitwise_operands: promoted to deny by #9894 after a zero-site
+# confirmation on a complete workspace --all-targets measurement (force-warn
+# pierces allows). The lint only reports decimal operands whose bit structure is
+# opaque -- powers of two, 2^n-1 masks, and already-hex literals are not
+# reported -- so the zero is a real denominator, not an inert selector.
+decimal_bitwise_operands = "deny"
 duration_suboptimal_units = "warn"
 needless_type_cast = "warn"
 # manual_ilog2: promoted to deny by #9896 after a zero-site confirmation on a

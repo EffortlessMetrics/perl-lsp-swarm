@@ -5,11 +5,14 @@ use perl_pragma::{CompileTimePragmaEnvironment, PragmaSnapshot};
 use perl_semantic_facts::AnchorId;
 use std::collections::BTreeMap;
 
+use crate::syntax::regex_analysis::RegexAnalysisFamily;
+
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
-    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
-    diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirRegex,
+    HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution,
+    HirTransliteration, HirVariable, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
+    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -3245,6 +3248,23 @@ fn classify_regex_target(expr: &Node) -> (RegexTargetKind, &'static str) {
     }
 }
 
+/// Whether a bound regex-family operand is a parser-synthesized default topic.
+///
+/// An unbound `s///` / `tr///` applies to `$_`. The parser materializes that
+/// operand as a zero-width `Identifier` node literally named `"$_"` — a
+/// fabricated identifier standing in for the implicit topic. Recognizing it
+/// here keeps that fabrication out of canonical body HIR, so an implicit topic
+/// stays distinguishable from an explicitly written `$_ =~ s///` (which parses
+/// as a real `Variable` node with a non-empty source range).
+///
+/// Both conditions are load-bearing: a source-visible bareword can never be
+/// named `$_`, and the zero-width range independently marks the node as
+/// synthesized rather than written.
+fn is_synthesized_default_topic(expr: &Node) -> bool {
+    matches!(&expr.kind, NodeKind::Identifier { name } if name == "$_")
+        && expr.location.start == expr.location.end
+}
+
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
@@ -3452,6 +3472,27 @@ impl<'a> BodyBuilder2<'a> {
         HirExprId(idx)
     }
 
+    /// Lower the operand of a `=~` / `!~` bound regex-family operator (#7136).
+    ///
+    /// The target is lowered exactly once, before the operator node is
+    /// allocated, so source evaluation order is preserved for a call-produced
+    /// target such as `make_target() =~ /x/`.
+    ///
+    /// Place-vs-expression classification reuses the flat path's
+    /// [`classify_regex_target`] rather than introducing a second classifier.
+    ///
+    /// A parser-synthesized `$_` operand is recorded as
+    /// [`HirRegexTarget::DefaultTopic`] so that an implicit topic stays
+    /// distinguishable from an explicitly written `$_ =~ /x/`.
+    fn lower_regex_target(&mut self, expr: &Node) -> HirRegexTarget {
+        if is_synthesized_default_topic(expr) {
+            return HirRegexTarget::DefaultTopic;
+        }
+        let (kind, ast_kind) = classify_regex_target(expr);
+        let id = self.lower_expr(expr);
+        HirRegexTarget::Bound { expr: id, kind, ast_kind }
+    }
+
     fn alloc_stmt(&mut self, stmt: HirStmt, range: SourceLocation) -> HirStmtId {
         let idx = self.stmts.alloc(stmt);
         self.source_map.stmt_ranges.push(range);
@@ -3475,46 +3516,121 @@ impl<'a> BodyBuilder2<'a> {
         }
     }
 
-    /// Resolve whether a variable is lexically bound or package-global.
+    /// Resolve the canonical [`Binding`] visible for `sigil`/`name` from this
+    /// body's current scope, walking the parent chain (#14166, family #6659).
     ///
-    /// A variable is `Lexical` if a `my`/`state` binding for it is visible in
-    /// the current scope chain. An `our` binding resolves to `Package` (package
-    /// alias). A qualified name (`Foo::x`) is always `Package`.
+    /// This is the resolution used for occurrences, and the source of the coarse
+    /// [`VariableKind`] via [`kind_for`](Self::kind_for), so the two can never
+    /// disagree. Declarations do not use it — they name the binding they
+    /// introduce through [`binding_declared_at`](Self::binding_declared_at).
     ///
-    /// Uses the same parent-chain walk as the first-pass `resolve_visible_binding`
-    /// (lower.rs ~1892). Starting from `start_scope`, walk up through
-    /// `scope_graph.scopes[id].parent` until None — matching the identical
-    /// algorithm used in pass 1.
-    fn resolve_variable_kind(&self, sigil: &str, name: &str) -> VariableKind {
-        // Qualified names are always package-qualified.
-        if name.contains("::") {
-            return VariableKind::Package;
-        }
+    /// Because `start_scope` is re-pointed while descending nested blocks (see
+    /// `lower_nested_block`), two same-spelling lexicals declared in nested
+    /// scopes of one body resolve to their own bindings.
+    ///
+    /// Two known boundaries, both pre-existing and deliberately preserved here
+    /// rather than changed under an identity-threading slice:
+    ///
+    /// 1. Within a *single* scope the walk takes the last matching binding, so a
+    ///    read placed between two same-scope redeclarations resolves to the
+    ///    later one. This position-insensitivity is shared with the first-pass
+    ///    `resolve_visible_binding` (lower.rs ~1892) and applies to occurrences
+    ///    only; declarations are span-matched and stay distinct. Two instances:
+    ///    `my $x = $x` reads the binding it declares rather than the outer one,
+    ///    and a `foreach my $i` iterator — recorded in the *enclosing* scope
+    ///    rather than a loop-private one — captures the read after the loop.
+    ///
+    ///    Making occurrences position-sensitive would also flip
+    ///    use-before-declare (`print $x; my $x = 1;`) from `Lexical` with a
+    ///    binding to `Package` with none, a consumer-visible `VariableKind`
+    ///    change, so it is left to the owning issue rather than made here.
+    /// 2. The walk only ascends. A `package NAME;` statement opens a *child*
+    ///    scope, while the program-root body still starts at the file scope, so
+    ///    declarations made at package top level are not visible to program-root
+    ///    occurrences and resolve to `None`. The pre-existing `VariableKind`
+    ///    fallback already mis-reported such a `my` as `Package`.
+    ///
+    /// Both boundaries are tracked by #14173.
+    fn resolve_visible_binding(&self, sigil: &str, name: &str) -> Option<&'a Binding> {
         let mut cursor = Some(self.start_scope);
         while let Some(current_scope) = cursor {
-            for binding in self.scope_graph.bindings.iter().rev() {
-                if binding.scope_id == current_scope
-                    && binding.sigil == sigil
-                    && binding.name == name
-                {
-                    return match binding.storage {
-                        StorageClass::LexicalMy
-                        | StorageClass::LexicalState
-                        | StorageClass::Parameter => VariableKind::Lexical,
-                        StorageClass::PackageOur
-                        | StorageClass::LocalizedPackage
-                        | StorageClass::PackageGlobal
-                        | StorageClass::MethodInvocant
-                        | StorageClass::Implicit => VariableKind::Package,
-                    };
-                }
+            let found = self.scope_graph.bindings.iter().rev().find(|binding| {
+                binding.scope_id == current_scope && binding.sigil == sigil && binding.name == name
+            });
+            if found.is_some() {
+                return found;
             }
             // Walk up to the parent scope — identical to first-pass resolve_visible_binding.
             cursor =
                 self.scope_graph.scopes.get(current_scope.index() as usize).and_then(|s| s.parent);
         }
-        // No binding found in any ancestor scope — treat as package global.
-        VariableKind::Package
+        None
+    }
+
+    /// Canonical identity for the binding introduced *at* `range`.
+    ///
+    /// A declaration must name the binding it introduces, which ordinary
+    /// visibility resolution cannot do: two same-scope declarations of one
+    /// spelling are both "visible" from the same scope, and the scope walk
+    /// takes the last, so `my $x = 1; my $x = 2;` would give both declarations
+    /// the second binding. `Binding::range` is the declaration token's own
+    /// span, so matching on it selects the exact binding.
+    ///
+    /// Returns `None` when the scope graph recorded no binding at this range.
+    /// It deliberately does *not* fall back to visibility resolution: that would
+    /// attach some *other* visible declaration's identity to this declaration,
+    /// which is exactly the fabricated stand-in that `HirVariable::binding` and
+    /// `HirStmt::Let::binding` promise never to carry. An unrecorded declaration
+    /// form is unresolved, not mis-resolved.
+    fn binding_declared_at(
+        &self,
+        sigil: &str,
+        name: &str,
+        range: SourceLocation,
+    ) -> Option<HirBindingId> {
+        self.scope_graph
+            .bindings
+            .iter()
+            .find(|binding| {
+                binding.range.start == range.start
+                    && binding.range.end == range.end
+                    && binding.sigil == sigil
+                    && binding.name == name
+            })
+            .map(|binding| binding.id)
+    }
+
+    /// Coarse lexical/package classification for an occurrence.
+    ///
+    /// A qualified name (`Foo::x`) is always `Package`, checked before storage
+    /// so the classification cannot move even when the scope graph recorded a
+    /// binding for it — this preserves the previous behaviour exactly while
+    /// still letting the occurrence carry that binding's canonical identity.
+    fn kind_for(name: &str, binding: Option<&Binding>) -> VariableKind {
+        if name.contains("::") {
+            return VariableKind::Package;
+        }
+        Self::kind_of(binding)
+    }
+
+    /// Coarse lexical/package classification derived from a resolved binding.
+    ///
+    /// No visible binding — an unresolved package global — classifies as
+    /// `Package`, preserving the previous behaviour exactly.
+    fn kind_of(binding: Option<&Binding>) -> VariableKind {
+        match binding.map(|binding| binding.storage) {
+            Some(
+                StorageClass::LexicalMy | StorageClass::LexicalState | StorageClass::Parameter,
+            ) => VariableKind::Lexical,
+            Some(
+                StorageClass::PackageOur
+                | StorageClass::LocalizedPackage
+                | StorageClass::PackageGlobal
+                | StorageClass::MethodInvocant
+                | StorageClass::Implicit,
+            ) => VariableKind::Package,
+            None => VariableKind::Package,
+        }
     }
 
     /// Whether `expr_id` is already an assignment whose target is the same
@@ -3601,6 +3717,13 @@ impl<'a> BodyBuilder2<'a> {
             ),
             Some(named) => {
                 let init = Some(self.lower_complex_local_effect(variable, initializer));
+                // Postfix-recovered declaration (`my $cache->{key}`) still
+                // introduces `$cache` at the recovered token (#14166).
+                let binding = self.binding_declared_at(
+                    named.sigil_str,
+                    &named.var_name,
+                    named.binding_node.location,
+                );
                 self.alloc_stmt(
                     HirStmt::Let {
                         name: named.var_name,
@@ -3608,6 +3731,7 @@ impl<'a> BodyBuilder2<'a> {
                         storage: storage_class_for_decl(declarator),
                         init,
                         binding_range: named.binding_node.location,
+                        binding,
                     },
                     range,
                 )
@@ -3634,6 +3758,11 @@ impl<'a> BodyBuilder2<'a> {
         // Unknown storage represents a legacy call. Its argument uses the
         // visible binding rather than creating a new declaration.
         let is_legacy_call = storage == DeclStorageClass::Unknown;
+        // Canonical identity for the binding this declaration introduces
+        // (#14166). Matched on the declaration token's own span, so a nested
+        // redeclaration — and a second same-scope declaration of the same
+        // spelling — each name their own binding.
+        let binding = self.binding_declared_at(sigil_str, &var_name, binding_node.location);
 
         let init_expr_id = match (initializer, &variable.kind) {
             // `local $x = EXPR` / `local $x .= EXPR`: the parser stores the
@@ -3648,7 +3777,10 @@ impl<'a> BodyBuilder2<'a> {
                 // their argument through the existing scope authority.
                 let place_kind = match declarator {
                     "our" => VariableKind::Package,
-                    "field" => self.resolve_variable_kind(sigil_str, &var_name),
+                    "field" => Self::kind_for(
+                        &var_name,
+                        self.resolve_visible_binding(sigil_str, &var_name),
+                    ),
                     _ => VariableKind::Lexical,
                 };
                 let place_expr = HirExpr::Variable(HirVariable {
@@ -3656,6 +3788,7 @@ impl<'a> BodyBuilder2<'a> {
                     name: var_name.clone(),
                     kind: place_kind,
                     access: AccessMode::Write,
+                    binding,
                 });
                 let place_id = self.alloc_expr(place_expr, variable.location);
 
@@ -3684,11 +3817,15 @@ impl<'a> BodyBuilder2<'a> {
             if !is_legacy_call {
                 return None;
             }
+            // A legacy call's argument reads the *visible* binding rather than
+            // declaring one, so it resolves by visibility (#14166).
+            let resolved = self.resolve_visible_binding(sigil_str, &var_name);
             let argument = HirExpr::Variable(HirVariable {
                 sigil: sigil_from_str(sigil_str),
                 name: var_name.clone(),
-                kind: self.resolve_variable_kind(sigil_str, &var_name),
+                kind: Self::kind_for(&var_name, resolved),
                 access: AccessMode::Read,
+                binding: resolved.map(|binding| binding.id),
             });
             Some(self.alloc_expr(argument, binding_node.location))
         });
@@ -3700,6 +3837,7 @@ impl<'a> BodyBuilder2<'a> {
                 storage,
                 init: init_expr_id,
                 binding_range: binding_node.location,
+                binding,
             },
             range,
         )
@@ -3756,12 +3894,13 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::ExpressionStatement { expression } => self.lower_expr(expression),
 
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name);
+                let resolved = self.resolve_visible_binding(sigil, name);
                 let var = HirVariable {
                     sigil: sigil_from_str(sigil),
                     name: name.clone(),
-                    kind,
+                    kind: Self::kind_for(name, resolved),
                     access: AccessMode::Read,
+                    binding: resolved.map(|binding| binding.id),
                 };
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
@@ -4039,67 +4178,82 @@ impl<'a> BodyBuilder2<'a> {
 
             NodeKind::Glob { pattern } => self.alloc_expr(glob_expr(pattern), range),
 
-            // Regex/Match/Substitution lowering (#5043): these are important
-            // for effect analysis because has_embedded_code means the pattern
-            // or replacement can execute arbitrary Perl code via (?{...}) or
-            // the /e modifier. Lower the matched expression as a structured
-            // child so variable reads are captured.
-            NodeKind::Regex { has_embedded_code: _, .. } => {
-                // A bare regex literal (qr//) has no target expression to lower.
-                // Model as Opaque but tag it so effect analysis can check for
-                // embedded code without string sniffing.
-                self.alloc_expr(HirExpr::Opaque { ast_kind: "Regex".to_string() }, range)
-            }
-
-            NodeKind::Match { expr, has_embedded_code, negated: _, .. } => {
-                // Lower the matched expression so variable reads are captured.
-                // The match itself is modeled as a Call so effect analysis can
-                // see it as a potential code-execution site when
-                // has_embedded_code is true.
-                let arg_ids = vec![self.lower_expr(expr)];
+            // Regex-family lowering (#7136, superseding the #5043 shells).
+            //
+            // Each family gets a first-class typed body form. The previous
+            // fallback modeled these as `Opaque`/`Call`, which erased negation,
+            // modifiers, `/r` mutation mode and (for `qr//`) embedded code, and
+            // encoded the embedded-code fact by mangling the `ast_kind` string.
+            //
+            // Pattern text is never copied or rescanned here: each construct
+            // carries a `RegexAnalysisAnchor` holding its enclosing source
+            // range, which a consumer resolves against the canonical retained
+            // analysis table from #7018 via `find_enclosed_by`. For a bound
+            // operator that range covers the target and binding operator too,
+            // so it is an enclosing anchor and not an exact record key — see
+            // `RegexAnalysisAnchor`.
+            NodeKind::Regex { modifiers, has_embedded_code, .. } => {
+                // Unbound regex construct. The AST does not distinguish `qr//`
+                // (regex value) from an unbound `m//` or bare `/.../` against
+                // the default topic, so this form claims neither.
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: if *has_embedded_code {
-                            "MatchWithEmbeddedCode".to_string()
-                        } else {
-                            "Match".to_string()
+                    HirExpr::Regex(HirRegex {
+                        modifiers: modifiers.clone(),
+                        embedded_code: *has_embedded_code,
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Regex,
                         },
-                        callee_span: None,
-                    },
+                    }),
                     range,
                 )
             }
 
-            NodeKind::Substitution { expr, has_embedded_code, .. } => {
-                // Lower the target expression. Substitution with /e modifier
-                // evaluates the replacement as Perl code — model as Call so
-                // effect analysis can see the code-execution site.
-                let arg_ids = vec![self.lower_expr(expr)];
+            NodeKind::Match { expr, modifiers, has_embedded_code, negated, .. } => {
+                let target = self.lower_regex_target(expr);
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: if *has_embedded_code {
-                            "SubstitutionWithEmbeddedCode".to_string()
-                        } else {
-                            "Substitution".to_string()
+                    HirExpr::Match(HirRegexMatch {
+                        target,
+                        negated: *negated,
+                        modifiers: modifiers.clone(),
+                        embedded_code: *has_embedded_code,
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Match,
                         },
-                        callee_span: None,
-                    },
+                    }),
                     range,
                 )
             }
 
-            NodeKind::Transliteration { expr, .. } => {
-                // tr/// has no code execution risk but the target expression
-                // should still be lowered for variable reads.
-                let arg_ids = vec![self.lower_expr(expr)];
+            NodeKind::Substitution { expr, modifiers, has_embedded_code, negated, .. } => {
+                let target = self.lower_regex_target(expr);
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: "Transliteration".to_string(),
-                        callee_span: None,
-                    },
+                    HirExpr::Substitution(HirSubstitution {
+                        target,
+                        negated: *negated,
+                        replacement: ReplacementEvaluation::from_modifiers(modifiers),
+                        modifiers: modifiers.clone(),
+                        embedded_code: *has_embedded_code,
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Substitution,
+                        },
+                    }),
+                    range,
+                )
+            }
+
+            NodeKind::Transliteration { expr, modifiers, negated, .. } => {
+                // tr/// is a character-list operator, not a regex: it carries
+                // no analysis anchor and must never reach pattern analysis.
+                let target = self.lower_regex_target(expr);
+                self.alloc_expr(
+                    HirExpr::Transliteration(HirTransliteration {
+                        target,
+                        negated: *negated,
+                        modifiers: modifiers.clone(),
+                    }),
                     range,
                 )
             }
@@ -4393,9 +4547,14 @@ impl<'a> BodyBuilder2<'a> {
         let range = node.location;
         match &node.kind {
             NodeKind::Variable { sigil, name } => {
-                let kind = self.resolve_variable_kind(sigil, name);
-                let var =
-                    HirVariable { sigil: sigil_from_str(sigil), name: name.clone(), kind, access };
+                let resolved = self.resolve_visible_binding(sigil, name);
+                let var = HirVariable {
+                    sigil: sigil_from_str(sigil),
+                    name: name.clone(),
+                    kind: Self::kind_for(name, resolved),
+                    access,
+                    binding: resolved.map(|binding| binding.id),
+                };
                 self.alloc_expr(HirExpr::Variable(var), range)
             }
             // A subscript element on the LHS of an assignment (or under `++`/`--`)
@@ -4499,12 +4658,21 @@ impl<'a> BodyBuilder2<'a> {
                             NodeKind::VariableWithAttributes { variable, .. } => variable.as_ref(),
                             _ => named.binding_node,
                         };
+                        // The `foreach my $i` iterator introduces its own
+                        // binding at this token (#14166). Resolved before the
+                        // name is moved into the constructed variable.
+                        let binding = self.binding_declared_at(
+                            named.sigil_str,
+                            &named.var_name,
+                            binding_node.location,
+                        );
                         self.alloc_expr(
                             HirExpr::Variable(HirVariable {
                                 sigil: sigil_from_str(named.sigil_str),
                                 name: named.var_name,
                                 kind,
                                 access: AccessMode::Write,
+                                binding,
                             }),
                             binding_node.location,
                         )
