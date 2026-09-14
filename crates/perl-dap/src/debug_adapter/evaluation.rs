@@ -188,8 +188,8 @@ impl DebugAdapter {
             if let Some(stdin) = session.process.stdin.as_mut() {
                 // Frame debugger output so evaluate parsing only considers this request's output.
                 let commands = vec![format!("x {expression}")];
-                match self.send_framed_debugger_commands(stdin, &commands) {
-                    Ok(markers) => Some(markers),
+                match self.send_framed_debugger_query(stdin, &commands, u64::from(timeout_ms)) {
+                    Ok((operation, begin, end)) => Some((operation, begin, end)),
                     Err(error) => {
                         return DapMessage::Response {
                             seq,
@@ -234,8 +234,8 @@ impl DebugAdapter {
             };
         };
 
-        let framed_lines = output_frame_markers.as_ref().and_then(|(begin, end)| {
-            self.capture_framed_debugger_output(begin, end, u64::from(timeout_ms))
+        let framed_lines = output_frame_markers.as_ref().and_then(|(operation, begin, end)| {
+            self.capture_framed_debugger_output_for_operation(operation, begin, end)
         });
 
         if let Some(lines) = framed_lines.as_ref()
@@ -447,8 +447,9 @@ impl DebugAdapter {
         {
             if let Some(stdin) = session.process.stdin.as_mut() {
                 let commands = vec![format!("p {expression} = {value}"), format!("p {expression}")];
-                match self.send_framed_debugger_commands(stdin, &commands) {
-                    Ok(markers) => Some(markers),
+                match self.send_framed_debugger_query(stdin, &commands, DEBUGGER_QUERY_WAIT_MS * 8)
+                {
+                    Ok((operation, begin, end)) => Some((operation, begin, end)),
                     Err(error) => {
                         return DapMessage::Response {
                             seq,
@@ -499,8 +500,8 @@ impl DebugAdapter {
         // literal branch would then discard such a line outright (#7275).
         let parsed = output_frame_markers
             .as_ref()
-            .and_then(|(begin, end)| {
-                self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
+            .and_then(|(operation, begin, end)| {
+                self.capture_framed_debugger_output_for_operation(operation, begin, end)
             })
             .and_then(|lines| {
                 Self::parse_evaluate_result_from_lines(

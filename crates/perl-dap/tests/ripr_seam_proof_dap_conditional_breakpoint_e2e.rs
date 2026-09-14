@@ -23,7 +23,7 @@
 
 mod common;
 
-use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
 use perl_dap::debug_adapter::DapMessage;
 use serde_json::{Value, json};
 use std::fs::write;
@@ -39,10 +39,11 @@ fn conditional_breakpoint_script_content() -> &'static str {
 
 #[test]
 fn conditional_breakpoint_entry_is_refused_and_never_installs_on_live_session() -> TestResult {
-    if !perl_available() {
-        eprintln!(
-            "Skipping conditional_breakpoint_entry_is_refused_and_never_installs - perl not available"
-        );
+    if debuggee_perl_or_typed_skip(
+        "conditional_breakpoint_entry_is_refused_and_never_installs_on_live_session",
+    )
+    .is_none()
+    {
         return Ok(());
     }
 
