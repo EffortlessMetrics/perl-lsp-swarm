@@ -413,7 +413,8 @@ impl LspServer {
         receipt.insert("reason".to_string(), json!(shape.reason));
         receipt.insert("fact_source".to_string(), json!("provider_runtime"));
         receipt.insert("confidence".to_string(), json!("low"));
-        receipt.insert("freshness".to_string(), json!("fresh"));
+        // Result shape does not establish accepted-state freshness. Let the
+        // receipt normalizer retain its unknown default for this generic trace.
         receipt.insert("source_backed".to_string(), json!(false));
         receipt.insert("source_backed_state".to_string(), json!("not_proven_by_dispatch_trace"));
         receipt.insert("dynamic_boundary".to_string(), json!(false));
