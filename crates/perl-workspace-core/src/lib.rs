@@ -97,6 +97,17 @@ pub use dist_authoring::{
     parse_build_pl, parse_dist_authoring, parse_dist_ini, parse_makefile_pl,
 };
 pub use effects::CompileEffectFacts;
+pub use environment::authorization::{
+    ActionableAuthority, AuthorizationActor, AuthorizationError, AuthorizationEvidence,
+    AuthorizationEvidenceId, AuthorizationFingerprint, AuthorizationOutcome, AuthorizationReason,
+    BoundGenerations, CapabilitySet, ClassifiedInput, ClassifiedInputId,
+    EXECUTION_AUTHORIZATION_SCHEMA_VERSION, EvidenceLimitation, ExecutionAuthorizationDecision,
+    ExecutionCapability, ExecutionIntent, ExecutionIntentId, ExecutionReasonClass,
+    InputDisposition, InputRiskClass, MAX_CLAIM_BOUNDARY_LEN, MAX_IDENTIFIER_LEN,
+    OPERATION_REGISTRY_VERSION, OperationProfile, OperationTrustRequirement, PolicyDenial,
+    PublicAuthorizationExplanation, RequiredScope, RevalidationRequirement, SessionOverride,
+    TrustScope, TrustScopeKind, authorize, operation_registry,
+};
 pub use environment::builder::{
     AmbientEnvironmentObservation, BuildSystemFactDeclaration, EnvironmentInputReceipt,
     EnvironmentRejectionReason, EnvironmentSnapshotReceipts, EnvironmentSnapshotSlot,
