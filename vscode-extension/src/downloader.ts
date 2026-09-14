@@ -747,6 +747,15 @@ export class BinaryDownloader {
    * it can produce a credential-related remedy.
    */
   private releaseMetadata403Disposition: GitHubAuthDisposition | undefined;
+  /**
+   * True only while this instance is inside its own download run.
+   *
+   * `checkForUpdateSilent` reaches `fetchReleaseMetadata` too, outside the
+   * singleflight contract. Today every caller builds it a fresh downloader, so
+   * it cannot reach another run's record — but that is an accident of call-site
+   * arrangement, not a rule. Gating the write on the owned run makes it one.
+   */
+  private ownedDownloadRunActive = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -829,6 +838,15 @@ export class BinaryDownloader {
   }
 
   private async runEnsureBinary(forceDownload: boolean): Promise<string | null> {
+    this.ownedDownloadRunActive = true;
+    try {
+      return await this.runEnsureBinaryInner(forceDownload);
+    } finally {
+      this.ownedDownloadRunActive = false;
+    }
+  }
+
+  private async runEnsureBinaryInner(forceDownload: boolean): Promise<string | null> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const channel = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
@@ -907,11 +925,14 @@ export class BinaryDownloader {
         }
         buttons = ['Install Manually'];
       } else if (errorMsg.includes('HTTP 403')) {
-        // GitHub rate limit or auth failure
-        message =
-          'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit). ' +
-          `${this.rateLimitRemedy()} ` +
-          manualInstallNote;
+        // GitHub rate limit or auth failure. The banner follows the remedy: a
+        // withheld credential is not a rate-limit story, so it must not be
+        // labelled as one.
+        const withheldCredential = this.releaseMetadata403Disposition === 'withheld_unverified_tls';
+        const banner = withheldCredential
+          ? 'perl-lsp: Download blocked (HTTP 403 — request was unauthenticated).'
+          : 'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit).';
+        message = `${banner} ${this.rateLimitRemedy()} ${manualInstallNote}`;
         buttons = ['Install Manually', 'View Logs'];
       } else if (errorMsg.includes('HTTP 404')) {
         // Release or asset not found
@@ -1405,10 +1426,16 @@ export class BinaryDownloader {
       if (error instanceof BoundedJsonStatusError && error.statusCode === 404) {
         throw new Error('No releases found');
       }
-      if (error instanceof BoundedJsonStatusError && error.statusCode === 403) {
+      if (
+        error instanceof BoundedJsonStatusError &&
+        error.statusCode === 403 &&
+        this.ownedDownloadRunActive
+      ) {
         // Remember the credential decision this refused request actually used.
         // A later 403 from the archive or checksum download is a different
         // request that never carries credentials, so it must not inherit this.
+        // Only a download run reports a remedy, so only a download run records
+        // one: a silent update check must not write into that run's state.
         this.releaseMetadata403Disposition = authDisposition;
       }
       throw error;

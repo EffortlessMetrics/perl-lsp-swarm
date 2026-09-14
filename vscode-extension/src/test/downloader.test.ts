@@ -3259,6 +3259,50 @@ describe('ensureBinary error classification', () => {
     expect(dispositionSeenByForceRun).toBeUndefined();
   });
 
+  /**
+   * `checkForUpdateSilent` reaches `fetchReleaseMetadata` outside the
+   * singleflight contract. Only a download run reports a remedy, so only a
+   * download run may record one.
+   */
+  test('a metadata 403 outside an owned download run records nothing', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+
+    type Seams = {
+      releaseMetadata403Disposition?: string;
+      fetchReleaseMetadata: (url: string, timeoutMs: number, token?: unknown) => Promise<unknown>;
+      httpGet: (...args: unknown[]) => unknown;
+    };
+    const seams = downloader as unknown as Seams;
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((..._args: unknown[]) => {
+      const callback = _args[3] as (value: unknown) => void;
+      const response = new EventEmitter() as EventEmitter & {
+        statusCode: number;
+        headers: Record<string, string>;
+        destroy: jest.Mock;
+      };
+      response.statusCode = 403;
+      response.headers = {};
+      response.destroy = jest.fn();
+      callback(response);
+      process.nextTick(() => response.emit('end'));
+      const request = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+      request.destroy = jest.fn();
+      return request;
+    });
+
+    // No ensureBinary around this call: it stands for the silent update check.
+    await expect(
+      seams.fetchReleaseMetadata(
+        'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases',
+        1000,
+      ),
+    ).rejects.toThrow();
+
+    expect(seams.releaseMetadata403Disposition).toBeUndefined();
+  });
+
   test('non-metadata 403 keeps the generic advice even with a withheld credential', async () => {
     // The archive and checksum downloads never carry credentials, so
     // re-enabling certificate validation cannot resolve a 403 from them. The
