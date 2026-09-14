@@ -33,7 +33,7 @@ module.exports = {
   bundledServerVersion: async () => ({ status: 'ok', version: '0.17.0', stdout: '0.17.0', stderr: '', outcome: 'completed', output_truncated: false, termination_confirmed: true }),
   pathsEquivalent: () => true,
   platformLabel: () => 'windows',
-  providerPosition: () => ({ line: 0, character: 0 }),
+  providerPosition: () => ({ line: 3, character: 3 }),
   providerResult: async (label, command, ...args) => {
     const result = await vscode.commands.executeCommand(command, ...args);
     return { status: 'ok', label, item_count: Array.isArray(result) ? result.length : 0 };
@@ -72,10 +72,19 @@ function fakeVscode(
   let openedPath: string | undefined;
   let documentText = '\n\n\nmy $value = 42;\nprint $value;\n';
   const document = {
-    uri: { toString: () => 'file:///workspace/packaged_daily_driver.pl' },
-    lineCount: 5,
+    uri: {
+      fsPath: undefined as string | undefined,
+      toString: () => 'file:///workspace/packaged_daily_driver.pl',
+    },
+    get lineCount(): number {
+      return documentText.split('\n').length;
+    },
     getText: () => documentText,
   };
+  const sameDocumentUri = (
+    uri: { fsPath?: string; toString?: () => string } | undefined,
+  ): boolean =>
+    uri?.fsPath === document.uri.fsPath && uri?.toString?.() === document.uri.toString();
   const configuration = {
     inspect: () => ({ globalValue: undefined }),
     update: async () => undefined,
@@ -110,7 +119,11 @@ function fakeVscode(
   }
   class WorkspaceEdit {
     deletePath: string | undefined;
-    readonly inserted: string[] = [];
+    readonly inserted: Array<{
+      uri: { toString: () => string };
+      position: { line: number; character: number };
+      newText: string;
+    }> = [];
     readonly textEdits: Array<{
       range: {
         start: { line: number; character: number };
@@ -119,8 +132,12 @@ function fakeVscode(
       newText: string;
     }> = [];
 
-    insert(_uri: unknown, _position: unknown, newText: string): void {
-      this.inserted.push(newText);
+    insert(
+      uri: { toString: () => string },
+      position: { line: number; character: number },
+      newText: string,
+    ): void {
+      this.inserted.push({ uri, position, newText });
     }
 
     set(
@@ -162,6 +179,7 @@ function fakeVscode(
       getConfiguration: () => configuration,
       openTextDocument: async (filePath: string) => {
         openedPath = filePath;
+        document.uri.fsPath = filePath;
         if (generation === 0) {
           setTimeout(() => {
             generation = 1;
@@ -191,7 +209,16 @@ function fakeVscode(
             line.slice(0, start) + textEdit.newText + line.slice(end);
           documentText = lines.join('\n');
         }
-        for (const inserted of edit?.inserted ?? []) documentText += inserted;
+        for (const inserted of edit?.inserted ?? []) {
+          if (
+            !sameDocumentUri(inserted.uri) ||
+            inserted.position.line !== document.lineCount ||
+            inserted.position.character !== 0
+          ) {
+            return false;
+          }
+          documentText += inserted.newText;
+        }
         return true;
       },
       isTrusted: true,
@@ -206,11 +233,24 @@ function fakeVscode(
       }),
     },
     commands: {
-      executeCommand: async (command: string) => {
+      executeCommand: async (command: string, ...args: unknown[]) => {
         if (command === 'workbench.action.revertAndCloseActiveEditor') return undefined;
         calls.push(command);
         firstProviderCall();
         if (command === 'vscode.executeDocumentRenameProvider') {
+          const [uri, position, newName] = args as [
+            { toString?: () => string },
+            { line?: number; character?: number },
+            string,
+          ];
+          if (
+            !sameDocumentUri(uri) ||
+            position?.line !== 3 ||
+            position?.character !== 3 ||
+            newName !== 'renamed_value'
+          ) {
+            return undefined;
+          }
           return {
             entries: () => [
               [
@@ -483,6 +523,13 @@ describe('registered packaged journey readiness contract', () => {
         { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
       ]);
       expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
+      const receipt = readReceipt(harness.receiptDirectory);
+      const requests = receipt.requests as {
+        after_edit?: { status?: string };
+        rename?: { status?: string };
+      };
+      expect(requests.after_edit?.status).toBe('ok');
+      expect(requests.rename?.status).toBe('applied_text_edits_verified');
     } finally {
       harness.cleanup();
     }
