@@ -269,6 +269,30 @@ limitations = [
 description = "Capability-gated CodeActionOptions.documentation entries for documented code-action kinds"
 
 [[feature]]
+id = "lsp.command_tooltip"
+spec = "LSP 3.18"
+area = "text_document"
+policy_class = "request_response"
+maturity = "not_proven"
+advertised = true
+counts_in_coverage = false
+direction = "server_to_client"
+capability_gate = "none"
+registration = "static_capabilities"
+implementation_owner = "missing"
+state_owner = "missing"
+tests = [
+  "crates/perl-lsp-rs/tests/lsp_codelens_tests.rs",
+  "crates/perl-lsp-rs/tests/lsp_command_tooltip_tests.rs",
+  "crates/perl-lsp-rs/tests/lsp_318_negative_claims.rs",
+]
+evidence = []
+limitations = [
+  "Response-shape field only; no client capability gate. Coverage is CodeLens, reachable code-action Command producers, and CodeAction.documentation Command objects; completion, inline-completion, and document-link surfaces do not produce Command objects (#13633).",
+]
+description = "Plain-text Command.tooltip on every reachable LSP Command object"
+
+[[feature]]
 id = "lsp.code_lens"
 spec = "LSP 3.0"
 area = "text_document"

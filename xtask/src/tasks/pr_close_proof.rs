@@ -19,8 +19,8 @@
 //! | Code | Meaning |
 //! |------|---------|
 //! | `0` | Commit **is** an ancestor of canonical-main (landing proof passes) |
-//! | `1` | Error (git not available, bad SHA format, I/O failure) |
-//! | `2` | Commit is **not** an ancestor — landing proof failed |
+//! | `1` | Error or not-proven (git failure, bad input, or a shallow/partial checkout that cannot decide ancestry) |
+//! | `2` | Commit is **not** an ancestor — landing proof failed (proved in a complete-enough graph) |
 //!
 //! Exit code 2 is distinct from 1 (error) so callers can branch on ancestry
 //! without conflating "not reachable" with "git failed".
@@ -53,7 +53,9 @@
 
 use color_eyre::eyre::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::process::Command;
+use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, is_ancestor};
 
 // ---------------------------------------------------------------------------
 // Public config
@@ -172,27 +174,46 @@ pub fn run(config: CloseProofConfig) -> Result<bool> {
 
 /// Returns `true` if `commit` is an ancestor of `canonical_main`.
 ///
-/// Runs: `git merge-base --is-ancestor <commit> <canonical_main>`
-/// Exit 0 → is ancestor; exit 1 → not ancestor; other → error.
+/// Provenance is the shared [`xtask::git_ancestry`] authority, not a bare
+/// `git merge-base --is-ancestor` exit code: exit 1 alone is not proof of
+/// non-ancestry in a shallow or partial checkout holding a present-but-
+/// disconnected object (#14557). `Ok(true)` means proved ancestry,
+/// `Ok(false)` means proved non-ancestry in a complete-enough graph, and
+/// `Err` means the relation is not proven — incomplete evidence, invalid
+/// input, or a git failure — which the caller surfaces as exit 1, never as
+/// exit 2 ("not reachable").
 fn check_ancestry(commit: &str, canonical_main: &str) -> Result<bool> {
     validate_sha_format(commit)?;
 
-    let status = Command::new("git")
-        .args(["merge-base", "--is-ancestor", commit, canonical_main])
-        .status()
-        .with_context(|| {
-            format!("running `git merge-base --is-ancestor {commit} {canonical_main}`")
-        })?;
+    let receipt = is_ancestor(Path::new("."), commit, canonical_main);
+    interpret_ancestry(&receipt, commit, canonical_main)
+}
 
-    match status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        Some(code) => {
-            color_eyre::eyre::bail!(
-                "`git merge-base --is-ancestor` exited with unexpected code {code}"
-            )
+/// Pure projection of one ancestry receipt onto the landing-proof outcome:
+/// proved ancestry passes, proved non-ancestry fails, and every `not_proven_*`
+/// disposition is a fail-closed error so a shallow or partial checkout can
+/// never report "not merged" (#14557).
+fn interpret_ancestry(
+    receipt: &AncestryReceipt,
+    commit: &str,
+    canonical_main: &str,
+) -> Result<bool> {
+    match receipt.disposition {
+        AncestryDisposition::Ancestor => Ok(true),
+        AncestryDisposition::Diverged | AncestryDisposition::Unrelated => Ok(false),
+        _ => {
+            let mut message = format!(
+                "cannot prove ancestry of {commit} in {canonical_main}: git ancestry is `{}` ({})",
+                receipt.disposition.as_str(),
+                receipt.reason
+            );
+            if let Some(guidance) = receipt.guidance.first() {
+                message.push_str("; ");
+                message.push_str(guidance);
+            }
+            message.push_str("; refusing to report \"not merged\" from incomplete evidence");
+            color_eyre::eyre::bail!("{message}")
         }
-        None => color_eyre::eyre::bail!("`git merge-base --is-ancestor` killed by signal"),
     }
 }
 
@@ -431,26 +452,25 @@ mod tests {
             return Ok(());
         }
 
+        // Self-ancestry is witnessed entirely locally, so the typed query
+        // proves `ancestor` even in a shallow checkout (#14557).
         let reachable = check_ancestry(&sha, &sha)?;
         assert!(reachable, "current HEAD should be an ancestor of itself");
         Ok(())
     }
 
     #[test]
-    fn test_fabricated_sha_is_not_ancestor_or_error() -> Result<()> {
-        // A SHA that cannot exist in the repo.  Either "not ancestor" (exit 1)
-        // or "object not found" which git reports as exit 128.
-        // We accept both: check_ancestry returns Ok(false) or Err.
+    fn test_fabricated_sha_fails_closed_never_unreachable() -> Result<()> {
+        // A SHA that cannot exist in the repo. The typed query can never prove
+        // non-ancestry for an unresolvable base: the receipt stays
+        // `not_proven_missing_object` (or `not_proven_shallow` / instrument
+        // failure when the checkout itself is incomplete), and every one of
+        // those fails closed instead of reporting "not merged".
         let sha = "0000000000000000000000000000000000000000";
         // validate_sha_format should pass (it's hex).
         validate_sha_format(sha)?;
-        // The actual ancestry check may error or return false — both are fine.
-        // We just verify it doesn't claim "reachable".
-        match check_ancestry(sha, "origin/main") {
-            Ok(true) => panic!("all-zeros SHA should not be an ancestor"),
-            Ok(false) => {} // expected: not ancestor
-            Err(_) => {}    // also fine: git rejected it
-        }
+        let result = check_ancestry(sha, "origin/main");
+        assert!(result.is_err(), "unresolvable base must fail closed, got {result:?}");
         Ok(())
     }
 
@@ -459,6 +479,77 @@ mod tests {
     // #10381: the command must keep "not reachable", "content overwritten",
     // "malformed input", and "git/instrument failure" distinct, and none of
     // them may become semantic completion.
+
+    #[test]
+    fn test_interpret_ancestry_maps_every_disposition() -> Result<()> {
+        // Proved verdicts pass through; every not-proven disposition fails
+        // closed with the disposition named, so no shallow, partial, missing-
+        // object, invalid-input, or instrument-failure checkout can ever
+        // report "not merged" (#14557).
+        assert!(interpret_ancestry(
+            &test_receipt(AncestryDisposition::Ancestor),
+            "abc1234",
+            "origin/main"
+        )?);
+        for disposition in [AncestryDisposition::Diverged, AncestryDisposition::Unrelated] {
+            let name = disposition.as_str();
+            assert!(
+                !interpret_ancestry(&test_receipt(disposition), "abc1234", "origin/main")?,
+                "{name} must report proved non-ancestry"
+            );
+        }
+        for disposition in [
+            AncestryDisposition::NotProvenShallow,
+            AncestryDisposition::NotProvenPartialClone,
+            AncestryDisposition::NotProvenMissingObject,
+            AncestryDisposition::InvalidInput,
+            AncestryDisposition::InstrumentFailure,
+        ] {
+            let name = disposition.as_str();
+            match interpret_ancestry(&test_receipt(disposition), "abc1234", "origin/main") {
+                Ok(reachable) => {
+                    panic!("{name} must fail closed, reported reachable={reachable}")
+                }
+                Err(error) => {
+                    let text = format!("{error:#}");
+                    assert!(
+                        text.contains(name),
+                        "fail-closed error must name the disposition, got: {text}"
+                    );
+                    assert!(
+                        text.contains("refusing to report"),
+                        "fail-closed error must refuse the verdict, got: {text}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn test_receipt(disposition: AncestryDisposition) -> AncestryReceipt {
+        AncestryReceipt {
+            schema_version: xtask::git_ancestry::GIT_ANCESTRY_SCHEMA_VERSION.to_string(),
+            repository: ".".to_string(),
+            repository_root: None,
+            git_dir: None,
+            git_common_dir: None,
+            base: "abc1234".to_string(),
+            head: "origin/main".to_string(),
+            base_sha: None,
+            head_sha: None,
+            merge_base: None,
+            is_shallow_repository: None,
+            is_partial_clone: None,
+            base_object_exists: false,
+            head_object_exists: false,
+            base_is_ancestor_of_head: None,
+            head_is_ancestor_of_base: None,
+            disposition,
+            reason: "test receipt".to_string(),
+            guidance: Vec::new(),
+            limitations: Vec::new(),
+        }
+    }
 
     /// Resolve `refname` to a full SHA, returning `None` when git or the ref
     /// is unavailable (tests degrade to skip in that case).
@@ -497,10 +588,11 @@ mod tests {
     #[test]
     fn test_unknown_ref_is_instrument_failure_not_unreachable() -> Result<()> {
         let Some(sha) = resolve_ref("HEAD") else { return Ok(()) };
-        // A ref that cannot exist: git merge-base exits 128, which must
-        // surface as Err (instrument failure), not Ok(false).
+        // A ref that cannot exist leaves the receipt `not_proven_missing_object`
+        // (or `not_proven_shallow` in a shallow checkout), which must surface
+        // as Err (fail-closed), not Ok(false).
         let result = check_ancestry(&sha, "refs/definitely/missing-10381");
-        assert!(result.is_err(), "unknown canonical ref must be an instrument failure");
+        assert!(result.is_err(), "unknown canonical ref must fail closed, got {result:?}");
         Ok(())
     }
 
@@ -513,6 +605,9 @@ mod tests {
             // Single-commit repo: property does not apply.
             return Ok(());
         }
+        // The local root (the shallow boundary in a shallow checkout) is an
+        // ancestor of HEAD in the local graph, so the merge base is the root
+        // itself and the typed query proves `diverged` locally (#14557).
         let reachable = check_ancestry(&head, &root)?;
         assert!(!reachable, "HEAD cannot be an ancestor of its own root commit");
         Ok(())
@@ -538,6 +633,8 @@ mod tests {
     #[test]
     fn test_run_reachable_receipt_is_landing_only() -> Result<()> {
         let Some(head) = resolve_ref("HEAD") else { return Ok(()) };
+        // Self-ancestry is witnessed entirely locally, so the run emits the
+        // landing receipt even in a shallow checkout (#14557).
         let reachable = run(CloseProofConfig {
             commit: head.clone(),
             canonical_main: head,

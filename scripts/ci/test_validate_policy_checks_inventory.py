@@ -86,7 +86,23 @@ class PolicyChecksInventoryTests(unittest.TestCase):
 
     def test_external_authority_requires_named_target(self) -> None:
         candidate = copy.deepcopy(self.inventory)
-        candidate["members"][7]["overlap"]["targets"] = []
+        # Locate the member by its disposition rather than by position: the
+        # composite's ordering is a policy decision, so a member inserted
+        # ahead of this one must not silently turn this falsifier vacuous.
+        member = next(
+            (
+                entry
+                for entry in candidate["members"]
+                if entry["overlap"]["disposition"] == "authoritative_elsewhere"
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            member,
+            "inventory has no authoritative_elsewhere member to falsify",
+        )
+        assert member is not None
+        member["overlap"]["targets"] = []
         errors = self.errors(candidate)
         self.assertTrue(
             any("targets is required for authoritative_elsewhere" in error for error in errors),

@@ -69,10 +69,13 @@ Use the release archive. Download
 [Releases](https://github.com/EffortlessMetrics/perl-lsp/releases), extract it,
 and add the folder containing `perllsp.exe` to your `PATH`.
 
-The PowerShell installer script does not work yet — the published copy resolves
-a `perl-lsp-…zip` asset that releases do not produce, so it fails with a 404.
-Windows support is also narrower generally: `x86_64` only. See
-[INSTALLATION.md](../how-to/INSTALLATION.md#windows) for the current limits.
+The PowerShell installer version linked in
+[INSTALLATION.md](../how-to/INSTALLATION.md#published-powershell-script) also
+selects this archive and installs `perllsp.exe` only; use the manual archive
+if you need `perl-dap.exe`. That script supports x86_64 Windows and Windows 11
+ARM64 through x64 emulation; Windows 10 ARM64 must build from source. Its
+checksum check aborts on a mismatch, but some verification failures only warn
+and continue. The guide includes checksum limitations and manual PATH setup.
 
 ### Option 4: GitHub release archive
 
