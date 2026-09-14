@@ -2322,6 +2322,7 @@ dependencies = [
  "perl-lsp-rs",
  "serde_json",
  "tempfile",
+ "url",
 ]
 
 [[package]]
