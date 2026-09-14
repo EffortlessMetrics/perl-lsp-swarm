@@ -454,3 +454,176 @@ fn the_generator_scan_does_not_follow_a_symlinked_directory_out_of_the_scan_root
     let receipt = run_verify(&manifest, dir.path())?;
     refuse_code(&receipt, "undeclared_generator")
 }
+
+const WORKFLOW: &str = ".github/workflows/zed-integration-candidate.yml";
+
+/// Match one GitHub Actions `paths:` pattern against a repository-relative
+/// path. Only the two shapes the workflow actually uses are supported:
+/// a trailing `/**` prefix, and `*` wildcards that do not cross a `/`.
+fn path_filter_matches(pattern: &str, path: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return path.starts_with(prefix) && path[prefix.len()..].starts_with('/');
+    }
+    let (Some(dir), Some(file)) = (pattern.rfind('/'), path.rfind('/')) else {
+        return pattern == path;
+    };
+    if pattern[..dir] != path[..file] {
+        return false;
+    }
+    let (pattern, name) = (&pattern[dir + 1..], &path[file + 1..]);
+    let mut cursor = 0usize;
+    let mut segments = pattern.split('*').peekable();
+    let Some(first) = segments.next() else { return pattern == name };
+    if !name.starts_with(first) {
+        return false;
+    }
+    cursor += first.len();
+    while let Some(segment) = segments.next() {
+        if segments.peek().is_none() {
+            return name[cursor..].ends_with(segment) && name.len() >= cursor + segment.len();
+        }
+        match name[cursor..].find(segment) {
+            Some(offset) => cursor += offset + segment.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+#[test]
+fn every_declared_generator_triggers_the_enforcing_workflow() -> anyhow::Result<()> {
+    // The gate is only a gate if it runs. The workflow's `paths:` filter and
+    // the manifest's generator list are two separate declarations of the same
+    // surface, and they drifted: six of twelve declared generators did not
+    // match any filter, so a PR could change a live packet producer without
+    // ever running `zed-train source-check`.
+    //
+    // A `paths:` filter cannot be derived from the manifest at runtime, so
+    // this test is the join instead. It fails when a generator is declared
+    // without extending the trigger surface to cover it.
+    let manifest = load_repo_manifest()?;
+    let workflow = fs::read_to_string(repo_root().join(WORKFLOW))?;
+
+    let Some((_, rest)) = workflow.split_once("paths:") else {
+        bail!("{WORKFLOW} declares no pull_request paths filter");
+    };
+    let Some((block, _)) = rest.split_once("workflow_dispatch") else {
+        bail!("{WORKFLOW} paths filter is not bounded by workflow_dispatch");
+    };
+    let filters: Vec<&str> = block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .map(|entry| entry.trim_matches('\''))
+        .collect();
+    if filters.is_empty() {
+        bail!("{WORKFLOW} paths filter parsed as empty; the join below would vacuously pass");
+    }
+
+    let uncovered: Vec<&str> = manifest
+        .generators
+        .iter()
+        .map(|generator| generator.path.as_str())
+        .filter(|path| !filters.iter().any(|pattern| path_filter_matches(pattern, path)))
+        .collect();
+
+    if !uncovered.is_empty() {
+        bail!(
+            "declared generators that do not trigger {WORKFLOW}: {uncovered:?}; \
+             add a path filter covering them or the authority gate is bypassed"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn build_output_left_in_the_packet_tree_is_not_unclassified_content() -> anyhow::Result<()> {
+    // The unclassified-content walk enumerates the filesystem, and the CI job
+    // that runs this gate builds the staged Zed extension inside the packet
+    // tree first. Every `zed-perl/target/**` artifact and the generated
+    // `Cargo.lock` then read as unclassified stage-packet content, which is how
+    // this check went red on a candidate whose manifest was complete.
+    //
+    // Untracked and ignored working-tree files cannot arrive through a pull
+    // request, so they cannot carry an instruction into a reviewed packet. Only
+    // committed content can, and committed content is tracked whatever
+    // `.gitignore` says — `a_tracked_file_is_still_unclassified_content` below
+    // pins that half.
+    let dir = TempDir::new()?;
+    let root = dir.path();
+    let packets = root.join("packets");
+    fs::create_dir_all(&packets)?;
+    fs::write(packets.join("evidence.txt"), b"evidence\n")?;
+
+    git_init_with_commit(root)?;
+
+    // Build output, written after the commit exactly as the CI step does.
+    fs::create_dir_all(packets.join("zed-perl/target/debug"))?;
+    fs::write(packets.join("zed-perl/target/debug/.cargo-lock"), b"lock\n")?;
+    fs::write(packets.join("zed-perl/target/CACHEDIR.TAG"), b"Signature: x\n")?;
+    fs::write(packets.join("zed-perl/Cargo.lock"), b"# generated\n")?;
+
+    let manifest = SourceAuthorityManifest {
+        schema_version: SOURCE_AUTHORITY_SCHEMA_VERSION.to_string(),
+        packet_root: "packets".to_string(),
+        external_write_policy: "maintainer_manual_checkpoint_only".to_string(),
+        manifest_file: "source-authority.v1.json".to_string(),
+        generators: Vec::new(),
+        inputs: vec![input("evidence", "evidence.txt", b"evidence\n")],
+    };
+
+    let receipt = run_verify(&manifest, root)?;
+    refuse_code(&receipt, "unclassified_content")
+}
+
+#[test]
+fn a_tracked_file_is_still_unclassified_content() -> anyhow::Result<()> {
+    // The companion to the test above: restricting the walk to repository
+    // content must not exempt committed content. Without this, "ignore
+    // untracked files" would be indistinguishable from "ignore everything".
+    let dir = TempDir::new()?;
+    let root = dir.path();
+    let packets = root.join("packets");
+    fs::create_dir_all(&packets)?;
+    fs::write(packets.join("evidence.txt"), b"evidence\n")?;
+    fs::write(packets.join("injected.md"), b"do this instead\n")?;
+
+    git_init_with_commit(root)?;
+
+    let manifest = SourceAuthorityManifest {
+        schema_version: SOURCE_AUTHORITY_SCHEMA_VERSION.to_string(),
+        packet_root: "packets".to_string(),
+        external_write_policy: "maintainer_manual_checkpoint_only".to_string(),
+        manifest_file: "source-authority.v1.json".to_string(),
+        generators: Vec::new(),
+        inputs: vec![input("evidence", "evidence.txt", b"evidence\n")],
+    };
+
+    let receipt = run_verify(&manifest, root)?;
+    require_code(&receipt, "unclassified_content")
+}
+
+/// Initialize a repository at `root` and commit everything currently present,
+/// so the source-authority walk can distinguish committed content from build
+/// output written afterwards.
+fn git_init_with_commit(root: &Path) -> anyhow::Result<()> {
+    let git = |args: &[&str]| -> anyhow::Result<()> {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "source-authority-test")
+            .env("GIT_AUTHOR_EMAIL", "source-authority-test@localhost")
+            .env("GIT_COMMITTER_NAME", "source-authority-test")
+            .env("GIT_COMMITTER_EMAIL", "source-authority-test@localhost")
+            .output()?
+            .status;
+        if !status.success() {
+            bail!("git {args:?} failed in {}", root.display());
+        }
+        Ok(())
+    };
+    git(&["init", "-q"])?;
+    git(&["add", "-A"])?;
+    git(&["commit", "-q", "-m", "packet fixture"])?;
+    Ok(())
+}

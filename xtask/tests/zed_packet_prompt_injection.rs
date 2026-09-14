@@ -68,6 +68,48 @@ fn copy_tree(source: &Path, target: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Copy the repository content of the packet tree into the sandbox.
+///
+/// Only files Git tracks are copied. The CI job that exercises this suite
+/// builds the staged Zed extension inside the packet tree, so a raw filesystem
+/// copy drags `zed-perl/target/**` and a generated `Cargo.lock` into the
+/// sandbox, where they read as unclassified stage-packet content and fail the
+/// positive control. Those are build output, not packet content: they cannot
+/// arrive through a pull request and are not what this boundary governs.
+///
+/// This mirrors the same rule the verifier applies to a real work tree. The
+/// sandbox is not a Git repository, so the verifier's own tracking check
+/// cannot run here — the filter has to happen as the copy is made. When Git
+/// cannot answer, fall back to the full copy, which can only over-report.
+fn copy_packet_tree(source_root: &Path, target_root: &Path) -> anyhow::Result<()> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(source_root)
+        .args(["ls-files", "-z", "--"])
+        .arg(PACKET_ROOT)
+        .output();
+
+    let tracked = match output {
+        Ok(output) if output.status.success() => String::from_utf8(output.stdout).ok(),
+        _ => None,
+    };
+
+    let Some(tracked) = tracked else {
+        copy_tree(&source_root.join(PACKET_ROOT), &target_root.join(PACKET_ROOT))?;
+        return Ok(());
+    };
+
+    let mut copied = 0usize;
+    for relative in tracked.split('\0').filter(|entry| !entry.is_empty()) {
+        copy_file(&source_root.join(relative), &target_root.join(relative))?;
+        copied += 1;
+    }
+    if copied == 0 {
+        bail!("git tracked no files under {PACKET_ROOT}; the sandbox would be empty");
+    }
+    Ok(())
+}
+
 /// A disposable repository holding a full copy of the live packet tree and
 /// its declared generator scripts.
 struct PacketCopy {
@@ -81,7 +123,7 @@ impl PacketCopy {
         let dir = TempDir::new()?;
         let root = dir.path().to_path_buf();
 
-        copy_tree(&source_root.join(PACKET_ROOT), &root.join(PACKET_ROOT))?;
+        copy_packet_tree(&source_root, &root)?;
 
         // Copy the generators the manifest itself declares, rather than a
         // second hard-coded list. A literal here is duplicate authority: when

@@ -337,6 +337,22 @@
       "digest": "de6bfee760f1e6a12e48394ac643f7b8a3302c335d6bf8538fb1573932ab74d7",
       "instruction_allowed": false,
       "sensitivity": "public"
+    },
+    {
+      "id": "managed-route-contract",
+      "subject": "managed-route.v1.json",
+      "authority": "canonical_stage_spec",
+      "digest": "95b24f1b61849619377eb8dd4a0fd0a99eb5af290c14a2eb8e05ebe18b3e9352",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
+      "id": "managed-route-receipt-template",
+      "subject": "receipts/managed-route-template.json",
+      "authority": "canonical_stage_spec",
+      "digest": "35e31a0e0a3d5a2d79b384b387f7b4a818000b6bf83c9e8cb9374fbb59f9eb51",
+      "instruction_allowed": false,
+      "sensitivity": "public"
     }
   ]
 }

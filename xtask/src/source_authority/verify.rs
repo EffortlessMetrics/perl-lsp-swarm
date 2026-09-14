@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// One fail-closed finding from the boundary verifier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -264,11 +265,17 @@ fn verify_input_table(
         }
     }
 
-    // No file may ride inside the packet tree unclassified.
+    // No file may ride inside the packet tree unclassified. Only repository
+    // content is in scope: see `tracked_packet_paths` for why build output left
+    // in the tree by an earlier step is not this boundary's subject.
+    let tracked = tracked_packet_paths(repo_root, &manifest.packet_root);
     match walk_packet_tree(packet_root, &manifest.manifest_file) {
         Ok(files) => {
             for path in files {
                 let relative = relative_to(packet_root, &path);
+                if tracked.as_ref().is_some_and(|tracked| !tracked.contains(&relative)) {
+                    continue;
+                }
                 if !by_subject.contains_key(&relative) {
                     violations.push(Violation {
                         code: "unclassified_content".into(),
@@ -554,6 +561,48 @@ fn generator_scan_files(root: &Path) -> Result<Vec<PathBuf>, color_eyre::eyre::R
     }
     files.sort();
     Ok(files)
+}
+
+/// Packet-relative paths that Git tracks under `packet_root`, or `None` when
+/// tracking cannot be established (no Git, not a work tree, unreadable index).
+///
+/// The unclassified-content walk enumerates the filesystem, so anything a build
+/// leaves inside the packet tree — `zed-perl/target/**`, a generated
+/// `Cargo.lock` — reads as unclassified stage-packet content. That is not what
+/// this boundary governs: an untracked or ignored working-tree file cannot
+/// arrive through a pull request, so it cannot carry an instruction into a
+/// reviewed packet. Only committed content can, and committed content is
+/// tracked regardless of `.gitignore`.
+///
+/// `None` falls back to the full filesystem walk, which is strictly more
+/// inclusive, so a missing Git answer can only over-report and never silently
+/// exempt a file.
+fn tracked_packet_paths(
+    repo_root: &Path,
+    packet_root_declaration: &str,
+) -> Option<BTreeSet<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["ls-files", "-z", "--"])
+        .arg(packet_root_declaration)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let listing = String::from_utf8(output.stdout).ok()?;
+    let prefix =
+        format!("{}/", normalize_separators(packet_root_declaration).trim_end_matches('/'));
+    Some(
+        listing
+            .split('\0')
+            .filter(|entry| !entry.is_empty())
+            .filter_map(|entry| {
+                normalize_separators(entry).strip_prefix(&prefix).map(str::to_owned)
+            })
+            .collect(),
+    )
 }
 
 /// Deterministically list every regular entry under `root`, excluding

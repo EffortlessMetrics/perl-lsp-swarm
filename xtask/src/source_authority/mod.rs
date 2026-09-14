@@ -19,32 +19,11 @@ pub use model::{
 };
 pub use verify::{Receipt, Violation, verify_manifest};
 
-use clap::Parser;
 use color_eyre::eyre::{Result, WrapErr, bail};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
-
-#[derive(Debug, Parser)]
-#[command(about = "Verify Zed stage-packet source-authority boundaries")]
-struct Args {
-    /// Source-authority manifest JSON.
-    fixture: PathBuf,
-
-    /// Repository root used to resolve the packet-relative subjects.
-    #[arg(long, default_value = ".")]
-    repo_root: PathBuf,
-
-    /// Receipt JSON retained for clean and blocking verdicts.
-    #[arg(long, default_value = "target/receipts/zed-source-authority.json")]
-    out: PathBuf,
-}
-
-pub fn run_from_env() -> Result<()> {
-    let args = Args::parse();
-    run_with_paths(args.fixture, args.repo_root, args.out)
-}
 
 pub fn run_with_paths(fixture: PathBuf, repo_root: PathBuf, out: PathBuf) -> Result<()> {
     let raw = fs::read_to_string(&fixture)
