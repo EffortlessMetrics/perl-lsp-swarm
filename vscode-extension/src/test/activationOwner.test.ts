@@ -14,6 +14,71 @@ function makeDisposable(disposed: string[], id: string): vscode.Disposable {
 }
 
 describe('extension activation owner (#7854)', () => {
+  test('census reports the resources the owner actually holds, across commit and shutdown (#14678)', async () => {
+    const disposed: string[] = [];
+    const host = makeHostContext();
+    const owner = new ExtensionActivationOwner(host);
+
+    // Registered the way production does: a disposable through own(), a
+    // non-disposable teardown through ownCleanup(), and a scoped-context push.
+    owner.own('commands', 'mandatory_for_activation', makeDisposable(disposed, 'commands'));
+    owner.ownCleanup('module-projections', 'base', 'mandatory_for_activation', () => {
+      disposed.push('module-projections');
+    });
+    owner
+      .scopedContext('debugger', 'optional_degradable')
+      .subscriptions.push(makeDisposable(disposed, 'debugger'));
+
+    const activating = owner.resourceCensus();
+    expect(activating.live_total).toBe(3);
+    expect(activating.live_by_class.mandatory_for_activation).toBe(2);
+    expect(activating.live_by_class.optional_degradable).toBe(1);
+
+    // Committing transfers ownership but releases nothing.
+    owner.commit();
+    expect(owner.resourceCensus().live_total).toBe(3);
+
+    // Deactivating the committed runtime must be visible through the owner.
+    await owner.deactivate();
+    expect(owner.resourceCensus().live_total).toBe(0);
+    expect(disposed).toContain('commands');
+  });
+
+  test('census keeps a resource the owner failed to release (#14678)', async () => {
+    const host = makeHostContext();
+    const owner = new ExtensionActivationOwner(host);
+
+    owner.own('commands', 'mandatory_for_activation', {
+      dispose: () => {
+        throw new Error('dispose exploded');
+      },
+    });
+    owner.own('workspace_listeners', 'mandatory_for_activation', makeDisposable([], 'listeners'));
+
+    owner.commit();
+    const receipt = await owner.deactivate();
+    expect(receipt?.cleanup_failures).toHaveLength(1);
+
+    // The healthy resource drops out; the one whose dispose() threw was never
+    // confirmed released, so the owner still reports it as held.
+    expect(owner.resourceCensus().live_total).toBe(1);
+  });
+
+  test('a rolled-back attempt still reports the support surfaces it retained (#14678)', async () => {
+    const host = makeHostContext();
+    const owner = new ExtensionActivationOwner(host);
+
+    owner.own('base', 'support_surface_allowed_after_failure', makeDisposable([], 'output'));
+    owner.own('commands', 'mandatory_for_activation', makeDisposable([], 'commands'));
+
+    await owner.rollback();
+
+    const census = owner.resourceCensus();
+    expect(census.live_total).toBe(1);
+    expect(census.live_by_class.support_surface_allowed_after_failure).toBe(1);
+    expect(census.live_by_class.mandatory_for_activation).toBe(0);
+  });
+
   test('registers scoped-context pushes as attempt resources while activating', () => {
     const host = makeHostContext();
     const owner = new ExtensionActivationOwner(host);

@@ -24,10 +24,11 @@
 //! - All nodes carry exact byte-offset source ranges in [`BodySourceMap`]
 
 use crate::SourceLocation;
+use crate::syntax::regex_analysis::RegexAnalysisFamily;
 
 use super::model::{
-    BranchKeyword, ControlTransferKind, LoopKind, ReadlineSource, StatementModifierKind,
-    glob_pattern_interpolates,
+    BranchKeyword, ControlTransferKind, LoopKind, ReadlineSource, RegexTargetKind,
+    StatementModifierKind, glob_pattern_interpolates,
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -471,11 +472,277 @@ pub enum HirExpr {
         interpolated: bool,
     },
 
+    /// An unbound regex-family construct (#7136).
+    ///
+    /// # Known representational limit
+    ///
+    /// The parser AST does not distinguish `qr//` regex-value construction
+    /// from an unbound match (`m//`, bare `/.../`) applied to the default
+    /// topic: all three produce `NodeKind::Regex` with no operator
+    /// discriminator (see `engine/parser/expressions/quotes.rs` and
+    /// `engine/parser/expressions/primary.rs`). Canonical body HIR therefore
+    /// records the construct and its facts **without claiming value
+    /// semantics**. Consumers must not read this variant as proof of a regex
+    /// value. Separating the forms needs a parser-level discriminator and is
+    /// tracked separately.
+    Regex(HirRegex),
+
+    /// Match application with an explicit `=~` / `!~` binding (#7136).
+    Match(HirRegexMatch),
+
+    /// Substitution application, `s///` (#7136).
+    Substitution(HirSubstitution),
+
+    /// Transliteration application, `tr///` or `y///` (#7136).
+    ///
+    /// A distinct non-regex language: it carries no regex analysis anchor,
+    /// because its search/replace lists are character lists, not patterns.
+    Transliteration(HirTransliteration),
+
     /// Opaque expression — used when the AST shape is not yet modeled.
     Opaque {
         /// The AST node kind name for diagnostics.
         ast_kind: String,
     },
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Regex-family operations (#7136)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Stable anchor binding a body-HIR regex operation to its canonical retained
+/// regex analysis record (#7018).
+///
+/// Body lowering has no handle on the analysis table (`lower_ast` receives only
+/// the AST), so HIR stores an *anchor* rather than the record: a consumer
+/// holding the table resolves the canonical facts itself.
+///
+/// # Resolving an anchor
+///
+/// Resolve with `RegexAnalysisTable::find_enclosed_by`, passing this anchor's
+/// [`family`](Self::family) — **not** `find_by_full_range`.
+///
+/// The anchor is the enclosing source range of the construct that was lowered.
+/// For an unbound construct that equals the operator's own range:
+///
+/// ```text
+/// my $r = qr/foo/i;    anchor 8..16 == record full_range 8..16
+/// ```
+///
+/// For a bound construct the anchor also spans the target and the binding
+/// operator, while the record keys on the operator range alone:
+///
+/// ```text
+/// $x =~ /foo/;         anchor 0..11  vs  record full_range 6..11
+/// ```
+///
+/// So exact-range lookup resolves only unbound constructs. The operator's own
+/// range is recovered from source geometry by the retained analysis and is not
+/// present in the AST, so HIR cannot carry it without rescanning source.
+///
+/// This deliberately carries no completeness claim. A lookup that finds no
+/// record means the analysis is **unavailable**, never that the pattern is
+/// clean — HIR never asserts a regex is complete or valid.
+///
+/// # Freshness is the caller's obligation
+///
+/// An anchor is a *position*, and positions do not identify a source snapshot.
+/// `HirFile` carries no source digest — `lower_ast` never sees source bytes,
+/// which is the same reason the anchor is a range rather than a record
+/// reference — so nothing in HIR can establish that a given table was built
+/// from the source this body was lowered from. Resolving an anchor against a
+/// table built from *different* source will succeed and return facts about the
+/// wrong text, most easily after an edit that keeps a construct at the same
+/// offsets (`s/a/b/` → `s/a/c/`).
+///
+/// A consumer holding both must therefore verify the pairing itself, with
+/// `RegexAnalysisTable::source_matches` against the source the HIR was lowered
+/// from, before resolving any anchor. Every lookup on that table is positional
+/// and generation-unchecked in this same way; the table's digest exists for
+/// exactly this check, and it is the caller that must perform it.
+///
+/// A shared generation identity spanning body HIR and the retained table would
+/// make the mismatch unrepresentable rather than merely documented. That is a
+/// `HirFile`-level change affecting every consumer, tracked as #14658.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RegexAnalysisAnchor {
+    /// Enclosing source range of the regex-family construct as written.
+    ///
+    /// See the type documentation: this is the construct's own range for an
+    /// unbound form, and the whole binding expression's range for a bound one.
+    pub full_range: SourceLocation,
+
+    /// Operator family this anchor may resolve to.
+    ///
+    /// Carried on the anchor rather than left to the caller so that resolution
+    /// cannot silently cross operator families: a record nested inside the
+    /// operator's own body — a regex within an `/e` replacement, say — starts
+    /// later than the operator and would otherwise win the containment
+    /// tie-break.
+    pub family: RegexAnalysisFamily,
+}
+
+/// The operand a regex-family operator applies to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HirRegexTarget {
+    /// No explicit binding: the operator applies to the default topic `$_`.
+    ///
+    /// Represented as an explicit state rather than a fabricated `$_`
+    /// identifier node, so that a real `$_ =~ /x/` stays distinguishable from
+    /// an implicit `/x/`.
+    DefaultTopic,
+
+    /// An explicitly bound operand, lowered exactly once in source order.
+    ///
+    /// # Reading `expr` against `kind`/`ast_kind`
+    ///
+    /// `kind` and `ast_kind` describe the *classified* operand, which for a
+    /// declaration-wrapped target is the inner declared lvalue: `classify` sees
+    /// through `my`/`our`/`state`/`local` and attribute wrappers, so
+    /// `(my $copy = $s) =~ s/a/b/` classifies as `Place` / `"Variable"`.
+    ///
+    /// `expr` is the lowered *outer* operand, and body lowering does not model
+    /// a declaration used as an expression, so for that case it is currently
+    /// `HirExpr::Opaque { ast_kind: "VariableDeclaration" }` — the declared
+    /// variable is not reachable through it, and neither is the initializer's
+    /// read. A consumer that needs the variable must not assume `ast_kind`
+    /// names the child's own shape.
+    ///
+    /// The two are consistent, not contradictory — `Place` is true of the
+    /// target, and the child is genuinely unmodeled — but they answer different
+    /// questions. Lowering declaration-expression targets so the child carries
+    /// the variable is separate work.
+    Bound {
+        /// The lowered target expression. See the variant docs: this is the
+        /// outer operand, which may be `Opaque` where `ast_kind` is not.
+        expr: HirExprId,
+        /// Whether the classified operand is a statically known lvalue place.
+        kind: RegexTargetKind,
+        /// Parser AST kind name of the *classified* operand — the inner
+        /// declared lvalue when the written target is declaration-wrapped.
+        ast_kind: &'static str,
+    },
+}
+
+/// How a substitution's replacement is evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ReplacementEvaluation {
+    /// Interpolated replacement text; no Perl code is evaluated.
+    Literal,
+    /// `/e` — the replacement is evaluated once as Perl code.
+    Expression,
+    /// `/ee` or more — the replacement is evaluated, and its result evaluated
+    /// again.
+    ///
+    /// Perl adds one evaluation pass per `e`, and `/eee` and beyond are legal,
+    /// so this variant buckets every count of two or more. The distinction it
+    /// preserves is the one consumers act on — whether a second evaluation of
+    /// generated code happens at all — not the exact pass count. A consumer
+    /// needing that depth must read [`HirSubstitution::modifiers`].
+    DoubleEval,
+}
+
+impl ReplacementEvaluation {
+    /// Classify replacement evaluation from the substitution's raw modifiers.
+    ///
+    /// Perl escalates on the *count* of `e`: one `e` evaluates the replacement
+    /// as code, two or more evaluate the result again.
+    #[must_use]
+    pub fn from_modifiers(modifiers: &str) -> Self {
+        match modifiers.chars().filter(|c| *c == 'e').count() {
+            0 => Self::Literal,
+            1 => Self::Expression,
+            _ => Self::DoubleEval,
+        }
+    }
+
+    /// Whether this replacement form evaluates Perl code at runtime.
+    #[must_use]
+    pub fn is_dynamic(self) -> bool {
+        !matches!(self, Self::Literal)
+    }
+}
+
+/// Payload for an unbound regex-family construct — see [`HirExpr::Regex`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HirRegex {
+    /// Raw modifiers as written, in source order.
+    pub modifiers: String,
+    /// Whether the pattern embeds runtime-evaluated code (`(?{…})`/`(??{…})`).
+    pub embedded_code: bool,
+    /// Anchor for canonical retained analysis lookup (#7018).
+    pub analysis: RegexAnalysisAnchor,
+}
+
+/// Payload for a bound match operation — see [`HirExpr::Match`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HirRegexMatch {
+    /// Operand the match applies to.
+    pub target: HirRegexTarget,
+    /// Whether the binding operator was `!~`.
+    pub negated: bool,
+    /// Raw modifiers as written, in source order.
+    pub modifiers: String,
+    /// Whether the pattern embeds runtime-evaluated code.
+    pub embedded_code: bool,
+    /// Anchor for canonical retained analysis lookup (#7018).
+    pub analysis: RegexAnalysisAnchor,
+}
+
+/// Payload for a substitution operation — see [`HirExpr::Substitution`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HirSubstitution {
+    /// Operand the substitution applies to.
+    pub target: HirRegexTarget,
+    /// Whether the binding operator was `!~`.
+    pub negated: bool,
+    /// Raw modifiers as written, in source order.
+    pub modifiers: String,
+    /// Whether the pattern or replacement embeds runtime-evaluated code.
+    pub embedded_code: bool,
+    /// How the replacement is evaluated (`/e`, `/ee`).
+    pub replacement: ReplacementEvaluation,
+    /// Anchor for canonical retained analysis lookup (#7018).
+    pub analysis: RegexAnalysisAnchor,
+}
+
+impl HirSubstitution {
+    /// Whether the operator writes back to its target.
+    ///
+    /// `/r` returns a modified copy and leaves the target unmodified. This
+    /// reports operator intent; whether the target can actually be written is
+    /// a separate fact carried by [`HirRegexTarget::Bound::kind`].
+    #[must_use]
+    pub fn mutates_target(&self) -> bool {
+        !self.modifiers.contains('r')
+    }
+}
+
+/// Payload for a transliteration operation — see [`HirExpr::Transliteration`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HirTransliteration {
+    /// Operand the transliteration applies to.
+    pub target: HirRegexTarget,
+    /// Whether the binding operator was `!~`.
+    pub negated: bool,
+    /// Raw modifiers as written (`c`, `d`, `s`, `r`), in source order.
+    pub modifiers: String,
+}
+
+impl HirTransliteration {
+    /// Whether the operator writes back to its target.
+    ///
+    /// `/r` returns a modified copy and leaves the target unmodified.
+    #[must_use]
+    pub fn mutates_target(&self) -> bool {
+        !self.modifiers.contains('r')
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -493,16 +760,33 @@ pub enum DeclStorageClass {
     Local,
     /// `state` — persistent lexical.
     State,
+    /// An AST declaration-shaped node whose keyword is not a declaration.
+    ///
+    /// The parser can represent a legacy subroutine call such as
+    /// `field $x = 1` with the same shape as a variable declaration. Keeping
+    /// that distinction explicit prevents body PIR from inventing a lexical
+    /// binding for the call.
+    ///
+    /// This is the catch-all arm: *every* unrecognized declarator lands here,
+    /// not only `field`. Declining to invent a binding is right for all of
+    /// them, but PIR labels the boundary `LegacyFieldCall`, which is accurate
+    /// only because `field` is the sole such keyword the parser produces
+    /// today. A second one would need that label generalized — the receipt
+    /// would be misleading, though the lowering would stay correct.
+    Unknown,
 }
 
 impl DeclStorageClass {
-    fn from_str(s: &str) -> Self {
+    /// Classify a declarator keyword. `pub(crate)` so flat PIR lowering can
+    /// ask the same question body lowering does, rather than keeping a second
+    /// list of which keywords are real declarators.
+    pub(crate) fn from_str(s: &str) -> Self {
         match s {
             "my" => DeclStorageClass::My,
             "our" => DeclStorageClass::Our,
             "local" => DeclStorageClass::Local,
             "state" => DeclStorageClass::State,
-            _ => DeclStorageClass::My,
+            _ => DeclStorageClass::Unknown,
         }
     }
 }
@@ -714,51 +998,122 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
                 NodeKind::Assignment { lhs, .. } => lhs.as_ref(),
                 _ => variable.as_ref(),
             };
-            // Extract variable name and sigil from the inner Variable node.
-            let (sigil_str, var_name) = match &binding_node.kind {
-                NodeKind::Variable { sigil, name } => (sigil.as_str(), name.clone()),
-                _ => ("$", String::from("<unknown>")),
-            };
-            let sigil = Sigil::from_str(sigil_str);
-            let storage = DeclStorageClass::from_str(declarator);
+            match named_variable_from_node(binding_node) {
+                Some((sigil_str, var_name)) => {
+                    let sigil = Sigil::from_str(sigil_str);
+                    let storage = DeclStorageClass::from_str(declarator);
 
-            let init_expr_id = initializer.as_ref().map(|init_node| {
-                // The initializer is the full RHS expression.
-                // For `my $x = $a + $b`, the AST may represent this as:
-                //   VariableDeclaration { variable: $x, initializer: Binary(+, $a, $b) }
-                // We model the assignment as:
-                //   Assign { lhs: Variable($x, Write), rhs: lower_expr(initializer) }
+                    let init_expr_id = initializer.as_ref().map(|init_node| {
+                        let place_expr = HirExpr::Variable(HirVariable {
+                            sigil: Sigil::from_str(sigil_str),
+                            name: var_name.clone(),
+                            kind: VariableKind::Lexical,
+                            access: AccessMode::Write,
+                        });
+                        let place_id = builder.alloc_expr(place_expr, variable.location);
+                        let rhs_id = lower_expr(builder, init_node);
+                        let assign_range = SourceLocation {
+                            start: variable.location.start,
+                            end: init_node.location.end,
+                        };
+                        let assign_expr = HirExpr::Assign {
+                            lhs: place_id,
+                            rhs: rhs_id,
+                            mode: AssignMode::Simple,
+                        };
+                        builder.alloc_expr(assign_expr, assign_range)
+                    });
+                    let init_expr_id = init_expr_id.or_else(|| match &variable.kind {
+                        NodeKind::Assignment { lhs, rhs, op } => Some(lower_assignment(
+                            builder,
+                            variable,
+                            lhs,
+                            rhs,
+                            op,
+                            VariableKind::Package,
+                        )),
+                        _ => None,
+                    });
 
-                // Allocate the write-place for $x
-                let place_expr = HirExpr::Variable(HirVariable {
-                    sigil: Sigil::from_str(sigil_str),
-                    name: var_name.clone(),
-                    kind: VariableKind::Lexical,
-                    access: AccessMode::Write,
-                });
-                let place_id = builder.alloc_expr(place_expr, variable.location);
-
-                // Lower the RHS value expression
-                let rhs_id = lower_expr(builder, init_node);
-
-                // Wrap in an Assign node spanning the full declaration range
-                let assign_range =
-                    SourceLocation { start: variable.location.start, end: init_node.location.end };
-                let assign_expr =
-                    HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
-                builder.alloc_expr(assign_expr, assign_range)
-            });
-
-            builder.alloc_stmt(
-                HirStmt::Let {
-                    name: var_name,
-                    sigil,
-                    storage,
-                    init: init_expr_id,
-                    binding_range: binding_node.location,
-                },
-                range,
-            )
+                    builder.alloc_stmt(
+                        HirStmt::Let {
+                            name: var_name,
+                            sigil,
+                            storage,
+                            init: init_expr_id,
+                            binding_range: binding_node.location,
+                        },
+                        range,
+                    )
+                }
+                None => {
+                    let effect_id = match (initializer.as_deref(), &variable.kind) {
+                        (None, NodeKind::Assignment { lhs, rhs, op }) => {
+                            lower_assignment(builder, variable, lhs, rhs, op, VariableKind::Package)
+                        }
+                        (None, _) => lower_place(
+                            builder,
+                            binding_node,
+                            VariableKind::Package,
+                            AccessMode::Write,
+                        ),
+                        (Some(init_node), _) => match &init_node.kind {
+                            NodeKind::Assignment { lhs, rhs, op }
+                                if lhs.location.start == binding_node.location.start
+                                    && lhs.location.end == binding_node.location.end =>
+                            {
+                                lower_assignment(
+                                    builder,
+                                    init_node,
+                                    lhs,
+                                    rhs,
+                                    op,
+                                    VariableKind::Package,
+                                )
+                            }
+                            _ => {
+                                let place_id = lower_place(
+                                    builder,
+                                    binding_node,
+                                    VariableKind::Package,
+                                    AccessMode::Write,
+                                );
+                                let rhs_id = lower_expr(builder, init_node);
+                                let assign_range = SourceLocation {
+                                    start: binding_node.location.start,
+                                    end: init_node.location.end,
+                                };
+                                builder.alloc_expr(
+                                    HirExpr::Assign {
+                                        lhs: place_id,
+                                        rhs: rhs_id,
+                                        mode: AssignMode::Simple,
+                                    },
+                                    assign_range,
+                                )
+                            }
+                        },
+                    };
+                    // Arrow-postfix `my $cache->{key}` still declares `$cache`.
+                    // Direct-subscript `local` stays a place write, not a Let.
+                    if declarator != "local"
+                        && let Some((sigil_str, var_name, recovered)) =
+                            declared_base_variable(binding_node)
+                    {
+                        return builder.alloc_stmt(
+                            HirStmt::Let {
+                                name: var_name,
+                                sigil: Sigil::from_str(sigil_str),
+                                storage: DeclStorageClass::from_str(declarator),
+                                init: Some(effect_id),
+                                binding_range: recovered.location,
+                            },
+                            range,
+                        );
+                    }
+                    builder.alloc_stmt(HirStmt::Expr(effect_id), range)
+                }
+            }
         }
 
         // Expression statement fallback
@@ -766,6 +1121,55 @@ fn lower_statement(builder: &mut BodyBuilder, node: &Node) -> HirStmtId {
             let expr_id = lower_expr(builder, node);
             builder.alloc_stmt(HirStmt::Expr(expr_id), range)
         }
+    }
+}
+
+fn named_variable_from_node(node: &Node) -> Option<(&str, String)> {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
+        NodeKind::VariableWithAttributes { variable, .. } => named_variable_from_node(variable),
+        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => Some(("*", name.clone())),
+        _ => None,
+    }
+}
+
+fn is_arrow_postfix_op(op: &str) -> bool {
+    matches!(op, "->" | "->{}" | "->[]")
+}
+
+fn is_direct_typeglob_name(name: &str) -> bool {
+    // Mirror of `is_direct_glob_name` in `hir::lower` until #5813. Computed
+    // `*{EXPR}` captures (`$name`, `foo()`, `'Sym'`) are not declaration names.
+    if name.chars().all(|ch| ch == '_' || ch == ':' || ch.is_ascii_alphanumeric())
+        && name.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+    {
+        return true;
+    }
+    if let Some(rest) = name.strip_prefix('^')
+        && rest.chars().all(|ch| ch == '_' || ch == ':' || ch.is_ascii_alphanumeric())
+        && rest.chars().next().is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+    {
+        return true;
+    }
+    let mut chars = name.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(ch), None) if !ch.is_ascii_alphanumeric() && ch != '_'
+    )
+}
+
+fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
+        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => {
+            Some(("*", name.clone(), node))
+        }
+        NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
+        NodeKind::Binary { op, left, .. } if is_arrow_postfix_op(op) => {
+            declared_base_variable(left)
+        }
+        NodeKind::MethodCall { object, .. } => declared_base_variable(object),
+        _ => None,
     }
 }
 
@@ -819,6 +1223,46 @@ pub(super) fn glob_expr(pattern: &str) -> HirExpr {
     HirExpr::Glob { pattern: pattern.to_string(), interpolated: glob_pattern_interpolates(pattern) }
 }
 
+/// Lower an assignment target. A plain variable becomes a place with the
+/// requested storage kind and access mode; anything else falls back to
+/// ordinary expression lowering, as this mirror does not model subscript
+/// places.
+fn lower_place(
+    builder: &mut BodyBuilder,
+    node: &Node,
+    kind: VariableKind,
+    access: AccessMode,
+) -> HirExprId {
+    match &node.kind {
+        NodeKind::Variable { sigil, name } => {
+            let var =
+                HirVariable { sigil: Sigil::from_str(sigil), name: name.clone(), kind, access };
+            builder.alloc_expr(HirExpr::Variable(var), node.location)
+        }
+        _ => lower_expr(builder, node),
+    }
+}
+
+/// Lower an `Assignment` node. Mirrors the canonical builder: `=` writes its
+/// target, every compound operator reads then writes it.
+fn lower_assignment(
+    builder: &mut BodyBuilder,
+    node: &Node,
+    lhs: &Node,
+    rhs: &Node,
+    op: &str,
+    place_kind: VariableKind,
+) -> HirExprId {
+    let (mode, access) = if op == "=" {
+        (AssignMode::Simple, AccessMode::Write)
+    } else {
+        (AssignMode::ReadModifyWrite, AccessMode::ReadModifyWrite)
+    };
+    let lhs_id = lower_place(builder, lhs, place_kind, access);
+    let rhs_id = lower_expr(builder, rhs);
+    builder.alloc_expr(HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode }, node.location)
+}
+
 fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
     let range = node.location;
 
@@ -840,13 +1284,8 @@ fn lower_expr(builder: &mut BodyBuilder, node: &Node) -> HirExprId {
             builder.alloc_expr(HirExpr::Binary { lhs: lhs_id, op: binary_op, rhs: rhs_id }, range)
         }
 
-        NodeKind::Assignment { lhs, rhs, .. } => {
-            let lhs_id = lower_expr(builder, lhs);
-            let rhs_id = lower_expr(builder, rhs);
-            builder.alloc_expr(
-                HirExpr::Assign { lhs: lhs_id, rhs: rhs_id, mode: AssignMode::Simple },
-                range,
-            )
+        NodeKind::Assignment { lhs, rhs, op } => {
+            lower_assignment(builder, node, lhs, rhs, op, VariableKind::Lexical)
         }
 
         NodeKind::Heredoc { delimiter, interpolated, indented, command, body_span, .. } => builder

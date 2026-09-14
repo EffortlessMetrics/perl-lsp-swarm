@@ -918,14 +918,22 @@ impl TypeInferenceEngine {
             };
             rhs_fact.evidence.push(slot_evidence);
             let mut hash_fact = env.get_fact_at(&hash_name).unwrap_or_else(TypeFact::unknown_hash);
-            let mut shape = match hash_fact.shape.take() {
-                Some(ShapeFact::Hash(shape)) => shape,
-                _ => HashShape::new(BTreeMap::new(), None),
-            };
-            shape.slots.insert(key, rhs_fact.clone());
-            hash_fact.ty = hash_type_from_slot_facts(shape.slots.values());
-            hash_fact.confidence = Confidence::High;
-            hash_fact.shape = Some(ShapeFact::Hash(shape));
+            match hash_fact.shape.take() {
+                Some(ShapeFact::Object(mut shape)) if is_hashref_slot => {
+                    shape.fields.insert(key, rhs_fact.clone());
+                    hash_fact.shape = Some(ShapeFact::Object(shape));
+                }
+                existing_shape => {
+                    let mut shape = match existing_shape {
+                        Some(ShapeFact::Hash(shape)) => shape,
+                        _ => HashShape::new(BTreeMap::new(), None),
+                    };
+                    shape.slots.insert(key, rhs_fact.clone());
+                    hash_fact.ty = hash_type_from_slot_facts(shape.slots.values());
+                    hash_fact.confidence = Confidence::High;
+                    hash_fact.shape = Some(ShapeFact::Hash(shape));
+                }
+            }
             env.set_variable_fact(hash_name, hash_fact);
             return rhs_fact;
         }
