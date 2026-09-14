@@ -5,7 +5,7 @@ use super::{
     DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, DebugState, EvaluateArguments,
     EvaluateResponseBody, Ordering, SafeEvaluator, SetExpressionArguments,
     SetExpressionResponseBody, Value, Variable, VariableCacheKind, lock_or_recover,
-    module_path_to_name, parse_dap_arguments, validate_safe_expression,
+    module_path_to_name, operation_broker, parse_dap_arguments, validate_safe_expression,
 };
 use crate::parse_origin::{DebuggerOutputOrigin, ParseIdentity};
 use crate::value::PerlValue;
@@ -130,7 +130,7 @@ impl DebugAdapter {
 
         // Validate frameId when provided: the frame must exist in the current session and
         // the session must be stopped.  frameId = None means "no frame context" — skip.
-        if let Some(requested_frame_id) = args.frame_id {
+        let frame_binding = if let Some(requested_frame_id) = args.frame_id {
             let session_guard = lock_or_recover(&self.session, "debug_adapter.session");
             match *session_guard {
                 None => {
@@ -172,9 +172,15 @@ impl DebugAdapter {
                             )),
                         };
                     }
+                    Some((
+                        session.stopped_generation,
+                        self.operation_broker.current_session_generation(),
+                    ))
                 }
             }
-        }
+        } else {
+            None
+        };
 
         let expression = &args.expression;
 
@@ -188,8 +194,28 @@ impl DebugAdapter {
             if let Some(stdin) = session.process.stdin.as_mut() {
                 // Frame debugger output so evaluate parsing only considers this request's output.
                 let commands = vec![format!("x {expression}")];
-                match self.send_framed_debugger_commands(stdin, &commands) {
-                    Ok(markers) => Some(markers),
+                let query = match frame_binding {
+                    Some((generation, session_generation))
+                        if session.state == DebugState::Stopped
+                            && session.stopped_generation == generation
+                            && self.operation_broker.current_session_generation()
+                                == session_generation =>
+                    {
+                        self.send_framed_debugger_query_bound(
+                            stdin,
+                            &commands,
+                            u64::from(timeout_ms),
+                            Some(generation),
+                            Some(session_generation),
+                        )
+                    }
+                    Some(_) => Err("evaluate frame became stale before debugger write".to_string()),
+                    None => {
+                        self.send_framed_debugger_query(stdin, &commands, u64::from(timeout_ms))
+                    }
+                };
+                match query {
+                    Ok((operation, begin, end)) => Some((operation, begin, end)),
                     Err(error) => {
                         return DapMessage::Response {
                             seq,
@@ -234,11 +260,54 @@ impl DebugAdapter {
             };
         };
 
-        let framed_lines = output_frame_markers.as_ref().and_then(|(begin, end)| {
-            // Evaluate is not a cancellable request family (#9074): the
-            // wait is bound to no cancel token at all.
-            self.capture_framed_debugger_output(begin, end, u64::from(timeout_ms), None)
+        let framed_terminal = output_frame_markers.as_ref().map(|(operation, begin, end)| {
+            self.await_framed_debugger_output_for_operation(operation, begin, end)
         });
+        let terminal_error = |message: String| DapMessage::Response {
+            seq,
+            request_seq,
+            success: false,
+            command: "evaluate".to_string(),
+            body: None,
+            message: Some(message),
+        };
+        let framed_lines = match framed_terminal {
+            Some(operation_broker::BrokerTerminal::Completed(lines)) => Some(lines),
+            Some(operation_broker::BrokerTerminal::StaleGeneration) => {
+                return terminal_error(
+                    "Evaluation became stale before its response arrived".to_string(),
+                );
+            }
+            Some(operation_broker::BrokerTerminal::Cancelled) => {
+                return terminal_error(
+                    "Evaluation was cancelled before its response arrived".to_string(),
+                );
+            }
+            Some(operation_broker::BrokerTerminal::SessionGone(reason)) => {
+                return terminal_error(format!(
+                    "Evaluation could not complete because the debugger session ended ({reason})"
+                ));
+            }
+            Some(operation_broker::BrokerTerminal::Rejected(reason)) => {
+                return terminal_error(format!("Debugger rejected evaluate: {reason}"));
+            }
+            Some(operation_broker::BrokerTerminal::TransportFailure(reason)) => {
+                return terminal_error(format!(
+                    "Debugger transport failed during evaluate: {reason}"
+                ));
+            }
+            Some(operation_broker::BrokerTerminal::ProtocolFailure(reason)) => {
+                return terminal_error(format!(
+                    "Debugger protocol failed during evaluate: {reason}"
+                ));
+            }
+            Some(operation_broker::BrokerTerminal::Acknowledged) => {
+                return terminal_error(
+                    "Debugger acknowledged evaluate without a response".to_string(),
+                );
+            }
+            Some(operation_broker::BrokerTerminal::TimedOut) | None => None,
+        };
 
         if let Some(lines) = framed_lines.as_ref()
             && let Some(error_line) = Self::parse_evaluate_error_from_lines(lines)
@@ -278,16 +347,57 @@ impl DebugAdapter {
             };
         };
 
+        if frame_binding
+            .is_some_and(|(expected, _)| self.current_stopped_generation() != Some(expected))
+        {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "evaluate".to_string(),
+                body: None,
+                message: Some(
+                    "Evaluation became stale after the stopped frame changed".to_string(),
+                ),
+            };
+        }
+
         // The cached placeholder keeps the policy-neutral rendering plus typed
         // facts, so a later `variables` expansion projects under its own
         // request's format (#9588). The response result is projected under
         // this request's policy.
-        let variables_reference = self.allocate_evaluate_result_ref(
-            expression,
-            &default_result,
-            &result_type,
-            typed.clone(),
-        );
+        let variables_reference = if let Some((expected, expected_session)) = frame_binding {
+            match self.allocate_evaluate_result_ref_bound(
+                expression,
+                &default_result,
+                &result_type,
+                typed.clone(),
+                expected,
+                expected_session,
+            ) {
+                Ok(reference) => reference,
+                Err(()) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "evaluate".to_string(),
+                        body: None,
+                        message: Some(
+                            "Evaluation became stale before its result could be retained"
+                                .to_string(),
+                        ),
+                    };
+                }
+            }
+        } else {
+            self.allocate_evaluate_result_ref(
+                expression,
+                &default_result,
+                &result_type,
+                typed.clone(),
+            )
+        };
         let eval_body = EvaluateResponseBody {
             result: format_policy.project_display(&default_result, typed.as_ref()),
             type_: Some(result_type),
@@ -328,6 +438,33 @@ impl DebugAdapter {
                 };
             }
         };
+        // #9568: `supportsSetExpression` is advertised false because there is no
+        // exact current-frame l-value assignment proof yet. Refuse here — before
+        // format parsing, before expression/value screening, before frame or
+        // session lookup, before any debugger command is written, and before any
+        // variables reference is allocated — so a client that ignores the
+        // advertised floor still cannot reach the raw assignment path.
+        //
+        // The gate is deliberately input-independent: every request that passes
+        // envelope validation receives the same deterministic refusal, whatever
+        // its expression, value, frameId, or format, and no rejected request can
+        // mutate debugger or session state.
+        // Bound to the same authority `handle_initialize` advertises, so a future
+        // promotion cannot leave the capability true while this still refuses.
+        if crate::backend::capabilities::refuse_set_expression(
+            crate::backend::capabilities::advertises_set_expression(),
+        ) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setExpression".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::SET_EXPRESSION_UNSUPPORTED_MESSAGE.to_string(),
+                ),
+            };
+        }
         // `format` affects the response rendering only; the assigned data below
         // is always the admitted client `value` (#9588; #8364/#9070 own
         // admission and read-back).
@@ -422,8 +559,9 @@ impl DebugAdapter {
         {
             if let Some(stdin) = session.process.stdin.as_mut() {
                 let commands = vec![format!("p {expression} = {value}"), format!("p {expression}")];
-                match self.send_framed_debugger_commands(stdin, &commands) {
-                    Ok(markers) => Some(markers),
+                match self.send_framed_debugger_query(stdin, &commands, DEBUGGER_QUERY_WAIT_MS * 8)
+                {
+                    Ok((operation, begin, end)) => Some((operation, begin, end)),
                     Err(error) => {
                         return DapMessage::Response {
                             seq,
@@ -474,9 +612,8 @@ impl DebugAdapter {
         // literal branch would then discard such a line outright (#7275).
         let parsed = output_frame_markers
             .as_ref()
-            .and_then(|(begin, end)| {
-                // setExpression is not a cancellable request family (#9074).
-                self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8, None)
+            .and_then(|(operation, begin, end)| {
+                self.capture_framed_debugger_output_for_operation(operation, begin, end)
             })
             .and_then(|lines| {
                 Self::parse_evaluate_result_from_lines(
@@ -605,10 +742,8 @@ impl DebugAdapter {
                 }
             }
 
-            // Add loaded module names from %INC. Completions are not a
-            // cancellable request family (#9074): the query is bound to no
-            // cancel token at all.
-            let modules = self.query_inc_entries(None);
+            // Add loaded module names from %INC.
+            let modules = self.query_inc_entries();
             for (key, _path) in &modules {
                 let name = module_path_to_name(key);
                 if stem.is_empty() || name.starts_with(stem) {
@@ -670,36 +805,86 @@ impl DebugAdapter {
         result_type: &str,
         typed: Option<PerlValue>,
     ) -> i64 {
-        if !Self::result_type_is_expandable(result_type) {
-            return 0;
+        self.allocate_evaluate_result_ref_inner(expression, result, result_type, typed, None, None)
+            .unwrap_or(0)
+    }
+
+    fn allocate_evaluate_result_ref_bound(
+        &self,
+        expression: &str,
+        result: &str,
+        result_type: &str,
+        typed: Option<PerlValue>,
+        expected_generation: u64,
+        expected_session_generation: operation_broker::SessionGeneration,
+    ) -> Result<i64, ()> {
+        self.allocate_evaluate_result_ref_inner(
+            expression,
+            result,
+            result_type,
+            typed,
+            Some(expected_generation),
+            Some(expected_session_generation),
+        )
+    }
+
+    fn allocate_evaluate_result_ref_inner(
+        &self,
+        expression: &str,
+        result: &str,
+        result_type: &str,
+        typed: Option<PerlValue>,
+        expected_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+    ) -> Result<i64, ()> {
+        if expected_generation.is_none() && !Self::result_type_is_expandable(result_type) {
+            return Ok(0);
         }
         if let Some(ref mut session) =
             *lock_or_recover(&self.session, "debug_adapter.allocate_evaluate_result_ref")
         {
-            let raw_counter = self.debugger_output_marker.fetch_add(1, Ordering::Relaxed);
-            let counter = Self::i64_to_i32_saturating(raw_counter as i64);
-            let eval_ref = crate::debug_adapter::var_ref::VariableReference::EvalResult { counter }
-                .encode()
-                .unwrap_or(0);
-            let placeholder = Variable {
-                name: expression.to_string(),
-                value: result.to_string(),
-                type_: Some(result_type.to_string()),
-                variables_reference: 0,
-                named_variables: None,
-                indexed_variables: None,
-                // The user-supplied expression is itself the canonical
-                // re-evaluable form per DAP §8.4 (#6050 review).
-                evaluate_name: Some(expression.to_string()),
+            if expected_generation.is_some_and(|expected| {
+                session.state != DebugState::Stopped || session.stopped_generation != expected
+            }) {
+                return Err(());
+            }
+            let accept = || {
+                if !Self::result_type_is_expandable(result_type) {
+                    return 0;
+                }
+                let raw_counter = self.debugger_output_marker.fetch_add(1, Ordering::Relaxed);
+                let counter = Self::i64_to_i32_saturating(raw_counter as i64);
+                let eval_ref =
+                    crate::debug_adapter::var_ref::VariableReference::EvalResult { counter }
+                        .encode()
+                        .unwrap_or(0);
+                let placeholder = Variable {
+                    name: expression.to_string(),
+                    value: result.to_string(),
+                    type_: Some(result_type.to_string()),
+                    variables_reference: 0,
+                    named_variables: None,
+                    indexed_variables: None,
+                    // The user-supplied expression is itself the canonical
+                    // re-evaluable form per DAP §8.4 (#6050 review).
+                    evaluate_name: Some(expression.to_string()),
+                };
+                session.variable_cache.upsert(
+                    eval_ref,
+                    VariableCacheKind::EvaluateResult,
+                    vec![super::CachedVariable { row: placeholder, typed }],
+                );
+                i64::from(eval_ref)
             };
-            session.variable_cache.upsert(
-                eval_ref,
-                VariableCacheKind::EvaluateResult,
-                vec![super::CachedVariable { row: placeholder, typed }],
-            );
-            i64::from(eval_ref)
+            if let Some(expected) = expected_session_generation {
+                self.operation_broker.accept_if_current(expected, accept).map_err(|_| ())
+            } else {
+                Ok(accept())
+            }
+        } else if expected_generation.is_some() || expected_session_generation.is_some() {
+            Err(())
         } else {
-            0
+            Ok(0)
         }
     }
 }
@@ -707,6 +892,34 @@ impl DebugAdapter {
 #[cfg(test)]
 mod evaluate_allocation_tests {
     use super::*;
+    use std::sync::Arc;
+
+    fn frame_evaluate_test_adapter()
+    -> Result<std::sync::Arc<DebugAdapter>, Box<dyn std::error::Error>> {
+        use std::process::{Command, Stdio};
+        let adapter = std::sync::Arc::new(DebugAdapter::new());
+        adapter.seed_stopped_session_with_frames_for_test(vec![crate::types::StackFrame::new(
+            7,
+            "main::test",
+            crate::types::Source::new("fixture.pl"),
+            1,
+        )]);
+        let child = Command::new("perl")
+            .arg("-e")
+            .arg("while (<STDIN>) {}")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let old_child = {
+            let mut session = lock_or_recover(&adapter.session, "test.session");
+            std::mem::replace(&mut session.as_mut().ok_or("missing test session")?.process, child)
+        };
+        let mut old_child = old_child;
+        let _ = old_child.kill();
+        let _ = old_child.wait();
+        Ok(adapter)
+    }
 
     // -----------------------------------------------------------------------
     // result_type_is_expandable — cover all arms including contains-HASH/ARRAY
@@ -755,6 +968,342 @@ mod evaluate_allocation_tests {
             ref_val, 0,
             "allocate_evaluate_result_ref must return 0 when no session is present"
         );
+    }
+
+    #[test]
+    fn bound_allocation_rejects_stale_stopped_generation() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(Vec::new());
+
+        let stale = adapter.allocate_evaluate_result_ref_bound(
+            "$h",
+            "HASH(0x1234)",
+            "HASH",
+            None,
+            1,
+            adapter.operation_broker.current_session_generation(),
+        );
+        if stale.is_ok() {
+            return Err("stale frame results must not enter the variable cache".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_allocation_rejects_stale_scalar() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(Vec::new());
+        let result = adapter.allocate_evaluate_result_ref_bound(
+            "$x",
+            "42",
+            "SCALAR",
+            None,
+            1,
+            adapter.operation_broker.current_session_generation(),
+        );
+        if result.is_ok() {
+            return Err(
+                "stale scalar allocation must be rejected before nonexpandable return".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_allocation_rejects_replacement_broker_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.seed_stopped_session_with_frames_for_test(Vec::new());
+        let old_generation = adapter.operation_broker.current_session_generation();
+        adapter.begin_session_generation_with_reason("test_replacement");
+        adapter.operation_broker.open_session();
+        let result = adapter.allocate_evaluate_result_ref_bound(
+            "%hash",
+            "{a => 1}",
+            "HASH",
+            None,
+            0,
+            old_generation,
+        );
+        if result.is_ok() {
+            return Err("replacement broker generation must reject stale allocation".into());
+        }
+        let session = lock_or_recover(&adapter.session, "test.session");
+        let cache_count =
+            session.as_ref().ok_or("missing test session")?.variable_cache.all_variables().count();
+        if cache_count != 0 {
+            return Err(
+                format!("stale replacement allocation populated {cache_count} entries").into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn frame_evaluate_rejects_delayed_payload_after_stop_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+
+        let adapter = frame_evaluate_test_adapter()?;
+        let request_adapter = Arc::clone(&adapter);
+        let request = std::thread::spawn(move || {
+            request_adapter.handle_evaluate(
+                1,
+                1,
+                Some(serde_json::json!({"expression": "$x", "frameId": 7})),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() == 0 {
+            return Err("evaluate query was not submitted".into());
+        }
+        {
+            let mut session = lock_or_recover(&adapter.session, "test.session");
+            session.as_mut().ok_or("missing test session")?.stopped_generation = 1;
+        }
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+        adapter.push_recent_output_line_for_test("$x = 42");
+        adapter.push_recent_output_line_for_test("DAP_END_1");
+        let response = request.join().map_err(|_| "evaluate thread panicked")?;
+        match response {
+            DapMessage::Response { success: false, message: Some(message), .. } => {
+                if !message.contains("stale") {
+                    return Err(format!("unexpected stale response: {message}").into());
+                }
+            }
+            other => return Err(format!("expected stale evaluate rejection, got {other:?}").into()),
+        }
+        let session = lock_or_recover(&adapter.session, "test.session");
+        let cache_count =
+            session.as_ref().ok_or("missing test session")?.variable_cache.all_variables().count();
+        if cache_count != 0 {
+            return Err(
+                format!("stale scalar evaluation populated {cache_count} cache entries").into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn frame_evaluate_rejects_delayed_payload_after_running_transition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+
+        let adapter = frame_evaluate_test_adapter()?;
+
+        let request_adapter = Arc::clone(&adapter);
+        let request = std::thread::spawn(move || {
+            request_adapter.handle_evaluate(
+                1,
+                1,
+                Some(serde_json::json!({"expression": "%hash", "frameId": 7})),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() == 0 {
+            return Err("evaluate query was not submitted".into());
+        }
+        {
+            let mut session = lock_or_recover(&adapter.session, "test.session");
+            session.as_mut().ok_or("missing test session")?.state = DebugState::Running;
+        }
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+        adapter.push_recent_output_line_for_test("%hash = {a => 1}");
+        adapter.push_recent_output_line_for_test("DAP_END_1");
+        let response = request.join().map_err(|_| "evaluate thread panicked")?;
+        match response {
+            DapMessage::Response { success: false, message: Some(message), .. } => {
+                if !message.contains("stale") {
+                    return Err(format!("unexpected stale response: {message}").into());
+                }
+            }
+            other => return Err(format!("expected stale evaluate rejection, got {other:?}").into()),
+        }
+        let session = lock_or_recover(&adapter.session, "test.session");
+        let cache_count =
+            session.as_ref().ok_or("missing test session")?.variable_cache.all_variables().count();
+        if cache_count != 0 {
+            return Err(format!("running transition populated {cache_count} cache entries").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn frame_evaluate_rejects_replacement_payload_then_recovers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::session::{DebugSession, ResumeMode};
+        use std::process::{Command, Stdio};
+        use std::sync::Arc;
+        use std::time::Duration;
+        use std::{collections::HashMap, path::PathBuf};
+
+        let adapter = frame_evaluate_test_adapter()?;
+        let keepalive = || {
+            Command::new("perl")
+                .arg("-e")
+                .arg("while (<STDIN>) {}")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        };
+        let old_ref = adapter.allocate_evaluate_result_ref("%old", "{old => 1}", "HASH", None);
+        if old_ref == 0 {
+            return Err("failed to seed prior replacement cache".into());
+        }
+
+        let request_adapter = Arc::clone(&adapter);
+        let request = std::thread::spawn(move || {
+            request_adapter.handle_evaluate(
+                1,
+                1,
+                Some(serde_json::json!({"expression": "%hash", "frameId": 7})),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() == 0 {
+            return Err("evaluate query was not submitted".into());
+        }
+
+        let replacement = keepalive()?;
+        let old_child = {
+            let mut session = lock_or_recover(&adapter.session, "test.session");
+            let current = session.take().ok_or("missing test session")?;
+            *session = Some(DebugSession {
+                process: replacement,
+                state: DebugState::Stopped,
+                stack_frames: vec![crate::types::StackFrame::new(
+                    7,
+                    "main::test",
+                    crate::types::Source::new("fixture.pl"),
+                    1,
+                )],
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: Default::default(),
+                thread_id: 1,
+                debuggee_cwd: PathBuf::from("."),
+                last_resume_mode: ResumeMode::Unknown,
+                initial_stop_pending: false,
+                stopped_generation: 0,
+            });
+            current.process
+        };
+        let mut old_child = old_child;
+        let _ = old_child.kill();
+        let _ = old_child.wait();
+        adapter.begin_session_generation_with_reason("test_replacement");
+        adapter.operation_broker.open_session();
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_2");
+        adapter.push_recent_output_line_for_test("%hash = {a => 1}");
+        adapter.push_recent_output_line_for_test("DAP_END_2");
+        let response = request.join().map_err(|_| "evaluate thread panicked")?;
+        match response {
+            DapMessage::Response { success: false, message: Some(message), .. } => {
+                if !(message.contains("stale") || message.contains("session")) {
+                    return Err(format!("unexpected replacement response: {message}").into());
+                }
+            }
+            other => return Err(format!("expected replacement rejection, got {other:?}").into()),
+        }
+        let session = lock_or_recover(&adapter.session, "test.session");
+        let replacement_cache_count =
+            session.as_ref().ok_or("missing test session")?.variable_cache.all_variables().count();
+        if replacement_cache_count != 0 {
+            return Err(format!(
+                "replacement payload populated {replacement_cache_count} cache entries"
+            )
+            .into());
+        }
+        drop(session);
+
+        let request_adapter = Arc::clone(&adapter);
+        let request = std::thread::spawn(move || {
+            request_adapter.handle_evaluate(
+                2,
+                2,
+                Some(serde_json::json!({"expression": "%hash", "frameId": 7})),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() < 2 {
+            return Err("replacement evaluate query was not submitted".into());
+        }
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_3");
+        adapter.push_recent_output_line_for_test("%hash = {a => 1}");
+        adapter.push_recent_output_line_for_test("DAP_END_3");
+        let response = request.join().map_err(|_| "replacement thread panicked")?;
+        match response {
+            DapMessage::Response { success: true, .. } => {}
+            other => {
+                return Err(format!("expected fresh replacement success, got {other:?}").into());
+            }
+        }
+        let session = lock_or_recover(&adapter.session, "test.session");
+        let fresh_cache_count =
+            session.as_ref().ok_or("missing test session")?.variable_cache.all_variables().count();
+        if fresh_cache_count != 1 {
+            return Err(format!(
+                "fresh replacement payload populated {fresh_cache_count} cache entries"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn frame_evaluate_accepts_current_delayed_payload() -> Result<(), Box<dyn std::error::Error>> {
+        use std::time::Duration;
+
+        let adapter = frame_evaluate_test_adapter()?;
+
+        let request_adapter = Arc::clone(&adapter);
+        let request = std::thread::spawn(move || {
+            request_adapter.handle_evaluate(
+                1,
+                1,
+                Some(serde_json::json!({"expression": "%hash", "frameId": 7})),
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() == 0 {
+            return Err("evaluate query was not submitted".into());
+        }
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+        adapter.push_recent_output_line_for_test("%hash = {a => 1}");
+        adapter.push_recent_output_line_for_test("DAP_END_1");
+        let response = request.join().map_err(|_| "evaluate thread panicked")?;
+        match response {
+            DapMessage::Response { success: true, .. } => {
+                let session = lock_or_recover(&adapter.session, "test.session");
+                let cache_count = session
+                    .as_ref()
+                    .ok_or("missing test session")?
+                    .variable_cache
+                    .all_variables()
+                    .count();
+                if cache_count == 0 {
+                    return Err("current expandable evaluation did not populate its cache".into());
+                }
+                Ok(())
+            }
+            other => Err(format!("expected current evaluate success, got {other:?}").into()),
+        }
     }
 
     #[test]

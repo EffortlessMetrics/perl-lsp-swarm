@@ -4,13 +4,11 @@
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
 use super::{
-    Arc, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap, HashSet,
-    IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
+    Arc, AtomicBool, AtomicI32, AtomicU64, BufReader, ClientCapabilities, FeatureProfile, HashMap,
+    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
     WorkspaceConfig, Write, io, notebook, outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
-use std::sync::atomic::AtomicU64;
 
 impl LspServer {
     /// Create a new LSP server
@@ -65,6 +63,13 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            dependency_facts_generation: Arc::new(AtomicU64::new(0)),
+            stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            metadata_refresh_serialization: Arc::new(Mutex::new(())),
+            workspace_identity_lock: Arc::new(Mutex::new(())),
+            single_file_project_config: Arc::new(Mutex::new(None)),
+            single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -77,10 +82,8 @@ impl LspServer {
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
-            diagnostic_debouncer: Mutex::new(None),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
-            parse_worker_handle: Mutex::new(None),
-            file_watcher_debouncer: Mutex::new(None),
+            runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
@@ -113,6 +116,10 @@ impl LspServer {
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -252,6 +259,13 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            dependency_facts_generation: Arc::new(AtomicU64::new(0)),
+            stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            metadata_refresh_serialization: Arc::new(Mutex::new(())),
+            workspace_identity_lock: Arc::new(Mutex::new(())),
+            single_file_project_config: Arc::new(Mutex::new(None)),
+            single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -264,10 +278,8 @@ impl LspServer {
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
-            diagnostic_debouncer: Mutex::new(None),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
-            parse_worker_handle: Mutex::new(None),
-            file_watcher_debouncer: Mutex::new(None),
+            runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
@@ -300,6 +312,10 @@ impl LspServer {
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -380,6 +396,13 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            dependency_facts_generation: Arc::new(AtomicU64::new(0)),
+            stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            metadata_refresh_serialization: Arc::new(Mutex::new(())),
+            workspace_identity_lock: Arc::new(Mutex::new(())),
+            single_file_project_config: Arc::new(Mutex::new(None)),
+            single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -392,10 +415,8 @@ impl LspServer {
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
-            diagnostic_debouncer: Mutex::new(None),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
-            parse_worker_handle: Mutex::new(None),
-            file_watcher_debouncer: Mutex::new(None),
+            runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
@@ -428,6 +449,10 @@ impl LspServer {
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -558,7 +583,7 @@ mod tests {
         // loop turns that exact error into the typed first cause reported in
         // the settlement record asserted below.
         let mut probe_sink = FailingWriter;
-        let probe = probe_sink.write(&mut Vec::new());
+        let probe = probe_sink.write(&[]);
         assert!(
             matches!(&probe, Err(err) if err.kind() == io::ErrorKind::ConnectionAborted),
             "controlled writer must fail writes with ConnectionAborted, got {probe:?}"

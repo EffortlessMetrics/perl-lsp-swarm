@@ -114,16 +114,10 @@ impl DebugAdapter {
             && let Some(stdin) = session.process.stdin.as_mut()
         {
             let commands = vec!["T".to_string()];
-            match self.send_framed_debugger_commands(stdin, &commands) {
-                Ok((begin, end)) => {
-                    // stackTrace is not a cancellable request family (#9074):
-                    // the wait is bound to no cancel token at all.
-                    framed_output_lines = self.capture_framed_debugger_output(
-                        &begin,
-                        &end,
-                        DEBUGGER_QUERY_WAIT_MS * 8,
-                        None,
-                    );
+            match self.send_framed_debugger_query(stdin, &commands, DEBUGGER_QUERY_WAIT_MS * 8) {
+                Ok((operation, begin, end)) => {
+                    framed_output_lines =
+                        self.capture_framed_debugger_output_for_operation(&operation, &begin, &end);
                 }
                 Err(error) => {
                     tracing::warn!(%error, "Failed to send framed stackTrace command, falling back");

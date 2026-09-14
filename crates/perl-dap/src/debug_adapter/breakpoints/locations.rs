@@ -1,6 +1,7 @@
 use super::{
     AstBreakpointValidator, BreakpointLocation, BreakpointLocationsArguments,
-    BreakpointLocationsResponseBody, BreakpointValidator, DapMessage, DebugAdapter, Value,
+    BreakpointLocationsResponseBody, BreakpointValidator, DapMessage, DebugAdapter, Ordering,
+    Value,
 };
 
 impl DebugAdapter {
@@ -73,16 +74,10 @@ impl DebugAdapter {
         let mut breakpoints = Vec::new();
         let end_line = args.end_line.unwrap_or(args.line);
 
-        // This scan is the cancellable operation mapped to its own request
-        // sequence (#9074): a cancel targeting another request can never
-        // truncate it, and a cancel targeting it settles it as cancelled.
-        let operation = self.cancel_registry.register(request_seq, "breakpointLocations");
-        let mut cancelled = false;
-
         if let Ok(validator) = AstBreakpointValidator::new(&content) {
             for line in args.line..=end_line {
-                if operation.is_cancelled() {
-                    cancelled = true;
+                if self.cancel_requested.load(Ordering::Acquire) {
+                    self.cancel_requested.store(false, Ordering::Release);
                     break;
                 }
                 if validator.is_executable_line(line) {
@@ -95,12 +90,6 @@ impl DebugAdapter {
                 }
             }
         }
-
-        operation.settle(if cancelled {
-            crate::debug_adapter::cancel_registry::OperationOutcome::Cancelled
-        } else {
-            crate::debug_adapter::cancel_registry::OperationOutcome::Completed
-        });
 
         let body = BreakpointLocationsResponseBody { breakpoints };
         DapMessage::Response {

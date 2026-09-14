@@ -17,7 +17,7 @@ chrono = "0.4.42"
 proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
 regex.workspace = true
 serde_json.workspace = true
-syn = { version = "2.0.117", features = ["full", "visit"] }
+syn = { version = "3.0.2", features = ["full", "visit"] }
 walkdir.workspace = true
 toml = "1.1.2"
 
