@@ -1839,10 +1839,10 @@ fn coverage_baseline_contract(
         recipe_tail.find("\n# Generate route-selected coverage").unwrap_or(recipe_tail.len());
     let recipe = &recipe_tail[..recipe_end];
     for required in [
-        "cargo xtask coverage-baseline",
+        "\"$HOME/.cargo/bin/rustup\" run nightly cargo xtask coverage-baseline",
         "--codecov codecov.yml",
         "--receipt target/receipts/quality/coverage-baseline.json",
-        "cargo xtask quality-gate",
+        "\"$HOME/.cargo/bin/rustup\" run nightly cargo xtask quality-gate",
         "--mode enforce-patch-coverage",
         "--receipt target/receipts/quality/quality-gate-coverage.json",
         "--summary target/receipts/quality/quality-gate-coverage.md",
@@ -1852,6 +1852,66 @@ fn coverage_baseline_contract(
     ensure!(
         recipe.matches("--mode enforce-patch-coverage").count() == 2,
         "coverage proof recipe must enforce the patch gate on write and check passes"
+    );
+    let report_end = recipe
+        .find("cargo llvm-cov report")
+        .ok_or_else(|| anyhow!("coverage proof recipe must report LCOV before xtask commands"))?;
+    let post_report = recipe
+        .get(report_end..)
+        .ok_or_else(|| anyhow!("coverage report boundary must be valid"))?;
+    coverage_post_report_xtask_route_contract(post_report)
+}
+
+fn coverage_post_report_xtask_route_contract(post_report: &str) -> Result<()> {
+    let xtask_commands = post_report
+        .lines()
+        .filter(|line| line.contains("cargo xtask"))
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    ensure!(
+        xtask_commands.len() == 4,
+        "coverage proof must run exactly four post-report xtask commands, got {}",
+        xtask_commands.len()
+    );
+    ensure!(
+        xtask_commands
+            .iter()
+            .all(|line| line.starts_with("\"$HOME/.cargo/bin/rustup\" run nightly cargo xtask")),
+        "post-report xtask commands must stay on the nightly toolchain"
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_post_report_route_rejects_one_bare_xtask_mutation() -> Result<()> {
+    let root = repo_root();
+    let justfile = fs::read_to_string(root.join("justfile"))?;
+    let recipe_start = justfile
+        .find("coverage-proof base='origin/main':")
+        .ok_or_else(|| anyhow!("coverage proof recipe is required"))?;
+    let recipe_tail = justfile
+        .get(recipe_start..)
+        .ok_or_else(|| anyhow!("coverage proof recipe start must be a valid boundary"))?;
+    let recipe_end =
+        recipe_tail.find("\n# Generate route-selected coverage").unwrap_or(recipe_tail.len());
+    let recipe = recipe_tail
+        .get(..recipe_end)
+        .ok_or_else(|| anyhow!("coverage proof recipe end must be a valid boundary"))?;
+    let report_end = recipe
+        .find("cargo llvm-cov report")
+        .ok_or_else(|| anyhow!("coverage proof must report LCOV before xtask commands"))?;
+    let post_report = recipe
+        .get(report_end..)
+        .ok_or_else(|| anyhow!("coverage report boundary must be valid"))?;
+    let mutated = post_report.replacen(
+        "\"$HOME/.cargo/bin/rustup\" run nightly cargo xtask",
+        "cargo xtask",
+        1,
+    );
+    ensure!(mutated != post_report, "negative control must mutate one post-report command");
+    ensure!(
+        coverage_post_report_xtask_route_contract(&mutated).is_err(),
+        "coverage route must reject one bare xtask command"
     );
     Ok(())
 }

@@ -1011,8 +1011,10 @@ fn wait_for_latest_diagnostics(
     timeout: Duration,
 ) -> Vec<Value> {
     let uri = workspace.uri(file);
+    // Blocks on the client's observation stream rather than resampling
+    // `peek_events` on a timer; the bound below is now a pure outer bound.
     DiagnosticsTracker::wait_for_uri_matching(
-        || client.peek_events(),
+        client,
         &uri,
         timeout.min(Duration::from_secs(5)),
         |_| true,
