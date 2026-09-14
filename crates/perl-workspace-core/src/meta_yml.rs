@@ -32,7 +32,20 @@
 //! Everything outside the subset is an **explicit non-success state**, never a
 //! silent fallback: anchors/aliases, YAML tags, merge keys, block scalars
 //! (`|` / `>`), and multiple documents are reported as findings and refuse
-//! the parse. Duplicate keys are detected rather than last-value-accepted,
+//! the parse. A `BlockScalar` finding names an actual block-scalar header
+//! (the indicator plus its optional indentation/chomping indicators) — valid
+//! YAML this parser declines. A value that merely opens with `|` or `>`, such
+//! as an unquoted `>= 1.0`, is malformed rather than unsupported, and the two
+//! contexts differ: in a block node no plain-scalar production is available,
+//! so it is a broken block-scalar header, while the same spelling inside a
+//! flow collection really is a rejected plain scalar. Both refuse; each says
+//! which.
+//! A document can also parse while a recognized field carries a value shape
+//! that cannot become a fact — a map-typed `license` entry, say. That is not a
+//! syntax failure, so the parse succeeds, but the unusable value yields an
+//! `UnsupportedValueShape` finding instead of vanishing from the fact set.
+//!
+//! Duplicate keys are detected rather than last-value-accepted,
 //! in block mappings and flow mappings alike. Resource budgets (input bytes,
 //! nesting depth, node count) fail closed: every mapping entry, sequence
 //! item, collection, and flow element charges the node budget, so flat
@@ -64,6 +77,10 @@ use crate::id::{Digest, FileId};
 const MAX_INPUT_BYTES: usize = 1 << 20; // 1 MiB — META.yml files are small
 const MAX_DEPTH: usize = 32;
 const MAX_NODES: usize = 10_000;
+/// Bounds the diagnostic list itself. Overflowing it means some refusals are
+/// unreported, which fails the whole parse closed rather than publishing facts
+/// with only partly reported refusals.
+const MAX_FINDINGS: usize = 64;
 
 /// The observed `meta-spec` version, kept distinct from the parse state: a
 /// file can parse cleanly while declaring an unrecognized spec.
@@ -116,6 +133,12 @@ pub enum MetaYmlFindingKind {
     MalformedSyntax,
     /// An escape outside the supported double-quoted subset.
     UnsupportedEscape,
+    /// A recognized metadata field parsed as valid YAML but carries a value
+    /// shape this normalizer cannot turn into a fact (for example a
+    /// map-typed `license` entry where a license name is expected). The
+    /// document still parses; the unusable value is reported rather than
+    /// silently dropped.
+    UnsupportedValueShape,
 }
 
 /// One bounded diagnostic. Line numbers are 1-based where known; they are
@@ -242,21 +265,33 @@ pub fn parse_meta_yml(file_id: FileId, content: &str) -> MetaYmlOutcome {
     let facts = DistMetadataFacts {
         file_id,
         source: DistMetadataSource::MetaYml,
-        name: root_string(&root, "name"),
-        version: root_string(&root, "version"),
-        summary: root_string(&root, "abstract"),
-        licenses: root_licenses(&root),
+        name: root_string(&root, "name", &mut findings),
+        version: root_string(&root, "version", &mut findings),
+        summary: root_string(&root, "abstract", &mut findings),
+        licenses: root_licenses(&root, &mut findings),
         prereqs: root_prereqs(&root),
     };
-    if findings.len() > 64 {
+    if findings.len() > MAX_FINDINGS {
         // The finding list itself is bounded; a pathological input must not
-        // grow it without limit.
-        findings.truncate(64);
+        // grow it without limit. Once it overflows, the remaining refusals
+        // are unreported, so publishing facts would claim a completeness the
+        // diagnostics no longer back. Fail closed instead — the same reading
+        // `failure_state` already gives every other `ResourceLimit`.
+        findings.truncate(MAX_FINDINGS);
         findings.push(MetaYmlFinding::new(
             MetaYmlFindingKind::ResourceLimit,
             None,
-            "finding list truncated at 64 entries",
+            format!(
+                "more than {MAX_FINDINGS} findings; the list is truncated and no facts are published, because the remaining refused values would go unreported"
+            ),
         ));
+        return outcome(
+            MetaYmlParseState::Unsupported,
+            spec_version,
+            None,
+            findings,
+            source_digest,
+        );
     }
     outcome(MetaYmlParseState::Parsed, spec_version, Some(facts), findings, source_digest)
 }
@@ -268,6 +303,7 @@ fn failure_state(finding: &MetaYmlFinding) -> MetaYmlParseState {
         | MetaYmlFindingKind::AnchorAliasOrTag
         | MetaYmlFindingKind::BlockScalar
         | MetaYmlFindingKind::UnsupportedEscape
+        | MetaYmlFindingKind::UnsupportedValueShape
         | MetaYmlFindingKind::MultipleDocuments => MetaYmlParseState::Unsupported,
         _ => MetaYmlParseState::Malformed,
     }
@@ -371,18 +407,67 @@ fn scan_stream_safety(doc: &mut Doc) -> Result<(), MetaYmlFinding> {
         let value_part = split_key(scalar_or_map, line.number, false)?
             .map(|(_, rest)| rest)
             .unwrap_or_else(|| scalar_or_map.to_string());
+        // A real header is the supported-feature refusal: valid YAML this
+        // parser declines, so `BlockScalar` (and with it `Unsupported`).
         let value_trimmed = value_part.trim_start();
-        if value_trimmed.starts_with('|') || value_trimmed.starts_with('>') {
+        if is_block_scalar_header(value_trimmed) {
             return Err(MetaYmlFinding::new(
                 MetaYmlFindingKind::BlockScalar,
                 Some(line.number),
                 "block scalars ('|' / '>') are not supported",
             ));
         }
+        // Anything else opening with an indicator is malformed, not merely
+        // unsupported. Every line reaching this scan is a block node, and
+        // YAML 1.2.2 `ns-plain-first` excludes indicators from starting a
+        // plain scalar, so no plain-scalar production is available here: an
+        // unquoted `>= 1.0` is a broken block-scalar header, not a rejected
+        // plain scalar. Name that mechanism rather than falling through to
+        // the shared admission check, whose message describes the flow-context
+        // rule this value never reached.
+        if value_trimmed.starts_with(['|', '>']) {
+            return Err(MetaYmlFinding::new(
+                MetaYmlFindingKind::MalformedSyntax,
+                Some(line.number),
+                "a block-scalar indicator ('|' / '>') opens this value but does not form a valid block-scalar header, and an indicator cannot begin a plain scalar",
+            ));
+        }
     }
 
     doc.body = body;
     Ok(())
+}
+
+/// True when `value` opens an actual block scalar: the `|` or `>` indicator,
+/// the optional explicit-indentation digit and chomping indicator in either
+/// order (YAML 1.2.2 section 8.1.1), then end of line or a comment.
+///
+/// A value that merely begins with one of those indicators — the unquoted
+/// version range `>= 1.0`, say — is not a header, and `false` here means
+/// malformed rather than unsupported: the caller refuses it as a broken
+/// block-scalar header, since a block node admits no plain-scalar production
+/// (YAML 1.2.2 `ns-plain-first`). Only inside a flow collection is the same
+/// spelling genuinely a rejected plain scalar, refused by the shared
+/// admission check in [`unquote`].
+fn is_block_scalar_header(value: &str) -> bool {
+    let mut chars = value.chars();
+    if !matches!(chars.next(), Some('|' | '>')) {
+        return false;
+    }
+    let (mut indentation, mut chomping) = (false, false);
+    while let Some(c) = chars.next() {
+        match c {
+            '1'..='9' if !indentation => indentation = true,
+            '+' | '-' if !chomping => chomping = true,
+            // Nothing but a comment may follow the header on its own line.
+            ' ' | '\t' => {
+                let rest = chars.as_str().trim_start();
+                return rest.is_empty() || rest.starts_with('#');
+            }
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Shared quote and escape state for punctuation scanners.
@@ -1062,6 +1147,17 @@ impl Yaml {
             _ => None,
         }
     }
+
+    /// Node shape named for findings, so a refusal says what was actually
+    /// there instead of only what was expected.
+    fn shape_name(&self) -> &'static str {
+        match self {
+            Yaml::Null => "an explicit null",
+            Yaml::Scalar(_) => "a scalar",
+            Yaml::Seq(_) => "a sequence",
+            Yaml::Map(_) => "a mapping",
+        }
+    }
 }
 
 /// Split a flow collection body on top-level commas.
@@ -1122,23 +1218,94 @@ fn split_flow(text: &str, line: usize) -> Result<Vec<String>, MetaYmlFinding> {
 
 // ── Fact normalization (mirrors dist::parse_meta_json) ──────────────────────
 
-fn root_string(root: &[(String, Yaml)], key: &str) -> Option<String> {
-    let value = root.iter().find(|(k, _)| k == key).map(|(_, v)| v)?;
-    value.as_scalar().map(str::to_string)
+/// How an explicit YAML null reads at one field position.
+#[derive(Clone, Copy)]
+enum NullMeaning {
+    /// A null *field value* declares absence — the same null doctrine the
+    /// module already applies to prerequisite versions. Nothing was dropped,
+    /// so nothing is reported.
+    DeclaresAbsence,
+    /// A null *sequence item* still occupies a declared position in that
+    /// sequence. Discarding it silently would be exactly the drop this rule
+    /// forbids, so it is reported like any other non-scalar item.
+    OccupiesPosition,
 }
 
-fn root_licenses(root: &[(String, Yaml)]) -> Vec<String> {
+/// Normalize one recognized field position that must hold a scalar.
+///
+/// A collection-typed value is a declared value this normalizer cannot
+/// represent: it yields a finding so the value is reported rather than dropped
+/// without trace. An explicit null is read according to `null_meaning`, which
+/// distinguishes "this field declares absence" from "this sequence slot was
+/// declared and holds something unusable".
+fn scalar_field(
+    value: &Yaml,
+    what: &str,
+    null_meaning: NullMeaning,
+    findings: &mut Vec<MetaYmlFinding>,
+) -> Option<String> {
+    match value {
+        Yaml::Scalar(s) => Some(s.clone()),
+        Yaml::Null if matches!(null_meaning, NullMeaning::DeclaresAbsence) => None,
+        other => {
+            findings.push(MetaYmlFinding::new(
+                MetaYmlFindingKind::UnsupportedValueShape,
+                None,
+                format!(
+                    "{what} is {}, not a scalar; it is reported, not silently dropped",
+                    other.shape_name()
+                ),
+            ));
+            None
+        }
+    }
+}
+
+/// Normalize one recognized root field that holds a plain scalar (`name`,
+/// `version`, `abstract`). An absent key yields `None` without a finding; a
+/// present but unrepresentable value is reported through [`scalar_field`].
+fn root_string(
+    root: &[(String, Yaml)],
+    key: &str,
+    findings: &mut Vec<MetaYmlFinding>,
+) -> Option<String> {
+    let value = root.iter().find(|(k, _)| k == key).map(|(_, v)| v)?;
+    scalar_field(value, &format!("`{key}`"), NullMeaning::DeclaresAbsence, findings)
+}
+
+/// Normalize `license`, which v2 spells as a sequence of names and v1.4 as a
+/// single string. Every declared entry that cannot become a license fact is
+/// reported rather than filtered away; see [`NullMeaning`] for why a null
+/// item is reported while a null field value is not.
+fn root_licenses(root: &[(String, Yaml)], findings: &mut Vec<MetaYmlFinding>) -> Vec<String> {
     let Some((_, value)) = root.iter().find(|(k, _)| k == "license") else {
         return Vec::new();
     };
     match value {
-        // v2: an array of license strings.
-        Yaml::Seq(items) => {
-            items.iter().filter_map(|v| v.as_scalar().map(str::to_string)).collect()
-        }
+        // v2: an array of license strings. A non-scalar item cannot become a
+        // license fact, so it is reported instead of filtered away — including
+        // an explicit null, which still claims a slot in the declared list.
+        Yaml::Seq(items) => items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                scalar_field(
+                    item,
+                    &format!("`license` item {index}"),
+                    NullMeaning::OccupiesPosition,
+                    findings,
+                )
+            })
+            .collect(),
         // v1.4: a single string.
         Yaml::Scalar(s) => vec![s.clone()],
-        _ => Vec::new(),
+        // A map-typed `license` is neither spelling; report it rather than
+        // returning an empty license set that looks like "none declared". A
+        // null field value declares absence and stays silent.
+        other => {
+            let _ = scalar_field(other, "`license`", NullMeaning::DeclaresAbsence, findings);
+            Vec::new()
+        }
     }
 }
 
@@ -1775,6 +1942,239 @@ build_requires:
 
         let outcome = parse_meta_yml(fid(), "name: X\nitems:\n  - |\n    long text\nversion: 1\n");
         assert_non_success(&outcome, MetaYmlFindingKind::BlockScalar, "sequence block scalar");
+    }
+
+    /// #15169(2): the `BlockScalar` kind must name an actual block-scalar
+    /// header, including its optional indentation/chomping indicators.
+    #[test]
+    fn block_scalar_kind_covers_every_real_header_spelling() {
+        for header in ["|", ">", "|-", ">-", "|+", ">+", "|2", ">2", "|2-", ">-2", "| # why"] {
+            let outcome = parse_meta_yml(fid(), &format!("abstract: {header}\n  text\nname: X\n"));
+            assert_non_success(
+                &outcome,
+                MetaYmlFindingKind::BlockScalar,
+                &format!("header '{header}'"),
+            );
+        }
+    }
+
+    /// #15169(2): an indicator-leading value that is not a real header is
+    /// malformed, not an unsupported feature — so it must not be reported as
+    /// a `BlockScalar`, whose state claims well-formed YAML.
+    ///
+    /// The mechanism differs by context, and the message must not blur them
+    /// (#15544 review, corroborated against PyYAML 6.0.1: block context raises
+    /// "while scanning a block scalar", flow context "while scanning for the
+    /// next token"). In a block node YAML 1.2.2 `ns-plain-first` leaves no
+    /// plain-scalar production available, so the value is a broken block-scalar
+    /// header; only in flow context is it genuinely a rejected plain scalar.
+    #[test]
+    fn indicator_leading_values_are_malformed_and_name_their_real_mechanism() {
+        // Block nodes: mapping value, nested mapping value, sequence item.
+        for input in [
+            "Foo: >= 1.0\n",
+            "Foo: |= 1.0\n",
+            "requires:\n  Foo: >= 1.0\n",
+            "license:\n  - >= 1.0\n",
+        ] {
+            let outcome = parse_meta_yml(fid(), input);
+            assert_non_success(
+                &outcome,
+                MetaYmlFindingKind::MalformedSyntax,
+                &format!("{input:?}: broken block-scalar header"),
+            );
+            assert!(
+                !outcome.findings.iter().any(|f| f.kind == MetaYmlFindingKind::BlockScalar),
+                "{input:?}: not a supported-feature refusal, got {:?}",
+                outcome.findings
+            );
+            assert!(
+                outcome.findings.iter().any(|f| f.detail.contains("block-scalar header")),
+                "{input:?}: block context must name the header mechanism, got {:?}",
+                outcome.findings
+            );
+        }
+
+        // Flow context is the one place the plain-scalar admission rule really
+        // is the mechanism, and it is reported as such.
+        let outcome = parse_meta_yml(fid(), "requires: { Foo: >= 1.0 }\n");
+        assert_non_success(&outcome, MetaYmlFindingKind::MalformedSyntax, "flow plain scalar");
+        assert!(
+            outcome.findings.iter().any(|f| f.detail.contains("unquoted scalar")),
+            "flow context must name plain-scalar admission, got {:?}",
+            outcome.findings
+        );
+
+        // Quoting preserves the range in either context: these rules refuse a
+        // spelling, not the value.
+        let outcome = parse_meta_yml(fid(), "requires:\n  Foo: '>= 1.0'\n");
+        assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{:?}", outcome.findings);
+        let facts = must_some_with(outcome.facts, "facts");
+        assert_eq!(facts.prereqs.first().and_then(|p| p.version.as_deref()), Some(">= 1.0"));
+    }
+
+    /// #15169(1): a non-scalar `license` entry parses as valid YAML but cannot
+    /// become a license fact. It must be reported, never filtered away into a
+    /// fact set that reads as "no license declared".
+    #[test]
+    fn non_scalar_license_values_are_reported_not_dropped() {
+        for (label, input, expected) in [
+            ("map-typed item", "license:\n  - X: Y\n", vec![]),
+            ("map-typed item after a good one", "license:\n  - perl_5\n  - X: Y\n", vec!["perl_5"]),
+            ("sequence-typed item", "license:\n  - [perl_5]\n", vec![]),
+            ("map-typed value", "license:\n  a: b\n", vec![]),
+            // A null ITEM occupies a declared slot in the list, unlike a null
+            // field value; dropping it silently is the same defect.
+            ("null item", "license: [null]\n", vec![]),
+            ("null item after a good one", "license: [perl_5, ~]\n", vec!["perl_5"]),
+        ] {
+            let outcome = parse_meta_yml(fid(), input);
+            assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{label}: {:?}", outcome.findings);
+            let shape_findings: Vec<_> = outcome
+                .findings
+                .iter()
+                .filter(|f| f.kind == MetaYmlFindingKind::UnsupportedValueShape)
+                .collect();
+            assert_eq!(
+                shape_findings.len(),
+                1,
+                "{label}: expected one finding, got {shape_findings:?}"
+            );
+            assert!(
+                shape_findings[0].detail.contains("license"),
+                "{label}: finding must name the field, got {:?}",
+                shape_findings[0].detail
+            );
+            let facts = must_some_with(outcome.facts, "facts");
+            assert_eq!(facts.licenses, expected, "{label}: surviving licenses");
+        }
+    }
+
+    /// Negative control for the same rule: representable licenses and the
+    /// module's null doctrine (an explicit null declares absence, as it
+    /// already does for prerequisite versions) stay finding-free.
+    #[test]
+    fn representable_and_null_license_values_report_no_shape_finding() {
+        for (label, input) in [
+            ("v2 sequence", "license:\n  - perl_5\n  - gpl_2\n"),
+            ("v2 flow sequence", "license: [perl_5, gpl_2]\n"),
+            ("v1.4 scalar", "license: perl_5\n"),
+            ("explicit null value", "license: ~\n"),
+            ("explicit null name", "name: ~\nversion: 1\n"),
+            ("absent field", "name: X\n"),
+        ] {
+            let outcome = parse_meta_yml(fid(), input);
+            assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{label}: {:?}", outcome.findings);
+            assert!(
+                !outcome
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == MetaYmlFindingKind::UnsupportedValueShape),
+                "{label}: representable value must not be reported, got {:?}",
+                outcome.findings
+            );
+        }
+    }
+
+    /// The null distinction, pinned side by side (#15544 review): the SAME
+    /// null spelling is silent as a field value and reported as a sequence
+    /// item, because only the item occupies a declared position.
+    #[test]
+    fn null_is_absence_as_a_field_value_but_a_reported_drop_as_a_sequence_item() {
+        let shape_findings = |input: &str| {
+            parse_meta_yml(fid(), input)
+                .findings
+                .into_iter()
+                .filter(|f| f.kind == MetaYmlFindingKind::UnsupportedValueShape)
+                .count()
+        };
+
+        assert_eq!(shape_findings("license: ~\n"), 0, "a null field value declares absence");
+        assert_eq!(shape_findings("license: [~]\n"), 1, "a null item occupies a declared slot");
+
+        // Every null spelling behaves the same way in item position.
+        assert_eq!(
+            shape_findings("license: [null, Null, NULL, ~]\n"),
+            4,
+            "each declared null slot is reported"
+        );
+
+        // ...and the facts stay honest: nothing is invented to fill the slot.
+        let facts = must_some_with(parse_meta_yml(fid(), "license: [null, ~]\n").facts, "facts");
+        assert!(facts.licenses.is_empty(), "a reported null yields no license fact");
+    }
+
+    /// #15544 review: shape findings are the first producer that can overflow
+    /// the finding budget on an otherwise-parsing document. Once it overflows,
+    /// some refusals are unreported, so facts must not be published as though
+    /// every refused value had been named.
+    #[test]
+    fn overflowing_the_finding_budget_fails_closed_instead_of_publishing_facts() {
+        let bad_items =
+            |count: usize| -> String { (0..count).map(|i| format!("  - K{i}: V\n")).collect() };
+
+        // Just at the cap: still a success, every refusal reported.
+        let outcome =
+            parse_meta_yml(fid(), &format!("license:\n  - perl_5\n{}", bad_items(MAX_FINDINGS)));
+        assert_eq!(
+            outcome.state,
+            MetaYmlParseState::Parsed,
+            "at the cap the document still parses"
+        );
+        assert_eq!(outcome.findings.len(), MAX_FINDINGS, "every refusal is reported");
+        assert!(
+            !outcome.findings.iter().any(|f| f.kind == MetaYmlFindingKind::ResourceLimit),
+            "nothing was truncated at the cap"
+        );
+        assert_eq!(must_some_with(outcome.facts, "facts").licenses, vec!["perl_5"]);
+
+        // One past it: the diagnostics can no longer account for every refused
+        // value, so the outcome refuses rather than publishing partial facts.
+        let outcome = parse_meta_yml(
+            fid(),
+            &format!("license:\n  - perl_5\n{}", bad_items(MAX_FINDINGS + 1)),
+        );
+        assert_non_success(&outcome, MetaYmlFindingKind::ResourceLimit, "finding budget overflow");
+        assert_eq!(
+            outcome.state,
+            MetaYmlParseState::Unsupported,
+            "ResourceLimit reads Unsupported"
+        );
+        assert_eq!(outcome.findings.len(), MAX_FINDINGS + 1, "list stays bounded");
+        assert_eq!(
+            outcome.findings.last().map(|f| f.kind),
+            Some(MetaYmlFindingKind::ResourceLimit),
+            "the truncation itself is disclosed"
+        );
+    }
+
+    /// The same honesty rule at the sibling scalar fields normalized through
+    /// the shared helper.
+    #[test]
+    fn non_scalar_recognized_scalar_fields_are_reported_not_dropped() {
+        for (field, accessor) in [
+            (
+                "name",
+                (|f: &DistMetadataFacts| f.name.clone())
+                    as fn(&DistMetadataFacts) -> Option<String>,
+            ),
+            ("version", |f: &DistMetadataFacts| f.version.clone()),
+            ("abstract", |f: &DistMetadataFacts| f.summary.clone()),
+        ] {
+            let outcome = parse_meta_yml(fid(), &format!("{field}:\n  nested: value\n"));
+            assert_eq!(outcome.state, MetaYmlParseState::Parsed, "{field}: {:?}", outcome.findings);
+            assert!(
+                outcome.findings.iter().any(|f| {
+                    f.kind == MetaYmlFindingKind::UnsupportedValueShape
+                        && f.detail.contains(field)
+                        && f.detail.contains("mapping")
+                }),
+                "{field}: map-typed value must be reported, got {:?}",
+                outcome.findings
+            );
+            let facts = must_some_with(outcome.facts, "facts");
+            assert_eq!(accessor(&facts), None, "{field}: unrepresentable value yields no fact");
+        }
     }
 
     #[test]

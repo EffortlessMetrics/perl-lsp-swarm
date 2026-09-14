@@ -364,13 +364,19 @@ impl ExecuteCommandProvider {
             .map_err(|error| format!("Invalid explain-provider-decision argument: {error}"))?;
 
         let mut explanation = default_provider_decision_explanation(request.provider);
+        // Capture only the defaults. Caller context and request details belong
+        // outside the policy heading, even though the shared formatter supports both.
+        let policy_summary = format_provider_decision_explanation(&explanation);
+        let mut request_context = String::new();
 
         if let Some(receipt_id) = request.receipt_id {
             validate_explanation_echo(&receipt_id, "receipt_id")?;
+            request_context.push_str(&format!("\nReceipt: {receipt_id}."));
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
             validate_explanation_echo(&scenario, "scenario")?;
+            request_context.push_str(&format!("\nScenario: {scenario}."));
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
@@ -384,7 +390,29 @@ impl ExecuteCommandProvider {
         }
 
         let request_position = request.request_position;
-        let user_message = format_provider_decision_explanation(&explanation);
+        // These top-level defaults describe provider policy, not a recorded
+        // request outcome. Keep attached evidence distinct in the editor message.
+        let request_evidence = if let Some(receipt) = &explanation.request_receipt {
+            let freshness = receipt.get("freshness").and_then(|value| {
+                serde_json::from_value::<ProviderDecisionFreshness>(value.clone()).ok()
+            });
+            let label = match freshness {
+                Some(ProviderDecisionFreshness::Fresh) => "fresh",
+                Some(ProviderDecisionFreshness::Stale) => "stale",
+                Some(ProviderDecisionFreshness::NotApplicable) => "not applicable",
+                _ => "unknown",
+            };
+            let mut evidence = format!("Attached request freshness: {label}.");
+            if let Some(detail) = receipt.get("user_message").and_then(Value::as_str) {
+                evidence.push_str(&format!("\nRequest detail: {detail}"));
+            }
+            evidence
+        } else {
+            "No request evidence is attached.".to_string()
+        };
+        let user_message = format!(
+            "{request_evidence}{request_context}\nProvider policy summary:\n{policy_summary}"
+        );
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,
@@ -1785,7 +1813,11 @@ pub(crate) fn select_test_runner(
 ///
 /// This is deliberately stricter than `execvp`, which honors relative and
 /// empty `PATH` components: a tool reachable only through such a component is
-/// reported absent and callers take their tool-unavailable branch.
+/// reported absent and callers take their tool-unavailable branch. It
+/// therefore subsumes the earlier empty-entry stripping that filtered only
+/// `""` before delegating to `which`: an empty component is not absolute, so
+/// it is refused by the same rule that refuses `.` and `tools`, and no
+/// `which` lookup remains to re-admit the current directory.
 pub fn command_exists(command: &str) -> bool {
     #[cfg(not(target_arch = "wasm32"))]
     {

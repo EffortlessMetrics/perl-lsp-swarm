@@ -248,7 +248,10 @@ fn public_command_exists_rejects_cwd_sibling_under_empty_path_entry() -> TestRes
     // A launchable sibling sits in the child's current directory and the only
     // PATH entry is empty. The public lookup must not interpret the empty
     // entry as the working directory (the CWD-first admission seam): it must
-    // reject the candidate under the runtime's shared availability policy.
+    // reject the candidate under the runtime's shared availability policy: an
+    // empty component is not absolute, so it is refused by the same rule that
+    // refuses `.` and `tools`, on every platform. This row pins that refusal
+    // as load-bearing — it is the regression guard for the CWD-first seam.
     run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), false)
 }
 
