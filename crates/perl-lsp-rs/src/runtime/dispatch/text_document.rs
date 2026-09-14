@@ -32,6 +32,9 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
+        // Admission must precede parse-token rotation: malformed input cannot
+        // cancel the predecessor parse or replace its token.
+        self.prepare_did_change_admission(params.as_ref())?;
         let uri = params
             .as_ref()
             .and_then(|p| p.pointer("/textDocument/uri"))
