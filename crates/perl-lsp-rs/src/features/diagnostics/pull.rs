@@ -2996,4 +2996,72 @@ mod tests {
 
         Ok(())
     }
+
+    /// Both identity-root fields exist for different jobs, and the default
+    /// provider shape is deliberately *key without path*: a key establishes root
+    /// authority, while the path only positions a document inside that root.
+    /// Asserting the shape here keeps the standalone branch load-bearing rather
+    /// than incidental — with no path, a document cannot be positioned inside the
+    /// root and must fall back to its own directory, which is exactly the
+    /// configuration every provider default produces.
+    #[test]
+    fn provider_default_contexts_carry_root_authority_without_a_root_path() {
+        let contexts = [
+            ("new", PullDiagnosticsContext::new()),
+            ("with_perlcritic", PullDiagnosticsContext::with_perlcritic(3, None)),
+        ];
+        for (label, context) in contexts {
+            assert_eq!(
+                context.identity_root_key.as_deref(),
+                Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
+                "{label} must establish provider-default root authority"
+            );
+            assert_eq!(
+                context.identity_root_path, None,
+                "{label} must not claim a filesystem root it never resolved"
+            );
+        }
+    }
+
+    /// A missing path is not a missing key. These two `None`s mean different
+    /// things — no key yields no reusable ID at all, while no path only forces a
+    /// standalone identity — so a caller must be able to tell them apart on the
+    /// same value.
+    #[test]
+    fn root_key_and_root_path_are_independently_observable() {
+        let mut context = PullDiagnosticsContext::new();
+        context.identity_root_path = Some(PathBuf::from("/ws"));
+        assert!(context.identity_root_key.is_some() && context.identity_root_path.is_some());
+
+        context.identity_root_path = None;
+        assert!(
+            context.identity_root_key.is_some(),
+            "clearing the root path must not clear root authority"
+        );
+
+        context.identity_root_key = None;
+        context.identity_root_path = Some(PathBuf::from("/ws"));
+        assert!(
+            context.identity_root_key.is_none() && context.identity_root_path.is_some(),
+            "a root path must not stand in for absent root authority"
+        );
+    }
+
+    /// The hand-written `Debug` impl enumerates fields explicitly, so a newly
+    /// added field is easy to omit. Render both states and discriminate between
+    /// them, so an omission fails here instead of silently degrading diagnostics.
+    #[test]
+    fn debug_renders_the_identity_root_path_in_both_states() {
+        let mut context = PullDiagnosticsContext::new();
+        let without = format!("{context:?}");
+        assert!(
+            without.contains("identity_root_path: None"),
+            "default Debug must render the absent root path: {without}"
+        );
+
+        context.identity_root_path = Some(PathBuf::from("/ws/root"));
+        let with = format!("{context:?}");
+        assert!(with.contains("/ws/root"), "Debug must render a present root path: {with}");
+        assert_ne!(without, with, "Debug must discriminate the two root-path states");
+    }
 }
