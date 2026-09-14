@@ -2939,10 +2939,11 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp server.lua (base d1432ae, blob 33c8ccae) staged for the Lite XL integration train, carrying the #11151 bounded inbound frame-reader patch (explicit parser state, header/body budgets, strict Content-Length validation, remainder ownership, typed content-free framing failures) and the #10833 backpressure patch (hit-rate enqueue admission removed: notifications always queue with overwrite coalescing, requests queue or coalesce or reject explicitly at a bounded queue with typed not_queued dispositions and no phantom ids, responses are obligation-class and never dropped; pacing lives in the send loops)."
+reason = "Exact upstream lite-xl-lsp server.lua (base d1432ae, blob 33c8ccae) staged for the Lite XL integration train, carrying the #11151 bounded inbound frame-reader patch (explicit parser state, header/body budgets, strict Content-Length validation, remainder ownership, typed content-free framing failures) and the #10833 backpressure patch (hit-rate enqueue admission removed: notifications always queue with overwrite coalescing, requests queue or coalesce or reject explicitly at a bounded queue with typed not_queued dispositions and no phantom ids, responses are obligation-class and never dropped; pacing lives in the send loops), and the #11155 trace-admission patch (per-server verbose now carries the same source-bearing boundary at all three declaration sites - the Server class field, the lsp.server.options class field a server definition is written against, and the default options table - so no site describes it as ordinary debugging)."
 covered_by = [
   "lua clients/lite-xl/tests/server_frame_test.lua",
   "lua clients/lite-xl/tests/server_message_scheduling_test.lua",
+  "lua clients/lite-xl/tests/init_trace_admission_test.lua",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-23"
@@ -2972,10 +2973,11 @@ language = "lua"
 surface = "editor"
 classification = "production"
 owner = "editor/lite-xl"
-reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities), the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions), the #10845 configuration-value patch (presence tracked separately from truthiness through workspace/configuration: found values append verbatim, only genuinely missing sections become the null sentinel), and the #10873 truthful showDocument patch (response follows the actual user/open outcome through the async util.show_document contract, generation-owned prompts via the servers_running identity, typed internal open/selection dispositions, exactly one response per request)."
+reason = "Exact upstream lite-xl-lsp init.lua (base d1432ae, blob 7b38c3a9) staged for the Lite XL integration train, carrying the #11115 monotonic document-version patch (one structured per-server/per-document open-session record owning versions, pending changes, server generations, and session identities), the #11108 request-subject currentness patch (immutable subjects plus one reusable response-admission guard with typed dispositions), the #10845 configuration-value patch (presence tracked separately from truthiness through workspace/configuration: found values append verbatim, only genuinely missing sections become the null sentinel), and the #10873 truthful showDocument patch (response follows the actual user/open outcome through the async util.show_document contract, generation-owned prompts via the servers_running identity, typed internal open/selection dispositions, exactly one response per request), and the #11155 trace-admission patch (the settings-GUI descriptions and LuaCATS field annotations for log_file, log_server_stderr and force_verbosity_off name the content classes each trace can expose instead of describing them as ordinary json logging)."
 covered_by = [
   "lua clients/lite-xl/tests/init_document_session_test.lua",
   "lua clients/lite-xl/tests/init_request_currentness_test.lua",
+  "lua clients/lite-xl/tests/init_trace_admission_test.lua",
   "cargo xtask check-file-policy",
 ]
 created = "2026-08-23"
@@ -3351,6 +3353,22 @@ covered_by = [
 ]
 created = "2026-08-25"
 review_after = "2026-09-25"
+
+[[allow]]
+id = "non-rust-litexl-trace-admission-tests"
+path = "clients/lite-xl/tests/init_trace_admission_test.lua"
+kind = "editor_extension_test"
+language = "lua"
+surface = "editor"
+classification = "test"
+owner = "editor/lite-xl"
+reason = "#11155 trace-admission suite: reads the real merged config.plugins.lsp.config_spec through the #11103 journey harness plus the LuaCATS/comment annotation blocks from staged source, and pins that every option admitting protocol or server-emitted content into a readable sink (log_file, log_server_stderr, force_verbosity_off, and all three server.lua declaration sites of per-server verbose - the Server class field, the lsp.server.options class field, and the default options table) names the content classes it can actually expose, cites the owning issue, keeps its original operational meaning, and stays within a readable settings bound. Carries a negative control that no non-admission option claims sensitivity, so blanket-appending the warning fails rather than passes; verified mutation falsifiers cover pristine-wording restore per surface, the class-field/default-options asymmetry, blanket marker application, and disclosure replacing operational meaning."
+covered_by = [
+  "lua clients/lite-xl/tests/init_trace_admission_test.lua",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-13"
+review_after = "2026-10-13"
 
 [[allow]]
 id = "non-rust-litexl-candidate-manifest"

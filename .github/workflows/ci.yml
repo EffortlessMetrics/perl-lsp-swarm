@@ -1127,6 +1127,10 @@ jobs:
         if: matrix.name == 'meta'
         run: python3 -m unittest scripts/ci/test_scope_cache_key.py
 
+      - name: Verify candidate proof presence classification
+        if: matrix.name == 'meta'
+        run: python3 -m unittest scripts/ci/test_candidate_proof_presence.py
+
       - name: Run merge-gate shard with receipts
         shell: bash
         env:

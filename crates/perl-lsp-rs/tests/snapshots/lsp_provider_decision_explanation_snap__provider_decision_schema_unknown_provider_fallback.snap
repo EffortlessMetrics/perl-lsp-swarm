@@ -19,7 +19,7 @@ copyable_payload:
   scenario: ~
   schema_version: provider_decision_bug_report.v1
   support_tier_link: "docs/project/status/SUPPORT_TIERS.md#claim-rows"
-  user_message: "Provider used fallback.\nNo usable fact was available for this request.\nFact source: unknown.\nConfidence: low. Freshness: unknown.\nDynamic boundary: no.\nFallback: no result."
+  user_message: "No request evidence is attached.\nProvider policy summary:\nProvider used fallback.\nNo usable fact was available for this request.\nFact source: unknown.\nConfidence: low. Freshness: unknown.\nDynamic boundary: no.\nFallback: no result."
   workspace_root_class: single_root
   workspace_root_hash: "<workspace-root-hash>"
 decision: fallback
@@ -30,4 +30,4 @@ freshness: unknown
 provider: unknown
 reason: missing_fact
 schema_version: provider_decision.v1
-user_message: "Provider used fallback.\nNo usable fact was available for this request.\nFact source: unknown.\nConfidence: low. Freshness: unknown.\nDynamic boundary: no.\nFallback: no result."
+user_message: "No request evidence is attached.\nProvider policy summary:\nProvider used fallback.\nNo usable fact was available for this request.\nFact source: unknown.\nConfidence: low. Freshness: unknown.\nDynamic boundary: no.\nFallback: no result."

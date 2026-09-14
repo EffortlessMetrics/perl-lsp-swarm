@@ -8,6 +8,7 @@ const { spawnSync } = require('node:child_process');
 const JSZip = require('jszip');
 const {
   baselineForPlatform,
+  bundleTargetForPackagedFile,
   classifyInventoryViolations,
   compareInventory,
   currentSourceBundleFile,
@@ -338,6 +339,129 @@ void test('does not classify ordinary files as platform-owned', () => {
   assert.equal(platformForPackagedFile('bin/win32-x64/perllsp.exe'), 'win32');
   assert.equal(platformForPackagedFile('bin/linux-x64/perllsp'), 'linux');
   assert.equal(platformForPackagedFile('bin/darwin-arm64/perllsp'), 'darwin');
+});
+
+void test('classifies musl bundle members as alpine-owned', () => {
+  assert.equal(platformForPackagedFile('bin/alpine-x64/perllsp'), 'alpine');
+  assert.equal(platformForPackagedFile('bin/alpine-arm64/perllsp'), 'alpine');
+  assert.equal(bundleTargetForPackagedFile('bin/alpine-x64/perllsp'), 'alpine-x64');
+  assert.equal(bundleTargetForPackagedFile('bin/alpine-arm64/perl-dap'), 'alpine-arm64');
+  assert.equal(bundleTargetForPackagedFile('assets/demo-project/main.pl'), null);
+});
+
+void test('scopes an alpine baseline member to the alpine target', () => {
+  const baseline = {
+    total_files: 3,
+    total_bytes: 20,
+    files: {
+      'README.md': 2,
+      'bin/alpine-x64/perllsp': 8,
+      'bin/linux-x64/perllsp': 10,
+    },
+  };
+
+  assert.deepEqual(baselineForPlatform(baseline, 'linux', 'x64'), {
+    schema_version: 1,
+    total_files: 2,
+    total_bytes: 12,
+    files: { 'README.md': 2, 'bin/linux-x64/perllsp': 10 },
+  });
+  assert.deepEqual(baselineForPlatform(baseline, 'alpine', 'x64'), {
+    schema_version: 1,
+    total_files: 2,
+    total_bytes: 10,
+    files: { 'README.md': 2, 'bin/alpine-x64/perllsp': 8 },
+  });
+});
+
+void test('reports a musl payload inside a glibc package as foreign', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 12,
+    files: { 'README.md': 2, 'bin/linux-x64/perllsp': 10 },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 20,
+        files: {
+          'README.md': 2,
+          'bin/linux-x64/perllsp': 10,
+          'bin/alpine-x64/perllsp': 8,
+        },
+      },
+      baseline,
+      'linux',
+      { arch: 'x64' },
+    ),
+    ['unexpected foreign-platform packaged file: bin/alpine-x64/perllsp'],
+  );
+});
+
+void test('reports a glibc payload inside a musl package as foreign', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 10,
+    files: { 'README.md': 2, 'bin/alpine-x64/perllsp': 8 },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 20,
+        files: {
+          'README.md': 2,
+          'bin/alpine-x64/perllsp': 8,
+          'bin/linux-x64/perllsp': 10,
+        },
+      },
+      baseline,
+      'alpine',
+      { arch: 'x64' },
+    ),
+    ['unexpected foreign-platform packaged file: bin/linux-x64/perllsp'],
+  );
+});
+
+void test('accepts an alpine package that carries only its own musl payload', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 10,
+    files: { 'README.md': 2, 'bin/alpine-x64/perllsp': 8 },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 10,
+        files: { 'README.md': 2, 'bin/alpine-x64/perllsp': 8 },
+      },
+      baseline,
+      'alpine',
+      { arch: 'x64' },
+    ),
+    [],
+  );
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 10,
+        files: { 'README.md': 2, 'bin/alpine-arm64/perllsp': 8 },
+      },
+      baseline,
+      'alpine',
+      { arch: 'x64' },
+    ),
+    [
+      'unexpected foreign-platform packaged file: bin/alpine-arm64/perllsp',
+      'baseline packaged file is missing: bin/alpine-x64/perllsp',
+    ],
+  );
 });
 
 const extensionRoot = path.resolve(__dirname, '..');
