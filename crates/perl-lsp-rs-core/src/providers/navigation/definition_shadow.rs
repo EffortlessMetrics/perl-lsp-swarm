@@ -28,7 +28,7 @@ use perl_semantic_facts::{
     Confidence, DefinitionCandidate, DefinitionRank, EntityKind, Provenance, ProviderFactFreshness,
     ProviderFactSourceKind, ProviderFactTrace, ProviderFallbackState, ProviderSurface,
 };
-use perl_workspace::semantic::queries::{QueryContext, SemanticQueries};
+use perl_workspace::semantic::queries::{AnchorSourceSpan, QueryContext, SemanticQueries};
 use perl_workspace::semantic_shadow_compare::{
     SemanticShadowCompareReceipt, ShadowQueryInput, ShadowQueryName, ShadowResultSummary,
     summarize_identities,
@@ -76,7 +76,7 @@ pub fn goto_definition_shadow<Q: SemanticQueries>(
     // ── New semantic path ──
     let new_candidates = semantic_queries.definitions(symbol, context);
     let new_summary =
-        semantic_candidates_to_summary(workspace_index, legacy_location.as_ref(), &new_candidates);
+        semantic_candidates_to_summary(semantic_queries, legacy_location.as_ref(), &new_candidates);
 
     // ── Build receipt ──
     let receipt = SemanticShadowCompareReceipt::from_summaries_with_fact_source_traces(
@@ -177,7 +177,7 @@ pub fn goto_definition_cutover<Q: SemanticQueries>(
     let legacy_location = workspace_index.find_definition(symbol);
     let old_summary = legacy_location_to_summary(legacy_location.as_ref());
     let new_summary =
-        semantic_candidates_to_summary(workspace_index, legacy_location.as_ref(), &all_candidates);
+        semantic_candidates_to_summary(semantic_queries, legacy_location.as_ref(), &all_candidates);
 
     // ── Classify result ──
     let result = classify_cutover_result(usable, legacy_location);
@@ -223,7 +223,7 @@ pub fn goto_definition_live_exact<Q: SemanticQueries>(
     let legacy_location = workspace_index.find_definition(symbol);
     let old_summary = legacy_location_to_summary(legacy_location.as_ref());
     let new_summary =
-        semantic_candidates_to_summary(workspace_index, legacy_location.as_ref(), &all_candidates);
+        semantic_candidates_to_summary(semantic_queries, legacy_location.as_ref(), &all_candidates);
 
     let exact_candidate = match all_candidates.as_slice() {
         [candidate] if is_live_exact_syntax_candidate(workspace_index, candidate) => {
@@ -277,7 +277,7 @@ pub fn goto_definition_live_exact_or_imported<Q: SemanticQueries>(
     let legacy_location = workspace_index.find_definition(symbol);
     let old_summary = legacy_location_to_summary(legacy_location.as_ref());
     let new_summary =
-        semantic_candidates_to_summary(workspace_index, legacy_location.as_ref(), &all_candidates);
+        semantic_candidates_to_summary(semantic_queries, legacy_location.as_ref(), &all_candidates);
 
     let live_candidate = match all_candidates.as_slice() {
         [candidate] if is_live_exact_or_imported_candidate(workspace_index, candidate) => {
@@ -645,73 +645,68 @@ fn legacy_location_to_summary(location: Option<&Location>) -> ShadowResultSummar
     }
 }
 
-/// True when `candidate`'s semantic anchor lies inside the legacy declaration
-/// span in the same file.
+/// True when `span` lies inside the legacy declaration span in the same file.
 ///
 /// The two paths describe the same definition with different span conventions:
 /// the legacy index reports the whole declaration (`sub bar { 1 }`) while a
 /// semantic anchor reports the name token (`bar`). Containment is therefore the
 /// correct relation, and it is evaluated on byte offsets so the comparison does
 /// not depend on the two paths agreeing about column encoding.
-fn anchor_is_within_legacy_declaration(
-    workspace_index: &WorkspaceIndex,
-    legacy: &Location,
-    candidate: &perl_semantic_facts::DefinitionCandidate,
-) -> bool {
-    let Some(shard) = workspace_index.file_fact_shard(&legacy.uri) else {
+fn anchor_is_within_legacy_declaration(legacy: &Location, span: &AnchorSourceSpan) -> bool {
+    if span.source_uri != legacy.uri {
         return false;
-    };
+    }
     let declaration_start = legacy.range.start.byte;
     let declaration_end = legacy.range.end.byte;
     if declaration_end <= declaration_start {
         return false;
     }
 
-    shard.anchors.iter().filter(|anchor| anchor.id == candidate.anchor_id).any(|anchor| {
-        if anchor.span_end_byte <= anchor.span_start_byte {
-            return false;
-        }
-        let (Ok(start), Ok(end)) =
-            (usize::try_from(anchor.span_start_byte), usize::try_from(anchor.span_end_byte))
-        else {
-            return false;
-        };
-        start >= declaration_start && end <= declaration_end
-    })
+    let (Ok(start), Ok(end)) = (usize::try_from(span.start_byte), usize::try_from(span.end_byte))
+    else {
+        return false;
+    };
+    start >= declaration_start && end <= declaration_end
 }
 
 /// Build the shadow-compare identity for one semantic definition candidate.
 ///
 /// Identities must live in the same space as the legacy path's, otherwise the
 /// two summaries can never compare equal and genuine agreement is unrepresentable.
-fn semantic_candidate_identity(
-    workspace_index: &WorkspaceIndex,
+///
+/// The anchor is resolved through `semantic_queries`, which answers from the
+/// fact snapshot it already borrows. Resolving it by re-entering
+/// `WorkspaceIndex` would re-acquire the `fact_shards` read lock that
+/// `with_semantic_queries_for_uri` still holds around these calls, and
+/// deadlock against a queued reindex.
+fn semantic_candidate_identity<Q: SemanticQueries>(
+    semantic_queries: &Q,
     legacy_location: Option<&Location>,
     candidate: &perl_semantic_facts::DefinitionCandidate,
 ) -> String {
+    let Some(span) = semantic_queries.anchor_source_span(candidate.anchor_id) else {
+        // No resolvable source span: generated or virtual member.
+        return format!(
+            "{NO_SOURCE_ANCHOR_IDENTITY_PREFIX}:{}:{}",
+            candidate.canonical_name, candidate.anchor_id.0
+        );
+    };
+
     // Same declaration, different span convention: adopt the legacy identity.
     if let Some(legacy) = legacy_location
-        && anchor_is_within_legacy_declaration(workspace_index, legacy, candidate)
+        && anchor_is_within_legacy_declaration(legacy, &span)
     {
         return location_identity(legacy);
     }
 
-    // A different (or additional) target still gets a real, comparable source
-    // location when its anchor resolves; otherwise it is explicitly non-source.
-    match workspace_index.semantic_anchor_wire_location(candidate.anchor_id) {
-        Some(wire) => {
-            format!("{}:{}:{}", wire.uri, wire.range.start.line, wire.range.start.character)
-        }
-        None => format!(
-            "{NO_SOURCE_ANCHOR_IDENTITY_PREFIX}:{}:{}",
-            candidate.canonical_name, candidate.anchor_id.0
-        ),
-    }
+    // A different (or additional) target keeps its own source-backed identity.
+    // Byte offsets are used so this does not depend on a line/column encoding.
+    format!("{}#{}-{}", span.source_uri, span.start_byte, span.end_byte)
 }
 
 /// Convert semantic `DefinitionCandidate` results into a [`ShadowResultSummary`].
-fn semantic_candidates_to_summary(
-    workspace_index: &WorkspaceIndex,
+fn semantic_candidates_to_summary<Q: SemanticQueries>(
+    semantic_queries: &Q,
     legacy_location: Option<&Location>,
     candidates: &[perl_semantic_facts::DefinitionCandidate],
 ) -> ShadowResultSummary {
@@ -721,7 +716,7 @@ fn semantic_candidates_to_summary(
 
     let identities: Vec<String> = candidates
         .iter()
-        .map(|candidate| semantic_candidate_identity(workspace_index, legacy_location, candidate))
+        .map(|candidate| semantic_candidate_identity(semantic_queries, legacy_location, candidate))
         .collect();
 
     summarize_identities(Some(identities))
@@ -743,9 +738,43 @@ mod tests {
 
     struct StubSemanticQueries {
         definitions_result: Vec<DefinitionCandidate>,
+        /// Anchor spans this stub can resolve, mirroring the snapshot a real
+        /// `WorkspaceSemanticQueries` borrows. Anchors absent here resolve to
+        /// `None`, which is how a generated/virtual member behaves.
+        anchor_spans: Vec<(AnchorId, AnchorSourceSpan)>,
+    }
+
+    impl StubSemanticQueries {
+        fn new(definitions_result: Vec<DefinitionCandidate>) -> Self {
+            Self { definitions_result, anchor_spans: Vec::new() }
+        }
+
+        /// Populate resolvable anchor spans from a real indexed fact shard, so
+        /// the stub answers exactly what the production snapshot would.
+        fn with_spans_from(mut self, index: &WorkspaceIndex, uri: &str) -> Self {
+            if let Some(shard) = index.file_fact_shard(uri) {
+                for anchor in &shard.anchors {
+                    if anchor.span_end_byte > anchor.span_start_byte {
+                        self.anchor_spans.push((
+                            anchor.id,
+                            AnchorSourceSpan {
+                                source_uri: shard.source_uri.clone(),
+                                start_byte: anchor.span_start_byte,
+                                end_byte: anchor.span_end_byte,
+                            },
+                        ));
+                    }
+                }
+            }
+            self
+        }
     }
 
     impl SemanticQueries for StubSemanticQueries {
+        fn anchor_source_span(&self, anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
+            self.anchor_spans.iter().find(|(id, _)| *id == anchor_id).map(|(_, span)| span.clone())
+        }
+
         fn symbol_at(
             &self,
             _file_id: FileId,
@@ -824,7 +853,7 @@ mod tests {
     #[test]
     fn shadow_both_unavailable_yields_unavailable() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { definitions_result: vec![] };
+        let queries = StubSemanticQueries::new(vec![]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let result = goto_definition_shadow(&index, &queries, "No::Such::Symbol", &ctx);
@@ -843,8 +872,7 @@ mod tests {
     #[test]
     fn shadow_new_path_has_candidates_old_unavailable() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries =
-            StubSemanticQueries { definitions_result: vec![make_candidate("Foo::bar", 10, 20)] };
+        let queries = StubSemanticQueries::new(vec![make_candidate("Foo::bar", 10, 20)]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let result = goto_definition_shadow(&index, &queries, "Foo::bar", &ctx);
@@ -868,7 +896,7 @@ mod tests {
     ) -> Result<(WorkspaceIndex, Vec<DefinitionCandidate>), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         index
-            .index_file(Url::parse(uri)?, code.to_string())
+            .index_initial_file(Url::parse(uri)?, code.to_string())
             .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
         let candidates = index
             .with_semantic_queries_for_uri(uri, |file_id, queries| {
@@ -889,7 +917,7 @@ mod tests {
         assert!(index.find_definition("Foo::bar").is_some(), "legacy path must resolve Foo::bar");
         assert_eq!(candidates.len(), 1, "fixture must yield exactly one semantic candidate");
 
-        let queries = StubSemanticQueries { definitions_result: candidates };
+        let queries = StubSemanticQueries::new(candidates).with_spans_from(&index, uri);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let result = goto_definition_shadow(&index, &queries, "Foo::bar", &ctx);
@@ -920,7 +948,7 @@ mod tests {
         let (index, other_candidates) = indexed_index_and_candidates(uri, code, "Foo::other")?;
         assert_eq!(other_candidates.len(), 1, "fixture must yield one candidate for Foo::other");
 
-        let queries = StubSemanticQueries { definitions_result: other_candidates };
+        let queries = StubSemanticQueries::new(other_candidates).with_spans_from(&index, uri);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         // Legacy resolves Foo::bar; the semantic path hands back Foo::other.
@@ -952,9 +980,8 @@ mod tests {
         let (index, _real) =
             indexed_index_and_candidates(uri, "package Foo;\n\nsub bar { 1 }\n\n1;\n", "Foo::bar")?;
 
-        let queries = StubSemanticQueries {
-            definitions_result: vec![make_candidate("Foo::bar", 987_654_321, 20)],
-        };
+        let queries = StubSemanticQueries::new(vec![make_candidate("Foo::bar", 987_654_321, 20)])
+            .with_spans_from(&index, uri);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let result = goto_definition_shadow(&index, &queries, "Foo::bar", &ctx);
@@ -1003,8 +1030,8 @@ mod tests {
 
     #[test]
     fn semantic_candidates_to_summary_empty() -> Result<(), Box<dyn std::error::Error>> {
-        let index = WorkspaceIndex::new();
-        let summary = super::semantic_candidates_to_summary(&index, None, &[]);
+        let queries = StubSemanticQueries::new(Vec::new());
+        let summary = super::semantic_candidates_to_summary(&queries, None, &[]);
         assert!(summary.available);
         assert_eq!(summary.match_count, 0);
         Ok(())
@@ -1012,10 +1039,10 @@ mod tests {
 
     #[test]
     fn semantic_candidates_to_summary_multiple() -> Result<(), Box<dyn std::error::Error>> {
-        let index = WorkspaceIndex::new();
         let candidates =
             vec![make_candidate("Foo::bar", 10, 20), make_candidate("Baz::bar", 30, 40)];
-        let summary = super::semantic_candidates_to_summary(&index, None, &candidates);
+        let queries = StubSemanticQueries::new(Vec::new());
+        let summary = super::semantic_candidates_to_summary(&queries, None, &candidates);
         assert!(summary.available);
         assert_eq!(summary.match_count, 2);
         // Identities should be sorted and deduplicated.
@@ -1036,7 +1063,7 @@ mod tests {
     #[test]
     fn receipt_uses_find_definition_query_name() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { definitions_result: vec![] };
+        let queries = StubSemanticQueries::new(vec![]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let result = goto_definition_shadow(&index, &queries, "test", &ctx);
@@ -1143,7 +1170,7 @@ mod tests {
     fn cutover_exact_single_high_confidence_candidate() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let candidate = make_candidate("Foo::bar", 10, 20);
-        let queries = StubSemanticQueries { definitions_result: vec![candidate.clone()] };
+        let queries = StubSemanticQueries::new(vec![candidate.clone()]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let outcome = goto_definition_cutover(&index, &queries, "Foo::bar", &ctx);
@@ -1158,7 +1185,7 @@ mod tests {
         let index = WorkspaceIndex::new();
         let c1 = make_candidate("Foo::bar", 10, 20);
         let c2 = make_candidate("Baz::bar", 30, 40);
-        let queries = StubSemanticQueries { definitions_result: vec![c1.clone(), c2.clone()] };
+        let queries = StubSemanticQueries::new(vec![c1.clone(), c2.clone()]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let outcome = goto_definition_cutover(&index, &queries, "bar", &ctx);
@@ -1177,7 +1204,7 @@ mod tests {
     #[test]
     fn cutover_fallback_when_no_candidates() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { definitions_result: vec![] };
+        let queries = StubSemanticQueries::new(vec![]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let outcome = goto_definition_cutover(&index, &queries, "No::Such::Symbol", &ctx);
@@ -1203,7 +1230,7 @@ mod tests {
             Provenance::DynamicBoundary,
             DefinitionRank::Heuristic,
         );
-        let queries = StubSemanticQueries { definitions_result: vec![dynamic_candidate] };
+        let queries = StubSemanticQueries::new(vec![dynamic_candidate]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let outcome = goto_definition_cutover(&index, &queries, "Foo::bar", &ctx);
@@ -1226,7 +1253,7 @@ mod tests {
             Provenance::NameHeuristic,
             DefinitionRank::Heuristic,
         );
-        let queries = StubSemanticQueries { definitions_result: vec![low_candidate] };
+        let queries = StubSemanticQueries::new(vec![low_candidate]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let outcome = goto_definition_cutover(&index, &queries, "Foo::bar", &ctx);
@@ -1250,7 +1277,7 @@ mod tests {
             Provenance::DynamicBoundary,
             DefinitionRank::Heuristic,
         );
-        let queries = StubSemanticQueries { definitions_result: vec![good.clone(), dynamic] };
+        let queries = StubSemanticQueries::new(vec![good.clone(), dynamic]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let outcome = goto_definition_cutover(&index, &queries, "Foo::bar", &ctx);
@@ -1282,7 +1309,7 @@ mod tests {
             Provenance::DynamicBoundary,
             DefinitionRank::Heuristic,
         );
-        let queries = StubSemanticQueries { definitions_result: vec![c1, c2] };
+        let queries = StubSemanticQueries::new(vec![c1, c2]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let outcome = goto_definition_cutover(&index, &queries, "Foo::bar", &ctx);
@@ -1307,7 +1334,7 @@ mod tests {
             DefinitionRank::ExplicitImport,
             DefinitionRankReason::ExplicitImport { module: "Foo".to_string() },
         );
-        let queries = StubSemanticQueries { definitions_result: vec![candidate] };
+        let queries = StubSemanticQueries::new(vec![candidate]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let result = goto_definition_shadow(&index, &queries, "imported_func", &ctx);
@@ -1337,7 +1364,7 @@ mod tests {
             DefinitionRank::WorkspaceCandidate,
             DefinitionRankReason::WorkspaceSymbol,
         );
-        let queries = StubSemanticQueries { definitions_result: vec![candidate] };
+        let queries = StubSemanticQueries::new(vec![candidate]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let result = goto_definition_shadow(&index, &queries, "generated_accessor", &ctx);
@@ -1365,7 +1392,7 @@ mod tests {
             DefinitionRank::Heuristic,
             DefinitionRankReason::HeuristicNameMatch,
         );
-        let queries = StubSemanticQueries { definitions_result: vec![candidate] };
+        let queries = StubSemanticQueries::new(vec![candidate]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let result = goto_definition_shadow(&index, &queries, "dynamic_symbol", &ctx);
@@ -1394,7 +1421,7 @@ mod tests {
             DefinitionRank::Heuristic,
             DefinitionRankReason::HeuristicNameMatch,
         );
-        let queries = StubSemanticQueries { definitions_result: vec![exact.clone(), low] };
+        let queries = StubSemanticQueries::new(vec![exact.clone(), low]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let outcome = goto_definition_cutover(&index, &queries, "Foo::bar", &ctx);
@@ -1458,9 +1485,7 @@ mod tests {
             DefinitionRank::Heuristic,
             DefinitionRankReason::HeuristicNameMatch,
         );
-        let queries = StubSemanticQueries {
-            definitions_result: vec![imported, generated, dynamic, low_confidence],
-        };
+        let queries = StubSemanticQueries::new(vec![imported, generated, dynamic, low_confidence]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let result = goto_definition_shadow(&index, &queries, "Real::Nav::legacy_helper", &ctx);
@@ -1501,7 +1526,7 @@ mod tests {
     fn definition_live_exact_accepts_single_source_backed_exact_ast_candidate()
     -> Result<(), Box<dyn std::error::Error>> {
         let (index, candidate) = source_backed_exact_candidate()?;
-        let queries = StubSemanticQueries { definitions_result: vec![candidate.clone()] };
+        let queries = StubSemanticQueries::new(vec![candidate.clone()]);
         let ctx = QueryContext::new(FileId(1), None, Some(0));
 
         let outcome = goto_definition_live_exact(&index, &queries, "LiveExact::target", &ctx);
@@ -1525,7 +1550,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let candidate = make_candidate("Foo::bar", 10, 20);
-        let queries = StubSemanticQueries { definitions_result: vec![candidate] };
+        let queries = StubSemanticQueries::new(vec![candidate]);
         let ctx = QueryContext::new(FileId(1), None, Some(0));
 
         let outcome = goto_definition_live_exact(&index, &queries, "Foo::bar", &ctx);
@@ -1552,7 +1577,7 @@ mod tests {
             DefinitionRank::ExplicitImport,
             DefinitionRankReason::ExplicitImport { module: "LiveExact".to_string() },
         );
-        let queries = StubSemanticQueries { definitions_result: vec![imported] };
+        let queries = StubSemanticQueries::new(vec![imported]);
         let ctx = QueryContext::new(FileId(1), None, Some(0));
 
         let outcome = goto_definition_live_exact(&index, &queries, "LiveExact::target", &ctx);
@@ -1580,7 +1605,7 @@ mod tests {
             DefinitionRank::ExplicitImport,
             DefinitionRankReason::ExplicitImport { module: "LiveExact".to_string() },
         );
-        let queries = StubSemanticQueries { definitions_result: vec![imported.clone()] };
+        let queries = StubSemanticQueries::new(vec![imported.clone()]);
         let ctx = QueryContext::new(FileId(1), None, Some(0));
 
         let outcome = goto_definition_live_exact_or_imported(&index, &queries, "target", &ctx);
@@ -1611,7 +1636,7 @@ mod tests {
             DefinitionRank::DefaultExport,
             DefinitionRankReason::DefaultExport { module: "LiveExact".to_string() },
         );
-        let queries = StubSemanticQueries { definitions_result: vec![default_export.clone()] };
+        let queries = StubSemanticQueries::new(vec![default_export.clone()]);
         let ctx = QueryContext::new(FileId(1), None, Some(0));
 
         let outcome = goto_definition_live_exact_or_imported(&index, &queries, "target", &ctx);
@@ -1638,7 +1663,7 @@ mod tests {
         );
         let mut second = first.clone();
         second.entity_id = EntityId(first.entity_id.0 + 1);
-        let queries = StubSemanticQueries { definitions_result: vec![first, second] };
+        let queries = StubSemanticQueries::new(vec![first, second]);
         let ctx = QueryContext::new(FileId(1), None, Some(0));
 
         let outcome = goto_definition_live_exact_or_imported(&index, &queries, "target", &ctx);
@@ -1671,7 +1696,7 @@ mod tests {
             DefinitionRank::ExplicitImport,
             DefinitionRankReason::ExplicitImport { module: "LiveExact".to_string() },
         );
-        let queries = StubSemanticQueries { definitions_result: vec![imported] };
+        let queries = StubSemanticQueries::new(vec![imported]);
         let ctx = QueryContext::new(FileId(1), None, Some(0));
 
         let outcome = goto_definition_live_exact_or_imported(&index, &queries, "target", &ctx);
@@ -1690,7 +1715,7 @@ mod tests {
         let (index, candidate) = source_backed_exact_candidate()?;
         let mut other = candidate.clone();
         other.entity_id = EntityId(candidate.entity_id.0 + 1);
-        let queries = StubSemanticQueries { definitions_result: vec![candidate, other] };
+        let queries = StubSemanticQueries::new(vec![candidate, other]);
         let ctx = QueryContext::new(FileId(1), None, Some(0));
 
         let outcome = goto_definition_live_exact(&index, &queries, "LiveExact::target", &ctx);
@@ -1722,7 +1747,7 @@ mod tests {
             DefinitionRank::Heuristic,
             DefinitionRankReason::HeuristicNameMatch,
         );
-        let queries = StubSemanticQueries { definitions_result: vec![dynamic] };
+        let queries = StubSemanticQueries::new(vec![dynamic]);
         let ctx = QueryContext::new(FileId(1), None, Some(0));
 
         let outcome = goto_definition_live_exact(&index, &queries, "Foo::dynamic_symbol", &ctx);
@@ -1747,7 +1772,7 @@ mod tests {
             Provenance::SemanticAnalyzer,
             DefinitionRank::WorkspaceCandidate,
         );
-        let queries = StubSemanticQueries { definitions_result: vec![medium.clone()] };
+        let queries = StubSemanticQueries::new(vec![medium.clone()]);
         let ctx = QueryContext::new(FileId(1), None, None);
 
         let outcome = goto_definition_cutover(&index, &queries, "Foo::bar", &ctx);

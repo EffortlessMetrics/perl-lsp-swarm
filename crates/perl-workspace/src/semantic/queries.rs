@@ -97,6 +97,21 @@ impl QueryContext {
     }
 }
 
+/// Source span of a semantic anchor, resolved from a fact snapshot.
+///
+/// Byte offsets are used deliberately: they are independent of the line/column
+/// encoding a consumer happens to use, so they can be compared against spans
+/// produced by other layers without an encoding conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorSourceSpan {
+    /// Normalized URI of the source that owns the anchor.
+    pub source_uri: String,
+    /// Inclusive start byte offset of the anchor span.
+    pub start_byte: u32,
+    /// Exclusive end byte offset of the anchor span.
+    pub end_byte: u32,
+}
+
 // ── SemanticQueries trait ──
 
 /// Workspace-level semantic query facade.
@@ -123,6 +138,22 @@ pub trait SemanticQueries {
     /// Returns all non-definition occurrences that reference the given
     /// entity, preserving occurrence kind classification.
     fn references(&self, entity_id: EntityId) -> Vec<OccurrenceFact>;
+
+    /// Resolve `anchor_id` to its owning source URI and byte span.
+    ///
+    /// Implementations must answer from the fact snapshot this facade already
+    /// borrows. Callers frequently run inside
+    /// `WorkspaceIndex::with_semantic_queries_for_uri`, which holds the
+    /// `fact_shards` read lock for the whole callback; resolving an anchor by
+    /// re-entering `WorkspaceIndex` from there re-acquires that same
+    /// non-reentrant, write-preferring lock and deadlocks against a queued
+    /// reindex.
+    ///
+    /// Returns `None` when the anchor has no resolvable source span, which
+    /// includes generated or virtual members.
+    fn anchor_source_span(&self, _anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
+        None
+    }
 
     /// Return symbols visible at a given file position and scope.
     fn visible_symbols_at(
@@ -497,6 +528,24 @@ impl<'a> WorkspaceSemanticQueries<'a> {
 }
 
 impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
+    /// Resolve the anchor from the borrowed shard snapshot.
+    ///
+    /// This never touches `WorkspaceIndex`, so it is safe to call from inside
+    /// `with_semantic_queries_for_uri` while the `fact_shards` read lock is
+    /// held. A degenerate span is reported as unresolved rather than as a
+    /// zero-length location.
+    fn anchor_source_span(&self, anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
+        self.fact_shards.values().find_map(|shard| {
+            shard.anchors.iter().find(|anchor| anchor.id == anchor_id).and_then(|anchor| {
+                (anchor.span_end_byte > anchor.span_start_byte).then(|| AnchorSourceSpan {
+                    source_uri: shard.source_uri.clone(),
+                    start_byte: anchor.span_start_byte,
+                    end_byte: anchor.span_end_byte,
+                })
+            })
+        })
+    }
+
     fn symbol_at(&self, file_id: FileId, byte_offset: u32) -> Option<(EntityFact, OccurrenceFact)> {
         let shard = self.shard_for_file(file_id)?;
 
