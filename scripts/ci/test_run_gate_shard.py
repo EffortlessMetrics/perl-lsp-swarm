@@ -1898,8 +1898,12 @@ class IntegrationSubjectTests(unittest.TestCase):
             git("checkout", "-qb", "base", ancestor)
             tests = root / "scripts/ci"
             tests.mkdir(parents=True)
-            # Both actual hosted meta invocations run a base-introduced test.
-            for filename in ("test_run_gate_shard.py", "test_scope_cache_key.py"):
+            # Every hosted meta invocation runs a base-introduced test.
+            for filename in (
+                "test_run_gate_shard.py",
+                "test_scope_cache_key.py",
+                "test_candidate_meta_self_tests.py",
+            ):
                 (tests / filename).write_text(
                     "import unittest\nfrom pathlib import Path\nPath('gate-script-executed').touch()\n"
                     "class Probe(unittest.TestCase):\n"
@@ -1957,15 +1961,29 @@ class IntegrationSubjectTests(unittest.TestCase):
                 raise RuntimeError("produced receipts do not bind the integration tree")
             if not find_stale_artifacts([receipts], candidate):
                 raise RuntimeError("integration receipt accepted as candidate-only proof")
-            for step in ("Verify complete shard runner falsifiers", "Verify scope cache key composition"):
-                block = job.split("      - name: " + step + "\n", 1)[1].split("      - name:", 1)[0]
-                command = block.split("        run: ", 1)[1].strip().split()
-                result = subprocess.run([sys.executable, *command[1:]], cwd=root, capture_output=True)
+            # The consolidated "Verify candidate meta self-tests" step runs one
+            # `python3 -m unittest <file>` per listed self-test; stale-head
+            # tolerance lives in the bash loop, not in this structural probe,
+            # so assert every listed file executes here and propagates failure.
+            block = job.split("      - name: Verify candidate meta self-tests\n", 1)[1].split(
+                "      - name:", 1
+            )[0]
+            listed = re.findall(r"scripts/ci/test_\w+\.py", block)
+            for expected in (
+                "scripts/ci/test_run_gate_shard.py",
+                "scripts/ci/test_scope_cache_key.py",
+                "scripts/ci/test_candidate_meta_self_tests.py",
+            ):
+                if expected not in listed:
+                    raise RuntimeError(f"consolidated meta step no longer runs {expected}")
+            for self_test in listed:
+                command = [sys.executable, "-m", "unittest", self_test]
+                result = subprocess.run(command, cwd=root, capture_output=True)
                 if result.returncode != 0 or not (root / "meta-executed").exists():
-                    raise RuntimeError("merge-tree meta test was not executed")
+                    raise RuntimeError(f"merge-tree meta test was not executed: {self_test}")
                 (root / "force-failure").touch()
-                if subprocess.run([sys.executable, *command[1:]], cwd=root, capture_output=True).returncode == 0:
-                    raise RuntimeError("present meta test failure was swallowed")
+                if subprocess.run(command, cwd=root, capture_output=True).returncode == 0:
+                    raise RuntimeError(f"present meta test failure was swallowed: {self_test}")
                 (root / "force-failure").unlink()
                 (root / "meta-executed").unlink()
             (root / "build-marker").unlink()
