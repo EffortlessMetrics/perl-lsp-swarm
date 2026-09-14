@@ -81,11 +81,14 @@ where
     samples.sort_unstable();
     let n = samples.len();
     let median_ns = samples.get(n / 2).copied().unwrap_or_default();
-    // Nearest-rank p95: ceil(0.95 * N) converted to a 0-based index, matching
-    // the parser bench scorecard. Ceiling division avoids the off-by-one in
-    // the floor formula ((n * 95) / 100), which returns the 100th-percentile
-    // sample for all N <= 20. This bench owns its own measurement math; the
-    // parser no longer publishes a percentile helper (#7595).
+    // Nearest-rank p95: ceil(0.95 * N) converted to a 0-based index. This is
+    // the same rank the retired `nearest_rank_percentile` computed, so no
+    // reported value changes; it matches the parser bench scorecard too.
+    // Ceiling division is what keeps that true: the floor formula
+    // ((n * 95) / 100) picks the next-higher sample whenever N is a multiple
+    // of 20 — which includes both sample counts this bench actually uses,
+    // 3000 and 5000. This bench owns its own measurement math; the parser no
+    // longer publishes a percentile helper (#7595).
     let p95_idx = (n * 95).div_ceil(100).saturating_sub(1).min(n.saturating_sub(1));
     let p95_ns = samples.get(p95_idx).copied().unwrap_or_default();
 
