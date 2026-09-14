@@ -147,6 +147,87 @@ fn check_parity_argument_count_prints_usage() -> TestResult {
 }
 
 #[test]
+fn two_sided_option_errors_name_the_side_the_operator_typed() -> TestResult {
+    // Each side's declaration is parsed by the same code as `build`'s, but an
+    // operator sees only what they typed: an error naming `--frame` on a
+    // `compare` invocation would send them looking for an option that command
+    // does not accept.
+    let dir = tempfile::tempdir()?;
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path())?;
+    let left = dir.path().join("left.json").to_string_lossy().into_owned();
+    let right = dir.path().join("right.json").to_string_lossy().into_owned();
+    let report = dir.path().join("parity.json").to_string_lossy().into_owned();
+    assert!(
+        run(&build_invocation(&matrix, "component_base", "test", &raw, &left, &[]))?
+            .status
+            .success(),
+        "left build failed"
+    );
+    assert!(
+        run(&build_invocation(&matrix, "component_base", "harness", &raw, &right, &[]))?
+            .status
+            .success(),
+        "right build failed"
+    );
+
+    let missing_right_frame = run(&[
+        "compare",
+        &matrix,
+        "component_base",
+        "test",
+        &left,
+        &raw,
+        "harness",
+        &right,
+        &raw,
+        &report,
+        "--left-frame",
+        "canonical_repository_path",
+    ])?;
+    assert_cli_failure(&missing_right_frame, "--right-frame is required");
+
+    let unknown_left_option = run(&[
+        "compare",
+        &matrix,
+        "component_base",
+        "test",
+        &left,
+        &raw,
+        "harness",
+        &right,
+        &raw,
+        &report,
+        "--left-frame",
+        "canonical_repository_path",
+        "--left-bogus",
+        "--right-frame",
+        "canonical_repository_path",
+    ])?;
+    assert_cli_failure(&unknown_left_option, "unsupported scheduling option --left-bogus");
+
+    let unsided_option = run(&[
+        "compare",
+        &matrix,
+        "component_base",
+        "test",
+        &left,
+        &raw,
+        "harness",
+        &right,
+        &raw,
+        &report,
+        "--frame",
+        "canonical_repository_path",
+    ])?;
+    assert_cli_failure(
+        &unsided_option,
+        "unsupported option --frame; declare each side with --left-* and --right-*",
+    );
+    Ok(())
+}
+
+#[test]
 fn build_requires_an_explicit_discovery_frame() -> TestResult {
     let dir = tempfile::tempdir()?;
     let matrix = bundle().to_string_lossy().into_owned();

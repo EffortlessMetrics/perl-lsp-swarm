@@ -68,7 +68,7 @@ fn build_command(args: Vec<OsString>) -> Result<()> {
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
     let discovery_path = PathBuf::from(&args[3]);
     let output_path = PathBuf::from(&args[4]);
-    let (discovery_frame, scheduling) = parse_declaration_options(&args[5..])?;
+    let (discovery_frame, scheduling) = parse_declaration_options(&args[5..], "")?;
     let matrix = read_matrix(&matrix_path)?;
     let raw = read_bytes(&discovery_path)?;
     let plan = build_runner_plan_with_frame(
@@ -121,7 +121,7 @@ fn check_plan_command(args: Vec<OsString>) -> Result<()> {
     let raw = read_bytes(Path::new(&args[3]))?;
     let plan_path = PathBuf::from(&args[4]);
     let plan = read_plan(&plan_path)?;
-    let (discovery_frame, scheduling) = parse_declaration_options(&args[5..])?;
+    let (discovery_frame, scheduling) = parse_declaration_options(&args[5..], "")?;
     let declared = DeclaredPlanInputs::new(target_id, runner, discovery_frame, scheduling);
     validate_runner_plan_against(&matrix, &raw, &declared, &plan)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
@@ -186,8 +186,8 @@ fn read_two_sided_arguments(args: &[OsString]) -> Result<TwoSidedArguments> {
     let right_raw = read_bytes(Path::new(&args[7]))?;
     let tail = PathBuf::from(&args[8]);
     let (left_options, right_options) = split_side_options(&args[9..])?;
-    let (left_frame, left_scheduling) = parse_declaration_options(&left_options)?;
-    let (right_frame, right_scheduling) = parse_declaration_options(&right_options)?;
+    let (left_frame, left_scheduling) = parse_declaration_options(&left_options, "left-")?;
+    let (right_frame, right_scheduling) = parse_declaration_options(&right_options, "right-")?;
     Ok(TwoSidedArguments {
         matrix,
         left: SideArguments {
@@ -241,7 +241,10 @@ fn split_side_options(args: &[OsString]) -> Result<(Vec<OsString>, Vec<OsString>
     Ok((left, right))
 }
 
-fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
+/// Parse declared scheduling inputs. `prefix` is the side marker the operator
+/// actually typed (`""`, `"left-"`, `"right-"`), so every error names the
+/// option as it appeared on the command line rather than its stripped form.
+fn parse_scheduling(args: &[OsString], prefix: &str) -> Result<RunnerScheduling> {
     let mut scheduling = RunnerScheduling::default();
     let mut index = 0;
     while index < args.len() {
@@ -251,30 +254,33 @@ fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
             "--state-ordering" => scheduling.state_ordering = true,
             "--jobs" => {
                 index += 1;
-                let value = args.get(index).context("--jobs requires a positive integer")?;
-                let jobs = value
-                    .to_string_lossy()
-                    .parse::<u32>()
-                    .context("--jobs requires a positive integer")?;
+                let jobs_requirement = format!("--{prefix}jobs requires a positive integer");
+                let value = args.get(index).context(jobs_requirement.clone())?;
+                let jobs =
+                    value.to_string_lossy().parse::<u32>().context(jobs_requirement.clone())?;
                 if jobs == 0 {
-                    bail!("--jobs requires a positive integer");
+                    bail!(jobs_requirement);
                 }
                 scheduling.jobs = Some(jobs);
             }
             "--property" => {
                 index += 1;
-                let value = args.get(index).context("--property requires key=value")?;
+                let property_requirement = format!("--{prefix}property requires key=value");
+                let value = args.get(index).context(property_requirement.clone())?;
                 let value = value.to_string_lossy();
                 let (key, property) =
-                    value.split_once('=').context("--property requires key=value")?;
+                    value.split_once('=').context(property_requirement.clone())?;
                 if key.trim().is_empty() || property.trim().is_empty() {
-                    bail!("--property requires non-empty key=value");
+                    bail!("--{prefix}property requires non-empty key=value");
                 }
                 if scheduling.properties.insert(key.to_string(), property.to_string()).is_some() {
                     bail!("duplicate scheduling property {key}");
                 }
             }
-            other => bail!("unsupported scheduling option {other}"),
+            other => {
+                let other = other.strip_prefix("--").unwrap_or(other);
+                bail!("unsupported scheduling option --{prefix}{other}");
+            }
         }
         index += 1;
     }
@@ -285,14 +291,19 @@ fn parse_scheduling(args: &[OsString]) -> Result<RunnerScheduling> {
 /// raw bytes are spelled in plus the declared scheduling inputs. Both `build`
 /// and the checking commands consume the same declaration, so a plan is
 /// checked against what its operator declared rather than against itself.
-fn parse_declaration_options(args: &[OsString]) -> Result<(DiscoveryFrame, RunnerScheduling)> {
+fn parse_declaration_options(
+    args: &[OsString],
+    prefix: &str,
+) -> Result<(DiscoveryFrame, RunnerScheduling)> {
     let mut frame = None;
     let mut scheduling_args = Vec::new();
     let mut index = 0;
     while index < args.len() {
         if args[index].to_string_lossy() == "--frame" {
             index += 1;
-            let value = args.get(index).context("--frame requires a discovery frame")?;
+            let value = args
+                .get(index)
+                .with_context(|| format!("--{prefix}frame requires a discovery frame"))?;
             frame = Some(match value.to_string_lossy().as_ref() {
                 "runner_t_directory_relative" => DiscoveryFrame::RunnerTDirectoryRelative,
                 "repository_root_relative" => DiscoveryFrame::RepositoryRootRelative,
@@ -304,8 +315,10 @@ fn parse_declaration_options(args: &[OsString]) -> Result<(DiscoveryFrame, Runne
         }
         index += 1;
     }
-    let frame = frame.context("--frame is required; declare the raw discovery path frame")?;
-    Ok((frame, parse_scheduling(&scheduling_args)?))
+    let frame = frame.with_context(|| {
+        format!("--{prefix}frame is required; declare the raw discovery path frame")
+    })?;
+    Ok((frame, parse_scheduling(&scheduling_args, prefix)?))
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
