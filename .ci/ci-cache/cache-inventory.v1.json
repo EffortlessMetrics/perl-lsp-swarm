@@ -36,7 +36,7 @@
       "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "trusted_guarded",
+      "writer_disposition": "not_candidate_reachable",
       "repair_owner": null,
       "notes": null
     },
@@ -98,7 +98,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -131,7 +131,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -164,7 +164,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -230,7 +230,7 @@
         "shared_key": "nightly-lsp-memory-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -263,7 +263,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -296,7 +296,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -329,7 +329,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -362,7 +362,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -395,7 +395,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -428,7 +428,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -461,7 +461,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -528,7 +528,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -562,7 +562,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -596,7 +596,7 @@
         "shared_key": "ci-all-targets-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -630,7 +630,7 @@
         "shared_key": "ci-lsp-memory-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -664,7 +664,7 @@
         "shared_key": "ci-gate-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -698,7 +698,7 @@
         "shared_key": "ci-platform-scope-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -732,7 +732,7 @@
         "shared_key": "ci-gate-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -766,7 +766,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -800,7 +800,7 @@
         "shared_key": "ci-contract-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -834,7 +834,7 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -868,7 +868,7 @@
         "shared_key": "ci-ux-tests-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -902,7 +902,7 @@
         "shared_key": "ci-windows-platform-${{ hashFiles('Cargo.lock') }}-${{ steps.windows-scope-key.outputs.scope-hash }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -934,7 +934,7 @@
         "shared_key": "corpus-windows-reparse-proof-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -967,7 +967,7 @@
         "shared_key": "dap-editor-transport-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -1000,7 +1000,7 @@
         "shared_key": "dap-scorecard-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -1041,7 +1041,7 @@
       "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "trusted_guarded",
+      "writer_disposition": "not_candidate_reachable",
       "repair_owner": null,
       "notes": null
     },
@@ -1075,7 +1075,7 @@
           "${{ runner.os }}-mdbook-"
         ]
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "candidate_tree",
       "artifact_provenance": null,
       "writer_disposition": "candidate_writer_violation",
@@ -1108,7 +1108,7 @@
         "shared_key": "perl-lsp-rust-small-fallback-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -1141,7 +1141,7 @@
         "shared_key": "perl-lsp-rust-small-${{ env.RUST_VERSION }}-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -1176,7 +1176,7 @@
       "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "trusted_guarded",
+      "writer_disposition": "not_candidate_reachable",
       "repair_owner": null,
       "notes": null
     },
@@ -1239,7 +1239,7 @@
         "shared_key": "post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "reviewed_exception",
@@ -1276,8 +1276,8 @@
           "cpan-corpus-bounded-${{ runner.os }}-"
         ]
       },
-      "key_authority": "trusted",
-      "cached_byte_provenance": "trusted_tree",
+      "key_authority": "mixed",
+      "cached_byte_provenance": "not_proven",
       "artifact_provenance": null,
       "writer_disposition": "restore_only",
       "repair_owner": null,
@@ -1310,7 +1310,7 @@
         "restore_keys": null
       },
       "key_authority": "trusted",
-      "cached_byte_provenance": "trusted_tree",
+      "cached_byte_provenance": "not_proven",
       "artifact_provenance": null,
       "writer_disposition": "statically_dead",
       "repair_owner": null,
@@ -1347,7 +1347,7 @@
         ]
       },
       "key_authority": "trusted",
-      "cached_byte_provenance": "trusted_tree",
+      "cached_byte_provenance": "not_proven",
       "artifact_provenance": null,
       "writer_disposition": "statically_dead",
       "repair_owner": null,
@@ -1380,7 +1380,7 @@
         "restore_keys": null
       },
       "key_authority": "trusted",
-      "cached_byte_provenance": "trusted_tree",
+      "cached_byte_provenance": "not_proven",
       "artifact_provenance": null,
       "writer_disposition": "statically_dead",
       "repair_owner": null,
@@ -1417,7 +1417,7 @@
         ]
       },
       "key_authority": "trusted",
-      "cached_byte_provenance": "trusted_tree",
+      "cached_byte_provenance": "not_proven",
       "artifact_provenance": null,
       "writer_disposition": "statically_dead",
       "repair_owner": null,
@@ -1452,7 +1452,7 @@
         "restore_keys": null
       },
       "key_authority": "trusted",
-      "cached_byte_provenance": "trusted_tree",
+      "cached_byte_provenance": "not_proven",
       "artifact_provenance": null,
       "writer_disposition": "statically_dead",
       "repair_owner": null,
@@ -1487,7 +1487,7 @@
         "restore_keys": null
       },
       "key_authority": "trusted",
-      "cached_byte_provenance": "trusted_tree",
+      "cached_byte_provenance": "not_proven",
       "artifact_provenance": null,
       "writer_disposition": "statically_dead",
       "repair_owner": null,
@@ -1521,7 +1521,7 @@
       "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "trusted_guarded",
+      "writer_disposition": "not_candidate_reachable",
       "repair_owner": null,
       "notes": null
     },
@@ -1551,11 +1551,11 @@
         "restore_keys": null
       },
       "key_authority": "not_proven",
-      "cached_byte_provenance": "candidate_tree",
-      "artifact_provenance": null,
-      "writer_disposition": "candidate_writer_violation",
-      "repair_owner": "needs-follow-up-issue",
-      "notes": "no save guard on a candidate-reachable writer; recorded honestly, not repaired here (#9177)"
+      "cached_byte_provenance": "not_proven",
+      "artifact_provenance": "workflow_run producer: Publish to crates.io",
+      "writer_disposition": "not_proven",
+      "repair_owner": null,
+      "notes": "reachable only via workflow_run/workflow_call; the executed subject is caller/artifact-resolved, not the candidate tree, so this is not_proven rather than a demonstrated candidate write"
     },
     {
       "id": "pr-candidate-set/reconcile/0",
@@ -1575,7 +1575,7 @@
       "job_condition": null,
       "step_condition": null,
       "save_condition": "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}",
-      "save_authority_source": "event_and_ref_guard",
+      "save_authority_source": "event_guard",
       "payload_class": "cargo_target",
       "cached_paths": [],
       "key_dimensions": {
@@ -1586,7 +1586,7 @@
       "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "trusted_guarded",
+      "writer_disposition": "reviewed_exception",
       "repair_owner": null,
       "notes": null
     },
@@ -1614,10 +1614,10 @@
         "shared_key": null,
         "restore_keys": null
       },
-      "key_authority": "not_proven",
+      "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "trusted_guarded",
+      "writer_disposition": "not_candidate_reachable",
       "repair_owner": null,
       "notes": null
     },
@@ -1680,7 +1680,7 @@
       "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "trusted_guarded",
+      "writer_disposition": "not_candidate_reachable",
       "repair_owner": null,
       "notes": null
     },
@@ -1878,7 +1878,7 @@
         "shared_key": "ux-gate-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
       "writer_disposition": "trusted_guarded",
@@ -1910,7 +1910,7 @@
         "shared_key": "vscode-current-source-smoke-${{ hashFiles('Cargo.lock') }}",
         "restore_keys": null
       },
-      "key_authority": "trusted",
+      "key_authority": "mixed",
       "cached_byte_provenance": "candidate_tree",
       "artifact_provenance": null,
       "writer_disposition": "candidate_writer_violation",
@@ -1944,7 +1944,7 @@
         "restore_keys": null
       },
       "key_authority": "trusted",
-      "cached_byte_provenance": "trusted_tree",
+      "cached_byte_provenance": "not_proven",
       "artifact_provenance": null,
       "writer_disposition": "statically_dead",
       "repair_owner": null,
@@ -1977,7 +1977,7 @@
       "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "trusted_guarded",
+      "writer_disposition": "not_candidate_reachable",
       "repair_owner": null,
       "notes": "reached via composite action .github/actions/setup-rust called by main-history-event.yml/classify"
     }

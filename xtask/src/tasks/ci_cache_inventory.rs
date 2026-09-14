@@ -718,11 +718,7 @@ fn key_authority_for(
     if !candidate_influenced {
         return KeyAuthority::Trusted;
     }
-    if has_trusted_key_dimension(&text) {
-        KeyAuthority::Mixed
-    } else {
-        KeyAuthority::Candidate
-    }
+    if has_trusted_key_dimension(&text) { KeyAuthority::Mixed } else { KeyAuthority::Candidate }
 }
 
 // ---------------------------------------------------------------------------
@@ -1881,8 +1877,7 @@ mod tests {
 
         let manifest_raw = fs::read_to_string(root.join(".ci/ci-cache/cache-inventory.v1.json"))
             .expect("read checked-in cache inventory manifest");
-        let manifest: JsonValue =
-            serde_json::from_str(&manifest_raw).expect("parse manifest JSON");
+        let manifest: JsonValue = serde_json::from_str(&manifest_raw).expect("parse manifest JSON");
 
         let mut diffs = diff_inventory(
             &inventory.families,
@@ -1915,7 +1910,8 @@ mod tests {
         let schema_raw = fs::read_to_string(root.join("schemas/ci_cache_receipt.v1.schema.json"))
             .expect("read ci_cache_receipt schema");
         let schema: JsonValue = serde_json::from_str(&schema_raw).expect("parse schema JSON");
-        let validator = jsonschema::validator_for(&schema).expect("compile ci_cache_receipt schema");
+        let validator =
+            jsonschema::validator_for(&schema).expect("compile ci_cache_receipt schema");
         let errors: Vec<String> =
             validator.iter_errors(&receipt_json).map(|error| error.to_string()).collect();
         assert!(errors.is_empty(), "receipt violates its own schema: {errors:?}");
@@ -1930,7 +1926,8 @@ mod tests {
         let schema_raw = fs::read_to_string(root.join("schemas/ci_cache_receipt.v1.schema.json"))
             .expect("read ci_cache_receipt schema");
         let schema: JsonValue = serde_json::from_str(&schema_raw).expect("parse schema JSON");
-        let validator = jsonschema::validator_for(&schema).expect("compile ci_cache_receipt schema");
+        let validator =
+            jsonschema::validator_for(&schema).expect("compile ci_cache_receipt schema");
         let errors: Vec<String> =
             validator.iter_errors(&receipt_json).map(|error| error.to_string()).collect();
         assert!(errors.is_empty(), "failed-instrument receipt violates its own schema: {errors:?}");
@@ -2036,8 +2033,11 @@ mod tests {
         let root = project_root();
         let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
             .expect("derive inventory");
-        let row =
-            find_row(&inventory.families, "vscode-current-source-linux-smoke.yml", "current-source-linux-smoke");
+        let row = find_row(
+            &inventory.families,
+            "vscode-current-source-linux-smoke.yml",
+            "current-source-linux-smoke",
+        );
         assert_eq!(
             row.writer_disposition,
             WriterDisposition::CandidateWriterViolation,
@@ -2101,7 +2101,8 @@ jobs:
     fn negative_control_1_active_site_missing_from_manifest_is_drift() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let workflows = fixture_workflows_dir(&tmp, "sample.yml", SAMPLE_CACHE_WORKFLOW);
-        let inventory = derive_families_in_dirs(&workflows, None).expect("derive fixture inventory");
+        let inventory =
+            derive_families_in_dirs(&workflows, None).expect("derive fixture inventory");
         assert_eq!(inventory.families.len(), 1);
 
         let diffs = diff_inventory(&inventory.families, &json!([]));
@@ -2221,7 +2222,9 @@ jobs:
         );
 
         let diffs = diff_inventory(&inventory.families, &json!([]));
-        assert!(diffs.iter().any(|diff| diff.contains("missing manifest row for active cache site")));
+        assert!(
+            diffs.iter().any(|diff| diff.contains("missing manifest row for active cache site"))
+        );
     }
 
     const PULL_REQUEST_TARGET_WORKFLOW: &str = r#"
@@ -2401,8 +2404,7 @@ jobs:
         let root = project_root();
         let manifest_raw = fs::read_to_string(root.join(".ci/ci-cache/cache-inventory.v1.json"))
             .expect("read checked-in manifest");
-        let manifest: JsonValue =
-            serde_json::from_str(&manifest_raw).expect("parse manifest JSON");
+        let manifest: JsonValue = serde_json::from_str(&manifest_raw).expect("parse manifest JSON");
         let top_level = manifest.as_object().expect("manifest must be a JSON object");
         for forbidden in ["denominator", "active_total", "total", "count"] {
             assert!(

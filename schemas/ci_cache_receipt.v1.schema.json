@@ -243,6 +243,7 @@
               "statically_dead",
               "restore_only",
               "reviewed_exception",
+              "not_candidate_reachable",
               "not_proven"
             ]
           },
