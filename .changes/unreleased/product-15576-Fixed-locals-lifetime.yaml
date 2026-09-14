@@ -1,7 +1,7 @@
 project: product
 component: Editor behavior
 kind: Fixed
-body: Keep debugger controls responsive while locals queries are pending and discard stale locals results after execution resumes or the session changes.
+body: Discard stale locals results after execution resumes or the debug session changes.
 time: 2026-09-14T02:20:18Z
 custom:
   PR: "15576"
