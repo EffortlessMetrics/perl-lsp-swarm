@@ -1095,7 +1095,15 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Pa
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to run {binary}"))?;
-    let stderr = child.stderr.take();
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            // `Stdio::piped()` above always yields a handle; an absent one means
+            // the child is not the process this transport configured.
+            settle_ripr_child(&mut child);
+            bail!("{binary} was spawned without the piped stderr this transport requires");
+        }
+    };
     let cap = StagedPayloadCap { path: stdout_file.path(), max_bytes };
     let (status, stderr_bytes) = drain_stderr_and_wait(&mut child, stderr, &binary, Some(&cap))?;
     if !status.success() {
@@ -1111,9 +1119,10 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Pa
         );
     }
     // The publication invariant, measured on the completed payload: an
-    // over-cap artifact is never published. A producer that passes the cap and
-    // exits inside one poll interval is settled by its own exit rather than by
-    // the waiter above, so this is the check that holds for it.
+    // over-cap artifact is never published. The waiter measures before it polls
+    // `try_wait`, so a producer that passes the cap and exits in the window
+    // between those two steps is reaped by its own exit and never measured
+    // again in the loop; this is the check that holds for it.
     cap.check(&binary)?;
     stdout_file
         .persist(out_path)
@@ -1251,38 +1260,65 @@ fn parse_max_raw_check_bytes(value: &str) -> Result<u64> {
 /// publish.
 fn drain_stderr_and_wait(
     child: &mut Child,
-    stderr: Option<impl Read + Send + 'static>,
+    stderr: impl Read + Send + 'static,
     binary: &str,
     cap: Option<&StagedPayloadCap<'_>>,
 ) -> Result<(ExitStatus, Vec<u8>)> {
     let read_failed = Arc::new(AtomicBool::new(false));
-    let drain = stderr.map(|stderr| {
+    let drain = {
         let read_failed = Arc::clone(&read_failed);
         thread::spawn(move || drain_bounded_stderr(stderr, &read_failed))
-    });
+    };
 
     // Settles the producer on every failure arm, so the drain below always
     // reaches EOF and the join cannot block on a live child.
     let waited = wait_within_cap(child, binary, cap, &read_failed);
 
-    let stderr_bytes = match drain.map(thread::JoinHandle::join) {
-        Some(Ok(Ok(stderr_bytes))) => stderr_bytes,
+    let stderr_bytes = match drain.join() {
+        Ok(Ok(stderr_bytes)) => stderr_bytes,
         // A stderr read failure is the precise diagnosis for the wait abort it
         // causes, so it is surfaced ahead of that abort.
-        Some(Ok(Err(error))) => {
+        Ok(Err(error)) => {
             settle_ripr_child(child);
             return Err(error).with_context(|| format!("failed to read {binary} stderr"));
         }
-        Some(Err(_)) => {
+        Err(_) => {
             settle_ripr_child(child);
             bail!("the {binary} stderr drain thread panicked");
         }
-        None => Vec::new(),
     };
 
     match waited? {
         Some(status) => Ok((status, stderr_bytes)),
-        None => bail!("failed to read {binary} stderr"),
+        // The drain signalled failure yet returned neither an error nor a
+        // panic. That is an internal inconsistency in this transport, not a
+        // producer fault, so it is not reported as one.
+        None => bail!(
+            "the {binary} stderr drain reported a failure without surfacing one; \
+             the producer was terminated and no evidence artifact was published"
+        ),
+    }
+}
+
+/// Releases the waiter if the drain stops for any reason other than reaching
+/// EOF, including a panic.
+///
+/// `read_failed` is the only channel by which the waiter learns the drain is no
+/// longer running. Setting it from the error arm alone would leave a panicking
+/// drain invisible: the waiter would keep polling a producer that is blocked
+/// writing into a stderr pipe nobody is reading, and neither would ever finish.
+/// Disarming on the success path keeps a normal EOF — which happens while the
+/// producer may still legitimately be working — from aborting the wait.
+struct StderrDrainSentinel<'a> {
+    read_failed: &'a AtomicBool,
+    armed: bool,
+}
+
+impl Drop for StderrDrainSentinel<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.read_failed.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -1292,19 +1328,14 @@ fn drain_stderr_and_wait(
 /// stopping the read would leave the producer blocked on a full pipe, and it
 /// would never exit.
 fn drain_bounded_stderr(mut stderr: impl Read, read_failed: &AtomicBool) -> io::Result<Vec<u8>> {
+    let mut sentinel = StderrDrainSentinel { read_failed, armed: true };
     let mut stderr_bytes = Vec::new();
     let mut chunk = [0_u8; 8 * 1024];
     loop {
-        let read = match stderr.read(&mut chunk) {
-            Ok(read) => read,
-            Err(error) => {
-                // Releases the waiter, which is otherwise polling a producer
-                // whose diagnostics can no longer be collected.
-                read_failed.store(true, Ordering::Release);
-                return Err(error);
-            }
-        };
+        // The sentinel releases the waiter on this arm, and on a panic.
+        let read = stderr.read(&mut chunk)?;
         if read == 0 {
+            sentinel.armed = false;
             return Ok(stderr_bytes);
         }
         let spare = MAX_RIPR_STDERR_BYTES.saturating_sub(stderr_bytes.len());
@@ -11516,6 +11547,52 @@ paths = ["archive/**"]
         }
     }
 
+    struct PanickingStderrReader;
+
+    impl Read for PanickingStderrReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            panic!("injected stderr drain panic")
+        }
+    }
+
+    /// A drain that dies without returning an error must still release the
+    /// waiter. Otherwise the waiter keeps polling a producer that can block
+    /// forever writing into a stderr pipe nobody is reading, and the whole
+    /// transport hangs instead of failing closed.
+    #[test]
+    fn a_panicking_stderr_drain_still_settles_the_producer() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let binary = write_sleeping_ripr_stub(temp.path(), "ripr-panicking-stderr")?;
+        let mut child = Command::new(&binary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("failed to spawn long-lived test producer")?;
+        let started = Instant::now();
+
+        let error = drain_stderr_and_wait(&mut child, PanickingStderrReader, "ripr", None)
+            .err()
+            .ok_or_else(|| eyre!("a panicking stderr drain must return an error"))?;
+
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("panicked"),
+            "the panic must be reported as such: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(30),
+            "a panicking drain left the waiter polling a producer that never exits"
+        );
+        let status = child
+            .try_wait()?
+            .ok_or_else(|| eyre!("producer was not reaped after the stderr drain panicked"))?;
+        color_eyre::eyre::ensure!(
+            !status.success(),
+            "a settled producer must not report success: {status}"
+        );
+        Ok(())
+    }
+
     struct ChunkedStderrReader {
         remaining: usize,
         chunk_size: usize,
@@ -11543,7 +11620,7 @@ paths = ["archive/**"]
             .spawn()
             .context("failed to spawn long-lived test producer")?;
         let started = Instant::now();
-        let error = drain_stderr_and_wait(&mut child, Some(FailingStderrReader), "ripr", None)
+        let error = drain_stderr_and_wait(&mut child, FailingStderrReader, "ripr", None)
             .err()
             .ok_or_else(|| eyre!("a failing stderr reader must return an error"))?;
         let message = format!("{error:#}");
@@ -11576,7 +11653,7 @@ paths = ["archive/**"]
             .context("failed to spawn short-lived test producer")?;
         let (status, stderr_bytes) = drain_stderr_and_wait(
             &mut child,
-            Some(ChunkedStderrReader { remaining: MAX_RIPR_STDERR_BYTES * 2, chunk_size: 1024 }),
+            ChunkedStderrReader { remaining: MAX_RIPR_STDERR_BYTES * 2, chunk_size: 1024 },
             "ripr",
             None,
         )?;
