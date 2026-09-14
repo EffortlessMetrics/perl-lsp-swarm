@@ -464,6 +464,13 @@ fn root_and_logical_path(
         return Err(NotReusable::SourcePathNotPlainDescent);
     }
     let parent = document_path.parent().ok_or(NotReusable::SourcePathHasNoFileName)?;
+    // The standalone root key is a directory path, and it has to be as plainly
+    // spelled as an owned root-relative path: `/outside/dir/..` names the same
+    // directory as `/outside` but keys a different identity, so two spellings of
+    // one directory would otherwise become two roots.
+    if parent.components().any(|c| matches!(c, Component::CurDir | Component::ParentDir)) {
+        return Err(NotReusable::SourcePathNotPlainDescent);
+    }
     let file_name = document_path
         .file_name()
         .and_then(|name| name.to_str())
@@ -482,6 +489,14 @@ fn root_and_logical_path(
 /// prefix) makes the path unusable here instead of being folded into something
 /// that merely looks canonical. A non-UTF-8 segment is also rejected, because
 /// `to_string_lossy` maps distinct files onto one spelling.
+///
+/// One normalization *is* inherited from [`Path::components`] and is deliberate:
+/// a repeated separator is dropped, so `lib//Mod.pm` and `lib/Mod.pm` yield one
+/// spelling. Those name the same file, so collapsing them gives that file one
+/// identity — the opposite of the `..` case, where folding would silently
+/// redirect identity to a *different* file. `RootRelativeLogicalPath` is stricter
+/// because it validates a path someone already claims is canonical; this function
+/// derives a canonical path from an OS path, which is a different question.
 ///
 /// # Errors
 ///
@@ -901,6 +916,32 @@ mod tests {
             Err(NotReusable::SourcePathNotPlainDescent),
             "a document the server knows the root of must not fall back to standalone"
         );
+    }
+
+    /// The standalone root key is a directory path and must be as plainly spelled
+    /// as an owned root-relative path. `/outside/dir/..` names the same directory
+    /// as `/outside` but would key a different identity, so two spellings of one
+    /// directory would otherwise become two roots.
+    #[test]
+    fn standalone_root_key_rejects_dot_segments() {
+        let context = context_with(Some(ROOT_A));
+        assert_eq!(
+            pull_report_subject("/outside/dir/../Mod.pm", CONTENT, Some(1), &context),
+            Err(NotReusable::SourcePathNotPlainDescent)
+        );
+    }
+
+    /// A repeated separator names the same file, so it must yield the *same*
+    /// identity — the deliberate exception to "nothing is folded", and the
+    /// opposite of the `..` case where folding would redirect identity to a
+    /// different file.
+    #[test]
+    fn repeated_separators_name_one_file_and_one_identity() {
+        let context = context_with(Some(ROOT_A));
+        let doubled = subject_for(&context, "/tmp/ws-a/lib//Mod.pm", CONTENT).compose().ok();
+        let single = subject_for(&context, "/tmp/ws-a/lib/Mod.pm", CONTENT).compose().ok();
+        assert_eq!(doubled, single, "one file must have one identity");
+        assert!(doubled.is_some(), "both spellings must compose");
     }
 
     /// A filesystem root names no file, so there is no logical source.

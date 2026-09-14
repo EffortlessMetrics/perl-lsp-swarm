@@ -98,8 +98,13 @@ pub struct PullDiagnosticsContext {
     ///
     /// Kept separate from the root key on purpose. The key is the root's durable
     /// authority material; this is local evidence for relativization and must
-    /// never itself become identity input. `None` is treated exactly like a
-    /// missing root authority: no reusable result ID.
+    /// never itself become identity input.
+    ///
+    /// `None` does **not** mean "no root authority" — that is
+    /// [`Self::identity_root_key`]'s job. With a key but no path the document
+    /// cannot be positioned inside the root, so it falls back to a standalone
+    /// identity relative to its own directory and still carries a reusable result
+    /// ID. Only a missing *key* yields no ID at all.
     pub identity_root_path: Option<PathBuf>,
     /// Current project-fact (workspace index) generation, when the fact tier
     /// is live and fresh for this document. `None` encodes the explicit

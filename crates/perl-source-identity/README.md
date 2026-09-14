@@ -27,7 +27,12 @@ All durable IDs use **SHA-256** with domain separation:
 
 - Fixed inputs always produce byte-identical IDs across machines and builds.
 - No host path, URI, traversal-order counter, or process-local value becomes
-  stable identity.
+  stable identity — for the *logical path*, `RootRelativeLogicalPath` now
+  enforces this (see below). The project name and root key remain
+  authority-defined caller material, and the low-level
+  `LogicalSourceId::from_root_and_path` still hashes whatever it is given, so
+  this is a guarantee about the governed constructors rather than about every
+  public entry point.
 - IDs of different kinds never collide even when their material inputs match
   (each type uses a unique domain prefix).
 - Fields are length-prefixed so `["a", "bc"]` and `["ab", "c"]` hash

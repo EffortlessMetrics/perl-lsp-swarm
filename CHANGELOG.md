@@ -63,6 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vectors are unchanged, and the crate still depends only on `serde` + `sha2`
   (#15555, under #7655/#4851).
 
+- **Breaking (`perl-lsp-rs`): `PullDiagnosticsContext` gains a public
+  `identity_root_path: Option<PathBuf>` field.** The struct has public fields, so
+  any downstream exhaustive struct literal must add it; `PullDiagnosticsContext::new()`
+  and the other constructors are unaffected. **Migration:** add
+  `identity_root_path: None` to preserve today's behavior for a context that never
+  had one, or set it to the same resolved root that produced `identity_root_key`
+  to get root-relative identities. Per `docs/reference/STABILITY.md` this
+  public-field addition requires the next minor release; it must not ship in a
+  0.17.x patch. `NotReusable` also gains variants and becomes `#[non_exhaustive]`,
+  so downstream matches need a wildcard arm — once — rather than a new arm per
+  future refusal reason (#15555).
+
 - **Pull diagnostics: report identity is now positioned relative to the owning
   workspace root.** The composer previously used `url::Url::path()` — the *host
   absolute* path — with its leading slash stripped, so the same logical file in
