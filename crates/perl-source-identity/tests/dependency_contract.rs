@@ -42,7 +42,7 @@ const FORBIDDEN: &[&str] = &[
     "perl-semantic-analyzer",
     "perl-semantic-facts",
     // Product configuration / trust policy
-    "perl-kwalitee",
+    "perl-release-readiness",
     "perl-corpus",
     "perl-ripr-facts",
 ];

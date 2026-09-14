@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "commit": "db2ac971a",
+  "commit": "ff26fa494",
   "cadence": "pr",
   "generated_by": "cargo xtask metrics parser-accuracy --export-status-receipts",
   "failure_packet_count": 50,
@@ -112,6 +112,7 @@
       ],
       "actual_nearest": [
         "FunctionCall line=5 span=\"has name => (is => 'ro')\" parent=Some(\"ExpressionStatement\")",
+        "String line=5 span=\"name\" parent=Some(\"FunctionCall\")",
         "HashLiteral line=5 span=\"(is => 'ro')\" parent=Some(\"FunctionCall\")",
         "String line=5 span=\"is\" parent=Some(\"HashLiteral\")",
         "String line=5 span=\"'ro'\" parent=Some(\"HashLiteral\")"
@@ -137,6 +138,7 @@
       ],
       "actual_nearest": [
         "FunctionCall line=5 span=\"has name => (is => 'ro')\" parent=Some(\"ExpressionStatement\")",
+        "String line=5 span=\"name\" parent=Some(\"FunctionCall\")",
         "HashLiteral line=5 span=\"(is => 'ro')\" parent=Some(\"FunctionCall\")",
         "String line=5 span=\"is\" parent=Some(\"HashLiteral\")",
         "String line=5 span=\"'ro'\" parent=Some(\"HashLiteral\")"

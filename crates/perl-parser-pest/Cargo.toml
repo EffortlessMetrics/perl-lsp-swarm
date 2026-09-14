@@ -1,12 +1,28 @@
+# Standalone-resolvable manifest (#8771).
+#
+# Every package and dependency key below is literal: this package describes
+# itself without borrowing identity, versions, dependencies, or test helpers
+# from the swarm workspace. Do not reintroduce `*.workspace = true` for any of
+# them — `tests/standalone_package.rs` fails closed on workspace inheritance
+# and on any path-only dependency.
+#
+# `[lints]` is the one deliberate exception, required by a repository gate; see
+# the note above that table.
+#
+# `version`, `repository`, and `homepage` deliberately still name the current
+# swarm/public lineage. The external `perl-parser-pest` repository does not
+# exist yet (train #8410 / #7373); claiming it here would be false metadata.
+# The pending external owner is recorded under `[package.metadata.extraction]`.
+
 [package]
 name = "perl-parser-pest"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-homepage.workspace = true
+version = "0.17.0"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Steven Zimmerman, CPA <git@effortlesssteven.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/EffortlessMetrics/perl-lsp"
+homepage = "https://github.com/EffortlessMetrics/perl-lsp"
 documentation = "https://docs.rs/perl-parser-pest"
 description = "Legacy Pest-based Perl parser (v2) — maintained as a learning tool and compatibility layer"
 readme = "README.md"
@@ -14,22 +30,31 @@ keywords = ["perl", "parser", "pest", "peg", "ast"]
 categories = ["parsing", "development-tools"]
 include = [
   "src/**",
-  "src/grammar.pest",
+  "tests/**",
+  "examples/**",
   "Cargo.toml",
   "README.md",
-  "LICENSE*",
-  "tests/fixtures/**",
-  "tests/support/**",
-  "tests/fixture_manifest.rs",
+  "CLAUDE.md",
+  "ROADMAP.md",
+  "LICENSE-APACHE",
+  "LICENSE-MIT",
 ]
+
+# Migration disposition, not a claim that the move has happened.
+[package.metadata.extraction]
+status = "pending"
+current_owner = "https://github.com/EffortlessMetrics/perl-lsp"
+tracking_issue = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7373"
+train_issue = "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/8410"
+note = "repository/homepage stay on the current lineage until the external repository exists."
 
 [dependencies]
 pest = "2.8.6"
 pest_derive = "2.8.6"
-regex.workspace = true
+regex = "1.12.2"
 stacker = "0.1.24"
-thiserror.workspace = true
-serde = { workspace = true }
+thiserror = "2.0.18"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [features]
 default = []
@@ -37,11 +62,9 @@ default = []
 serde = []
 
 [dev-dependencies]
-perl-tdd-support = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
-sha2.workspace = true
-tempfile.workspace = true
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+tempfile = "3.24.0"
 toml = "1.1.2"
 
 [lib]
@@ -51,5 +74,12 @@ doctest = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+# Lint policy stays workspace-inherited. `cargo xtask check-lint-policy` is a
+# required gate and enforces `[lints] workspace = true` on every workspace
+# member with no exemption mechanism, so the lint half of #8771's standalone
+# contract cannot land while this crate is a workspace member. That residual is
+# tracked separately; `tests/standalone_package.rs` pins this as the single
+# permitted inheritance so the rest of the manifest cannot quietly follow it
+# back.
 [lints]
 workspace = true

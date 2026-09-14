@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-06",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14790"
+    ],
+    "subject_shas": [],
+    "boundary": "Immutable bounded structured excerpts; canonical GitHub subjects and exact candidate SHAs are retained. The fixture proves CP00-EXPLICITLY-NOT-PROVEN still rejects a close that leaves the closed issue's remaining work unproven even when a later sentence names the neighboring issue that tracks that leftover."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990014,
+    "title": "fix(query): gate one stale caller (#9000901)",
+    "body": "## Claim Boundary\n\nThis PR does not prove the complete remaining work. That work is tracked by #9000902.\n\nCloses #9000901."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9000901,
+      "title": "fix(query): gate the complete stale-query cohort",
+      "body": "## Acceptance\n\nEvery current caller is generation-gated and the exact five-row denominator is reconciled."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9000901,
+        "code": "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK"
+      }
+    ]
+  }
+}
