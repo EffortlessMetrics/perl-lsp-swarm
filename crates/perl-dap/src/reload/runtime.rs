@@ -2189,6 +2189,12 @@ mod tests {
         use std::io::Write as _;
 
         let mut command = oracle.into_command();
+        #[cfg(windows)]
+        {
+            // Match the production pipe launch: Strawberry's debugger must
+            // use its non-console transport when stdio is redirected.
+            command.env("EMACS", "1").env("PERLDB_OPTS", "ReadLine=0");
+        }
         command
             .arg("-d")
             .arg("-I")
@@ -2356,8 +2362,10 @@ mod tests {
         )?;
 
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            // The subject names the real runtime path perl will resolve.
-            let resolved = module_path.to_string_lossy().into_owned();
+            // Perl's runtime registration keeps the platform prefix but uses
+            // slash separators after the scratch root; bind the fixture to
+            // that exact `%INC` spelling instead of PathBuf's Windows form.
+            let resolved = format!("{}/{}", scratch.to_string_lossy(), KEY);
             let subject = SubjectCandidate {
                 inc_key: KEY.to_string(),
                 resolved_runtime_path: resolved.clone(),
