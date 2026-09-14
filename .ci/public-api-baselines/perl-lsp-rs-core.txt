@@ -2434,6 +2434,7 @@ pub const perl_lsp_rs_core::protocol::schema::SCHEMA_SOURCE_JSON: &str
 pub const perl_lsp_rs_core::protocol::schema::SCHEMA_SOURCE_MANIFEST_SHA256: &str
 pub const perl_lsp_rs_core::protocol::schema::UPSTREAM_PROTOCOL_COMMIT: &str
 pub fn perl_lsp_rs_core::protocol::schema::registered_schema_identities() -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_lsp_rs_core::protocol::schema::validate_did_change_content_changes(value: &serde_json::value::Value) -> core::result::Result<(), perl_lsp_rs_core::protocol::schema::SchemaError>
 pub enum perl_lsp_rs_core::protocol::ClassificationRoute
 pub perl_lsp_rs_core::protocol::ClassificationRoute::AppAdapter(&'static str)
 pub perl_lsp_rs_core::protocol::ClassificationRoute::TraitImpl

@@ -329,7 +329,9 @@ pub struct AttachRequestArguments {
     /// Connection timeout in milliseconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u32>,
-    /// If true, pause at the first available program location after attaching.
+    /// Request a pause at the first available program location after attaching.
+    /// TCP attachments reject true because the peer protocol cannot request or
+    /// acknowledge this pause; set it to false and configure the peer instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_on_entry: Option<bool>,
 }
