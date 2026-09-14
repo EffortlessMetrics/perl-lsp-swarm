@@ -14,8 +14,309 @@ use real_process::RealProcessClient;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+fn explain_trace(client: &mut RealProcessClient, provider: &str) -> Result<Value> {
+    let id = json!("explain-trace");
+    let response = client.request(
+        id.clone(),
+        "workspace/executeCommand",
+        json!({
+            "command": "perl.explainProviderDecision",
+            "arguments": [{"provider": provider}]
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&response, &id)?;
+    ensure!(response.get("error").is_none(), "explanation request failed: {response}");
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("missing explanation: {response}"))
+}
+
+fn open_trace_fixture(client: &mut RealProcessClient) -> Result<&'static str> {
+    let uri = "file:///workspace/provider-trace.pl";
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1,
+            "text": "my $value = 1;\nprint $value;\n"
+        }}),
+    )?;
+    Ok(uri)
+}
+
+#[test]
+fn generic_trace_success_does_not_invent_freshness() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-trace"))?;
+    let uri = open_trace_fixture(&mut client)?;
+    let hover = client.request(
+        json!(801),
+        "textDocument/hover",
+        json!({
+            "textDocument": {"uri": uri}, "position": {"line": 1, "character": 2}
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&hover, &json!(801))?;
+    ensure!(hover.get("error").is_none(), "valid hover failed: {hover}");
+    ensure!(
+        hover.pointer("/result/contents").is_some_and(|value| value.to_string().contains("print")),
+        "builtin hover control must describe print: {hover}"
+    );
+    let explanation = explain_trace(&mut client, "hover")?;
+    ensure!(
+        explanation.pointer("/request_receipt/freshness") == Some(&json!("unknown")),
+        "dispatch shape alone cannot establish freshness: {explanation}"
+    );
+    ensure!(
+        explanation.pointer("/request_receipt/source_backed_state")
+            == Some(&json!("not_proven_by_dispatch_trace")),
+        "expected the actual generic dispatch trace: {explanation}"
+    );
+    ensure!(
+        explanation.pointer("/request_receipt/live_provider_result_count") == Some(&json!(1)),
+        "successful hover trace must still record the actual result: {explanation}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-trace"))
+}
+
+#[test]
+fn generic_trace_error_does_not_invent_freshness() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-trace-error"))?;
+    let response = client.request(json!("801"), "textDocument/hover", json!({}), timeout())?;
+    assert_response_id(&response, &json!("801"))?;
+    ensure!(
+        response.pointer("/error/code") == Some(&json!(-32602)),
+        "expected invalid params: {response}"
+    );
+    let explanation = explain_trace(&mut client, "hover")?;
+    ensure!(
+        explanation.pointer("/request_receipt/freshness") == Some(&json!("unknown")),
+        "provider error without accepted-state evidence cannot claim freshness: {explanation}"
+    );
+    ensure!(
+        explanation.pointer("/request_receipt/provider_error/code") == Some(&json!(-32602)),
+        "trace must retain the provider error: {explanation}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-trace-error"))
+}
+
+#[test]
+fn generic_trace_preserves_provider_owned_full_token_freshness() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-trace-tokens"))?;
+    let uri = open_trace_fixture(&mut client)?;
+    let response = client.request(
+        json!(802),
+        "textDocument/semanticTokens/full",
+        json!({
+            "textDocument": {"uri": uri}
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&response, &json!(802))?;
+    ensure!(response.get("error").is_none(), "valid full-token request failed: {response}");
+    ensure!(
+        response
+            .pointer("/result/data")
+            .and_then(Value::as_array)
+            .is_some_and(|data| !data.is_empty()),
+        "full-token control must execute the provider: {response}"
+    );
+    let explanation = explain_trace(&mut client, "semantic_tokens")?;
+    ensure!(
+        explanation.pointer("/request_receipt/freshness") == Some(&json!("fresh")),
+        "dispatcher must preserve provider-owned freshness: {explanation}"
+    );
+    ensure!(
+        explanation.pointer("/request_receipt/provider_action")
+            == Some(&json!("textDocument/semanticTokens/full")),
+        "expected the provider-owned full-token trace: {explanation}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-trace-tokens"))
+}
+
 fn timeout() -> Duration {
     Duration::from_secs(10)
+}
+
+fn check_policy_message(receipt: Option<Value>, expected_evidence: &str) -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-policy"))?;
+    let expected_freshness = receipt
+        .as_ref()
+        .map(|value| value.get("freshness").cloned().unwrap_or_else(|| json!("unknown")));
+    let expected_detail = receipt
+        .as_ref()
+        .and_then(|value| value.get("user_message"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let mut argument = json!({"provider": "hover"});
+    if expected_detail.is_some() {
+        let fields =
+            argument.as_object_mut().ok_or_else(|| anyhow::anyhow!("expected argument object"))?;
+        fields.insert("receipt_id".to_string(), json!("caller-receipt-marker"));
+        fields.insert("scenario".to_string(), json!("caller-scenario-marker"));
+    }
+    if let Some(receipt) = receipt {
+        let prior =
+            client.request(json!("prior-hover"), "textDocument/hover", json!({}), timeout())?;
+        assert_response_id(&prior, &json!("prior-hover"))?;
+        ensure!(
+            prior.pointer("/error/code") == Some(&json!(-32602)),
+            "expected prior hover error: {prior}"
+        );
+        argument
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("expected argument object"))?
+            .insert("request_receipt".to_string(), receipt);
+    }
+    let response = client.request(
+        json!("policy-message"),
+        "workspace/executeCommand",
+        json!({
+            "command": "perl.explainProviderDecision", "arguments": [argument]
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&response, &json!("policy-message"))?;
+    ensure!(response.get("error").is_none(), "explanation failed: {response}");
+    let result =
+        response.get("result").ok_or_else(|| anyhow::anyhow!("missing result: {response}"))?;
+    let message = result
+        .get("user_message")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("missing user message: {result}"))?;
+    ensure!(
+        message.contains("\nProvider policy summary:\n"),
+        "static defaults must be identified as policy: {message}"
+    );
+    ensure!(
+        message.starts_with(expected_evidence),
+        "request evidence must lead the message: {message}"
+    );
+    if let Some(detail) = expected_detail {
+        let (evidence, policy) = message
+            .split_once("\nProvider policy summary:\n")
+            .ok_or_else(|| anyhow::anyhow!("missing policy boundary: {message}"))?;
+        ensure!(
+            evidence.contains(&format!("Request detail: {detail}")),
+            "request detail must be in the evidence section: {message}"
+        );
+        ensure!(
+            !policy.contains(&detail) && message.matches(&detail).count() == 1,
+            "request detail must not be duplicated or labeled as policy: {message}"
+        );
+        for (field, marker) in
+            [("receipt_id", "caller-receipt-marker"), ("scenario", "caller-scenario-marker")]
+        {
+            ensure!(
+                evidence.contains(marker) && !policy.contains(marker),
+                "caller context must remain outside static policy: {message}"
+            );
+            ensure!(
+                result.get(field).and_then(Value::as_str) == Some(marker),
+                "structured caller context must be preserved: {result}"
+            );
+        }
+        ensure!(
+            result.pointer("/request_receipt/user_message").and_then(Value::as_str)
+                == Some(detail.as_str()),
+            "structured request detail must be preserved: {result}"
+        );
+    }
+    ensure!(
+        result.get("freshness") == Some(&json!("fresh")),
+        "message repair must preserve the structured policy default: {result}"
+    );
+    if let Some(expected_freshness) = expected_freshness {
+        ensure!(
+            result.pointer("/request_receipt/freshness") == Some(&expected_freshness),
+            "caller receipt must retain precedence and its structured freshness: {result}"
+        );
+        ensure!(
+            result.pointer("/request_receipt/provider_error").is_none(),
+            "prior hover error must not leak into the caller receipt: {result}"
+        );
+        ensure!(
+            result.pointer("/copyable_payload/request_receipt") == result.get("request_receipt"),
+            "copyable request receipt must match the structured evidence: {result}"
+        );
+    } else {
+        ensure!(
+            result.get("request_receipt").is_none(),
+            "no request receipt should be invented: {result}"
+        );
+        ensure!(
+            result.pointer("/copyable_payload/request_receipt") == Some(&Value::Null),
+            "copyable payload must retain its explicit absence representation: {result}"
+        );
+    }
+    ensure!(
+        result.pointer("/copyable_payload/user_message").and_then(Value::as_str) == Some(message),
+        "copyable message must match the displayed message: {result}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-policy"))
+}
+
+#[test]
+fn policy_message_without_request_evidence_is_explicit() -> Result<()> {
+    check_policy_message(None, "No request evidence is attached.")
+}
+
+#[test]
+fn policy_message_keeps_request_detail_out_of_policy() -> Result<()> {
+    check_policy_message(
+        Some(json!({
+            "freshness": "unknown", "user_message": "The recorded request returned no result."
+        })),
+        "Attached request freshness: unknown.",
+    )
+}
+
+#[test]
+fn policy_message_preserves_unknown_request_evidence() -> Result<()> {
+    check_policy_message(
+        Some(json!({"freshness": "unknown"})),
+        "Attached request freshness: unknown.",
+    )
+}
+
+#[test]
+fn policy_message_preserves_stale_request_evidence() -> Result<()> {
+    check_policy_message(Some(json!({"freshness": "stale"})), "Attached request freshness: stale.")
+}
+
+#[test]
+fn policy_message_preserves_fresh_request_evidence() -> Result<()> {
+    check_policy_message(Some(json!({"freshness": "fresh"})), "Attached request freshness: fresh.")
+}
+
+#[test]
+fn policy_message_preserves_not_applicable_request_evidence() -> Result<()> {
+    check_policy_message(
+        Some(json!({"freshness": "not_applicable"})),
+        "Attached request freshness: not applicable.",
+    )
+}
+
+#[test]
+fn policy_message_missing_request_freshness_is_unknown() -> Result<()> {
+    check_policy_message(Some(json!({})), "Attached request freshness: unknown.")
+}
+
+#[test]
+fn policy_message_invalid_request_freshness_is_unknown() -> Result<()> {
+    check_policy_message(
+        Some(json!({"freshness": "invented"})),
+        "Attached request freshness: unknown.",
+    )
 }
 
 fn assert_public_candidate(client: &RealProcessClient) -> Result<()> {
@@ -108,6 +409,42 @@ fn exact_public_candidate_completes_legal_lifecycle() -> Result<()> {
     assert_public_candidate(&client)?;
     initialize_and_notify(&mut client, json!("initialize-public"))?;
     shutdown_and_exit(&mut client, json!("shutdown-public"))
+}
+
+#[test]
+fn cancellation_of_unknown_or_completed_ids_does_not_poison_reuse() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-cancel-reuse"))?;
+    let uri = open_trace_fixture(&mut client)?;
+
+    for id in [json!(71003), json!("71003")] {
+        for phase in ["unknown", "completed"] {
+            client.notify("$/cancelRequest", json!({"id": id.clone()}))?;
+            let response = client.request(
+                id.clone(),
+                "textDocument/hover",
+                json!({
+                    "textDocument": {"uri": uri},
+                    "position": {"line": 1, "character": 2}
+                }),
+                timeout(),
+            )?;
+            assert_response_id(&response, &id)?;
+            ensure!(
+                response.get("error").is_none(),
+                "cancellation of {phase} ID {id} poisoned a later request: {response}"
+            );
+            ensure!(
+                response
+                    .pointer("/result/contents")
+                    .is_some_and(|contents| contents.to_string().contains("print")),
+                "later request must execute the real hover provider after {phase} cancellation: {response}"
+            );
+        }
+    }
+
+    shutdown_and_exit(&mut client, json!("shutdown-cancel-reuse"))
 }
 
 #[test]
@@ -325,6 +662,195 @@ fn exit_without_shutdown_returns_status_one() -> Result<()> {
     ensure!(!status.success(), "exit without shutdown succeeded");
     ensure!(status.code() == Some(1), "expected status 1, got {status}");
     client.assert_transport_clean()
+}
+
+fn require_missing_resolve_params_error(
+    method: &str,
+    id: Value,
+    explicit_null: bool,
+) -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-resolve-error"))?;
+    let request = if explicit_null {
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": null})
+    } else {
+        json!({"jsonrpc": "2.0", "id": id, "method": method})
+    };
+    client.send_raw_bytes(&RealProcessClient::encode_message(&request))?;
+    let response = client.receive_response(&id, timeout())?;
+    assert_response_id(&response, &id)?;
+    ensure!(response.get("result").is_none(), "invalid resolve returned a result: {response}");
+    ensure!(
+        response.pointer("/error/code") == Some(&json!(-32602)),
+        "missing resolve parameters must return InvalidParams: {response}"
+    );
+    ensure!(
+        response
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "invalid resolve must explain the error: {response}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-resolve-error"))
+}
+
+#[test]
+fn resolve_completion_without_params_returns_error() -> Result<()> {
+    require_missing_resolve_params_error("completionItem/resolve", json!(701), false)
+}
+
+#[test]
+fn resolve_completion_with_null_params_returns_error() -> Result<()> {
+    require_missing_resolve_params_error("completionItem/resolve", json!("701"), true)
+}
+
+#[test]
+fn resolve_code_action_without_params_returns_error() -> Result<()> {
+    require_missing_resolve_params_error("codeAction/resolve", json!(702), false)
+}
+
+#[test]
+fn resolve_code_action_with_null_params_returns_error() -> Result<()> {
+    require_missing_resolve_params_error("codeAction/resolve", json!("702"), true)
+}
+
+#[test]
+fn resolve_valid_items_retain_documentation_and_edits() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-resolve-valid"))?;
+    let completion = client.request(
+        json!(703),
+        "completionItem/resolve",
+        json!({"label": "print", "kind": 3, "extension": {"opaque": [1, "β"]}}),
+        timeout(),
+    )?;
+    assert_response_id(&completion, &json!(703))?;
+    ensure!(completion.get("error").is_none(), "valid completion failed: {completion}");
+    ensure!(
+        completion.pointer("/result/extension") == Some(&json!({"opaque": [1, "β"]})),
+        "completion lost extension data: {completion}"
+    );
+    ensure!(
+        completion.pointer("/result/label") == Some(&json!("print")),
+        "completion changed: {completion}"
+    );
+    ensure!(
+        completion
+            .pointer("/result/documentation/value")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "builtin completion must retain documentation: {completion}"
+    );
+    let uri = "file:///workspace/resolve-valid.pl";
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": uri, "languageId": "perl", "version": 1, "text": "print 1;\n"
+        }}),
+    )?;
+    let action = client.request(
+        json!("703"),
+        "codeAction/resolve",
+        json!({
+            "title": "Add use strict", "kind": "quickfix",
+            "data": {"uri": uri, "pragma": "use strict;"},
+            "extension": {"opaque": [1, "β"]}
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&action, &json!("703"))?;
+    ensure!(action.get("error").is_none(), "valid code action failed: {action}");
+    ensure!(
+        action.pointer("/result/extension") == Some(&json!({"opaque": [1, "β"]})),
+        "code action lost extension data: {action}"
+    );
+    let edits = action
+        .pointer("/result/edit/changes")
+        .and_then(|changes| changes.get(uri))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("resolved code action omitted document edits: {action}"))?;
+    ensure!(edits.len() == 1, "expected one pragma edit: {action}");
+    ensure!(
+        edits.first()
+            == Some(&json!({
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+                "newText": "use strict;\n"
+            })),
+        "wrong resolved pragma edit: {action}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-resolve-valid"))
+}
+
+#[test]
+fn malformed_resolve_notifications_do_not_emit_errors_or_poison_requests() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-resolve-notifications"))?;
+    for method in ["completionItem/resolve", "codeAction/resolve"] {
+        let missing = json!({"jsonrpc": "2.0", "method": method});
+        client.send_raw_bytes(&RealProcessClient::encode_message(&missing))?;
+        client.notify(method, Value::Null)?;
+        client.notify(method, json!({}))?;
+    }
+    let id = json!("resolve-after-notifications");
+    let response = client.request(
+        id.clone(),
+        "completionItem/resolve",
+        json!({"label": "print", "kind": 3}),
+        timeout(),
+    )?;
+    assert_response_id(&response, &id)?;
+    ensure!(response.get("error").is_none(), "valid resolve failed: {response}");
+    ensure!(response.pointer("/result/label") == Some(&json!("print")));
+    ensure!(
+        response
+            .pointer("/result/documentation/value")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        "valid resolve lost documentation: {response}"
+    );
+    shutdown_and_exit(&mut client, json!("shutdown-resolve-notifications"))
+}
+
+#[test]
+fn resolve_completion_rejects_invalid_supplied_shapes() -> Result<()> {
+    require_resolve_shape_errors("completionItem/resolve", "label")
+}
+
+#[test]
+fn resolve_code_action_rejects_invalid_supplied_shapes() -> Result<()> {
+    require_resolve_shape_errors("codeAction/resolve", "title")
+}
+
+fn require_resolve_shape_errors(method: &str, required_field: &str) -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-shapes"))?;
+    let malformed =
+        [json!([]), json!({}), json!({(required_field): 7}), json!({(required_field): null})];
+    let mut unexpected = Vec::new();
+    for (index, params) in malformed.into_iter().enumerate() {
+        let id = json!(format!("invalid-{index}"));
+        let response = client.request(id.clone(), method, params, timeout())?;
+        assert_response_id(&response, &id)?;
+        if response.get("result").is_some()
+            || response.pointer("/error/code") != Some(&json!(-32602))
+            || response.pointer("/error/message").and_then(Value::as_str).is_none_or(str::is_empty)
+        {
+            unexpected.push(response);
+        }
+    }
+    // Empty strings satisfy the required string field; extension data is opaque.
+    let valid = json!({(required_field): "", "extension": {"opaque": [1, "β"]}});
+    let response = client.request(json!("valid-after-errors"), method, valid.clone(), timeout())?;
+    assert_response_id(&response, &json!("valid-after-errors"))?;
+    ensure!(response.get("error").is_none(), "valid recovery failed: {response}");
+    ensure!(response.get("result") == Some(&valid), "valid item was altered: {response}");
+    shutdown_and_exit(&mut client, json!("shutdown-shapes"))?;
+    ensure!(unexpected.is_empty(), "invalid {method} shapes returned success: {unexpected:?}");
+    Ok(())
 }
 
 #[test]

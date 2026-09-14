@@ -37,6 +37,229 @@ fn make_server_with_capture() -> (LspServer, StdArc<parking_lot::Mutex<Vec<u8>>>
     (server, buf)
 }
 
+#[test]
+fn dispatch_rejects_malformed_change_before_document_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    let initialized = server.handle_request(JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(crate::protocol::JsonRpcId::Integer(0)),
+        method: "initialize".to_string(),
+        params: Some(json!({})),
+    });
+    if initialized.as_ref().is_none_or(|response| response.error.is_some()) {
+        return Err("test initialize request failed".into());
+    }
+    let uri = "file:///malformed-admission.pl";
+    server.did_open(json!({
+        "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": "my $x = 1;\n"}
+    }))?;
+    let before = {
+        let documents = server.documents.lock();
+        let document = documents.get(uri).ok_or("didOpen did not store document")?;
+        (document.text.clone(), document.version, document.current_generation())
+    };
+    let normalized_uri = server.normalize_uri_key(uri);
+    let readiness_before = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(receipt) = server.test_active_document_readiness(&normalized_uri)
+                && receipt.0 != "pending_parser"
+            {
+                break receipt;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("didOpen did not settle active-document readiness".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let start_predecessor_stream = || {
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_owned(),
+            document_version: 1,
+            line: 0,
+            character: 0,
+        })
+    };
+    let same_version_stream =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: uri.to_owned(),
+            document_version: 2,
+            line: 0,
+            character: 0,
+        });
+    let other_document_stream =
+        server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+            uri: "file:///other-document.pl".to_owned(),
+            document_version: 1,
+            line: 0,
+            character: 0,
+        });
+    if same_version_stream.is_cancelled()
+        || other_document_stream.is_cancelled()
+        || server.memory_state_snapshot().stream_sessions != 2
+    {
+        return Err("baseline control streams were not retained".into());
+    }
+    let predecessor_parse_token = server.new_parse_token(uri);
+    if predecessor_parse_token.load(Ordering::Relaxed) {
+        return Err("baseline parse token was unexpectedly cancelled".into());
+    }
+    for changes in [
+        json!([{"text": 7}, {"text": "my $x = 2;\n"}]),
+        json!([{"text": "my $x = 2;\n"}, {"text": 7}]),
+        json!([{"text": 7}]),
+        json!([{"rangeLength": 7, "text": "my $x = 2;\n"}]),
+        json!([{"rangeLength": null, "text": "my $x = 2;\n"}]),
+        json!([{"range": null, "text": "my $x = 2;\n"}]),
+    ] {
+        let session = start_predecessor_stream();
+        let malformed = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didChange".to_string(),
+            params: Some(
+                json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": changes}),
+            ),
+        };
+        if server.handle_request(malformed).is_some() {
+            return Err("notification-shaped malformed change must not respond".into());
+        }
+        let after = {
+            let documents = server.documents.lock();
+            let document = documents.get(uri).ok_or("document disappeared after rejection")?;
+            (document.text.clone(), document.version, document.current_generation())
+        };
+        if after != before {
+            return Err(format!(
+                "malformed change mutated document: before={before:?}, after={after:?}"
+            )
+            .into());
+        }
+        if !session.is_cancelled() {
+            return Err("malformed change retained an obsolete editor stream".into());
+        }
+        if server.memory_state_snapshot().stream_sessions != 2
+            || same_version_stream.is_cancelled()
+            || other_document_stream.is_cancelled()
+        {
+            return Err("malformed change did not isolate obsolete-stream cancellation".into());
+        }
+        if predecessor_parse_token.load(Ordering::Relaxed)
+            || !server
+                .parse_cancel_flags
+                .lock()
+                .get(uri)
+                .is_some_and(|token| Arc::ptr_eq(token, &predecessor_parse_token))
+        {
+            return Err("malformed change rotated or cancelled the parse token".into());
+        }
+        if server.test_active_document_readiness(&normalized_uri) != Some(readiness_before) {
+            return Err("malformed change altered active-document readiness".into());
+        }
+    }
+    for params in [
+        json!({"textDocument": {"uri": uri, "version": 2}}),
+        json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": {}}),
+        json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": null}),
+    ] {
+        let session = start_predecessor_stream();
+        let malformed = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: None,
+            method: "textDocument/didChange".to_string(),
+            params: Some(params),
+        };
+        if server.handle_request(malformed).is_some() {
+            return Err("notification-shaped malformed contentChanges must not respond".into());
+        }
+        let after = {
+            let documents = server.documents.lock();
+            let document = documents.get(uri).ok_or("document disappeared after rejection")?;
+            (document.text.clone(), document.version, document.current_generation())
+        };
+        if after != before
+            || !session.is_cancelled()
+            || server.memory_state_snapshot().stream_sessions != 2
+            || same_version_stream.is_cancelled()
+            || other_document_stream.is_cancelled()
+            || predecessor_parse_token.load(Ordering::Relaxed)
+            || !server
+                .parse_cancel_flags
+                .lock()
+                .get(uri)
+                .is_some_and(|token| Arc::ptr_eq(token, &predecessor_parse_token))
+            || server.test_active_document_readiness(&normalized_uri) != Some(readiness_before)
+        {
+            return Err("invalid contentChanges shape altered document side effects".into());
+        }
+    }
+    let session = start_predecessor_stream();
+    let recovery = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "textDocument/didChange".to_string(),
+        params: Some(
+            json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": "my $x = 3;\n"}]}),
+        ),
+    };
+    if server.handle_request(recovery).is_some() {
+        return Err("notification-shaped recovery must not respond".into());
+    }
+    let recovered = {
+        let documents = server.documents.lock();
+        let document = documents.get(uri).ok_or("document disappeared after recovery")?;
+        (document.text.clone(), document.version, document.current_generation())
+    };
+    if recovered.0 != "my $x = 3;\n" || recovered.1 != 2 || recovered.2 <= before.2 {
+        return Err(format!(
+            "valid recovery was not applied: before={before:?}, recovered={recovered:?}"
+        )
+        .into());
+    }
+    if !session.is_cancelled()
+        || server.memory_state_snapshot().stream_sessions != 2
+        || same_version_stream.is_cancelled()
+        || other_document_stream.is_cancelled()
+    {
+        return Err("valid recovery did not cancel and evict the retained stream".into());
+    }
+    if !predecessor_parse_token.load(Ordering::Relaxed) {
+        return Err("valid recovery did not cancel the predecessor parse token".into());
+    }
+    Ok(())
+}
+#[test]
+fn malformed_change_cancels_raw_uri_stream_but_not_invalid_uri_stream()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (uri, should_cancel) in [("file://localhost/raw-stream.pl", true), ("", false)] {
+        let server = LspServer::new();
+        if should_cancel && server.normalize_uri_key(uri) == uri {
+            return Err("raw URI fixture did not exercise normalization".into());
+        }
+        let session =
+            server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
+                uri: uri.to_owned(),
+                document_version: 1,
+                line: 0,
+                character: 0,
+            });
+        let result = server.handle_did_change(Some(json!({
+            "textDocument": {"uri": uri, "version": 2}, "contentChanges": [{"text": 7}]
+        })));
+        let error = result.err().ok_or("malformed direct change was accepted")?;
+        if error.code != -32602 || session.is_cancelled() != should_cancel {
+            return Err(format!(
+                "wrong malformed URI admission: uri={uri:?}, cancelled={}, error={error}",
+                session.is_cancelled()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(feature = "incremental")]
 #[test]
 fn test_build_incremental_edits_uses_evolving_document_ranges() {
