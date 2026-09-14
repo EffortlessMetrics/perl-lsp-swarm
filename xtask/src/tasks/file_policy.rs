@@ -923,6 +923,20 @@ pub fn non_rust_exact_tree(
     result
 }
 
+/// Bounded fail-closed detail for an ancestry question the local checkout
+/// cannot decide: a shallow or partial checkout, a missing object, or a git
+/// failure must never be rendered as a history verdict (#14557).
+fn ancestry_not_proven_detail(receipt: &xtask::git_ancestry::AncestryReceipt) -> String {
+    let mut detail =
+        format!("git ancestry is `{}` ({})", receipt.disposition.as_str(), receipt.reason);
+    if let Some(guidance) = receipt.guidance.first() {
+        detail.push_str("; ");
+        detail.push_str(guidance);
+    }
+    detail.push_str("; refusing to render a history verdict from incomplete evidence");
+    detail
+}
+
 fn non_rust_exact_tree_inner(
     root: &Path,
     base_sha: &str,
@@ -942,22 +956,38 @@ fn non_rust_exact_tree_inner(
             .trim()
             .to_string();
     if let Some(pr_head) = pr_head_sha {
-        let ancestor = Command::new("git")
-            .args(["merge-base", "--is-ancestor", pr_head, &subject_commit])
-            .current_dir(root)
-            .status()
-            .context("checking PR head ancestry")?;
-        if !ancestor.success() {
-            bail!("subject {subject_commit} does not contain PR head {pr_head}");
+        // Ancestry verdicts come from the shared `xtask::git_ancestry`
+        // authority: a bare `merge-base --is-ancestor` exit 1 is not proof of
+        // non-ancestry in a shallow or partial checkout holding a
+        // present-but-disconnected object (#14557).
+        let receipt = xtask::git_ancestry::is_ancestor(root, pr_head, &subject_commit);
+        match &receipt.disposition {
+            xtask::git_ancestry::AncestryDisposition::Ancestor => {}
+            xtask::git_ancestry::AncestryDisposition::Diverged
+            | xtask::git_ancestry::AncestryDisposition::Unrelated => {
+                bail!("subject {subject_commit} does not contain PR head {pr_head}");
+            }
+            _ => {
+                bail!(
+                    "cannot prove subject {subject_commit} contains PR head {pr_head}: {}",
+                    ancestry_not_proven_detail(&receipt)
+                );
+            }
         }
     }
-    let topology = Command::new("git")
-        .args(["merge-base", "--is-ancestor", &base_commit, &subject_commit])
-        .current_dir(root)
-        .status()
-        .context("checking base ancestry")?;
-    if !topology.success() {
-        bail!("subject {subject_commit} is not based on base {base_commit}");
+    let receipt = xtask::git_ancestry::is_ancestor(root, &base_commit, &subject_commit);
+    match &receipt.disposition {
+        xtask::git_ancestry::AncestryDisposition::Ancestor => {}
+        xtask::git_ancestry::AncestryDisposition::Diverged
+        | xtask::git_ancestry::AncestryDisposition::Unrelated => {
+            bail!("subject {subject_commit} is not based on base {base_commit}");
+        }
+        _ => {
+            bail!(
+                "cannot prove subject {subject_commit} is based on base {base_commit}: {}",
+                ancestry_not_proven_detail(&receipt)
+            );
+        }
     }
     if matches!(event_name, Some("pull_request_target") | Some("merge_group")) {
         let first_parent =
@@ -5825,12 +5855,30 @@ review_after = "2026-06-01"
         )
         .expect_err("malformed base must fail");
         assert!(error.to_string().contains("git rev-parse"));
+        // An unresolvable PR head cannot prove non-containment: the typed
+        // query stays `not_proven_missing_object` and fails closed (#14557)
+        // instead of reporting the old "does not contain" verdict.
         let error = non_rust_exact_tree(
             temp.path(),
             &base,
             &base,
             Some("deadbeef"),
             &temp.path().join("head.json"),
+            None,
+            None,
+        )
+        .expect_err("unresolvable PR head must fail closed");
+        assert!(error.to_string().contains("not_proven_missing_object"));
+        // A genuinely present-but-unrelated head still reports non-containment.
+        run_git(temp.path(), &["switch", "--orphan", "unrelated"])?;
+        write_fixture(temp.path(), "unrelated.txt", "unrelated\n")?;
+        let unrelated = commit_fixture(temp.path(), "unrelated head")?;
+        let error = non_rust_exact_tree(
+            temp.path(),
+            &base,
+            &base,
+            Some(unrelated.as_str()),
+            &temp.path().join("unrelated-head.json"),
             None,
             None,
         )

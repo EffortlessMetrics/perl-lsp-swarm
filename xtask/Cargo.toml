@@ -25,7 +25,7 @@ similar = "3.1"
 duct = "1.1.1"
 walkdir.workspace = true
 serde = { workspace = true }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 anyhow.workspace = true
 # (perl-feature-catalog absorbed into perl-lsp-rs-core::feature_catalog — Wave Final PR B)
 perl-lsp-rs-core = { workspace = true }
