@@ -517,11 +517,13 @@ impl DebugAdapter {
                     // through that worker would leave the broker token
                     // unreachable until the operation returned.
                     if native_stdio_transport && command == "cancel" {
-                        let target = arguments
+                        if let Some(request) = arguments
                             .as_ref()
                             .and_then(|value| value.get("requestId"))
-                            .and_then(serde_json::Value::as_i64);
-                        let _ = target.map(|request| operation_broker.cancel_request(request));
+                            .and_then(serde_json::Value::as_i64)
+                        {
+                            operation_broker.cancel_request(request);
+                        }
                         let response = DapMessage::Response {
                             seq: next_transport_seq(&transport_seq),
                             request_seq: seq,

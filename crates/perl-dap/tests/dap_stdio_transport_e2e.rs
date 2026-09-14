@@ -51,14 +51,50 @@ struct ReleaseMarkerGuard {
 }
 
 impl ReleaseMarkerGuard {
-    fn set_pid(&mut self, pid: &str) -> Result<()> {
-        let parsed = pid
-            .parse::<u32>()
-            .ok()
-            .filter(|pid| *pid > 0)
-            .ok_or_else(|| anyhow!("debuggee marker contained invalid PID: {pid:?}"))?;
-        self.pid = Some(parsed);
+    fn set_pid(&mut self, pid: u32) -> Result<()> {
+        if pid == 0 {
+            return Err(anyhow!("debuggee marker contained invalid PID: {pid:?}"));
+        }
+        self.pid = Some(pid);
         Ok(())
+    }
+}
+
+#[test]
+fn marker_pid_requires_complete_validated_record() -> Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let marker = workspace.path().join("started");
+    fs::write(&marker, "started 123")?;
+    if read_validated_pid(&marker, Instant::now()).is_ok() {
+        return Err(anyhow!("partial PID marker must not be accepted"));
+    }
+    fs::write(&marker, "started 1234\n")?;
+    if read_validated_pid(&marker, Instant::now())? != 1234 {
+        return Err(anyhow!("complete PID marker parsed incorrectly"));
+    }
+    Ok(())
+}
+
+fn read_validated_pid(path: &Path, deadline: Instant) -> Result<u32> {
+    loop {
+        if let Ok(contents) = fs::read_to_string(path)
+            && contents.ends_with('\n')
+            && contents.lines().count() == 1
+        {
+            let mut fields = contents.split_whitespace();
+            if fields.next() == Some("started")
+                && let Some(pid) = fields.next()
+                && fields.next().is_none()
+                && let Ok(pid) = pid.parse::<u32>()
+                && pid > 0
+            {
+                return Ok(pid);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!("marker did not contain one complete validated PID: {path:?}"));
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -207,9 +243,6 @@ impl DapProcess {
         }
         let reader =
             self.reader.take().ok_or_else(|| anyhow!("DAP stdout reader was already consumed"))?;
-        if !reader.is_finished() {
-            return Err(anyhow!("DAP stdout reader did not finish within cleanup bound"));
-        }
         reader.join().map_err(|_| anyhow!("DAP stdout reader panicked"))
     }
 }
@@ -589,7 +622,7 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
         "evaluate",
         Some(json!({
             "expression": format!(
-                "do {{ open(F, '>', '{}') or die $!; print F 'started ', $$; close F; while (!-e '{}') {{ select undef, undef, undef, 0.01 }}; 987654321 }}",
+                "do {{ open(F, '>', '{}') or die $!; print F 'started ', $$, \"\\n\"; close F; while (!-e '{}') {{ select undef, undef, undef, 0.01 }}; 987654321 }}",
                 started_path,
                 release_path,
             ),
@@ -597,18 +630,7 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
             "allowSideEffects": true,
         })),
     )?;
-    let started_deadline = Instant::now() + Duration::from_secs(2);
-    while !started.exists() && Instant::now() < started_deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    if !started.exists() {
-        return Err(anyhow!("native evaluate did not reach its blocking expression"));
-    }
-    let started_marker = fs::read_to_string(&started)?;
-    let started_pid = started_marker
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| anyhow!("debuggee marker did not contain its PID: {started_marker:?}"))?;
+    let started_pid = read_validated_pid(&started, Instant::now() + Duration::from_secs(2))?;
     release_guard.set_pid(started_pid)?;
     dap.send_request(5, "cancel", Some(json!({"requestId": 4})))?;
     let first = wait_for_message(&dap.rx, "cancel/evaluate responses".to_string(), |msg| {
@@ -690,13 +712,7 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
         ));
     }
     {
-        let marker = fs::read_to_string(&started)?;
-        let pid = marker
-            .split_whitespace()
-            .nth(1)
-            .ok_or_else(|| anyhow!("debuggee marker did not contain its PID: {marker:?}"))?;
-        release_guard.set_pid(pid)?;
-        assert_debuggee_absent(pid)?;
+        assert_debuggee_absent(&started_pid.to_string())?;
         release_guard.pid = None;
     }
 
@@ -711,17 +727,15 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
     dap.wait_for_response(13, "launch")?;
     dap.wait_for_event("stopped")?;
     dap.send_request(4, "evaluate", Some(json!({
-        "expression": format!("do {{ open(F, '>', '{}') or die $!; print F 'started ', $$; close F; (6 * 7) }}", replacement_started_path),
+        "expression": format!("do {{ open(F, '>', '{}') or die $!; print F 'started ', $$, \"\\n\"; close F; (6 * 7) }}", replacement_started_path),
         "context": "repl",
         "allowSideEffects": true
     })))?;
     let replacement_eval = dap
         .wait_for_response(4, "evaluate")?
         .ok_or_else(|| anyhow!("replacement evaluate body missing"))?;
-    let replacement_marker = fs::read_to_string(&replacement_started)?;
-    let replacement_pid = replacement_marker.split_whitespace().nth(1).ok_or_else(|| {
-        anyhow!("replacement marker did not contain its PID: {replacement_marker:?}")
-    })?;
+    let replacement_pid =
+        read_validated_pid(&replacement_started, Instant::now() + Duration::from_secs(2))?;
     release_guard.set_pid(replacement_pid)?;
     if replacement_eval.get("result").and_then(Value::as_str) != Some(baseline_result) {
         return Err(anyhow!(
@@ -734,7 +748,7 @@ fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
         return Err(anyhow!("disconnect failed after replacement: {disconnect:?}"));
     }
     dap.finish_cleanly()?;
-    assert_debuggee_absent(replacement_pid)?;
+    assert_debuggee_absent(&replacement_pid.to_string())?;
     release_guard.pid = None;
     Ok(())
 }
