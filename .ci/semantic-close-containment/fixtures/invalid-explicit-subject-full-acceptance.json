@@ -1,0 +1,35 @@
+{
+  "schema_version": "semantic_close_containment_fixture.v1",
+  "provenance": {
+    "captured_at": "2026-09-09",
+    "sources": [
+      "https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14551"
+    ],
+    "subject_shas": [],
+    "boundary": "Synthetic CP00-003 retention control: a direct exclusion of full acceptance must remain blocking."
+  },
+  "repository": "effortlessmetrics/perl-lsp-swarm",
+  "pull_request": {
+    "number": 990102,
+    "title": "fix: bounded required-work subject control",
+    "body": "## Claim Boundary\n\n**Not claimed:** the full acceptance criteria.\n\nCloses #9001202."
+  },
+  "issues": [
+    {
+      "repository": "effortlessmetrics/perl-lsp-swarm",
+      "number": 9001202,
+      "title": "Complete the named bounded change",
+      "body": "## Acceptance\nThe named change and its focused regression control are established."
+    }
+  ],
+  "expected": {
+    "aggregate_code": "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK",
+    "rows": [
+      {
+        "repository": "effortlessmetrics/perl-lsp-swarm",
+        "issue_number": 9001202,
+        "code": "FAIL_EXPLICIT_UNPROVEN_REQUIRED_WORK"
+      }
+    ]
+  }
+}

@@ -158,6 +158,19 @@ Keep claim frames and wake events in runtime memory only. Reconstruct them from 
 PRs, reviews, checks, merges, and repository artifacts after replacement. Do not poll
 unchanged remote state.
 
+A remote wait releases root attention. An exact wake event records the material
+condition that would justify reconstructing the claim later; it is not an instruction
+to keep the current root session alive until that condition changes. Do not create a
+timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit the
+same remote condition. In a multi-claim goal, release unnecessary live contexts and
+immediately advance another phase-eligible actionable claim. If no remaining
+required claim is actionable because each waits on a real external blocker or
+accountable owner decision, return `EXTERNAL_BLOCKER` with each claim's condition and
+wake event named, and let the bounded engineering session end rather than preserving
+the root as a watcher.
+Scheduled monitoring is a different user goal, not a continuation mechanism for
+ordinary engineering work.
+
 ## Useful GitHub handoffs
 
 Post or update GitHub only when information remains useful after the current context
@@ -209,6 +222,11 @@ truth, claim honesty, semantic authority/complexity, and risk/rollback.
 The construction context must not be the only detection surface supporting a
 substantive merge. Independence comes from changed evidence, oracle, method, threat
 model, environment, or attention—not identity alone.
+
+Read-only review is non-exclusive. Multiple sessions may inspect the same candidate and
+publish useful findings concurrently without writer allocation, a claim, or a wait.
+Exclusivity begins at mutation: a reviewer that wants to change the candidate must take
+the one writer role or leave the finding for the current writer.
 
 A clean review is valid. Do not manufacture findings or edits to demonstrate that the
 review happened.
@@ -263,7 +281,12 @@ Otherwise detect, explain, repair, and continue.
   context-preserving `must_with`/`must_some_with`/`must_err_with`; the bare
   `must`/`must_some`/`must_err` are only correct when the call site carried no
   explanation (`cargo xtask ci-hygiene check-must-context` reports the drop);
-- never use `git stash` in worktrees; use scoped restore or a WIP commit;
+- never use `git stash` in this shared multi-worktree repository; `refs/stash` is
+  repository-global, so another worktree can pop or drop your entry without knowing it
+  is yours; use scoped restore or a branch-local WIP commit;
+- rewrite published candidate history only with established sole mutation ownership and
+  an explicit expected remote SHA; if exclusivity is unknown, preserve the observed
+  remote head and use a non-rewriting integration or stop;
 - stage intended paths explicitly;
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
 - run focused proof, then affected package proof, then broader proof only when risk or
