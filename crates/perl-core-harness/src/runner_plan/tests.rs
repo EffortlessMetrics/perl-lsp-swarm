@@ -311,11 +311,17 @@ fn declared_scheduling_is_not_taken_from_the_candidate_plan() -> Result<()> {
         forged_schedule.clone(),
     )
     .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    // The forgery is a structurally perfect receipt: it validates standalone,
+    // and it differs from the honest plan only in the declared schedule.
     validate_runner_plan(&forged).map_err(|error| color_eyre::eyre::eyre!(error))?;
-    assert_eq!(
+    let honest = base_plan(&matrix, RunnerKind::Test, raw)?;
+    assert_eq!(forged.raw_discovery_digest, honest.raw_discovery_digest);
+    assert_eq!(forged.normalized_membership, honest.normalized_membership);
+    assert_eq!(forged.limitations, honest.limitations);
+    assert_ne!(
         runner_plan_digest(&forged).map_err(|error| color_eyre::eyre::eyre!(error))?,
-        runner_plan_digest(&forged).map_err(|error| color_eyre::eyre::eyre!(error))?,
-        "the forged receipt is self-consistent under its own digest rules"
+        runner_plan_digest(&honest).map_err(|error| color_eyre::eyre::eyre!(error))?,
+        "the declared schedule is part of plan identity"
     );
 
     let Err(error) = validate_runner_plan_against(

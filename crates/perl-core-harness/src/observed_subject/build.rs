@@ -52,6 +52,7 @@ pub fn build_observed_runner_subject(
     bind_producer(&input.producer, discovery)?;
     validate_plan_binding(matrix, &input.plan, discovery, &input.declared_scheduling)?;
     validate_invocation_trace_receipt(&input.discovery, &input.trace)?;
+    validate_declared_scheduling(&input.trace, &input.declared_scheduling)?;
 
     // Stage 3: perform the denominator arithmetic.
     let mut diagnostics: Vec<SubjectDiagnostic> = Vec::new();
@@ -608,6 +609,43 @@ fn validate_plan_binding(
         declared_scheduling.clone(),
     );
     crate::build::validate_runner_plan_against(matrix, &raw_bytes, &declared, plan)
+}
+
+/// Refuse a declared schedule the observation itself contradicts (#7737).
+///
+/// The discovery receipt carries no scheduling, which is why the plan's
+/// schedule is validated against the caller's declaration. #12284 invocation
+/// rows, however, do carry `scheduling` as a behavior-bearing observed field,
+/// and [`crate::invocation_trace::adapter`] retains it in every canonical
+/// projection. A declaration that disagrees with what a bound row observed is
+/// therefore an incoherent input set, named here like the producer and plan
+/// bindings above, rather than a receipt whose run-level schedule contradicts
+/// its own rows.
+///
+/// Only rows that bind this subject and actually observed the field are
+/// compared: a `not_observed` schedule stays a content shortfall for the
+/// arithmetic below, never a refusal.
+fn validate_declared_scheduling(
+    trace: &crate::invocation_trace::model::EffectiveInvocationTraceReceiptV1,
+    declared: &crate::runner_model::RunnerScheduling,
+) -> Result<(), String> {
+    for row in trace.payload.rows.iter().filter(|row| {
+        matches!(row.disposition, TraceRowDisposition::Accepted)
+            && row.state != InvocationObservationState::SubjectMismatch
+    }) {
+        let Some(observed) = row.fields.scheduling.observed() else {
+            continue;
+        };
+        if observed != declared {
+            return Err(format!(
+                "declared_scheduling disagrees with the scheduling observed by invocation \
+                 row {} for member {}; a declaration the observation contradicts cannot \
+                 supply this subject's schedule",
+                row.row_id, row.subject.parent_member_path
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Assemble the agreed identity snapshot recorded by the join.
