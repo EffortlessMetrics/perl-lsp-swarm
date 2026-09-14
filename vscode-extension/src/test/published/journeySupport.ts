@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parsePackagedServerVersionStdout } from '../../packagedServerVersion';
-import { runBoundedProcess } from '../../testAdapter';
+import { runBoundedProcess, type BoundedProcessResult } from '../../testAdapter';
 
 /**
  * Shared primitives for the published-smoke journeys (packaged bundle journey
@@ -16,6 +16,21 @@ import { runBoundedProcess } from '../../testAdapter';
  */
 
 export type ReceiptValue = Record<string, unknown>;
+
+/** Preserve bounded probe failures without mistaking them for process absence. */
+export function debuggeeCreationTimeFromProbe(
+  pid: number,
+  result: BoundedProcessResult,
+): string | null {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, 'invalid owned debuggee PID');
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    throw new Error(`owned debuggee scan failed: ${JSON.stringify({ pid, ...result })}`);
+  }
+  const creationTime = result.stdout.trim();
+  if (!creationTime) return null;
+  assert.match(creationTime, /^\d+$/, 'invalid process creation time');
+  return creationTime;
+}
 
 export function platformLabel(): string {
   switch (process.platform) {
@@ -284,6 +299,34 @@ export function providerPosition(
   const offset = document.getText().indexOf(probe);
   assert.notEqual(offset, -1, `packaged journey fixture must contain the ${probe} probe`);
   return document.positionAt(offset);
+}
+
+/** Independent two-occurrence oracle for the packaged daily-driver fixture. */
+export function assertDailyDriverRenameEdits(
+  source: string,
+  edits: ReadonlyArray<{
+    range: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+    };
+    newText: string;
+  }>,
+): void {
+  const lines = source.split('\n');
+  assert.equal(lines[3], 'my $value = 42;', 'rename fixture declaration changed');
+  assert.equal(lines[4], 'print $value;', 'rename fixture use changed');
+  assert.equal(edits.length, 2, 'rename must cover exactly the declaration and use');
+  const ordered = [...edits].sort((left, right) => left.range.start.line - right.range.start.line);
+  for (const [index, edit] of ordered.entries()) {
+    const line = index + 3;
+    const sigilStart = index === 0 ? 3 : 6;
+    assert.equal(edit.range.start.line, line, 'rename changed the wrong occurrence');
+    assert.equal(edit.range.end.line, line, 'rename crosses a line boundary');
+    assert.equal(edit.range.end.character, sigilStart + 6, 'rename changed the wrong span');
+    const includesSigil = edit.range.start.character === sigilStart;
+    assert.ok(includesSigil || edit.range.start.character === sigilStart + 1, 'wrong rename start');
+    assert.equal(edit.newText, includesSigil ? '$renamed_value' : 'renamed_value');
+  }
 }
 
 export function assertProviderSucceeded(label: string, result: ReceiptValue): void {
@@ -584,44 +627,20 @@ export interface BoundedTerminationResult {
  * Running→Stopped crash path. This is deliberately NOT the extension's user
  * restart command and not the activation API's stop seam — the issue's
  * negative controls forbid substituting either for the crash.
+ * Node emulates SIGKILL on Windows as unconditional single-process termination.
+ * Delivery is not an exit/recovery oracle: callers must still observe process
+ * disappearance, replacement generation, overlap and cleanup independently.
  */
 export async function terminateServerProcess(pid: number): Promise<BoundedTerminationResult> {
   if (!Number.isInteger(pid) || pid <= 0) {
     return { outcome: 'error', detail: `invalid pid ${JSON.stringify(pid)}` };
-  }
-  if (process.platform === 'win32') {
-    const result = await runBoundedProcess('taskkill', ['/PID', String(pid), '/F'], {
-      shell: false,
-      timeoutMs: 15_000,
-      maxOutputBytes: 64 * 1024,
-      terminationGraceMs: 2_000,
-      terminationWatchdogMs: 10_000,
-      windowsHide: true,
-    });
-    if (result.outcome === 'completed' && result.exitCode === 0) {
-      return { outcome: 'terminated', detail: `taskkill /F pid ${pid}` };
-    }
-    if (
-      result.outcome === 'completed' &&
-      /not found|no such/i.test(result.stdout + result.stderr)
-    ) {
-      return { outcome: 'already_gone', detail: `taskkill reported pid ${pid} already gone` };
-    }
-    return {
-      outcome: 'error',
-      detail: `taskkill pid ${pid} ended ${result.outcome} exit ${String(result.exitCode)}: ${(
-        result.stderr ||
-        result.stdout ||
-        ''
-      ).slice(0, 300)}`,
-    };
   }
   try {
     process.kill(pid, 'SIGKILL');
     return { outcome: 'terminated', detail: `SIGKILL pid ${pid}` };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/ESRCH/i.test(message)) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH') {
       return { outcome: 'already_gone', detail: `pid ${pid} already gone (ESRCH)` };
     }
     return { outcome: 'error', detail: message };
