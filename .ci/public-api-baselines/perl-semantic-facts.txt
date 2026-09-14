@@ -3019,6 +3019,209 @@ pub fn perl_semantic_facts::SemanticQuerySubject::eq(&self, other: &perl_semanti
 pub fn perl_semantic_facts::SemanticQuerySubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_semantic_facts::SemanticQuerySubject::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_semantic_facts::SemanticQuerySubject::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub mod perl_semantic_facts::structural_access
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::DynamicBoundary(perl_semantic_facts::BoundaryLink)
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::Fact(perl_semantic_facts::FactId)
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::PrecedingHop
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::PrecedingHop::ordinal: u32
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::Variable
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::Variable::name: alloc::string::String
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::Variable::sigil: alloc::string::String
+pub const fn perl_semantic_facts::structural_access::StructuralAccessAggregate::refuses_promotion(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessAggregate::tag(&self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessAggregate
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessAggregate) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::AggregateChainPosition
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::AggregateChainPosition::ordinal: u32
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::AggregateChainPosition::reason: &'static str
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::ContradictoryStatus(&'static str)
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::EmptyIdentityField(&'static str)
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedBudget(&'static str)
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedChain(&'static str)
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedRange
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedRange::end_byte: u32
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedRange::start_byte: u32
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::SelectorOperatorMismatch
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::SelectorOperatorMismatch::operator: &'static str
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::SelectorOperatorMismatch::selector: &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessContractError::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessContractError
+pub fn perl_semantic_facts::structural_access::StructuralAccessContractError::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessContractError) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessContractError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessContractError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::BudgetExhausted
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::CompatibilityBridge
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::DynamicSelector
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::EscapedAggregate
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::MutatedAggregate
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::OpenAggregate
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::RecoveredSyntax
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::StaleDependency
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::Unsupported
+pub const fn perl_semantic_facts::structural_access::StructuralAccessLimitation::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessLimitation
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessLimitation) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessLimitation) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessLimitation) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessOperator::ArrayIndex
+pub perl_semantic_facts::structural_access::StructuralAccessOperator::ArrayRefIndex
+pub perl_semantic_facts::structural_access::StructuralAccessOperator::HashRefSlot
+pub perl_semantic_facts::structural_access::StructuralAccessOperator::HashSlot
+pub const fn perl_semantic_facts::structural_access::StructuralAccessOperator::dereferences(self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessOperator::is_keyed(self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessOperator::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessOperator
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessOperator) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessOperator) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessOperator) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessSelector::DynamicIndex(perl_semantic_facts::BoundaryLink)
+pub perl_semantic_facts::structural_access::StructuralAccessSelector::DynamicKey(perl_semantic_facts::BoundaryLink)
+pub perl_semantic_facts::structural_access::StructuralAccessSelector::StaticIndex(i64)
+pub perl_semantic_facts::structural_access::StructuralAccessSelector::StaticKey(alloc::string::String)
+pub const fn perl_semantic_facts::structural_access::StructuralAccessSelector::is_dynamic(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessSelector::is_keyed(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessSelector::refuses_promotion(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessSelector::tag(&self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessSelector
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessSelector) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAggregateCompleteness::Closed
+pub perl_semantic_facts::structural_access::StructuralAggregateCompleteness::Open
+pub const fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::clone(&self) -> perl_semantic_facts::structural_access::StructuralAggregateCompleteness
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateCompleteness) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateCompleteness) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateCompleteness) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAggregateDisposition::Escaped
+pub perl_semantic_facts::structural_access::StructuralAggregateDisposition::EscapedAndMutated
+pub perl_semantic_facts::structural_access::StructuralAggregateDisposition::Mutated
+pub perl_semantic_facts::structural_access::StructuralAggregateDisposition::Stable
+pub const fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::is_stable(self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::clone(&self) -> perl_semantic_facts::structural_access::StructuralAggregateDisposition
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateDisposition) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateDisposition) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateDisposition) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralHopCertainty::Definite
+pub perl_semantic_facts::structural_access::StructuralHopCertainty::Possible
+pub const fn perl_semantic_facts::structural_access::StructuralHopCertainty::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::clone(&self) -> perl_semantic_facts::structural_access::StructuralHopCertainty
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralHopCertainty) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::eq(&self, other: &perl_semantic_facts::structural_access::StructuralHopCertainty) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralHopCertainty) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::AbsentMember
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::Boundary(perl_semantic_facts::BoundaryLink)
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::BudgetExhausted
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::Selected
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::Selected::shape: perl_semantic_facts::ValueShape
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::Selected::value_fact: core::option::Option<perl_semantic_facts::FactId>
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::ShapeMismatch
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::ShapeMismatch::observed: perl_semantic_facts::ValueShape
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::StaleGeneration
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::UnknownMember
+pub const fn perl_semantic_facts::structural_access::StructuralHopOutcome::claims_member_answer(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralHopOutcome::depends_on_aggregate_contents(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralHopOutcome::is_selecting(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralHopOutcome::tag(&self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::clone(&self) -> perl_semantic_facts::structural_access::StructuralHopOutcome
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::eq(&self, other: &perl_semantic_facts::structural_access::StructuralHopOutcome) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessBudget::units_after: u32
+pub perl_semantic_facts::structural_access::StructuralAccessBudget::units_before: u32
+pub const fn perl_semantic_facts::structural_access::StructuralAccessBudget::is_exhausted(self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessBudget::new(units_before: u32, units_after: u32) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessBudget::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessBudget
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessBudget) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessBudget) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessBudget) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::fingerprint(&self) -> alloc::string::String
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::hops(&self) -> &[perl_semantic_facts::structural_access::StructuralAccessHop]
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::new(subject: perl_semantic_facts::structural_access::StructuralAccessSubject, hops: alloc::vec::Vec<perl_semantic_facts::structural_access::StructuralAccessHop>) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessChain::schema_version(&self) -> u32
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::selected(&self) -> core::option::Option<&perl_semantic_facts::structural_access::StructuralHopOutcome>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessChain::subject(&self) -> &perl_semantic_facts::structural_access::StructuralAccessSubject
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessChain
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessChain) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::aggregate(&self) -> &perl_semantic_facts::structural_access::StructuralAccessAggregate
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::budget(&self) -> perl_semantic_facts::structural_access::StructuralAccessBudget
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::certainty(&self) -> perl_semantic_facts::structural_access::StructuralHopCertainty
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::completeness(&self) -> perl_semantic_facts::structural_access::StructuralAggregateCompleteness
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::confidence(&self) -> perl_semantic_facts::SemanticConfidence
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::disposition(&self) -> perl_semantic_facts::structural_access::StructuralAggregateDisposition
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::fingerprint(&self) -> alloc::string::String
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::limitations(&self) -> &[perl_semantic_facts::structural_access::StructuralAccessLimitation]
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::new(ordinal: u32, aggregate: perl_semantic_facts::structural_access::StructuralAccessAggregate, operator: perl_semantic_facts::structural_access::StructuralAccessOperator, selector: perl_semantic_facts::structural_access::StructuralAccessSelector, spelling: perl_semantic_facts::structural_access::StructuralAccessSpelling, outcome: perl_semantic_facts::structural_access::StructuralHopOutcome, certainty: perl_semantic_facts::structural_access::StructuralHopCertainty, completeness: perl_semantic_facts::structural_access::StructuralAggregateCompleteness, disposition: perl_semantic_facts::structural_access::StructuralAggregateDisposition, producer: perl_semantic_facts::SemanticProducer, provenance: perl_semantic_facts::SemanticProvenance, confidence: perl_semantic_facts::SemanticConfidence, reason_code: perl_semantic_facts::SemanticReasonCode, budget: perl_semantic_facts::structural_access::StructuralAccessBudget, limitations: alloc::vec::Vec<perl_semantic_facts::structural_access::StructuralAccessLimitation>) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::operator(&self) -> perl_semantic_facts::structural_access::StructuralAccessOperator
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::ordinal(&self) -> u32
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::outcome(&self) -> &perl_semantic_facts::structural_access::StructuralHopOutcome
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::producer(&self) -> perl_semantic_facts::SemanticProducer
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::provenance(&self) -> perl_semantic_facts::SemanticProvenance
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::reason_code(&self) -> perl_semantic_facts::SemanticReasonCode
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::selector(&self) -> &perl_semantic_facts::structural_access::StructuralAccessSelector
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::spelling(&self) -> &perl_semantic_facts::structural_access::StructuralAccessSpelling
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessHop
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessHop) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessSpelling::anchor: perl_semantic_facts::SourceAnchor
+pub perl_semantic_facts::structural_access::StructuralAccessSpelling::text: alloc::string::String
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::new(text: impl core::convert::Into<alloc::string::String>, anchor: perl_semantic_facts::SourceAnchor) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessSpelling
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessSpelling) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessSubject::document: perl_semantic_facts::FileId
+pub perl_semantic_facts::structural_access::StructuralAccessSubject::project_generation: core::option::Option<perl_semantic_facts::SourceGeneration>
+pub perl_semantic_facts::structural_access::StructuralAccessSubject::source_generation: perl_semantic_facts::SourceGeneration
+pub perl_semantic_facts::structural_access::StructuralAccessSubject::workspace_root: core::option::Option<alloc::string::String>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::new(document: perl_semantic_facts::FileId, source_generation: perl_semantic_facts::SourceGeneration, workspace_root: core::option::Option<alloc::string::String>, project_generation: core::option::Option<perl_semantic_facts::SourceGeneration>) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessSubject
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessSubject) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_semantic_facts::structural_access::STRUCTURAL_ACCESS_CHAIN_SCHEMA_VERSION: u32
+pub const perl_semantic_facts::structural_access::STRUCTURAL_ACCESS_SCHEMA_TAG: &str
 pub perl_semantic_facts::BoundaryDisposition::Degrade
 pub perl_semantic_facts::BoundaryDisposition::Refuse
 pub fn perl_semantic_facts::BoundaryDisposition::clone(&self) -> perl_semantic_facts::BoundaryDisposition
