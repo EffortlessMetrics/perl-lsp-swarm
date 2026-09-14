@@ -8,6 +8,12 @@ members = [
     # Tier 1 leaf — no parser/workspace/LSP/DAP deps. Dependency contract
     # asserted in tests/dependency_contract.rs.
     "crates/perl-source-identity",
+    # perl-evidence-envelope: evidence_envelope.v1 core types and deterministic
+    # envelope identity (#15057). Tier 1 leaf — no parser/workspace/LSP/DAP
+    # deps; depends on perl-source-identity for ContentDigest/ProjectId.
+    # publish = false: internal evidence infrastructure until it has
+    # consumers. Dependency contract asserted in tests/dependency_contract.rs.
+    "crates/perl-evidence-envelope",
     "crates/perl-pragma",
     "crates/perl-regex",
     "crates/perl-lexer",
@@ -237,6 +243,11 @@ perl-ast-v2 = { path = "crates/perl-ast-v2", version = "0.17.0" }
 perl-token = { path = "crates/perl-token", version = "0.17.0" }
 # perl-source-identity: source_identity.v1 core types (#7652). No internal deps.
 perl-source-identity = { path = "crates/perl-source-identity", version = "0.17.0" }
+# perl-evidence-envelope: evidence_envelope.v1 core types (#15057). Direct
+# dependencies are serde, sha2, and perl-source-identity (ContentDigest,
+# ProjectId) — the last being its only internal one. Exact closure asserted
+# by crates/perl-evidence-envelope/tests/dependency_contract.rs.
+perl-evidence-envelope = { path = "crates/perl-evidence-envelope", version = "0.17.0" }
 perl-regex = { path = "crates/perl-regex", version = "0.17.0" }
 perl-pragma = { path = "crates/perl-pragma", version = "0.17.0" }
 perl-lexer = { path = "crates/perl-lexer", version = "0.17.0" }
@@ -438,7 +449,12 @@ collapsible_if = "deny"
 # of all measured sites and removal of the workspace allow plus six crate-root
 # and one test-target masks.
 collapsible_match = "deny"
-decimal_bitwise_operands = "warn"
+# decimal_bitwise_operands: promoted to deny by #9894 after a zero-site
+# confirmation on a complete workspace --all-targets measurement (force-warn
+# pierces allows). The lint only reports decimal operands whose bit structure is
+# opaque -- powers of two, 2^n-1 masks, and already-hex literals are not
+# reported -- so the zero is a real denominator, not an inert selector.
+decimal_bitwise_operands = "deny"
 duration_suboptimal_units = "warn"
 needless_type_cast = "warn"
 # manual_ilog2: promoted to deny by #9896 after a zero-site confirmation on a

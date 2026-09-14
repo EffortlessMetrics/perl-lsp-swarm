@@ -148,6 +148,20 @@ mkdir -p "${FIXTURE_ROOT}/scripts" "${FIXTURE_ROOT}/.ci/public-api-baselines"
 cp "${REPO_ROOT}/justfile" "${FIXTURE_ROOT}/justfile"
 write_fake_cargo_safe
 
+# The recipes read their crate set from the fixture's own ratchet list
+# (#14607), so the invocation assertions below prove the recipes are
+# list-driven rather than restating a hard-coded facade set: the real
+# repository list is longer than this fixture's.
+write_ratchet_list() {
+  {
+    printf '# fixture ratchet list\n\n'
+    for crate in "$@"; do
+      printf '  %s  # trailing comment\n' "${crate}"
+    done
+  } > "${FIXTURE_ROOT}/.ci/public-api-baselines/ratchet-crates.txt"
+}
+write_ratchet_list perl-lsp-rs perl-parser perl-uri perl-dap perllsp
+
 for crate in perl-lsp-rs perl-parser perl-uri perl-dap perllsp; do
   printf 'pub struct ExistingSurface;\n' \
     > "${FIXTURE_ROOT}/.ci/public-api-baselines/${crate}.txt"
@@ -274,5 +288,93 @@ assert_contains "normal comparison reports the expected crate" \
 assert_exact_invocations "non-empty check invokes the generator once per facade with exact arguments" \
   "${CHECK_NONEMPTY_LOG}" "${CHECK_NONEMPTY_EXPECTED}" nonempty \
   perl-lsp-rs perl-parser perl-uri perl-dap perllsp
+
+# List-driven proof (#14607): shrinking the fixture list shrinks the crate
+# set both recipes act on, and a listed crate without a baseline fails the
+# check closed instead of being skipped.
+write_ratchet_list perl-uri
+CHECK_LIST_OUTPUT="${TMPDIR_BASE}/check-list.txt"
+CHECK_LIST_LOG="${TMPDIR_BASE}/check-list.log"
+CHECK_LIST_EXPECTED="${TMPDIR_BASE}/check-list.expected"
+if run_recipe nonempty public-api-check "${CHECK_LIST_OUTPUT}" "${CHECK_LIST_LOG}"; then
+  check_list_code=0
+else
+  check_list_code=$?
+fi
+if [[ "${check_list_code}" -eq 0 ]]; then
+  pass "single-entry ratchet list checks cleanly"
+else
+  fail "single-entry ratchet list unexpectedly failed (exit ${check_list_code})"
+fi
+assert_exact_invocations "check invokes only the listed crate" \
+  "${CHECK_LIST_LOG}" "${CHECK_LIST_EXPECTED}" nonempty perl-uri
+
+UPDATE_LIST_OUTPUT="${TMPDIR_BASE}/update-list.txt"
+UPDATE_LIST_LOG="${TMPDIR_BASE}/update-list.log"
+UPDATE_LIST_EXPECTED="${TMPDIR_BASE}/update-list.expected"
+if run_recipe nonempty public-api-update "${UPDATE_LIST_OUTPUT}" "${UPDATE_LIST_LOG}"; then
+  update_list_code=0
+else
+  update_list_code=$?
+fi
+if [[ "${update_list_code}" -eq 0 ]]; then
+  pass "single-entry ratchet list updates cleanly"
+else
+  fail "single-entry ratchet list update unexpectedly failed (exit ${update_list_code})"
+fi
+assert_exact_invocations "update regenerates only the listed crate" \
+  "${UPDATE_LIST_LOG}" "${UPDATE_LIST_EXPECTED}" nonempty perl-uri
+
+write_ratchet_list perl-uri perl-unbaselined
+CHECK_MISSING_OUTPUT="${TMPDIR_BASE}/check-missing.txt"
+CHECK_MISSING_LOG="${TMPDIR_BASE}/check-missing.log"
+if run_recipe nonempty public-api-check "${CHECK_MISSING_OUTPUT}" "${CHECK_MISSING_LOG}"; then
+  check_missing_code=0
+else
+  check_missing_code=$?
+fi
+assert_exit_nonzero "listed crate without a baseline fails public-api-check closed" "${check_missing_code}"
+assert_contains "missing baseline is reported for the listed crate" \
+  "FAIL Missing baseline: .ci/public-api-baselines/perl-unbaselined.txt" "${CHECK_MISSING_OUTPUT}"
+
+# An empty list (only comments and blank lines) must fail loud, not iterate
+# zero times and report a vacuous pass.
+write_ratchet_list
+CHECK_EMPTY_OUTPUT="${TMPDIR_BASE}/check-empty.txt"
+CHECK_EMPTY_LOG="${TMPDIR_BASE}/check-empty.log"
+if run_recipe nonempty public-api-check "${CHECK_EMPTY_OUTPUT}" "${CHECK_EMPTY_LOG}"; then
+  check_empty_code=0
+else
+  check_empty_code=$?
+fi
+assert_exit_nonzero "empty ratchet list fails public-api-check closed" "${check_empty_code}"
+assert_contains "empty ratchet list is named as the cause" \
+  "ratchet-crates.txt lists no crates" "${CHECK_EMPTY_OUTPUT}"
+assert_not_contains "empty ratchet list does not claim any surface is unchanged" \
+  "API surface unchanged" "${CHECK_EMPTY_OUTPUT}"
+if [[ ! -s "${CHECK_EMPTY_LOG}" ]]; then
+  pass "empty ratchet list never invokes the generator"
+else
+  fail "empty ratchet list invoked the generator: $(cat "${CHECK_EMPTY_LOG}")"
+fi
+
+# A duplicate entry must fail loud instead of checking (or regenerating) the
+# same crate twice.
+write_ratchet_list perl-uri perl-uri
+CHECK_DUP_OUTPUT="${TMPDIR_BASE}/check-dup.txt"
+CHECK_DUP_LOG="${TMPDIR_BASE}/check-dup.log"
+if run_recipe nonempty public-api-check "${CHECK_DUP_OUTPUT}" "${CHECK_DUP_LOG}"; then
+  check_dup_code=0
+else
+  check_dup_code=$?
+fi
+assert_exit_nonzero "duplicate ratchet entry fails public-api-check closed" "${check_dup_code}"
+assert_contains "duplicate ratchet entry is named" \
+  "lists a crate twice: perl-uri" "${CHECK_DUP_OUTPUT}"
+if [[ ! -s "${CHECK_DUP_LOG}" ]]; then
+  pass "duplicate ratchet entry never invokes the generator"
+else
+  fail "duplicate ratchet entry invoked the generator: $(cat "${CHECK_DUP_LOG}")"
+fi
 
 echo "=== public-api ratchet regression fixture passed ==="

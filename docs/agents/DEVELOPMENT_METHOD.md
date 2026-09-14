@@ -180,6 +180,17 @@ When GitHub owns the next transition, mark the frame `IN_FLIGHT`, advance anothe
 independent claim, and revisit only when its named wake event occurs. Do not poll
 unchanged state or keep an idle agent alive to symbolize the wait.
 
+A remote wait releases root attention. An exact wake event is a resumability condition,
+not a request to schedule the current engineering context to wake itself. Do not create
+a timer, cron, scheduled reminder, recurring wake, or polling loop merely to revisit
+the same remote condition. While any disjoint claim remains useful, release unnecessary
+claim-local contexts and continue that work immediately. If no remaining required claim is
+actionable because each waits on a real external blocker or accountable owner decision,
+return the goal-level external blocker with each claim's condition and wake event
+named, and let the bounded engineering session end. Scheduled monitoring is a distinct user goal;
+it must not be introduced merely to keep ordinary engineering work attached to a
+remote wait.
+
 ## Orchestration economics
 
 Delegate when expected evidence gain, root-context preservation,
@@ -259,6 +270,38 @@ only duplicate claims, same-candidate writers, explicit prerequisites, destructi
 shared runtime state, actual conflicts, or demonstrated combined-tree interactions.
 Behind-only movement requires no action.
 
+### The exclusive role is writer, not reader
+
+Mutation is exclusive; reading is not. Arriving at an existing candidate to research,
+review, challenge, or comment requires no claim, no check for a current writer, and no
+wait. Duplicate review is cheap and buys a second detection surface from
+changed attention, which is what substantive review asks for and cannot get from
+identity alone. A session that finds another writer already on a candidate may review
+it and contribute evidence; it does not push or need to wait to review.
+
+Independent reviewing roots publish useful findings to the durable GitHub surface.
+Bounded review workers return findings to their accountable root, which joins the
+evidence and publishes the useful result. Evidence left only in a reviewing session
+cannot inform the next reviewer; publication follows the existing root/worker authority.
+
+Do not gate reading. A claim ceremony, reservation, or persistent writer-liveness
+signal ahead of research or review serializes the cheap half of the work and goes stale.
+Mutation is different: immediately before a write, establish the exact candidate,
+head, and mutation ownership from live evidence, using typed checks applicable to the
+operation. `cargo xtask writer-admission` checks new-candidate creation; its open-PR
+collision result is not evidence of another current writer during repair of an
+existing candidate. For resume/reuse, consume the applicable guidance and verify the
+live head and writer. Missing, stale, or contradictory writer evidence is `NOT_PROVEN`;
+an established second writer is a hard stop. This is a just-in-time write check, not
+durable coordination state.
+
+If a collision is discovered only after commits from multiple contexts have reached the
+branch, first establish one writer. That writer preserves the commits by merging
+rather than rewriting history, subject to applicable user and repository authorization.
+A second writer does not gain permission to perform recovery mutation merely because
+merge is safer than force-push. Writer ownership alone grants no rebase or force-push
+authorization.
+
 ## Proof ladder
 
 ```text
@@ -307,6 +350,24 @@ publication. [File policy](../FILE_POLICY.md) and
 [non-Rust policy](../policy/NON_RUST_POLICY.md) define its current-tree evidence path.
 Temporary workflows that execute or push on a branch's behalf are not an acceptable
 repair route; the edit is made locally by the candidate writer.
+
+## Self-authored correction and disclosure
+
+When an in-scope defect is reversible and covered by the accepted claim and current
+writer envelope, correct it immediately, rerun the
+affected proof, and disclose the defect, correction, result, and remaining uncertainty.
+The fact that the agent introduced the defect does not create a new approval
+transaction. Ask for a decision only when the correction requires a non-derivable
+product or policy choice, a separately protected external action, or material scope,
+cost, privacy, security, or exposure change. Disclosure and authorization are separate
+facts.
+
+Pending candidate work remains a candidate-local wait with one exact wake event. Do not
+turn unchanged polling into progress or an umbrella blocker; advance another disjoint
+claim when its authority permits. An active writer collision and a higher-precedence
+prohibition hold only the affected claim and preserve existing ownership and result
+vocabulary. Repository guidance cannot override a higher-precedence runtime
+instruction; that provenance remains an explicit uncertainty boundary.
 
 ## Hard stops
 
