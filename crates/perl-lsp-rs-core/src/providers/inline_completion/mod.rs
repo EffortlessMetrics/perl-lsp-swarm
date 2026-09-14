@@ -364,6 +364,11 @@ pub enum BackendError {
     RateLimited,
     /// Request was cancelled.
     Cancelled,
+    /// The response crossed a compiled resource limit and was refused before
+    /// the offending bytes were accumulated. Carries only limit identity and
+    /// bounded numeric metadata — never response, prompt, or completion
+    /// content.
+    BudgetExceeded(crate::providers::ai::budget::BudgetViolation),
 }
 
 impl std::fmt::Display for BackendError {
@@ -375,6 +380,7 @@ impl std::fmt::Display for BackendError {
             Self::Timeout => write!(f, "request timed out"),
             Self::RateLimited => write!(f, "rate limit exceeded"),
             Self::Cancelled => write!(f, "request cancelled"),
+            Self::BudgetExceeded(violation) => write!(f, "{violation}"),
         }
     }
 }
@@ -384,8 +390,13 @@ impl std::error::Error for BackendError {}
 impl perl_parser_core::ErrorClass for BackendError {
     fn error_class(&self) -> perl_parser_core::ErrorCategory {
         match self {
-            // Network/IO or external service error — infrastructure.
-            Self::Transport(_) | Self::Provider(_) => perl_parser_core::ErrorCategory::Infra,
+            // Network/IO or external service error — infrastructure. A
+            // resource-budget refusal joins them: the response, not the
+            // request, is at fault, and retrying it reproduces the breach
+            // rather than resolving it.
+            Self::Transport(_) | Self::Provider(_) | Self::BudgetExceeded(_) => {
+                perl_parser_core::ErrorCategory::Infra
+            }
             // Bad key or expired token — user configuration issue.
             Self::Auth(_) => perl_parser_core::ErrorCategory::UserError,
             // All three may succeed on retry after backoff or cancellation
