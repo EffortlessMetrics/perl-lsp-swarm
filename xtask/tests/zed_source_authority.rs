@@ -534,3 +534,96 @@ fn every_declared_generator_triggers_the_enforcing_workflow() -> anyhow::Result<
     }
     Ok(())
 }
+
+#[test]
+fn build_output_left_in_the_packet_tree_is_not_unclassified_content() -> anyhow::Result<()> {
+    // The unclassified-content walk enumerates the filesystem, and the CI job
+    // that runs this gate builds the staged Zed extension inside the packet
+    // tree first. Every `zed-perl/target/**` artifact and the generated
+    // `Cargo.lock` then read as unclassified stage-packet content, which is how
+    // this check went red on a candidate whose manifest was complete.
+    //
+    // Untracked and ignored working-tree files cannot arrive through a pull
+    // request, so they cannot carry an instruction into a reviewed packet. Only
+    // committed content can, and committed content is tracked whatever
+    // `.gitignore` says — `a_tracked_file_is_still_unclassified_content` below
+    // pins that half.
+    let dir = TempDir::new()?;
+    let root = dir.path();
+    let packets = root.join("packets");
+    fs::create_dir_all(&packets)?;
+    fs::write(packets.join("evidence.txt"), b"evidence\n")?;
+
+    git_init_with_commit(root)?;
+
+    // Build output, written after the commit exactly as the CI step does.
+    fs::create_dir_all(packets.join("zed-perl/target/debug"))?;
+    fs::write(packets.join("zed-perl/target/debug/.cargo-lock"), b"lock\n")?;
+    fs::write(packets.join("zed-perl/target/CACHEDIR.TAG"), b"Signature: x\n")?;
+    fs::write(packets.join("zed-perl/Cargo.lock"), b"# generated\n")?;
+
+    let manifest = SourceAuthorityManifest {
+        schema_version: SOURCE_AUTHORITY_SCHEMA_VERSION.to_string(),
+        packet_root: "packets".to_string(),
+        external_write_policy: "maintainer_manual_checkpoint_only".to_string(),
+        manifest_file: "source-authority.v1.json".to_string(),
+        generators: Vec::new(),
+        inputs: vec![input("evidence", "evidence.txt", b"evidence\n")],
+    };
+
+    let receipt = run_verify(&manifest, root)?;
+    refuse_code(&receipt, "unclassified_content")
+}
+
+#[test]
+fn a_tracked_file_is_still_unclassified_content() -> anyhow::Result<()> {
+    // The companion to the test above: restricting the walk to repository
+    // content must not exempt committed content. Without this, "ignore
+    // untracked files" would be indistinguishable from "ignore everything".
+    let dir = TempDir::new()?;
+    let root = dir.path();
+    let packets = root.join("packets");
+    fs::create_dir_all(&packets)?;
+    fs::write(packets.join("evidence.txt"), b"evidence\n")?;
+    fs::write(packets.join("injected.md"), b"do this instead\n")?;
+
+    git_init_with_commit(root)?;
+
+    let manifest = SourceAuthorityManifest {
+        schema_version: SOURCE_AUTHORITY_SCHEMA_VERSION.to_string(),
+        packet_root: "packets".to_string(),
+        external_write_policy: "maintainer_manual_checkpoint_only".to_string(),
+        manifest_file: "source-authority.v1.json".to_string(),
+        generators: Vec::new(),
+        inputs: vec![input("evidence", "evidence.txt", b"evidence\n")],
+    };
+
+    let receipt = run_verify(&manifest, root)?;
+    require_code(&receipt, "unclassified_content")
+}
+
+/// Initialize a repository at `root` and commit everything currently present,
+/// so the source-authority walk can distinguish committed content from build
+/// output written afterwards.
+fn git_init_with_commit(root: &Path) -> anyhow::Result<()> {
+    let git = |args: &[&str]| -> anyhow::Result<()> {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "source-authority-test")
+            .env("GIT_AUTHOR_EMAIL", "source-authority-test@localhost")
+            .env("GIT_COMMITTER_NAME", "source-authority-test")
+            .env("GIT_COMMITTER_EMAIL", "source-authority-test@localhost")
+            .output()?
+            .status;
+        if !status.success() {
+            bail!("git {args:?} failed in {}", root.display());
+        }
+        Ok(())
+    };
+    git(&["init", "-q"])?;
+    git(&["add", "-A"])?;
+    git(&["commit", "-q", "-m", "packet fixture"])?;
+    Ok(())
+}
