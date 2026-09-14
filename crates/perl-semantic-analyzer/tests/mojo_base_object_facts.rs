@@ -359,16 +359,37 @@ fn an_explicit_source_method_keeps_the_collision_visible() {
 }
 
 #[test]
-fn a_non_code_reference_default_stays_an_unsupported_boundary() {
-    let code = "package App;\nuse Mojo::Base -base;\nhas 'list' => [];\n";
-    let declared = declarations(code, FileId(1), "gen-1");
-    assert!(matches!(declared[0].default, MojoBaseAttributeDefault::Unsupported { .. }));
-    let facts = only_facts(code);
-    assert_eq!(facts.reader_results[0].relation, CallableResultRelation::Unknown);
-    assert!(
-        facts.reader_results[0].limitations().contains(&CallableResultLimitation::Unsupported),
-        "Mojo::Base rejects a non-code reference default at runtime"
+fn a_non_code_reference_default_declares_no_accessor() {
+    // `Mojo::Base::attr` croaks at import on a reference default that is not a
+    // code reference, so no accessor is installed — not one whose reader
+    // merely carries an `Unsupported` boundary. Verified against `perl` with
+    // the released guard transcribed:
+    //
+    //     Carp::croak 'Default has to be a code reference or constant value'
+    //       if ref $value && ref $value ne 'CODE';
+    //
+    // The croak also aborts the rest of the file, so `after` never runs and
+    // only `before` reaches the symbol table.
+    let code = concat!(
+        "package App;\n",
+        "use Mojo::Base -base;\n",
+        "has 'before' => 1;\n",
+        "has 'list' => [];\n",
+        "has 'after' => 2;\n",
     );
+    let declared = declarations(code, FileId(1), "gen-1");
+    assert!(
+        matches!(declared[1].default, MojoBaseAttributeDefault::Unsupported { .. }),
+        "the extractor still classifies the refused default"
+    );
+    let facts = only_facts(code);
+    assert_eq!(
+        member_names(&facts),
+        ["before"],
+        "the refused declaration and everything after it install no accessor"
+    );
+    assert_eq!(facts.reader_results.len(), 1, "one surviving accessor, one read result");
+    assert_eq!(facts.setter_results.len(), 1, "one surviving accessor, one write contract");
 }
 
 #[test]

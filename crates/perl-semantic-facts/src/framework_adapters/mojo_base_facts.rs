@@ -516,6 +516,9 @@ pub fn mojo_base_object_facts(
     let (_, import_end_byte) = activation.source_interval;
 
     let mut admitted: Vec<(&MojoBaseAttributeDeclaration, &str)> = Vec::new();
+    // Execution-order key of the earliest declaration `attr` refuses, if any.
+    // See the `Unsupported` arm below and the cut that follows the loop.
+    let mut refused_at: Option<(u8, u32)> = None;
     for declaration in declarations {
         if declaration.package.as_deref() != package {
             continue;
@@ -588,9 +591,38 @@ pub fn mojo_base_object_facts(
         // — a same-named sibling that a determinate default reaches is the
         // only one that can still be live.
         if matches!(declaration.default, MojoBaseAttributeDefault::Unsupported { .. }) {
+            // The croak is not local to this statement either. It propagates
+            // out of the `has` call and aborts the enclosing phase, so every
+            // declaration that would have executed *after* it never runs and
+            // the package fails to load. Confirmed against `perl` with the
+            // released guard transcribed verbatim: given
+            //
+            //     has 'before_it' => 1;   # installed
+            //     has 'list'      => [];  # croaks
+            //     has 'after_it'  => 2;   # never runs
+            //
+            // only `before_it` reaches the symbol table. Minting `after_it`
+            // would publish a method that provably does not exist, which is
+            // the same over-report this arm exists to prevent.
+            //
+            // Record the earliest refusal in *execution* order, not source
+            // order: a refusal inside `BEGIN` croaks during compilation, so an
+            // ordinary `has` written above it has not run yet and never will.
+            let refusal =
+                (execution_rank(declaration.execution_phase), declaration.declaration_index);
+            refused_at = Some(refused_at.map_or(refusal, |earliest| earliest.min(refusal)));
             continue;
         }
         admitted.push((declaration, name));
+    }
+    // Drop everything the croak above prevents from executing. Names sharing
+    // one `has [qw(a b)]` statement share `declaration_index`, and a statement
+    // has one default, so a refused statement is already wholly excluded by the
+    // arm above; the strict `<` here only removes genuinely later statements.
+    if let Some(cut) = refused_at {
+        admitted.retain(|(declaration, _)| {
+            (execution_rank(declaration.execution_phase), declaration.declaration_index) < cut
+        });
     }
     let Some(owning_package) = package else {
         return facts;
@@ -1480,8 +1512,14 @@ mod tests {
 
     /// The `Unsupported` exclusion is per-declaration, not per-activation: a
     /// sibling `has` with a determinate default in the same package still
-    /// mints a member, reader, and setter even though an earlier declaration
-    /// in the same statement list is `Unsupported`.
+    /// mints a member, reader, and setter. The activation stays good; only the
+    /// one refused declaration is dropped.
+    ///
+    /// The determinate sibling is written *above* the refused one because that
+    /// is the only position where it genuinely still installs. `attr` croaks,
+    /// and the croak aborts the enclosing phase, so a sibling below the refused
+    /// declaration never executes — see
+    /// `a_refused_default_also_drops_every_later_declaration`.
     #[test]
     fn a_sibling_determinate_declaration_still_mints_beside_an_unsupported_one() {
         let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
@@ -1489,14 +1527,78 @@ mod tests {
         let facts = mint_with_detection(
             &activation,
             &[
-                declaration(1, "broken", unsupported),
-                declaration(2, "ok", MojoBaseAttributeDefault::Constant),
+                declaration(1, "ok", MojoBaseAttributeDefault::Constant),
+                declaration(2, "broken", unsupported),
             ],
         );
         assert_eq!(facts.members.len(), 1, "only the determinate sibling mints a member");
         assert_eq!(facts.members[0].member.name, "ok");
         assert_eq!(facts.reader_results.len(), 1);
         assert_eq!(facts.setter_results.len(), 1);
+    }
+
+    /// The croak aborts the enclosing phase, so a refused default also drops
+    /// every declaration that would have executed after it.
+    ///
+    /// Verified against `perl` with the released `attr` guard transcribed: with
+    /// `before` installed, `bad => []` croaking and `after` written below it,
+    /// the load fails and only `before` reaches the symbol table.
+    #[test]
+    fn a_refused_default_also_drops_every_later_declaration() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let facts = mint_with_detection(
+            &activation,
+            &[
+                declaration(1, "before", MojoBaseAttributeDefault::Constant),
+                declaration(
+                    2,
+                    "bad",
+                    MojoBaseAttributeDefault::Unsupported { reason: "ref".to_string() },
+                ),
+                declaration(3, "after", MojoBaseAttributeDefault::Constant),
+            ],
+        );
+        let names: Vec<&str> =
+            facts.members.iter().map(|member| member.member.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["before"],
+            "only the declaration executing before the croak installs an accessor"
+        );
+        assert_eq!(facts.reader_results.len(), 1, "one surviving accessor, one read result");
+        assert_eq!(facts.setter_results.len(), 1, "one surviving accessor, one write contract");
+    }
+
+    /// Execution order decides what the croak kills, not source order.
+    ///
+    /// A refusal inside `BEGIN` croaks during compilation, so an ordinary `has`
+    /// written *above* it has not run yet and never will. Verified against
+    /// `perl`:
+    ///
+    /// ```perl
+    /// has 'run_phase' => 1;         # written first, runs in the run phase
+    /// BEGIN { has 'bad' => []; }    # written second, croaks at compile time
+    /// ```
+    ///
+    /// reports `BEGIN failed--compilation aborted` and installs neither.
+    /// Cutting on source order alone would wrongly keep `run_phase`.
+    #[test]
+    fn a_refusal_in_begin_kills_a_run_phase_declaration_written_above_it() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let run_phase = declaration(1, "run_phase", MojoBaseAttributeDefault::Constant);
+        let mut refused_in_begin = declaration(
+            2,
+            "bad",
+            MojoBaseAttributeDefault::Unsupported { reason: "ref".to_string() },
+        );
+        refused_in_begin.execution_phase = MojoBaseExecutionPhase::CompileImmediate;
+        let facts = mint_with_detection(&activation, &[run_phase, refused_in_begin]);
+        assert!(
+            facts.members.is_empty(),
+            "the compile-time croak aborts the file before any run-phase `has` executes"
+        );
+        assert!(facts.reader_results.is_empty());
+        assert!(facts.setter_results.is_empty());
     }
 
     #[test]
