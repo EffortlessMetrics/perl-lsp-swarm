@@ -5,7 +5,8 @@ use serde_json::{Value, json};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use xtask::critic_rule_proof::{
-    self as proof, MANIFEST_PATH, STATUS_PATH, resolve_fixture_path, validate_manifest_value,
+    self as proof, EXECUTE_LIVE_OWNER_PATHS, MANIFEST_PATH, PILOT_RULES, STATUS_PATH,
+    resolve_fixture_path, validate_manifest_value,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -70,7 +71,7 @@ fn status_render_is_byte_deterministic() -> TestResult {
     assert!(rendered.contains("MISSING"));
     assert!(rendered.contains("n/a"));
     let catalog = NativeCriticRegistry::for_profile(NativeCriticProfile::Strict).len();
-    let remainder = catalog.saturating_sub(first.rules.len());
+    let remainder = catalog.saturating_sub(PILOT_RULES.len());
     assert!(
         rendered.contains(&format!("{remainder} catalog native rules")),
         "status remainder must follow the live strict catalog, not a hardcoded 4-rule total:\n{rendered}"
@@ -82,6 +83,10 @@ fn status_render_is_byte_deterministic() -> TestResult {
     assert!(
         !rendered.contains("--write-status"),
         "status must not recommend a flag the CLI does not accept:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("closed PILOT_RULES cohort"),
+        "status remainder must name the closed PILOT_RULES set:\n{rendered}"
     );
     assert!(
         !rendered.contains("4-rule recommended/strict totals"),
@@ -394,6 +399,14 @@ fn automatic_success_without_target_removal_fails_check() -> TestResult {
 }
 
 #[test]
+fn automatic_success_without_no_new_governed_fails_check() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    case_mut(&mut manifest, "CRP-STRICT-POS-001").expect("strict pos")["fix_round_trip"]["expect_no_new_governed"] =
+        json!(false);
+    expect_violation(&manifest, "no new governed diagnostic")
+}
+
+#[test]
 fn unknown_alias_shape_fails_schema() -> TestResult {
     let mut manifest = canonical_manifest()?;
     rule_mut(&mut manifest, "native.testing.require_use_strict").expect("strict")["identity_aliases"]
@@ -470,5 +483,96 @@ fn generated_status_marks_missing_and_not_applicable_classes() -> TestResult {
     assert!(rendered.contains("n/a"));
     let status = std::fs::read_to_string(repo_root().join(STATUS_PATH))?;
     assert_eq!(status, rendered);
+    Ok(())
+}
+
+#[test]
+fn extra_catalog_rule_outside_pilot_fails_check() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    let mut extra =
+        rule_mut(&mut manifest, "native.testing.require_use_strict").expect("strict").clone();
+    extra["rule_id"] = json!("native.testing.require_use_warnings");
+    extra["canonical_id"] = json!("critic.testing.require_use_warnings");
+    manifest["rules"].as_array_mut().expect("rules").push(extra);
+    let error = match validate_manifest_value(&repo_root(), &manifest) {
+        Ok(_) => "manifest unexpectedly validated".to_string(),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("outside the closed PILOT_RULES set"),
+        "expected closed-set rejection in:\n{error}"
+    );
+    assert!(
+        !error.contains("missing required evidence class"),
+        "extra catalog rows must fail the closed set only, not missing-class noise:\n{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn advisory_lane_covers_execute_live_owners() -> TestResult {
+    let root = repo_root();
+    let workflow = std::fs::read_to_string(root.join(".github/workflows/critic-rule-proof.yml"))?;
+    let lanes = std::fs::read_to_string(root.join("policy/ci-lanes.toml"))?;
+    assert!(lanes.contains("[lane.critic_rule_proof]"), "missing critic_rule_proof lane");
+    for path in EXECUTE_LIVE_OWNER_PATHS {
+        assert!(
+            workflow.contains(path),
+            "workflow path filter missing execute live owner `{path}`:\n{workflow}"
+        );
+        assert!(
+            lanes.contains(path),
+            "ci-lanes critic_rule_proof paths missing execute live owner `{path}`:\n{lanes}"
+        );
+    }
+    assert_eq!(PILOT_RULES.len(), 4, "closed PILOT_RULES must stay the four-rule #6973 cohort");
+    Ok(())
+}
+
+#[test]
+fn ordinary_boundary_without_governed_proposition_fails_check() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    let case = case_mut(&mut manifest, "CRP-ASSIGN-BOUND-001").expect("assign bound");
+    case["expected_non_findings"] = json!([]);
+    expect_violation(
+        &manifest,
+        "ordinary boundary evidence must name a governed finding or non-finding",
+    )
+}
+
+#[test]
+fn omitted_fix_title_does_not_match_live_fix() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    case_mut(&mut manifest, "CRP-STRICT-POS-001")
+        .expect("strict pos")
+        .get_mut("expected_findings")
+        .and_then(Value::as_array_mut)
+        .expect("findings")[0]
+        .as_object_mut()
+        .expect("finding")
+        .remove("fix_title");
+    let typed =
+        validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
+    let error = proof::execute_manifest(&repo_root(), &typed)
+        .expect_err("presence-only fix_title must fail typed metadata match")
+        .to_string();
+    assert!(error.contains("missing expected finding"), "unexpected error: {error}");
+    Ok(())
+}
+
+#[test]
+fn excerpt_range_past_source_end_fails_live_check() -> TestResult {
+    let mut manifest = canonical_manifest()?;
+    let finding = &mut case_mut(&mut manifest, "CRP-ASSIGN-POS-001").expect("assign pos")["expected_findings"]
+        [0];
+    finding["start_byte"] = json!(10_000);
+    finding["end_byte"] = json!(10_000);
+    finding["excerpt"] = json!("");
+    let typed =
+        validate_manifest_value(&repo_root(), &manifest).map_err(|error| error.to_string())?;
+    let error = proof::execute_manifest(&repo_root(), &typed)
+        .expect_err("OOB excerpt must fail")
+        .to_string();
+    assert!(error.contains("outside source"), "unexpected error: {error}");
     Ok(())
 }

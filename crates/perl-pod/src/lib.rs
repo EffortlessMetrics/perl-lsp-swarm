@@ -219,9 +219,10 @@ fn pod_command(line: &str) -> Option<&'static str> {
     let rest = line.strip_prefix('=')?;
     // The command is the leading alphanumeric run (e.g. `head1`, `head2`).
     let cmd_end = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
-    let cmd = &rest[..cmd_end];
+    let cmd = rest.get(..cmd_end)?;
+    let after = rest.get(cmd_end..)?;
     // After the command, the next char must be whitespace or end-of-line.
-    if cmd_end < rest.len() && !rest[cmd_end..].starts_with(char::is_whitespace) {
+    if !after.is_empty() && !after.starts_with(char::is_whitespace) {
         return None;
     }
     match cmd {
@@ -308,7 +309,12 @@ fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, in_ove
             doc.name = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Synopsis => {
-            doc.synopsis = Some(cleaned);
+            // Synopsis feeds the same plain-text hover/virtual-content
+            // surfaces as NAME, so links render as display text there too.
+            // The markdown `L<>` rendering percent-encodes link targets and
+            // made a cleaned synopsis longer than its source, tripping the
+            // `pod_extraction` fuzz invariant (#12824 family).
+            doc.synopsis = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Description => {
             // Take only the first paragraph
@@ -368,10 +374,10 @@ pub fn strip_pod_formatting(text: &str) -> String {
 
 /// Like [`strip_pod_formatting`], but renders `L<...>` links as their plain
 /// display text only — no markdown `[text](url)` wrapper, no percent-encoded
-/// target. Used for the NAME field (#12824): its sole consumer renders it as
-/// plain perldoc text, so link markup is noise, and the percent-encoding
-/// expansion made a cleaned NAME longer than its source, violating the
-/// extraction invariant the `pod_extraction` fuzz target asserts.
+/// target. Used for the NAME and SYNOPSIS fields (#12824, #14171): their
+/// consumers render them as plain perldoc text, so link markup is noise, and
+/// the percent-encoding expansion made a cleaned field longer than its source,
+/// violating the extraction invariant the `pod_extraction` fuzz target asserts.
 pub fn strip_pod_formatting_display_text(text: &str) -> String {
     strip_pod_formatting_depth_links(text, 0, LinkRendering::DisplayText)
 }
@@ -830,6 +836,13 @@ mod tests {
             "=encodingx",
         ] {
             assert_eq!(pod_command(line), None, "lookalike directive {line}");
+        }
+    }
+
+    #[test]
+    fn pod_command_rejects_malformed_empty_and_no_argument_inputs() {
+        for line in ["", "=", "= ", "=\t", "==", "==pod", "=☃", " =head1 NAME"] {
+            assert_eq!(pod_command(line), None, "malformed directive {line:?}");
         }
     }
 

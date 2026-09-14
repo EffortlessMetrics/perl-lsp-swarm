@@ -17,8 +17,13 @@ pub(super) struct DebugSession {
     pub(super) variable_cache: VariableCache,
     /// Thread ID
     pub(super) thread_id: i32,
+    /// Working directory used by the debuggee process for relative sources.
+    pub(super) debuggee_cwd: std::path::PathBuf,
     /// Last resume command issued while running.
     pub(super) last_resume_mode: ResumeMode,
+    /// Whether the debugger's implicit startup pause is still available for
+    /// projection onto an acknowledged main-source breakpoint.
+    pub(super) initial_stop_pending: bool,
     /// Monotonic stopped-suspension authority used to prevent old frame ids
     /// from becoming valid again when the debugger reuses a numeric frame id.
     pub(super) stopped_generation: u64,
@@ -44,6 +49,9 @@ pub(super) enum ResumeMode {
     Next,
     StepIn,
     StepOut,
+    /// Run-to-line resume. Unreachable while standard DAP `goto` is fail-closed
+    /// (#9064); retained for the proven-primitive re-enable gate.
+    #[allow(dead_code)]
     Goto,
     Unknown,
 }

@@ -280,6 +280,10 @@ impl ReferenceKind {
 // ---------------------------------------------------------------------------
 
 /// An out-of-line module declared in `lib.rs`.
+///
+/// Test-only residue of the pre-syn hand-rolled parser (#14344 moved symbol
+/// discovery to `syn`); retained so its tests keep running under `cfg(test)`.
+#[cfg(test)]
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Module {
     pub name: String,
@@ -553,6 +557,7 @@ fn tracked_files(root: &Path) -> Result<Vec<String>> {
 /// the scanner permanently one level deep, and every item declared after it
 /// would be silently dropped from discovery — a fail-open hole in a task whose
 /// entire job is to fail closed.
+#[cfg(test)]
 fn code_lines(source: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut block_comment_depth: usize = 0;
@@ -996,6 +1001,7 @@ fn module_path_attribute(item_mod: &syn::ItemMod) -> Option<String> {
 }
 
 /// `pub mod <name>;` declarations in `lib.rs`.
+#[cfg(test)]
 pub fn parse_modules(lib_rs: &str) -> Vec<Module> {
     let mut modules = Vec::new();
     for line in code_lines(lib_rs) {
@@ -1023,6 +1029,7 @@ pub fn parse_modules(lib_rs: &str) -> Vec<Module> {
 }
 
 /// `pub use <module>::{A, B};` and `pub use <module>::A;` in `lib.rs`.
+#[cfg(test)]
 pub fn parse_root_reexports(lib_rs: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for line in code_lines(lib_rs) {
@@ -1063,6 +1070,7 @@ pub fn parse_root_reexports(lib_rs: &str) -> Vec<(String, String)> {
 ///
 /// Internal items are returned alongside public ones rather than skipped, so the
 /// ledger has to account for them too.
+#[cfg(test)]
 pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility)> {
     let mut out = Vec::new();
     let mut depth: i32 = 0;
@@ -1134,11 +1142,13 @@ pub fn parse_declared_items(source: &str) -> Vec<(String, SymbolKind, Visibility
 /// generics, and `->` in a bound), so counting them would add a larger failure
 /// surface than the one it closes. Literals and comments are already removed by
 /// `code_lines`, so `{ /* … */ }` reaches here as an empty group.
+#[cfg(test)]
 fn impl_body_opens(trimmed: &str, delta: i32) -> bool {
     delta > 0 || (delta == 0 && closes_an_empty_brace_group(trimmed))
 }
 
 /// Whether the line ends by closing a brace group that encloses nothing.
+#[cfg(test)]
 fn closes_an_empty_brace_group(trimmed: &str) -> bool {
     let Some(head) = trimmed.strip_suffix('}') else {
         return false;
@@ -1153,6 +1163,7 @@ fn closes_an_empty_brace_group(trimmed: &str) -> bool {
 ///
 /// Trait-impl methods are not `pub`, so they never reach the caller anyway;
 /// returning `None` keeps the intent explicit.
+#[cfg(test)]
 fn inherent_impl_type(line: &str) -> Option<String> {
     let rest = line.strip_prefix("impl")?;
     if rest.contains(" for ") {
@@ -1201,6 +1212,7 @@ fn strip_fn_qualifiers(mut rest: &str) -> &str {
 /// The declared visibility is not the recorded one: a `pub` item in a private
 /// module is only reachable if `lib.rs` re-exports it, so [`discover`] narrows
 /// this to `Internal` where the module says so.
+#[cfg(test)]
 fn parse_item(trimmed: &str) -> Option<(String, SymbolKind, Visibility)> {
     // `pub(crate) fn` has no space after `pub`, so the two spellings are split
     // before the shared item parsing.
@@ -1227,6 +1239,7 @@ fn parse_item(trimmed: &str) -> Option<(String, SymbolKind, Visibility)> {
 /// Net brace depth contributed by one line. Callers must pass a line with
 /// literals and comments already stripped, or a brace inside a string shifts
 /// the depth permanently.
+#[cfg(test)]
 fn brace_delta(line: &str) -> i32 {
     let opens = line.matches('{').count() as i32;
     let closes = line.matches('}').count() as i32;
@@ -2065,8 +2078,24 @@ mod tests {
     use super::*;
 
     use color_eyre::eyre::eyre;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
 
     type TestResult<T = ()> = Result<T>;
+
+    #[track_caller]
+    fn validate_err(ledger: &Ledger, discovered: &Discovered, context: &'static str) -> String {
+        must_err_with(validate(ledger, discovered), context).to_string()
+    }
+
+    #[track_caller]
+    fn digest_authorities_err(root: &Path, context: &'static str) -> String {
+        must_err_with(digest_authorities(root), context).to_string()
+    }
+
+    #[track_caller]
+    fn discover_references_err(root: &Path, tracked: &[String], context: &'static str) -> String {
+        must_err_with(discover_references(root, tracked), context).to_string()
+    }
 
     /// Public declarations only, as `(name, kind)`. Most parser tests are about
     /// item shape rather than visibility, so they assert against this narrower
@@ -2194,7 +2223,7 @@ mod tests {
             kind: "normal".to_string(),
         }];
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "unused symbol must fail when a Cargo dependent exists");
         assert!(err.contains("needs an empty Cargo population"), "unexpected error: {err}");
         Ok(())
     }
@@ -2226,7 +2255,7 @@ mod tests {
             kind: "normal".to_string(),
         }];
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "Cargo dependent filed as documentation must fail");
         assert!(err.contains("must be recorded as `cargo_dependency`"), "unexpected error: {err}");
         Ok(())
     }
@@ -2404,7 +2433,7 @@ mod tests {
         let l = ledger(vec![row], vec![]);
         let d = discovered(vec![export("parse_to_tree")], vec![]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "unresolvable fixture must fail closed");
         assert!(err.contains("does not resolve to a function"), "unexpected error: {err}");
         Ok(())
     }
@@ -2414,7 +2443,7 @@ mod tests {
         let l = ledger(vec![symbol("parse_to_tree", Disposition::UniqueAndRequired)], vec![]);
         let d = discovered(vec![export("parse_to_tree")], vec!["docs/new.md"]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "unexplained reference must fail closed");
         assert!(err.contains("does not explain it"), "unexpected error: {err}");
         Ok(())
     }
@@ -2428,7 +2457,7 @@ mod tests {
         let mut d = discovered(vec![], vec![]);
         d.authority_digest = "sha256:the-tier-a-list-was-edited".to_string();
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "authority digest mismatch must fail closed");
         assert!(err.contains("authority"), "unexpected error: {err}");
         assert_eq!(l.source_digest, d.source_digest, "source must be unchanged for this test");
         Ok(())
@@ -2456,7 +2485,7 @@ mod tests {
     fn a_missing_authority_fails_closed() -> TestResult {
         // Evidence a disposition rests on cannot simply vanish.
         let dir = tempfile::tempdir()?;
-        let err = digest_authorities(dir.path()).unwrap_err().to_string();
+        let err = digest_authorities_err(dir.path(), "missing authority document must fail closed");
         assert!(err.contains("failed to read"), "unexpected error: {err}");
         Ok(())
     }
@@ -2495,8 +2524,11 @@ mod tests {
         // Unknown contents cannot be assumed empty: a file git tracks but that
         // cannot be read must stop the audit, not silently leave the population.
         let dir = tempfile::tempdir()?;
-        let err = discover_references(dir.path(), &["missing.bin".to_string()]).unwrap_err();
-        let err = err.to_string();
+        let err = discover_references_err(
+            dir.path(),
+            &["missing.bin".to_string()],
+            "unreadable tracked file must fail closed",
+        );
         assert!(err.contains("must be complete"), "unexpected error: {err}");
         Ok(())
     }
@@ -2507,7 +2539,7 @@ mod tests {
         let l = ledger(vec![], vec![consumer(&path, ReferenceKind::Documentation)]);
         let d = discovered(vec![], vec![&path]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "own-crate path recorded as documentation must fail");
         assert!(err.contains("must be recorded as `own_crate`"), "unexpected error: {err}");
         Ok(())
     }
@@ -2536,7 +2568,7 @@ mod tests {
         let l = ledger(vec![], vec![]);
         let d = discovered(vec![export("parse_to_tree")], vec![]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "discovered symbol without a ledger row must fail");
         assert!(err.contains("has no row for it"), "unexpected error: {err}");
         Ok(())
     }
@@ -2546,7 +2578,7 @@ mod tests {
         let l = ledger(vec![symbol("removed_fn", Disposition::UniqueAndRequired)], vec![]);
         let d = discovered(vec![], vec![]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "stale ledger row with no discovered symbol must fail");
         assert!(err.contains("remove the stale row"), "unexpected error: {err}");
         Ok(())
     }
@@ -2562,7 +2594,7 @@ mod tests {
         );
         let d = discovered(vec![export("parse_to_tree")], vec![]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "duplicate symbol rows must fail closed");
         assert!(err.contains("duplicate symbol row"), "unexpected error: {err}");
         Ok(())
     }
@@ -2578,8 +2610,24 @@ mod tests {
         );
         let d = discovered(vec![], vec!["docs/x.md"]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "duplicate consumer rows must fail closed");
         assert!(err.contains("duplicate consumer row"), "unexpected error: {err}");
+        Ok(())
+    }
+
+    /// Retention control for #15076: retiring a stale consumer from the
+    /// checked-in ledger must not silence the rule that a row with no tracked
+    /// package mention is refused.
+    #[test]
+    fn a_stale_consumer_row_fails_closed() -> TestResult {
+        let path = "docs/policy/NON_RUST_INVENTORY.md";
+        let l = ledger(vec![], vec![consumer(path, ReferenceKind::Documentation)]);
+        let d = discovered(vec![], vec![]);
+
+        let err =
+            validate_err(&l, &d, "stale consumer row with no tracked package reference must fail");
+        assert!(err.contains("remove the stale row"), "unexpected error: {err}");
+        assert!(err.contains(path), "error must name the stale path: {err}");
         Ok(())
     }
 
@@ -2590,7 +2638,7 @@ mod tests {
         let l = ledger(vec![row], vec![]);
         let d = discovered(vec![export("parse_to_tree")], vec![]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "unknown row without canonical_owner must fail");
         assert!(err.contains("must record `canonical_owner`"), "unexpected error: {err}");
         Ok(())
     }
@@ -2602,7 +2650,7 @@ mod tests {
         let l = ledger(vec![symbol("parse_to_tree", Disposition::UnknownBlocking)], vec![]);
         let d = discovered(vec![export("parse_to_tree")], vec![]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "well-formed unknown_blocking row must still fail");
         assert!(err.contains("remain `unknown_blocking`"), "unexpected error: {err}");
         Ok(())
     }
@@ -2614,7 +2662,7 @@ mod tests {
         let l = ledger(vec![row], vec![]);
         let d = discovered(vec![export("parse_to_tree")], vec![]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "required row without fixture must fail");
         assert!(err.contains("must record `fixture`"), "unexpected error: {err}");
         Ok(())
     }
@@ -2635,7 +2683,7 @@ mod tests {
             vec![],
         );
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "kind that disagrees with the source must fail");
         assert!(err.contains("but the source declares `enum`"), "unexpected error: {err}");
         Ok(())
     }
@@ -2647,7 +2695,7 @@ mod tests {
         let mut d = discovered(vec![export("parse_to_tree")], vec![]);
         d.source_digest = "sha256:different".to_string();
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "source digest mismatch must fail closed");
         assert!(err.contains("source changed since"), "unexpected error: {err}");
         Ok(())
     }
@@ -2692,12 +2740,12 @@ mod tests {
         let mut l = ledger(vec![], vec![]);
         l.schema_version = "tree_sitter_compat_inventory.v2".to_string();
         let d = discovered(vec![], vec![]);
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "schema version other than v1 must fail");
         assert!(err.contains("expected `tree_sitter_compat_inventory.v1`"));
 
         let mut l = ledger(vec![], vec![]);
         l.package = "perl-parser".to_string();
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "package other than perl-tree-sitter-compat must fail");
         assert!(err.contains("expected `perl-tree-sitter-compat`"));
         Ok(())
     }
@@ -2707,7 +2755,7 @@ mod tests {
         let mut l = ledger(vec![], vec![]);
         l.migration_owner = "the migration issue".to_string();
         let d = discovered(vec![], vec![]);
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "non-numeric issue reference must fail");
         assert!(err.contains("must be an issue reference"), "got: {err}");
         Ok(())
     }
@@ -2788,7 +2836,7 @@ fn private() {}
         internal.reexported_at_root = false;
         let d = discovered(vec![internal], vec![]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "internal symbol without a ledger row must fail");
         assert!(
             err.contains("declares internal symbol `convert::crate_helper`"),
             "unexpected error: {err}"
@@ -3192,7 +3240,7 @@ impl fmt::Display
         moved.visibility = Visibility::Internal;
         let d = discovered(vec![moved], vec![]);
 
-        let err = validate(&l, &d).unwrap_err().to_string();
+        let err = validate_err(&l, &d, "visibility that disagrees with the source must fail");
         assert!(err.contains("but the source declares it `internal`"), "unexpected error: {err}");
         Ok(())
     }
@@ -3342,6 +3390,16 @@ impl<T> Wrapper<T> {
         Ok(exports)
     }
 
+    #[track_caller]
+    fn syn_exports_err(source: &str, context: &'static str) -> String {
+        must_err_with(syn_exports(source), context).to_string()
+    }
+
+    #[track_caller]
+    fn syn_root_reexports_err(source: &str, context: &'static str) -> String {
+        must_err_with(syn_root_reexports(source), context).to_string()
+    }
+
     #[test]
     fn syn_walk_handles_nested_types_and_all_declared_item_forms() -> TestResult {
         let exports = syn_exports(
@@ -3382,18 +3440,20 @@ impl<T> Wrapper<T> {
 
     #[test]
     fn syn_walk_refuses_item_macros_without_expansion() {
-        let error = syn_exports("macro_rules! generated { ($name:ident) => { pub fn $name() {} }; }\ngenerated!(made);\n")
-            .unwrap_err()
-            .to_string();
+        let error = syn_exports_err(
+            "macro_rules! generated { ($name:ident) => { pub fn $name() {} }; }\ngenerated!(made);\n",
+            "item-position macro invocation must fail closed",
+        );
         assert!(error.contains("macro-generated"), "unexpected error: {error}");
         assert!(error.contains("generated"), "unexpected error: {error}");
     }
 
     #[test]
     fn syn_walk_rejects_root_glob_reexports_fail_closed() {
-        let error = syn_root_reexports("pub use api::*;\npub use convert::TreeError;\n")
-            .unwrap_err()
-            .to_string();
+        let error = syn_root_reexports_err(
+            "pub use api::*;\npub use convert::TreeError;\n",
+            "root glob re-export must fail closed",
+        );
         assert!(error.contains("glob"), "unexpected error: {error}");
         assert!(error.contains("api"), "error must name the glob source: {error}");
         // The named re-export alongside the glob is irrelevant: one glob makes
@@ -3480,7 +3540,7 @@ impl<T> Wrapper<T> {
             ("pub trait Probe { gen_trait!(); }", "gen_trait"),
             ("extern \"C\" { gen_foreign!(); }", "gen_foreign"),
         ] {
-            let error = syn_exports(form).unwrap_err().to_string();
+            let error = syn_exports_err(form, "associated-item macro invocation must fail closed");
             assert!(error.contains("macro-generated"), "unexpected error: {error}");
             assert!(error.contains(macro_name), "error must name `{macro_name}`: {error}");
         }
@@ -3491,7 +3551,10 @@ impl<T> Wrapper<T> {
         // A `macro_rules!` definition stores `generated` in `ItemMacro::ident`
         // while `mac.path` is the defining keyword `macro_rules`; the refusal
         // must name the definition, not the keyword.
-        let error = syn_exports("macro_rules! generated { () => {}; }").unwrap_err().to_string();
+        let error = syn_exports_err(
+            "macro_rules! generated { () => {}; }",
+            "macro_rules definition must be refused by name",
+        );
         assert!(error.contains("`generated`"), "unexpected error: {error}");
         assert!(!error.contains("`macro_rules`"), "unexpected error: {error}");
     }
@@ -3517,5 +3580,81 @@ impl<T> Wrapper<T> {
             "{PROJECTION_PATH} is stale; run `cargo xtask compat-inventory`"
         );
         Ok(())
+    }
+
+    #[test]
+    fn compat_inventory_converted_must_wrappers_carry_track_caller() {
+        let src = include_str!("compat_inventory.rs");
+        let mut failures = Vec::new();
+        for helper in [
+            "fn validate_err(",
+            "fn digest_authorities_err(",
+            "fn discover_references_err(",
+            "fn syn_exports_err(",
+            "fn syn_root_reexports_err(",
+        ] {
+            let Some(idx) = src.find(helper) else {
+                failures.push(format!("missing wrapper {helper}"));
+                continue;
+            };
+            let preceding = src.get(..idx).unwrap_or("");
+            let last_attr_line =
+                preceding.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
+            if last_attr_line.trim() != "#[track_caller]" {
+                failures.push(format!(
+                    "{helper} is not immediately preceded by #[track_caller] (found {last_attr_line:?})"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: valid reconciled ledger must not succeed:")]
+    fn compat_inventory_converted_validate_err_still_fails_when_ledger_is_valid() {
+        let l = ledger(
+            vec![symbol("parse_to_tree", Disposition::UniqueAndRequired)],
+            vec![consumer("docs/x.md", ReferenceKind::Documentation)],
+        );
+        let d = discovered(vec![export("parse_to_tree")], vec!["docs/x.md"]);
+        let _ = validate_err(&l, &d, "valid reconciled ledger must not succeed");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: present authority document must not succeed:")]
+    fn compat_inventory_converted_digest_authorities_err_still_fails_when_authority_exists() {
+        let dir = must_with(tempfile::tempdir(), "should-panic tempdir");
+        let path = dir.path().join(AUTHORITIES[0]);
+        let parent = must_some_with(path.parent(), "authority path has a parent");
+        must_with(fs::create_dir_all(parent), "create authority parent");
+        must_with(fs::write(&path, "Tier-A: parse_to_tree\n"), "write authority");
+        let _ = digest_authorities_err(dir.path(), "present authority document must not succeed");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: readable tracked file must not succeed:")]
+    fn compat_inventory_converted_discover_references_err_still_fails_when_file_is_readable() {
+        let dir = must_with(tempfile::tempdir(), "should-panic tempdir");
+        must_with(fs::write(dir.path().join("archive.bin"), b"no needle"), "write readable file");
+        let _ = discover_references_err(
+            dir.path(),
+            &["archive.bin".to_string()],
+            "readable tracked file must not succeed",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: clean syn source must not succeed:")]
+    fn compat_inventory_converted_syn_exports_err_still_fails_when_source_is_clean() {
+        let _ = syn_exports_err("pub fn after() {}\n", "clean syn source must not succeed");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: named root re-export must not succeed:")]
+    fn compat_inventory_converted_syn_root_reexports_err_still_fails_when_reexport_is_named() {
+        let _ = syn_root_reexports_err(
+            "pub use convert::TreeError;\n",
+            "named root re-export must not succeed",
+        );
     }
 }
