@@ -37,6 +37,7 @@ impl Checkpointable for PerlLexer<'_> {
             scan_limit,
             logical_source,
             generation,
+            content_digest: _,
         } = self;
         let _ = input_bytes;
         let _ = scan_limit;
@@ -59,8 +60,10 @@ impl Checkpointable for PerlLexer<'_> {
             CheckpointContext::Normal
         };
 
+        let content =
+            self.content_digest.get_or_init(|| crate::checkpoint::compute_content_digest(input));
         let identity = LexerCheckpointIdentity::capture(
-            input,
+            content,
             config,
             *qw_recovery_enabled,
             *emit_heredoc_body_tokens,
@@ -110,7 +113,10 @@ impl Checkpointable for PerlLexer<'_> {
         }
         checkpoint.ensure_complete()?;
         checkpoint.identity().matches_target(
-            self.input,
+            || {
+                self.content_digest
+                    .get_or_init(|| crate::checkpoint::compute_content_digest(self.input))
+            },
             &self.config,
             self.qw_recovery_enabled,
             self.emit_heredoc_body_tokens,
@@ -313,15 +319,95 @@ mod tests {
     }
 
     #[test]
-    fn stale_generation_fails_closed() {
+    fn stale_generation_fails_closed() -> Result<(), String> {
         let source = "my $x = 1;";
-        let mut lexer = PerlLexer::new(source);
-        lexer.bind_generation(SourceGeneration::known("1"));
-        let checkpoint = lexer.checkpoint();
-        lexer.bind_generation(SourceGeneration::known("2"));
-        assert_eq!(
-            lexer.validate_restore(&checkpoint),
-            Err(CheckpointRestoreError::WrongGeneration)
-        );
+        let mut checkpoint_source = PerlLexer::new(source);
+        checkpoint_source.bind_generation(SourceGeneration::known("1"));
+        let checkpoint = checkpoint_source.checkpoint();
+        let mut target = PerlLexer::new(source);
+        target.bind_generation(SourceGeneration::known("2"));
+        crate::checkpoint::reset_diagnostic_digest_counter();
+        if target.validate_restore(&checkpoint) != Err(CheckpointRestoreError::WrongGeneration) {
+            return Err("stale generation did not fail closed".to_string());
+        }
+        let (bytes, calls) = crate::checkpoint::diagnostic_digest_counter();
+        if (bytes, calls) != (0, 0) {
+            return Err(format!(
+                "stale generation computed target digest: calls={calls} bytes={bytes}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn restore_reuses_target_content_digest() -> Result<(), String> {
+        let source = "package RestoreCache;\nmy $value = 1;\n";
+        let mut source_lexer = PerlLexer::new(source);
+        source_lexer.next_token().ok_or_else(|| "source ended before checkpoint".to_string())?;
+        source_lexer.bind_generation(SourceGeneration::known("restore-generation"));
+        let checkpoint = source_lexer.checkpoint();
+
+        crate::checkpoint::reset_diagnostic_digest_counter();
+        let mut target = PerlLexer::new(source);
+        target.bind_generation(SourceGeneration::known("restore-generation"));
+        target.restore(&checkpoint).map_err(|error| error.to_string())?;
+        target.restore(&checkpoint).map_err(|error| error.to_string())?;
+
+        let (bytes, calls) = crate::checkpoint::diagnostic_digest_counter();
+        if calls != 1 || bytes != source.len() {
+            return Err(format!(
+                "expected one target digest over {} bytes, observed calls={calls} bytes={bytes}",
+                source.len()
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_identity_digest_is_cached_per_lexer() -> Result<(), String> {
+        let mut previous_captures = None;
+        for statements in [64, 128] {
+            crate::checkpoint::reset_diagnostic_digest_counter();
+            let source = "package Cached;\n".to_string() + &"my $value = 1;\n".repeat(statements);
+            let mut lexer = PerlLexer::new(&source);
+            lexer.next_token().ok_or_else(|| "source ended before first token".to_string())?;
+            let (bytes, calls) = crate::checkpoint::diagnostic_digest_counter();
+            if calls != 0 || bytes != 0 {
+                return Err(format!(
+                    "digest was computed during lexing without checkpoint: calls={calls} bytes={bytes}"
+                ));
+            }
+            let mut captures: usize = 0;
+            while lexer.next_token().is_some() {
+                let _ = lexer.checkpoint();
+                captures = captures.saturating_add(1);
+            }
+            lexer.bind_generation(SourceGeneration::known("fresh-generation"));
+            let refreshed = lexer.checkpoint();
+            if refreshed.identity().generation() != &SourceGeneration::known("fresh-generation") {
+                return Err("checkpoint did not refresh generation metadata".to_string());
+            }
+            let (bytes, calls) = crate::checkpoint::diagnostic_digest_counter();
+            if calls != 1 || bytes != source.len() {
+                return Err(format!(
+                    "expected one digest over {} bytes for {statements} statements, observed calls={calls} bytes={bytes} captures={captures}",
+                    source.len()
+                ));
+            }
+            if captures <= statements {
+                return Err(format!(
+                    "expected token-boundary captures above {statements}, got {captures}"
+                ));
+            }
+            if let Some(previous) = previous_captures
+                && captures <= previous
+            {
+                return Err(format!(
+                    "doubled source family did not add captures: previous={previous} current={captures}"
+                ));
+            }
+            previous_captures = Some(captures);
+        }
+        Ok(())
     }
 }

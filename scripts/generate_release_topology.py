@@ -44,6 +44,7 @@ SOURCE_PATHS = [
     "docs/reference/downstream-dap-integrations.json",
     "vscode-extension/src/downloader.ts",
     "scripts/inject-sha-assets.sh",
+    "scripts/publish-topo.py",
 ]
 TARGET_RE = re.compile(
     r"(?ms)^\s*- target:\s*(?P<target>[A-Za-z0-9_-]+)\s*$"
@@ -53,6 +54,29 @@ TARGET_RE = re.compile(
 
 class TopologyError(ValueError):
     """A release topology input is missing, stale, or inconsistent."""
+
+
+def publish_dependency_graph(
+    packages: list[dict[str, Any]], root: Path | None = None
+) -> dict[str, set[str]]:
+    """Use the shared publication graph policy rather than a second SCC implementation."""
+    helper_path = (
+        root or Path(__file__).resolve().parents[1]
+    ) / "scripts" / "publish-topo.py"
+    try:
+        source = helper_path.read_bytes()
+    except OSError as error:
+        raise TopologyError(f"cannot read publish graph helper: {helper_path}: {error}") from error
+    try:
+        code = compile(source, str(helper_path), "exec")
+    except (SyntaxError, UnicodeError) as error:
+        raise TopologyError(f"cannot compile publish graph helper: {helper_path}: {error}") from error
+    namespace: dict[str, Any] = {"__name__": "publish_topo", "__file__": str(helper_path)}
+    exec(code, namespace)
+    builder = namespace.get("build_publish_dependency_graph")
+    if not callable(builder):
+        raise TopologyError(f"publish graph helper has no callable builder: {helper_path}")
+    return builder(packages)
 
 
 def topology_schema_version(value: Any) -> int:
@@ -152,7 +176,7 @@ def cargo_metadata(root: Path) -> dict[str, Any]:
     return value
 
 
-def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+def derive_crates(metadata: dict[str, Any], root: Path | None = None) -> list[dict[str, Any]]:
     packages = {package["id"]: package for package in metadata.get("packages", [])}
     member_ids = metadata.get("workspace_members", [])
     members = [packages[member_id] for member_id in member_ids if member_id in packages]
@@ -182,14 +206,11 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
             f"missing={sorted(publishable - allowed)}, extra={sorted(allowed - publishable)}"
         )
 
-    dependencies: dict[str, set[str]] = {}
-    for name in allowed:
-        package = by_name[name]
-        dependencies[name] = {
-            dependency["name"]
-            for dependency in package.get("dependencies", [])
-            if dependency.get("name") in allowed and dependency.get("source") is None
-        }
+    dependencies = publish_dependency_graph(list(by_name.values()), root)
+    dependencies = {
+        name: deps & allowed for name, deps in dependencies.items() if name in allowed
+    }
+    publish_dependencies = {name: set(deps) for name, deps in dependencies.items()}
     ready = sorted(name for name, deps in dependencies.items() if not deps)
     order: list[str] = []
     while ready:
@@ -219,14 +240,7 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
                 "package_path": package_path,
                 "version": package["version"],
                 "publish_order": publish_order[name],
-                "internal_dependencies": sorted(
-                    dependency
-                    for dependency in (
-                        item["name"]
-                        for item in package.get("dependencies", [])
-                        if item.get("name") in allowed and item.get("source") is None
-                    )
-                ),
+                "internal_dependencies": sorted(publish_dependencies[name]),
             }
         )
     return entries
@@ -842,6 +856,20 @@ def validate_prepared_projection(
         )
 
 
+_TYPESCRIPT_NON_CODE = re.compile(
+    r"//[^\r\n]*|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
+    re.DOTALL,
+)
+
+
+def _mask_typescript_non_code(source: str) -> str:
+    """Blank TypeScript comments and literals while preserving line positions."""
+    return _TYPESCRIPT_NON_CODE.sub(
+        lambda match: "".join("\n" if char == "\n" else " " for char in match.group()),
+        source,
+    )
+
+
 def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[str]:
     """Derive the release targets reachable through the managed downloader.
 
@@ -852,15 +880,31 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
     architecture/libc construction.
     """
     managed: set[str] = set()
+    executable_source = _mask_typescript_non_code(source)
 
     if "aarch64-apple-darwin" in source:
         managed.add("aarch64-apple-darwin")
     if "x86_64-apple-darwin" in source:
         managed.add("x86_64-apple-darwin")
-    if "return 'x86_64-pc-windows-msvc'" in source:
-        managed.add("x86_64-pc-windows-msvc")
-    if "return 'aarch64-pc-windows-msvc'" in source:
-        managed.add("aarch64-pc-windows-msvc")
+    for constant, target in (
+        ("WINDOWS_X64_TARGET", "x86_64-pc-windows-msvc"),
+        ("WINDOWS_ARM64_TARGET", "aarch64-pc-windows-msvc"),
+    ):
+        literal_return = False
+        for match in re.finditer(rf"return\s+(['\"]){re.escape(target)}\1", source):
+            if executable_source[match.start() : match.start() + len("return")] == "return":
+                literal_return = True
+                break
+        constant_return = re.search(rf"return\s+{constant}\b", executable_source) is not None
+        declared_target = False
+        for match in re.finditer(
+            rf"\b{constant}\s*=\s*(['\"]){re.escape(target)}\1", source
+        ):
+            if executable_source[match.start() : match.start() + len(constant)] == constant:
+                declared_target = True
+                break
+        if literal_return or (declared_target and constant_return):
+            managed.add(target)
 
     constructs_linux_targets = (
         "return `${archPrefix}-unknown-linux-${libc}`" in source
@@ -968,7 +1012,7 @@ def build_manifest(
         raise TopologyError(
             f"VSIX version {package.get('version')} does not match {release}"
         )
-    crates = derive_crates(metadata)
+    crates = derive_crates(metadata, root)
     workspace_manifests = workspace_member_manifest_paths(metadata, root)
     for entry in crates:
         entry["package_path"] = (
@@ -1101,7 +1145,7 @@ def validate_manifest(
     if not isinstance(release, str):
         raise TopologyError("manifest release is missing")
     metadata = cargo_metadata(root)
-    expected_crates = derive_crates(metadata)
+    expected_crates = derive_crates(metadata, root)
     workspace_manifests = workspace_member_manifest_paths(metadata, root)
     for entry in expected_crates:
         entry["package_path"] = (
