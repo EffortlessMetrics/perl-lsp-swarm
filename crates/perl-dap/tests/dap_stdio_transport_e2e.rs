@@ -25,8 +25,9 @@ const EXPLICIT_DAP_BINARY_ENV: &str = "PERL_DAP_TEST_BINARY";
 const DAP_SMOKE_RECEIPT_ENV: &str = "PERL_DAP_SMOKE_RECEIPT";
 const DAP_SMOKE_SCHEMA_VERSION: &str = "perl_dap_stdio_smoke.v1";
 const DAP_SMOKE_CLAIM_BOUNDARY: &str = concat!(
-    "real Content-Length framed stdio initialize, threads, disconnect, and ",
-    "terminated-event smoke against the configured perl-dap binary; does not ",
+    "real Content-Length framed stdio initialize, threads, and disconnect smoke ",
+    "against the configured perl-dap binary; no debug session is started, so ",
+    "no terminated event is expected; does not ",
     "prove launch/debug-session semantics or platform-wide process cleanup"
 );
 
@@ -146,7 +147,7 @@ fn write_smoke_receipt_to(output: &Path, binary: &OsString) -> Result<()> {
         "binary": binary.to_string_lossy(),
         "commands": ["initialize", "threads", "disconnect"],
         "initialized_event": true,
-        "terminated_event": true,
+        "terminated_event": false,
         "timeout_seconds": 5,
         "claim_boundary": DAP_SMOKE_CLAIM_BOUNDARY,
     });
@@ -164,11 +165,12 @@ where
     thread::spawn(move || {
         loop {
             match read_framed_message(&mut reader) {
-                Ok(message) => {
+                Ok(Some(message)) => {
                     if tx.send(Ok(message)).is_err() {
                         break;
                     }
                 }
+                Ok(None) => break,
                 Err(error) => {
                     let _ = tx.send(Err(error.to_string()));
                     break;
@@ -179,11 +181,16 @@ where
     rx
 }
 
-fn read_framed_message<R: Read>(reader: &mut R) -> Result<DapMessage> {
+fn read_framed_message<R: Read>(reader: &mut R) -> Result<Option<DapMessage>> {
     let mut header = Vec::new();
     let mut byte = [0_u8; 1];
     loop {
-        reader.read_exact(&mut byte).context("failed to read DAP frame header")?;
+        if reader.read(&mut byte).context("failed to read DAP frame header")? == 0 {
+            if header.is_empty() {
+                return Ok(None);
+            }
+            return Err(anyhow!("EOF inside DAP frame header"));
+        }
         header.push(byte[0]);
         if header.ends_with(b"\r\n\r\n") {
             break;
@@ -203,7 +210,7 @@ fn read_framed_message<R: Read>(reader: &mut R) -> Result<DapMessage> {
 
     let mut body = vec![0_u8; content_length];
     reader.read_exact(&mut body).context("failed to read DAP frame body")?;
-    serde_json::from_slice(&body).context("DAP frame body was not a DapMessage")
+    serde_json::from_slice(&body).map(Some).context("DAP frame body was not a DapMessage")
 }
 
 fn wait_for_message<F>(
@@ -325,8 +332,34 @@ fn stdio_transport_framing_initialize_threads_disconnect() -> Result<()> {
     assert!(threads.is_empty(), "stdio e2e starts without an active debuggee");
 
     dap.send_request(3, "disconnect", Some(json!({})))?;
-    dap.wait_for_response(3, "disconnect")?;
-    dap.wait_for_event("terminated")?;
+    // Observe the complete remaining stream: an immediate try_recv would race
+    // the event writer and could miss a terminal event before or after the response.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut acknowledged = false;
+    loop {
+        match dap.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Ok(DapMessage::Response { request_seq: 3, command, success: true, .. }))
+                if command == "disconnect" && !acknowledged =>
+            {
+                acknowledged = true;
+            }
+            Ok(message) => return Err(anyhow!("unexpected disconnect message: {message:?}")),
+            Err(RecvTimeoutError::Disconnected) if acknowledged => break,
+            Err(error) => return Err(anyhow!("disconnect stream did not complete: {error}")),
+        }
+    }
+    loop {
+        if let Some(status) = dap.child.try_wait()? {
+            if !status.success() {
+                return Err(anyhow!("adapter exited unsuccessfully after disconnect: {status}"));
+            }
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow!("adapter did not exit after disconnect"));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
     write_smoke_receipt(&binary)?;
 
     Ok(())

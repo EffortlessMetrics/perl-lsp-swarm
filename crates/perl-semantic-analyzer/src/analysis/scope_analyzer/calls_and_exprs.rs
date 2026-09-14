@@ -5,7 +5,7 @@ use super::{
     builtin_declaration_arg_positions, feature_for_keyword, is_topic_defaulting_builtin,
     is_topic_modifying_builtin,
 };
-use crate::ast::Node;
+use crate::ast::{Node, NodeKind};
 use crate::pragma_tracker::PragmaState;
 use std::rc::Rc;
 
@@ -88,13 +88,54 @@ pub(super) fn handle_function_call<'a>(
     }
     ancestors.push(node);
     let declaration_arg_positions = builtin_declaration_arg_positions(name);
-    for (arg_index, arg) in args.iter().enumerate() {
+    for arg in args {
         analyzer.analyze_node(arg, scope, ancestors, issues, context);
-        if declaration_arg_positions.contains(&arg_index) {
-            analyzer.mark_builtin_declaration_arg_consumed(arg, scope, context);
+    }
+    // Parenthesized builtins wrap a comma or fat-comma list as one ArrayLiteral
+    // or HashLiteral argument (`build_list_or_hash`). Consume by the inner
+    // positional index so `open(my $fh, ...)` and `pipe(my $r => my $w)` both
+    // mark declared handles used (#15051). Walk the original `args` above so
+    // the wrapper itself is analyzed exactly once.
+    if !declaration_arg_positions.is_empty() {
+        for (arg_index, arg) in parenthesized_list_args(args, context.code).into_iter().enumerate()
+        {
+            if declaration_arg_positions.contains(&arg_index) {
+                analyzer.mark_builtin_declaration_arg_consumed(arg, scope, context);
+            }
         }
     }
     ancestors.pop();
+}
+
+/// Argument list used for builtin declaration-slot consumption.
+///
+/// Bare calls already store one node per argument. A parenthesized call whose
+/// only argument is a `(`-opened list is the same positional list wrapped by
+/// the parser:
+/// - comma lists → [`NodeKind::ArrayLiteral`]
+/// - even fat-comma lists → [`NodeKind::HashLiteral`]
+///
+/// Bracket and brace constructors stay wrapped. Nested literals inside a pair
+/// or element are not flattened.
+fn parenthesized_list_args<'a>(args: &'a [Node], source: &str) -> Vec<&'a Node> {
+    let [arg] = args else {
+        return args.iter().collect();
+    };
+    if source.as_bytes().get(arg.location.start) != Some(&b'(') {
+        return args.iter().collect();
+    }
+    match &arg.kind {
+        NodeKind::ArrayLiteral { elements } => elements.iter().collect(),
+        NodeKind::HashLiteral { pairs } => {
+            let mut flattened = Vec::with_capacity(pairs.len() * 2);
+            for (key, value) in pairs {
+                flattened.push(key);
+                flattened.push(value);
+            }
+            flattened
+        }
+        _ => args.iter().collect(),
+    }
 }
 
 /// Handle `NodeKind::AmperCall`.
