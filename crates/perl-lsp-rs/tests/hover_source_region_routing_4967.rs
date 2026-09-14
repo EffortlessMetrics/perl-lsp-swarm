@@ -464,3 +464,30 @@ fn hover_keeps_method_call_hover_in_proven_code() -> TestResult {
     assert!(!result.is_null(), "method call in proven code must keep its hover, got null");
     Ok(())
 }
+
+#[test]
+fn hover_interpolated_special_variable_excludes_trailing_literal() -> TestResult {
+    let doc = "print \"$!x\", \"@+x\", \"$^Wx\";\n";
+    let mut harness = LspHarness::new();
+    harness.initialize(None).map_err(Box::<dyn std::error::Error>::from)?;
+    harness.open_document(URI, doc).map_err(Box::<dyn std::error::Error>::from)?;
+
+    for variable in ["$!", "@+", "$^W"] {
+        for delta in 0..variable.len() {
+            let mut params = position_of(doc, variable)?;
+            let start = params["position"]["character"].as_u64().ok_or("missing position")?;
+            params["position"]["character"] = serde_json::json!(start + delta as u64);
+            let result = harness.request("textDocument/hover", params)?;
+            assert!(
+                hover_markdown(&result).is_some_and(|card| card.contains(variable)),
+                "expected {variable} card at +{delta}, got: {result}"
+            );
+        }
+        let mut params = position_of(doc, variable)?;
+        let start = params["position"]["character"].as_u64().ok_or("missing position")?;
+        params["position"]["character"] = serde_json::json!(start + variable.len() as u64);
+        let result = harness.request("textDocument/hover", params)?;
+        assert!(result.is_null(), "literal x after {variable} received a card: {result}");
+    }
+    Ok(())
+}

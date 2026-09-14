@@ -9,7 +9,8 @@
 //!   root does not exist.
 //! - `load_hover_gold_fixtures`: root does not exist, non-directory entry skipped,
 //!   directory without `fixture.pl` skipped, directory without `expected_hover.json`
-//!   skipped, malformed `expected_hover.json`, valid fixture loaded.
+//!   skipped, malformed `expected_hover.json`, valid fixture loaded, unknown assertion
+//!   keys fail closed, checked-in fixtures still parse after additive range kinds.
 //! - `load_goto_gold_fixtures`: same shape as hover variant.
 //! - `load_completion_gold_fixtures`: same shape, plus all `CompletionAssertionKind`
 //!   variants round-trip through serde.
@@ -302,6 +303,8 @@ mod gold {
             r#"{"kind":"hover_null","line":1,"character":5}"#,
             r#"{"kind":"hover_contains","needle":"Foo","line":2,"character":10}"#,
             r#"{"kind":"hover_absent","needle":"Bar","line":3,"character":0}"#,
+            r#"{"kind":"hover_range_covers","line":4,"character":3}"#,
+            r#"{"kind":"hover_range_equals","line":4,"character":3,"start_line":4,"start_character":3,"end_line":4,"end_character":12}"#,
         ];
 
         for raw in &cases {
@@ -332,6 +335,26 @@ mod gold {
         );
         assert_eq!(a.line, 5);
         assert_eq!(a.character, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn hover_gold_expected_rejects_unknown_assertion_keys() {
+        let json = r#"{"version":1,"fixture":"x","assertions":[{"kind":"hover_null","line":0,"character":0,"typo":1}]}"#;
+        assert!(
+            serde_json::from_str::<HoverGoldExpected>(json).is_err(),
+            "unknown hover assertion keys must fail closed"
+        );
+    }
+
+    #[test]
+    fn checked_in_hover_gold_fixtures_keep_parsing() -> Result<(), Box<dyn std::error::Error>> {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test_corpus/gold");
+        let fixtures = load_hover_gold_fixtures(&root)?;
+        assert!(
+            !fixtures.is_empty(),
+            "checked-in hover gold fixtures must still load after schema extension"
+        );
         Ok(())
     }
 

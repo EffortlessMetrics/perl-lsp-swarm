@@ -4,7 +4,8 @@ use super::*;
 use crate::contract::{validate_external_selector_for_test, validate_selector_for_test};
 use crate::io::{read_drift, read_matrix};
 use crate::model::{
-    CompositeOverlapPolicy, ManifestPopulation, TARGET_MATRIX_INDEX_SCHEMA_VERSION,
+    CONTROLLING_TERMINAL_CAPABILITY, CompositeOverlapPolicy, HARNESS_DISPLAY_NO_TTY_ENV,
+    ManifestPopulation, RUNTESTS_NO_TTY_ENV, TARGET_MATRIX_INDEX_SCHEMA_VERSION,
     TARGET_MATRIX_PART_SCHEMA_VERSION, TARGET_MATRIX_SCHEMA_VERSION,
     TARGET_SELECTION_SCHEMA_VERSION, TARGET_TOPOLOGY_DRIFT_SCHEMA_VERSION, TargetAuthority,
     TargetAuthorityKind, TargetDisposition, TargetExclusion, TargetKind, TargetMatrixEntry,
@@ -136,6 +137,8 @@ fn environment_variant(target_id: &str, base: &str) -> TargetSelectionContract {
     contract.preparation.perl_runtime = TargetPerlRuntime::Inherited;
     contract.variant_of = Some(base.to_string());
     contract.terminal_policy = TargetTerminalPolicy::NoTty;
+    // A no-TTY row must name the mechanism that selects the no-terminal path.
+    contract.environment = BTreeMap::from([(RUNTESTS_NO_TTY_ENV.to_string(), "1".to_string())]);
     contract
 }
 
@@ -168,7 +171,7 @@ fn checked_in_target_matrix_is_valid_and_stable() -> Result<()> {
     let first = matrix.fingerprint().map_err(|error| color_eyre::eyre::eyre!(error))?;
     let second = matrix.fingerprint().map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(first, second);
-    assert_eq!(first, "4182b36d39baa378790619cbf9d674de40cd895507a412750bd0e5fb0fa583fa");
+    assert_eq!(first, "c60ee4e521957e9ff7f2b1a85bba9ab929acae8a1004ebd3ea9e16683692eb70");
     Ok(())
 }
 
@@ -1256,5 +1259,246 @@ fn matrix_part_rejects_empty_and_unsorted_rows_with_exact_messages() -> Result<(
         unsorted.validate(),
         "target matrix part rows must be strictly sorted by target ID",
     )?;
+    Ok(())
+}
+
+// #6702: a row states its terminal behavior three times — the policy, the
+// capability predicate that gates which hosts may run it, and the environment
+// variable that actually selects the no-terminal path. These prove the three
+// statements cannot disagree, so a terminal variant can never be admitted on a
+// host that cannot satisfy it and report as an ordinary pass.
+//
+// Upstream Perl 5.42.2 ground truth, from `Makefile.SH` and `runtests.SH`:
+//
+//   test / check          runtests choose
+//   test_tty              runtests tty          -> stdin from /dev/tty
+//   test_notty            runtests no-tty       -> PERL_SKIP_TTY_TEST=1
+//   test_harness          runtests choose
+//   test_harness_notty    HARNESS_NOTTY=1 ... runtests choose
+//   minitest              TEST ... </dev/tty
+//   minitest_notty        PERL_SKIP_TTY_TEST=1 TEST ...
+//
+// So `PERL_SKIP_TTY_TEST` is the only mechanism that resolves the terminal, and
+// `HARNESS_NOTTY` only formats harness output.
+
+/// Build a forced-TTY row that satisfies the gate, so each falsifier below
+/// changes exactly one fact away from a known-good contract.
+fn forced_tty_contract() -> TargetSelectionContract {
+    let mut contract = physical_contract();
+    contract.target_id = "forced_tty".to_string();
+    contract.terminal_policy = TargetTerminalPolicy::Tty;
+    contract.capability_predicates = vec![CONTROLLING_TERMINAL_CAPABILITY.to_string()];
+    contract
+}
+
+/// Positive control: the good rows are accepted, so the falsifiers below fail
+/// for the fact they mutate rather than for an unrelated defect.
+#[test]
+fn coherent_terminal_rows_are_accepted() -> Result<(), String> {
+    forced_tty_contract().validate()?;
+
+    let mut forced_no_tty = physical_contract();
+    forced_no_tty.terminal_policy = TargetTerminalPolicy::NoTty;
+    forced_no_tty.environment =
+        BTreeMap::from([(RUNTESTS_NO_TTY_ENV.to_string(), "1".to_string())]);
+    forced_no_tty.validate()?;
+
+    // The shape of upstream `test_harness_notty`: it sets the harness display
+    // variable and still resolves its terminal by `choose`.
+    let mut harness_display = physical_contract();
+    harness_display.terminal_policy = TargetTerminalPolicy::Choose;
+    harness_display.environment =
+        BTreeMap::from([(HARNESS_DISPLAY_NO_TTY_ENV.to_string(), "1".to_string())]);
+    harness_display.validate()?;
+
+    // An unrelated environment variable is not a terminal mechanism either.
+    let mut other_env = physical_contract();
+    other_env.terminal_policy = TargetTerminalPolicy::Choose;
+    other_env.environment =
+        BTreeMap::from([("PERL_TEST_HARNESS_ASAP".to_string(), "1".to_string())]);
+    other_env.validate()?;
+    Ok(())
+}
+
+/// The defect this gate exists for: a `tty` row with no terminal requirement is
+/// admitted on a terminal-less host and reports as an ordinary pass.
+#[test]
+fn forced_tty_row_without_terminal_capability_is_rejected() -> Result<(), String> {
+    let mut contract = forced_tty_contract();
+    contract.capability_predicates.clear();
+    expect_exact_error(
+        contract.validate(),
+        "forced-TTY target forced_tty must declare the controlling_terminal capability predicate",
+    )?;
+
+    // A different predicate is not a substitute for the terminal requirement.
+    let mut other_predicate = forced_tty_contract();
+    other_predicate.capability_predicates = vec!["miniperl".to_string()];
+    expect_exact_error(
+        other_predicate.validate(),
+        "forced-TTY target forced_tty must declare the controlling_terminal capability predicate",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn forced_tty_row_cannot_also_select_the_no_tty_path() -> Result<(), String> {
+    let mut contract = forced_tty_contract();
+    contract.environment = BTreeMap::from([(RUNTESTS_NO_TTY_ENV.to_string(), "1".to_string())]);
+    expect_exact_error(
+        contract.validate(),
+        "forced-TTY target forced_tty cannot declare PERL_SKIP_TTY_TEST",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn no_tty_row_without_a_mechanism_is_rejected() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.terminal_policy = TargetTerminalPolicy::NoTty;
+    expect_exact_error(
+        contract.validate(),
+        "no-TTY target component_base must declare PERL_SKIP_TTY_TEST",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn no_tty_row_cannot_require_a_controlling_terminal() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.terminal_policy = TargetTerminalPolicy::NoTty;
+    contract.environment = BTreeMap::from([(RUNTESTS_NO_TTY_ENV.to_string(), "1".to_string())]);
+    contract.capability_predicates = vec![CONTROLLING_TERMINAL_CAPABILITY.to_string()];
+    expect_exact_error(
+        contract.validate(),
+        "no-TTY target component_base cannot require a controlling terminal",
+    )?;
+    Ok(())
+}
+
+/// The issue's explicit non-goal, and the error the checked-in matrix actually
+/// contained: `HARNESS_NOTTY` is a display variable, so a row that reaches for
+/// it instead of `PERL_SKIP_TTY_TEST` has not selected the no-terminal path.
+#[test]
+fn the_harness_display_variable_cannot_stand_in_for_the_no_tty_mechanism() -> Result<(), String> {
+    let mut contract = physical_contract();
+    contract.terminal_policy = TargetTerminalPolicy::NoTty;
+    contract.environment =
+        BTreeMap::from([(HARNESS_DISPLAY_NO_TTY_ENV.to_string(), "1".to_string())]);
+    expect_exact_error(
+        contract.validate(),
+        "no-TTY target component_base declares only HARNESS_NOTTY, which formats harness output and does not select the no-TTY path",
+    )?;
+
+    // Declaring both is fine — upstream can format output and skip the terminal
+    // at once — because the real mechanism is present.
+    let mut both = physical_contract();
+    both.terminal_policy = TargetTerminalPolicy::NoTty;
+    both.environment = BTreeMap::from([
+        (HARNESS_DISPLAY_NO_TTY_ENV.to_string(), "1".to_string()),
+        (RUNTESTS_NO_TTY_ENV.to_string(), "1".to_string()),
+    ]);
+    both.validate()?;
+    Ok(())
+}
+
+/// Presence is not selection: Perl's only false strings are "" and "0", and
+/// empty values are already rejected.
+#[test]
+fn a_false_valued_no_tty_mechanism_is_rejected() -> Result<(), String> {
+    let mut disabled = physical_contract();
+    disabled.terminal_policy = TargetTerminalPolicy::NoTty;
+    disabled.environment = BTreeMap::from([(RUNTESTS_NO_TTY_ENV.to_string(), "0".to_string())]);
+    expect_exact_error(
+        disabled.validate(),
+        "target component_base sets PERL_SKIP_TTY_TEST to a false value, which does not select the no-TTY path",
+    )?;
+
+    // "1" is the canonical enabling value and must still be accepted, so the
+    // rule rejects the false value rather than the variable.
+    let mut enabled = physical_contract();
+    enabled.terminal_policy = TargetTerminalPolicy::NoTty;
+    enabled.environment = BTreeMap::from([(RUNTESTS_NO_TTY_ENV.to_string(), "1".to_string())]);
+    enabled.validate()?;
+    Ok(())
+}
+
+/// A row that sets the mechanism has already resolved the terminal, so it may
+/// not keep reporting as the auto-detecting or inheriting target.
+#[test]
+fn unresolved_policies_cannot_carry_terminal_facts() -> Result<(), String> {
+    for policy in [
+        TargetTerminalPolicy::Choose,
+        TargetTerminalPolicy::Inherited,
+        TargetTerminalPolicy::NotApplicable,
+    ] {
+        let mut mechanism = physical_contract();
+        mechanism.terminal_policy = policy;
+        mechanism.environment =
+            BTreeMap::from([(RUNTESTS_NO_TTY_ENV.to_string(), "1".to_string())]);
+        expect_exact_error(
+            mechanism.validate(),
+            "target component_base declares PERL_SKIP_TTY_TEST without the no_tty terminal policy",
+        )?;
+
+        let mut capability = physical_contract();
+        capability.terminal_policy = policy;
+        capability.capability_predicates = vec![CONTROLLING_TERMINAL_CAPABILITY.to_string()];
+        expect_exact_error(
+            capability.validate(),
+            "target component_base requires a controlling terminal without the tty terminal policy",
+        )?;
+    }
+    Ok(())
+}
+
+/// Every checked-in row that resolves a terminal must carry the matching
+/// capability and mechanism, so the pinned matrix cannot drift back to a
+/// terminal variant that any host appears able to run.
+#[test]
+fn checked_in_terminal_rows_declare_their_capability_and_mechanism() -> Result<()> {
+    let matrix = read_matrix(&repo_file(".ci/perl-core-harness/upstream-targets-5.42.2.v1"))?;
+    let mut forced_tty = Vec::new();
+    let mut forced_no_tty = Vec::new();
+    for target in &matrix.targets {
+        let contract = &target.contract;
+        // Assert the facts here as well as collecting the IDs. Loading the
+        // matrix already runs `validate`, so a row that lost its capability or
+        // mechanism could not reach this loop — but that makes the assertion
+        // depend on validation having run. Restating it keeps this test
+        // meaningful on its own terms.
+        match contract.terminal_policy {
+            TargetTerminalPolicy::Tty => {
+                assert!(
+                    contract
+                        .capability_predicates
+                        .iter()
+                        .any(|predicate| predicate == CONTROLLING_TERMINAL_CAPABILITY),
+                    "{} forces a terminal without requiring one",
+                    contract.target_id
+                );
+                forced_tty.push(contract.target_id.as_str());
+            }
+            TargetTerminalPolicy::NoTty => {
+                assert!(
+                    contract.environment.contains_key(RUNTESTS_NO_TTY_ENV),
+                    "{} forces the no-terminal path without declaring {RUNTESTS_NO_TTY_ENV}",
+                    contract.target_id
+                );
+                forced_no_tty.push(contract.target_id.as_str());
+            }
+            _ => {}
+        }
+    }
+    forced_tty.sort_unstable();
+    forced_no_tty.sort_unstable();
+    // State the denominator rather than leaving it implicit. Upstream forces a
+    // terminal only for `test_tty` (`runtests tty`) and `minitest` (stdin from
+    // `/dev/tty`), and forces the no-terminal path only for `test_notty`
+    // (`runtests no-tty`) and `minitest_notty`. `test_harness_notty` is
+    // deliberately absent: it runs `runtests choose` and only changes output
+    // formatting. A new terminal row must be a deliberate edit here.
+    assert_eq!(forced_tty, vec!["make_minitest_tty", "make_test_tty"]);
+    assert_eq!(forced_no_tty, vec!["make_minitest_notty", "make_test_notty"]);
     Ok(())
 }
