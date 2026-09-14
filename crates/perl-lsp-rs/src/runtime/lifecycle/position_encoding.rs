@@ -73,7 +73,7 @@ impl PositionEncodingSessionContext {
     /// until the end-to-end cutover owned by #1690.
     #[allow(dead_code, reason = "production consumer arrives with #1690 activation")]
     #[must_use]
-    pub(crate) const fn server_supported(self) -> &'static [PositionEncoding] {
+    pub(crate) const fn server_supported() -> &'static [PositionEncoding] {
         &SERVER_SUPPORTED_POSITION_ENCODINGS
     }
 
@@ -202,7 +202,10 @@ mod tests {
         let context = server
             .position_encoding_session_context()
             .ok_or("initialized session should expose an active encoding")?;
-        assert_eq!(context.server_supported(), &[PositionEncoding::Utf8, PositionEncoding::Utf16]);
+        assert_eq!(
+            PositionEncodingSessionContext::server_supported(),
+            &[PositionEncoding::Utf8, PositionEncoding::Utf16]
+        );
         assert_eq!(context.active().encoding(), PositionEncoding::Utf16);
         assert_eq!(
             context.active().selection_reason(),

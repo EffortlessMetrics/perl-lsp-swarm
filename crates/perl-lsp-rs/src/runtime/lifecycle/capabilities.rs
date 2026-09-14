@@ -875,9 +875,14 @@ impl LspServer {
             );
         }
 
-        // Publish coordinate authority only after the complete initialize
-        // response has been constructed successfully. Client preference stays
-        // available for compatibility parsing but is not active authority.
+        // Publish coordinate authority once every capability that can still
+        // fail has been computed, so no partially-built initialize can leave a
+        // published authority behind. The response value is assembled just
+        // below from `capabilities`, which is already final here. Client
+        // preference stays available for compatibility parsing but is not
+        // active authority. Re-entry cannot republish: the duplicate-initialize
+        // guard rejects a second initialize before reaching this point, which
+        // `duplicate_initialize_cannot_mutate_active_identity` pins.
         self.publish_position_encoding_session_context();
 
         Ok(Some(json!({
