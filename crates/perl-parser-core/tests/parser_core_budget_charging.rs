@@ -707,6 +707,64 @@ fn a_nested_core_exhaustion_is_reported_in_the_adopting_operations_coordinates()
     }
 }
 
+/// The diagnostic budget is never charged for a diagnostic the operation did
+/// not retain.
+///
+/// The exemptions in this design all run one way: a terminal diagnostic is
+/// *retained without being charged*, so `diagnostics.len()` may exceed
+/// `errors_emitted`. The reverse — charged without being retained — has no
+/// legitimate case, because `max_errors` bounds what a caller receives. A
+/// charge with nothing behind it silently shrinks the allowance for
+/// diagnostics that would have been returned.
+///
+/// The failure path of the fused `*{ ... }` dereference violated exactly this:
+/// `adopt_nested_failure` charged `DiagnosticsEmitted` from the nested usage
+/// snapshot while the nested parser's retained diagnostics were dropped with
+/// the parser. On `my $g = *{ my $q = ; ( };` under an unlimited budget that
+/// implementation reports `errors_emitted = 5` against 2 retained diagnostics.
+#[test]
+fn the_diagnostic_budget_is_not_charged_for_unretained_diagnostics() {
+    // Sources whose fused `*{ ... }` sub-parse retains diagnostics and *then*
+    // fails, so the failure path runs with a non-empty nested diagnostic set.
+    const FIXTURES: [&str; 4] = [
+        "my $g = *{ my $q = ; ( };",
+        "my $g = *{ $a; ( };",
+        "my $g = *{ my $q = ; my $r = ; 'STDOUT' };",
+        "my $g = *{ my $q = ; $b };",
+    ];
+
+    for source in FIXTURES {
+        // Unlimited: nothing can be refused, so every charge must correspond to
+        // a retained diagnostic and the two must agree exactly.
+        let unlimited = parse_with_budget(source, ParseBudget::unlimited());
+        assert_eq!(
+            unlimited.budget_usage.errors_emitted,
+            unlimited.diagnostics.len(),
+            "{source:?}: under an unlimited budget nothing is refused and no terminal is \
+             recorded, so the charge and the retained vector must agree exactly; charged {} \
+             against {} retained",
+            unlimited.budget_usage.errors_emitted,
+            unlimited.diagnostics.len()
+        );
+
+        // Bounded: the terminal exemption can leave the vector *longer* than
+        // the charge, but never shorter.
+        let required = usage_unlimited(source).nodes_constructed;
+        for limit in 1..=required {
+            let output =
+                parse_with_budget(source, budget_with(ParseCoreDimension::NodesConstructed, limit));
+            assert!(
+                output.budget_usage.errors_emitted <= output.diagnostics.len(),
+                "{source:?} at node limit {limit}: charged {} diagnostics but retained only {} — \
+                 a charge without a retained diagnostic spends `max_errors` on output no caller \
+                 receives",
+                output.budget_usage.errors_emitted,
+                output.diagnostics.len()
+            );
+        }
+    }
+}
+
 /// Tokens consumed by a nested sub-parse are adopted too, not just its nodes.
 #[test]
 fn tokens_from_a_nested_sub_parse_are_adopted_by_the_adopting_operation() {

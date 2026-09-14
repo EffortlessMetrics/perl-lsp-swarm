@@ -18,11 +18,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 /// Carried out of the nested parse so the adopting operation can charge it:
 /// the nested tracker is discarded on the failure path, and dropping its
 /// charges with it would let a failed nested parse cost the parent nothing.
+///
+/// Diagnostics are deliberately absent: they are adopted by *retention*
+/// through the parent's `record_error` seam, not as a raw usage number. A
+/// count adopted here would charge `max_errors` for diagnostics the parent
+/// never retained and never returned.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NestedCoreUsage {
     pub(crate) tokens: usize,
     pub(crate) nodes: usize,
-    pub(crate) diagnostics: usize,
 }
 
 /// Immutable identity of the production parser configuration selected for an
@@ -358,7 +362,6 @@ impl ParserOperationContext {
         NestedCoreUsage {
             tokens: self.tracker.core_usage(ParseCoreDimension::TokensConsumed),
             nodes: self.tracker.core_usage(ParseCoreDimension::NodesConstructed),
-            diagnostics: self.tracker.core_usage(ParseCoreDimension::DiagnosticsEmitted),
         }
     }
 
@@ -384,7 +387,10 @@ impl ParserOperationContext {
     ) -> ParseError {
         self.tracker.record_core_batch(ParseCoreDimension::TokensConsumed, nested.tokens);
         self.tracker.record_core_batch(ParseCoreDimension::NodesConstructed, nested.nodes);
-        self.tracker.record_core_batch(ParseCoreDimension::DiagnosticsEmitted, nested.diagnostics);
+        // Diagnostics are not adopted here. The caller forwards the nested
+        // parse's retained diagnostics through `record_error` first, so by the
+        // time this runs `DiagnosticsEmitted` already counts exactly what this
+        // operation retained — no more (#8786).
         match error {
             ParseError::CoreBudgetExhausted { dimension, .. } => ParseError::CoreBudgetExhausted {
                 dimension,

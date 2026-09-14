@@ -486,6 +486,14 @@ impl<'a> Parser<'a> {
                     // against this operation's configured limit rather than the
                     // remainder it was handed (#8786).
                     Err(failure) => {
+                        // The nested parse retained these before it failed; the
+                        // Ok path forwards its diagnostics through the seam, so
+                        // this path must too. Charging for them without
+                        // retaining them would spend `max_errors` on
+                        // diagnostics no caller receives (#8786).
+                        for diagnostic in failure.diagnostics {
+                            self.record_error(diagnostic);
+                        }
                         return Err(
                             self.operation.adopt_nested_failure(failure.error, failure.usage)
                         );
@@ -1703,13 +1711,27 @@ impl<'a> Parser<'a> {
 /// the error lets [`ParserOperationContext::adopt_nested_failure`] repair both.
 struct NestedParseFailure {
     error: ParseError,
+    /// Diagnostics the nested parse had already retained when it failed.
+    ///
+    /// Carried out with the error so the adopting operation can put them
+    /// through its own retention seam. Charging for them while discarding them
+    /// — which is what dropping this vector amounts to — spends the parent's
+    /// `max_errors` on diagnostics no caller ever receives (#8786).
+    diagnostics: Vec<ParseError>,
     usage: NestedCoreUsage,
 }
 
 impl NestedParseFailure {
-    /// Capture a nested parser's charged core work alongside its error.
-    fn capture(error: ParseError, parser: &Parser<'_>) -> Self {
-        Self { error, usage: parser.operation.core_usage_snapshot() }
+    /// Capture a nested parser's charged core work and retained diagnostics
+    /// alongside its error, with diagnostics shifted to outer coordinates.
+    fn capture(error: ParseError, parser: &Parser<'_>, offset: usize) -> Self {
+        let diagnostics = parser
+            .errors()
+            .iter()
+            .cloned()
+            .map(|diagnostic| offset_parse_error(diagnostic, offset))
+            .collect();
+        Self { error, diagnostics, usage: parser.operation.core_usage_snapshot() }
     }
 }
 
@@ -1742,7 +1764,11 @@ fn parse_inline_expression(
     let ast = match parser.parse() {
         Ok(ast) => ast,
         Err(error) => {
-            return Err(NestedParseFailure::capture(offset_parse_error(error, offset), &parser));
+            return Err(NestedParseFailure::capture(
+                offset_parse_error(error, offset),
+                &parser,
+                offset,
+            ));
         }
     };
     let diagnostics = parser
@@ -1755,6 +1781,7 @@ fn parse_inline_expression(
         return Err(NestedParseFailure::capture(
             ParseError::syntax("Expected an expression program", offset),
             &parser,
+            offset,
         ));
     };
     let mut expressions = Vec::new();
@@ -1769,6 +1796,7 @@ fn parse_inline_expression(
                     offset.saturating_add(statement_start),
                 ),
                 &parser,
+                offset,
             ));
         };
         // A braced dereference follows Perl block-expression semantics: when
@@ -1783,7 +1811,7 @@ fn parse_inline_expression(
     // adopting parser charges the whole nested total against its own budget.
     let body = match build_deref_body(&mut parser, expressions, offset) {
         Ok(body) => body,
-        Err(error) => return Err(NestedParseFailure::capture(error, &parser)),
+        Err(error) => return Err(NestedParseFailure::capture(error, &parser, offset)),
     };
     let adopted_nodes = parser.operation.charged_nodes();
     let adopted_tokens = parser.operation.charged_tokens();
