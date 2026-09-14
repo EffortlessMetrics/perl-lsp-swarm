@@ -6,7 +6,7 @@ use super::{empty_debt, test_root};
 use color_eyre::eyre::{Result, bail};
 use toml::Value;
 
-const REQUIRED: [&str; 9] = [
+const REQUIRED: &[&str] = &[
     "rust::const_item_interior_mutations",
     "rust::function_casts_as_integer",
     "clippy::same_length_and_capacity",
@@ -16,6 +16,7 @@ const REQUIRED: [&str; 9] = [
     "clippy::manual_pop_if",
     "rust::let_underscore_lock",
     "clippy::let_underscore_lock",
+    "clippy::decimal_bitwise_operands",
 ];
 
 fn required_ledger() -> super::super::model::LintLedger {
@@ -30,6 +31,7 @@ fn required_ledger() -> super::super::model::LintLedger {
     ledger.deferred_due.push(deferred_lint(REQUIRED[6], "1.95"));
     ledger.lint.push(lint_entry(REQUIRED[7], "active"));
     ledger.lint.push(lint_entry(REQUIRED[8], "active"));
+    ledger.lint.push(lint_entry(REQUIRED[9], "active"));
     ledger
 }
 
@@ -244,6 +246,54 @@ fn required_manual_ilog2_level_and_identity_cannot_be_rolled_back() -> Result<()
         bail!("removing the required manual_ilog2 disposition should fail closed");
     };
     assert!(error.to_string().contains("clippy::manual_ilog2"));
+    assert!(error.to_string().contains("exactly once"));
+    Ok(())
+}
+
+#[test]
+fn required_decimal_bitwise_operands_cannot_be_demoted_out_of_active_enforcement() -> Result<()> {
+    // #9894 promoted this lint on a zero-finding denominator. A zero-finding
+    // promotion is the easiest kind to roll back silently: nothing in the source
+    // tree changes when the level drops, so no burn-down would have to be redone
+    // and no test outside the policy model would go red. Demotion to a planned
+    // row keeps the identity count at one and keeps level "deny", so only the
+    // pinned active status catches it.
+    let mut demoted = required_ledger();
+    demoted.lint.retain(|lint| lint.name != "clippy::decimal_bitwise_operands");
+    demoted.planned.push(planned_lint("clippy::decimal_bitwise_operands", "1.99"));
+
+    let Err(error) = validate_required_dispositions(&demoted) else {
+        bail!("demoting decimal_bitwise_operands to a planned row should fail closed");
+    };
+    assert!(error.to_string().contains("clippy::decimal_bitwise_operands"));
+    assert!(error.to_string().contains("must remain an active ledger entry"));
+    Ok(())
+}
+
+#[test]
+fn required_decimal_bitwise_operands_level_and_identity_cannot_be_rolled_back() -> Result<()> {
+    let mut rolled_back = required_ledger();
+    rolled_back
+        .lint
+        .iter_mut()
+        .find(|lint| lint.name == "clippy::decimal_bitwise_operands")
+        .ok_or_else(|| color_eyre::eyre::eyre!("decimal_bitwise_operands fixture entry missing"))?
+        .level = "warn".to_owned();
+
+    let result = validate_required_dispositions(&rolled_back);
+    let Err(error) = result else {
+        bail!("synchronized decimal_bitwise_operands rollback to warn should fail closed");
+    };
+    assert!(error.to_string().contains("clippy::decimal_bitwise_operands"));
+    assert!(error.to_string().contains("must remain at level deny"));
+
+    let mut partially_removed = required_ledger();
+    partially_removed.lint.retain(|lint| lint.name != "clippy::decimal_bitwise_operands");
+    let result = validate_required_dispositions(&partially_removed);
+    let Err(error) = result else {
+        bail!("removing the required decimal_bitwise_operands disposition should fail closed");
+    };
+    assert!(error.to_string().contains("clippy::decimal_bitwise_operands"));
     assert!(error.to_string().contains("exactly once"));
     Ok(())
 }
