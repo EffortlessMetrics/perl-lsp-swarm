@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parsePackagedServerVersionStdout } from '../../packagedServerVersion';
-import { runBoundedProcess } from '../../testAdapter';
+import { runBoundedProcess, type BoundedProcessResult } from '../../testAdapter';
 
 /**
  * Shared primitives for the published-smoke journeys (packaged bundle journey
@@ -16,6 +16,21 @@ import { runBoundedProcess } from '../../testAdapter';
  */
 
 export type ReceiptValue = Record<string, unknown>;
+
+/** Preserve bounded probe failures without mistaking them for process absence. */
+export function debuggeeCreationTimeFromProbe(
+  pid: number,
+  result: BoundedProcessResult,
+): string | null {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, 'invalid owned debuggee PID');
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    throw new Error(`owned debuggee scan failed: ${JSON.stringify({ pid, ...result })}`);
+  }
+  const creationTime = result.stdout.trim();
+  if (!creationTime) return null;
+  assert.match(creationTime, /^\d+$/, 'invalid process creation time');
+  return creationTime;
+}
 
 export function platformLabel(): string {
   switch (process.platform) {
@@ -284,6 +299,34 @@ export function providerPosition(
   const offset = document.getText().indexOf(probe);
   assert.notEqual(offset, -1, `packaged journey fixture must contain the ${probe} probe`);
   return document.positionAt(offset);
+}
+
+/** Independent two-occurrence oracle for the packaged daily-driver fixture. */
+export function assertDailyDriverRenameEdits(
+  source: string,
+  edits: ReadonlyArray<{
+    range: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+    };
+    newText: string;
+  }>,
+): void {
+  const lines = source.split('\n');
+  assert.equal(lines[3], 'my $value = 42;', 'rename fixture declaration changed');
+  assert.equal(lines[4], 'print $value;', 'rename fixture use changed');
+  assert.equal(edits.length, 2, 'rename must cover exactly the declaration and use');
+  const ordered = [...edits].sort((left, right) => left.range.start.line - right.range.start.line);
+  for (const [index, edit] of ordered.entries()) {
+    const line = index + 3;
+    const sigilStart = index === 0 ? 3 : 6;
+    assert.equal(edit.range.start.line, line, 'rename changed the wrong occurrence');
+    assert.equal(edit.range.end.line, line, 'rename crosses a line boundary');
+    assert.equal(edit.range.end.character, sigilStart + 6, 'rename changed the wrong span');
+    const includesSigil = edit.range.start.character === sigilStart;
+    assert.ok(includesSigil || edit.range.start.character === sigilStart + 1, 'wrong rename start');
+    assert.equal(edit.newText, includesSigil ? '$renamed_value' : 'renamed_value');
+  }
 }
 
 export function assertProviderSucceeded(label: string, result: ReceiptValue): void {

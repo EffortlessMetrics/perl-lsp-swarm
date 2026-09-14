@@ -48,6 +48,78 @@ fn uri_tail(uri: &str) -> String {
 }
 
 impl LspServer {
+    /// Reject malformed batches before accepted document or parser state changes.
+    /// Obsolete editor-output streams still stop when the editor reports a change.
+    pub(super) fn prepare_did_change_admission(
+        &self,
+        params: Option<&Value>,
+    ) -> Result<(), JsonRpcError> {
+        let params = params.ok_or_else(|| invalid_params("Missing didChange parameters"))?;
+        perl_lsp_rs_core::protocol::schema::validate_did_change_content_changes(params).map_err(
+            |error| {
+                let change_index = error
+                    .path
+                    .split_once("contentChanges[")
+                    .and_then(|(_, suffix)| suffix.split_once(']'))
+                    .and_then(|(index, _)| index.parse::<usize>().ok());
+                let raw_uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+                let valid_uri = raw_uri
+                    .map(|uri| self.normalize_uri_key(uri))
+                    .filter(|uri| crate::security::validate_document_uri(uri).is_ok());
+
+                if valid_uri.is_some()
+                    && let Some(uri) = raw_uri
+                {
+                    self.cancel_document_streams_for_change(
+                        uri,
+                        params.pointer("/textDocument/version").and_then(Value::as_i64),
+                        false,
+                    );
+                }
+
+                match (change_index, valid_uri.as_deref()) {
+                    (Some(change_index), Some(uri)) => tracing::error!(
+                        change_index,
+                        error_category = "invalid_content_change",
+                        uri,
+                        "Rejected malformed didChange content change"
+                    ),
+                    (Some(change_index), None) => tracing::error!(
+                        change_index,
+                        error_category = "invalid_content_change",
+                        "Rejected malformed didChange content change"
+                    ),
+                    (None, Some(uri)) => tracing::error!(
+                        error_category = "invalid_content_change",
+                        uri,
+                        "Rejected malformed didChange content change batch"
+                    ),
+                    (None, None) => tracing::error!(
+                        error_category = "invalid_content_change",
+                        "Rejected malformed didChange content change batch"
+                    ),
+                }
+
+                invalid_params(&format!("Invalid didChange parameters: {error}"))
+            },
+        )
+    }
+
+    fn cancel_document_streams_for_change(
+        &self,
+        uri: &str,
+        version: Option<i64>,
+        allow_same_version: bool,
+    ) {
+        for key in Self::uri_key_variants(uri) {
+            if let Some(version) = version.filter(|_| !allow_same_version) {
+                self.stream_sessions().cancel_for_uri_version(&key, version);
+            } else {
+                self.stream_sessions().cancel_for_uri(&key);
+            }
+        }
+    }
+
     /// Whether the dormant eager-incremental-maintenance fast-path
     /// (`incremental_doc`/`incremental_state`) is opted into for this
     /// server. Always `false` when the `incremental` cargo feature is not
@@ -647,6 +719,9 @@ impl LspServer {
         allow_same_version: bool,
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
+            // Direct callers bypass the JSON-RPC dispatcher, so retain the
+            // same admission guard before accepted-state mutation.
+            self.prepare_did_change_admission(Some(&params))?;
             // Sink-owned admission (#8895): same URI policy as didOpen,
             // enforced where the change is applied and judged on the
             // normalized key. Typed InvalidParams belongs to this method, not
@@ -663,21 +738,36 @@ impl LspServer {
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
 
-            // The editor has changed even if the candidate text is rejected.
-            // Stop streams derived from its predecessor before validating it.
-            // Saves preserve the client version, so also cancel same-version
-            // streams; ordinary changes retain the older-only policy.
-            for key in Self::uri_key_variants(uri) {
-                if let Some(version) = incoming_version_i64 {
-                    if allow_same_version {
-                        self.stream_sessions().cancel_for_uri(&key);
-                    } else {
-                        self.stream_sessions().cancel_for_uri_version(&key, version);
-                    }
-                } else {
-                    self.stream_sessions().cancel_for_uri(&key);
-                }
-            }
+            // Deserialize the complete change batch before any document cache,
+            // generation, or readiness side effect. A malformed member
+            // must reject the notification as one unit instead of applying a
+            // valid prefix and leaving the document/version partially advanced.
+            let changes = params
+                .get("contentChanges")
+                .and_then(Value::as_array)
+                .ok_or_else(|| invalid_params("Missing required parameter: contentChanges"))?;
+            let lsp_changes = changes
+                .iter()
+                .enumerate()
+                .map(|(i, change)| {
+                    <lsp_types::TextDocumentContentChangeEvent as serde::Deserialize>::deserialize(
+                        change,
+                    )
+                    .map_err(|_| {
+                        tracing::error!(
+                            change_index = i,
+                            uri = %uri,
+                            error_category = "invalid_content_change",
+                            "Rejected malformed textDocument/didChange content change"
+                        );
+                        invalid_params("Malformed textDocument/didChange content change")
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            // Stop output based on the editor's predecessor even if the later
+            // line bound rejects this buffer. Saves also cancel same-version work.
+            self.cancel_document_streams_for_change(uri, incoming_version_i64, allow_same_version);
 
             if let Some(changes) = params["contentChanges"].as_array() {
                 // Phase-1 latency instrumentation (opt-in via PERL_LSP_TIMING).
@@ -734,28 +824,7 @@ impl LspServer {
 
                 // Apply incremental changes with UTF-16 aware mapping
                 use crate::textdoc::{Doc, PosEnc, apply_changes};
-                use lsp_types::TextDocumentContentChangeEvent;
-
                 let mut doc = Doc { rope: doc_state.rope.clone(), version };
-
-                // Convert JSON changes to proper LSP types with error logging
-                // (Silent filter_map failures can mask document state corruption)
-                let mut lsp_changes = Vec::with_capacity(changes.len());
-                for (i, c) in changes.iter().enumerate() {
-                    match serde_json::from_value::<TextDocumentContentChangeEvent>(c.clone()) {
-                        Ok(change) => lsp_changes.push(change),
-                        Err(_) => {
-                            tracing::error!(
-                                change_index = i,
-                                uri = %uri,
-                                error_category = "invalid_content_change",
-                                "Rejected malformed textDocument/didChange content change"
-                            );
-                            // Continue processing other changes; LSP has no server-initiated
-                            // full sync, so logging is critical for diagnosing state issues.
-                        }
-                    }
-                }
 
                 // Build incremental edits from the OLD source BEFORE mutating the rope.
                 // UTF-16 line/char → byte conversion must use the pre-change line index.
