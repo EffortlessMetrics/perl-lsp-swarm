@@ -3897,11 +3897,52 @@ fn render_annotations(repo: &Path, comments: &str) -> Result<AnnotationOutput> {
         .and_then(Value::as_array)
         .ok_or_else(|| eyre!("{comments} is missing comments[]"))?;
     let mut out = String::new();
+    // The degraded notice precedes the line annotations it qualifies: it says
+    // the set below is incomplete, so it must not be read after it.
+    if let Some(notice) = degraded_guidance_annotation(&packet) {
+        out.push_str(&notice);
+        out.push('\n');
+    }
     for item in comments_array {
         out.push_str(&annotation_from_comment(item)?);
         out.push('\n');
     }
     Ok(AnnotationOutput { text: out, comments_missing: false })
+}
+
+/// One run-level warning when the review-guidance producer did not complete.
+///
+/// A degraded receipt keeps its fallback seams in `summary_only[]`, which
+/// `annotation_from_comment` rejects as not annotation-safe, so `comments[]`
+/// is empty and the run would otherwise emit no annotation at all — byte-for-byte
+/// how a PR with no gaps presents. The timeout would then be discoverable only
+/// by opening the receipt or comparing step durations (#15523, #11322 item 5).
+///
+/// Returns `None` for an `advisory` (completed) receipt so a clean run stays
+/// clean, and for any unrecognized status so this never invents a signal it
+/// cannot substantiate. The text is derived only from receipt bytes, keeping
+/// `cargo xtask ripr-annotations --check` a meaningful staleness contract.
+fn degraded_guidance_annotation(packet: &Value) -> Option<String> {
+    let status = packet.get("status").and_then(Value::as_str)?;
+    if !matches!(status, "incomplete" | "error") {
+        return None;
+    }
+    let reason = packet
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|warning| warning.get("kind").and_then(Value::as_str) == Some("tool_error"))
+        .and_then(|warning| warning.get("message").and_then(Value::as_str))
+        .map(first_line)
+        .unwrap_or_else(|| "no tool_error reason was recorded".to_string());
+    Some(format!(
+        "::warning title={}::{}",
+        escape_cmd(&format!("ripr review guidance {status}")),
+        escape_cmd_data(&format!(
+            "Review guidance did not complete, so the seam set for this run is not the whole picture: {reason}"
+        ))
+    ))
 }
 
 fn annotation_from_comment(item: &Value) -> Result<String> {
@@ -4723,6 +4764,17 @@ fn escape_cmd(value: &str) -> String {
         .replace('\n', "%0A")
         .replace(',', "%2C")
         .replace(':', "%3A")
+}
+
+/// Escape the *data* half of a workflow command — the text after `::`.
+///
+/// The runner unescapes only `%25`, `%0D` and `%0A` there; `%3A` and `%2C` are
+/// unescaped for `key=value` *properties* only. Running message text through
+/// [`escape_cmd`] therefore renders literal `%3A`/`%2C` in the annotation, which
+/// defeats the point of a message a human is meant to read. Use this for message
+/// bodies and keep [`escape_cmd`] for property values such as `title=`.
+fn escape_cmd_data(value: &str) -> String {
+    value.replace('%', "%25").replace('\r', "%0D").replace('\n', "%0A")
 }
 
 fn bullet_list(values: &[String]) -> String {
@@ -9390,6 +9442,259 @@ paths = ["archive/["]
         assert!(rendered.text.contains("title=ripr strong%3Agap focused%2Ctest"));
         assert!(rendered.text.contains("boundary proof%3A below%2C equal%2C above"));
         assert!(rendered.text.contains("Suggested test%3A add %25 branch table"));
+        Ok(())
+    }
+
+    /// Write a `comments.json` with the given status/warnings and no
+    /// annotation-safe `comments[]` — the exact shape a degraded guidance pass
+    /// produces, since its fallback seams live in `summary_only[]`.
+    fn write_guidance_receipt(repo: &Path, status: &str, warnings: Value) -> Result<()> {
+        fs::create_dir_all(repo.join("target/ripr/review"))?;
+        fs::write(
+            repo.join(REVIEW_COMMENTS_JSON),
+            format_json(&json!({
+                "status": status,
+                "comments": [],
+                "summary_only": [
+                    { "path": "crates/perl-parser/src/lib.rs", "line": 42, "seam": "gap" }
+                ],
+                "suppressed": [],
+                "warnings": warnings,
+            }))?,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn render_annotations_warns_when_guidance_timed_out() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([
+                { "kind": "tool_error", "message": "ripr timed out after 600s", "path": null },
+                { "kind": "guidance_fallback", "message": "seam names were synthesized", "path": null }
+            ]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        // Without this the run emits nothing at all, which is byte-for-byte how
+        // a PR with no gaps presents.
+        assert!(!rendered.text.is_empty(), "a degraded pass must not render as a clean run");
+        // The message is command *data*: the runner unescapes only %25/%0D/%0A
+        // there, so `,` and `:` must reach it literally or the operator reads
+        // "%2C"/"%3A" in the annotation.
+        assert_eq!(
+            rendered.text.trim_end(),
+            "::warning title=ripr review guidance incomplete::Review guidance did not complete, \
+             so the seam set for this run is not the whole picture: ripr timed out after 600s"
+        );
+        Ok(())
+    }
+
+    /// The message is command data, not a property. Escaping it with the
+    /// property escaper renders literal `%3A`/`%2C` to the operator, so this
+    /// pins the two escapers apart at the one seam that mixes them.
+    #[test]
+    fn render_annotations_does_not_property_escape_the_degraded_message() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "error",
+            json!([{
+                "kind": "tool_error",
+                "message": "failed to spawn ripr: No such file, giving up",
+                "path": null
+            }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+        let (title, message) = rendered
+            .text
+            .trim_end()
+            .trim_start_matches("::warning title=")
+            .split_once("::")
+            .ok_or_else(|| eyre!("annotation did not split into title and message"))?;
+
+        assert!(message.contains("failed to spawn ripr: No such file, giving up"));
+        assert!(!message.contains("%3A"), "message must not be property-escaped: {message}");
+        assert!(!message.contains("%2C"), "message must not be property-escaped: {message}");
+        // The title is a property and stays property-escaped.
+        assert_eq!(title, "ripr review guidance error");
+        Ok(())
+    }
+
+    /// `%` still has to be escaped in the data half, or the runner eats it as
+    /// the start of an escape sequence.
+    #[test]
+    fn render_annotations_escapes_percent_in_the_degraded_message() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([{ "kind": "tool_error", "message": "budget 90% exhausted", "path": null }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("budget 90%25 exhausted"));
+        Ok(())
+    }
+
+    /// Pins selection order. With one `tool_error` per receipt today both
+    /// first-match and last-match agree, so nothing else here would catch a
+    /// change of rule.
+    #[test]
+    fn render_annotations_reports_the_first_tool_error_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([
+                { "kind": "tool_error", "message": "first recorded failure", "path": null },
+                { "kind": "tool_error", "message": "later cascading failure", "path": null }
+            ]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("first recorded failure"));
+        assert!(!rendered.text.contains("later cascading failure"));
+        Ok(())
+    }
+
+    #[test]
+    fn render_annotations_warns_when_guidance_errored_without_fallback() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "error",
+            json!([{ "kind": "tool_error", "message": "ripr exited with status 2", "path": null }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("title=ripr review guidance error"));
+        assert!(rendered.text.contains("ripr exited with status 2"));
+        Ok(())
+    }
+
+    /// Negative control: the signal must discriminate. A completed pass carries
+    /// `status: "advisory"`, and adding a standing warning there would make the
+    /// annotation worthless as evidence.
+    #[test]
+    fn render_annotations_stays_silent_for_a_completed_guidance_pass() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(repo, "advisory", json!([]))?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(
+            rendered.text.is_empty(),
+            "a completed pass must emit no degradation warning, got {:?}",
+            rendered.text
+        );
+        Ok(())
+    }
+
+    /// Negative control: a receipt with no status at all is not evidence of
+    /// degradation, so it must not manufacture one.
+    #[test]
+    fn render_annotations_stays_silent_when_no_status_is_recorded() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("target/ripr/review"))?;
+        fs::write(
+            repo.join(REVIEW_COMMENTS_JSON),
+            format_json(&json!({ "comments": [], "warnings": [] }))?,
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.is_empty());
+        Ok(())
+    }
+
+    /// A degraded pass whose reason was lost still has to be visible. Falling
+    /// silent here would restore the exact defect for the one case where the
+    /// producer failed hardest.
+    #[test]
+    fn render_annotations_warns_on_degradation_even_without_a_recorded_reason() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([{ "kind": "guidance_fallback", "message": "no tool error here", "path": null }]),
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        assert!(rendered.text.contains("title=ripr review guidance incomplete"));
+        assert!(rendered.text.contains("no tool_error reason was recorded"));
+        Ok(())
+    }
+
+    /// The notice qualifies the annotations beneath it, so it cannot trail them.
+    #[test]
+    fn render_annotations_places_the_degraded_notice_before_line_annotations() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        fs::create_dir_all(repo.join("target/ripr/review"))?;
+        fs::write(
+            repo.join(REVIEW_COMMENTS_JSON),
+            format_json(&json!({
+                "status": "incomplete",
+                "comments": [
+                    {
+                        "placement": {
+                            "path": "crates/perl-parser/src/lib.rs",
+                            "line": 42,
+                            "mode": "exact_seam_line"
+                        },
+                        "reason": "branch lacks boundary proof"
+                    }
+                ],
+                "warnings": [
+                    { "kind": "tool_error", "message": "ripr timed out after 600s", "path": null }
+                ],
+            }))?,
+        )?;
+
+        let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        let lines: Vec<&str> = rendered.text.lines().collect();
+        assert_eq!(lines.len(), 2, "expected notice + one line annotation, got {lines:?}");
+        assert!(lines[0].contains("title=ripr review guidance incomplete"));
+        assert!(lines[1].contains("file=crates/perl-parser/src/lib.rs,line=42"));
+        Ok(())
+    }
+
+    /// The `--check` staleness contract compares exact bytes, so the notice has
+    /// to be a pure function of the receipt.
+    #[test]
+    fn render_annotations_degraded_notice_is_deterministic() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path();
+        write_guidance_receipt(
+            repo,
+            "incomplete",
+            json!([{ "kind": "tool_error", "message": "ripr timed out after 600s", "path": null }]),
+        )?;
+
+        let first = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+        let second = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
+
+        // Two identical empty renders would satisfy equality vacuously.
+        assert!(first.text.contains("ripr review guidance incomplete"));
+        assert_eq!(first, second);
         Ok(())
     }
 
