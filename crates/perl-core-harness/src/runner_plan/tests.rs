@@ -1,7 +1,8 @@
 //! Runner-plan and parity falsifiers over the pinned target matrix.
 
 use crate::build::{
-    build_runner_plan, runner_plan_digest, validate_runner_plan, validate_runner_plan_against,
+    DeclaredPlanInputs, build_runner_plan, runner_plan_digest, validate_runner_plan,
+    validate_runner_plan_against,
 };
 use crate::compare::{
     compare_runner_plans, compare_runner_plans_against, validate_runner_parity,
@@ -32,28 +33,46 @@ fn base_plan(
         .map_err(|error| color_eyre::eyre::eyre!(error))
 }
 
+/// The declaration a caller of `build_runner_plan` must supply to validate the
+/// plan it just built (#7737). Nothing here is read back from the candidate.
+fn declared(
+    target_id: &str,
+    runner: RunnerKind,
+    scheduling: RunnerScheduling,
+) -> DeclaredPlanInputs {
+    DeclaredPlanInputs::new(target_id, runner, DiscoveryFrame::CanonicalRepositoryPath, scheduling)
+}
+
 #[test]
 fn test_and_harness_membership_can_match_with_different_order() -> Result<()> {
     let matrix = matrix()?;
     let test_raw = b"t/base/cond.t\nt/base/if.t\n";
     let harness_raw = b"t/base/if.t\nt/base/cond.t\n";
     let test_plan = base_plan(&matrix, RunnerKind::Test, test_raw)?;
+    let harness_scheduling = RunnerScheduling {
+        jobs: Some(2),
+        asap: false,
+        state_ordering: true,
+        properties: BTreeMap::new(),
+    };
     let harness_plan = build_runner_plan(
         &matrix,
         "component_base",
         RunnerKind::Harness,
         harness_raw,
-        RunnerScheduling {
-            jobs: Some(2),
-            asap: false,
-            state_ordering: true,
-            properties: BTreeMap::new(),
-        },
+        harness_scheduling.clone(),
     )
     .map_err(|error| color_eyre::eyre::eyre!(error))?;
-    let parity =
-        compare_runner_plans_against(&matrix, &test_plan, test_raw, &harness_plan, harness_raw)
-            .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let parity = compare_runner_plans_against(
+        &matrix,
+        &declared("component_base", RunnerKind::Test, RunnerScheduling::default()),
+        &test_plan,
+        test_raw,
+        &declared("component_base", RunnerKind::Harness, harness_scheduling),
+        &harness_plan,
+        harness_raw,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
     assert_eq!(parity.membership_status, MembershipParityStatus::Parity);
     assert!(!parity.order_equal);
     assert!(!parity.scheduling_equal);
@@ -253,15 +272,132 @@ fn plan_check_rebuilds_from_matrix_and_raw_discovery() -> Result<()> {
     let matrix = matrix()?;
     let raw = b"t/base/if.t\n";
     let plan = base_plan(&matrix, RunnerKind::Test, raw)?;
-    validate_runner_plan_against(&matrix, raw, &plan)
+    let declaration = declared("component_base", RunnerKind::Test, RunnerScheduling::default());
+    validate_runner_plan_against(&matrix, raw, &declaration, &plan)
         .map_err(|error| color_eyre::eyre::eyre!(error))?;
 
     let mut forged_digest = plan.clone();
     forged_digest.matrix_fingerprint = "0".repeat(64);
     assert!(validate_runner_plan(&forged_digest).is_ok());
-    assert!(validate_runner_plan_against(&matrix, raw, &forged_digest).is_err());
+    assert!(validate_runner_plan_against(&matrix, raw, &declaration, &forged_digest).is_err());
 
-    assert!(validate_runner_plan_against(&matrix, b"t/base/cond.t\n", &plan).is_err());
+    assert!(
+        validate_runner_plan_against(&matrix, b"t/base/cond.t\n", &declaration, &plan).is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn declared_scheduling_is_not_taken_from_the_candidate_plan() -> Result<()> {
+    // The decisive mutation: a plan whose declared scheduling was changed and
+    // whose every internally derived field and digest was then recomputed. It
+    // is a structurally perfect `runner_plan.v2` receipt, so nothing about the
+    // candidate alone can reject it; only an independently declared schedule
+    // can.
+    let matrix = matrix()?;
+    let raw = b"t/base/if.t\n";
+    let honest_schedule = RunnerScheduling::default();
+    let forged_schedule = RunnerScheduling {
+        jobs: Some(8),
+        asap: true,
+        state_ordering: true,
+        properties: BTreeMap::from([("order".to_string(), "state".to_string())]),
+    };
+    let forged = build_runner_plan(
+        &matrix,
+        "component_base",
+        RunnerKind::Test,
+        raw,
+        forged_schedule.clone(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    validate_runner_plan(&forged).map_err(|error| color_eyre::eyre::eyre!(error))?;
+    assert_eq!(
+        runner_plan_digest(&forged).map_err(|error| color_eyre::eyre::eyre!(error))?,
+        runner_plan_digest(&forged).map_err(|error| color_eyre::eyre::eyre!(error))?,
+        "the forged receipt is self-consistent under its own digest rules"
+    );
+
+    let Err(error) = validate_runner_plan_against(
+        &matrix,
+        raw,
+        &declared("component_base", RunnerKind::Test, honest_schedule),
+        &forged,
+    ) else {
+        bail!("a candidate-owned schedule must not validate against another declaration");
+    };
+    assert_eq!(
+        error,
+        "runner plan field scheduling disagrees with the independently declared reconstruction \
+         input; the plan cannot supply its own reconstruction authority"
+    );
+
+    // Positive control: the same receipt is authoritative under the schedule it
+    // was actually declared with, so the rejection above is about authority
+    // rather than a malformed plan.
+    validate_runner_plan_against(
+        &matrix,
+        raw,
+        &declared("component_base", RunnerKind::Test, forged_schedule),
+        &forged,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    Ok(())
+}
+
+#[test]
+fn declared_target_runner_and_frame_are_not_taken_from_the_candidate_plan() -> Result<()> {
+    // Each of these candidates is a valid plan for *some* declaration. The
+    // standalone validation seam must reject each one under a declaration it
+    // does not match, rather than silently adopting the candidate's own
+    // target, runner, or discovery frame.
+    let matrix = matrix()?;
+    let raw = b"t/base/if.t\n";
+    let schedule = RunnerScheduling::default();
+    let honest = declared("component_base", RunnerKind::Test, schedule.clone());
+
+    let other_target = build_runner_plan(
+        &matrix,
+        "make_test_harness_notty",
+        RunnerKind::Test,
+        raw,
+        schedule.clone(),
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    let Err(target_error) = validate_runner_plan_against(&matrix, raw, &honest, &other_target)
+    else {
+        bail!("a plan for another target must not validate against this declaration");
+    };
+    assert!(target_error.contains("target_id"), "unexpected error: {target_error}");
+
+    let other_runner = base_plan(&matrix, RunnerKind::Harness, raw)?;
+    let Err(runner_error) = validate_runner_plan_against(&matrix, raw, &honest, &other_runner)
+    else {
+        bail!("a plan for another runner must not validate against this declaration");
+    };
+    assert!(runner_error.contains("runner"), "unexpected error: {runner_error}");
+
+    let other_frame = crate::build::build_runner_plan_with_frame(
+        &matrix,
+        "component_base",
+        RunnerKind::Test,
+        b"base/if.t\n",
+        DiscoveryFrame::RunnerTDirectoryRelative,
+        schedule,
+    )
+    .map_err(|error| color_eyre::eyre::eyre!(error))?;
+    // Same canonical membership, different declared frame: membership equality
+    // is exactly what cannot distinguish these two receipts.
+    assert_eq!(
+        other_frame.normalized_membership,
+        base_plan(&matrix, RunnerKind::Test, raw)?.normalized_membership
+    );
+    let Err(frame_error) =
+        validate_runner_plan_against(&matrix, b"base/if.t\n", &honest, &other_frame)
+    else {
+        bail!("a plan in another discovery frame must not validate against this declaration");
+    };
+    assert!(frame_error.contains("discovery_frame"), "unexpected error: {frame_error}");
     Ok(())
 }
 

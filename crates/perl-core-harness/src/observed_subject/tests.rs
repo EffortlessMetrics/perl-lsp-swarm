@@ -285,6 +285,7 @@ impl JoinFixture {
         let input = ObservedRunnerSubjectInput {
             producer: producer_from(&self.scenario.parent),
             plan: self.scenario.plan_for(&self.scenario.stdout)?,
+            declared_scheduling: RunnerScheduling::default(),
             discovery: self.scenario.parent.clone(),
             trace,
             equivalence: self.equivalence.clone(),
@@ -298,6 +299,7 @@ impl JoinFixture {
         Ok(ObservedRunnerSubjectInput {
             producer: producer_from(&self.scenario.parent),
             plan: self.scenario.plan_for(&self.scenario.stdout)?,
+            declared_scheduling: RunnerScheduling::default(),
             discovery: self.scenario.parent.clone(),
             trace,
             equivalence: self.equivalence.clone(),
@@ -486,6 +488,7 @@ fn cross_run_parent_receipt_is_refused_by_name() -> Result<()> {
     let input = ObservedRunnerSubjectInput {
         producer: producer_from(&other_scenario.parent),
         plan: other_scenario.plan_for("t/base/if.t\nt/base/cond.t\nt/base/unless.t\n")?,
+        declared_scheduling: RunnerScheduling::default(),
         discovery: other_scenario.parent,
         trace,
         equivalence: Some(default_equivalence()),
@@ -566,6 +569,7 @@ fn renamed_suite_plan_refused_on_raw_discovery_identity() -> Result<()> {
     let input = ObservedRunnerSubjectInput {
         producer: producer_from(&fixture.scenario.parent),
         plan: renamed_plan,
+        declared_scheduling: RunnerScheduling::default(),
         discovery: fixture.scenario.parent.clone(),
         trace,
         equivalence: Some(default_equivalence()),
@@ -589,6 +593,7 @@ fn producer_identity_mismatch_refused_by_name() -> Result<()> {
     let input = ObservedRunnerSubjectInput {
         producer,
         plan: fixture.scenario.plan_for(&fixture.scenario.stdout)?,
+        declared_scheduling: RunnerScheduling::default(),
         discovery: fixture.scenario.parent.clone(),
         trace,
         equivalence: Some(default_equivalence()),
@@ -611,6 +616,7 @@ fn truncated_discovery_cannot_become_complete() -> Result<()> {
     let input = ObservedRunnerSubjectInput {
         producer: producer_from(&scenario.parent),
         plan: scenario.plan_for(stdout)?,
+        declared_scheduling: RunnerScheduling::default(),
         discovery: scenario.parent.clone(),
         trace,
         equivalence: Some(default_equivalence()),
@@ -831,6 +837,7 @@ fn forged_plan_membership_refused_by_matrix_rebuild() -> Result<()> {
     let input = ObservedRunnerSubjectInput {
         producer: producer_from(&fixture.scenario.parent),
         plan: forged,
+        declared_scheduling: RunnerScheduling::default(),
         discovery: fixture.scenario.parent.clone(),
         trace,
         equivalence: Some(default_equivalence()),
@@ -839,6 +846,54 @@ fn forged_plan_membership_refused_by_matrix_rebuild() -> Result<()> {
         .err()
         .ok_or_else(|| eyre!("forged plan membership must be refused"))?;
     assert!(error.contains("does not match"), "rebuild refusal: {error}");
+    Ok(())
+}
+
+#[test]
+fn forged_plan_scheduling_refused_against_the_declared_schedule() -> Result<()> {
+    // Upstream scheduling state is not observed, so the discovery receipt
+    // cannot contradict a plan that simply declares a different schedule. The
+    // join therefore compares the plan against the caller's own declaration
+    // (#7737): membership, order, bytes and every digest here are honest, and
+    // only the schedule differs.
+    let members = ["t/base/if.t", "t/base/cond.t"];
+    let fixture = JoinFixture::new(&members)?;
+    let forged_schedule = RunnerScheduling {
+        jobs: Some(6),
+        asap: true,
+        state_ordering: false,
+        properties: std::collections::BTreeMap::new(),
+    };
+    let forged = build_runner_plan(
+        &matrix()?,
+        TARGET,
+        RunnerKind::Test,
+        fixture.scenario.stdout.as_bytes(),
+        forged_schedule.clone(),
+    )
+    .map_err(|error| eyre!(error))?;
+    let trace_bytes = fixture.scenario.emit_complete(&members)?;
+    let trace = build_invocation_trace_receipt(&fixture.scenario.input(trace_bytes))
+        .map_err(|error| eyre!(error))?;
+    let mut input = ObservedRunnerSubjectInput {
+        producer: producer_from(&fixture.scenario.parent),
+        plan: forged,
+        declared_scheduling: RunnerScheduling::default(),
+        discovery: fixture.scenario.parent.clone(),
+        trace,
+        equivalence: Some(default_equivalence()),
+    };
+    let error = build_observed_runner_subject(&matrix()?, &input)
+        .err()
+        .ok_or_else(|| eyre!("a candidate-declared schedule must not validate itself"))?;
+    assert!(error.contains("scheduling"), "declared input must be named: {error}");
+
+    // Positive control: the same plan joins once the caller declares the
+    // schedule it was actually built with.
+    input.declared_scheduling = forged_schedule;
+    let receipt =
+        build_observed_runner_subject(&matrix()?, &input).map_err(|error| eyre!(error))?;
+    assert_eq!(receipt.payload.state, ObservedSubjectState::CompleteCurrent);
     Ok(())
 }
 

@@ -50,7 +50,7 @@ pub fn build_observed_runner_subject(
     crate::observed_discovery::validate_observed_discovery_receipt(matrix, &input.discovery)?;
     let discovery = &input.discovery.payload;
     bind_producer(&input.producer, discovery)?;
-    validate_plan_binding(matrix, &input.plan, discovery)?;
+    validate_plan_binding(matrix, &input.plan, discovery, &input.declared_scheduling)?;
     validate_invocation_trace_receipt(&input.discovery, &input.trace)?;
 
     // Stage 3: perform the denominator arithmetic.
@@ -564,14 +564,19 @@ fn bind_producer(
 }
 
 /// Revalidate the independent plan structurally and byte-bind it to the
-/// observed discovery stream it claims to have been reconstructed from. The
-/// final full-authority rebuild proves items, order, membership, and
-/// scheduling are exactly what this matrix and these observed bytes produce;
-/// a coherent forgery carrying the right digests cannot pass it.
+/// observed discovery stream it claims to have been reconstructed from.
+///
+/// Target, runner, and discovery frame are rebound from the observed discovery
+/// subject; scheduling has no observed counterpart, so it is taken from the
+/// caller's declaration (#7737) rather than from the candidate. The final
+/// full-authority rebuild then proves items, order, membership, and scheduling
+/// are exactly what this matrix, these observed bytes, and that declaration
+/// produce; a coherent forgery carrying the right digests cannot pass it.
 fn validate_plan_binding(
     matrix: &crate::model::UpstreamTargetMatrix,
     plan: &RunnerPlan,
     discovery: &DiscoveryPayload,
+    declared_scheduling: &crate::runner_model::RunnerScheduling,
 ) -> Result<(), String> {
     let subject = &discovery.subject;
     let disagreements = [
@@ -596,7 +601,13 @@ fn validate_plan_binding(
             plan.raw_discovery_digest
         ));
     }
-    crate::build::validate_runner_plan_against(matrix, &raw_bytes, plan)
+    let declared = crate::build::DeclaredPlanInputs::new(
+        subject.target_id.clone(),
+        discovery.invocation.runner,
+        discovery.discovery_frame,
+        declared_scheduling.clone(),
+    );
+    crate::build::validate_runner_plan_against(matrix, &raw_bytes, &declared, plan)
 }
 
 /// Assemble the agreed identity snapshot recorded by the join.

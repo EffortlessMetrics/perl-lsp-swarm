@@ -50,6 +50,52 @@ fn build_invocation<'a>(
     args
 }
 
+/// `check-plan` declares the same reconstruction inputs `build` does: the plan
+/// under check supplies none of them (#7737).
+fn check_plan_invocation<'a>(
+    matrix: &'a str,
+    target: &'a str,
+    runner: &'a str,
+    raw: &'a str,
+    plan: &'a str,
+    extra: &[&'a str],
+) -> Vec<&'a str> {
+    let mut args = Vec::with_capacity(8 + extra.len());
+    args.extend_from_slice(&["check-plan", matrix, target, runner, raw, plan]);
+    args.extend_from_slice(&["--frame", "canonical_repository_path"]);
+    args.extend_from_slice(extra);
+    args
+}
+
+/// `compare` and `check-parity` declare each side independently, so neither
+/// candidate plan can supply the authority that validates it (#7737).
+fn two_sided_invocation<'a>(
+    command: &'a str,
+    matrix: &'a str,
+    left_plan: &'a str,
+    left_raw: &'a str,
+    right_plan: &'a str,
+    right_raw: &'a str,
+    tail: &'a str,
+) -> Vec<&'a str> {
+    vec![
+        command,
+        matrix,
+        "component_base",
+        "test",
+        left_plan,
+        left_raw,
+        "harness",
+        right_plan,
+        right_raw,
+        tail,
+        "--left-frame",
+        "canonical_repository_path",
+        "--right-frame",
+        "canonical_repository_path",
+    ]
+}
+
 fn assert_cli_failure(output: &Output, fragment: &str) {
     assert!(!output.status.success(), "expected CLI failure, but it succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -318,8 +364,15 @@ fn compare_prints_exact_parity_status() -> TestResult {
     assert!(built_harness.status.success(), "right build failed");
 
     let report = dir.path().join("parity.json");
-    let output =
-        run(&["compare", &matrix, &left, &raw, &right, &raw, report.to_string_lossy().as_ref()])?;
+    let output = run(&two_sided_invocation(
+        "compare",
+        &matrix,
+        &left,
+        &raw,
+        &right,
+        &raw,
+        report.to_string_lossy().as_ref(),
+    ))?;
     assert!(output.status.success(), "compare failed: {}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "runner parity valid: target=component_base status=Parity\n");
@@ -340,7 +393,8 @@ fn check_plan_revalidates_built_receipt_and_rejects_tampering() -> TestResult {
     let built = run(&build_invocation(&matrix, "component_base", "test", &raw, &plan_path, &[]))?;
     assert!(built.status.success(), "build failed");
 
-    let checked = run(&["check-plan", &matrix, &raw, &plan_path])?;
+    let checked =
+        run(&check_plan_invocation(&matrix, "component_base", "test", &raw, &plan_path, &[]))?;
     assert!(
         checked.status.success(),
         "check-plan failed: {}",
@@ -357,8 +411,58 @@ fn check_plan_revalidates_built_receipt_and_rejects_tampering() -> TestResult {
     forged["runner_entrypoint"] = "t/wrong".into();
     let forged_path = dir.path().join("forged.json");
     std::fs::write(&forged_path, serde_json::to_vec(&forged)?)?;
-    let rejected = run(&["check-plan", &matrix, &raw, forged_path.to_string_lossy().as_ref()])?;
+    let rejected = run(&check_plan_invocation(
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        forged_path.to_string_lossy().as_ref(),
+        &[],
+    ))?;
     assert_cli_failure(&rejected, "runner plan entrypoint t/wrong disagrees with");
+    Ok(())
+}
+
+#[test]
+fn check_plan_rejects_a_schedule_the_operator_did_not_declare() -> TestResult {
+    // A plan built with `--jobs 4` is a perfectly valid receipt. It is not,
+    // however, the plan an operator who declares no scheduling asked for, and
+    // the CLI has no way to observe upstream scheduling state — so the
+    // declaration on the command line is the only authority available (#7737).
+    let dir = tempfile::tempdir()?;
+    let matrix = bundle().to_string_lossy().into_owned();
+    let raw = discovery_paths(dir.path())?;
+    let plan_path = dir.path().join("plan.json").to_string_lossy().into_owned();
+    let built = run(&build_invocation(
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        &plan_path,
+        &["--jobs", "4"],
+    ))?;
+    assert!(built.status.success(), "build failed: {}", String::from_utf8_lossy(&built.stderr));
+
+    let rejected =
+        run(&check_plan_invocation(&matrix, "component_base", "test", &raw, &plan_path, &[]))?;
+    assert_cli_failure(
+        &rejected,
+        "runner plan field scheduling disagrees with the independently declared reconstruction",
+    );
+
+    let accepted = run(&check_plan_invocation(
+        &matrix,
+        "component_base",
+        "test",
+        &raw,
+        &plan_path,
+        &["--jobs", "4"],
+    ))?;
+    assert!(
+        accepted.status.success(),
+        "declared schedule must validate: {}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
     Ok(())
 }
 
@@ -377,10 +481,19 @@ fn check_parity_revalidates_report_and_rejects_tampering() -> TestResult {
         run(&build_invocation(&matrix, "component_base", "harness", &raw, &right, &[]))?;
     assert!(built_left.status.success() && built_right.status.success(), "builds failed");
 
-    let compared = run(&["compare", &matrix, &left, &raw, &right, &raw, &report_arg])?;
+    let compared =
+        run(&two_sided_invocation("compare", &matrix, &left, &raw, &right, &raw, &report_arg))?;
     assert!(compared.status.success(), "compare failed");
 
-    let checked = run(&["check-parity", &matrix, &left, &raw, &right, &raw, &report_arg])?;
+    let checked = run(&two_sided_invocation(
+        "check-parity",
+        &matrix,
+        &left,
+        &raw,
+        &right,
+        &raw,
+        &report_arg,
+    ))?;
     assert!(
         checked.status.success(),
         "check-parity failed: {}",
@@ -392,7 +505,15 @@ fn check_parity_revalidates_report_and_rejects_tampering() -> TestResult {
     let mut forged: serde_json::Value = must(serde_json::from_slice(&std::fs::read(&report)?));
     forged["membership_status"] = "mismatch".into();
     std::fs::write(&report, serde_json::to_vec(&forged)?)?;
-    let rejected = run(&["check-parity", &matrix, &left, &raw, &right, &raw, &report_arg])?;
+    let rejected = run(&two_sided_invocation(
+        "check-parity",
+        &matrix,
+        &left,
+        &raw,
+        &right,
+        &raw,
+        &report_arg,
+    ))?;
     assert_cli_failure(&rejected, "mismatch");
     Ok(())
 }
