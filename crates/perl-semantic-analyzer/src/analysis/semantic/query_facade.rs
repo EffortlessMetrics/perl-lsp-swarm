@@ -303,8 +303,23 @@ mod tests {
         ("Parser::new", "the facade consumes an accepted AST; it must not parse"),
     ];
 
-    /// Production source with comment lines removed, so the guard checks code
-    /// and not the prose that documents the boundary.
+    /// Drop each line's comment, keeping any code that precedes it. Trailing
+    /// comments matter as much as whole-line ones: the module doc names the
+    /// retired constructs to say where they belong, and a trailing `// uses
+    /// WorkspaceIndex` would otherwise reach the needle scan as if it were code.
+    fn strip_line_comments(source: &str) -> String {
+        source
+            .lines()
+            .map(|line| match line.find("//") {
+                Some(index) => &line[..index],
+                None => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// This file's production half, with comments stripped, so the guard checks
+    /// code and not the prose that documents the boundary.
     fn production_code(source: &str) -> String {
         let (production, _) = must_some(source.split_once(TEST_MODULE_MARKER));
         assert_eq!(
@@ -318,17 +333,42 @@ mod tests {
             "this guard strips line comments only; a block comment appeared in production code, so \
              re-derive the stripping rule rather than letting prose reach the needle scan"
         );
-        production
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        strip_line_comments(production)
     }
 
     #[test]
-    fn the_scanned_region_is_production_code_with_prose_removed() {
-        // Guards the guard. An empty, truncated, or un-stripped region would
-        // make the boundary check below pass for the wrong reason.
+    fn comment_stripping_removes_prose_and_keeps_code() {
+        // Owns the stripping proof, on controlled input. Asserting instead that
+        // the real file's stripped text contains no `//` at all would forbid
+        // any future trailing comment or `//` inside a production string
+        // literal, and would be tautological once stripping cuts to end of line.
+        let source = concat!(
+            "//! Module doc naming WorkspaceIndex as the canonical cross-file owner.\n",
+            "/// Doc comment mentioning std::fs and workspace_index.\n",
+            "pub fn keep_me() -> usize { 1 } // trailing comment naming Parser::new\n",
+            "pub fn also_keep() -> usize { 2 }\n",
+        );
+
+        let stripped = strip_line_comments(source);
+
+        assert!(
+            stripped.contains("pub fn keep_me"),
+            "code preceding a trailing comment must survive stripping"
+        );
+        assert!(stripped.contains("pub fn also_keep"), "uncommented code must survive stripping");
+        for (needle, _) in FORBIDDEN_IN_PRODUCTION {
+            assert!(
+                !stripped.contains(needle),
+                "`{needle}` written only in prose must not survive stripping, or the boundary \
+                 guard would be scanning comments instead of code"
+            );
+        }
+    }
+
+    #[test]
+    fn the_scanned_region_is_the_production_half_of_this_file() {
+        // Guards the guard. An empty or truncated region would make the
+        // boundary check below pass for the wrong reason.
         let code = production_code(FACADE_SOURCE);
 
         assert!(
@@ -342,14 +382,6 @@ mod tests {
         assert!(
             !code.contains("fn production_code"),
             "scanned region must exclude this test module"
-        );
-        // Stripping is proven by the absence of any comment marker rather than
-        // by matching particular prose, so rewording the module doc that names
-        // the retired boundary cannot fail this test spuriously.
-        assert!(
-            !code.contains("//"),
-            "comment stripping must remove every line comment, otherwise the needle scan would be \
-             checking the prose that documents the boundary instead of the code"
         );
     }
 
