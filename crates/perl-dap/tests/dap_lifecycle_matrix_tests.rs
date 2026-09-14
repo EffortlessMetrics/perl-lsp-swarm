@@ -11,10 +11,6 @@
 //! All tests skip gracefully when `perl` is not on `PATH`.
 //! AC: DAP lifecycle matrix — phase 2 e2e coverage.
 
-#![expect(
-    clippy::print_stderr,
-    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
-)]
 mod common;
 
 use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
@@ -912,11 +908,11 @@ fn test_relaunch_after_terminate_no_stale_state() -> TestResult {
 /// C6 — restart without prior launch args → clean protocol error; adapter
 /// remains usable afterwards.
 ///
-/// `handle_restart` falls back to `last_launch_args` when no arguments are
-/// provided. Without a prior successful launch, `last_launch_args` is None and
-/// the handler must return a descriptive, non-panicking error. This locks the
-/// error-path behaviour and validates that restart does not crash or produce
-/// an opaque "Unknown command" response.
+/// #9581: restart is a floored secondary capability, so the dispatch gate
+/// rejects the request before `handle_restart` is ever reached — no stored
+/// launch args are consulted, no session/generation state is touched. This
+/// locks the explicit unsupported disposition and validates that restart does
+/// not crash or produce an opaque "Unknown command" response.
 #[test]
 fn test_restart_without_prior_launch_fails_gracefully() -> TestResult {
     let (mut adapter, _rx) = make_adapter_with_rx();
@@ -927,20 +923,15 @@ fn test_restart_without_prior_launch_fails_gracefully() -> TestResult {
     match restart {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "restart", "command field must echo restart");
-            assert!(
-                !success,
-                "restart without prior launch must fail (no configuration to replay)"
-            );
+            assert!(!success, "restart without prior launch must fail (floored by #9581)");
             let msg = message.as_deref().unwrap_or("");
             assert!(
                 !msg.contains("Unknown command"),
                 "restart must route to its handler, not the unknown-command fallback: {msg}"
             );
             assert!(
-                msg.contains("no previous launch")
-                    || msg.contains("Cannot restart")
-                    || msg.contains("no launch configuration"),
-                "restart error must explain missing configuration, got: {msg}"
+                msg.contains("unsupported") && msg.contains("supportsRestartRequest"),
+                "restart error must be the explicit #9581 unsupported disposition, got: {msg}"
             );
         }
         other => {

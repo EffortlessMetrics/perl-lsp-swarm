@@ -1,0 +1,2974 @@
+{
+  "canonical_digest": "5F5724D8724EF0EE0008FA126606B8FCA803449AD2B37354B89BA196B6FB7416",
+  "conflict_classes_by_phase": {
+    "A0": [
+      [
+        "pc_asset_path_10555"
+      ],
+      [
+        "pc_concept_ledger_topology_10587"
+      ],
+      [
+        "pc_generator_fuzz_topology_10594"
+      ],
+      [
+        "pc_gold_snapshot_topology_10593"
+      ],
+      [
+        "pc_loader_interpretation_7715"
+      ],
+      [
+        "pc_opened_asset_7693"
+      ],
+      [
+        "pc_parser_accuracy_topology_10583"
+      ],
+      [
+        "pc_recovery_relationships_10585"
+      ],
+      [
+        "pc_sidecar_identity_7723"
+      ],
+      [
+        "pc_static_cases_10595"
+      ],
+      [
+        "pc_topology_union_6994"
+      ],
+      [
+        "pc_tree_sitter_documents_10589"
+      ],
+      [
+        "pc_tree_sitter_highlights_10591"
+      ],
+      [
+        "pc_tree_sitter_queries_10590"
+      ]
+    ],
+    "A1": [
+      [
+        "pc_executable_producers_7013"
+      ],
+      [
+        "pc_expectation_metrics_11579"
+      ],
+      [
+        "pc_expectation_retirement_11031"
+      ],
+      [
+        "pc_expectation_writers_11029"
+      ],
+      [
+        "pc_fixture_expectation_identity_6999",
+        "pc_sidecar_concept_links_6996"
+      ],
+      [
+        "pc_fixture_promotion_11034"
+      ],
+      [
+        "pc_generated_case_identity_7014"
+      ],
+      [
+        "pc_generated_execution_7017"
+      ],
+      [
+        "pc_generator_profiles_7020"
+      ],
+      [
+        "pc_gold_extensions_7006",
+        "pc_gold_project_envelopes_7003"
+      ],
+      [
+        "pc_highlight_execution_11587"
+      ],
+      [
+        "pc_hir_disposition_7073",
+        "pc_hir_manifest_binding_7077"
+      ],
+      [
+        "pc_obligation_algebra_7000"
+      ],
+      [
+        "pc_parser_accuracy_generated_11586"
+      ],
+      [
+        "pc_parser_accuracy_matrix_11583"
+      ],
+      [
+        "pc_parser_accuracy_real_project_11585"
+      ],
+      [
+        "pc_parser_accuracy_static_gold_11584"
+      ],
+      [
+        "pc_parser_gap_consumers_8070"
+      ],
+      [
+        "pc_property_profile_retirement_11581",
+        "pc_property_suites_11580"
+      ],
+      [
+        "pc_resolved_expectation_view_11578"
+      ]
+    ],
+    "A2": [
+      [
+        "pc_backfill_7031"
+      ],
+      [
+        "pc_command_surface_7033"
+      ],
+      [
+        "pc_corpus_workspace_7025"
+      ],
+      [
+        "pc_vocabularies_indexes_7028"
+      ]
+    ],
+    "A3": [
+      [
+        "pc_audit_case_plan_7035"
+      ],
+      [
+        "pc_audit_concept_joins_7049",
+        "pc_audit_nodekind_evidence_7044"
+      ],
+      [
+        "pc_audit_current_input_check_7067",
+        "pc_audit_report_envelope_7062"
+      ],
+      [
+        "pc_audit_receipts_7039"
+      ],
+      [
+        "pc_audit_supervision_7042"
+      ]
+    ],
+    "A4": [
+      [
+        "pc_community_journeys_11589",
+        "pc_docs_reconciliation_8120"
+      ],
+      [
+        "pc_consumer_inventory_8787"
+      ],
+      [
+        "pc_consumer_migration_8808"
+      ],
+      [
+        "pc_consumer_recurrence_8831"
+      ],
+      [
+        "pc_parser_status_receipts_11588"
+      ]
+    ],
+    "A5": [
+      [
+        "pc_ci_audit_route_8730"
+      ],
+      [
+        "pc_ci_fan_in_8766"
+      ],
+      [
+        "pc_ci_hir_route_8747"
+      ],
+      [
+        "pc_ci_workspace_route_8715"
+      ]
+    ],
+    "B0": [
+      [
+        "pc_package_isolation_7406"
+      ]
+    ],
+    "B1": [
+      [
+        "pc_extraction_manifest_8841",
+        "pc_standalone_ci_8860"
+      ]
+    ],
+    "B2": [
+      [
+        "pc_consumer_family_parser_8873"
+      ],
+      [
+        "pc_consumer_family_product_8874"
+      ],
+      [
+        "pc_consumer_family_tools_8875"
+      ],
+      [
+        "pc_embedded_removal_8876"
+      ],
+      [
+        "pc_external_bootstrap_8872"
+      ],
+      [
+        "pc_repository_boundary_7370"
+      ]
+    ],
+    "C0": [
+      [
+        "pc_agent_packets_11017"
+      ],
+      [
+        "pc_current_tree_frontier_10992"
+      ],
+      [
+        "pc_frontier_specs_11010"
+      ],
+      [
+        "pc_live_candidates_11001"
+      ],
+      [
+        "pc_stable_dag_10980"
+      ]
+    ]
+  },
+  "horizon_counts": {
+    "audit_evidence": 10,
+    "consumer_ci_closeout": 11,
+    "expectation_gold_generator": 27,
+    "foundation_safety": 18,
+    "optional_breadth": 7,
+    "package_externalization": 12,
+    "publication_manual": 2,
+    "topology_registration": 12,
+    "workspace_command": 7
+  },
+  "law": "stable topology projection only: no current-tree state, frontier, candidate, or readiness claim (#10992/#11001)",
+  "manifest_schema": "perl_corpus_train.v1",
+  "node_count": 106,
+  "nodes": [
+    {
+      "authority_after": "one self-contained implementation packet and one independent reviewer packet per eligible train leaf, joined from the DAG, current-tree state, live observation, and compiled specs",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.agent_packets"
+      ],
+      "hard_dependencies": [
+        "pc_current_tree_frontier_10992",
+        "pc_frontier_specs_11010",
+        "pc_live_candidates_11001",
+        "pc_stable_dag_10980"
+      ],
+      "issue_ref": "#11017",
+      "lane": "control_plane",
+      "legacy_exit_owner": "#8826",
+      "node_id": "pc_agent_packets_11017",
+      "phase": "C0",
+      "release_horizon": "foundation_safety",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one opaque validated CorpusAssetPath owns portable root-relative member-path syntax; CorpusAsset validation and CorpusTopology::asset_path resolve through it",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_concept_ledger_topology_10587",
+        "pc_generator_fuzz_topology_10594",
+        "pc_gold_snapshot_topology_10593",
+        "pc_loader_interpretation_7715",
+        "pc_opened_asset_7693",
+        "pc_parser_accuracy_topology_10583",
+        "pc_recovery_relationships_10585",
+        "pc_sidecar_identity_7723",
+        "pc_static_cases_10595",
+        "pc_topology_union_6994",
+        "pc_tree_sitter_documents_10589",
+        "pc_tree_sitter_highlights_10591",
+        "pc_tree_sitter_queries_10590"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.asset_path"
+      ],
+      "hard_dependencies": [
+        "pc_hist_symlink_directories_7700",
+        "pc_hist_topology_identity_6699"
+      ],
+      "issue_ref": "#10555",
+      "lane": "foundation",
+      "legacy_exit_owner": "#10555 (this leaf)",
+      "node_id": "pc_asset_path_10555",
+      "phase": "A0",
+      "release_horizon": "foundation_safety",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one deterministic typed AuditCasePlan sourced from CorpusWorkspace; non-Perl inputs excluded by authored role",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_receipts_7039",
+        "pc_consumer_inventory_8787",
+        "pc_consumer_migration_8808",
+        "pc_expectation_retirement_11031"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.audit_plan"
+      ],
+      "hard_dependencies": [
+        "pc_corpus_workspace_7025",
+        "pc_generator_profiles_7020",
+        "pc_gold_extensions_7006",
+        "pc_obligation_algebra_7000",
+        "pc_resolved_expectation_view_11578",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#7035",
+      "lane": "audit",
+      "legacy_exit_owner": "#7035 (this leaf)",
+      "node_id": "pc_audit_case_plan_7035",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "neutral source-bound concept/feature evidence joined from authoritative registries, fixture obligations, and exact receipts; no scalar GA claim without a versioned policy",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_report_envelope_7062",
+        "pc_docs_reconciliation_8120"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.audit_evidence"
+      ],
+      "hard_dependencies": [
+        "pc_audit_nodekind_evidence_7044",
+        "pc_obligation_algebra_7000",
+        "pc_sidecar_concept_links_6996"
+      ],
+      "issue_ref": "#7049",
+      "lane": "audit",
+      "legacy_exit_owner": "#7049 (this leaf)",
+      "node_id": "pc_audit_concept_joins_7049",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "check mode proves the checked-in report matches a complete execution of the expected profile over the exact current inputs, comparing atomically",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_ci_audit_route_8730",
+        "pc_consumer_family_parser_8873",
+        "pc_consumer_family_tools_8875",
+        "pc_docs_reconciliation_8120"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.audit_report"
+      ],
+      "hard_dependencies": [
+        "pc_audit_report_envelope_7062"
+      ],
+      "issue_ref": "#7067",
+      "lane": "audit",
+      "legacy_exit_owner": "#7067 (this leaf)",
+      "node_id": "pc_audit_current_input_check_7067",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "separate NodeKind occurrence, file-presence, layer, disposition, expectation, and concept evidence derived only from the exact receipt set",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_concept_joins_7049"
+      ],
+      "evidence_dependencies": [
+        "pc_parser_accuracy_topology_10583"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.audit_evidence"
+      ],
+      "hard_dependencies": [
+        "pc_audit_supervision_7042",
+        "pc_obligation_algebra_7000"
+      ],
+      "issue_ref": "#7044",
+      "lane": "audit",
+      "legacy_exit_owner": "#7044 (this leaf)",
+      "node_id": "pc_audit_nodekind_evidence_7044",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one immutable typed execution receipt per planned case carrying exact input identity, terminal result, evidence, timing, and limitations",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_supervision_7042"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.audit_receipts"
+      ],
+      "hard_dependencies": [
+        "pc_audit_case_plan_7035",
+        "pc_generated_execution_7017"
+      ],
+      "issue_ref": "#7039",
+      "lane": "audit",
+      "legacy_exit_owner": "#7039 (this leaf)",
+      "node_id": "pc_audit_receipts_7039",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one versioned canonical source-bound report envelope proving which inputs, schemas, tools, and profile produced the payload and whether the run completed",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_current_input_check_7067",
+        "pc_hir_manifest_binding_7077",
+        "pc_parser_status_receipts_11588"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.audit_report"
+      ],
+      "hard_dependencies": [
+        "pc_audit_concept_joins_7049",
+        "pc_audit_supervision_7042"
+      ],
+      "issue_ref": "#7062",
+      "lane": "audit",
+      "legacy_exit_owner": "#7062 (this leaf)",
+      "node_id": "pc_audit_report_envelope_7062",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one bounded execution controller preserves every terminal outcome and produces honest layer/profile denominators and replay from the immutable receipt set",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_nodekind_evidence_7044",
+        "pc_audit_report_envelope_7062"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.audit_supervision"
+      ],
+      "hard_dependencies": [
+        "pc_audit_receipts_7039"
+      ],
+      "issue_ref": "#7042",
+      "lane": "audit",
+      "legacy_exit_owner": "#7042 (this leaf)",
+      "node_id": "pc_audit_supervision_7042",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "a deterministic plan → apply → check contract that cannot author semantic truth, race source changes, or produce non-idempotent files",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_command_surface_7033"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.backfill"
+      ],
+      "hard_dependencies": [
+        "pc_corpus_workspace_7025",
+        "pc_vocabularies_indexes_7028"
+      ],
+      "issue_ref": "#7031",
+      "lane": "workspace",
+      "legacy_exit_owner": "#7031 (this leaf)",
+      "node_id": "pc_backfill_7031",
+      "phase": "A2",
+      "release_horizon": "workspace_command",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "the canonical fast audit profile routed through one bounded required CI result with current-input receipts",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_ci_fan_in_8766"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.ci_routing_audit"
+      ],
+      "hard_dependencies": [
+        "#6261",
+        "#7745",
+        "pc_audit_current_input_check_7067",
+        "pc_generator_profiles_7020"
+      ],
+      "issue_ref": "#8730",
+      "lane": "ci_routing",
+      "legacy_exit_owner": "#8766",
+      "node_id": "pc_ci_audit_route_8730",
+      "phase": "A5",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "required-route reachability, budgets, context, policy, docs, and legacy gate metadata reconciled; stale/duplicate corpus gate metadata removed",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.ci_routing"
+      ],
+      "hard_dependencies": [
+        "#6261",
+        "#7745",
+        "pc_ci_audit_route_8730",
+        "pc_ci_hir_route_8747",
+        "pc_ci_workspace_route_8715"
+      ],
+      "issue_ref": "#8766",
+      "lane": "ci_routing",
+      "legacy_exit_owner": "#8766 (this leaf)",
+      "node_id": "pc_ci_fan_in_8766",
+      "phase": "A5",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "topology-bound HIR snapshot stability routed through an affected reachable result with scoped no-op receipts",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_ci_fan_in_8766"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.ci_routing_hir"
+      ],
+      "hard_dependencies": [
+        "#6261",
+        "#7745",
+        "pc_hir_manifest_binding_7077"
+      ],
+      "issue_ref": "#8747",
+      "lane": "ci_routing",
+      "legacy_exit_owner": "#8766",
+      "node_id": "pc_ci_hir_route_8747",
+      "phase": "A5",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "canonical read-only workspace and command checks routed through one actually executed required CI authority",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_ci_fan_in_8766"
+      ],
+      "evidence_dependencies": [
+        "pc_generator_profiles_7020"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.ci_routing_workspace"
+      ],
+      "hard_dependencies": [
+        "#6261",
+        "#7745",
+        "pc_command_surface_7033"
+      ],
+      "issue_ref": "#8715",
+      "lane": "ci_routing",
+      "legacy_exit_owner": "#8766",
+      "node_id": "pc_ci_workspace_route_8715",
+      "phase": "A5",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every perl-corpus command loads the same explicit CorpusWorkspace with stable machine/human output and exit contracts proven on checked-in assets",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_ci_workspace_route_8715",
+        "pc_community_journeys_11589",
+        "pc_consumer_inventory_8787",
+        "pc_consumer_migration_8808",
+        "pc_docs_reconciliation_8120",
+        "pc_extraction_manifest_8841",
+        "pc_package_isolation_7406"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.command_surface"
+      ],
+      "hard_dependencies": [
+        "pc_backfill_7031",
+        "pc_corpus_workspace_7025",
+        "pc_generator_profiles_7020",
+        "pc_vocabularies_indexes_7028"
+      ],
+      "issue_ref": "#7033",
+      "lane": "workspace",
+      "legacy_exit_owner": "#7033 (this leaf)",
+      "node_id": "pc_command_surface_7033",
+      "phase": "A2",
+      "release_horizon": "workspace_command",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "tested community journeys for consuming perl-corpus and contributing evidence safely",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.documentation_claims"
+      ],
+      "hard_dependencies": [
+        "pc_command_surface_7033",
+        "pc_docs_reconciliation_8120",
+        "pc_expectation_writers_11029",
+        "pc_fixture_promotion_11034",
+        "pc_generated_case_identity_7014",
+        "pc_package_isolation_7406"
+      ],
+      "issue_ref": "#11589",
+      "lane": "docs",
+      "legacy_exit_owner": "#11589 (this leaf)",
+      "node_id": "pc_community_journeys_11589",
+      "phase": "A4",
+      "release_horizon": "optional_breadth",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "exactly one authored parser concept ledger, every concept row, and every declared fixture reference are typed corpus assets and relationships",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_sidecar_concept_links_6996",
+        "pc_topology_union_6994"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.concept_registry"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705",
+        "pc_opened_asset_7693"
+      ],
+      "issue_ref": "#10587",
+      "lane": "topology_parser",
+      "legacy_exit_owner": "#6996",
+      "node_id": "pc_concept_ledger_topology_10587",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "parser-facing and evidence-facing consumers use the exact external software and asset subjects with semantics unchanged",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_embedded_removal_8876"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.consumer_family_parser"
+      ],
+      "hard_dependencies": [
+        "pc_audit_current_input_check_7067",
+        "pc_consumer_recurrence_8831",
+        "pc_external_bootstrap_8872",
+        "pc_generator_profiles_7020",
+        "pc_hir_manifest_binding_7077",
+        "pc_parser_gap_consumers_8070"
+      ],
+      "issue_ref": "#8873",
+      "lane": "external_cutover",
+      "legacy_exit_owner": "#8876",
+      "node_id": "pc_consumer_family_parser_8873",
+      "phase": "B2",
+      "release_horizon": "package_externalization",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "those consumers use the external subjects with product schemas, provider semantics, and exact-process identity preserved",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_embedded_removal_8876"
+      ],
+      "evidence_dependencies": [
+        "pc_gold_extensions_7006"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.consumer_family_product"
+      ],
+      "hard_dependencies": [
+        "pc_consumer_recurrence_8831",
+        "pc_docs_reconciliation_8120",
+        "pc_external_bootstrap_8872"
+      ],
+      "issue_ref": "#8874",
+      "lane": "external_cutover",
+      "legacy_exit_owner": "#8876",
+      "node_id": "pc_consumer_family_product_8874",
+      "phase": "B2",
+      "release_horizon": "package_externalization",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "those consumers use the external subjects with parser, query, compiler, real-Perl, and evidence semantics preserved",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_embedded_removal_8876"
+      ],
+      "evidence_dependencies": [
+        "pc_tree_sitter_documents_10589"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.consumer_family_tools"
+      ],
+      "hard_dependencies": [
+        "pc_audit_current_input_check_7067",
+        "pc_consumer_recurrence_8831",
+        "pc_external_bootstrap_8872"
+      ],
+      "issue_ref": "#8875",
+      "lane": "external_cutover",
+      "legacy_exit_owner": "#8876",
+      "node_id": "pc_consumer_family_tools_8875",
+      "phase": "B2",
+      "release_horizon": "package_externalization",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "a versioned corpus-consumer inventory and deterministic shadow candidate report showing every known consumer, its canonical contract, and remaining local authority",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_consumer_migration_8808",
+        "pc_consumer_recurrence_8831"
+      ],
+      "evidence_dependencies": [
+        "pc_audit_case_plan_7035",
+        "pc_parser_accuracy_topology_10583",
+        "pc_parser_gap_consumers_8070",
+        "pc_tree_sitter_documents_10589"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.consumer_inventory"
+      ],
+      "hard_dependencies": [
+        "pc_command_surface_7033",
+        "pc_corpus_workspace_7025",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#8787",
+      "lane": "consumers",
+      "legacy_exit_owner": "#8808",
+      "node_id": "pc_consumer_inventory_8787",
+      "phase": "A4",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "proof",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "legacy corpus authorities removed or narrowed after every active repository consumer moved to typed topology and CorpusWorkspace",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_consumer_recurrence_8831"
+      ],
+      "evidence_dependencies": [
+        "pc_audit_case_plan_7035",
+        "pc_executable_producers_7013",
+        "pc_generator_profiles_7020",
+        "pc_gold_extensions_7006",
+        "pc_hir_manifest_binding_7077"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.consumer_migration"
+      ],
+      "hard_dependencies": [
+        "pc_command_surface_7033",
+        "pc_consumer_inventory_8787",
+        "pc_obligation_algebra_7000",
+        "pc_parser_gap_consumers_8070",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#8808",
+      "lane": "consumers",
+      "legacy_exit_owner": "#8808 (this leaf)",
+      "node_id": "pc_consumer_migration_8808",
+      "phase": "A4",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "a precise diff-aware recurrence check that fails when a change adds or materially changes a corpus consumer, private denominator, legacy import, or completeness claim without updating the authority and proof",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_consumer_family_parser_8873",
+        "pc_consumer_family_product_8874",
+        "pc_consumer_family_tools_8875",
+        "pc_embedded_removal_8876"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.consumer_recurrence"
+      ],
+      "hard_dependencies": [
+        "pc_consumer_inventory_8787",
+        "pc_consumer_migration_8808"
+      ],
+      "issue_ref": "#8831",
+      "lane": "consumers",
+      "legacy_exit_owner": "#8766",
+      "node_id": "pc_consumer_recurrence_8831",
+      "phase": "A4",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one loaded CorpusWorkspace state; inventory consumes it instead of get_test_files_from, shallow gold scans, and private generator lists",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_case_plan_7035",
+        "pc_backfill_7031",
+        "pc_command_surface_7033",
+        "pc_consumer_inventory_8787",
+        "pc_parser_gap_consumers_8070",
+        "pc_parser_status_receipts_11588",
+        "pc_resolved_expectation_view_11578",
+        "pc_vocabularies_indexes_7028"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.workspace"
+      ],
+      "hard_dependencies": [
+        "pc_executable_producers_7013",
+        "pc_expectation_writers_11029",
+        "pc_gold_extensions_7006",
+        "pc_obligation_algebra_7000",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#7025",
+      "lane": "workspace",
+      "legacy_exit_owner": "#7025 (this leaf)",
+      "node_id": "pc_corpus_workspace_7025",
+      "phase": "A2",
+      "release_horizon": "workspace_command",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "corpus-audit execution and evidence programme controller over #7035 → #7039 → #7042 → #7044 → #7049 → #7062 → #7067",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6712",
+      "lane": "audit",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_audit_6712",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "audit evidence sub-programme over #7044 and #7049",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6716",
+      "lane": "audit",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_audit_evidence_6716",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "audit freshness sub-programme over #7062 and #7067",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6718",
+      "lane": "audit",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_audit_freshness_6718",
+      "phase": "A3",
+      "release_horizon": "audit_evidence",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "corpus required-CI programme controller over #8715, #8730, #8747 → #8766",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#7086",
+      "lane": "ci_routing",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_ci_7086",
+      "phase": "A5",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "corpus consumer-governance programme controller over #8787 → #8808 → #8831",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#8091",
+      "lane": "consumers",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_consumer_governance_8091",
+      "phase": "A4",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "architectural epic and final closure authority for the whole perl-corpus programme; closes only when every #8826 node is landed, superseded, transferred, or authorization-gated",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6696",
+      "lane": "programme",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_epic_6696",
+      "phase": "P",
+      "release_horizon": "foundation_safety",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "controller and closure authority for the authority, CI, and externalization PR train; after this stable graph lands it stops being a hand-maintained readiness database",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#8826",
+      "lane": "programme",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_execution_8826",
+      "phase": "P",
+      "release_horizon": "foundation_safety",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "consumer-cutover controller over #11578 → (#8070, #11579, #7073, #7035); closes when every child receipt is terminal",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#11030",
+      "lane": "expectations",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_expectation_consumers_11030",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "generic fixture-expectation programme controller over #6996 → #6999 → #7000 → #11029 → #11030 → #11031",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6703",
+      "lane": "expectations",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_expectations_6703",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "external authority establishment controller over #8841 → #8850 → #8860 → #8869",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#7407",
+      "lane": "external_repository",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_external_authority_7407",
+      "phase": "B1",
+      "release_horizon": "package_externalization",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "external source and consumer cutover controller over #8872 → (#8873, #8874, #8875) → #8876",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#7408",
+      "lane": "external_cutover",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_external_cutover_7408",
+      "phase": "B2",
+      "release_horizon": "package_externalization",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "externalization programme controller over #7406 → #7407 → #7408; not authorization to create, tag, publish, or remove",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#7405",
+      "lane": "package_isolation",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_externalization_7405",
+      "phase": "B0",
+      "release_horizon": "package_externalization",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "generator/static execution programme controller over #7013 → #7014 → #7017 → #7020 → (#11032 || #11034)",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6708",
+      "lane": "generators",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_generators_6708",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "gold programme controller over #7003 → #7006 → #7009",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6721",
+      "lane": "gold",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_gold_6721",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "gold consumer migration controller and final closure authority over #14011, #14013, #13453, #13967, #14025, #13961, #13168, #14027",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#7009",
+      "lane": "gold",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_gold_consumers_7009",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "HIR stability programme controller; completed exact-set foundation PR #6750, remaining leaves #7073 → #7077",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6725",
+      "lane": "hir_stability",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_hir_stability_6725",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "operational workspace and command programme controller over #7025 → #7028 → #7031 → #7033",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6706",
+      "lane": "workspace",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_operations_6706",
+      "phase": "A2",
+      "release_horizon": "workspace_command",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "parser-accuracy coverage controller over #11583 → (#11584, #11585, #11586); no full-language score",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#1377",
+      "lane": "parser_accuracy",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_parser_accuracy_1377",
+      "phase": "A1",
+      "release_horizon": "optional_breadth",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "parser-population topology umbrella over #10583, #10585, #10587; closes when #6994 can consume their receipts",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6985",
+      "lane": "topology_parser",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_parser_populations_6985",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "property-profile adoption and retirement controller over #11580 → #11581",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#11032",
+      "lane": "generators",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_property_adoption_11032",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "root/distribution contract umbrella; advanced by #7705 and closed only when load-bearing consumers stop depending on compatibility discovery under their later owners",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6980",
+      "lane": "foundation",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_root_contract_6980",
+      "phase": "A0",
+      "release_horizon": "foundation_safety",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "Tree-sitter population topology umbrella over #10589, #10590, #10591",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6989",
+      "lane": "topology_tree_sitter",
+      "legacy_exit_owner": null,
+      "node_id": "pc_ctrl_tree_sitter_populations_6989",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "controller",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one deterministic offline current-tree status and conflict-safe next frontier derived from repository probes joined to the stable DAG",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_agent_packets_11017",
+        "pc_live_candidates_11001"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.generated_status"
+      ],
+      "hard_dependencies": [
+        "pc_stable_dag_10980"
+      ],
+      "issue_ref": "#10992",
+      "lane": "control_plane",
+      "legacy_exit_owner": "#8826",
+      "node_id": "pc_current_tree_frontier_10992",
+      "phase": "C0",
+      "release_horizon": "foundation_safety",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "canonical documentation describes one implemented root, package, command, API, and measurement contract",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_community_journeys_11589",
+        "pc_consumer_family_product_8874",
+        "pc_embedded_removal_8876"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.documentation_claims"
+      ],
+      "hard_dependencies": [
+        "pc_audit_concept_joins_7049",
+        "pc_audit_current_input_check_7067",
+        "pc_command_surface_7033",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#8120",
+      "lane": "docs",
+      "legacy_exit_owner": "#8120 (this leaf)",
+      "node_id": "pc_docs_reconciliation_8120",
+      "phase": "A4",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "embedded crate source and generic assets removed; workspace, package, CI, command, docs, file-policy, and repository-topology state reconciled so the swarm cannot regain embedded corpus authority",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.package_identity"
+      ],
+      "hard_dependencies": [
+        "pc_consumer_family_parser_8873",
+        "pc_consumer_family_product_8874",
+        "pc_consumer_family_tools_8875",
+        "pc_consumer_recurrence_8831",
+        "pc_docs_reconciliation_8120",
+        "pc_repository_boundary_7370"
+      ],
+      "issue_ref": "#8876",
+      "lane": "external_cutover",
+      "legacy_exit_owner": "#8876 (this leaf)",
+      "node_id": "pc_embedded_removal_8876",
+      "phase": "B2",
+      "release_horizon": "package_externalization",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one versioned executable producer registry maps registered generator/static identities to exact entrypoints, contract versions, profiles, budgets, and dispositions",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_consumer_migration_8808",
+        "pc_corpus_workspace_7025",
+        "pc_generated_case_identity_7014"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.executable_producers"
+      ],
+      "hard_dependencies": [
+        "pc_generator_fuzz_topology_10594",
+        "pc_static_cases_10595",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#7013",
+      "lane": "generators",
+      "legacy_exit_owner": "#7013 (this leaf)",
+      "node_id": "pc_executable_producers_7013",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every generic expectation metric participation and denominator consumer uses the resolved typed view with metric-specific scoring preserved",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_expectation_retirement_11031",
+        "pc_parser_accuracy_generated_11586",
+        "pc_parser_accuracy_matrix_11583",
+        "pc_parser_accuracy_real_project_11585",
+        "pc_parser_accuracy_static_gold_11584"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.expectation_consumers_metrics"
+      ],
+      "hard_dependencies": [
+        "pc_expectation_writers_11029",
+        "pc_resolved_expectation_view_11578"
+      ],
+      "issue_ref": "#11579",
+      "lane": "expectations",
+      "legacy_exit_owner": "#11031",
+      "node_id": "pc_expectation_metrics_11579",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every duplicate generic expectation authority is removed or explicitly quarantined with semver/persisted-data disposition and recurrence proof",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.expectation_retirement"
+      ],
+      "hard_dependencies": [
+        "pc_audit_case_plan_7035",
+        "pc_expectation_metrics_11579",
+        "pc_expectation_writers_11029",
+        "pc_hir_disposition_7073",
+        "pc_parser_gap_consumers_8070",
+        "pc_resolved_expectation_view_11578"
+      ],
+      "issue_ref": "#11031",
+      "lane": "expectations",
+      "legacy_exit_owner": "#11031 (this leaf)",
+      "node_id": "pc_expectation_retirement_11031",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "the complete checked-in generic expectation population is canonical or exact-blocked, every production writer emits only the canonical schema, and a checked migration receipt is current",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_community_journeys_11589",
+        "pc_corpus_workspace_7025",
+        "pc_expectation_metrics_11579",
+        "pc_expectation_retirement_11031",
+        "pc_package_isolation_7406",
+        "pc_resolved_expectation_view_11578"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.expectation_assets_writers"
+      ],
+      "hard_dependencies": [
+        "pc_fixture_expectation_identity_6999",
+        "pc_obligation_algebra_7000"
+      ],
+      "issue_ref": "#11029",
+      "lane": "expectations",
+      "legacy_exit_owner": "#11029 (this leaf)",
+      "node_id": "pc_expectation_writers_11029",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one swarm-owned pinned external software and asset-root bootstrap authority with cache, offline reuse, root rebinding, and freshness failure",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_consumer_family_parser_8873",
+        "pc_consumer_family_product_8874",
+        "pc_consumer_family_tools_8875"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.external_source_bootstrap"
+      ],
+      "hard_dependencies": [
+        "pc_release_subjects_8869"
+      ],
+      "issue_ref": "#8872",
+      "lane": "external_cutover",
+      "legacy_exit_owner": "#8876",
+      "node_id": "pc_external_bootstrap_8872",
+      "phase": "B2",
+      "release_horizon": "package_externalization",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "the exact reusable code, assets, schemas, history, path rewrites, and exclusions that will move are frozen and validated",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_parser_accuracy_real_project_11585",
+        "pc_repository_import_8850"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.external_repository"
+      ],
+      "hard_dependencies": [
+        "pc_command_surface_7033",
+        "pc_generator_profiles_7020",
+        "pc_obligation_algebra_7000",
+        "pc_package_isolation_7406",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#8841",
+      "lane": "external_repository",
+      "legacy_exit_owner": "#8876",
+      "node_id": "pc_extraction_manifest_8841",
+      "phase": "B1",
+      "release_horizon": "package_externalization",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every canonical generic fixture expectation describes one exact fixture member, one exact sidecar member, and both exact retained contents, failing closed on orphaned, duplicated, stale, or mismatched relationships",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_expectation_writers_11029",
+        "pc_gold_project_envelopes_7003",
+        "pc_obligation_algebra_7000"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.expectation_relationship"
+      ],
+      "hard_dependencies": [
+        "pc_sidecar_concept_links_6996",
+        "pc_sidecar_identity_7723",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#6999",
+      "lane": "expectations",
+      "legacy_exit_owner": "#11031",
+      "node_id": "pc_fixture_expectation_identity_6999",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one review-gated generated-failure → promoted static fixture workflow with deterministic plan/apply/check, exact provenance, atomic writes, stable promoted identity, and topology integration",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_community_journeys_11589",
+        "pc_parser_accuracy_generated_11586"
+      ],
+      "evidence_dependencies": [
+        "pc_generated_execution_7017"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.fixture_promotion"
+      ],
+      "hard_dependencies": [
+        "pc_generated_case_identity_7014",
+        "pc_generator_fuzz_topology_10594",
+        "pc_generator_profiles_7020",
+        "pc_static_cases_10595"
+      ],
+      "issue_ref": "#11034",
+      "lane": "generators",
+      "legacy_exit_owner": "#11034 (this leaf)",
+      "node_id": "pc_fixture_promotion_11034",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "bounded source-linked .spec packets for the active foundation/topology frontier plus a validator that rejects stale boilerplate or a second semantic authority",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_agent_packets_11017"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.frontier_specs"
+      ],
+      "hard_dependencies": [
+        "pc_stable_dag_10980"
+      ],
+      "issue_ref": "#11010",
+      "lane": "control_plane",
+      "legacy_exit_owner": "#3983",
+      "node_id": "pc_frontier_specs_11010",
+      "phase": "C0",
+      "release_horizon": "foundation_safety",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every emitted generated case has a stable identity reproducing byte-identical source and a portable digest across reruns",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_community_journeys_11589",
+        "pc_fixture_promotion_11034",
+        "pc_generated_execution_7017",
+        "pc_parser_accuracy_generated_11586",
+        "pc_property_suites_11580"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.generated_case_identity"
+      ],
+      "hard_dependencies": [
+        "pc_executable_producers_7013"
+      ],
+      "issue_ref": "#7014",
+      "lane": "generators",
+      "legacy_exit_owner": "#11580",
+      "node_id": "pc_generated_case_identity_7014",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every generated/static case runs through one bounded lexer/parser execution adapter and is judged against its declared clean/recovery/rejection/ambiguity/boundary disposition",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_receipts_7039",
+        "pc_fixture_promotion_11034",
+        "pc_generator_profiles_7020",
+        "pc_parser_accuracy_generated_11586",
+        "pc_property_suites_11580"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.generated_execution"
+      ],
+      "hard_dependencies": [
+        "pc_generated_case_identity_7014",
+        "pc_obligation_algebra_7000"
+      ],
+      "issue_ref": "#7017",
+      "lane": "generators",
+      "legacy_exit_owner": "#11580",
+      "node_id": "pc_generated_execution_7017",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "producer-backed evidence is represented explicitly with generator family, promoted-fixture provenance, and fuzz reproducer identity",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_executable_producers_7013",
+        "pc_fixture_promotion_11034",
+        "pc_parser_accuracy_generated_11586",
+        "pc_property_suites_11580",
+        "pc_topology_union_6994"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.generator_fuzz_topology"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705",
+        "pc_opened_asset_7693"
+      ],
+      "issue_ref": "#10594",
+      "lane": "topology_packages",
+      "legacy_exit_owner": "#7013",
+      "node_id": "pc_generator_fuzz_topology_10594",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one versioned generator execution profile authority (fast/extended/replay) with deterministic planning, budgets, exact plan/receipt identities, and one terminal outcome per planned case",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_case_plan_7035",
+        "pc_ci_audit_route_8730",
+        "pc_ci_workspace_route_8715",
+        "pc_command_surface_7033",
+        "pc_consumer_family_parser_8873",
+        "pc_consumer_migration_8808",
+        "pc_extraction_manifest_8841",
+        "pc_fixture_promotion_11034",
+        "pc_package_isolation_7406",
+        "pc_parser_accuracy_generated_11586",
+        "pc_property_profile_retirement_11581",
+        "pc_property_suites_11580"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.generator_profiles"
+      ],
+      "hard_dependencies": [
+        "pc_generated_execution_7017"
+      ],
+      "issue_ref": "#7020",
+      "lane": "generators",
+      "legacy_exit_owner": "#11581",
+      "node_id": "pc_generator_profiles_7020",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every product-specific gold expectation sits behind one typed versioned extension and registered-consumer authority with explicit applicability and stable assertion identity",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_case_plan_7035",
+        "pc_consumer_family_product_8874",
+        "pc_consumer_migration_8808",
+        "pc_corpus_workspace_7025"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.gold_snapshot"
+      ],
+      "hard_dependencies": [
+        "pc_gold_project_envelopes_7003",
+        "pc_obligation_algebra_7000"
+      ],
+      "issue_ref": "#7006",
+      "lane": "gold",
+      "legacy_exit_owner": "#7009",
+      "node_id": "pc_gold_extensions_7006",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every checked-in gold project has an explicit stable versioned envelope with exact member bytes, roles, entrypoints, and closed-world membership",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_gold_extensions_7006"
+      ],
+      "evidence_dependencies": [
+        "pc_fixture_expectation_identity_6999"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.gold_snapshot"
+      ],
+      "hard_dependencies": [
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#7003",
+      "lane": "gold",
+      "legacy_exit_owner": "#7009",
+      "node_id": "pc_gold_project_envelopes_7003",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "file-backed evidence packages are typed graphs with source/support/expected roles and deterministic package identity",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_topology_union_6994"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.gold_snapshot"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705",
+        "pc_opened_asset_7693"
+      ],
+      "issue_ref": "#10593",
+      "lane": "topology_packages",
+      "legacy_exit_owner": "#8808",
+      "node_id": "pc_gold_snapshot_topology_10593",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every registered inline expectation executes at its exact byte/point range with one terminal result per expectation",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.tree_sitter_highlights"
+      ],
+      "hard_dependencies": [
+        "#8056",
+        "#8081",
+        "pc_tree_sitter_highlights_10591",
+        "pc_tree_sitter_queries_10590"
+      ],
+      "issue_ref": "#11587",
+      "lane": "topology_tree_sitter",
+      "legacy_exit_owner": "#11587 (this leaf)",
+      "node_id": "pc_highlight_execution_11587",
+      "phase": "A1",
+      "release_horizon": "optional_breadth",
+      "role": "proof",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every snapshot entry records declared and observed parser disposition and full-source-consumption before stability is evaluated; the Unknown catch-all is gone",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_expectation_retirement_11031",
+        "pc_hir_manifest_binding_7077"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.hir_stability"
+      ],
+      "hard_dependencies": [
+        "pc_hist_hir_exact_set_6750",
+        "pc_obligation_algebra_7000",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#7073",
+      "lane": "hir_stability",
+      "legacy_exit_owner": "#7073 (this leaf)",
+      "node_id": "pc_hir_disposition_7073",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "fixtures selected through topology, manifest bound to exact input plan and parser/lowering/tool schemas, canonical payload hash, atomic complete output",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_ci_hir_route_8747",
+        "pc_consumer_family_parser_8873",
+        "pc_consumer_migration_8808"
+      ],
+      "evidence_dependencies": [
+        "pc_audit_report_envelope_7062"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.hir_stability"
+      ],
+      "hard_dependencies": [
+        "pc_hir_disposition_7073",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#7077",
+      "lane": "hir_stability",
+      "legacy_exit_owner": "#7077 (this leaf)",
+      "node_id": "pc_hir_manifest_binding_7077",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "deserialized topology asset kind is validated against the layer classifier",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [
+        "pc_hist_topology_identity_6699"
+      ],
+      "issue_ref": "#9140",
+      "lane": "foundation",
+      "legacy_exit_owner": null,
+      "node_id": "pc_hist_asset_kind_9140",
+      "phase": "H",
+      "release_horizon": "foundation_safety",
+      "role": "historical",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "versioned semantic_snapshot.v2 exact-set foundation for HIR stability",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_hir_disposition_7073"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "PR #6750",
+      "lane": "hir_stability",
+      "legacy_exit_owner": null,
+      "node_id": "pc_hist_hir_exact_set_6750",
+      "phase": "H",
+      "release_horizon": "expectation_gold_generator",
+      "role": "historical",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "loader-separation candidate transferred to #7715, which restacks or rebuilds it over the opened-asset authority",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "PR #7200",
+      "lane": "foundation",
+      "legacy_exit_owner": null,
+      "node_id": "pc_hist_loader_candidate_7200",
+      "phase": "H",
+      "release_horizon": "foundation_safety",
+      "role": "historical",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": "pc_loader_interpretation_7715"
+    },
+    {
+      "authority_after": "documented expected-error|todo|wip marker flags are recognized by the lint taxonomy",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_hist_temporary_vocabularies_13807"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#13072",
+      "lane": "workspace",
+      "legacy_exit_owner": null,
+      "node_id": "pc_hist_marker_flags_13072",
+      "phase": "H",
+      "release_horizon": "workspace_command",
+      "role": "historical",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one typed CorpusRoot authority with explicit provenance; CorpusPaths::discover() is a bounded non-authoritative compatibility adapter",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_concept_ledger_topology_10587",
+        "pc_generator_fuzz_topology_10594",
+        "pc_gold_snapshot_topology_10593",
+        "pc_loader_interpretation_7715",
+        "pc_opened_asset_7693",
+        "pc_package_isolation_7406",
+        "pc_parser_accuracy_topology_10583",
+        "pc_recovery_relationships_10585",
+        "pc_topology_union_6994",
+        "pc_tree_sitter_documents_10589",
+        "pc_tree_sitter_highlights_10591",
+        "pc_tree_sitter_queries_10590"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [
+        "pc_hist_symlink_directories_7700",
+        "pc_hist_topology_identity_6699"
+      ],
+      "issue_ref": "#7705",
+      "lane": "foundation",
+      "legacy_exit_owner": null,
+      "node_id": "pc_hist_root_authority_7705",
+      "phase": "H",
+      "release_horizon": "foundation_safety",
+      "role": "historical",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "superseded root-authority candidate; its reviewed types and tests survive only as a read-only mining source for #7705",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "PR #7188",
+      "lane": "foundation",
+      "legacy_exit_owner": null,
+      "node_id": "pc_hist_root_candidate_7188",
+      "phase": "H",
+      "release_horizon": "foundation_safety",
+      "role": "historical",
+      "selectable": false,
+      "superseded_by": "pc_hist_root_authority_7705",
+      "transferred_to": null
+    },
+    {
+      "authority_after": "directory/traversal disposition precedes unselected-leaf filtering; symlinked population directories are rejected",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [
+        "pc_hist_topology_identity_6699"
+      ],
+      "issue_ref": "#7700",
+      "lane": "foundation",
+      "legacy_exit_owner": null,
+      "node_id": "pc_hist_symlink_directories_7700",
+      "phase": "H",
+      "release_horizon": "foundation_safety",
+      "role": "historical",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "temporary tag/flag arrays are duplicate-free and self-validating until #7028 derives them",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_vocabularies_indexes_7028"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [
+        "pc_hist_marker_flags_13072"
+      ],
+      "issue_ref": "#13807",
+      "lane": "workspace",
+      "legacy_exit_owner": null,
+      "node_id": "pc_hist_temporary_vocabularies_13807",
+      "phase": "H",
+      "release_horizon": "workspace_command",
+      "role": "historical",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one versioned typed topology identity for corpus assets and producers (CorpusTopology v1)",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_asset_path_10555",
+        "pc_hist_asset_kind_9140",
+        "pc_hist_root_authority_7705",
+        "pc_hist_symlink_directories_7700",
+        "pc_static_cases_10595"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [],
+      "issue_ref": "#6699",
+      "lane": "foundation",
+      "legacy_exit_owner": null,
+      "node_id": "pc_hist_topology_identity_6699",
+      "phase": "H",
+      "release_horizon": "foundation_safety",
+      "role": "historical",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one read-only bounded live GitHub observation over the stable DAG and exact current-tree state that classifies candidates to resume, restack, salvage, reconcile, or reject",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_agent_packets_11017"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.live_candidate_observation"
+      ],
+      "hard_dependencies": [
+        "pc_current_tree_frontier_10992"
+      ],
+      "issue_ref": "#11001",
+      "lane": "control_plane",
+      "legacy_exit_owner": "#8826",
+      "node_id": "pc_live_candidates_11001",
+      "phase": "C0",
+      "release_horizon": "foundation_safety",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "plain/sectioned loading is the only interpretation layer over OpenedCorpusAsset; one whole-document validator owns section acceptance; duplicate recognized metadata keys, unknown declaration-shaped keys, and malformed reserved declarations fail with typed source identity",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_tree_sitter_documents_10589"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.loader_interpretation"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705",
+        "pc_opened_asset_7693"
+      ],
+      "issue_ref": "#7715",
+      "lane": "foundation",
+      "legacy_exit_owner": "#7715 (this leaf)",
+      "node_id": "pc_loader_interpretation_7715",
+      "phase": "A0",
+      "release_horizon": "foundation_safety",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one versioned generic fixture obligation algebra, typed Rust model, canonical serialization, and pure structural validator over the exact #6999 relationship",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_case_plan_7035",
+        "pc_audit_concept_joins_7049",
+        "pc_audit_nodekind_evidence_7044",
+        "pc_consumer_migration_8808",
+        "pc_corpus_workspace_7025",
+        "pc_expectation_writers_11029",
+        "pc_extraction_manifest_8841",
+        "pc_generated_execution_7017",
+        "pc_gold_extensions_7006",
+        "pc_hir_disposition_7073",
+        "pc_package_isolation_7406",
+        "pc_parser_gap_consumers_8070"
+      ],
+      "evidence_dependencies": [
+        "pc_recovery_relationships_10585"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.expectation_schema"
+      ],
+      "hard_dependencies": [
+        "pc_fixture_expectation_identity_6999"
+      ],
+      "issue_ref": "#7000",
+      "lane": "expectations",
+      "legacy_exit_owner": "#11029",
+      "node_id": "pc_obligation_algebra_7000",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one capability/root-relative no-follow nonblocking opened-file primitive (OpenedCorpusAsset) owns exact retained bytes and digest; the merged sidecar implementation consumes it",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_concept_ledger_topology_10587",
+        "pc_generator_fuzz_topology_10594",
+        "pc_gold_snapshot_topology_10593",
+        "pc_loader_interpretation_7715",
+        "pc_parser_accuracy_topology_10583",
+        "pc_recovery_relationships_10585",
+        "pc_sidecar_identity_7723",
+        "pc_topology_union_6994",
+        "pc_tree_sitter_documents_10589",
+        "pc_tree_sitter_highlights_10591",
+        "pc_tree_sitter_queries_10590"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.opened_asset"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705"
+      ],
+      "issue_ref": "#7693",
+      "lane": "foundation",
+      "legacy_exit_owner": "#7693 (this leaf)",
+      "node_id": "pc_opened_asset_7693",
+      "phase": "A0",
+      "release_horizon": "foundation_safety",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "the crate and CLI are independently packageable and runnable from an unpacked package with an explicit root from unrelated cwd and offline",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_community_journeys_11589",
+        "pc_extraction_manifest_8841",
+        "pc_standalone_ci_8860"
+      ],
+      "evidence_dependencies": [
+        "pc_expectation_writers_11029"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.package_identity"
+      ],
+      "hard_dependencies": [
+        "pc_command_surface_7033",
+        "pc_generator_profiles_7020",
+        "pc_hist_root_authority_7705",
+        "pc_obligation_algebra_7000",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#7406",
+      "lane": "package_isolation",
+      "legacy_exit_owner": "#8841",
+      "node_id": "pc_package_isolation_7406",
+      "phase": "B0",
+      "release_horizon": "package_externalization",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "a versioned deterministic generated/replay stratum with per-case receipts never counted as reviewed static gold",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [
+        "pc_expectation_metrics_11579",
+        "pc_fixture_promotion_11034"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.parser_accuracy_generated"
+      ],
+      "hard_dependencies": [
+        "pc_generated_case_identity_7014",
+        "pc_generated_execution_7017",
+        "pc_generator_fuzz_topology_10594",
+        "pc_generator_profiles_7020",
+        "pc_parser_accuracy_matrix_11583"
+      ],
+      "issue_ref": "#11586",
+      "lane": "parser_accuracy",
+      "legacy_exit_owner": "#1377",
+      "node_id": "pc_parser_accuracy_generated_11586",
+      "phase": "A1",
+      "release_horizon": "optional_breadth",
+      "role": "proof",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one deterministic checked matrix reconciling every fixture, authored expectation, scorable NodeKind, E2E selector, and scorer vocabulary against NodeKind::ALL_KIND_NAMES",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_parser_accuracy_generated_11586",
+        "pc_parser_accuracy_real_project_11585",
+        "pc_parser_accuracy_static_gold_11584"
+      ],
+      "evidence_dependencies": [
+        "pc_expectation_metrics_11579"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.parser_accuracy_matrix"
+      ],
+      "hard_dependencies": [
+        "pc_parser_accuracy_topology_10583"
+      ],
+      "issue_ref": "#11583",
+      "lane": "parser_accuracy",
+      "legacy_exit_owner": "#1377",
+      "node_id": "pc_parser_accuracy_matrix_11583",
+      "phase": "A1",
+      "release_horizon": "optional_breadth",
+      "role": "proof",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "a small pinned content-addressed real-project stratum with exact provenance, license disposition, and its own denominator",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [
+        "pc_expectation_metrics_11579",
+        "pc_extraction_manifest_8841"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.parser_accuracy_real_project"
+      ],
+      "hard_dependencies": [
+        "pc_parser_accuracy_matrix_11583",
+        "pc_parser_accuracy_topology_10583"
+      ],
+      "issue_ref": "#11585",
+      "lane": "parser_accuracy",
+      "legacy_exit_owner": "#1377",
+      "node_id": "pc_parser_accuracy_real_project_11585",
+      "phase": "A1",
+      "release_horizon": "optional_breadth",
+      "role": "proof",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "reviewed static gold for the actionable long-tail kinds with scorer widened only for reviewed kinds",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [
+        "pc_expectation_metrics_11579",
+        "pc_recovery_relationships_10585"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.parser_accuracy_static_gold"
+      ],
+      "hard_dependencies": [
+        "pc_parser_accuracy_matrix_11583",
+        "pc_parser_accuracy_topology_10583"
+      ],
+      "issue_ref": "#11584",
+      "lane": "parser_accuracy",
+      "legacy_exit_owner": "#1377",
+      "node_id": "pc_parser_accuracy_static_gold_11584",
+      "phase": "A1",
+      "release_horizon": "optional_breadth",
+      "role": "proof",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "the parser-accuracy manifest, every declared source, and manifest-to-source references are typed topology assets with a deterministic population receipt",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_nodekind_evidence_7044",
+        "pc_consumer_inventory_8787",
+        "pc_parser_accuracy_matrix_11583",
+        "pc_parser_accuracy_real_project_11585",
+        "pc_parser_accuracy_static_gold_11584",
+        "pc_parser_gap_consumers_8070",
+        "pc_recovery_relationships_10585",
+        "pc_topology_union_6994"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.parser_accuracy"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705",
+        "pc_opened_asset_7693"
+      ],
+      "issue_ref": "#10583",
+      "lane": "topology_parser",
+      "legacy_exit_owner": "#8787",
+      "node_id": "pc_parser_accuracy_topology_10583",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "parser gap tests use one topology-selected case plan while preserving the stronger focused regression tests",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_consumer_family_parser_8873",
+        "pc_consumer_inventory_8787",
+        "pc_consumer_migration_8808",
+        "pc_expectation_retirement_11031"
+      ],
+      "evidence_dependencies": [
+        "pc_parser_accuracy_topology_10583"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.expectation_consumers_parser"
+      ],
+      "hard_dependencies": [
+        "pc_corpus_workspace_7025",
+        "pc_obligation_algebra_7000",
+        "pc_resolved_expectation_view_11578"
+      ],
+      "issue_ref": "#8070",
+      "lane": "expectations",
+      "legacy_exit_owner": "#8070 (this leaf)",
+      "node_id": "pc_parser_gap_consumers_8070",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "parser-status counts and case coverage derive from current topology/workspace/receipt projections",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [
+        "pc_audit_report_envelope_7062"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.parser_status_projection"
+      ],
+      "hard_dependencies": [
+        "pc_corpus_workspace_7025",
+        "pc_topology_union_6994",
+        "pc_tree_sitter_documents_10589"
+      ],
+      "issue_ref": "#11588",
+      "lane": "consumers",
+      "legacy_exit_owner": "#11588 (this leaf)",
+      "node_id": "pc_parser_status_receipts_11588",
+      "phase": "A4",
+      "release_horizon": "consumer_ci_closeout",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every private corpus property-profile authority, including ci-fast, is removed or strictly forwarding after all real consumers migrated",
+      "authorization_dependencies": [],
+      "consumed_by": [],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.property_consumer_cutover"
+      ],
+      "hard_dependencies": [
+        "pc_generator_profiles_7020",
+        "pc_property_suites_11580"
+      ],
+      "issue_ref": "#11581",
+      "lane": "generators",
+      "legacy_exit_owner": "#11581 (this leaf)",
+      "node_id": "pc_property_profile_retirement_11581",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "parser property suites run on the canonical registry, replay identity, bounded adapter, and versioned profiles with every real invariant preserved or strengthened",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_property_profile_retirement_11581"
+      ],
+      "evidence_dependencies": [
+        "pc_generator_fuzz_topology_10594",
+        "pc_static_cases_10595"
+      ],
+      "exclusive_conflict_keys": [
+        "perl_corpus.property_consumer_cutover"
+      ],
+      "hard_dependencies": [
+        "pc_generated_case_identity_7014",
+        "pc_generated_execution_7017",
+        "pc_generator_profiles_7020"
+      ],
+      "issue_ref": "#11580",
+      "lane": "generators",
+      "legacy_exit_owner": "#11581",
+      "node_id": "pc_property_suites_11580",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "recovery-class manifest rows are first-class source-bound typed relationships with unique obligation identity and validated source coordinates",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_obligation_algebra_7000",
+        "pc_parser_accuracy_static_gold_11584",
+        "pc_topology_union_6994"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.recovery_relationships"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705",
+        "pc_opened_asset_7693",
+        "pc_parser_accuracy_topology_10583"
+      ],
+      "issue_ref": "#10585",
+      "lane": "topology_parser",
+      "legacy_exit_owner": "#8787",
+      "node_id": "pc_recovery_relationships_10585",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "two independently immutable external subjects (software and asset manifest) with embedded/external parity",
+      "authorization_dependencies": [
+        "#EXPLICIT-AUTHORIZATION"
+      ],
+      "consumed_by": [
+        "pc_external_bootstrap_8872"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [
+        "pc_repository_import_8850",
+        "pc_standalone_ci_8860"
+      ],
+      "issue_ref": "#8869",
+      "lane": "external_repository",
+      "legacy_exit_owner": null,
+      "node_id": "pc_release_subjects_8869",
+      "phase": "B1",
+      "release_horizon": "publication_manual",
+      "role": "external_action",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "machine repository-topology authority and boundary checker that rejects reintroduction of a second corpus authority",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_embedded_removal_8876"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.repository_topology_boundary"
+      ],
+      "hard_dependencies": [],
+      "issue_ref": "#7370",
+      "lane": "repository_boundary",
+      "legacy_exit_owner": "#7370 (this leaf)",
+      "node_id": "pc_repository_boundary_7370",
+      "phase": "B2",
+      "release_horizon": "package_externalization",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "the external repository is created and populated from the reviewed extraction manifest with a durable import/provenance receipt",
+      "authorization_dependencies": [
+        "#EXPLICIT-AUTHORIZATION"
+      ],
+      "consumed_by": [
+        "pc_release_subjects_8869",
+        "pc_standalone_ci_8860"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [],
+      "hard_dependencies": [
+        "pc_extraction_manifest_8841"
+      ],
+      "issue_ref": "#8850",
+      "lane": "external_repository",
+      "legacy_exit_owner": null,
+      "node_id": "pc_repository_import_8850",
+      "phase": "B1",
+      "release_horizon": "publication_manual",
+      "role": "external_action",
+      "selectable": false,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one production ResolvedFixtureExpectation view over topology, exact bytes, concept context, algebra, applicability, and requiredness; corpus-native consumers migrated to it",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_case_plan_7035",
+        "pc_expectation_metrics_11579",
+        "pc_expectation_retirement_11031",
+        "pc_parser_gap_consumers_8070"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.expectation_consumers"
+      ],
+      "hard_dependencies": [
+        "pc_corpus_workspace_7025",
+        "pc_expectation_writers_11029"
+      ],
+      "issue_ref": "#11578",
+      "lane": "expectations",
+      "legacy_exit_owner": "#11031",
+      "node_id": "pc_resolved_expectation_view_11578",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one SidecarConceptValidationContext derived from the registered concept ledger and canonical topology is the only sidecar concept authority",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_concept_joins_7049",
+        "pc_fixture_expectation_identity_6999"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.expectation_relationship"
+      ],
+      "hard_dependencies": [
+        "pc_concept_ledger_topology_10587",
+        "pc_sidecar_identity_7723",
+        "pc_topology_union_6994"
+      ],
+      "issue_ref": "#6996",
+      "lane": "expectations",
+      "legacy_exit_owner": "#6996 (this leaf)",
+      "node_id": "pc_sidecar_concept_links_6996",
+      "phase": "A1",
+      "release_horizon": "expectation_gold_generator",
+      "role": "cutover",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "a versioned portable sidecar pair identity built from the shared member/content authorities, with the local selected-population digest renamed to what it proves",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_fixture_expectation_identity_6999",
+        "pc_sidecar_concept_links_6996",
+        "pc_topology_union_6994"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.sidecar_identity"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_opened_asset_7693"
+      ],
+      "issue_ref": "#7723",
+      "lane": "foundation",
+      "legacy_exit_owner": "#7723 (this leaf)",
+      "node_id": "pc_sidecar_identity_7723",
+      "phase": "A0",
+      "release_horizon": "foundation_safety",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one checked perl_corpus_train.v1 manifest owns stable node role, dependency class, authority transition, conflict key, release horizon, candidate lineage, and legacy exit semantics",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_agent_packets_11017",
+        "pc_current_tree_frontier_10992",
+        "pc_frontier_specs_11010"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.stable_train"
+      ],
+      "hard_dependencies": [],
+      "issue_ref": "#10980",
+      "lane": "control_plane",
+      "legacy_exit_owner": "#8826 execution controller",
+      "node_id": "pc_stable_dag_10980",
+      "phase": "C0",
+      "release_horizon": "foundation_safety",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "the external repository is independently buildable, testable, packageable, and usable with an explicit root under corpus-relevant CI",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_release_subjects_8869"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.external_repository"
+      ],
+      "hard_dependencies": [
+        "pc_package_isolation_7406",
+        "pc_repository_import_8850"
+      ],
+      "issue_ref": "#8860",
+      "lane": "external_repository",
+      "legacy_exit_owner": "#8876",
+      "node_id": "pc_standalone_ci_8860",
+      "phase": "B1",
+      "release_horizon": "package_externalization",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every embedded static case has one explicit disposition and registration",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_executable_producers_7013",
+        "pc_fixture_promotion_11034",
+        "pc_property_suites_11580",
+        "pc_topology_union_6994"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.static_cases"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_topology_identity_6699"
+      ],
+      "issue_ref": "#10595",
+      "lane": "topology_packages",
+      "legacy_exit_owner": "#8808",
+      "node_id": "pc_static_cases_10595",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "the common corpus topology vocabulary and union inventory over every registered asset, producer, and structural relationship, with completeness and explicit exits",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_audit_case_plan_7035",
+        "pc_consumer_inventory_8787",
+        "pc_consumer_migration_8808",
+        "pc_corpus_workspace_7025",
+        "pc_docs_reconciliation_8120",
+        "pc_executable_producers_7013",
+        "pc_extraction_manifest_8841",
+        "pc_fixture_expectation_identity_6999",
+        "pc_gold_project_envelopes_7003",
+        "pc_hir_disposition_7073",
+        "pc_hir_manifest_binding_7077",
+        "pc_package_isolation_7406",
+        "pc_parser_status_receipts_11588",
+        "pc_sidecar_concept_links_6996"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.topology_schema"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_concept_ledger_topology_10587",
+        "pc_generator_fuzz_topology_10594",
+        "pc_gold_snapshot_topology_10593",
+        "pc_hist_root_authority_7705",
+        "pc_opened_asset_7693",
+        "pc_parser_accuracy_topology_10583",
+        "pc_recovery_relationships_10585",
+        "pc_sidecar_identity_7723",
+        "pc_static_cases_10595",
+        "pc_tree_sitter_documents_10589",
+        "pc_tree_sitter_highlights_10591",
+        "pc_tree_sitter_queries_10590"
+      ],
+      "issue_ref": "#6994",
+      "lane": "topology_packages",
+      "legacy_exit_owner": "#6994 (this leaf)",
+      "node_id": "pc_topology_union_6994",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every governed sectioned document and every valid section case is registered through the common corpus authorities with exact content identity",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_consumer_family_tools_8875",
+        "pc_consumer_inventory_8787",
+        "pc_parser_status_receipts_11588",
+        "pc_topology_union_6994"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.tree_sitter_documents"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705",
+        "pc_loader_interpretation_7715",
+        "pc_opened_asset_7693"
+      ],
+      "issue_ref": "#10589",
+      "lane": "topology_tree_sitter",
+      "legacy_exit_owner": "#11588",
+      "node_id": "pc_tree_sitter_documents_10589",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "every highlight fixture, its exact source/annotation projection, and the exact query distribution it targets are registered",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_highlight_execution_11587",
+        "pc_topology_union_6994"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.tree_sitter_highlights"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705",
+        "pc_opened_asset_7693",
+        "pc_tree_sitter_queries_10590"
+      ],
+      "issue_ref": "#10591",
+      "lane": "topology_tree_sitter",
+      "legacy_exit_owner": "#11587",
+      "node_id": "pc_tree_sitter_highlights_10591",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "each query is an exact typed asset with a registered distribution/consumer relationship; same filename is not parity",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_highlight_execution_11587",
+        "pc_topology_union_6994",
+        "pc_tree_sitter_highlights_10591"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.tree_sitter_queries"
+      ],
+      "hard_dependencies": [
+        "pc_asset_path_10555",
+        "pc_hist_root_authority_7705",
+        "pc_opened_asset_7693"
+      ],
+      "issue_ref": "#10590",
+      "lane": "topology_tree_sitter",
+      "legacy_exit_owner": "#11587",
+      "node_id": "pc_tree_sitter_queries_10590",
+      "phase": "A0",
+      "release_horizon": "topology_registration",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    },
+    {
+      "authority_after": "one controlled vocabulary for lint, metadata parsing, inventory, indexes, and selectors; generated indexes prove freshness against the exact loaded workspace",
+      "authorization_dependencies": [],
+      "consumed_by": [
+        "pc_backfill_7031",
+        "pc_command_surface_7033"
+      ],
+      "evidence_dependencies": [],
+      "exclusive_conflict_keys": [
+        "perl_corpus.vocabularies_indexes"
+      ],
+      "hard_dependencies": [
+        "pc_corpus_workspace_7025",
+        "pc_hist_temporary_vocabularies_13807"
+      ],
+      "issue_ref": "#7028",
+      "lane": "workspace",
+      "legacy_exit_owner": "#7028 (this leaf)",
+      "node_id": "pc_vocabularies_indexes_7028",
+      "phase": "A2",
+      "release_horizon": "workspace_command",
+      "role": "implementation",
+      "selectable": true,
+      "superseded_by": null,
+      "transferred_to": null
+    }
+  ],
+  "role_counts": {
+    "controller": 22,
+    "cutover": 20,
+    "external_action": 2,
+    "historical": 9,
+    "implementation": 47,
+    "proof": 6
+  },
+  "schema": "perl_corpus_train.v1.graph"
+}

@@ -1,0 +1,28 @@
+{
+  "kind": "perl_kwalitee",
+  "schema_version": 1,
+  "generated_at": "2026-07-01T00:00:00Z",
+  "commit": "legacy-v1-fixture",
+  "profile": "pr",
+  "score": 100,
+  "verdict": "pass",
+  "mandatory_passed": true,
+  "mandatory_failed_count": 0,
+  "mandatory_unverified_count": 0,
+  "warning_count": 0,
+  "unverified_count": 0,
+  "indicators": [
+    {
+      "id": "manifest.workspace_member_declared",
+      "area": "manifest",
+      "title": "workspace member declared",
+      "mandatory": true,
+      "status": "pass",
+      "score_weight": 1,
+      "evidence": [
+        { "kind": "file", "value": "Cargo.toml" }
+      ],
+      "remediation": null
+    }
+  ]
+}

@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "commit": "f87de5c9a",
+  "commit": "52651936d",
   "generated_by": "cargo xtask metrics parser-accuracy --export-status-receipts",
-  "fixture_count": 50,
-  "family_count": 29,
-  "scored_lines": 139,
-  "scored_symbols": 117,
+  "fixture_count": 53,
+  "family_count": 30,
+  "scored_lines": 159,
+  "scored_symbols": 131,
   "fixtures": [
     {
       "id": "package_basic",
@@ -391,10 +391,31 @@
       "source_path": "crates/perl-corpus/fixtures/parser_accuracy/imports_exports.pl",
       "label_mode": "partial",
       "scored_lines": 6,
-      "scored_symbols": 10,
+      "scored_symbols": 6,
       "fully_labeled_regions": 0,
       "partial_labeled_regions": 1,
       "unknown_regions": 1,
+      "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "provider_expectation_counts": {
+        "method_completion": 0,
+        "diagnostics": 0,
+        "navigation": 0
+      }
+    },
+    {
+      "id": "imports_exports_producer",
+      "family": "imports_exports",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/Accuracy/ImportsExports.pm",
+      "label_mode": "full",
+      "scored_lines": 7,
+      "scored_symbols": 4,
+      "fully_labeled_regions": 1,
+      "partial_labeled_regions": 0,
+      "unknown_regions": 0,
       "negative_regions": 0,
       "dynamic_boundaries": 0,
       "unsupported_constructs": 0,
@@ -495,12 +516,33 @@
       "family": "regex",
       "source_path": "crates/perl-corpus/fixtures/parser_accuracy/regex_match.pl",
       "label_mode": "partial",
-      "scored_lines": 4,
-      "scored_symbols": 2,
+      "scored_lines": 7,
+      "scored_symbols": 3,
       "fully_labeled_regions": 0,
       "partial_labeled_regions": 1,
       "unknown_regions": 1,
       "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "provider_expectation_counts": {
+        "method_completion": 0,
+        "diagnostics": 0,
+        "navigation": 0
+      }
+    },
+    {
+      "id": "slash_ambiguity",
+      "family": "slash_ambiguity",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/slash_ambiguity.pl",
+      "label_mode": "full",
+      "scored_lines": 6,
+      "scored_symbols": 6,
+      "fully_labeled_regions": 1,
+      "partial_labeled_regions": 0,
+      "unknown_regions": 0,
+      "negative_regions": 1,
       "dynamic_boundaries": 0,
       "unsupported_constructs": 0,
       "real_project_file": false,
@@ -768,7 +810,7 @@
       "family": "quote_like",
       "source_path": "crates/perl-corpus/fixtures/parser_accuracy/quote_like.pl",
       "label_mode": "partial",
-      "scored_lines": 4,
+      "scored_lines": 6,
       "scored_symbols": 2,
       "fully_labeled_regions": 0,
       "partial_labeled_regions": 1,
@@ -1054,6 +1096,27 @@
       "provider_expectation_counts": {
         "method_completion": 0,
         "diagnostics": 8,
+        "navigation": 0
+      }
+    },
+    {
+      "id": "control_flow_core",
+      "family": "control_flow",
+      "source_path": "crates/perl-corpus/fixtures/parser_accuracy/control_flow_core.pl",
+      "label_mode": "partial",
+      "scored_lines": 2,
+      "scored_symbols": 7,
+      "fully_labeled_regions": 0,
+      "partial_labeled_regions": 1,
+      "unknown_regions": 1,
+      "negative_regions": 0,
+      "dynamic_boundaries": 0,
+      "unsupported_constructs": 0,
+      "real_project_file": false,
+      "generated": false,
+      "provider_expectation_counts": {
+        "method_completion": 0,
+        "diagnostics": 0,
         "navigation": 0
       }
     }

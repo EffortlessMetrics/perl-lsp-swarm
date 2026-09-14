@@ -409,7 +409,7 @@ fn payload_summary(kind: &NodeKind) -> PayloadSummary {
             push_bool(&mut parts, "has_filter_risk", *has_filter_risk);
         }
         NodeKind::PhaseBlock { phase, .. } => push_str(&mut parts, &mut truncated, "phase", phase),
-        NodeKind::DataSection { marker, body } => {
+        NodeKind::DataSection { marker, body, .. } => {
             push_str(&mut parts, &mut truncated, "marker", marker);
             if let Some(body) = body {
                 push_str(&mut parts, &mut truncated, "body", body);

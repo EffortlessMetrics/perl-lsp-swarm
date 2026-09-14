@@ -3922,16 +3922,17 @@ fn token_hard_reject_zone(token_type: &TokenType) -> Option<(HardRejectZone, boo
         TokenType::StringLiteral
         | TokenType::InterpolatedString(_)
         | TokenType::QuoteSingle
-        | TokenType::QuoteDouble
+        | TokenType::QuoteDouble(_)
         | TokenType::QuoteWords
         | TokenType::QuoteCommand => Some((HardRejectZone::StringLike, false, false)),
         TokenType::RegexMatch
         | TokenType::QuoteRegex
         | TokenType::Substitution
         | TokenType::Transliteration => Some((HardRejectZone::RegexLike, false, false)),
-        TokenType::HeredocBody(_) | TokenType::FormatBody(_) | TokenType::DataBody(_) => {
-            Some((HardRejectZone::HeredocBody, true, false))
-        }
+        TokenType::HeredocBody(_)
+        | TokenType::InterpolatedHeredocBody(_)
+        | TokenType::FormatBody(_)
+        | TokenType::DataBody(_) => Some((HardRejectZone::HeredocBody, true, false)),
         TokenType::Error(message)
             if message.contains("unterminated string") || message.contains("unclosed") =>
         {

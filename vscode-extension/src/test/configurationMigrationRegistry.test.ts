@@ -23,7 +23,8 @@ describe('public-beta configuration migration registry', () => {
         automatic_read_compatibility: false,
         explicit_write_allowed: false,
         security_trust_class: 'process_execution',
-        expiry_version_or_issue: '#7119',
+        compatibility_window: { kind: 'no_expiry' },
+        expiry_owner_issue: 7119,
         installed_proof_requirement: '#7841',
       }),
     ]);
@@ -43,7 +44,8 @@ describe('public-beta configuration migration registry', () => {
       old_scope: 'resource',
       automatic_read_compatibility: true,
       old_plus_new_conflict_policy: 'current_wins',
-      expiry_version_or_issue: '#9999',
+      compatibility_window: { kind: 'no_expiry' },
+      expiry_owner_issue: 9999,
       installed_proof_requirement: '#9998',
     });
 
@@ -52,6 +54,19 @@ describe('public-beta configuration migration registry', () => {
 
     expect(first).toBe(second);
     expect(first.indexOf('aaa_future_row')).toBeLessThan(first.indexOf('v017_mcp_servers_removed'));
+  });
+
+  test('serializes equivalent registries independently of object insertion order', () => {
+    const registry = cloneRegistry();
+    const row = registry.rows[0]!;
+    const reorderedRow = Object.fromEntries(Object.entries(row).reverse());
+    const reorderedRegistry = Object.fromEntries(
+      Object.entries({ ...registry, rows: [reorderedRow] }).reverse(),
+    ) as unknown as ConfigurationMigrationRegistry;
+
+    expect(serializeMigrationRegistry(reorderedRegistry)).toBe(
+      serializeMigrationRegistry(registry),
+    );
   });
 
   test('rejects duplicate exact historical subjects', () => {
@@ -65,6 +80,30 @@ describe('public-beta configuration migration registry', () => {
       'overlapping historical migration subject: perl-lsp.mcp.servers',
     );
   });
+
+  test.each(['target_release', 'source_public_release'] as const)(
+    'rejects an envelope missing required release identity %s',
+    (field) => {
+      const registry = cloneRegistry() as unknown as Record<string, unknown>;
+      delete registry[field];
+
+      expect(
+        validateMigrationRegistry(registry as unknown as ConfigurationMigrationRegistry),
+      ).toEqual(['migration registry envelope is missing or unsupported']);
+    },
+  );
+
+  test.each(['target_release', 'source_public_release'] as const)(
+    'rejects an envelope with malformed release identity %s',
+    (field) => {
+      const registry = cloneRegistry() as unknown as Record<string, unknown>;
+      registry[field] = 'not-a-version';
+
+      expect(
+        validateMigrationRegistry(registry as unknown as ConfigurationMigrationRegistry),
+      ).toEqual(['migration registry envelope is missing or unsupported']);
+    },
+  );
 
   test('rejects read or write compatibility for removed inert settings', () => {
     const registry = cloneRegistry();
@@ -124,6 +163,34 @@ describe('public-beta configuration migration registry', () => {
     expect(registry.rows[0]!.migration_disposition).toBe('removed_inert');
 
     expect(validateMigrationRegistry(registry)).toEqual([]);
+  });
+
+  test.each(['01.18.0', '0.18.0-01'])(
+    'rejects SemVer forms runtime cannot parse: %s',
+    (version) => {
+      const registry = cloneRegistry();
+      registry.rows[0] = {
+        ...registry.rows[0]!,
+        compatibility_window: {
+          kind: 'removed_in_extension_version',
+          version,
+          post_expiry_disposition: 'inert',
+        },
+      };
+
+      expect(validateMigrationRegistry(registry)).toContain(
+        'migration expiry version is not valid SemVer: v017_mcp_servers_removed',
+      );
+    },
+  );
+
+  test('rejects malformed rows without dereferencing their fields', () => {
+    const registry = cloneRegistry();
+    registry.rows = [null as never];
+
+    expect(validateMigrationRegistry(registry)).toEqual([
+      'migration row is missing required fields',
+    ]);
   });
 
   test('orders rows by code point rather than host collation', () => {

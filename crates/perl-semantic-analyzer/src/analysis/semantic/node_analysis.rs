@@ -18,6 +18,7 @@ use super::builtins::{
 };
 use super::hover::HoverInfo;
 use super::tokens::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
+use perl_semantic_facts::Confidence;
 
 impl SemanticAnalyzer {
     /// Analyze a node and generate semantic information
@@ -59,6 +60,9 @@ impl SemanticAnalyzer {
                         } else {
                             vec![format!("Attributes: {}", attributes.join(", "))]
                         },
+                        // Exact source-backed declaration at this location.
+                        confidence: Confidence::High,
+                        provenance: None,
                     };
 
                     self.hover_info.insert(variable.location, hover);
@@ -113,6 +117,9 @@ impl SemanticAnalyzer {
                             "Defined at line {}",
                             self.line_number(symbol.location.start)
                         )],
+                        // Exact source-backed declaration at this location.
+                        confidence: Confidence::High,
+                        provenance: None,
                     };
 
                     self.hover_info.insert(node.location, hover);
@@ -152,6 +159,9 @@ impl SemanticAnalyzer {
                         } else {
                             vec![format!("Attributes: {}", attributes.join(", "))]
                         },
+                        // Exact source-backed declaration at this location.
+                        confidence: Confidence::High,
+                        provenance: None,
                     };
 
                     self.hover_info.insert(node.location, hover);
@@ -183,6 +193,9 @@ impl SemanticAnalyzer {
                         signature: signature_str,
                         documentation: self.extract_sub_documentation(node.location.start, body),
                         details,
+                        // Exact source-backed declaration at this location.
+                        confidence: Confidence::High,
+                        provenance: None,
                     };
 
                     self.hover_info.insert(node.location, hover);
@@ -219,6 +232,9 @@ impl SemanticAnalyzer {
                     } else {
                         vec![format!("Attributes: {}", attributes.join(", "))]
                     },
+                    // Exact source-backed declaration at this location.
+                    confidence: Confidence::High,
+                    provenance: None,
                 };
                 self.hover_info.insert(node.location, hover);
 
@@ -277,6 +293,9 @@ impl SemanticAnalyzer {
                             signature: doc.signature.to_string(),
                             documentation: Some(doc.description.to_string()),
                             details: vec![],
+                            // Exact source-backed declaration at this location.
+                            confidence: Confidence::High,
+                            provenance: None,
                         };
 
                         self.hover_info.insert(node.location, hover);
@@ -305,6 +324,9 @@ impl SemanticAnalyzer {
                     signature: format!("package {}", name),
                     documentation,
                     details: vec![],
+                    // Exact source-backed declaration at this location.
+                    confidence: Confidence::High,
+                    provenance: None,
                 };
 
                 self.hover_info.insert(node.location, hover);
@@ -496,6 +518,9 @@ impl SemanticAnalyzer {
                             } else {
                                 vec![format!("Attributes: {}", attributes.join(", "))]
                             },
+                            // Exact source-backed declaration at this location.
+                            confidence: Confidence::High,
+                            provenance: None,
                         };
 
                         self.hover_info.insert(var.location, hover);
@@ -654,6 +679,9 @@ impl SemanticAnalyzer {
                             _ => Some(format!("Read from filehandle {}", fh)),
                         },
                         details: vec![],
+                        // Exact source-backed declaration at this location.
+                        confidence: Confidence::High,
+                        provenance: None,
                     };
                     self.hover_info.insert(node.location, hover);
                 } else {
@@ -662,6 +690,9 @@ impl SemanticAnalyzer {
                         signature: "<>".to_string(),
                         documentation: Some("Read from command-line files or STDIN".to_string()),
                         details: vec![],
+                        // Exact source-backed declaration at this location.
+                        confidence: Confidence::High,
+                        provenance: None,
                     };
                     self.hover_info.insert(node.location, hover);
                 }
@@ -955,6 +986,9 @@ impl SemanticAnalyzer {
                     signature: format!("format {} =", name),
                     documentation: None,
                     details: vec![],
+                    // Exact source-backed declaration at this location.
+                    confidence: Confidence::High,
+                    provenance: None,
                 };
                 self.hover_info.insert(node.location, hover);
             }
@@ -1012,6 +1046,9 @@ impl SemanticAnalyzer {
                     } else {
                         vec![format!("Attributes: {}", attributes.join(", "))]
                     },
+                    // Exact source-backed declaration at this location.
+                    confidence: Confidence::High,
+                    provenance: None,
                 };
                 self.hover_info.insert(node.location, hover);
             }

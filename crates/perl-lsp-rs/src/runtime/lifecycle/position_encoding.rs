@@ -98,7 +98,7 @@ impl LspServer {
         *self.position_encoding_session_context.lock()
     }
 
-    pub(super) fn publish_position_encoding_session_context(&self) {
+    pub(crate) fn publish_position_encoding_session_context(&self) {
         *self.position_encoding_session_context.lock() =
             Some(PositionEncodingSessionContext::COMPATIBILITY_PINNED_UTF16);
     }

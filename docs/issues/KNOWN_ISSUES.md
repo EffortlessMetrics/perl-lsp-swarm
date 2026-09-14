@@ -105,13 +105,14 @@ if ($string =~ /^(a+)+b$/) { }  # Hangs for seconds to minutes
 
 **Current Mitigation**
 
-The lexer implements multiple protections:
+The lexer implements multiple protections, and the parser adds one budget
+of its own:
 
-| Protection | Value | Purpose |
-|------------|-------|---------|
-| `MAX_REGEX_BYTES` | 64KB | Limits regex pattern size |
-| `MAX_DELIM_NEST` | 128 | Limits delimiter nesting depth |
-| `HEREDOC_TIMEOUT_MS` | 5000ms | Timeout for heredoc parsing |
+| Protection | Owner | Value | Purpose |
+|------------|-------|-------|---------|
+| `MAX_REGEX_BYTES` | `perl-lexer` | 64KB | Limits regex pattern size |
+| `MAX_DELIM_NEST` | `perl-lexer` | 128 | Limits delimiter nesting depth |
+| `ParseBudget::max_heredoc_scan_bytes` | `perl-parser-core` | 64 MiB | Deterministic budget for heredoc body collection |
 
 **Attack Vectors**
 

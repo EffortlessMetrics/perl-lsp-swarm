@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! End-to-end registry-backed Mojo::Base activation/profile proof (#9681).
 //!
 //! Drives the #6820 checked SDK surface through the Mojo::Base adapter in

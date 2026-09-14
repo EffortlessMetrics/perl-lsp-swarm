@@ -350,6 +350,8 @@ impl DebugAdapter {
 
 #[cfg(test)]
 mod tests {
+    use super::super::operation_broker::OperationBroker;
+    use super::super::patterns::DEBUGGER_FRAME_POLL_MS;
     use super::super::*;
     use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
     use std::thread;
@@ -553,10 +555,14 @@ mod tests {
             let mut saw_begin = false;
             for line in &lines {
                 if !saw_begin {
-                    if DebugAdapter::line_contains_full_marker(&line.normalized, "DAP_BEGIN_900") {
+                    if OperationBroker::line_contains_full_marker(&line.normalized, "DAP_BEGIN_900")
+                    {
                         saw_begin = true;
                     }
-                } else if DebugAdapter::line_contains_full_marker(&line.normalized, "DAP_END_900") {
+                } else if OperationBroker::line_contains_full_marker(
+                    &line.normalized,
+                    "DAP_END_900",
+                ) {
                     break;
                 }
             }
@@ -1044,7 +1050,7 @@ mod tests {
         adapter.push_recent_output_line_for_test("main::(/test/file1.pl:4):");
         adapter.push_recent_output_line_for_test("main::(/test/file2.pl:5):");
 
-        let response = adapter.handle_stack_trace(1, 1, None);
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
         match response {
             DapMessage::Response { body: Some(body), .. } => {
                 if let Ok(trace_response) =
