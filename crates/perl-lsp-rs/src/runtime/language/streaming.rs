@@ -274,6 +274,11 @@ impl LspServer {
         // Track whether the one terminal frame has been emitted from inside the
         // stream, so the tail below knows whether it still owns the terminal.
         let mut sent_final = false;
+        // Track whether the backend was stopped because an *intermediate* frame
+        // never reached the client. A compliant backend honours that `Stop` and
+        // returns `Ok`, so `stream_result` alone cannot tell this truncation
+        // apart from a clean end of stream.
+        let mut aborted_before_final = false;
         let debounce = Duration::from_millis(streaming_debounce_ms);
         let mut last_emitted_at: Option<Instant> = None;
 
@@ -387,9 +392,23 @@ impl LspServer {
                     // available and, for a final chunk, the stream has *not*
                     // reached its terminal. Stop pulling from the backend and
                     // let the tail owner below attempt the terminal once more.
+                    //
+                    // For a *non-final* chunk this `Stop` truncates the backend
+                    // mid-generation, so the cumulative text the tail would find
+                    // is a prefix of the suggestion the provider was still
+                    // writing. Record that, or the tail cannot distinguish it
+                    // from a complete result that simply arrived without an
+                    // explicit final chunk.
+                    if !is_final {
+                        aborted_before_final = true;
+                    }
                     return perl_lsp_rs_core::providers::inline_completion::StreamControl::Stop;
                 }
                 session.commit_sequence();
+                // A backend that ignores `Stop` and keeps producing can still
+                // reach a clean end of stream; a later delivered frame leaves no
+                // undelivered truncation behind.
+                aborted_before_final = false;
                 last_emitted_at = Some(Instant::now());
 
                 if is_final {
@@ -443,6 +462,18 @@ impl LspServer {
                     Vec::new()
                 };
                 (StreamTerminalOutcome::BackendFailed, items)
+            } else if aborted_before_final {
+                // The backend was stopped because an intermediate frame could
+                // not be delivered, so `current_text` is a truncated prefix of
+                // an unfinished generation. Promoting it here would present an
+                // incomplete suggestion as a complete one -- the same dishonesty
+                // the backend-failure branch above refuses. Deterministic
+                // fallback is not substituted either: this is a transport
+                // condition, not the provider policy that owns that decision.
+                //
+                // The empty final still goes out so the client drops the partial
+                // ghost text it is already displaying instead of stranding it.
+                (StreamTerminalOutcome::ProtocolEndedWithoutFinal, Vec::new())
             } else {
                 // A clean end-of-stream without an explicit final chunk:
                 // evaluate the terminal cumulative text through the same shared
