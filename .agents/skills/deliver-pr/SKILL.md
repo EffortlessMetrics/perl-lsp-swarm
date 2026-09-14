@@ -161,3 +161,5 @@ Update the root-held claim frame with `RECONCILED`, `IN_FLIGHT`, `PARTIAL`,
 is current, the durable issue/PR subject, and the next material route or wake event.
 Return to `$deliver-goal` or the caller when the current claim has no immediately useful
 root work.
+
+> Self-authored reversible corrections follow the canonical [correction and disclosure contract](../../../docs/agents/DEVELOPMENT_METHOD.md); this reference does not override higher-precedence instructions.

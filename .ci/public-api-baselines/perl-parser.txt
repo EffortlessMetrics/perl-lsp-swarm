@@ -589,7 +589,7 @@ pub perl_parser::heredoc_anti_patterns::AntiPattern::EvalStringHeredoc
 pub perl_parser::heredoc_anti_patterns::AntiPattern::EvalStringHeredoc::location: perl_parser::heredoc_anti_patterns::Location
 pub perl_parser::heredoc_anti_patterns::AntiPattern::FormatHeredoc
 pub perl_parser::heredoc_anti_patterns::AntiPattern::FormatHeredoc::format_name: alloc::string::String
-pub perl_parser::heredoc_anti_patterns::AntiPattern::FormatHeredoc::heredoc_delimiter: alloc::string::String
+pub perl_parser::heredoc_anti_patterns::AntiPattern::FormatHeredoc::heredoc_delimiter: perl_parser::heredoc_anti_patterns::HeredocDelimiter
 pub perl_parser::heredoc_anti_patterns::AntiPattern::FormatHeredoc::location: perl_parser::heredoc_anti_patterns::Location
 pub perl_parser::heredoc_anti_patterns::AntiPattern::RegexCodeBlockHeredoc
 pub perl_parser::heredoc_anti_patterns::AntiPattern::RegexCodeBlockHeredoc::location: perl_parser::heredoc_anti_patterns::Location
@@ -599,9 +599,56 @@ pub perl_parser::heredoc_anti_patterns::AntiPattern::SourceFilterHeredoc::module
 pub perl_parser::heredoc_anti_patterns::AntiPattern::TiedHandleHeredoc
 pub perl_parser::heredoc_anti_patterns::AntiPattern::TiedHandleHeredoc::handle_name: alloc::string::String
 pub perl_parser::heredoc_anti_patterns::AntiPattern::TiedHandleHeredoc::location: perl_parser::heredoc_anti_patterns::Location
+pub fn perl_parser::heredoc_anti_patterns::AntiPattern::offset(&self) -> usize
 pub fn perl_parser::heredoc_anti_patterns::AntiPattern::clone(&self) -> perl_parser::heredoc_anti_patterns::AntiPattern
 pub fn perl_parser::heredoc_anti_patterns::AntiPattern::eq(&self, other: &perl_parser::heredoc_anti_patterns::AntiPattern) -> bool
 pub fn perl_parser::heredoc_anti_patterns::AntiPattern::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser::heredoc_anti_patterns::DetectionStatus
+pub perl_parser::heredoc_anti_patterns::DetectionStatus::Complete
+pub perl_parser::heredoc_anti_patterns::DetectionStatus::Partial
+pub perl_parser::heredoc_anti_patterns::DetectionStatus::Unavailable
+pub fn perl_parser::heredoc_anti_patterns::DetectionStatus::as_str(self) -> &'static str
+pub fn perl_parser::heredoc_anti_patterns::DetectionStatus::clone(&self) -> perl_parser::heredoc_anti_patterns::DetectionStatus
+pub fn perl_parser::heredoc_anti_patterns::DetectionStatus::eq(&self, other: &perl_parser::heredoc_anti_patterns::DetectionStatus) -> bool
+pub fn perl_parser::heredoc_anti_patterns::DetectionStatus::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser::heredoc_anti_patterns::DetectorFailureReason
+pub perl_parser::heredoc_anti_patterns::DetectorFailureReason::PatternUnavailable
+pub perl_parser::heredoc_anti_patterns::DetectorFailureReason::PatternUnavailable::pattern_ids: alloc::vec::Vec<&'static str>
+pub fn perl_parser::heredoc_anti_patterns::DetectorFailureReason::clone(&self) -> perl_parser::heredoc_anti_patterns::DetectorFailureReason
+pub fn perl_parser::heredoc_anti_patterns::DetectorFailureReason::eq(&self, other: &perl_parser::heredoc_anti_patterns::DetectorFailureReason) -> bool
+pub fn perl_parser::heredoc_anti_patterns::DetectorFailureReason::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser::heredoc_anti_patterns::DetectorId
+pub perl_parser::heredoc_anti_patterns::DetectorId::BeginTimeHeredoc
+pub perl_parser::heredoc_anti_patterns::DetectorId::DynamicDelimiter
+pub perl_parser::heredoc_anti_patterns::DetectorId::EvalString
+pub perl_parser::heredoc_anti_patterns::DetectorId::FormatHeredoc
+pub perl_parser::heredoc_anti_patterns::DetectorId::RegexCodeBlock
+pub perl_parser::heredoc_anti_patterns::DetectorId::SourceFilter
+pub perl_parser::heredoc_anti_patterns::DetectorId::TiedHandle
+pub fn perl_parser::heredoc_anti_patterns::DetectorId::as_str(self) -> &'static str
+pub fn perl_parser::heredoc_anti_patterns::DetectorId::clone(&self) -> perl_parser::heredoc_anti_patterns::DetectorId
+pub fn perl_parser::heredoc_anti_patterns::DetectorId::cmp(&self, other: &perl_parser::heredoc_anti_patterns::DetectorId) -> core::cmp::Ordering
+pub fn perl_parser::heredoc_anti_patterns::DetectorId::eq(&self, other: &perl_parser::heredoc_anti_patterns::DetectorId) -> bool
+pub fn perl_parser::heredoc_anti_patterns::DetectorId::partial_cmp(&self, other: &perl_parser::heredoc_anti_patterns::DetectorId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_parser::heredoc_anti_patterns::DetectorId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser::heredoc_anti_patterns::DetectorId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub enum perl_parser::heredoc_anti_patterns::DetectorState
+pub perl_parser::heredoc_anti_patterns::DetectorState::Complete
+pub perl_parser::heredoc_anti_patterns::DetectorState::Limited
+pub perl_parser::heredoc_anti_patterns::DetectorState::Limited::reason: perl_parser::heredoc_anti_patterns::DetectorFailureReason
+pub perl_parser::heredoc_anti_patterns::DetectorState::Unavailable
+pub perl_parser::heredoc_anti_patterns::DetectorState::Unavailable::reason: perl_parser::heredoc_anti_patterns::DetectorFailureReason
+pub fn perl_parser::heredoc_anti_patterns::DetectorState::ran(&self) -> bool
+pub fn perl_parser::heredoc_anti_patterns::DetectorState::clone(&self) -> perl_parser::heredoc_anti_patterns::DetectorState
+pub fn perl_parser::heredoc_anti_patterns::DetectorState::eq(&self, other: &perl_parser::heredoc_anti_patterns::DetectorState) -> bool
+pub fn perl_parser::heredoc_anti_patterns::DetectorState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_parser::heredoc_anti_patterns::HeredocDelimiter
+pub perl_parser::heredoc_anti_patterns::HeredocDelimiter::Extracted(alloc::string::String)
+pub perl_parser::heredoc_anti_patterns::HeredocDelimiter::Unavailable
+pub perl_parser::heredoc_anti_patterns::HeredocDelimiter::Unknown
+pub fn perl_parser::heredoc_anti_patterns::HeredocDelimiter::clone(&self) -> perl_parser::heredoc_anti_patterns::HeredocDelimiter
+pub fn perl_parser::heredoc_anti_patterns::HeredocDelimiter::eq(&self, other: &perl_parser::heredoc_anti_patterns::HeredocDelimiter) -> bool
+pub fn perl_parser::heredoc_anti_patterns::HeredocDelimiter::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser::heredoc_anti_patterns::Severity
 pub perl_parser::heredoc_anti_patterns::Severity::Error
 pub perl_parser::heredoc_anti_patterns::Severity::Info
@@ -611,9 +658,25 @@ pub fn perl_parser::heredoc_anti_patterns::Severity::eq(&self, other: &perl_pars
 pub fn perl_parser::heredoc_anti_patterns::Severity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser::heredoc_anti_patterns::AntiPatternDetector
 pub fn perl_parser::heredoc_anti_patterns::AntiPatternDetector::detect_all(&self, code: &str) -> alloc::vec::Vec<perl_parser::heredoc_anti_patterns::Diagnostic>
+pub fn perl_parser::heredoc_anti_patterns::AntiPatternDetector::detect_all_report(&self, code: &str) -> perl_parser::heredoc_anti_patterns::DetectionReport
+pub fn perl_parser::heredoc_anti_patterns::AntiPatternDetector::format_detection_report(&self, detection: &perl_parser::heredoc_anti_patterns::DetectionReport) -> alloc::string::String
 pub fn perl_parser::heredoc_anti_patterns::AntiPatternDetector::format_report(&self, diagnostics: &[perl_parser::heredoc_anti_patterns::Diagnostic]) -> alloc::string::String
 pub fn perl_parser::heredoc_anti_patterns::AntiPatternDetector::new() -> Self
 pub fn perl_parser::heredoc_anti_patterns::AntiPatternDetector::default() -> Self
+pub struct perl_parser::heredoc_anti_patterns::DetectionReport
+pub perl_parser::heredoc_anti_patterns::DetectionReport::detectors: alloc::vec::Vec<perl_parser::heredoc_anti_patterns::DetectorObservation>
+pub perl_parser::heredoc_anti_patterns::DetectionReport::diagnostics: alloc::vec::Vec<perl_parser::heredoc_anti_patterns::Diagnostic>
+pub perl_parser::heredoc_anti_patterns::DetectionReport::status: perl_parser::heredoc_anti_patterns::DetectionStatus
+pub fn perl_parser::heredoc_anti_patterns::DetectionReport::is_complete_clean(&self) -> bool
+pub fn perl_parser::heredoc_anti_patterns::DetectionReport::clone(&self) -> perl_parser::heredoc_anti_patterns::DetectionReport
+pub fn perl_parser::heredoc_anti_patterns::DetectionReport::eq(&self, other: &perl_parser::heredoc_anti_patterns::DetectionReport) -> bool
+pub fn perl_parser::heredoc_anti_patterns::DetectionReport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser::heredoc_anti_patterns::DetectorObservation
+pub perl_parser::heredoc_anti_patterns::DetectorObservation::id: perl_parser::heredoc_anti_patterns::DetectorId
+pub perl_parser::heredoc_anti_patterns::DetectorObservation::state: perl_parser::heredoc_anti_patterns::DetectorState
+pub fn perl_parser::heredoc_anti_patterns::DetectorObservation::clone(&self) -> perl_parser::heredoc_anti_patterns::DetectorObservation
+pub fn perl_parser::heredoc_anti_patterns::DetectorObservation::eq(&self, other: &perl_parser::heredoc_anti_patterns::DetectorObservation) -> bool
+pub fn perl_parser::heredoc_anti_patterns::DetectorObservation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser::heredoc_anti_patterns::Diagnostic
 pub perl_parser::heredoc_anti_patterns::Diagnostic::explanation: alloc::string::String
 pub perl_parser::heredoc_anti_patterns::Diagnostic::message: alloc::string::String

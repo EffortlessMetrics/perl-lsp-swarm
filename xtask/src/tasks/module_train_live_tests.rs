@@ -34,12 +34,28 @@ fn loaded() -> Result<LoadedManifest> {
     load_manifest()
 }
 
+fn probe() -> Result<(RepoTreeSource, Option<String>)> {
+    Ok((RepoTreeSource::from_project_root()?, Some(current_head()?)))
+}
+
+/// HEAD of the executing checkout, so a test can build a coherent probe.
+fn current_head() -> Result<String> {
+    Ok(tree_binding("HEAD")?.tree_head)
+}
+
 fn normalize_raw(raw: &RawObservation) -> Result<LiveSnapshot> {
-    normalize(raw, &loaded()?)
+    let (source, head) = probe()?;
+    normalize(raw, &loaded()?, &TreeProbe { source: &source, head, dirty: false })
 }
 
 fn normalize_text(text: &str) -> Result<LiveSnapshot> {
-    normalize(&raw_from_text(text)?, &loaded()?)
+    normalize_raw(&raw_from_text(text)?)
+}
+
+fn normalize_clean_surface() -> Result<LiveSnapshot> {
+    let mut raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    normalize_raw(&raw)
 }
 
 fn node<'a>(snapshot: &'a LiveSnapshot, node_id: &str) -> Result<&'a NodeLive> {
@@ -77,6 +93,147 @@ fn open_candidate() -> CandidateView {
         head_oid: "dddddddddddddddddddddddddddddddddddddddd".to_string(),
         ..CandidateView::default()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Probed-tree identity (#11626 review finding on #15094).
+// ---------------------------------------------------------------------------
+
+/// A stored fixture records a synthetic head, so its observation never
+/// describes the executing checkout. The join is still emitted, but every node
+/// must say the implementation states came from a different tree.
+#[test]
+fn a_fixture_observation_marks_its_states_as_probed_from_another_tree() -> Result<()> {
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    for node in &snapshot.semantic.nodes {
+        assert!(
+            node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE),
+            "node {} must record the probed-tree mismatch: {:?}",
+            node.node_id,
+            node.limitations
+        );
+    }
+    Ok(())
+}
+
+/// The opposite direction: when the observation's head IS the probed tree, no
+/// node carries the limitation. Without this the assertion above would pass on
+/// an implementation that always sets it.
+#[test]
+fn a_coherent_observation_carries_no_probed_tree_limitation() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    let snapshot = normalize_raw(&raw)?;
+    for node in &snapshot.semantic.nodes {
+        assert!(
+            !node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE),
+            "node {} must not claim a mismatch when heads agree: {:?}",
+            node.node_id,
+            node.limitations
+        );
+    }
+    Ok(())
+}
+
+/// A matching HEAD is insufficient when the probe reads a mutable working
+/// tree: dirty content cannot be shown equivalent to the commit-only record.
+#[test]
+fn a_dirty_probe_fails_closed_even_when_heads_agree() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    let (source, head) = probe()?;
+    let snapshot = normalize(&raw, &loaded()?, &TreeProbe { source: &source, head, dirty: true })?;
+    if !snapshot
+        .semantic
+        .nodes
+        .iter()
+        .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE))
+    {
+        color_eyre::eyre::bail!("dirty probe must fail closed even when HEADs agree");
+    }
+    if node(&snapshot, "M07A")?.action != "NOT_PROVEN" {
+        color_eyre::eyre::bail!("dirty probe must gate tree-dependent START actions");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_dirty_manifest_fails_closed_even_without_dirty_path_rows() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    raw.git_local.manifest_dirty = true;
+    let (source, head) = probe()?;
+    let snapshot = normalize(&raw, &loaded()?, &TreeProbe { source: &source, head, dirty: false })?;
+    if !snapshot
+        .semantic
+        .nodes
+        .iter()
+        .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE))
+    {
+        color_eyre::eyre::bail!("manifest-dirty observation must fail closed");
+    }
+    Ok(())
+}
+
+/// An unestablishable probed head fails closed rather than silently claiming
+/// the observation and the tree agree.
+#[test]
+fn an_unknown_probed_head_fails_closed() -> Result<()> {
+    let mut raw = raw_from_text(CORPUS_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
+    let (source, _) = probe()?;
+    let snapshot =
+        normalize(&raw, &loaded()?, &TreeProbe { source: &source, head: None, dirty: false })?;
+    assert!(
+        snapshot
+            .semantic
+            .nodes
+            .iter()
+            .all(|node| node.limitations.iter().any(|l| l == PROBED_FROM_A_DIFFERENT_TREE)),
+        "an unknown probed head must not read as agreement"
+    );
+    if node(&snapshot, "M07A")?.action != "NOT_PROVEN" {
+        color_eyre::eyre::bail!("an unknown probed head must gate tree-dependent START actions");
+    }
+    Ok(())
+}
+
+#[test]
+fn mismatched_tree_gates_start_but_keeps_candidate_action() -> Result<()> {
+    let mut mismatched_raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    mismatched_raw.git_local.head = Some("f".repeat(40));
+    let snapshot = normalize_raw(&mismatched_raw)?;
+    let start_leaf = node(&snapshot, "M07A")?;
+    if start_leaf.action != "NOT_PROVEN"
+        || !start_leaf
+            .limitations
+            .iter()
+            .any(|limitation| limitation == PROBED_FROM_A_DIFFERENT_TREE)
+        || start_leaf.c02_state != "not_proven"
+        || start_leaf.c02_reasons != vec![PROBED_FROM_A_DIFFERENT_TREE.to_string()]
+    {
+        color_eyre::eyre::bail!(
+            "a mismatched ready leaf must not START: action={} limitations={:?}",
+            start_leaf.action,
+            start_leaf.limitations
+        );
+    }
+    let explain = render_explain(&snapshot, &loaded()?, "M07A")?;
+    let expected_state = format!("c02_state: not_proven reasons={PROBED_FROM_A_DIFFERENT_TREE}");
+    if !explain.contains(&expected_state) || explain.contains("c02_state: ready") {
+        color_eyre::eyre::bail!(
+            "mismatched-tree explain must expose the effective NOT_PROVEN state: {explain}"
+        );
+    }
+    let candidate_snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let candidate = node(&candidate_snapshot, "M01")?;
+    if candidate.action != "REVIEW" {
+        color_eyre::eyre::bail!(
+            "a candidate-only review action should remain actionable: {}",
+            candidate.action
+        );
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +316,9 @@ fn read_only_shapes_pass_the_gate() {
     assert!(args_read_only("git", &["status", "--porcelain"]));
     assert!(args_read_only("git", &["for-each-ref", "refs/heads/"]));
     assert!(args_read_only("git", &["ls-remote", "origin", "refs/heads/*"]));
-    assert!(args_read_only("git", &["merge-base", "--is-ancestor", "a", "HEAD"]));
+    // No merge-base shape: ancestry resolves through the shared
+    // `xtask::git_ancestry` authority now, not through an observation spawn
+    // (#14557), so the read-only allowlist no longer carries it.
     assert!(args_read_only("git", &["worktree", "list", "--porcelain"]));
     assert!(args_read_only("git", &["remote", "get-url", "origin"]));
     assert!(args_read_only("gh", &["pr", "list", "--state", "open"]));
@@ -449,14 +608,16 @@ fn main_movement_alone_changes_no_action() -> Result<()> {
 fn corpus_classifies_every_expected_action() -> Result<()> {
     let snapshot = normalize_text(CORPUS_FIXTURE)?;
     let expect = [
-        ("C01", "WAIT", "landed_current_tree_no_writer_action"),
+        ("C01", "NOT_PROVEN", "c02_state_not_actionable:not_proven"),
         ("C02", "WAIT", "landed_current_tree_no_writer_action"),
-        ("C03", "BLOCKED", "hard_dep_not_landed:C02"),
+        // C03's implementation is on the tree and its semantic probe (#11626)
+        // now sees it, so it is landed rather than statically blocked on C02.
+        ("C03", "NOT_PROVEN", "c02_state_not_actionable:not_proven"),
         ("CTRL", "STOP", "controller_selected_as_implementation"),
         ("E00A", "REPAIR", "review_changes_requested"),
         ("E00C", "RECONCILE", "multiple_bound_candidates_need_bounded_ownership_decision"),
         ("M01", "REVIEW", "review_pending"),
-        ("M07A", "RECONCILE", "unique_work_surface:local_branch:wip/10573-context-contract"),
+        ("M07A", "NOT_PROVEN", "c02_state_not_actionable:not_proven"),
         ("M07B", "RECONCILE", "closed_candidate_unique_work_needs_salvage_decision"),
         ("M07C", "RECONCILE", "binding_agreement_failed_needs_bounded_ownership_decision"),
         ("L09A", "WAIT", "merge_commit_not_ancestor_of_observed_head"),
@@ -482,11 +643,16 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
         "merged-but-absent commit must stay pending-probe"
     );
     assert!(node(&snapshot, "C02")?.candidate_flags.contains(&"merged_current_tree".to_string()));
-    // Falsifier 7: stray issue closure/labels changed nothing (M01 still
-    // classified from the train + candidate facts; C03 still BLOCKED).
+    // Falsifier 7: stray issue closure/labels changed nothing — M01 and C03
+    // are still classified from the train + candidate facts alone. C03's
+    // action follows its #11626 current-tree probe, never its issue state.
     let m01 = node(&snapshot, "M01")?;
     assert_eq!(m01.action, "REVIEW");
-    assert!(node(&snapshot, "C03")?.action == "BLOCKED");
+    assert_eq!(
+        node(&snapshot, "C03")?.action,
+        "NOT_PROVEN",
+        "C03 cannot use a mismatched current-tree probe"
+    );
     // Surfaces are diagnostics that never outvote the candidate: M01 keeps its
     // remote surface while its action stays REVIEW.
     assert!(m01.surfaces.iter().any(|surface| surface.kind == "remote_branch"));
@@ -509,7 +675,7 @@ fn corpus_classifies_every_expected_action() -> Result<()> {
 
 #[test]
 fn clean_surface_fixture_start_and_unbound_surface_reconcile() -> Result<()> {
-    let snapshot = normalize_text(CLEAN_SURFACE_FIXTURE)?;
+    let snapshot = normalize_clean_surface()?;
     // A pushed, clean, name-associated branch is an ownership decision, not a
     // silent START (the branch may be this node's unique work).
     let m01 = node(&snapshot, "M01")?;
@@ -579,7 +745,7 @@ fn snapshot_validation_detects_tampering() -> Result<()> {
         .iter()
         .position(|node| node.node_id == "M07A")
         .ok_or_else(|| color_eyre::eyre::eyre!("M07A present"))?;
-    drift.semantic.nodes[index].action = "MERGE_READY_RECOMMENDATION".to_string();
+    drift.semantic.nodes[index].action = "START".to_string();
     let semantic_value = serde_json::to_value(&drift.semantic)?;
     drift.semantic_digest = canonical_digest(&semantic_value)?;
     let bytes = serde_json::to_vec(&drift)?;
@@ -590,6 +756,68 @@ fn snapshot_validation_detects_tampering() -> Result<()> {
         .err()
         .ok_or_else(|| color_eyre::eyre::eyre!("stored action drift must fail validation"))?;
     assert!(error.to_string().contains("disagrees with re-derived"), "got: {error}");
+    Ok(())
+}
+
+#[test]
+fn cross_tree_validation_rejects_false_stored_state() -> Result<()> {
+    // Devin review, PR #15094: the validator substitutes honest not_proven
+    // values for cross-tree nodes during re-derivation; a snapshot rebuilt
+    // with a self-consistent digest around a false stored state must not be
+    // laundered through that substitution.
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let manifest = loaded()?;
+    let marker = "c02_implementation_probed_from_a_different_tree";
+
+    let mut forged = snapshot.clone();
+    // Mark every node (the producer's marker is snapshot-wide) and forge the
+    // false stored state on the first; the stored-state check must catch it.
+    for node in &mut forged.semantic.nodes {
+        node.limitations.push(marker.to_string());
+        node.limitations.sort();
+    }
+    let node = &mut forged.semantic.nodes[0];
+    node.c02_state = "ready".to_string();
+    node.c02_reasons = Vec::new();
+    let semantic_value = serde_json::to_value(&forged.semantic)?;
+    forged.semantic_digest = canonical_digest(&semantic_value)?;
+
+    let error = validate_snapshot(&forged, &manifest)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("false cross-tree state must fail validation"))?;
+    assert!(
+        error.to_string().contains("must record not_proven"),
+        "the failure must name the honest-record invariant, got: {error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn cross_tree_marker_must_be_snapshot_wide() -> Result<()> {
+    // Devin review, PR #15094: the producer computes the cross-tree condition
+    // once per snapshot, so a marker on only some nodes is itself evidence of
+    // a stale or tampered record — and an unmarked node would skip the
+    // stored-state check.
+    let snapshot = normalize_text(CORPUS_FIXTURE)?;
+    let manifest = loaded()?;
+    let marker = "c02_implementation_probed_from_a_different_tree";
+
+    // The corpus observation is cross-tree, so every node already carries the
+    // marker and the honest not_proven record. Removing the marker from one
+    // node creates the mixed set a stale or tampered producer would emit.
+    let mut forged = snapshot.clone();
+    let node = &mut forged.semantic.nodes[1];
+    node.limitations.retain(|limitation| limitation != marker);
+    let semantic_value = serde_json::to_value(&forged.semantic)?;
+    forged.semantic_digest = canonical_digest(&semantic_value)?;
+
+    let error = validate_snapshot(&forged, &manifest)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("a mixed marker set must fail validation"))?;
+    assert!(
+        error.to_string().contains("snapshot-wide"),
+        "the failure must name the uniformity invariant, got: {error}"
+    );
     Ok(())
 }
 
@@ -644,6 +872,7 @@ fn instrument_failures_are_not_proven_never_absence() -> Result<()> {
 #[test]
 fn git_remote_failure_degrades_only_remote_facts() -> Result<()> {
     let mut raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
     let record = serde_json::from_value::<InstrumentRecord>(serde_json::json!({
         "source": "test", "state": "failed", "detail": "forced by test"
     }))?;
@@ -671,6 +900,7 @@ fn gone_upstream_counts_as_unpushed_unique_work() -> Result<()> {
     // branch is unique work and must gate START exactly like any other
     // unpushed surface (falsifier 9 family).
     let mut raw = raw_from_text(CLEAN_SURFACE_FIXTURE)?;
+    raw.git_local.head = Some(current_head()?);
     raw.git_local.branches[0].upstream = Some("origin/tooling/8497-requests".to_string());
     raw.git_local.branches[0].ahead = Some(0);
     raw.git_local.branches[0].behind = None;
@@ -697,11 +927,11 @@ fn tracking_parser_recognizes_gone_and_mixed_forms() {
 }
 
 #[test]
-fn ancestry_probe_is_allowlist_gated_too() {
-    // The ancestry path is the one non-string adapter; it must reject any
-    // argument shape outside the read-only allowlist exactly like the choke
-    // point does (structural read-only law covers every spawn path). The
-    // hostile "oid" never reaches git: exit-1/0 would mean it spawned.
+fn ancestry_probe_rejects_hostile_oid_before_git() {
+    // The ancestry path resolves through the shared authority, but the oid
+    // shape gate stays in this module: the hostile "oid" never reaches any
+    // probe. A `ProbeFailed` carrying the refusal is the only acceptable
+    // outcome.
     match run_git_ancestry(Path::new("."), "abc; rm -rf /") {
         Ancestry::ProbeFailed(reason) => {
             assert!(
@@ -899,16 +1129,16 @@ fn written_snapshot_round_trips_through_check_next_explain() -> Result<()> {
     assert!(next.contains("M07A"));
     assert!(next.contains("at most one action per writer/conflict surface"));
     // START remains reachable on a clean frontier (clean-surface fixture).
-    let clean = normalize_text(CLEAN_SURFACE_FIXTURE)?;
+    let clean = normalize_clean_surface()?;
     let clean_next = render_next(&clean);
     assert!(
-        clean_next.contains("START (3)"),
+        clean_next.contains("START (2)"),
         "clean frontier must START its ready leaves: {clean_next}"
     );
 
     let explain = render_explain(&reloaded, &loaded()?, "C03")?;
     assert!(explain.contains("module-train live explain C03"));
-    assert!(explain.contains("action: BLOCKED"));
+    assert!(explain.contains("action: NOT_PROVEN"));
     assert!(explain.contains("closeout route"));
     assert!(render_explain(&reloaded, &loaded()?, "NOPE").is_err());
     Ok(())

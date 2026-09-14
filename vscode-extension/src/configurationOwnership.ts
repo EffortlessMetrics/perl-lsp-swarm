@@ -125,18 +125,14 @@ export const SETTING_OWNERSHIP: readonly SettingOwnership[] = [
     transport: 'local-only',
   },
   {
+    // `populateCreatedFiles` in extension.ts resolves the gate against each
+    // created URI, so a folder override selects the behaviour for files created
+    // in that folder (#14547). Local-only: the value never reaches the server.
     key: 'perl-lsp.autoPopulateNewFiles',
     manifestScope: 'resource',
-    semanticScope: 'client-session',
+    semanticScope: 'workspace-folder',
     owner: 'extension',
     transport: 'local-only',
-    defect: {
-      reason:
-        'Declared `resource`, but the file-creation listener reads ' +
-        "getConfiguration('perl-lsp') once without a created-file URI before " +
-        'iterating the event, so a folder override is never selected.',
-      owner: '#14447',
-    },
   },
   {
     key: 'perl-lsp.autoUpdate',
