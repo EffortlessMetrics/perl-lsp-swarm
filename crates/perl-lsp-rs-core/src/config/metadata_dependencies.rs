@@ -1756,10 +1756,15 @@ requires 'Kept#Tag'; # drop
 
     #[test]
     fn meta_yml_kind_boundary_discriminator() {
-        let open_keys: Vec<(usize, String)> =
-            vec![(0, "prereqs".to_string()), (2, "runtime".to_string())];
+        let with_prereqs = vec![(0, "prereqs".to_string()), (2, "runtime".to_string())];
+        let without_prereqs = vec![(0, "unrelated".to_string()), (2, "runtime".to_string())];
 
-        assert_eq!(meta_yml_kind(&open_keys, "requires"), "runtime.requires");
+        assert_eq!(meta_yml_kind(&with_prereqs, "requires"), "runtime.requires");
+        assert_eq!(meta_yml_kind(&without_prereqs, "requires"), "requires");
+        assert_ne!(
+            meta_yml_kind(&with_prereqs, "requires"),
+            meta_yml_kind(&without_prereqs, "requires"),
+        );
     }
 
     #[test]
@@ -1811,6 +1816,24 @@ requires 'Kept#Tag'; # drop
             "test.requires",
             DeclaredDependencySource::MetaYml,
         )));
+        Ok(())
+    }
+
+    #[test]
+    fn collect_from_file_ignores_unreadable_file() -> TestResult {
+        let temp = tempfile::TempDir::new()?;
+        let path = temp.path().join("missing-META.yml");
+        let sentinel = DeclaredDependency::new(
+            "Existing::Module",
+            Some("1.0"),
+            "runtime.requires",
+            DeclaredDependencySource::MetaYml,
+        );
+        let mut dependencies = vec![sentinel.clone()];
+
+        collect_from_file(&mut dependencies, &path, DeclaredDependencySource::MetaYml.extractor());
+
+        assert_eq!(dependencies, vec![sentinel]);
         Ok(())
     }
 }
