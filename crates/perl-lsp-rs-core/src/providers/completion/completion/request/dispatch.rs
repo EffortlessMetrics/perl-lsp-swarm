@@ -4,6 +4,7 @@ use super::super::{
     workspace, xs_api,
 };
 use super::CompletionFlow;
+use perl_lexer::{PerlLexer, TokenType};
 use perl_pragma::PragmaTracker;
 use perl_semantic_analyzer::symbol::SymbolKind;
 
@@ -471,16 +472,19 @@ fn complete_general_context(
     is_cancelled: &dyn Fn() -> bool,
 ) -> CompletionFlow {
     let (import_map, used_modules) = provider.import_state_at(context.position);
-    let keyword_set = keywords::keywords();
-    // Suppress statement keywords in expression positions to reduce noise.
-    // Statement keywords (package, sub, use, etc.) are only valid at the start
-    // of a statement. When the cursor follows =, [, (, {, comma, or an operator,
-    // we're in expression context and should not offer them. (UX_GAP_02)
+    // Value positions still admit expression-capable keywords (anonymous `sub`,
+    // `do`, `eval`) while suppressing statement-only ones (`package`, `use`,
+    // phasers, compound-statement openers). Statement positions get both sets.
+    // (#14844 — one boolean cannot express that split.)
     let in_expression_position = is_in_expression_position(source, context.prefix_start);
-    if !in_expression_position
-        && (context.prefix.is_empty() || provider.could_be_keyword(&context.prefix, keyword_set))
-    {
-        keywords::add_keyword_completions(completions, context, keyword_set);
+    let keyword_set = keywords::keywords_for_position(in_expression_position);
+    if context.prefix.is_empty() || provider.could_be_keyword(&context.prefix, keyword_set) {
+        keywords::add_keyword_completions(
+            completions,
+            context,
+            keyword_set,
+            in_expression_position,
+        );
         if is_cancelled() {
             return CompletionFlow::Cancelled;
         }
@@ -713,12 +717,53 @@ mod indirect_helper_tests {
         assert!(!is_in_expression_position("value ", 6));
         assert!(!is_in_expression_position("   ", 3));
     }
+
+    #[test]
+    fn flush_value_operators_are_expression_positions() {
+        assert!(is_in_expression_position("k =>", 4));
+        assert!(is_in_expression_position("k => ", 5));
+        assert!(is_in_expression_position("x ==", 4));
+        assert!(is_in_expression_position("x !=", 4));
+        assert!(is_in_expression_position("x <=", 4));
+        assert!(is_in_expression_position("x >=", 4));
+        assert!(is_in_expression_position("x =~", 4));
+        assert!(is_in_expression_position("x //", 4));
+    }
+
+    #[test]
+    fn semicolon_is_a_statement_position() {
+        assert!(!is_in_expression_position("foo;", 4));
+        assert!(!is_in_expression_position("foo; ", 5));
+        assert!(!is_in_expression_position("foo();\n", 7));
+    }
+
+    #[test]
+    fn c_style_for_semicolons_are_expression_positions() {
+        let cond = "for (my $i = 0; ";
+        let incr = "for (my $i = 0; $i < 10; ";
+        let flush = "for (my $i = 0;";
+        assert!(is_in_expression_position(cond, cond.len()));
+        assert!(is_in_expression_position(incr, incr.len()));
+        assert!(is_in_expression_position(flush, flush.len()));
+        assert!(is_in_expression_position("foreach (my $i = 0; ", 20));
+        let after_body_stmt = "for (my $i = 0; $i < 10; $i++) { foo;";
+        assert!(!is_in_expression_position(after_body_stmt, after_body_stmt.len()));
+        let paren_in_string = r#"for (my $x = "("; "#;
+        assert!(is_in_expression_position(paren_in_string, paren_in_string.len()));
+        let nested_do_block = "for (do { foo; ";
+        assert!(!is_in_expression_position(nested_do_block, nested_do_block.len()));
+        let quoted_for = r#"my $x = "for ("; "#;
+        assert!(!is_in_expression_position(quoted_for, quoted_for.len()));
+        let comment_for = "# for (\nmy $x = 1;";
+        assert!(!is_in_expression_position(comment_for, comment_for.len()));
+    }
 }
 
-/// Heuristic: detect if the cursor is in an expression position where statement
-/// keywords (package, sub, use, etc.) would be invalid. Returns true if the
-/// text immediately before the prefix suggests an expression context.
-/// (UX_GAP_02)
+/// Heuristic: detect if the cursor is in a value/expression position.
+/// Statement-only keywords (`package`, `use`, compound openers) are invalid
+/// there; expression-capable keywords (anonymous `sub`, `do`, `eval`) remain
+/// admissible. Returns true if the text immediately before the prefix suggests
+/// an expression context. (UX_GAP_02 / #14844)
 fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     if prefix_start == 0 {
         return false; // start of file — statement position
@@ -729,15 +774,98 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     let Some(last_char) = trimmed.chars().next_back() else {
         return false; // blank line — statement position
     };
-    // Expression indicators: assignment, list, operator contexts
+    // Expression indicators: assignment, list, operator contexts.
+    // Multi-character value operators (`=>`, `==`, `=~`, `//`, …) already end
+    // in one of these characters; they must stay expression positions even
+    // when the prefix is flush against the operator (#14844).
+    // `;` ends a statement unless it separates C-style `for (;;)` clauses,
+    // which are still term positions.
+    if last_char == ';' {
+        return c_style_for_header_owns_semicolon(trimmed);
+    }
     matches!(
         last_char,
-        '=' | ',' | ';' | '(' | '[' | '{' | '+' | '-' | '*' | '/' | '%' | '.' | '&' | '|' | '!' | '<' | '>' | '?' | ':' | '~' | '\\'
-    ) && !before.ends_with("=>") // fat comma is a key context, not expression
-    && !before.ends_with("==")
-    && !before.ends_with("!=")
-    && !before.ends_with("<=")
-    && !before.ends_with(">=")
-    && !before.ends_with("=~")
-    && !before.ends_with("//")
+        '=' | ','
+            | '('
+            | '['
+            | '{'
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '.'
+            | '&'
+            | '|'
+            | '!'
+            | '<'
+            | '>'
+            | '?'
+            | ':'
+            | '~'
+            | '\\'
+    )
+}
+
+/// True when `trimmed` ends at a `;` that separates C-style `for`/`foreach`
+/// header clauses rather than a completed statement.
+///
+/// Walks lexer tokens of the whole prefix so `for`/`foreach` inside strings or
+/// comments cannot open a header, parentheses inside literals are not
+/// delimiters, and `{` / `}` nesting keeps `do { foo; ` as a statement. Still a
+/// prefix heuristic: unusual `q()`/`qq()` delimiters and heredocs are not claimed.
+fn c_style_for_header_owns_semicolon(trimmed: &str) -> bool {
+    let Some(before_semi) = trimmed.strip_suffix(';') else {
+        return false;
+    };
+
+    let mut lexer = PerlLexer::new(before_semi);
+    let mut paren_depth: u32 = 0;
+    let mut brace_depth: u32 = 0;
+    let mut after_for_keyword = false;
+    // (paren depth of the header `(`, brace depth when that `(` opened)
+    let mut headers: Vec<(u32, u32)> = Vec::new();
+
+    while let Some(token) = lexer.next_token() {
+        if token.token_type.is_trivia() {
+            continue;
+        }
+        match &token.token_type {
+            TokenType::EOF => break,
+            TokenType::Keyword(name) if is_for_or_foreach(name) => {
+                after_for_keyword = true;
+            }
+            TokenType::LeftParen => {
+                paren_depth = paren_depth.saturating_add(1);
+                if after_for_keyword {
+                    headers.push((paren_depth, brace_depth));
+                }
+                after_for_keyword = false;
+            }
+            TokenType::RightParen => {
+                after_for_keyword = false;
+                paren_depth = paren_depth.saturating_sub(1);
+                while headers.last().is_some_and(|&(paren_open, _)| paren_open > paren_depth) {
+                    headers.pop();
+                }
+            }
+            TokenType::LeftBrace => {
+                after_for_keyword = false;
+                brace_depth = brace_depth.saturating_add(1);
+            }
+            TokenType::RightBrace => {
+                after_for_keyword = false;
+                brace_depth = brace_depth.saturating_sub(1);
+            }
+            _ => {
+                after_for_keyword = false;
+            }
+        }
+    }
+
+    headers.last().is_some_and(|&(_, brace_open)| brace_depth == brace_open)
+}
+
+fn is_for_or_foreach(name: &str) -> bool {
+    name == "for" || name == "foreach"
 }

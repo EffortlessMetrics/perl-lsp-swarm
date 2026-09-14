@@ -1,21 +1,23 @@
 //! Versioned native critic rule-proof manifest, checker, and status (#6973).
+//! Checker residuals beyond the four-rule pilot: #14560.
 
 mod digest;
 mod error;
 mod execute;
+mod mapping;
 mod model;
 mod status;
 mod validate;
 
 pub use digest::file_digest;
 pub use error::ProofError;
-pub use execute::execute_manifest;
+pub use execute::{EXECUTE_LIVE_OWNER_PATHS, execute_manifest};
 pub use model::{
-    EvidenceClass, FIXTURE_ROOT, MANIFEST_PATH, RuleProofManifest, SCHEMA_PATH, SCHEMA_VERSION,
-    STATUS_PATH, resolve_fixture_path,
+    EvidenceClass, FIXTURE_ROOT, MANIFEST_PATH, PILOT_RULES, RuleProofManifest, SCHEMA_PATH,
+    SCHEMA_VERSION, STATUS_PATH, resolve_fixture_path,
 };
 pub use status::{check_status, render_status, write_status};
-pub use validate::{PILOT_RULES, load_and_validate, validate_manifest_value};
+pub use validate::{load_and_validate, validate_manifest_value};
 
 use std::path::Path;
 

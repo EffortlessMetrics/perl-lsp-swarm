@@ -16,6 +16,8 @@ For an existing draft, inspect the named condition. Once complete, recheck the e
 
 Use the PR body as a review index covering claim, issue, contract, production path, proof, hardening, simplification, deviations, limits, risk, rollback, and review locations.
 
+Proportionality mirrors `review-pr`'s carve-out: a candidate whose cumulative diff is mechanical — generated regeneration, lint-site collapse, allowlist row removal, comment-only edits — may publish a reduced index of three sections: **Claim**, **Proof**, and **What this does not establish**. The full index remains the default for anything crossing a production seam.
+
 ## Enforcement status is part of the claim
 
 When a candidate adds or changes a gate, check, linting check, ratchet, or policy, state in the body whether it is **required** or **advisory**, and resolve that against live protection rather than intent. A body implying a gate blocks merge when it runs advisory overstates the claim, and the overstatement survives the merge as documentation.
@@ -36,11 +38,13 @@ by the author's next force-push, and the author's local head and the PR head div
 without either party noticing. All three are expensive precisely because the branch
 still looks like one coherent candidate.
 
-If a reviewer has already pushed, do not race it. Read what landed, verify it against
-observed behavior rather than assuming it is correct, and either adopt it — restating
-the proof, since a reviewer's push carries none — or replace it and say why in the
-thread. Step 8 of `address-review-comments` covers the same case: a reviewer-applied
-repair makes a new authored candidate whose affected review dimensions are invalid.
+Where another context has already pushed, first establish one writer before recovery
+mutation. That writer inspects and verifies the foreign change, fast-forwards when
+possible, and merges a true divergence so both published tips remain ancestors.
+Unwanted behavior is repaired with a new commit and an explanation in the thread;
+do not rebase away or force-push over a foreign commit. Applicable user and repository
+authorization still governs the operation. Re-prove the affected dimensions and
+refresh the affected review; a second writer receives no recovery exception.
 
 Recreating a closed PR is a different matter, and the first move is to try reopening
 it. A closed PR whose head and base branches both still exist normally reopens even

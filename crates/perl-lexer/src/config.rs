@@ -23,13 +23,18 @@ use crate::symbol_table::LocalSymbolTable;
 /// ```
 #[derive(Debug, Clone)]
 pub struct LexerConfig {
-    /// Split supported ordinary double-quoted strings into string parts.
+    /// Split interpolating string bodies into string parts (#8779).
     ///
-    /// When `false`, the ordinary double-quoted scanner emits one literal part
-    /// for a non-empty body instead of recognizing variable/expression islands.
-    /// The enclosing token text and byte span do not change. Quote-like `qq`
-    /// bodies are currently opaque whole tokens and therefore do not consume
-    /// this switch.
+    /// When `true`, ordinary double-quoted strings, `qq` bodies, and
+    /// interpolating heredoc bodies segment variable/expression islands out
+    /// of the literal run during the original body scan. When `false`, every
+    /// covered body keeps one opaque `StringPart::Literal` part instead —
+    /// disabled mode never leaks selected variable parts. Non-interpolating
+    /// forms (`q`, `qw`, `<<'EOF'`, `<<\EOF`) are invariant controls that
+    /// never consume the switch, and `qx`/backtick bodies are the intentional
+    /// command boundary that stays opaque under every configuration. The
+    /// enclosing token text and byte span do not change; quote/heredoc token
+    /// identity is retained.
     pub parse_interpolation: bool,
     /// Deprecated compatibility field: token byte spans are always tracked.
     ///
