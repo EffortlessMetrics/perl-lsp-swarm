@@ -575,6 +575,21 @@ pub fn mojo_base_object_facts(
             // the generated-member payload requires a real package identity.
             continue;
         }
+        // `Mojo::Base::attr` croaks at import when a default is a non-code
+        // reference: the accessor is never installed at all, not installed
+        // with an uncertain value. Admitting the declaration anyway would
+        // mint an accessor member and a determinate `ReceiverSelf` setter for
+        // a method that does not exist at runtime — the opposite of the fail
+        // closed posture this producer otherwise keeps. So an `Unsupported`
+        // default mints nothing for its own declaration, and it also never
+        // competes for a same-named slot below: `attr` never runs far enough
+        // to call `monkey_patch` for it, so it cannot be "the declaration
+        // that leaves the live accessor" for `live_declaration_index` either
+        // — a same-named sibling that a determinate default reaches is the
+        // only one that can still be live.
+        if matches!(declaration.default, MojoBaseAttributeDefault::Unsupported { .. }) {
+            continue;
+        }
         admitted.push((declaration, name));
     }
     let Some(owning_package) = package else {
@@ -862,8 +877,14 @@ fn reader_relation(
             ],
             BoundaryKind::DynamicValue,
         ),
-        // The only genuinely unsupported case: `Mojo::Base` rejects this
-        // default at runtime, so the reviewed profile models no result at all.
+        // The admission loop above already excludes an `Unsupported`
+        // declaration from `admitted`, so `mint_reader_fact` is never called
+        // with this variant in production: `Mojo::Base::attr` croaks at
+        // import for a non-code reference default, so no accessor — and no
+        // reader — is ever installed to describe. This arm stays only for
+        // exhaustive matching (`MojoBaseAttributeDefault` is matched
+        // elsewhere with no wildcard) and as the honest value this function
+        // would still owe if it were ever called on this variant directly.
         MojoBaseAttributeDefault::Unsupported { .. } => (
             CallableResultRelation::Unknown,
             vec![
@@ -1411,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_genuinely_unsupported_default_carries_an_unsupported_boundary() {
+    fn an_admitted_determinate_default_limits_the_reader_dynamically_not_as_unsupported() {
         let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
         let determinate = [
             MojoBaseAttributeDefault::Constant,
@@ -1431,11 +1452,51 @@ mod tests {
                 "the write contract is determinate and carries no boundary"
             );
         }
+    }
 
+    /// `Mojo::Base::attr` croaks at import for a non-code reference default,
+    /// so the accessor it would have installed never exists at runtime: an
+    /// `Unsupported` declaration must mint no member, reader, or setter at
+    /// all — not an accessor whose reader merely carries an `Unsupported`
+    /// boundary.
+    #[test]
+    fn an_unsupported_default_mints_no_member_reader_or_setter() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
         let unsupported = MojoBaseAttributeDefault::Unsupported { reason: "ref".to_string() };
-        let facts = mint_with_detection(&activation, &[declaration(1, "name", unsupported)]);
-        let boundary = must_some(facts.reader_results[0].envelope.boundary.as_ref());
-        assert_eq!(boundary.kind, BoundaryKind::Unsupported);
+        let facts = mint_with_detection(&activation, &[declaration(1, "broken", unsupported)]);
+        assert!(
+            facts.members.is_empty(),
+            "no accessor member for a default Mojo::Base::attr rejects at import"
+        );
+        assert!(
+            facts.reader_results.is_empty(),
+            "no reader for an accessor that was never installed"
+        );
+        assert!(
+            facts.setter_results.is_empty(),
+            "no setter for an accessor that was never installed"
+        );
+    }
+
+    /// The `Unsupported` exclusion is per-declaration, not per-activation: a
+    /// sibling `has` with a determinate default in the same package still
+    /// mints a member, reader, and setter even though an earlier declaration
+    /// in the same statement list is `Unsupported`.
+    #[test]
+    fn a_sibling_determinate_declaration_still_mints_beside_an_unsupported_one() {
+        let activation = exact_activation(MojoBaseActivationOutcome::ExactBaseActivation);
+        let unsupported = MojoBaseAttributeDefault::Unsupported { reason: "ref".to_string() };
+        let facts = mint_with_detection(
+            &activation,
+            &[
+                declaration(1, "broken", unsupported),
+                declaration(2, "ok", MojoBaseAttributeDefault::Constant),
+            ],
+        );
+        assert_eq!(facts.members.len(), 1, "only the determinate sibling mints a member");
+        assert_eq!(facts.members[0].member.name, "ok");
+        assert_eq!(facts.reader_results.len(), 1);
+        assert_eq!(facts.setter_results.len(), 1);
     }
 
     #[test]
