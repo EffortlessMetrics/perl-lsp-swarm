@@ -80,7 +80,7 @@ fn select_restart(
     if !live_checkpoint.try_apply_edit(edit.start_byte, old_len, edit.new_text.len()) {
         anyhow::bail!("Edit invalidated required live lexer state");
     }
-    Ok(SelectedRestart { old_prefix_bytes_replayed: live_checkpoint.position, live_checkpoint })
+    Ok(SelectedRestart { old_prefix_bytes_replayed: live_checkpoint.position(), live_checkpoint })
 }
 
 pub(crate) fn apply_single_edit(
@@ -91,7 +91,7 @@ pub(crate) fn apply_single_edit(
     let old_digest = ContentDigest::of_bytes(old_source.as_bytes());
 
     let selected = select_restart(&old_source, &old_digest, state, edit)?;
-    let restart_byte = selected.live_checkpoint.position;
+    let restart_byte = selected.live_checkpoint.position();
     let reused_prefix_tokens =
         state.tokens().iter().take_while(|token| token.start < restart_byte).count();
 

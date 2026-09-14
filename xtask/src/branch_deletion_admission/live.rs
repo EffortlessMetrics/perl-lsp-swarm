@@ -204,14 +204,45 @@ fn child_mergeability(mergeable: &str) -> Mergeability {
 fn collect_branch(commands: &dyn ReadOnlyCommands, remote: &str, branch: &str) -> BranchSubject {
     let reference = format!("refs/heads/{branch}");
     let Ok(output) = commands.capture("git", &["ls-remote", remote, &reference]) else {
-        return BranchSubject { current_sha: None };
+        return BranchSubject { local_ref: None, current_sha: None };
     };
     let sha = output
         .lines()
         .find_map(|line| line.split_whitespace().next())
         .filter(|sha| is_full_object_id(sha))
         .map(str::to_string);
-    BranchSubject { current_sha: sha }
+    BranchSubject { local_ref: None, current_sha: sha }
+}
+
+/// Read a local branch alias without consulting or mutating the remote.
+///
+/// The parent PR and child graph still come from the live remote admission;
+/// this subject only changes which local ref the final compare-and-delete
+/// leases. An unreadable alias remains `RETAIN_BRANCH_MOVED` through the same
+/// fail-closed branch subject used by normal admission.
+fn collect_local_branch(commands: &dyn ReadOnlyCommands, branch: &str) -> BranchSubject {
+    let reference = format!("refs/heads/{branch}");
+    if commands.capture("git", &["check-ref-format", &reference]).is_err() {
+        return BranchSubject { local_ref: Some(branch.to_string()), current_sha: None };
+    }
+    let Ok(ref_metadata) =
+        commands.capture("git", &["for-each-ref", "--format=%(refname)%00%(symref)", &reference])
+    else {
+        return BranchSubject { local_ref: Some(branch.to_string()), current_sha: None };
+    };
+    let Some((reported_ref, symref)) = ref_metadata.trim_end().split_once('\0') else {
+        return BranchSubject { local_ref: Some(branch.to_string()), current_sha: None };
+    };
+    if reported_ref != reference || !symref.is_empty() {
+        return BranchSubject { local_ref: Some(branch.to_string()), current_sha: None };
+    }
+    let sha = commands
+        .capture("git", &["rev-parse", "--verify", "--quiet", &reference])
+        .ok()
+        .and_then(|output| output.lines().find_map(|line| line.trim().parse().ok()))
+        .filter(|sha: &String| is_full_object_id(sha))
+        .map(|sha| sha.to_string());
+    BranchSubject { local_ref: Some(branch.to_string()), current_sha: sha }
 }
 
 /// Report whether any registered local worktree has `branch` checked out.
@@ -414,6 +445,22 @@ pub fn collect_request(
         },
         remote_identity,
     })
+}
+
+/// Build a live admission for a local branch alias whose tip is expected to
+/// equal the reviewed terminal PR head. The remote parent/child graph and
+/// repository identity remain the normal live subjects; only the leased local
+/// ref and its ownership are substituted.
+pub fn collect_request_for_local_alias(
+    commands: &dyn ReadOnlyCommands,
+    parent_number: u64,
+    remote: &str,
+    local_ref: &str,
+) -> Result<LiveCollection> {
+    let mut collection = collect_request(commands, parent_number, remote)?;
+    collection.request.branch = collect_local_branch(commands, local_ref);
+    collection.request.worktree_ownership = collect_worktree_ownership(commands, local_ref);
+    Ok(collection)
 }
 
 /// What one live collection observed.
