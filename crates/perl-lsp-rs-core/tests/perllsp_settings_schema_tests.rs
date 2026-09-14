@@ -222,7 +222,13 @@ fn generic_settings_schema_is_server_native_and_namespaced() -> Result<(), Box<d
 fn generic_formatter_schema_excludes_external_process_modes() -> Result<(), Box<dyn Error>> {
     let schema = load_schema()?;
     let engine = &schema["properties"]["perl"]["properties"]["formatting"]["properties"]["engine"];
-    assert_eq!(engine["enum"], json!(["native", "compat", "off"]));
+    // `compat` is deliberately absent (#7129): it was a bare alias for the
+    // native formatter, producing byte-identical output, so the public
+    // settings contract must not offer it as an engine to choose. The server
+    // still accepts the token for a bounded deprecation window — that is a
+    // migration affordance, not a supported value, and the schema is what
+    // tells a user what to pick.
+    assert_eq!(engine["enum"], json!(["native", "off"]));
     Ok(())
 }
 
@@ -277,7 +283,7 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
         "formatting": {
             "enabled": true,
             "formatOnSave": false,
-            "engine": "compat",
+            "engine": "off",
             "maximumLineLength": 100,
             "indentColumns": 2,
             "tabs": false,
@@ -318,7 +324,9 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     assert_eq!(server.perlcritic_severity, 4);
     assert_eq!(server.native_critic_profile, "strict");
     assert!(!server.format_on_save);
-    assert!(matches!(server.formatting_engine, FormatterMode::Compat));
+    // A non-default, schema-valid engine, so the assertion proves the field is
+    // actually read rather than matching the compiled default.
+    assert!(matches!(server.formatting_engine, FormatterMode::Off));
     assert_eq!(server.perltidy_maximum_line_length, Some(100));
     assert_eq!(server.perltidy_indent_columns, Some(2));
     assert_eq!(server.perltidy_tabs, Some(false));

@@ -155,7 +155,7 @@
             "formatOnSave": { "type": "boolean", "default": true },
             "engine": {
               "type": "string",
-              "enum": ["native", "compat", "off"],
+              "enum": ["native", "off"],
               "default": "native"
             },
             "maximumLineLength": { "type": "integer", "minimum": 0, "default": 80 },

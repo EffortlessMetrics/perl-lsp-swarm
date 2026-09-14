@@ -171,9 +171,16 @@ fn formatting_error_reason(error: &FormattingError) -> Value {
     }
 }
 
+/// Resolve the engine a requested mode actually executes.
+///
+/// Every [`FormatterMode`] must map to a distinct engine here. A mode that
+/// shares an engine with another mode is a bare alias — a public distinction
+/// the formatter cannot defend — which is exactly what `compat` was before
+/// #7129 retired it. `formatter_modes_resolve_to_distinct_engines` in
+/// `tests.rs` enforces that as a recurrence check.
 fn actual_engine_for_mode(mode: FormatterMode) -> &'static str {
     match mode {
-        FormatterMode::Native | FormatterMode::Compat => "native",
+        FormatterMode::Native => "native",
         FormatterMode::ExternalLegacy => "external_legacy",
         FormatterMode::Off => "disabled",
     }
