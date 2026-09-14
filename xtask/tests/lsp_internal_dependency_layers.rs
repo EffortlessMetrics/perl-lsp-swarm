@@ -61,6 +61,8 @@ const LAYERS: &[LayerRow] = &[
     layer!("refresh", AdapterPolicy),
     layer!("resolve_session", RuntimeProtocol),
     layer!("routing", AdapterPolicy),
+    layer!("runtime_services", ApplicationServices),
+    layer!("runtime_services_tests", ObservabilityTest),
     layer!("scan_gate_observation", ObservabilityTest),
     layer!("scheduler", RuntimeProtocol),
     layer!("serving", RuntimeProtocol),
