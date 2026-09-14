@@ -12,8 +12,10 @@ mod model;
 pub use body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
     DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirLoopLabel,
-    HirLoopRegionId, HirStmt, HirStmtId, HirSubscript, HirVariable, LoopControlResolution,
-    LoopControlVerb, Sigil, SubscriptKind, UnaryMode, VariableKind, lower_body,
+    HirLoopRegionId, HirRegex, HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript,
+    HirSubstitution, HirTransliteration, HirVariable, LoopControlResolution, LoopControlVerb,
+    RegexAnalysisAnchor, ReplacementEvaluation, Sigil, SubscriptKind, UnaryMode, VariableKind,
+    lower_body,
 };
 pub use lower::lower_ast;
 pub use model::{
