@@ -620,6 +620,14 @@ jobs:
       # tag (#9593). This receipt is written only after the sparse-index
       # verification above succeeded, and this job never runs for a dry run,
       # so its presence is evidence of a real publication.
+      #
+      # The payload carries `schema_version` so that a later shape change is
+      # something the consumer can refuse out loud. Without it, renaming a
+      # field left the reader with an empty string, which it turned into a
+      # green "nothing to verify" skip: the smoke test never ran and no one
+      # was told (#15332). The semver field is `release_version`, not
+      # `version`, so that reading `version` off this receipt cannot be
+      # mistaken for reading the envelope version.
       - name: Write publication receipt
         if: success()
         env:
@@ -635,7 +643,7 @@ jobs:
           fi
           mkdir -p receipt
           COUNT="$(printf '%s\n' "$CRATES_JSON" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-          printf '{"version":"%s","subject_sha":"%s","crate_count":%s,"publish_run_id":"%s"}\n' \
+          printf '{"schema_version":"publication_receipt.v1","release_version":"%s","subject_sha":"%s","crate_count":%s,"publish_run_id":"%s"}\n' \
             "$PUBLISHED_VERSION" "$SUBJECT_SHA" "$COUNT" "$RUN_ID" > receipt/publication-receipt.json
           cat receipt/publication-receipt.json
 

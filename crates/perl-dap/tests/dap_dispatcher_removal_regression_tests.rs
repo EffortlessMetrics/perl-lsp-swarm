@@ -26,7 +26,8 @@
 
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_tdd_support::{must, must_some};
-use serde_json::json;
+use serde_json::{Value, json};
+use std::error::Error;
 use std::io::Write;
 use std::sync::mpsc::sync_channel;
 use std::time::Duration;
@@ -146,14 +147,14 @@ fn successful_initialize_emits_initialized_event_with_no_body() {
 
 // --- setBreakpoints -----------------------------------------------------------
 
-/// Mirrors `dispatcher::tests::test_handle_set_breakpoints`: on a real
-/// Perl file, AST-valid lines must come back `verified: true`.
+/// On a real Perl file, AST-valid lines remain pending until the debugger
+/// acknowledges them after launch.
 ///
-/// Existing DebugAdapter coverage (e.g. `dap_comprehensive_test.rs`) only
-/// exercised the unverified path (non-existent source path). This pins the
-/// verified path through the same dispatch surface.
+/// This pins the prelaunch dispatch surface: static AST admission preserves
+/// both requested entries and their order, while publication remains
+/// explicitly unverified with the exact pending message.
 #[test]
-fn set_breakpoints_marks_executable_lines_verified() {
+fn set_breakpoints_marks_executable_lines_pending_before_launch() -> Result<(), Box<dyn Error>> {
     let (_keep, source_path) = create_test_perl_file();
     let mut adapter = DebugAdapter::new();
     let response = adapter.handle_request(
@@ -169,22 +170,47 @@ fn set_breakpoints_marks_executable_lines_verified() {
     );
 
     let body = match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "setBreakpoints should succeed");
-            assert_eq!(command, "setBreakpoints");
-            must_some(body)
+        DapMessage::Response { success: true, command, body, .. }
+            if command == "setBreakpoints" =>
+        {
+            body.ok_or("setBreakpoints response is missing its body")?
         }
-        other => must(Err::<serde_json::Value, _>(format!("expected Response, got {other:?}"))),
+        DapMessage::Response { success, command, .. } => {
+            return Err(format!("expected successful setBreakpoints response, got success={success}, command={command}").into());
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
     };
 
-    let breakpoints = must_some(body.get("breakpoints").and_then(|b| b.as_array()));
-    assert_eq!(breakpoints.len(), 2);
-    let line_10_verified =
-        breakpoints[0].get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
-    let line_25_verified =
-        breakpoints[1].get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
-    assert!(line_10_verified, "line 10 (executable) should be verified, got {breakpoints:?}");
-    assert!(line_25_verified, "line 25 (executable) should be verified, got {breakpoints:?}");
+    let breakpoints = body
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .ok_or("setBreakpoints response is missing its breakpoint array")?;
+    if breakpoints.len() != 2 {
+        return Err(format!("expected exactly two breakpoint results, got {breakpoints:?}").into());
+    }
+    for (breakpoint, expected_line) in breakpoints.iter().zip([10_i64, 25_i64]) {
+        let line = breakpoint.get("line").and_then(Value::as_i64);
+        if line != Some(expected_line) {
+            return Err(
+                format!("expected breakpoint line {expected_line}, got {breakpoint:?}").into()
+            );
+        }
+        if breakpoint.get("verified").and_then(Value::as_bool) != Some(false) {
+            return Err(format!(
+                "prelaunch breakpoint must be typed verified=false, got {breakpoint:?}"
+            )
+            .into());
+        }
+        if breakpoint.get("message").and_then(Value::as_str)
+            != Some("Breakpoint is pending debugger launch")
+        {
+            return Err(format!(
+                "prelaunch breakpoint must carry the exact pending message, got {breakpoint:?}"
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// Mirrors `dispatcher::tests::test_handle_set_breakpoints_preserves_order`:
