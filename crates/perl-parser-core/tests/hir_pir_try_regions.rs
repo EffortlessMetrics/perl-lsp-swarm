@@ -363,6 +363,46 @@ fn handler_and_finally_entry_are_not_fallthrough() {
     );
 }
 
+/// A try body that models no PIR node of its own must still leave its handler
+/// reachable.
+///
+/// `try { 1 }` has an opaque literal body that emits no PIR node, so the
+/// region's "last modeled node" — the ordinary edge source — does not exist.
+/// The handler must then fall back to the node control entered the try from.
+/// Without that fallback the handler region carries no incoming edge at all,
+/// which a CFG consumer reads as unreachable rather than as conditionally
+/// reached, and `PirEdgeKind::Unknown` exists precisely so such an edge is not
+/// dropped silently.
+#[test]
+fn handler_stays_reachable_when_try_body_models_no_node() {
+    let graph = lower_pir("sub f { my $x = 0; try { 1 } catch ($e) { $x = 2; } }");
+
+    let handler_entry = graph
+        .nodes
+        .iter()
+        .position(
+            |n| matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "e"),
+        )
+        .expect("catch binding must emit a write for $e");
+
+    let incoming: Vec<PirEdgeKind> = graph
+        .edges
+        .iter()
+        .filter(|e| e.to.is_some_and(|t| t.index() as usize == handler_entry))
+        .map(|e| e.kind)
+        .collect();
+
+    assert!(
+        incoming.contains(&PirEdgeKind::Unknown),
+        "a handler after a node-less try body must fall back to the try's entry predecessor \
+         rather than being orphaned; incoming = {incoming:?}"
+    );
+    assert!(
+        !incoming.contains(&PirEdgeKind::Fallthrough),
+        "the fallback must not claim ordinary control flow; incoming = {incoming:?}"
+    );
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 4. Support-claim ratchet
 // ──────────────────────────────────────────────────────────────────────────────
