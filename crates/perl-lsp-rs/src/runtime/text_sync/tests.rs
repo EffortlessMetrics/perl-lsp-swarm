@@ -82,13 +82,18 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
             character: 0,
         })
     };
-    let same_version_stream =
+    // The current-version control cannot be held alongside the obsolete
+    // predecessor: one document owns at most one live stream (#14133), so
+    // seeding the predecessor would supersede it. It is therefore exercised
+    // on its own below, against the same malformed payloads.
+    let start_current_version_stream = || {
         server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
             uri: uri.to_owned(),
             document_version: 2,
             line: 0,
             character: 0,
-        });
+        })
+    };
     let other_document_stream =
         server.stream_sessions().start_session(crate::runtime::stream_session::SessionKey {
             uri: "file:///other-document.pl".to_owned(),
@@ -96,11 +101,8 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
             line: 0,
             character: 0,
         });
-    if same_version_stream.is_cancelled()
-        || other_document_stream.is_cancelled()
-        || server.memory_state_snapshot().stream_sessions != 2
-    {
-        return Err("baseline control streams were not retained".into());
+    if other_document_stream.is_cancelled() || server.memory_state_snapshot().stream_sessions != 1 {
+        return Err("baseline control stream was not retained".into());
     }
     let predecessor_parse_token = server.new_parse_token(uri);
     if predecessor_parse_token.load(Ordering::Relaxed) {
@@ -114,8 +116,7 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
         json!([{"rangeLength": null, "text": "my $x = 2;\n"}]),
         json!([{"range": null, "text": "my $x = 2;\n"}]),
     ] {
-        let session = start_predecessor_stream();
-        let malformed = JsonRpcRequest {
+        let malformed_change = || JsonRpcRequest {
             _jsonrpc: "2.0".to_string(),
             id: None,
             method: "textDocument/didChange".to_string(),
@@ -123,7 +124,8 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
                 json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": changes}),
             ),
         };
-        if server.handle_request(malformed).is_some() {
+        let session = start_predecessor_stream();
+        if server.handle_request(malformed_change()).is_some() {
             return Err("notification-shaped malformed change must not respond".into());
         }
         let after = {
@@ -140,11 +142,22 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
         if !session.is_cancelled() {
             return Err("malformed change retained an obsolete editor stream".into());
         }
-        if server.memory_state_snapshot().stream_sessions != 2
-            || same_version_stream.is_cancelled()
+        if server.memory_state_snapshot().stream_sessions != 1
             || other_document_stream.is_cancelled()
         {
             return Err("malformed change did not isolate obsolete-stream cancellation".into());
+        }
+        // Same payload, current-version stream: the cancellation must be scoped
+        // to versions older than the rejected change, so this one survives.
+        let current_version_stream = start_current_version_stream();
+        if server.handle_request(malformed_change()).is_some() {
+            return Err("notification-shaped malformed change must not respond".into());
+        }
+        if current_version_stream.is_cancelled()
+            || server.memory_state_snapshot().stream_sessions != 2
+            || other_document_stream.is_cancelled()
+        {
+            return Err("malformed change cancelled a current-version editor stream".into());
         }
         if predecessor_parse_token.load(Ordering::Relaxed)
             || !server
@@ -164,14 +177,14 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
         json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": {}}),
         json!({"textDocument": {"uri": uri, "version": 2}, "contentChanges": null}),
     ] {
-        let session = start_predecessor_stream();
-        let malformed = JsonRpcRequest {
+        let malformed_change = || JsonRpcRequest {
             _jsonrpc: "2.0".to_string(),
             id: None,
             method: "textDocument/didChange".to_string(),
-            params: Some(params),
+            params: Some(params.clone()),
         };
-        if server.handle_request(malformed).is_some() {
+        let session = start_predecessor_stream();
+        if server.handle_request(malformed_change()).is_some() {
             return Err("notification-shaped malformed contentChanges must not respond".into());
         }
         let after = {
@@ -181,8 +194,7 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
         };
         if after != before
             || !session.is_cancelled()
-            || server.memory_state_snapshot().stream_sessions != 2
-            || same_version_stream.is_cancelled()
+            || server.memory_state_snapshot().stream_sessions != 1
             || other_document_stream.is_cancelled()
             || predecessor_parse_token.load(Ordering::Relaxed)
             || !server
@@ -194,8 +206,22 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
         {
             return Err("invalid contentChanges shape altered document side effects".into());
         }
+        let current_version_stream = start_current_version_stream();
+        if server.handle_request(malformed_change()).is_some() {
+            return Err("notification-shaped malformed contentChanges must not respond".into());
+        }
+        if current_version_stream.is_cancelled()
+            || server.memory_state_snapshot().stream_sessions != 2
+            || other_document_stream.is_cancelled()
+        {
+            return Err(
+                "invalid contentChanges shape cancelled a current-version editor stream".into()
+            );
+        }
     }
-    let session = start_predecessor_stream();
+    // A valid change carries the same version boundary as a rejected one: a
+    // stream already at the incoming version is current, not obsolete.
+    let current_version_stream = start_current_version_stream();
     let recovery = JsonRpcRequest {
         _jsonrpc: "2.0".to_string(),
         id: None,
@@ -218,15 +244,42 @@ fn dispatch_rejects_malformed_change_before_document_mutation()
         )
         .into());
     }
-    if !session.is_cancelled()
+    if current_version_stream.is_cancelled()
         || server.memory_state_snapshot().stream_sessions != 2
-        || same_version_stream.is_cancelled()
         || other_document_stream.is_cancelled()
     {
-        return Err("valid recovery did not cancel and evict the retained stream".into());
+        return Err("valid recovery cancelled a current-version editor stream".into());
     }
     if !predecessor_parse_token.load(Ordering::Relaxed) {
         return Err("valid recovery did not cancel the predecessor parse token".into());
+    }
+
+    // Advancing past a stream's version does cancel and evict it.
+    let session = start_predecessor_stream();
+    let advance = JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "textDocument/didChange".to_string(),
+        params: Some(
+            json!({"textDocument": {"uri": uri, "version": 3}, "contentChanges": [{"text": "my $x = 4;\n"}]}),
+        ),
+    };
+    if server.handle_request(advance).is_some() {
+        return Err("notification-shaped advance must not respond".into());
+    }
+    let advanced = {
+        let documents = server.documents.lock();
+        let document = documents.get(uri).ok_or("document disappeared after advance")?;
+        (document.text.clone(), document.version)
+    };
+    if advanced.0 != "my $x = 4;\n" || advanced.1 != 3 {
+        return Err(format!("valid advance was not applied: advanced={advanced:?}").into());
+    }
+    if !session.is_cancelled()
+        || server.memory_state_snapshot().stream_sessions != 1
+        || other_document_stream.is_cancelled()
+    {
+        return Err("valid advance did not cancel and evict the obsolete stream".into());
     }
     Ok(())
 }
