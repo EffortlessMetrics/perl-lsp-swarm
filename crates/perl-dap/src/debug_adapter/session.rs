@@ -1,4 +1,5 @@
 use super::variable_cache::VariableCache;
+use crate::reload::RuntimeModuleGenerationClock;
 use crate::types::StackFrame;
 use std::collections::HashMap;
 use std::process::Child;
@@ -22,6 +23,11 @@ pub(super) struct DebugSession {
     /// Monotonic stopped-suspension authority used to prevent old frame ids
     /// from becoming valid again when the debugger reuses a numeric frame id.
     pub(super) stopped_generation: u64,
+    /// Monotonic runtime-module generation authority (ADR-0046 §4): advanced
+    /// by both terminal mutation outcomes of a loaded-module reload and
+    /// reset only when the debuggee process/session is replaced. Carried on
+    /// the session per the frozen contract (#10097/#10102).
+    pub(super) module_generation: RuntimeModuleGenerationClock,
 }
 
 #[derive(Debug, Clone, PartialEq)]

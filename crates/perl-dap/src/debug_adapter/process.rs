@@ -29,6 +29,7 @@ mod perl_info;
 mod perl_spawn;
 
 use super::variable_cache::VariableCache;
+use crate::reload::RuntimeModuleGenerationClock;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
@@ -642,6 +643,7 @@ impl DebugAdapter {
                     thread_id,
                     last_resume_mode: ResumeMode::Unknown,
                     stopped_generation: 0,
+                    module_generation: RuntimeModuleGenerationClock::new(),
                 };
 
                 if let Ok(mut guard) = self.session.lock() {
@@ -2018,6 +2020,11 @@ impl DebugAdapter {
     /// leave the existing session untouched.
     fn prepare_replacement_session(&self) {
         self.begin_session_generation();
+        // Debuggee replacement invalidates the reload family's session
+        // identities (#10102): a new epoch refuses prior family/operation
+        // claims, and the runtime-module generation resets with the new
+        // debuggee process (it lives on `DebugSession`).
+        self.reset_reload_route_for_replacement_session();
         self.clear_active_session_state();
     }
 
@@ -2582,6 +2589,7 @@ mod tests {
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
         reserve_terminated_event, terminated_delivery_is_current,
     };
+    use crate::reload::RuntimeModuleGenerationClock;
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
     use std::collections::HashMap;
@@ -3435,6 +3443,7 @@ mod tests {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
@@ -3553,6 +3562,7 @@ mod tests {
             thread_id: 1,
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 

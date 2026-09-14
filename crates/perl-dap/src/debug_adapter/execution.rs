@@ -870,6 +870,7 @@ mod thread_identity_tests {
     use super::super::session::DebugSession;
     use super::super::variable_cache::VariableCache;
     use super::*;
+    use crate::reload::RuntimeModuleGenerationClock;
     use std::collections::HashMap;
     use std::sync::mpsc::sync_channel;
 
@@ -885,6 +886,7 @@ mod thread_identity_tests {
             thread_id,
             last_resume_mode: ResumeMode::Unknown,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         }
     }
 

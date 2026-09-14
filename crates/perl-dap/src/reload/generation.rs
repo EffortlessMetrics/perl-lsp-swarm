@@ -123,6 +123,14 @@ impl RuntimeModuleGenerationClock {
         RuntimeModuleGenerationClock { current: RuntimeModuleGeneration::INITIAL }
     }
 
+    /// A clock positioned at an arbitrary generation (exhaustion and
+    /// saturation proof only; production clocks always start at
+    /// [`RuntimeModuleGenerationClock::new`]).
+    #[cfg(test)]
+    pub(crate) fn at_generation_for_test(generation: RuntimeModuleGeneration) -> Self {
+        RuntimeModuleGenerationClock { current: generation }
+    }
+
     /// The current generation.
     pub const fn current(&self) -> RuntimeModuleGeneration {
         self.current
