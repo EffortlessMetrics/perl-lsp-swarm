@@ -1054,7 +1054,10 @@ impl BodyLowerer {
             None => return,
         };
         match stmt {
-            HirStmt::Let { name, sigil, storage, init, binding_range } => {
+            // `binding` (#14166) is deliberately not consumed here yet: threading
+            // canonical binding identity and storage class into PIR facts is
+            // #6659 item 2, a separate slice.
+            HirStmt::Let { name, sigil, storage, init, binding_range, binding: _ } => {
                 if *storage == DeclStorageClass::Unknown {
                     // Parser-shaped legacy calls (for example `field $x = 1`)
                     // do not bind a lexical declaration. For `Unknown` storage
