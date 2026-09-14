@@ -93,13 +93,33 @@ fn normalize_path_does_not_convert_non_wsl_mnt_path() -> Result<(), anyhow::Erro
 #[cfg(target_os = "linux")]
 #[test]
 fn normalize_path_wsl_short_mnt_path_no_conversion() -> Result<(), anyhow::Error> {
-    // "/mnt/" is only 5 chars, plus 1 for drive letter = 6; path_str.len() > 6 check
-    // means "/mnt/c" (len 6) should NOT trigger conversion
     let input = PathBuf::from("/mnt/c");
     let normalized = normalize_path(&input);
-    let s = normalized.to_string_lossy().to_string();
-    // The path is exactly 6 chars, so the > 6 check means it won't convert
-    assert!(!s.contains(':'), "path of exactly 6 chars should not be converted, got: {s}");
+    anyhow::ensure!(normalized == input, "bare mount changed to {normalized:?}");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn normalize_path_wsl_requires_separator_after_single_drive_letter() -> Result<(), anyhow::Error> {
+    // A non-empty suffix alone admits adjacent mount names as drive-relative
+    // paths. Only a separator after one ASCII drive letter is a WSL mount.
+    for (input, expected) in [
+        ("/mnt/cx", "/mnt/cx"),
+        ("/mnt/Cx/path.pl", "/mnt/Cx/path.pl"),
+        ("/mnt/cé/path.pl", "/mnt/cé/path.pl"),
+        ("/mnt/é/path.pl", "/mnt/é/path.pl"),
+        ("/mnt/1/path.pl", "/mnt/1/path.pl"),
+        ("/mnt/C", "/mnt/C"),
+        ("/mnt/c/", "C:\\"),
+        ("/mnt/D/project/lib.pm", "D:\\project\\lib.pm"),
+    ] {
+        let actual = normalize_path(std::path::Path::new(input));
+        anyhow::ensure!(
+            actual == std::path::Path::new(expected),
+            "normalizing {input:?}: expected {expected:?}, got {actual:?}"
+        );
+    }
     Ok(())
 }
 

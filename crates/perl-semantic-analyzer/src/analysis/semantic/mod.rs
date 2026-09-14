@@ -47,11 +47,50 @@ use crate::analysis::class_model::{
 use crate::analysis::generated_member_extractor::GeneratedMemberExtractor;
 use crate::analysis::package_graph_extractor::PackageGraphExtractor;
 use crate::ast::Node;
-use crate::symbol::{Symbol, SymbolExtractor, SymbolTable, is_universal_method};
+use crate::symbol::{
+    Symbol, SymbolExtractor, SymbolTable, is_method_modifier_keyword, is_universal_method,
+};
 use perl_semantic_facts::{Confidence, FileId, GeneratedMember, PackageEdge, Provenance};
 use std::collections::{HashMap, HashSet};
 
 const MAX_MRO_TRAVERSAL_DEPTH: usize = 1024;
+
+/// Return `true` if `declaration` marks a symbol as a synthetic method modifier.
+///
+/// Modifier symbols are minted by `SymbolExtractor` with the introducing keyword
+/// (`before`, `after`, ...) recorded as their `declaration`.
+fn is_method_modifier_declaration(declaration: Option<&str>) -> bool {
+    declaration.is_some_and(is_method_modifier_keyword)
+}
+
+/// Return `true` if `symbol` is a subroutine that its package actually contributes
+/// to method dispatch.
+///
+/// Two kinds of same-named subroutine are excluded because neither can be the
+/// method a modifier decorates:
+///
+/// - synthetic modifier symbols, which carry the introducing keyword;
+/// - lexical subs (`my sub`/`state sub`, Perl 5.18+ `feature 'lexical_subs'`).
+///   `SymbolExtractor` qualifies every named sub as `Package::name` regardless of
+///   declarator, so a lexical sub is string-indistinguishable from a real method
+///   here, yet it never enters the package's method table and `$self->name` can
+///   never reach it.
+fn is_package_method_symbol(symbol: &Symbol) -> bool {
+    if symbol.kind != crate::symbol::SymbolKind::Subroutine {
+        return false;
+    }
+    !matches!(symbol.declaration.as_deref(), Some("my" | "state"))
+        && !is_method_modifier_declaration(symbol.declaration.as_deref())
+}
+
+/// The package that declared `symbol`, taken from its qualified name.
+///
+/// Modifier symbols are qualified as `Package::method`, so stripping the method
+/// name yields the declaring package. Returns `None` for an unqualified symbol,
+/// which keeps an unattributable modifier unresolved instead of guessing.
+fn declaring_package_of(symbol: &Symbol) -> Option<&str> {
+    symbol.qualified_name.strip_suffix(&symbol.name)?.strip_suffix("::")
+}
 
 #[derive(Debug)]
 /// Semantic analyzer providing comprehensive IDE features for Perl code.
@@ -263,24 +302,102 @@ impl SemanticAnalyzer {
     }
 
     /// If `symbol` is a method modifier target, find the underlying method symbol.
+    ///
+    /// Resolution is bound to the package that declared the modifier: first that
+    /// package's own method, then its ancestors in the package's configured
+    /// method-resolution order. A target that neither provides is left unresolved
+    /// rather than redirected to a same-named method in an unrelated package.
     fn resolve_method_modifier_target<'a>(&'a self, symbol: &'a Symbol) -> Option<&'a Symbol> {
-        if !matches!(
-            symbol.declaration.as_deref(),
-            Some("before" | "after" | "around" | "override" | "augment")
-        ) {
+        if !is_method_modifier_declaration(symbol.declaration.as_deref()) {
             return None;
         }
 
+        let declaring_package = declaring_package_of(symbol)?;
+
+        if let Some(local) = self.method_symbol_in_package(declaring_package, symbol) {
+            return Some(local);
+        }
+
+        // Ancestors in the package's configured resolution order. Each is looked
+        // up in the symbol table by qualified name rather than through its class
+        // model, so a plain-Perl parent that never became a `ClassModel` still
+        // provides its method — matching the fallback inherited hover already has.
+        self.resolve_parent_chain(declaring_package)?
+            .iter()
+            .find_map(|ancestor| self.method_symbol_in_package(ancestor, symbol))
+    }
+
+    /// One `ClassModel` per package name, merging reopened `package` segments.
+    ///
+    /// A file may declare the same package more than once, and each declaration
+    /// produces its own `ClassModel`. Keying a lookup map straight off
+    /// `class_models` therefore lets a later segment hide an earlier one's
+    /// parents, roles, and methods. Perl has one package here, so the segments
+    /// are combined before any resolution decision is made. Repeated methods
+    /// are replaced by their later declaration, and later explicit ancestry or
+    /// MRO declarations replace earlier package state.
+    fn merged_class_models(&self) -> Vec<ClassModel> {
+        let mut merged: Vec<ClassModel> = Vec::new();
+        for model in &self.class_models {
+            let Some(existing) = merged.iter_mut().find(|candidate| candidate.name == model.name)
+            else {
+                merged.push(model.clone());
+                continue;
+            };
+
+            // `extends`, `use parent`, `use base`, and `@ISA` describe the
+            // package's current ancestry. A later declaration supersedes an
+            // earlier one; blindly unioning the lists invents parents that Perl
+            // would no longer dispatch through. An empty later segment carries
+            // no ancestry declaration and therefore leaves the prior value
+            // intact.
+            if model.parents_explicit {
+                if model.parents_replaces_prior {
+                    existing.parents = model.parents.clone();
+                } else if model.parents_additive {
+                    existing.parents.extend(model.parents.iter().cloned());
+                } else {
+                    existing.parents = model.parents.clone();
+                }
+            }
+            if !model.roles.is_empty() {
+                existing.roles = model.roles.clone();
+            }
+
+            // Reopening a package can redefine a method. Keep declaration
+            // order authoritative so every consumer selects the later symbol,
+            // rather than retaining a stale earlier body in the merged view.
+            for method in &model.methods {
+                existing.methods.retain(|candidate| candidate.name != method.name);
+                existing.methods.push(method.clone());
+            }
+            existing.modifiers.extend(model.modifiers.iter().cloned());
+            // An explicit `use mro 'dfs'` must be able to reset an earlier
+            // explicit C3. Silent reopened segments carry no MRO decision.
+            if model.mro_explicit {
+                existing.mro = model.mro;
+            }
+        }
+        merged
+    }
+
+    /// Find the method named `symbol.name` that `package` itself contributes.
+    fn method_symbol_in_package<'a>(
+        &'a self,
+        package: &str,
+        symbol: &'a Symbol,
+    ) -> Option<&'a Symbol> {
+        let qualified = format!("{package}::{}", symbol.name);
         self.symbol_table
-            .find_symbol(&symbol.name, symbol.scope_id, crate::symbol::SymbolKind::Subroutine)
-            .into_iter()
-            .find(|candidate| {
-                candidate.location != symbol.location
-                    && !matches!(
-                        candidate.declaration.as_deref(),
-                        Some("before" | "after" | "around" | "override" | "augment")
-                    )
+            .symbols
+            .get(&symbol.name)?
+            .iter()
+            .filter(|candidate| {
+                is_package_method_symbol(candidate)
+                    && candidate.qualified_name == qualified
+                    && candidate.location != symbol.location
             })
+            .max_by_key(|candidate| candidate.location.start)
     }
 
     /// Check if an operator is a file test operator.
@@ -295,8 +412,8 @@ impl SemanticAnalyzer {
 
     /// Resolve hover info for a method by walking the same-file parent chain.
     ///
-    /// Given a receiver package name and a method name, walks the `parents` of
-    /// each `ClassModel` in `self.class_models` (BFS) and returns `HoverInfo` for
+    /// Given a receiver package name and a method name, walks the merged
+    /// `parents` of each package model (BFS) and returns `HoverInfo` for
     /// the first class in the chain that defines the method.
     ///
     /// For packages not in `class_models` (plain packages with no OO indicators),
@@ -324,8 +441,9 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<SourceLocation> {
+        let merged = self.merged_class_models();
         let models_by_name: HashMap<&str, &ClassModel> =
-            self.class_models.iter().map(|model| (model.name.as_str(), model)).collect();
+            merged.iter().map(|model| (model.name.as_str(), model)).collect();
 
         let receiver_model = models_by_name.get(receiver_class).copied()?;
         let ancestor_order = match receiver_model.mro {
@@ -362,8 +480,9 @@ impl SemanticAnalyzer {
     ///
     /// Returns ancestors in configured method-resolution order, excluding `receiver_class`.
     pub fn resolve_parent_chain(&self, receiver_class: &str) -> Option<Vec<String>> {
+        let merged = self.merged_class_models();
         let models_by_name: HashMap<&str, &ClassModel> =
-            self.class_models.iter().map(|model| (model.name.as_str(), model)).collect();
+            merged.iter().map(|model| (model.name.as_str(), model)).collect();
         let receiver_model = models_by_name.get(receiver_class).copied()?;
 
         let chain = match receiver_model.mro {
@@ -378,8 +497,9 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<HoverInfo> {
+        let merged = self.merged_class_models();
         let models_by_name: HashMap<&str, &ClassModel> =
-            self.class_models.iter().map(|model| (model.name.as_str(), model)).collect();
+            merged.iter().map(|model| (model.name.as_str(), model)).collect();
 
         let Some(receiver_model) = models_by_name.get(receiver_class).copied() else {
             return self.resolve_plain_package_method_hover(receiver_class, method_name);
@@ -449,7 +569,16 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<HoverInfo> {
-        if !model.methods.iter().any(|m| m.name == method_name) {
+        // Lexical `my sub`/`state sub` declarations are recorded in the model
+        // for provenance, but they do not enter the package method table and
+        // therefore cannot satisfy a package method dispatch.  Keep the exact
+        // hover path aligned with `method_location_in_model` and the modifier
+        // resolver by requiring a package-level declarator.
+        if !model
+            .methods
+            .iter()
+            .any(|method| method.name == method_name && method.declarator.is_none())
+        {
             return None;
         }
         let is_direct = model.name == receiver_class;
@@ -493,7 +622,7 @@ impl SemanticAnalyzer {
         receiver_class: &str,
         method_name: &str,
     ) -> Option<HoverInfo> {
-        if !model.methods.iter().any(|m| m.name == "AUTOLOAD") {
+        if !model.methods.iter().any(|m| m.name == "AUTOLOAD" && m.declarator.is_none()) {
             return None;
         }
         let is_direct = model.name == receiver_class;
@@ -543,8 +672,15 @@ impl SemanticAnalyzer {
         model
             .methods
             .iter()
-            .find(|method| method.name == method_name)
-            .or_else(|| model.methods.iter().find(|method| method.name == "AUTOLOAD"))
+            .rev()
+            .find(|method| method.name == method_name && method.declarator.is_none())
+            .or_else(|| {
+                model
+                    .methods
+                    .iter()
+                    .rev()
+                    .find(|method| method.name == "AUTOLOAD" && method.declarator.is_none())
+            })
             .map(|method| method.location)
     }
 
@@ -557,12 +693,19 @@ impl SemanticAnalyzer {
         method_name: &str,
     ) -> Option<HoverInfo> {
         let qualified = format!("{}::{}", package_name, method_name);
-        let found_in_table = self.symbol_table.symbols.get(method_name).is_some_and(|syms| {
-            syms.iter().any(|s| {
-                matches!(s.kind, crate::symbol::SymbolKind::Subroutine)
-                    && s.qualified_name == qualified
-            })
-        }) || self.symbol_table.symbols.contains_key(&qualified);
+        let has_package_method = |symbols: &[Symbol]| {
+            symbols.iter().any(|s| is_package_method_symbol(s) && s.qualified_name == qualified)
+        };
+        let found_in_table = self
+            .symbol_table
+            .symbols
+            .get(method_name)
+            .is_some_and(|symbols| has_package_method(symbols))
+            || self
+                .symbol_table
+                .symbols
+                .get(&qualified)
+                .is_some_and(|symbols| has_package_method(symbols));
 
         found_in_table.then(|| HoverInfo {
             signature: format!("sub {}::{}", package_name, method_name),
@@ -583,12 +726,21 @@ impl SemanticAnalyzer {
         method_name: &str,
     ) -> Option<HoverInfo> {
         let qualified_autoload = format!("{}::AUTOLOAD", package_name);
-        let autoload_in_table = self.symbol_table.symbols.get("AUTOLOAD").is_some_and(|syms| {
-            syms.iter().any(|s| {
-                matches!(s.kind, crate::symbol::SymbolKind::Subroutine)
-                    && s.qualified_name == qualified_autoload
-            })
-        }) || self.symbol_table.symbols.contains_key(&qualified_autoload);
+        let has_package_autoload = |symbols: &[Symbol]| {
+            symbols
+                .iter()
+                .any(|s| is_package_method_symbol(s) && s.qualified_name == qualified_autoload)
+        };
+        let autoload_in_table = self
+            .symbol_table
+            .symbols
+            .get("AUTOLOAD")
+            .is_some_and(|symbols| has_package_autoload(symbols))
+            || self
+                .symbol_table
+                .symbols
+                .get(&qualified_autoload)
+                .is_some_and(|symbols| has_package_autoload(symbols));
 
         autoload_in_table.then(|| HoverInfo {
             signature: format!("sub {}::AUTOLOAD", package_name),
@@ -1076,6 +1228,42 @@ sub real_method { 2 }
             "exact resolution must not carry the dynamic-dispatch detail, got: {:?}",
             hover.details
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_lexical_subs_do_not_claim_exact_method_hover() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Named lexical subs are collected for source/provenance purposes, but
+        // they are not package methods.  If exact hover checks only the name,
+        // these declarations incorrectly outrank the class AUTOLOAD boundary.
+        let code = r#"
+package Foo;
+use Moo;
+use feature 'lexical_subs';
+my sub hidden_method { 1 }
+state sub another_hidden_method { 2 }
+sub AUTOLOAD { 3 }
+"#;
+
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        for method_name in ["hidden_method", "another_hidden_method"] {
+            let hover = analyzer
+                .resolve_inherited_method_hover("Foo", method_name)
+                .ok_or_else(|| format!("expected AUTOLOAD hover for {method_name}"))?;
+            assert_eq!(
+                hover.signature, "sub Foo::AUTOLOAD",
+                "lexical {method_name} must not be presented as an exact package method"
+            );
+            assert_eq!(
+                hover.provenance,
+                Some(Provenance::DynamicBoundary),
+                "lexical {method_name} should fall through to the dynamic AUTOLOAD boundary"
+            );
+        }
         Ok(())
     }
 
@@ -2447,6 +2635,600 @@ my %config = (key => "value");
             );
         }
 
+        Ok(())
+    }
+
+    /// Byte offset of the modifier's quoted target name in `code`.
+    fn modifier_target_offset(code: &str, modifier: &str, target: &str) -> Option<usize> {
+        let modifier_start = code.find(modifier)?;
+        code[modifier_start..].find(target).map(|found| modifier_start + found)
+    }
+
+    #[test]
+    fn test_method_modifier_target_prefers_declaring_package_over_same_named_method()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Both packages define `save`. The modifier belongs to `Demo`, so it must
+        // resolve to `Demo::save` and never to the earlier `Other::save`.
+        let code = concat!(
+            "package Other;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Demo;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 2;\n",
+            "}\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let other_save = code.find("sub save").ok_or("Other::save not found")?;
+        let demo_save = code[other_save + 1..]
+            .find("sub save")
+            .map(|f| f + other_save + 1)
+            .ok_or("Demo::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_eq!(
+            sym.qualified_name, "Demo::save",
+            "modifier must resolve inside its own package, got {}",
+            sym.qualified_name
+        );
+        assert_eq!(
+            sym.location.start, demo_save,
+            "modifier target should land on Demo::save, not Other::save"
+        );
+        assert_ne!(
+            sym.location.start, other_save,
+            "modifier target must not leak into the unrelated Other package"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_unresolved_in_declaring_package_is_not_redirected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `Demo` declares no `save` and inherits none. The only `save` in the file
+        // belongs to the unrelated `Other`, so there is no honest target and the
+        // definition must stay on the modifier declaration itself.
+        let code = concat!(
+            "package Other;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Demo;\n",
+            "use Moo;\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let other_save = code.find("sub save").ok_or("Other::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_ne!(
+            sym.location.start, other_save,
+            "unresolved modifier target must not jump to a same-named method in another package"
+        );
+        assert_eq!(
+            sym.declaration.as_deref(),
+            Some("before"),
+            "definition should remain on the modifier declaration when no target is provable"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_resolves_through_parent_class()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `Child` does not declare `save`; it inherits it. Resolution must reach
+        // `Base::save` through the class's method-resolution order, and the
+        // unrelated `Bystander::save` must never win.
+        let code = concat!(
+            "package Bystander;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 0;\n",
+            "}\n",
+            "\n",
+            "package Base;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let bystander_save = code.find("sub save").ok_or("Bystander::save not found")?;
+        let base_save = code[bystander_save + 1..]
+            .find("sub save")
+            .map(|f| f + bystander_save + 1)
+            .ok_or("Base::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_eq!(
+            sym.location.start, base_save,
+            "inherited modifier target should resolve to Base::save through the MRO"
+        );
+        assert_ne!(
+            sym.location.start, bystander_save,
+            "inherited resolution must not pick the unrelated Bystander::save"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_ignores_lexical_subs() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A `my sub` is qualified `Demo::save` like any other named sub, but it
+        // never enters the package's method table, so `$self->save` cannot reach
+        // it and a modifier must not resolve to it.
+        let code = concat!(
+            "package Demo;\n",
+            "use Moo;\n",
+            "use feature 'lexical_subs';\n",
+            "\n",
+            "if (1) {\n",
+            "    my sub save {\n",
+            "        return 42;\n",
+            "    }\n",
+            "}\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let lexical_sub = code.find("my sub save").ok_or("lexical sub not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_ne!(
+            sym.location.start, lexical_sub,
+            "a lexical `my sub` is not in the package method table and must not be a modifier target"
+        );
+        assert_eq!(
+            sym.declaration.as_deref(),
+            Some("before"),
+            "with no package method to reach, definition stays on the modifier declaration"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_hover_does_not_treat_lexical_autoload_as_class_method()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Demo;\n",
+            "use Moo;\n",
+            "use feature 'lexical_subs';\n",
+            "my sub AUTOLOAD { return 42; }\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        assert!(
+            analyzer.resolve_inherited_method_hover("Demo", "missing").is_none(),
+            "a lexical AUTOLOAD is not a package dispatch fallback"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plain_parent_lexical_method_is_not_inherited_for_hover()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Base;\n",
+            "use feature 'lexical_subs';\n",
+            "my sub save { return 42; }\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        assert!(
+            analyzer.resolve_inherited_method_hover("Child", "save").is_none(),
+            "a lexical sub in a plain parent is not inherited package behavior"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plain_parent_lexical_autoload_is_not_inherited_for_hover()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Base;\n",
+            "use feature 'lexical_subs';\n",
+            "my sub AUTOLOAD { return 42; }\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        assert!(
+            analyzer.resolve_inherited_method_hover("Child", "missing").is_none(),
+            "a lexical AUTOLOAD in a plain parent is not inherited package behavior"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_resolves_through_plain_package_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `Base` is ordinary Perl with no OO indicators, so it never becomes a
+        // `ClassModel`. It is still a real parent contributing a real method, and
+        // the decoy `Bystander::save` must not win.
+        let code = concat!(
+            "package Bystander;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 0;\n",
+            "}\n",
+            "\n",
+            "package Base;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let bystander_save = code.find("sub save").ok_or("Bystander::save not found")?;
+        let base_save = code[bystander_save + 1..]
+            .find("sub save")
+            .map(|found| found + bystander_save + 1)
+            .ok_or("Base::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_eq!(
+            sym.location.start, base_save,
+            "a plain-Perl parent with no class model still provides the inherited method"
+        );
+        assert_ne!(
+            sym.location.start, bystander_save,
+            "resolution must not fall back to an unrelated package's method"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_method_modifier_target_resolves_through_reopened_parent_declaration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `Child` is declared twice: the first segment carries `extends 'Base'`,
+        // the second carries the modifier. The package has one ancestry, so the
+        // inherited target must still resolve.
+        let code = concat!(
+            "package Base;\n",
+            "use Moo;\n",
+            "\n",
+            "sub save {\n",
+            "    return 1;\n",
+            "}\n",
+            "\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+            "\n",
+            "package Other;\n",
+            "use Moo;\n",
+            "\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "\n",
+            "before 'save' => sub {\n",
+            "    my ($self) = @_;\n",
+            "};\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let base_save = code.find("sub save").ok_or("Base::save not found")?;
+
+        let sym = analyzer.find_definition(offset).ok_or("no symbol at modifier target")?;
+
+        assert_eq!(
+            sym.location.start, base_save,
+            "a reopened package keeps the ancestry declared in its earlier segment"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_later_ancestry_replaces_parents_and_roles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package OldParent;\n",
+            "use Moo;\n",
+            "sub save { 1 }\n",
+            "package NewParent;\n",
+            "use Moo;\n",
+            "sub save { 2 }\n",
+            "package OldRole;\n",
+            "use Moo::Role;\n",
+            "package NewRole;\n",
+            "use Moo::Role;\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'OldParent';\n",
+            "with 'OldRole';\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'NewParent';\n",
+            "with 'NewRole';\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let child = analyzer
+            .merged_class_models()
+            .into_iter()
+            .find(|model| model.name == "Child")
+            .ok_or("Child model not found")?;
+        assert_eq!(child.parents, vec!["NewParent"]);
+        assert_eq!(child.roles, vec!["NewRole"]);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let new_parent_save = code.find("sub save { 2 }").ok_or("NewParent::save not found")?;
+        let target = analyzer.find_definition(offset).ok_or("modifier definition")?;
+        assert_eq!(target.location.start, new_parent_save);
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_additive_parent_declarations_keep_all_ancestors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package First; use Moo; sub save { 1 }\n",
+            "package Second; use Moo; sub save { 2 }\n",
+            "package Child; use Moo; use parent 'First';\n",
+            "package Child; use Moo; use base 'Second';\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+        let chain = analyzer.resolve_parent_chain("Child").ok_or("parent chain")?;
+        assert_eq!(chain, vec!["First", "Second"]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_replacement_then_push_drops_old_ancestors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Old; use Moo; sub save { 1 }\n",
+            "package New; use Moo; sub save { 2 }\n",
+            "package Extra; use Moo; sub save { 3 }\n",
+            "package Child; use Moo; use parent 'Old';\n",
+            "package Child; use Moo; @ISA = ('New'); push @ISA, 'Extra';\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let chain = analyzer.resolve_parent_chain("Child").ok_or("parent chain")?;
+        assert_eq!(chain, vec!["New", "Extra"]);
+        assert!(!chain.contains(&"Old".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_empty_isa_clears_prior_ancestry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Base; use Moo; sub save { 1 }\n",
+            "package Child; use Moo; extends 'Base';\n",
+            "package Child; use Moo; @ISA = ();\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+        let child = analyzer
+            .merged_class_models()
+            .into_iter()
+            .find(|model| model.name == "Child")
+            .ok_or("Child model")?;
+        assert!(child.parents.is_empty());
+        assert!(analyzer.resolve_inherited_method_location("Child", "save").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_mro_directives_do_not_override_prior_selection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Root; use Moo; sub save { 1 }\n",
+            "package Left; use Moo; extends 'Root';\n",
+            "package Right; use Moo; extends 'Root'; sub save { 2 }\n",
+            "package Child; use Moo; extends 'Left', 'Right'; use mro 'c3';\n",
+            "package Child; use Moo; no mro;\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+        let child = analyzer
+            .merged_class_models()
+            .into_iter()
+            .find(|model| model.name == "Child")
+            .ok_or("Child model")?;
+        assert_eq!(child.mro, MethodResolutionOrder::C3);
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_duplicate_method_uses_later_definition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Child;\n",
+            "use Moo;\n",
+            "sub save { 1 }\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "sub save { 2 }\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let later_save = code.rfind("sub save { 2 }").ok_or("later Child::save not found")?;
+        let target = analyzer.find_definition(offset).ok_or("modifier definition")?;
+        assert_eq!(target.qualified_name, "Child::save");
+        assert_eq!(target.location.start, later_save);
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_parent_definition_and_hover_share_merged_view()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Base;\n",
+            "use Moo;\n",
+            "sub save { 1 }\n",
+            "package Base;\n",
+            "use Moo;\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Base';\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let base_save = code.find("sub save { 1 }").ok_or("Base::save not found")?;
+        let target = analyzer.find_definition(offset).ok_or("modifier definition")?;
+        assert_eq!(target.location.start, base_save);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Child", "save")
+            .ok_or("inherited hover not found")?;
+        assert_eq!(hover.signature, "sub Base::save");
+        Ok(())
+    }
+
+    #[test]
+    fn test_reopened_package_explicit_dfs_replaces_prior_c3_for_navigation_and_hover()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let code = concat!(
+            "package Root;\n",
+            "use Moo;\n",
+            "sub save { 1 }\n",
+            "package Left;\n",
+            "use Moo;\n",
+            "extends 'Root';\n",
+            "package Right;\n",
+            "use Moo;\n",
+            "extends 'Root';\n",
+            "sub save { 2 }\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "extends 'Left', 'Right';\n",
+            "use mro 'c3';\n",
+            "package Child;\n",
+            "use Moo;\n",
+            "use mro 'dfs';\n",
+            "before 'save' => sub { };\n",
+        );
+        let mut parser = Parser::new(code);
+        let ast = parser.parse()?;
+        let analyzer = SemanticAnalyzer::analyze_with_source(&ast, code);
+
+        let child = analyzer
+            .merged_class_models()
+            .into_iter()
+            .find(|model| model.name == "Child")
+            .ok_or("Child model not found")?;
+        assert_eq!(child.mro, MethodResolutionOrder::Dfs);
+
+        let chain = analyzer.resolve_parent_chain("Child").ok_or("parent chain")?;
+        assert_eq!(chain, vec!["Left", "Root", "Right"]);
+
+        let offset = modifier_target_offset(code, "before 'save'", "save")
+            .ok_or("modifier target not found")?;
+        let root_save = code.find("sub save { 1 }").ok_or("Root::save not found")?;
+        let target = analyzer.find_definition(offset).ok_or("modifier definition")?;
+        assert_eq!(target.location.start, root_save);
+
+        let hover = analyzer
+            .resolve_inherited_method_hover("Child", "save")
+            .ok_or("inherited hover not found")?;
+        assert_eq!(hover.signature, "sub Root::save");
         Ok(())
     }
 
