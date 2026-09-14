@@ -556,6 +556,47 @@ fn replay_without_readiness_counts_is_rejected() -> Result<()> {
 }
 
 #[test]
+fn the_recovery_chain_must_agree_on_one_active_generation() -> Result<()> {
+    let digest = &valid_digest();
+    let reject = |events: Vec<DriverEvent>| {
+        ensure!(
+            validate_driver_events(&events, false).is_err(),
+            "a recovery stream that disagrees with itself about the serving generation must be \
+             rejected"
+        );
+        anyhow::Ok(())
+    };
+
+    // a skipped generation: the second restart leaves generation 2 for 4
+    let mut events = complete_recovery_events(digest);
+    events[15].details.insert("old_init_generation".to_string(), "3".to_string());
+    events[15].details.insert("new_init_generation".to_string(), "4".to_string());
+    reject(events)?;
+
+    // a backward restart: the second restart re-runs the first one
+    let mut events = complete_recovery_events(digest);
+    events[15].details.insert("old_init_generation".to_string(), "1".to_string());
+    events[15].details.insert("new_init_generation".to_string(), "2".to_string());
+    reject(events)?;
+
+    // a stimulus against a generation that is no longer serving
+    let mut events = complete_recovery_events(digest);
+    events[13].details.insert("serving_generation".to_string(), "1".to_string());
+    reject(events)?;
+
+    // a replay that skips the generation the observed restart produced
+    let mut events = complete_recovery_events(digest);
+    events[11].details.insert("initialize_generation".to_string(), "3".to_string());
+    reject(events)?;
+
+    // readiness counts that never reached the declared generation
+    let mut events = complete_recovery_events(digest);
+    events[21].details.insert("client_init_events".to_string(), "2".to_string());
+    reject(events)?;
+    Ok(())
+}
+
+#[test]
 fn an_admitted_old_generation_signature_cannot_even_be_stated() -> Result<()> {
     let mut events = complete_recovery_events(&valid_digest());
     events[23].details.insert("old_signature_settled".to_string(), "1".to_string());

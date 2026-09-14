@@ -840,6 +840,9 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     let mut recovery_disposition_index = 0_u32;
     let mut recovery_replay_index = 0_u32;
     let mut recovery_rejection_index = 0_u32;
+    // The single active server generation the recovery chain must agree on: the
+    // first launch is generation 1, and only an observed restart advances it.
+    let mut active_generation = 1_u32;
     // Monotone last-seen indexes for the #11396 repeating save-format kinds.
     let mut save_owner_index = 0_u32;
     let mut save_settlement_index = 0_u32;
@@ -1090,18 +1093,28 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                             .is_some_and(|generation| generation >= 2),
                     "server_restart_applied must bind numeric old/new process generations"
                 );
+                let old_generation = event
+                    .details
+                    .get("old_init_generation")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or_default();
+                let new_generation = event
+                    .details
+                    .get("new_init_generation")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or_default();
                 ensure!(
-                    event
-                        .details
-                        .get("old_init_generation")
-                        .and_then(|value| value.parse::<u32>().ok())
-                        < event
-                            .details
-                            .get("new_init_generation")
-                            .and_then(|value| value.parse::<u32>().ok()),
+                    old_generation < new_generation,
                     "server_restart_applied new generation must exceed the old generation; a clean \
                      first launch has no old generation and cannot pose as a restart"
                 );
+                ensure!(
+                    old_generation == active_generation,
+                    "server_restart_applied must restart the generation currently serving \
+                     ({active_generation}), not {old_generation}; a repeated or backward restart \
+                     chain is not one recovery"
+                );
+                active_generation = new_generation;
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
             DriverEventKind::RecoveryStimulusApplied => {
@@ -1120,6 +1133,16 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     event.details.contains_key("marker")
                         && event.details.contains_key("serving_generation"),
                     "recovery_stimulus_applied must name its marker and serving generation"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("serving_generation")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        == Some(active_generation),
+                    "recovery_stimulus_applied must terminate the generation currently serving \
+                     ({active_generation}); a stimulus against another generation proves nothing \
+                     about this chain"
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
@@ -1185,6 +1208,15 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                     "generation_replay_observed must bind the replaying initialize generation"
                 );
                 ensure!(
+                    event
+                        .details
+                        .get("initialize_generation")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        == Some(active_generation),
+                    "generation_replay_observed must replay into the generation the observed \
+                     restart produced ({active_generation}); a skipped generation is not a replay"
+                );
+                ensure!(
                     event.details.contains_key("document") && event.details.contains_key("root"),
                     "generation_replay_observed must name the replayed document and root"
                 );
@@ -1197,15 +1229,16 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                         .details
                         .get("client_init_events")
                         .and_then(|value| value.parse::<u32>().ok())
-                        .is_some_and(|count| count >= 2)
+                        .is_some_and(|count| count >= active_generation)
                         && event
                             .details
                             .get("buffer_enabled_events")
                             .and_then(|value| value.parse::<u32>().ok())
-                            .is_some_and(|count| count >= 2),
+                            .is_some_and(|count| count >= active_generation),
                     "generation_replay_observed must bind the replacement generation's readiness \
-                     counts (client init and buffer-enabled events); a bare new PID is not \
-                     readiness"
+                     counts (client init and buffer-enabled events) to the active generation \
+                     ({active_generation}); a bare new PID, or a declared generation the readiness \
+                     counts never reached, is not readiness"
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }

@@ -33,7 +33,7 @@ jobs:
   hermetic-host-run:
     name: actual Vim + vim-lsp + perllsp / Linux x64
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 150
     env:
       # The pinned subject commit is read from the governed #11369 manifest
       # inside the job; this env var only names the manifest, never a second
@@ -277,6 +277,14 @@ jobs:
           echo "ambient_path_only control result: ${result}"
           [ "${result}" = "fail" ]
 
+      - name: Prove no candidate process survives the freshness journeys
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the freshness host runs" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
+
       - name: Run the #11398 recovery-generations journey (canonical)
         run: >-
           cargo run --quiet --locked -p xtask --
@@ -350,14 +358,6 @@ jobs:
         run: |
           if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
             echo "a perllsp process survived the recovery host runs" >&2
-            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
-            exit 1
-          fi
-
-      - name: Prove no candidate process survives the freshness journeys
-        run: |
-          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
-            echo "a perllsp process survived the freshness host runs" >&2
             pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
             exit 1
           fi
