@@ -1339,8 +1339,12 @@ pub enum NodeKind {
     DataSection {
         /// Section marker (__DATA__ or __END__)
         marker: String,
+        /// Source location span of the marker token itself, for precise navigation
+        marker_span: Option<SourceLocation>,
         /// Content following the marker (if any)
         body: Option<String>,
+        /// Source location span of the payload text following the marker, if any
+        body_span: Option<SourceLocation>,
     },
 
     /// Class declaration (Perl 5.38+ with `use feature 'class'`)
@@ -2173,7 +2177,12 @@ mod tests {
                 phase_span: None,
                 block: Box::new(dummy_node()),
             },
-            NodeKind::DataSection { marker: String::new(), body: None },
+            NodeKind::DataSection {
+                marker: String::new(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
             NodeKind::Class {
                 name: String::new(),
                 name_span: None,

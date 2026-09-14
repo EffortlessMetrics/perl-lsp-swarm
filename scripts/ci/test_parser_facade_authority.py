@@ -197,6 +197,31 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "historical incremental modules"):
             check(self.root, self.ledger_path)
 
+    def test_unledgered_incremental_export_fails(self) -> None:
+        # The source keeps every export written by setUp; only the ledger loses a
+        # row. This is the drift shape that reddened main in #14212: an export
+        # reaches the facade with no classification behind it.
+        self.ledger["incremental_public_exports"] = [
+            row
+            for row in self.ledger["incremental_public_exports"]
+            if row["name"] != "geometry_attachment::SourceGeometryAttachment"
+        ]
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(
+            ValueError, "unclassified=geometry_attachment::SourceGeometryAttachment"
+        ):
+            check(self.root, self.ledger_path)
+
+    def test_incremental_export_cannot_be_promoted_to_production(self) -> None:
+        # The canonical production set is a reviewed list, so a staged export
+        # cannot become production-eligible by editing its own row alone.
+        for row in self.ledger["incremental_public_exports"]:
+            if row["name"] == "geometry_attachment::SourceGeometryAttachment":
+                row["production_eligible"] = True
+        self.write_ledger(self.ledger)
+        with self.assertRaisesRegex(ValueError, "canonical incremental export marker"):
+            check(self.root, self.ledger_path)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,439 @@
+pub mod perl_symbol
+pub mod perl_symbol::api
+pub enum perl_symbol::api::CursorSymbolKind
+pub perl_symbol::api::CursorSymbolKind::Array
+pub perl_symbol::api::CursorSymbolKind::Hash
+pub perl_symbol::api::CursorSymbolKind::Scalar
+pub perl_symbol::api::CursorSymbolKind::Subroutine
+pub fn perl_symbol::cursor::CursorSymbolKind::clone(&self) -> perl_symbol::cursor::CursorSymbolKind
+pub fn perl_symbol::cursor::CursorSymbolKind::eq(&self, other: &perl_symbol::cursor::CursorSymbolKind) -> bool
+pub fn perl_symbol::cursor::CursorSymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_symbol::api::SymbolKind
+pub perl_symbol::api::SymbolKind::Class
+pub perl_symbol::api::SymbolKind::Constant
+pub perl_symbol::api::SymbolKind::Export
+pub perl_symbol::api::SymbolKind::Format
+pub perl_symbol::api::SymbolKind::Import
+pub perl_symbol::api::SymbolKind::Label
+pub perl_symbol::api::SymbolKind::Method
+pub perl_symbol::api::SymbolKind::Package
+pub perl_symbol::api::SymbolKind::Role
+pub perl_symbol::api::SymbolKind::Subroutine
+pub perl_symbol::api::SymbolKind::Variable(perl_symbol::types::VarKind)
+pub const fn perl_symbol::types::SymbolKind::array() -> Self
+pub const fn perl_symbol::types::SymbolKind::hash() -> Self
+pub const fn perl_symbol::types::SymbolKind::is_callable(self) -> bool
+pub const fn perl_symbol::types::SymbolKind::is_namespace(self) -> bool
+pub const fn perl_symbol::types::SymbolKind::is_variable(self) -> bool
+pub fn perl_symbol::types::SymbolKind::kind_compatible(self, other: perl_symbol::types::SymbolKind) -> bool
+pub const fn perl_symbol::types::SymbolKind::scalar() -> Self
+pub const fn perl_symbol::types::SymbolKind::sigil(self) -> core::option::Option<&'static str>
+pub const fn perl_symbol::types::SymbolKind::to_lsp_kind(self) -> u32
+pub const fn perl_symbol::types::SymbolKind::to_lsp_kind_document_symbol(self) -> u32
+pub fn perl_symbol::types::SymbolKind::clone(&self) -> perl_symbol::types::SymbolKind
+pub fn perl_symbol::types::SymbolKind::eq(&self, other: &perl_symbol::types::SymbolKind) -> bool
+pub fn perl_symbol::types::SymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::types::SymbolKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_symbol::types::SymbolKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_symbol::types::SymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_symbol::api::SymbolRefKind
+pub perl_symbol::api::SymbolRefKind::CoderefReference
+pub perl_symbol::api::SymbolRefKind::MethodCall
+pub perl_symbol::api::SymbolRefKind::StaticMethodCall
+pub perl_symbol::api::SymbolRefKind::SubroutineCall
+pub perl_symbol::api::SymbolRefKind::TypeglobReference
+pub perl_symbol::api::SymbolRefKind::Variable(perl_symbol::types::VarKind)
+pub fn perl_symbol::surface::ref::SymbolRefKind::clone(&self) -> perl_symbol::surface::ref::SymbolRefKind
+pub fn perl_symbol::surface::ref::SymbolRefKind::eq(&self, other: &perl_symbol::surface::ref::SymbolRefKind) -> bool
+pub fn perl_symbol::surface::ref::SymbolRefKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_symbol::api::VarKind
+pub perl_symbol::api::VarKind::Array
+pub perl_symbol::api::VarKind::Hash
+pub perl_symbol::api::VarKind::Scalar
+pub const fn perl_symbol::types::VarKind::sigil(self) -> &'static str
+pub fn perl_symbol::types::VarKind::clone(&self) -> perl_symbol::types::VarKind
+pub fn perl_symbol::types::VarKind::eq(&self, other: &perl_symbol::types::VarKind) -> bool
+pub fn perl_symbol::types::VarKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::types::VarKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_symbol::types::VarKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_symbol::types::VarKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_symbol::api::SymbolDecl
+pub perl_symbol::api::SymbolDecl::anchor_span: core::option::Option<(usize, usize)>
+pub perl_symbol::api::SymbolDecl::container: core::option::Option<alloc::string::String>
+pub perl_symbol::api::SymbolDecl::declarator: core::option::Option<alloc::string::String>
+pub perl_symbol::api::SymbolDecl::full_span: (usize, usize)
+pub perl_symbol::api::SymbolDecl::kind: perl_symbol::types::SymbolKind
+pub perl_symbol::api::SymbolDecl::name: alloc::string::String
+pub perl_symbol::api::SymbolDecl::qualified_name: alloc::string::String
+pub fn perl_symbol::surface::decl::SymbolDecl::clone(&self) -> perl_symbol::surface::decl::SymbolDecl
+pub fn perl_symbol::surface::decl::SymbolDecl::eq(&self, other: &perl_symbol::surface::decl::SymbolDecl) -> bool
+pub fn perl_symbol::surface::decl::SymbolDecl::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_symbol::api::SymbolDeclSemanticFacts
+pub perl_symbol::api::SymbolDeclSemanticFacts::anchors: alloc::vec::Vec<perl_semantic_facts::AnchorFact>
+pub perl_symbol::api::SymbolDeclSemanticFacts::defines_edges: alloc::vec::Vec<perl_semantic_facts::EdgeFact>
+pub perl_symbol::api::SymbolDeclSemanticFacts::entities: alloc::vec::Vec<perl_semantic_facts::EntityFact>
+pub perl_symbol::api::SymbolDeclSemanticFacts::unsupported: alloc::vec::Vec<perl_symbol::surface::facts::UnsupportedDeclFact>
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::clone(&self) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::eq(&self, other: &perl_symbol::surface::facts::SymbolDeclSemanticFacts) -> bool
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_symbol::api::SymbolIndex
+pub fn perl_symbol::index::SymbolIndex::add_symbol(&mut self, symbol: alloc::string::String)
+pub fn perl_symbol::index::SymbolIndex::new() -> Self
+pub fn perl_symbol::index::SymbolIndex::remove_document(&mut self, uri: &str)
+pub fn perl_symbol::index::SymbolIndex::replace_document_symbols(&mut self, uri: &str, symbols: alloc::vec::Vec<alloc::string::String>)
+pub fn perl_symbol::index::SymbolIndex::search_fuzzy(&self, query: &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_symbol::index::SymbolIndex::search_prefix(&self, prefix: &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_symbol::index::SymbolIndex::default() -> Self
+pub struct perl_symbol::api::SymbolRef
+pub perl_symbol::api::SymbolRef::anchor_span: core::option::Option<(usize, usize)>
+pub perl_symbol::api::SymbolRef::full_span: (usize, usize)
+pub perl_symbol::api::SymbolRef::kind: perl_symbol::surface::ref::SymbolRefKind
+pub perl_symbol::api::SymbolRef::name: alloc::string::String
+pub perl_symbol::api::SymbolRef::package_qualifier: core::option::Option<alloc::string::String>
+pub perl_symbol::api::SymbolRef::qualified_name: alloc::string::String
+pub perl_symbol::api::SymbolRef::sigil: core::option::Option<alloc::string::String>
+pub fn perl_symbol::surface::ref::SymbolRef::clone(&self) -> perl_symbol::surface::ref::SymbolRef
+pub fn perl_symbol::surface::ref::SymbolRef::eq(&self, other: &perl_symbol::surface::ref::SymbolRef) -> bool
+pub fn perl_symbol::surface::ref::SymbolRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_symbol::api::SymbolRefSemanticFacts
+pub perl_symbol::api::SymbolRefSemanticFacts::anchors: alloc::vec::Vec<perl_semantic_facts::AnchorFact>
+pub perl_symbol::api::SymbolRefSemanticFacts::occurrences: alloc::vec::Vec<perl_semantic_facts::OccurrenceFact>
+pub perl_symbol::api::SymbolRefSemanticFacts::reference_edges: alloc::vec::Vec<perl_semantic_facts::EdgeFact>
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::clone(&self) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::eq(&self, other: &perl_symbol::surface::facts::SymbolRefSemanticFacts) -> bool
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_symbol::api::UnsupportedDeclFact
+pub perl_symbol::api::UnsupportedDeclFact::kind: perl_symbol::types::SymbolKind
+pub perl_symbol::api::UnsupportedDeclFact::qualified_name: alloc::string::String
+pub perl_symbol::api::UnsupportedDeclFact::reason: &'static str
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::clone(&self) -> perl_symbol::surface::facts::UnsupportedDeclFact
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::eq(&self, other: &perl_symbol::surface::facts::UnsupportedDeclFact) -> bool
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub const perl_symbol::api::MIN_LOOSE_MATCH_QUERY_CHARS: usize
+pub fn perl_symbol::api::byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize
+pub fn perl_symbol::api::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
+pub fn perl_symbol::api::extract_symbol_from_source(position: usize, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::cursor::CursorSymbolKind)>
+pub fn perl_symbol::api::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
+pub fn perl_symbol::api::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<(usize, usize)>
+pub fn perl_symbol::api::is_modchar(byte: u8) -> bool
+pub fn perl_symbol::api::is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool
+pub fn perl_symbol::api::symbol_decls_to_semantic_facts(decls: &[perl_symbol::surface::decl::SymbolDecl], file_id: perl_semantic_facts::FileId) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
+pub fn perl_symbol::api::symbol_refs_to_semantic_facts(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, entity_ids_by_qualified_name: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub fn perl_symbol::api::token_under_cursor(text: &str, line: usize, col_utf16: usize) -> core::option::Option<alloc::string::String>
+pub mod perl_symbol::cursor
+pub enum perl_symbol::cursor::CursorSymbolKind
+pub perl_symbol::cursor::CursorSymbolKind::Array
+pub perl_symbol::cursor::CursorSymbolKind::Hash
+pub perl_symbol::cursor::CursorSymbolKind::Scalar
+pub perl_symbol::cursor::CursorSymbolKind::Subroutine
+pub fn perl_symbol::cursor::CursorSymbolKind::clone(&self) -> perl_symbol::cursor::CursorSymbolKind
+pub fn perl_symbol::cursor::CursorSymbolKind::eq(&self, other: &perl_symbol::cursor::CursorSymbolKind) -> bool
+pub fn perl_symbol::cursor::CursorSymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::cursor::byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize
+pub fn perl_symbol::cursor::extract_symbol_from_source(position: usize, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::cursor::CursorSymbolKind)>
+pub fn perl_symbol::cursor::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<(usize, usize)>
+pub fn perl_symbol::cursor::is_modchar(byte: u8) -> bool
+pub fn perl_symbol::cursor::is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool
+pub fn perl_symbol::cursor::token_under_cursor(text: &str, line: usize, col_utf16: usize) -> core::option::Option<alloc::string::String>
+pub mod perl_symbol::index
+pub struct perl_symbol::index::SymbolIndex
+pub fn perl_symbol::index::SymbolIndex::add_symbol(&mut self, symbol: alloc::string::String)
+pub fn perl_symbol::index::SymbolIndex::new() -> Self
+pub fn perl_symbol::index::SymbolIndex::remove_document(&mut self, uri: &str)
+pub fn perl_symbol::index::SymbolIndex::replace_document_symbols(&mut self, uri: &str, symbols: alloc::vec::Vec<alloc::string::String>)
+pub fn perl_symbol::index::SymbolIndex::search_fuzzy(&self, query: &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_symbol::index::SymbolIndex::search_prefix(&self, prefix: &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_symbol::index::SymbolIndex::default() -> Self
+pub mod perl_symbol::surface
+pub mod perl_symbol::surface::decl
+pub struct perl_symbol::surface::decl::SymbolDecl
+pub perl_symbol::surface::decl::SymbolDecl::anchor_span: core::option::Option<(usize, usize)>
+pub perl_symbol::surface::decl::SymbolDecl::container: core::option::Option<alloc::string::String>
+pub perl_symbol::surface::decl::SymbolDecl::declarator: core::option::Option<alloc::string::String>
+pub perl_symbol::surface::decl::SymbolDecl::full_span: (usize, usize)
+pub perl_symbol::surface::decl::SymbolDecl::kind: perl_symbol::types::SymbolKind
+pub perl_symbol::surface::decl::SymbolDecl::name: alloc::string::String
+pub perl_symbol::surface::decl::SymbolDecl::qualified_name: alloc::string::String
+pub fn perl_symbol::surface::decl::SymbolDecl::clone(&self) -> perl_symbol::surface::decl::SymbolDecl
+pub fn perl_symbol::surface::decl::SymbolDecl::eq(&self, other: &perl_symbol::surface::decl::SymbolDecl) -> bool
+pub fn perl_symbol::surface::decl::SymbolDecl::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::decl::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
+pub mod perl_symbol::surface::facts
+pub struct perl_symbol::surface::facts::SymbolDeclSemanticFacts
+pub perl_symbol::surface::facts::SymbolDeclSemanticFacts::anchors: alloc::vec::Vec<perl_semantic_facts::AnchorFact>
+pub perl_symbol::surface::facts::SymbolDeclSemanticFacts::defines_edges: alloc::vec::Vec<perl_semantic_facts::EdgeFact>
+pub perl_symbol::surface::facts::SymbolDeclSemanticFacts::entities: alloc::vec::Vec<perl_semantic_facts::EntityFact>
+pub perl_symbol::surface::facts::SymbolDeclSemanticFacts::unsupported: alloc::vec::Vec<perl_symbol::surface::facts::UnsupportedDeclFact>
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::clone(&self) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::eq(&self, other: &perl_symbol::surface::facts::SymbolDeclSemanticFacts) -> bool
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub perl_symbol::surface::facts::SymbolRefSemanticFacts::anchors: alloc::vec::Vec<perl_semantic_facts::AnchorFact>
+pub perl_symbol::surface::facts::SymbolRefSemanticFacts::occurrences: alloc::vec::Vec<perl_semantic_facts::OccurrenceFact>
+pub perl_symbol::surface::facts::SymbolRefSemanticFacts::reference_edges: alloc::vec::Vec<perl_semantic_facts::EdgeFact>
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::clone(&self) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::eq(&self, other: &perl_symbol::surface::facts::SymbolRefSemanticFacts) -> bool
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_symbol::surface::facts::UnsupportedDeclFact
+pub perl_symbol::surface::facts::UnsupportedDeclFact::kind: perl_symbol::types::SymbolKind
+pub perl_symbol::surface::facts::UnsupportedDeclFact::qualified_name: alloc::string::String
+pub perl_symbol::surface::facts::UnsupportedDeclFact::reason: &'static str
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::clone(&self) -> perl_symbol::surface::facts::UnsupportedDeclFact
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::eq(&self, other: &perl_symbol::surface::facts::UnsupportedDeclFact) -> bool
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_symbol::surface::facts::symbol_decls_to_semantic_facts(decls: &[perl_symbol::surface::decl::SymbolDecl], file_id: perl_semantic_facts::FileId) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
+pub fn perl_symbol::surface::facts::symbol_refs_to_semantic_facts(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, entity_ids_by_qualified_name: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub mod perl_symbol::surface::ref
+pub enum perl_symbol::surface::ref::SymbolRefKind
+pub perl_symbol::surface::ref::SymbolRefKind::CoderefReference
+pub perl_symbol::surface::ref::SymbolRefKind::MethodCall
+pub perl_symbol::surface::ref::SymbolRefKind::StaticMethodCall
+pub perl_symbol::surface::ref::SymbolRefKind::SubroutineCall
+pub perl_symbol::surface::ref::SymbolRefKind::TypeglobReference
+pub perl_symbol::surface::ref::SymbolRefKind::Variable(perl_symbol::types::VarKind)
+pub fn perl_symbol::surface::ref::SymbolRefKind::clone(&self) -> perl_symbol::surface::ref::SymbolRefKind
+pub fn perl_symbol::surface::ref::SymbolRefKind::eq(&self, other: &perl_symbol::surface::ref::SymbolRefKind) -> bool
+pub fn perl_symbol::surface::ref::SymbolRefKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_symbol::surface::ref::SymbolRef
+pub perl_symbol::surface::ref::SymbolRef::anchor_span: core::option::Option<(usize, usize)>
+pub perl_symbol::surface::ref::SymbolRef::full_span: (usize, usize)
+pub perl_symbol::surface::ref::SymbolRef::kind: perl_symbol::surface::ref::SymbolRefKind
+pub perl_symbol::surface::ref::SymbolRef::name: alloc::string::String
+pub perl_symbol::surface::ref::SymbolRef::package_qualifier: core::option::Option<alloc::string::String>
+pub perl_symbol::surface::ref::SymbolRef::qualified_name: alloc::string::String
+pub perl_symbol::surface::ref::SymbolRef::sigil: core::option::Option<alloc::string::String>
+pub fn perl_symbol::surface::ref::SymbolRef::clone(&self) -> perl_symbol::surface::ref::SymbolRef
+pub fn perl_symbol::surface::ref::SymbolRef::eq(&self, other: &perl_symbol::surface::ref::SymbolRef) -> bool
+pub fn perl_symbol::surface::ref::SymbolRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::ref::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
+pub enum perl_symbol::surface::SymbolRefKind
+pub perl_symbol::surface::SymbolRefKind::CoderefReference
+pub perl_symbol::surface::SymbolRefKind::MethodCall
+pub perl_symbol::surface::SymbolRefKind::StaticMethodCall
+pub perl_symbol::surface::SymbolRefKind::SubroutineCall
+pub perl_symbol::surface::SymbolRefKind::TypeglobReference
+pub perl_symbol::surface::SymbolRefKind::Variable(perl_symbol::types::VarKind)
+pub fn perl_symbol::surface::ref::SymbolRefKind::clone(&self) -> perl_symbol::surface::ref::SymbolRefKind
+pub fn perl_symbol::surface::ref::SymbolRefKind::eq(&self, other: &perl_symbol::surface::ref::SymbolRefKind) -> bool
+pub fn perl_symbol::surface::ref::SymbolRefKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_symbol::surface::SymbolDecl
+pub perl_symbol::surface::SymbolDecl::anchor_span: core::option::Option<(usize, usize)>
+pub perl_symbol::surface::SymbolDecl::container: core::option::Option<alloc::string::String>
+pub perl_symbol::surface::SymbolDecl::declarator: core::option::Option<alloc::string::String>
+pub perl_symbol::surface::SymbolDecl::full_span: (usize, usize)
+pub perl_symbol::surface::SymbolDecl::kind: perl_symbol::types::SymbolKind
+pub perl_symbol::surface::SymbolDecl::name: alloc::string::String
+pub perl_symbol::surface::SymbolDecl::qualified_name: alloc::string::String
+pub fn perl_symbol::surface::decl::SymbolDecl::clone(&self) -> perl_symbol::surface::decl::SymbolDecl
+pub fn perl_symbol::surface::decl::SymbolDecl::eq(&self, other: &perl_symbol::surface::decl::SymbolDecl) -> bool
+pub fn perl_symbol::surface::decl::SymbolDecl::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_symbol::surface::SymbolDeclSemanticFacts
+pub perl_symbol::surface::SymbolDeclSemanticFacts::anchors: alloc::vec::Vec<perl_semantic_facts::AnchorFact>
+pub perl_symbol::surface::SymbolDeclSemanticFacts::defines_edges: alloc::vec::Vec<perl_semantic_facts::EdgeFact>
+pub perl_symbol::surface::SymbolDeclSemanticFacts::entities: alloc::vec::Vec<perl_semantic_facts::EntityFact>
+pub perl_symbol::surface::SymbolDeclSemanticFacts::unsupported: alloc::vec::Vec<perl_symbol::surface::facts::UnsupportedDeclFact>
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::clone(&self) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::eq(&self, other: &perl_symbol::surface::facts::SymbolDeclSemanticFacts) -> bool
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_symbol::surface::SymbolRef
+pub perl_symbol::surface::SymbolRef::anchor_span: core::option::Option<(usize, usize)>
+pub perl_symbol::surface::SymbolRef::full_span: (usize, usize)
+pub perl_symbol::surface::SymbolRef::kind: perl_symbol::surface::ref::SymbolRefKind
+pub perl_symbol::surface::SymbolRef::name: alloc::string::String
+pub perl_symbol::surface::SymbolRef::package_qualifier: core::option::Option<alloc::string::String>
+pub perl_symbol::surface::SymbolRef::qualified_name: alloc::string::String
+pub perl_symbol::surface::SymbolRef::sigil: core::option::Option<alloc::string::String>
+pub fn perl_symbol::surface::ref::SymbolRef::clone(&self) -> perl_symbol::surface::ref::SymbolRef
+pub fn perl_symbol::surface::ref::SymbolRef::eq(&self, other: &perl_symbol::surface::ref::SymbolRef) -> bool
+pub fn perl_symbol::surface::ref::SymbolRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_symbol::surface::SymbolRefSemanticFacts
+pub perl_symbol::surface::SymbolRefSemanticFacts::anchors: alloc::vec::Vec<perl_semantic_facts::AnchorFact>
+pub perl_symbol::surface::SymbolRefSemanticFacts::occurrences: alloc::vec::Vec<perl_semantic_facts::OccurrenceFact>
+pub perl_symbol::surface::SymbolRefSemanticFacts::reference_edges: alloc::vec::Vec<perl_semantic_facts::EdgeFact>
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::clone(&self) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::eq(&self, other: &perl_symbol::surface::facts::SymbolRefSemanticFacts) -> bool
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_symbol::surface::UnsupportedDeclFact
+pub perl_symbol::surface::UnsupportedDeclFact::kind: perl_symbol::types::SymbolKind
+pub perl_symbol::surface::UnsupportedDeclFact::qualified_name: alloc::string::String
+pub perl_symbol::surface::UnsupportedDeclFact::reason: &'static str
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::clone(&self) -> perl_symbol::surface::facts::UnsupportedDeclFact
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::eq(&self, other: &perl_symbol::surface::facts::UnsupportedDeclFact) -> bool
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_symbol::surface::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
+pub fn perl_symbol::surface::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
+pub fn perl_symbol::surface::symbol_decls_to_semantic_facts(decls: &[perl_symbol::surface::decl::SymbolDecl], file_id: perl_semantic_facts::FileId) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
+pub fn perl_symbol::surface::symbol_refs_to_semantic_facts(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, entity_ids_by_qualified_name: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub mod perl_symbol::types
+pub enum perl_symbol::types::SymbolKind
+pub perl_symbol::types::SymbolKind::Class
+pub perl_symbol::types::SymbolKind::Constant
+pub perl_symbol::types::SymbolKind::Export
+pub perl_symbol::types::SymbolKind::Format
+pub perl_symbol::types::SymbolKind::Import
+pub perl_symbol::types::SymbolKind::Label
+pub perl_symbol::types::SymbolKind::Method
+pub perl_symbol::types::SymbolKind::Package
+pub perl_symbol::types::SymbolKind::Role
+pub perl_symbol::types::SymbolKind::Subroutine
+pub perl_symbol::types::SymbolKind::Variable(perl_symbol::types::VarKind)
+pub const fn perl_symbol::types::SymbolKind::array() -> Self
+pub const fn perl_symbol::types::SymbolKind::hash() -> Self
+pub const fn perl_symbol::types::SymbolKind::is_callable(self) -> bool
+pub const fn perl_symbol::types::SymbolKind::is_namespace(self) -> bool
+pub const fn perl_symbol::types::SymbolKind::is_variable(self) -> bool
+pub fn perl_symbol::types::SymbolKind::kind_compatible(self, other: perl_symbol::types::SymbolKind) -> bool
+pub const fn perl_symbol::types::SymbolKind::scalar() -> Self
+pub const fn perl_symbol::types::SymbolKind::sigil(self) -> core::option::Option<&'static str>
+pub const fn perl_symbol::types::SymbolKind::to_lsp_kind(self) -> u32
+pub const fn perl_symbol::types::SymbolKind::to_lsp_kind_document_symbol(self) -> u32
+pub fn perl_symbol::types::SymbolKind::clone(&self) -> perl_symbol::types::SymbolKind
+pub fn perl_symbol::types::SymbolKind::eq(&self, other: &perl_symbol::types::SymbolKind) -> bool
+pub fn perl_symbol::types::SymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::types::SymbolKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_symbol::types::SymbolKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_symbol::types::SymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_symbol::types::VarKind
+pub perl_symbol::types::VarKind::Array
+pub perl_symbol::types::VarKind::Hash
+pub perl_symbol::types::VarKind::Scalar
+pub const fn perl_symbol::types::VarKind::sigil(self) -> &'static str
+pub fn perl_symbol::types::VarKind::clone(&self) -> perl_symbol::types::VarKind
+pub fn perl_symbol::types::VarKind::eq(&self, other: &perl_symbol::types::VarKind) -> bool
+pub fn perl_symbol::types::VarKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::types::VarKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_symbol::types::VarKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_symbol::types::VarKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_symbol::types::MIN_LOOSE_MATCH_QUERY_CHARS: usize
+pub enum perl_symbol::CursorSymbolKind
+pub perl_symbol::CursorSymbolKind::Array
+pub perl_symbol::CursorSymbolKind::Hash
+pub perl_symbol::CursorSymbolKind::Scalar
+pub perl_symbol::CursorSymbolKind::Subroutine
+pub fn perl_symbol::cursor::CursorSymbolKind::clone(&self) -> perl_symbol::cursor::CursorSymbolKind
+pub fn perl_symbol::cursor::CursorSymbolKind::eq(&self, other: &perl_symbol::cursor::CursorSymbolKind) -> bool
+pub fn perl_symbol::cursor::CursorSymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_symbol::SymbolKind
+pub perl_symbol::SymbolKind::Class
+pub perl_symbol::SymbolKind::Constant
+pub perl_symbol::SymbolKind::Export
+pub perl_symbol::SymbolKind::Format
+pub perl_symbol::SymbolKind::Import
+pub perl_symbol::SymbolKind::Label
+pub perl_symbol::SymbolKind::Method
+pub perl_symbol::SymbolKind::Package
+pub perl_symbol::SymbolKind::Role
+pub perl_symbol::SymbolKind::Subroutine
+pub perl_symbol::SymbolKind::Variable(perl_symbol::types::VarKind)
+pub const fn perl_symbol::types::SymbolKind::array() -> Self
+pub const fn perl_symbol::types::SymbolKind::hash() -> Self
+pub const fn perl_symbol::types::SymbolKind::is_callable(self) -> bool
+pub const fn perl_symbol::types::SymbolKind::is_namespace(self) -> bool
+pub const fn perl_symbol::types::SymbolKind::is_variable(self) -> bool
+pub fn perl_symbol::types::SymbolKind::kind_compatible(self, other: perl_symbol::types::SymbolKind) -> bool
+pub const fn perl_symbol::types::SymbolKind::scalar() -> Self
+pub const fn perl_symbol::types::SymbolKind::sigil(self) -> core::option::Option<&'static str>
+pub const fn perl_symbol::types::SymbolKind::to_lsp_kind(self) -> u32
+pub const fn perl_symbol::types::SymbolKind::to_lsp_kind_document_symbol(self) -> u32
+pub fn perl_symbol::types::SymbolKind::clone(&self) -> perl_symbol::types::SymbolKind
+pub fn perl_symbol::types::SymbolKind::eq(&self, other: &perl_symbol::types::SymbolKind) -> bool
+pub fn perl_symbol::types::SymbolKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::types::SymbolKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_symbol::types::SymbolKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_symbol::types::SymbolKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_symbol::SymbolRefKind
+pub perl_symbol::SymbolRefKind::CoderefReference
+pub perl_symbol::SymbolRefKind::MethodCall
+pub perl_symbol::SymbolRefKind::StaticMethodCall
+pub perl_symbol::SymbolRefKind::SubroutineCall
+pub perl_symbol::SymbolRefKind::TypeglobReference
+pub perl_symbol::SymbolRefKind::Variable(perl_symbol::types::VarKind)
+pub fn perl_symbol::surface::ref::SymbolRefKind::clone(&self) -> perl_symbol::surface::ref::SymbolRefKind
+pub fn perl_symbol::surface::ref::SymbolRefKind::eq(&self, other: &perl_symbol::surface::ref::SymbolRefKind) -> bool
+pub fn perl_symbol::surface::ref::SymbolRefKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_symbol::VarKind
+pub perl_symbol::VarKind::Array
+pub perl_symbol::VarKind::Hash
+pub perl_symbol::VarKind::Scalar
+pub const fn perl_symbol::types::VarKind::sigil(self) -> &'static str
+pub fn perl_symbol::types::VarKind::clone(&self) -> perl_symbol::types::VarKind
+pub fn perl_symbol::types::VarKind::eq(&self, other: &perl_symbol::types::VarKind) -> bool
+pub fn perl_symbol::types::VarKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::types::VarKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_symbol::types::VarKind::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_symbol::types::VarKind::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_symbol::SymbolDecl
+pub perl_symbol::SymbolDecl::anchor_span: core::option::Option<(usize, usize)>
+pub perl_symbol::SymbolDecl::container: core::option::Option<alloc::string::String>
+pub perl_symbol::SymbolDecl::declarator: core::option::Option<alloc::string::String>
+pub perl_symbol::SymbolDecl::full_span: (usize, usize)
+pub perl_symbol::SymbolDecl::kind: perl_symbol::types::SymbolKind
+pub perl_symbol::SymbolDecl::name: alloc::string::String
+pub perl_symbol::SymbolDecl::qualified_name: alloc::string::String
+pub fn perl_symbol::surface::decl::SymbolDecl::clone(&self) -> perl_symbol::surface::decl::SymbolDecl
+pub fn perl_symbol::surface::decl::SymbolDecl::eq(&self, other: &perl_symbol::surface::decl::SymbolDecl) -> bool
+pub fn perl_symbol::surface::decl::SymbolDecl::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_symbol::SymbolDeclSemanticFacts
+pub perl_symbol::SymbolDeclSemanticFacts::anchors: alloc::vec::Vec<perl_semantic_facts::AnchorFact>
+pub perl_symbol::SymbolDeclSemanticFacts::defines_edges: alloc::vec::Vec<perl_semantic_facts::EdgeFact>
+pub perl_symbol::SymbolDeclSemanticFacts::entities: alloc::vec::Vec<perl_semantic_facts::EntityFact>
+pub perl_symbol::SymbolDeclSemanticFacts::unsupported: alloc::vec::Vec<perl_symbol::surface::facts::UnsupportedDeclFact>
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::clone(&self) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::eq(&self, other: &perl_symbol::surface::facts::SymbolDeclSemanticFacts) -> bool
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::SymbolDeclSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_symbol::SymbolIndex
+pub fn perl_symbol::index::SymbolIndex::add_symbol(&mut self, symbol: alloc::string::String)
+pub fn perl_symbol::index::SymbolIndex::new() -> Self
+pub fn perl_symbol::index::SymbolIndex::remove_document(&mut self, uri: &str)
+pub fn perl_symbol::index::SymbolIndex::replace_document_symbols(&mut self, uri: &str, symbols: alloc::vec::Vec<alloc::string::String>)
+pub fn perl_symbol::index::SymbolIndex::search_fuzzy(&self, query: &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_symbol::index::SymbolIndex::search_prefix(&self, prefix: &str) -> alloc::vec::Vec<alloc::string::String>
+pub fn perl_symbol::index::SymbolIndex::default() -> Self
+pub struct perl_symbol::SymbolRef
+pub perl_symbol::SymbolRef::anchor_span: core::option::Option<(usize, usize)>
+pub perl_symbol::SymbolRef::full_span: (usize, usize)
+pub perl_symbol::SymbolRef::kind: perl_symbol::surface::ref::SymbolRefKind
+pub perl_symbol::SymbolRef::name: alloc::string::String
+pub perl_symbol::SymbolRef::package_qualifier: core::option::Option<alloc::string::String>
+pub perl_symbol::SymbolRef::qualified_name: alloc::string::String
+pub perl_symbol::SymbolRef::sigil: core::option::Option<alloc::string::String>
+pub fn perl_symbol::surface::ref::SymbolRef::clone(&self) -> perl_symbol::surface::ref::SymbolRef
+pub fn perl_symbol::surface::ref::SymbolRef::eq(&self, other: &perl_symbol::surface::ref::SymbolRef) -> bool
+pub fn perl_symbol::surface::ref::SymbolRef::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_symbol::SymbolRefSemanticFacts
+pub perl_symbol::SymbolRefSemanticFacts::anchors: alloc::vec::Vec<perl_semantic_facts::AnchorFact>
+pub perl_symbol::SymbolRefSemanticFacts::occurrences: alloc::vec::Vec<perl_semantic_facts::OccurrenceFact>
+pub perl_symbol::SymbolRefSemanticFacts::reference_edges: alloc::vec::Vec<perl_semantic_facts::EdgeFact>
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::clone(&self) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::eq(&self, other: &perl_symbol::surface::facts::SymbolRefSemanticFacts) -> bool
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::SymbolRefSemanticFacts::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_symbol::UnsupportedDeclFact
+pub perl_symbol::UnsupportedDeclFact::kind: perl_symbol::types::SymbolKind
+pub perl_symbol::UnsupportedDeclFact::qualified_name: alloc::string::String
+pub perl_symbol::UnsupportedDeclFact::reason: &'static str
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::clone(&self) -> perl_symbol::surface::facts::UnsupportedDeclFact
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::eq(&self, other: &perl_symbol::surface::facts::UnsupportedDeclFact) -> bool
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_symbol::surface::facts::UnsupportedDeclFact::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub const perl_symbol::MIN_LOOSE_MATCH_QUERY_CHARS: usize
+pub fn perl_symbol::byte_offset_utf16(line_text: &str, col_utf16: usize) -> usize
+pub fn perl_symbol::extract_symbol_decls(root: &perl_ast::ast::Node, current_package: core::option::Option<&str>) -> alloc::vec::Vec<perl_symbol::surface::decl::SymbolDecl>
+pub fn perl_symbol::extract_symbol_from_source(position: usize, source: &str) -> core::option::Option<(alloc::string::String, perl_symbol::cursor::CursorSymbolKind)>
+pub fn perl_symbol::extract_symbol_refs(root: &perl_ast::ast::Node) -> alloc::vec::Vec<perl_symbol::surface::ref::SymbolRef>
+pub fn perl_symbol::get_symbol_range_at_position(position: usize, source: &str) -> core::option::Option<(usize, usize)>
+pub fn perl_symbol::is_modchar(byte: u8) -> bool
+pub fn perl_symbol::is_word_boundary(text: &[u8], pos: usize, word_len: usize) -> bool
+pub fn perl_symbol::symbol_decls_to_semantic_facts(decls: &[perl_symbol::surface::decl::SymbolDecl], file_id: perl_semantic_facts::FileId) -> perl_symbol::surface::facts::SymbolDeclSemanticFacts
+pub fn perl_symbol::symbol_refs_to_semantic_facts(refs: &[perl_symbol::surface::ref::SymbolRef], file_id: perl_semantic_facts::FileId, entity_ids_by_qualified_name: &alloc::collections::btree::map::BTreeMap<alloc::string::String, perl_semantic_facts::EntityId>) -> perl_symbol::surface::facts::SymbolRefSemanticFacts
+pub fn perl_symbol::token_under_cursor(text: &str, line: usize, col_utf16: usize) -> core::option::Option<alloc::string::String>

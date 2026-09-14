@@ -331,7 +331,15 @@ fn for_each_child_leaf_nodes_visit_nothing() -> Result<(), Box<dyn std::error::E
             loc(0, 13),
         ),
         Node::new(NodeKind::Prototype { content: "$@".to_string() }, loc(0, 4)),
-        Node::new(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }, loc(0, 8)),
+        Node::new(
+            NodeKind::DataSection {
+                marker: "__DATA__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
+            loc(0, 8),
+        ),
         Node::new(
             NodeKind::Format {
                 name: "STDOUT".to_string(),
@@ -1138,8 +1146,15 @@ fn sexp_class() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn sexp_data_section_without_body() -> Result<(), Box<dyn std::error::Error>> {
-    let node =
-        Node::new(NodeKind::DataSection { marker: "__END__".to_string(), body: None }, loc(0, 7));
+    let node = Node::new(
+        NodeKind::DataSection {
+            marker: "__END__".to_string(),
+            marker_span: None,
+            body: None,
+            body_span: None,
+        },
+        loc(0, 7),
+    );
     let sexp = node.to_sexp();
     assert_eq!(sexp, "(data_section (marker __END__))");
     Ok(())

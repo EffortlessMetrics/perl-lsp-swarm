@@ -3,6 +3,7 @@
 //! Handles client capability parsing and server capabilities construction.
 
 use super::super::{JsonRpcError, LspServer, Ordering};
+use crate::protocol::command::code_action_documentation_entries;
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
@@ -97,9 +98,16 @@ fn workspace_capabilities(
     workspace_folders_support: bool,
     file_operations: FileOperationSupport,
 ) -> Value {
-    let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
-    let filters: Vec<Value> =
-        perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
+    // Advertised file-operation filters share the watcher pattern authority
+    // so both registrations stay honest about what the handlers classify
+    // (#13308). The catch-all delivers non-Perl events by design; the
+    // willRename preflight classifies each renamed subject through the same
+    // discovery admission authority as the startup and watcher seams and
+    // plans no module edits for non-Perl subjects (#14186).
+    let filters: Vec<Value> = super::watchers::PERL_WATCH_PATTERNS
+        .iter()
+        .map(|glob| json!({ "pattern": { "glob": glob } }))
+        .collect();
     let mut file_operation_capabilities = serde_json::Map::new();
     file_operations.insert_capabilities(&mut file_operation_capabilities, &filters);
 
@@ -117,13 +125,6 @@ fn workspace_capabilities(
     }
     workspace
 }
-
-/// The LSP protocol version this server implements.
-///
-/// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
-/// The server uses 3.18 extensions (e.g. `inlineCompletionProvider`), so the
-/// advertised version reflects the highest spec whose features are surfaced.
-const LSP_PROTOCOL_VERSION: &str = "3.18";
 
 fn is_opencode_client(params: &Value) -> bool {
     params
@@ -163,47 +164,6 @@ fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Val
     };
 
     experimental.insert(key.to_string(), value);
-}
-
-fn code_action_documentation_entries() -> Value {
-    json!([
-        {
-            "kind": "quickfix",
-            "command": {
-                "title": "Explain Perl quick fixes",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "diagnostics",
-                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_quickfix"
-                }]
-            }
-        },
-        {
-            "kind": "refactor",
-            "command": {
-                "title": "Explain Perl refactors",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "rename",
-                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_refactor"
-                }]
-            }
-        },
-        {
-            "kind": "source.fixAll",
-            "command": {
-                "title": "Explain Perl fix-all actions",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "diagnostics",
-                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_fix_all"
-                }]
-            }
-        }
-    ])
 }
 
 impl LspServer {
@@ -876,7 +836,6 @@ impl LspServer {
 
         Ok(Some(json!({
             "capabilities": capabilities,
-            "protocolVersion": LSP_PROTOCOL_VERSION,
             "serverInfo": {
                 "name": "perl-lsp",
                 "version": env!("CARGO_PKG_VERSION")
@@ -1706,6 +1665,20 @@ mod tests {
             .and_then(Value::as_array)
             .ok_or("supported clients should receive CodeActionOptions.documentation")?;
         assert_eq!(docs.len(), 3, "expected quickfix, refactor, and source.fixAll docs");
+        for doc in docs {
+            let command = doc.get("command").ok_or("documentation entry missing command")?;
+            let title = command.get("title").and_then(Value::as_str);
+            let tooltip = command
+                .get("tooltip")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("documentation Command missing tooltip: {doc}"))?;
+            assert!(!tooltip.is_empty(), "documentation Command.tooltip must be non-empty: {doc}");
+            assert_ne!(
+                Some(tooltip),
+                title,
+                "documentation Command.tooltip must not replace title: {doc}"
+            );
+        }
         Ok(())
     }
 

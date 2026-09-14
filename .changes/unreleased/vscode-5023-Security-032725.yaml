@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Security
+body: "The legacy tooling settings perl-lsp.perltidyConfig, perl-lsp.critic.engine, perl-lsp.perlcritic.profile and perl-lsp.perlcritic.theme are now machine-scoped, so a checked-in .vscode/settings.json can no longer set them and a cloned repository cannot re-arm the legacy Perl::Critic/perltidy subprocess path on your machine; set them in your user or machine settings instead."
+time: 2026-07-29T03:27:25Z
+custom:
+  PR: "5023"
+  Slug: legacy-critic-perltidy-machine-scope-extension
+  Breaking: "no"

@@ -8,9 +8,9 @@
 
 use anyhow::{Context, Result, bail};
 use perl_core_harness_types::{
-    RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus, SemanticBoundaryConfidence,
-    SemanticBoundaryDisposition, SemanticBoundaryLockScope, SemanticBoundaryRecord,
-    SemanticBoundarySourceSpan,
+    ExecutionMechanism, HarnessMode, RUNNER_RECORD_SCHEMA_VERSION, RunnerRecord, RunnerStatus,
+    SemanticBoundaryConfidence, SemanticBoundaryDisposition, SemanticBoundaryLockScope,
+    SemanticBoundaryRecord, SemanticBoundarySourceSpan, validate_execution_mechanism,
 };
 use perl_parser_core::hir::{
     CompileEffect, CompileEffectKind, CompileEffectSourceKind, CompilePhase, HirFile, HirScopeId,
@@ -91,7 +91,10 @@ fn main() {
             let args = env::args_os().skip(1).collect::<Vec<_>>();
             let display_path =
                 infer_display_path(&args).unwrap_or_else(|| "perl-core-test-runner".to_string());
-            let result = ModeRunResult::fail("cli_switch", err.to_string());
+            let mut result = ModeRunResult::fail("cli_switch", err.to_string());
+            if mode == HarnessMode::Execute.as_str() {
+                result = result.with_mechanism(ExecutionMechanism::FixtureReplay);
+            }
             emit_internal_failure(&err);
             let _ = append_context_record(&mode, &display_path, &result);
             1
@@ -213,6 +216,7 @@ struct ModeRunResult {
     assertions_passed: usize,
     assertions_total: usize,
     tap_output: Option<String>,
+    mechanism: Option<ExecutionMechanism>,
     semantic_boundaries: Vec<SemanticBoundaryRecord>,
 }
 
@@ -225,6 +229,7 @@ impl ModeRunResult {
             assertions_passed: 1,
             assertions_total: 1,
             tap_output: None,
+            mechanism: None,
             semantic_boundaries: Vec::new(),
         }
     }
@@ -237,6 +242,7 @@ impl ModeRunResult {
             assertions_passed,
             assertions_total,
             tap_output: Some(tap_output),
+            mechanism: None,
             semantic_boundaries: Vec::new(),
         }
     }
@@ -249,12 +255,22 @@ impl ModeRunResult {
             assertions_passed: 0,
             assertions_total: 1,
             tap_output: None,
+            mechanism: None,
             semantic_boundaries: Vec::new(),
         }
     }
 
     fn from_error(err: anyhow::Error) -> Self {
         Self::fail("source_decode", err.to_string())
+    }
+
+    /// Name the rail that produced this result.
+    ///
+    /// Applied by [`run_execute`] to the rail as a whole, and by the top-level
+    /// failure path when an execute invocation dies before reaching it.
+    fn with_mechanism(mut self, mechanism: ExecutionMechanism) -> Self {
+        self.mechanism = Some(mechanism);
+        self
     }
 }
 
@@ -1528,7 +1544,21 @@ fn is_run_switchp_data_setup_boundary(
     normalized == "BEGIN {\n    print \"1..3\\n\";\n    *ARGV = *DATA;\n}"
 }
 
+/// Run the selected-fixture executor and classify its evidence.
+///
+/// The only executor wired to `execute` recognizes six exact fixture shapes and
+/// emits scaffold-generated TAP (#8254). Classifying the whole rail here rather
+/// than inside the six passing handlers keeps every outcome — replayed pass,
+/// rejected path, failed compile precondition, source-decode error — labelled
+/// as the fixture-replay evidence it is, and leaves no caller able to obtain an
+/// unclassified execution result.
 fn run_execute(invocation: &Invocation) -> Result<ModeRunResult> {
+    Ok(execute_selected_fixture(invocation)
+        .unwrap_or_else(ModeRunResult::from_error)
+        .with_mechanism(ExecutionMechanism::FixtureReplay))
+}
+
+fn execute_selected_fixture(invocation: &Invocation) -> Result<ModeRunResult> {
     let display_path = normalize_display_path(&invocation.display_path);
     let Some(selected_test) = selected_execute_test(&display_path) else {
         return Ok(ModeRunResult::fail(
@@ -2189,6 +2219,13 @@ fn write_context_record(
     display_path: &str,
     result: &ModeRunResult,
 ) -> Result<()> {
+    // Fail closed before the record reaches disk: an execution receipt that
+    // does not name its rail, or that claims a rail this runner cannot supply,
+    // is not evidence and must not be published (#8254).
+    validate_execution_mechanism(mode, result.mechanism)
+        .map_err(|violation| anyhow::anyhow!("{violation}"))
+        .context("refusing to write an inadmissible runner record")?;
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("creating runner context directory {}", parent.display()))?;
@@ -2203,6 +2240,7 @@ fn write_context_record(
         assertions_total: result.assertions_total,
         bucket: result.bucket.clone(),
         first_diagnostic: result.first_diagnostic.clone(),
+        mechanism: result.mechanism,
         semantic_boundaries: result.semantic_boundaries.clone(),
     };
     let json = serde_json::to_string(&record).context("serializing runner record")?;
@@ -2221,6 +2259,7 @@ fn one_line(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_parser_core::SourceLocation;
 
     type TestResult<T = ()> = Result<T>;
 
@@ -3712,8 +3751,13 @@ mod tests {
 
     #[test]
     fn compile_comp_form_scope_end_reference_boundary_passes() -> TestResult {
+        let source = "#!./perl\nBEGIN { \\&END }\n".to_string();
+        let effects = compile_effects_for_source(&source)?;
+        if !effects.is_empty() {
+            bail!("pure BEGIN {{ \\&END }} should not emit compile effects: {effects:?}");
+        }
         let invocation = Invocation {
-            source: SourceInput::Inline("#!./perl\nBEGIN { \\&END }\n".to_string()),
+            source: SourceInput::Inline(source),
             display_path: "comp/form_scope.t".to_string(),
         };
 
@@ -3726,8 +3770,10 @@ mod tests {
 
     #[test]
     fn compile_comp_form_scope_end_reference_other_file_stays_bucketed() -> TestResult {
+        let source = comp_form_scope_end_reference_effect_source(r"\&END");
+        assert_phase_block_effect(&source)?;
         let invocation = Invocation {
-            source: SourceInput::Inline("#!./perl\nBEGIN { \\&END }\n".to_string()),
+            source: SourceInput::Inline(source),
             display_path: "comp/hints.t".to_string(),
         };
 
@@ -3740,8 +3786,10 @@ mod tests {
 
     #[test]
     fn compile_comp_form_scope_end_reference_changed_block_stays_bucketed() -> TestResult {
+        let source = comp_form_scope_end_reference_effect_source(r"\&CHECK");
+        assert_phase_block_effect(&source)?;
         let invocation = Invocation {
-            source: SourceInput::Inline("#!./perl\nBEGIN { \\&CHECK }\n".to_string()),
+            source: SourceInput::Inline(source),
             display_path: "comp/form_scope.t".to_string(),
         };
 
@@ -3749,6 +3797,79 @@ mod tests {
 
         assert_eq!(result.status, RunnerStatus::Fail);
         assert_eq!(result.bucket.as_deref(), Some("compile_effect"));
+        Ok(())
+    }
+
+    /// Build a PhaseBlock dynamic-boundary effect whose range covers exactly
+    /// `slice` within `source`. Direct classifier tests need an effect whose
+    /// slice is otherwise accepted: `CompileEffect` is `#[non_exhaustive]`,
+    /// so harvest a real effect from the observable `$^H = 1` fixture and pin
+    /// its range, letting each guard negative vary exactly one guard.
+    fn phase_block_effect_over(slice: &str, source: &str) -> TestResult<CompileEffect> {
+        let base = comp_form_scope_end_reference_effect_source(r"\&END");
+        let mut effects = compile_effects_for_source(&base)?;
+        effects.retain(|effect| effect.source_kind == CompileEffectSourceKind::PhaseBlock);
+        let Some(mut effect) = effects.pop() else {
+            bail!("fixture produced no PhaseBlock effect");
+        };
+        let Some(start) = source.find(slice) else {
+            bail!("slice must exist in source: {slice:?}");
+        };
+        effect.range = SourceLocation { start, end: start + slice.len() };
+        Ok(effect)
+    }
+
+    fn inline_invocation(source: &str, display_path: &str) -> Invocation {
+        Invocation {
+            source: SourceInput::Inline(source.to_string()),
+            display_path: display_path.to_string(),
+        }
+    }
+
+    #[test]
+    fn classifier_form_scope_end_reference_accepts_exact_slice_on_owner_path() -> TestResult {
+        let source = "#!./perl\nBEGIN { \\&END }\n";
+        let effect = phase_block_effect_over(r"BEGIN { \&END }", source)?;
+        let invocation = inline_invocation(source, "comp/form_scope.t");
+
+        assert!(is_comp_form_scope_terminal_phase_boundary(&effect, &invocation, source));
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_form_scope_end_reference_path_guard_rejects_other_file() -> TestResult {
+        // Negative control varying only the display path against the accepted
+        // shape; a widened path guard flips this test.
+        let source = "#!./perl\nBEGIN { \\&END }\n";
+        let effect = phase_block_effect_over(r"BEGIN { \&END }", source)?;
+        let invocation = inline_invocation(source, "comp/hints.t");
+
+        assert!(!is_comp_form_scope_terminal_phase_boundary(&effect, &invocation, source));
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_form_scope_end_reference_slice_guard_rejects_changed_reference() -> TestResult {
+        // Negative control varying only the guarded reference; an accepted
+        // `\&CHECK` (or any widened reference set) flips this test.
+        let source = "#!./perl\nBEGIN { \\&CHECK }\n";
+        let effect = phase_block_effect_over(r"BEGIN { \&CHECK }", source)?;
+        let invocation = inline_invocation(source, "comp/form_scope.t");
+
+        assert!(!is_comp_form_scope_terminal_phase_boundary(&effect, &invocation, source));
+        Ok(())
+    }
+
+    #[test]
+    fn classifier_form_scope_end_reference_slice_guard_rejects_augmented_block() -> TestResult {
+        // Negative control varying only the guarded slice: the observability
+        // helper's `; $^H = 1` changes the slice, so this documents that the
+        // classifier accepts only the exact `BEGIN { \&END }` text.
+        let source = "#!./perl\nBEGIN { \\&END; $^H = 1 }\n";
+        let effect = phase_block_effect_over(r"BEGIN { \&END; $^H = 1 }", source)?;
+        let invocation = inline_invocation(source, "comp/form_scope.t");
+
+        assert!(!is_comp_form_scope_terminal_phase_boundary(&effect, &invocation, source));
         Ok(())
     }
 
@@ -5559,7 +5680,148 @@ while ($x != 1) { $x = 1; }
         assert_eq!(record["assertions_passed"], 2);
         assert_eq!(record["assertions_total"], 2);
         assert!(record["bucket"].is_null());
+        assert_eq!(record["mechanism"], "fixture_replay");
         assert_eq!(record["semantic_boundaries"], serde_json::json!([]));
+        Ok(())
+    }
+
+    /// The six selected fixtures paired with the source each handler
+    /// recognizes, so a new allowlist entry cannot land unclassified.
+    fn selected_execute_sources() -> Vec<(&'static str, String)> {
+        vec![
+            ("base/if.t", base_if_source()),
+            ("base/cond.t", base_cond_source()),
+            ("base/num.t", base_num_source()),
+            ("base/pat.t", base_pat_source()),
+            ("base/translate.t", base_translate_source()),
+            ("base/while.t", base_while_source()),
+        ]
+    }
+
+    #[test]
+    fn every_selected_execute_fixture_is_classified_as_fixture_replay() -> TestResult {
+        let sources = selected_execute_sources();
+        assert_eq!(
+            sources.iter().map(|(path, _)| *path).collect::<Vec<_>>().len(),
+            EXECUTE_BASE_ALLOWLIST.len(),
+            "every allowlisted fixture must be covered by this control"
+        );
+
+        for (path, source) in sources {
+            let invocation =
+                Invocation { source: SourceInput::Inline(source), display_path: path.to_string() };
+
+            let result = run_execute(&invocation)?;
+
+            assert_eq!(result.status, RunnerStatus::Pass, "{path} should replay cleanly");
+            assert_eq!(
+                result.mechanism,
+                Some(ExecutionMechanism::FixtureReplay),
+                "{path} produced scaffold behavior and must say so"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_execute_paths_stay_classified_as_fixture_replay() -> TestResult {
+        // A path outside the allowlist is a failure *of the replay rail*, not
+        // an unclassified execution receipt.
+        let invocation = Invocation {
+            source: SourceInput::Inline(base_if_source()),
+            display_path: "base/rs.t".to_string(),
+        };
+
+        let result = run_execute(&invocation)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.mechanism, Some(ExecutionMechanism::FixtureReplay));
+        Ok(())
+    }
+
+    #[test]
+    fn identical_fixture_source_under_another_path_is_not_promoted() -> TestResult {
+        // Recognizing `base/if.t`'s exact source does not make the same bytes
+        // executable under a different name: the scaffold is path-dispatched,
+        // and the receipt must not claim otherwise.
+        let renamed = Invocation {
+            source: SourceInput::Inline(base_if_source()),
+            display_path: "base/if_renamed.t".to_string(),
+        };
+
+        let result = run_execute(&renamed)?;
+
+        assert_eq!(result.status, RunnerStatus::Fail);
+        assert_eq!(result.assertions_passed, 0);
+        assert_eq!(result.mechanism, Some(ExecutionMechanism::FixtureReplay));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_and_compile_results_claim_no_execution_mechanism() -> TestResult {
+        let invocation = Invocation {
+            source: SourceInput::Inline("my $x = 1;\n".to_string()),
+            display_path: "base/ok.t".to_string(),
+        };
+
+        assert_eq!(run_parse(&invocation)?.mechanism, None);
+        assert_eq!(run_compile(&invocation)?.mechanism, None);
+        Ok(())
+    }
+
+    #[test]
+    fn writing_an_unclassified_execution_receipt_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let context = temp.path().join("records.jsonl");
+        // An execute result that never went through the rail's classification.
+        let unclassified = ModeRunResult::execute_pass("1..1\nok 1\n".to_string(), 1, 1);
+
+        let error = match write_context_record(&context, "execute", "base/if.t", &unclassified) {
+            Err(error) => error,
+            Ok(()) => {
+                return Err(anyhow::anyhow!("an unclassified execute receipt must not be written"));
+            }
+        };
+
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.to_string().contains("does not declare an execution mechanism")),
+            "unexpected error chain: {error:?}"
+        );
+        assert!(!context.exists(), "no receipt should reach disk");
+        Ok(())
+    }
+
+    #[test]
+    fn writing_a_relabelled_execution_receipt_fails_closed() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let context = temp.path().join("records.jsonl");
+        let relabelled = ModeRunResult::execute_pass("1..1\nok 1\n".to_string(), 1, 1)
+            .with_mechanism(ExecutionMechanism::EirExecution);
+
+        let error = match write_context_record(&context, "execute", "base/if.t", &relabelled) {
+            Err(error) => error,
+            Ok(()) => return Err(anyhow::anyhow!("an EIR claim must not be written by this rail")),
+        };
+
+        assert!(
+            error.chain().any(|cause| cause.to_string().contains("no current rail can supply")),
+            "unexpected error chain: {error:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_parse_receipt_cannot_carry_an_execution_mechanism() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let context = temp.path().join("records.jsonl");
+        let mislabelled = ModeRunResult::pass().with_mechanism(ExecutionMechanism::FixtureReplay);
+
+        assert!(
+            write_context_record(&context, "parse", "base/ok.t", &mislabelled).is_err(),
+            "a parse receipt executes nothing and must not claim execution evidence"
+        );
         Ok(())
     }
 
@@ -5831,6 +6093,40 @@ $test
 }
 "#
         .to_string()
+    }
+
+    /// Keep the negative controls on a real PhaseBlock effect. A bare `\&END`
+    /// code reference is pure and intentionally emits no compile boundary;
+    /// assigning `$^H` makes the sibling's compile-time execution observable
+    /// without changing the path or phase being tested.
+    fn comp_form_scope_end_reference_effect_source(reference: &str) -> String {
+        format!("#!./perl\nBEGIN {{ {reference}; $^H = 1 }}\n")
+    }
+
+    fn compile_effects_for_source(source: &str) -> Result<Vec<CompileEffect>> {
+        let mut parser = Parser::new(source);
+        let output = parser.parse_with_recovery();
+        if !output.diagnostics.is_empty() {
+            bail!(
+                "fixture produced parse diagnostics: {:?} for source: {:?}",
+                output.diagnostics,
+                source
+            );
+        }
+        Ok(lower_ast(&output.ast).compile_effects())
+    }
+
+    fn assert_phase_block_effect(source: &str) -> TestResult {
+        let effects = compile_effects_for_source(source)?;
+        if !effects.iter().any(|effect| {
+            effect.kind == CompileEffectKind::EmitDynamicBoundary
+                && effect.source_kind == CompileEffectSourceKind::PhaseBlock
+                && effect.dynamic_reason.as_deref()
+                    == Some("phase block compile-time execution is recorded but not evaluated")
+        }) {
+            bail!("expected a PhaseBlock compile effect for source {source:?}, got {effects:?}");
+        }
+        Ok(())
     }
 
     fn comp_require_setup_source() -> String {

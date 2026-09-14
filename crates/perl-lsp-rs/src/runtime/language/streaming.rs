@@ -314,11 +314,15 @@ impl LspServer {
             let cumulative_text =
                 session.current_text.lock().map(|t| t.clone()).unwrap_or_default();
 
-            // Evaluate the terminal cumulative text through the same shared
-            // seam. A filtered final is a typed decision: with fallback
-            // configured, the deterministic route owns the final content;
-            // without it, the final list is empty.
-            let outcome = if cumulative_text.is_empty() {
+            // A typed provider failure (response.failed / non-token-limited
+            // response.incomplete) means the accumulated text is NOT a usable
+            // candidate: the recovery path must never promote it to the final
+            // completion. Mirror the no-backend branch — with fallback
+            // configured the deterministic route owns the final content,
+            // otherwise the stream ends with an empty final. The terminal
+            // isFinal notification below is still always sent.
+            let provider_failed = matches!(&stream_result, Err(BackendError::Provider(_)));
+            let outcome = if provider_failed || cumulative_text.is_empty() {
                 None
             } else {
                 Some(evaluate_external_candidates(
@@ -338,7 +342,17 @@ impl LspServer {
                     ai_fallback,
                 ))
             };
-            let final_decision = outcome.or(final_outcome.take());
+            let final_decision = if provider_failed {
+                // Failed provider output never becomes the candidate: the
+                // deterministic route owns the final when configured.
+                if ai_fallback {
+                    Some(ExternalCompletionOutcome::FallbackRequired)
+                } else {
+                    Some(ExternalCompletionOutcome::FinalEmpty)
+                }
+            } else {
+                outcome.or(final_outcome.take())
+            };
 
             let final_items = match final_decision {
                 Some(ExternalCompletionOutcome::Accepted(list)) => list.items,

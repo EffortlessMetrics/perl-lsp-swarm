@@ -238,7 +238,9 @@ impl IncrementalState {
     /// The snapshot and parse checkpoints are updated from the same recovered
     /// parse so the state cannot expose mixed generations. Generation
     /// advancement is checked: counter exhaustion fails closed before any
-    /// state is committed.
+    /// state is committed. The parser-state lifetime identity remains stable
+    /// across committed generations and changes only for a newly constructed
+    /// or reopened `IncrementalState`.
     pub(crate) fn refresh_parse_output(
         &mut self,
         strategy: ParseSnapshotStrategy,
@@ -247,10 +249,16 @@ impl IncrementalState {
             .generation()
             .checked_next()
             .ok_or_else(|| anyhow::anyhow!("parse generation counter exhausted"))?;
+        let previous_geometry_subject = self.snapshot().source_geometry().subject().clone();
         let mut parser = Parser::new(self.source());
         let parse_output = parser.parse_with_recovery();
-        let snapshot =
-            ParseSnapshot::from_output(self.source(), generation, strategy, parse_output);
+        let snapshot = ParseSnapshot::from_output_for_existing_instance(
+            self.source(),
+            generation,
+            strategy,
+            parse_output,
+            &previous_geometry_subject,
+        );
         self.read_view.parse_checkpoints =
             Self::create_parse_checkpoints(&snapshot.parse_output().ast);
         self.read_view.snapshot = snapshot;

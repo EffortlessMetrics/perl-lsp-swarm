@@ -85,7 +85,10 @@ impl FoldingRangeExtractor {
         let mut lexer = PerlLexer::with_body_tokens(text);
 
         while let Some(token) = lexer.next_token() {
-            if matches!(token.token_type, TokenType::HeredocBody(_)) {
+            if matches!(
+                token.token_type,
+                TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+            ) {
                 ranges.push(FoldingRange {
                     start_offset: token.start,
                     end_offset: token.end,
@@ -340,7 +343,7 @@ impl FoldingRangeExtractor {
                 self.visit_node(init);
             }
 
-            NodeKind::DataSection { marker: _, body }
+            NodeKind::DataSection { marker: _, body, .. }
                 // Fold the data section body as a comment
                 if body.is_some() =>
             {
