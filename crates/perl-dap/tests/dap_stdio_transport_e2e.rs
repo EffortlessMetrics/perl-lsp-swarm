@@ -18,6 +18,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,62 @@ struct DapProcess {
     child: Child,
     stdin: ChildStdin,
     rx: Receiver<std::result::Result<DapMessage, String>>,
+    reader: Option<thread::JoinHandle<()>>,
+    observed: Arc<Mutex<Vec<(i64, String)>>>,
+}
+
+type FrameObservation = Arc<Mutex<Vec<(i64, String)>>>;
+type FrameReader =
+    (Receiver<std::result::Result<DapMessage, String>>, thread::JoinHandle<()>, FrameObservation);
+
+struct ReleaseMarkerGuard {
+    release: std::path::PathBuf,
+    markers: [std::path::PathBuf; 2],
+    pid: Option<u32>,
+}
+
+impl ReleaseMarkerGuard {
+    fn set_pid(&mut self, pid: &str) -> Result<()> {
+        let parsed = pid
+            .parse::<u32>()
+            .ok()
+            .filter(|pid| *pid > 0)
+            .ok_or_else(|| anyhow!("debuggee marker contained invalid PID: {pid:?}"))?;
+        self.pid = Some(parsed);
+        Ok(())
+    }
+}
+
+impl Drop for ReleaseMarkerGuard {
+    fn drop(&mut self) {
+        let _ = fs::write(&self.release, "release");
+        if let Some(pid) = self.pid {
+            terminate_debuggee_bounded(pid);
+        }
+        let _ = fs::remove_file(&self.release);
+        for marker in &self.markers {
+            let _ = fs::remove_file(marker);
+        }
+    }
+}
+
+fn terminate_debuggee_bounded(pid: u32) {
+    let mut child = if cfg!(windows) {
+        Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).spawn().ok()
+    } else {
+        Command::new("kill").args(["-TERM", &pid.to_string()]).spawn().ok()
+    };
+    let Some(ref mut child) = child else { return };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(_) => return,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 impl DapProcess {
@@ -51,9 +108,9 @@ impl DapProcess {
 
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("child stdin was not piped"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow!("child stdout was not piped"))?;
-        let rx = spawn_frame_reader(stdout);
+        let (rx, reader, observed) = spawn_frame_reader(stdout);
 
-        Ok(Self { child, stdin, rx })
+        Ok(Self { child, stdin, rx, reader: Some(reader), observed })
     }
 
     fn send_request(&mut self, seq: i64, command: &str, arguments: Option<Value>) -> Result<()> {
@@ -99,6 +156,23 @@ impl DapProcess {
         })
     }
 
+    fn wait_for_response_message(&self, request_seq: i64, command: &str) -> Result<DapMessage> {
+        wait_for_message(
+            &self.rx,
+            format!("response `{command}` for request {request_seq}"),
+            |msg| {
+                matches!(
+                    msg,
+                    DapMessage::Response {
+                        request_seq: actual_request_seq,
+                        command: actual_command,
+                        ..
+                    } if *actual_request_seq == request_seq && actual_command == command
+                )
+            },
+        )
+    }
+
     fn wait_for_event(&self, event_name: &str) -> Result<Option<Value>> {
         wait_for_message(
             &self.rx,
@@ -110,6 +184,34 @@ impl DapProcess {
             other => Err(anyhow!("expected event `{event_name}`, got {other:?}")),
         })
     }
+
+    fn finish_cleanly(&mut self) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.child.try_wait()?.is_none() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let status = self
+            .child
+            .try_wait()?
+            .ok_or_else(|| anyhow!("adapter did not exit within cleanup bound"))?;
+        if !status.success() {
+            return Err(anyhow!("adapter exited unsuccessfully during cleanup: {status}"));
+        }
+        while !self.reader.as_ref().is_some_and(|reader| reader.is_finished())
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !self.reader.as_ref().is_some_and(|reader| reader.is_finished()) {
+            return Err(anyhow!("DAP stdout reader did not finish within cleanup bound"));
+        }
+        let reader =
+            self.reader.take().ok_or_else(|| anyhow!("DAP stdout reader was already consumed"))?;
+        if !reader.is_finished() {
+            return Err(anyhow!("DAP stdout reader did not finish within cleanup bound"));
+        }
+        reader.join().map_err(|_| anyhow!("DAP stdout reader panicked"))
+    }
 }
 
 impl Drop for DapProcess {
@@ -117,6 +219,15 @@ impl Drop for DapProcess {
         if let Ok(None) = self.child.try_wait() {
             let _ = self.child.kill();
             let _ = self.child.wait();
+        }
+        if let Some(reader) = self.reader.take() {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !reader.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            if reader.is_finished() {
+                let _ = reader.join();
+            }
         }
     }
 }
@@ -157,15 +268,22 @@ fn write_smoke_receipt_to(output: &Path, binary: &OsString) -> Result<()> {
     Ok(())
 }
 
-fn spawn_frame_reader<R>(mut reader: R) -> Receiver<std::result::Result<DapMessage, String>>
+fn spawn_frame_reader<R>(mut reader: R) -> FrameReader
 where
     R: Read + Send + 'static,
 {
     let (tx, rx) = channel();
-    thread::spawn(move || {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let reader_observed = Arc::clone(&observed);
+    let reader_thread = thread::spawn(move || {
         loop {
             match read_framed_message(&mut reader) {
                 Ok(Some(message)) => {
+                    if let DapMessage::Response { request_seq, command, .. } = &message
+                        && let Ok(mut entries) = reader_observed.lock()
+                    {
+                        entries.push((*request_seq, command.clone()));
+                    }
                     if tx.send(Ok(message)).is_err() {
                         break;
                     }
@@ -178,7 +296,7 @@ where
             }
         }
     });
-    rx
+    (rx, reader_thread, observed)
 }
 
 fn read_framed_message<R: Read>(reader: &mut R) -> Result<Option<DapMessage>> {
@@ -365,6 +483,262 @@ fn stdio_transport_framing_initialize_threads_disconnect() -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn assert_debuggee_absent(pid: &str) -> Result<()> {
+    let probe = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()?;
+    if !probe.status.success() {
+        return Err(anyhow!(
+            "debuggee cleanup probe failed: {}; stdout={:?}; stderr={:?}",
+            probe.status,
+            String::from_utf8_lossy(&probe.stdout),
+            String::from_utf8_lossy(&probe.stderr)
+        ));
+    }
+    let output = String::from_utf8_lossy(&probe.stdout);
+    if output.lines().any(|line| line.split(',').nth(1).is_some_and(|v| v.trim_matches('"') == pid))
+    {
+        return Err(anyhow!("debuggee PID {pid} remained after disconnect: {output}"));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn assert_debuggee_absent(pid: &str) -> Result<()> {
+    let probe = Command::new("ps").args(["-p", pid, "-o", "pid="]).output()?;
+    if !probe.status.success() && probe.status.code() != Some(1) {
+        return Err(anyhow!("debuggee cleanup probe failed: {}", probe.status));
+    }
+    if !String::from_utf8_lossy(&probe.stdout).trim().is_empty() {
+        return Err(anyhow!("debuggee PID {pid} remained after disconnect"));
+    }
+    Ok(())
+}
+
+#[test]
+fn native_stdio_cancel_reaches_blocked_evaluate_and_recovers() -> Result<()> {
+    let perl_probe = Command::new("perl")
+        .arg("-e")
+        .arg("exit 0")
+        .status()
+        .context("native stdio cancellation proof requires a runnable Perl interpreter")?;
+    if !perl_probe.success() {
+        return Err(anyhow!("native stdio Perl interpreter probe failed: {perl_probe}"));
+    }
+    let workspace = tempfile::tempdir()?;
+    let script = workspace.path().join("cancel_stdio.pl");
+    fs::write(&script, "use strict;\nuse warnings;\n\nmy $x = 1;\nsleep 60;\n")?;
+    let started = workspace.path().join("evaluate-started");
+    let replacement_started = workspace.path().join("replacement-started");
+    let release = workspace.path().join("evaluate-release");
+    let mut release_guard = ReleaseMarkerGuard {
+        release: release.clone(),
+        markers: [started.clone(), replacement_started.clone()],
+        pid: None,
+    };
+    let perl_path =
+        |path: &std::path::Path| path.to_string_lossy().replace('\\', "/").replace('\'', "\\'");
+    let started_path = perl_path(&started);
+    let replacement_started_path = perl_path(&replacement_started);
+    let release_path = perl_path(&release);
+
+    let binary = configured_dap_binary_path();
+    let mut dap = DapProcess::spawn_binary(&binary)?;
+    dap.send_request(
+        1,
+        "initialize",
+        Some(json!({"clientID": "cancel-e2e", "adapterID": "perl-dap", "pathFormat": "path"})),
+    )?;
+    let init = dap
+        .wait_for_response(1, "initialize")?
+        .ok_or_else(|| anyhow!("initialize response missing capability body"))?;
+    if init.get("supportsCancelRequest").and_then(Value::as_bool) != Some(true) {
+        return Err(anyhow!("native stdio must advertise supportsCancelRequest after promotion"));
+    }
+    dap.wait_for_event("initialized")?;
+
+    dap.send_request(
+        2,
+        "launch",
+        Some(json!({
+            "program": script,
+            "stopOnEntry": true,
+        })),
+    )?;
+    dap.wait_for_response(2, "launch")?;
+    dap.wait_for_event("stopped")?;
+
+    // Establish the debugger's native formatting for the follow-up expression
+    // before introducing cancellation; `x` treats an unparenthesized leading
+    // number as a depth/count argument.
+    dap.send_request(3, "evaluate", Some(json!({"expression": "(6 * 7)", "context": "repl"})))?;
+    let baseline = dap
+        .wait_for_response(3, "evaluate")?
+        .ok_or_else(|| anyhow!("baseline evaluate response missing body"))?;
+    let baseline_result = baseline
+        .get("result")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("baseline evaluate result was not a string: {baseline:?}"))?;
+    if baseline_result.split_whitespace().collect::<Vec<_>>() != ["0", "42"] {
+        return Err(anyhow!("baseline evaluate did not produce 42: {baseline:?}"));
+    }
+
+    dap.send_request(
+        4,
+        "evaluate",
+        Some(json!({
+            "expression": format!(
+                "do {{ open(F, '>', '{}') or die $!; print F 'started ', $$; close F; while (!-e '{}') {{ select undef, undef, undef, 0.01 }}; 987654321 }}",
+                started_path,
+                release_path,
+            ),
+            "context": "repl",
+            "allowSideEffects": true,
+        })),
+    )?;
+    let started_deadline = Instant::now() + Duration::from_secs(2);
+    while !started.exists() && Instant::now() < started_deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    if !started.exists() {
+        return Err(anyhow!("native evaluate did not reach its blocking expression"));
+    }
+    let started_marker = fs::read_to_string(&started)?;
+    let started_pid = started_marker
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| anyhow!("debuggee marker did not contain its PID: {started_marker:?}"))?;
+    release_guard.set_pid(started_pid)?;
+    dap.send_request(5, "cancel", Some(json!({"requestId": 4})))?;
+    let first = wait_for_message(&dap.rx, "cancel/evaluate responses".to_string(), |msg| {
+        matches!(msg, DapMessage::Response { request_seq: 4 | 5, .. })
+    })?;
+    let (cancel, evaluate_before_cancel) = match first {
+        message @ DapMessage::Response { request_seq: 5, .. } => (message, None),
+        message @ DapMessage::Response { request_seq: 4, .. } => {
+            (dap.wait_for_response_message(5, "cancel")?, Some(message))
+        }
+        message => return Err(anyhow!("unexpected cancellation response: {message:?}")),
+    };
+    if !matches!(cancel, DapMessage::Response { success: true, .. }) {
+        return Err(anyhow!("cancel was not accepted: {cancel:?}"));
+    }
+    // Both correlated responses must settle before releasing the blocked
+    // debugger expression; this proves cancellation did not depend on its
+    // eventual completion.
+    let evaluate = match evaluate_before_cancel {
+        Some(message) => message,
+        None => dap.wait_for_response_message(4, "evaluate")?,
+    };
+    if !matches!(evaluate, DapMessage::Response { success: false, message: Some(ref message), .. } if message.contains("cancelled"))
+    {
+        return Err(anyhow!("blocked evaluate did not settle as cancelled: {evaluate:?}"));
+    }
+    fs::write(&release, "release")?;
+
+    dap.send_request(6, "evaluate", Some(json!({"expression": "6*7", "context": "repl"})))?;
+    let follow_up = dap
+        .wait_for_response(6, "evaluate")?
+        .ok_or_else(|| anyhow!("follow-up evaluate response missing body"))?;
+    let follow_up_result = follow_up
+        .get("result")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("follow-up evaluate result was not a string: {follow_up:?}"))?;
+    if follow_up_result != baseline_result
+        || follow_up_result.split_whitespace().collect::<Vec<_>>() != ["0", "42"]
+    {
+        return Err(anyhow!(
+            "follow-up evaluate was contaminated by cancelled output: {follow_up:?}"
+        ));
+    }
+    // Late duplicate and unknown cancellation must be correlated to their own
+    // acknowledgements and leave a healthy request untouched.
+    dap.send_request(7, "cancel", Some(json!({"requestId": 4})))?;
+    dap.send_request(8, "cancel", Some(json!({"requestId": 999})))?;
+    for request_seq in [7, 8] {
+        let response = dap.wait_for_response_message(request_seq, "cancel")?;
+        if !matches!(response, DapMessage::Response { success: true, .. }) {
+            return Err(anyhow!("cancel control {request_seq} failed: {response:?}"));
+        }
+    }
+    dap.send_request(9, "evaluate", Some(json!({"expression": "(6 * 7)", "context": "repl"})))?;
+    let healthy = dap
+        .wait_for_response(9, "evaluate")?
+        .ok_or_else(|| anyhow!("healthy post-cancel evaluate response missing body"))?;
+    let healthy_result = healthy.get("result").and_then(Value::as_str).unwrap_or("");
+    if healthy_result != baseline_result {
+        return Err(anyhow!("cancel controls changed healthy evaluate: {healthy:?}"));
+    }
+    dap.send_request(10, "threads", None)?;
+    let _ = dap.wait_for_response(10, "threads")?;
+    dap.send_request(11, "terminate", Some(json!({})))?;
+    let terminate = dap.wait_for_response_message(11, "terminate")?;
+    if !matches!(terminate, DapMessage::Response { success: true, .. }) {
+        return Err(anyhow!("terminate failed after cancellation: {terminate:?}"));
+    }
+    let duplicate_terminal = dap
+        .observed
+        .lock()
+        .map(|entries| {
+            entries.iter().filter(|(seq, command)| *seq == 4 && command == "evaluate").count()
+        })
+        .map_err(|_| anyhow!("DAP frame observation log was poisoned"))?;
+    if duplicate_terminal != 1 {
+        return Err(anyhow!(
+            "request 4 must have exactly one observed evaluate response before sequence reuse: {duplicate_terminal}"
+        ));
+    }
+    {
+        let marker = fs::read_to_string(&started)?;
+        let pid = marker
+            .split_whitespace()
+            .nth(1)
+            .ok_or_else(|| anyhow!("debuggee marker did not contain its PID: {marker:?}"))?;
+        release_guard.set_pid(pid)?;
+        assert_debuggee_absent(pid)?;
+        release_guard.pid = None;
+    }
+
+    // The same adapter session must not let a terminal request lease poison a
+    // replacement launch that reuses its request sequence.
+    dap.send_request(12, "cancel", Some(json!({"requestId": 4})))?;
+    let old_cancel = dap.wait_for_response_message(12, "cancel")?;
+    if !matches!(old_cancel, DapMessage::Response { success: true, .. }) {
+        return Err(anyhow!("old request cancel poisoned replacement: {old_cancel:?}"));
+    }
+    dap.send_request(13, "launch", Some(json!({"program": script, "stopOnEntry": true})))?;
+    dap.wait_for_response(13, "launch")?;
+    dap.wait_for_event("stopped")?;
+    dap.send_request(4, "evaluate", Some(json!({
+        "expression": format!("do {{ open(F, '>', '{}') or die $!; print F 'started ', $$; close F; (6 * 7) }}", replacement_started_path),
+        "context": "repl",
+        "allowSideEffects": true
+    })))?;
+    let replacement_eval = dap
+        .wait_for_response(4, "evaluate")?
+        .ok_or_else(|| anyhow!("replacement evaluate body missing"))?;
+    let replacement_marker = fs::read_to_string(&replacement_started)?;
+    let replacement_pid = replacement_marker.split_whitespace().nth(1).ok_or_else(|| {
+        anyhow!("replacement marker did not contain its PID: {replacement_marker:?}")
+    })?;
+    release_guard.set_pid(replacement_pid)?;
+    if replacement_eval.get("result").and_then(Value::as_str) != Some(baseline_result) {
+        return Err(anyhow!(
+            "replacement request sequence inherited stale cancellation: {replacement_eval:?}"
+        ));
+    }
+    dap.send_request(14, "disconnect", Some(json!({})))?;
+    let disconnect = dap.wait_for_response_message(14, "disconnect")?;
+    if !matches!(disconnect, DapMessage::Response { success: true, .. }) {
+        return Err(anyhow!("disconnect failed after replacement: {disconnect:?}"));
+    }
+    dap.finish_cleanly()?;
+    assert_debuggee_absent(replacement_pid)?;
+    release_guard.pid = None;
+    Ok(())
+}
+
 #[test]
 fn stdio_transport_stops_when_client_closes_stdout_while_stdin_remains_open() -> Result<()> {
     let binary = configured_dap_binary_path();
@@ -427,12 +801,11 @@ fn stdio_transport_stops_when_client_closes_stdout_while_stdin_remains_open() ->
             stdin.flush()?;
             Ok(())
         })();
-        if let Err(error) = threads_write {
-            if error.downcast_ref::<std::io::Error>().map(std::io::Error::kind)
+        if let Err(error) = threads_write
+            && error.downcast_ref::<std::io::Error>().map(std::io::Error::kind)
                 != Some(std::io::ErrorKind::BrokenPipe)
-            {
-                return Err(error);
-            }
+        {
+            return Err(error);
         }
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {

@@ -201,18 +201,24 @@ impl DebugAdapter {
                             && self.operation_broker.current_session_generation()
                                 == session_generation =>
                     {
-                        self.send_framed_debugger_query_bound(
+                        self.send_framed_debugger_query_bound_for_request(
                             stdin,
                             &commands,
                             u64::from(timeout_ms),
                             Some(generation),
                             Some(session_generation),
+                            request_seq,
                         )
                     }
                     Some(_) => Err("evaluate frame became stale before debugger write".to_string()),
-                    None => {
-                        self.send_framed_debugger_query(stdin, &commands, u64::from(timeout_ms))
-                    }
+                    None => self.send_framed_debugger_query_bound_for_request(
+                        stdin,
+                        &commands,
+                        u64::from(timeout_ms),
+                        None,
+                        None,
+                        request_seq,
+                    ),
                 };
                 match query {
                     Ok((operation, begin, end)) => Some((operation, begin, end)),

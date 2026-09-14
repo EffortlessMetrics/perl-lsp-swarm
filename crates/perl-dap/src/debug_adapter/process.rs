@@ -196,10 +196,10 @@ impl DebugAdapter {
             "supportsDataBreakpoints": supports_watchpoints,
             "supportsReadMemoryRequest": false,
             "supportsDisassembleRequest": false,
-            // Request-scoped cancellation is an internal primitive; concurrent
-            // wire intake and exact-binary acceptance remain unproven.
-            // Gate: #9074 + #8712 + #7568.
-            "supportsCancelRequest": false,
+            // Request-scoped cancellation is advertised only for native stdio,
+            // whose concurrent intake and exact-binary proof own this row.
+            // Peer and direct/in-process surfaces remain fail-closed.
+            "supportsCancelRequest": self.native_stdio_transport,
             // breakpointLocations: canonical geometry/coordinate contract
             // unproven. Gate: #10524 + #2300 + #9021 + #7566.
             "supportsBreakpointLocationsRequest": false,

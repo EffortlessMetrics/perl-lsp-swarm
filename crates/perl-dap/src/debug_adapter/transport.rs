@@ -213,6 +213,20 @@ impl DebugAdapter {
         R: BoundedRead,
         W: Write + Send + 'static,
     {
+        self.native_stdio_transport = true;
+        let result = self.run_with_io_inner(input, output);
+        self.native_stdio_transport = false;
+        result
+    }
+
+    fn run_with_io_inner<R, W>(&mut self, input: R, output: W) -> io::Result<()>
+    where
+        R: BoundedRead,
+        W: Write + Send + 'static,
+    {
+        // The shipped native server reaches this transport only through stdio.
+        // Set the profile before initialize is dispatched so capability
+        // advertisement and request-floor admission use the same authority.
         // Create a shared writer to prevent interleaving between the main loop
         // and the event handler thread.
         let shared_writer: Arc<Mutex<W>> = Arc::new(Mutex::new(output));
@@ -332,6 +346,7 @@ impl DebugAdapter {
         let worker_event_sender = event_sender.clone();
         let transport_seq = Arc::clone(&self.seq);
         let worker_seq = Arc::clone(&self.seq);
+        let native_stdio_transport = self.native_stdio_transport;
         let worker_transport_broken = Arc::clone(&transport_broken);
         let worker_request_rx = request_rx;
         let operation_broker = Arc::clone(&self.operation_broker);
@@ -496,22 +511,56 @@ impl DebugAdapter {
                         }
                     };
 
+                    // Cancellation is the one control request that must be
+                    // dispatched by intake while the FIFO worker may be
+                    // blocked in an ordinary debugger operation.  Routing it
+                    // through that worker would leave the broker token
+                    // unreachable until the operation returned.
+                    if native_stdio_transport && command == "cancel" {
+                        let target = arguments
+                            .as_ref()
+                            .and_then(|value| value.get("requestId"))
+                            .and_then(serde_json::Value::as_i64);
+                        let _ = target.map(|request| operation_broker.cancel_request(request));
+                        let response = DapMessage::Response {
+                            seq: next_transport_seq(&transport_seq),
+                            request_seq: seq,
+                            success: true,
+                            command,
+                            body: None,
+                            message: None,
+                        };
+                        if let Err(error) = write_message_then_notify_initialized(
+                            &shared_writer,
+                            response,
+                            false,
+                            Some(&event_sender),
+                            &transport_seq,
+                            &wire_seq,
+                        ) {
+                            break 'transport Err(error);
+                        }
+                        continue;
+                    }
+
                     // #9581 secondary-capability floor, ahead of the table-owned
                     // dispatch: a floored wire request is refused before any
                     // handler can run. The `initialized` notification below still
                     // keys off the (never-floored) initialize response.
-                    let response = crate::backend::capabilities::capability_floor_message(
-                        &command,
-                        arguments.as_ref(),
-                    )
-                    .map(|message| DapMessage::Response {
-                        seq: next_transport_seq(&transport_seq),
-                        request_seq: seq,
-                        success: false,
-                        command: command.clone(),
-                        body: None,
-                        message: Some(message),
-                    });
+                    let response =
+                        crate::backend::capabilities::capability_floor_message_for_native_stdio(
+                            &command,
+                            arguments.as_ref(),
+                            native_stdio_transport,
+                        )
+                        .map(|message| DapMessage::Response {
+                            seq: next_transport_seq(&transport_seq),
+                            request_seq: seq,
+                            success: false,
+                            command: command.clone(),
+                            body: None,
+                            message: Some(message),
+                        });
                     if let Some(response) = response {
                         if let Err(error) = write_message_then_notify_initialized(
                             &shared_writer,
@@ -1134,11 +1183,15 @@ while (my $line = <STDIN>) {
                     thread::sleep(Duration::from_millis(5));
                 }
             }
-            let mut control = framed_request_with_arguments(
-                2,
-                if disconnect { "disconnect" } else { "cancel" },
-                serde_json::json!({"requestId": 1}),
-            )?;
+            let mut control = if matches!(scenario, TransportScenario::Released) {
+                Vec::new()
+            } else {
+                framed_request_with_arguments(
+                    2,
+                    if disconnect { "disconnect" } else { "cancel" },
+                    serde_json::json!({"requestId": 1}),
+                )?
+            };
             if disconnect {
                 control.extend(framed_request_with_arguments(
                     999,
@@ -1165,10 +1218,13 @@ while (my $line = <STDIN>) {
                 while Instant::now() < deadline {
                     let messages = transport_messages(&output_view)?;
                     if messages.iter().any(|message| {
-                        matches!(message, DapMessage::Response { request_seq: 1, .. })
+                        matches!(
+                            message,
+                            DapMessage::Response { request_seq: 1, success: true, .. }
+                        )
                     }) {
                         return Err(format!(
-                            "evaluate completed before peer release: {messages:?}"
+                            "evaluate succeeded before peer release: {messages:?}"
                         )
                         .into());
                     }
@@ -1365,14 +1421,32 @@ while (my $line = <STDIN>) {
                 DapMessage::Response { request_seq, .. } if *request_seq == request)
                 })
                 .collect();
-            if matching.len() != 1
-                || !matches!(matching.first(),
-                Some(DapMessage::Response { command: actual, success: true, body: Some(_), .. }) if actual == command)
-            {
+            let evaluate_cancelled = request == 1
+                && matches!(
+                    scenario,
+                    TransportScenario::Cancel | TransportScenario::FullQueueCancel
+                );
+            let valid_response = if evaluate_cancelled {
+                matches!(matching.first(), Some(DapMessage::Response {
+                    command: actual_command,
+                    success: false,
+                    message: Some(message),
+                    ..
+                }) if actual_command == command && message.contains("cancelled"))
+            } else {
+                matches!(matching.first(), Some(DapMessage::Response {
+                    command: actual,
+                    success: true,
+                    body: Some(_),
+                    ..
+                }) if actual == command)
+            };
+            if matching.len() != 1 || !valid_response {
                 return Err(format!("expected one successful {command}: {matching:?}").into());
             }
         }
         if !disconnect
+            && !matches!(scenario, TransportScenario::Cancel | TransportScenario::FullQueueCancel)
             && !messages.iter().any(|message| {
                 matches!(message,
             DapMessage::Response { request_seq: 1, body: Some(body), .. }
@@ -1381,28 +1455,28 @@ while (my $line = <STDIN>) {
         {
             return Err(format!("evaluate did not return peer value: {messages:?}").into());
         }
-        let refusal = "`cancel` is unsupported: `supportsCancelRequest` is false for this adapter \
-            (#9581 secondary-capability floor; exact semantics unproven, \
-            re-enable gate: #9074 + #8712 + #7568). The request was rejected before any debugger \
-            interaction, so no state was read or changed.";
         let cancel: Vec<_> = messages
             .iter()
             .filter(|message| matches!(message, DapMessage::Response { request_seq: 2, .. }))
             .collect();
         if !disconnect
+            && require_early_cancel
+            && !matches!(
+                scenario,
+                TransportScenario::CancelWriteFailure | TransportScenario::IntakeFailure
+            )
             && (cancel.len() != 1
                 || !matches!(cancel.first(),
-            Some(DapMessage::Response { command, success: false, body: None, message: Some(message), .. })
-            if command == "cancel" && message == refusal))
+            Some(DapMessage::Response { command, success, body: None, .. })
+            if command == "cancel" && *success))
         {
-            return Err(format!("public cancel refusal changed: {cancel:?}").into());
+            return Err(format!("public cancel acknowledgement changed: {cancel:?}").into());
         }
         if require_early_cancel && !early {
-            return Err("cancel refusal arrived only after releasing blocked evaluate; recovery controls passed".into());
+            return Err("cancel acknowledgement arrived only after releasing blocked evaluate; recovery controls passed".into());
         }
         if require_early_cancel {
-            let mut expected = 1;
-            for message in &messages {
+            for (expected, message) in (1..).zip(messages.iter()) {
                 let actual = match message {
                     DapMessage::Request { seq, .. }
                     | DapMessage::Response { seq, .. }
@@ -1414,7 +1488,6 @@ while (my $line = <STDIN>) {
                     )
                     .into());
                 }
-                expected += 1;
             }
         }
         Ok(())
@@ -1912,7 +1985,7 @@ while (my $line = <STDIN>) {
     /// The `transport_broken` flag starts as `false` on a fresh adapter and is
     /// not set by a successful run (clean EOF on the input side).
     #[test]
-    fn test_transport_broken_flag_clear_on_clean_run() {
+    fn test_transport_broken_flag_clear_on_clean_run() -> Result<(), Box<dyn std::error::Error>> {
         let mut adapter = DebugAdapter::new();
         // Empty input → immediate EOF → clean Ok(()) return.
         let input = Cursor::new(vec![]);
@@ -1924,6 +1997,17 @@ while (my $line = <STDIN>) {
             !adapter.transport_broken.load(AOrdering::Acquire),
             "transport_broken must remain false after a clean run"
         );
+        assert!(!adapter.native_stdio_transport, "native stdio mode must not stick after run");
+        let body = match adapter.handle_request(1, "initialize", None) {
+            DapMessage::Response { body: Some(body), .. } => body,
+            response => return Err(format!("direct initialize returned {response:?}").into()),
+        };
+        assert_eq!(
+            body.get("supportsCancelRequest").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "direct adapter reuse must not inherit native stdio cancellation"
+        );
+        Ok(())
     }
 
     #[test]
@@ -2019,6 +2103,7 @@ while (my $line = <STDIN>) {
             matches!(result, Err(ref error) if error.kind() == io::ErrorKind::BrokenPipe),
             "pre-marked broken transport must return BrokenPipe"
         );
+        assert!(!adapter.native_stdio_transport, "native stdio mode must reset after an error");
     }
 }
 
