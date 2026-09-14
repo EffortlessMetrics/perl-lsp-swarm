@@ -5,7 +5,7 @@
 //! control mutates exactly one field away from a passing row so a failure
 //! localizes to the rule under test.
 
-use super::check::check;
+use super::check::{check, decoder_names_method};
 use super::discover::{parse_direction_registry, parse_feature_catalog, scan_emission};
 use super::model::{CatalogRow, Discovered, Matrix, Meta, RegistryKind, RequestRow};
 use super::{evaluate, fingerprint, load, render};
@@ -893,6 +893,89 @@ impl Server {
     );
     assert!(findings.is_empty(), "{findings:?}");
     Ok(())
+}
+
+/// A `per_method` decoder claim was checked by searching the decoding module's
+/// raw text for the method literal, so a mention inside a `#[cfg(test)]` module
+/// satisfied it. That is the text-scanning mistake the emission reader was
+/// rewritten to remove, left in the rule that judges the reader's output.
+#[test]
+fn a_decoder_claim_is_not_satisfied_by_a_test_only_mention() {
+    let source = r#"
+pub fn decode(method: &str) -> Decoded {
+    match method {
+        "window/showDocument" => Decoded::Shown,
+        _ => Decoded::Generic,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn decodes() {
+        let _ = decode("workspace/codeLens/refresh");
+    }
+}
+"#;
+
+    assert!(
+        decoder_names_method(source, "window/showDocument"),
+        "a method named in production is decoded per-method"
+    );
+    assert!(
+        !decoder_names_method(source, "workspace/codeLens/refresh"),
+        "a method named only inside a test module is not a production decoder"
+    );
+}
+
+/// The rule, not merely its helper: `check` must reject a `per_method` claim
+/// whose only mention of the method sits in a test module of the real decoding
+/// source it reads. Asserting on the helper alone left the call site free to go
+/// on searching raw text, which is how this was checked before.
+#[test]
+fn the_decoder_rule_rejects_a_claim_backed_only_by_a_test_mention()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let decoder = root.path().join("crates/perl-lsp-rs/src/runtime/client_requests");
+    std::fs::create_dir_all(&decoder)?;
+    std::fs::write(
+        decoder.join("registry.rs"),
+        r#"
+pub fn decode(method: &str) -> Decoded {
+    match method {
+        "window/showDocument" => Decoded::Shown,
+        _ => Decoded::Generic,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    fn exercises() {
+        let _ = decode("workspace/codeLens/refresh");
+    }
+}
+"#,
+    )?;
+
+    let mut row = passing_row();
+    row.response_decoder = "per_method".to_string();
+    let found = check(root.path(), &matrix_of(vec![row]), &agreeing_discovery(), Vec::new())
+        .into_iter()
+        .map(|violation| violation.rule)
+        .collect::<Vec<_>>();
+
+    assert!(
+        found.contains(&"decoder-overclaim"),
+        "a test-only mention does not evidence a per-method decoder: {found:?}"
+    );
+    Ok(())
+}
+
+/// A decoding module that cannot be parsed names nothing, so the claim is
+/// refuted rather than granted -- silence is not evidence of a decoder.
+#[test]
+fn an_unparsable_decoder_source_refutes_the_claim() {
+    assert!(!decoder_names_method("fn broken( {", "window/showDocument"));
 }
 
 /// `link/../x.rs` and `x.rs` are the same file only when `link` is a real

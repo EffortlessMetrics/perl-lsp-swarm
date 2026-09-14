@@ -64,7 +64,7 @@ fn meta_is_test_only(meta: &syn::Meta) -> bool {
 }
 
 /// Whether an item's attributes gate it to `cfg(test)`.
-fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
+pub(super) fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
             && attr.parse_args::<syn::Meta>().is_ok_and(|meta| meta_is_test_only(&meta))

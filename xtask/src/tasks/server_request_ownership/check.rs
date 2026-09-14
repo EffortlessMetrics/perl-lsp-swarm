@@ -4,6 +4,7 @@
 //! as `missing` and can never satisfy a requirement, and an empty discovery or
 //! an empty matrix is an instrument failure rather than a pass.
 
+use super::discover::is_test_gated;
 use super::model::{Discovered, Matrix, RegistryKind, RequestRow, Violation};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -11,6 +12,47 @@ use std::path::Path;
 /// Registry module whose non-test source must name a method before that method
 /// may claim a per-method response decoder.
 const DECODER_SOURCE: &str = "crates/perl-lsp-rs/src/runtime/client_requests/registry.rs";
+
+/// Whether the decoding module names `method` in production source.
+///
+/// A raw substring search over the file counted mentions inside `#[cfg(test)]`
+/// modules, so a test literal alone satisfied a `per_method` claim -- the same
+/// text-scanning mistake the emission reader was rewritten to remove, left in
+/// the rule that judges it. The source is parsed and test-gated items are not
+/// descended into. A file that cannot be parsed names nothing, so the claim is
+/// refuted rather than granted.
+pub(super) fn decoder_names_method(source: &str, method: &str) -> bool {
+    struct Named<'a> {
+        method: &'a str,
+        found: bool,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Named<'_> {
+        fn visit_item(&mut self, node: &'ast syn::Item) {
+            let attrs: &[syn::Attribute] = match node {
+                syn::Item::Fn(item) => &item.attrs,
+                syn::Item::Mod(item) => &item.attrs,
+                syn::Item::Impl(item) => &item.attrs,
+                syn::Item::Const(item) => &item.attrs,
+                syn::Item::Static(item) => &item.attrs,
+                syn::Item::Macro(item) => &item.attrs,
+                _ => &[],
+            };
+            if is_test_gated(attrs) {
+                return;
+            }
+            syn::visit::visit_item(self, node);
+        }
+
+        fn visit_lit_str(&mut self, node: &'ast syn::LitStr) {
+            self.found |= node.value() == self.method;
+        }
+    }
+
+    let Ok(parsed) = syn::parse_file(source) else { return false };
+    let mut named = Named { method, found: false };
+    syn::visit::Visit::visit_file(&mut named, &parsed);
+    named.found
+}
 
 /// The two dynamic-registration methods must never collapse into one row.
 const REGISTRATION_PAIR: [&str; 2] = ["client/registerCapability", "client/unregisterCapability"];
@@ -503,7 +545,7 @@ fn check_row(
     // module's production source; otherwise the claim is refuted.
     if row.response_decoder == "per_method" {
         let named = std::fs::read_to_string(repo_root.join(DECODER_SOURCE))
-            .is_ok_and(|source| source.contains(&format!("\"{}\"", row.method)));
+            .is_ok_and(|source| decoder_names_method(&source, &row.method));
         if !named {
             violations.push(Violation::new(
                 "decoder-overclaim",
