@@ -48,7 +48,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::ser::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::configuration_authority::{
     ConfigSource, ConfigValidation, ConfigValueKind, EvidencePolicy, FieldAuthority,
@@ -61,8 +63,11 @@ use crate::hashing::sha256_hex;
 /// Generation 2: observation identity digests became algorithm-tagged
 /// SHA-256 over full length-prefixed material (`sha256:` on the wire), and
 /// the fingerprint covers validation/evidence-policy/limitations/counts.
+/// Generation 3: normalized values gained a finite float carrier so float
+/// authority rows (`ai.rate_limit_rps`) admit as evidence instead of
+/// failing closed as unsupported.
 /// Any further identity-visible change must bump this deliberately.
-pub(crate) const OBSERVATION_SCHEMA_GENERATION: u32 = 2;
+pub(crate) const OBSERVATION_SCHEMA_GENERATION: u32 = 3;
 
 const MAX_IDENTITY_CHARS: usize = 128;
 const MAX_TEXT_VALUE_CHARS: usize = 4_096;
@@ -470,23 +475,95 @@ impl ConfigurationObservationDisposition {
 
 /// Bounded normalized candidate value. Sensitive evidence collapses to
 /// [`NormalizedValue::Redacted`] or a tagged digest before storage.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `PartialEq` only: the float carrier holds an `f64`, which has no
+/// equivalence relation (`Eq`). Non-finite floats are rejected at admission
+/// ([`NormalizedValue::float`], and defensively again in
+/// `ConfigurationObservationDraft::record_present`), so stored floats are
+/// always finite and JSON-encodable numbers.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum NormalizedValue {
     Flag(bool),
     Count(u64),
+    Float(f64),
     Text(String),
     TextList(Vec<String>),
     Redacted,
     DigestOnly(String),
 }
 
+/// Serde-only representation for [`NormalizedValue`]. Non-finite floats can
+/// still arrive through deserializers that support non-finite numbers;
+/// keeping the raw form separate keeps the `is_finite()` gate in one place
+/// rather than scattered across the carrier and per-format adapters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+enum RawNormalizedValue {
+    Flag(bool),
+    Count(u64),
+    Float(f64),
+    Text(String),
+    TextList(Vec<String>),
+    Redacted,
+    DigestOnly(String),
+}
+
+impl Serialize for NormalizedValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let raw = match self {
+            Self::Flag(value) => RawNormalizedValue::Flag(*value),
+            Self::Count(value) => RawNormalizedValue::Count(*value),
+            Self::Float(value) if value.is_finite() => RawNormalizedValue::Float(*value),
+            Self::Float(_) => {
+                return Err(S::Error::custom("normalized float must be finite"));
+            }
+            Self::Text(value) => RawNormalizedValue::Text(value.clone()),
+            Self::TextList(value) => RawNormalizedValue::TextList(value.clone()),
+            Self::Redacted => RawNormalizedValue::Redacted,
+            Self::DigestOnly(value) => RawNormalizedValue::DigestOnly(value.clone()),
+        };
+        raw.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for NormalizedValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match RawNormalizedValue::deserialize(deserializer)? {
+            RawNormalizedValue::Flag(value) => Ok(Self::Flag(value)),
+            RawNormalizedValue::Count(value) => Ok(Self::Count(value)),
+            RawNormalizedValue::Float(value) if value.is_finite() => Ok(Self::Float(value)),
+            RawNormalizedValue::Float(_) => {
+                Err(D::Error::custom("normalized float must be finite"))
+            }
+            RawNormalizedValue::Text(value) => Ok(Self::Text(value)),
+            RawNormalizedValue::TextList(value) => Ok(Self::TextList(value)),
+            RawNormalizedValue::Redacted => Ok(Self::Redacted),
+            RawNormalizedValue::DigestOnly(value) => Ok(Self::DigestOnly(value)),
+        }
+    }
+}
+
 impl NormalizedValue {
+    /// Total float admission: only finite values may become observation
+    /// evidence. NaN and the infinities have no JSON wire encoding
+    /// (`serde_json` would emit `null`) and no honest evidence meaning, so
+    /// they fail closed here.
+    pub(crate) fn float(value: f64) -> Option<Self> {
+        if value.is_finite() { Some(Self::Float(value)) } else { None }
+    }
+
     /// Deterministic identity material for fingerprints. Raw sensitive bytes
     /// cannot reach this point (enforced at admission time).
     fn evidence_material(&self) -> String {
         match self {
             Self::Flag(flag) => format!("flag={flag}"),
             Self::Count(count) => format!("count={count}"),
+            Self::Float(value) => format!("float={value}"),
             Self::Text(text) => format!("text={}", tag("x", text.as_bytes())),
             Self::TextList(items) => {
                 let joined = items.iter().map(|item| tag("x", item.as_bytes())).collect::<Vec<_>>();
@@ -501,7 +578,11 @@ impl NormalizedValue {
         match self {
             Self::Text(text) => vec![text.as_str()],
             Self::TextList(items) => items.iter().map(String::as_str).collect(),
-            Self::Flag(_) | Self::Count(_) | Self::Redacted | Self::DigestOnly(_) => Vec::new(),
+            Self::Flag(_)
+            | Self::Count(_)
+            | Self::Float(_)
+            | Self::Redacted
+            | Self::DigestOnly(_) => Vec::new(),
         }
     }
 }
@@ -583,7 +664,9 @@ pub(crate) enum ConfigurationObservationLimitation {
 /// One observed field with its admission, landed validation/evidence policy,
 /// and limitations. Values arrive already normalized/redacted; raw input
 /// never lands here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `PartialEq` only: the normalized float carrier is not `Eq`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ObservedConfigurationField {
     identity: ObservedFieldIdentity,
     disposition: ConfigurationObservationDisposition,
@@ -657,7 +740,8 @@ impl ConfigurationObservationFingerprint {
 /// redaction, limitations, and completeness from recorded facts). A decoded
 /// receipt future consumers accept must go through a validated wrapper, not
 /// raw derivation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// `PartialEq` only: the normalized float carrier is not `Eq`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct ConfigurationObservation {
     schema_generation: u32,
     subject: ConfigurationObservationSubject,
@@ -946,6 +1030,7 @@ impl ConfigurationObservationDraft {
                 (&value, policy.value_kind),
                 (NormalizedValue::Flag(_), ConfigValueKind::Boolean)
                     | (NormalizedValue::Count(_), ConfigValueKind::Unsigned)
+                    | (NormalizedValue::Float(_), ConfigValueKind::Float)
                     | (
                         NormalizedValue::Text(_),
                         ConfigValueKind::String
@@ -997,6 +1082,29 @@ impl ConfigurationObservationDraft {
                             field: key.clone(),
                             reason: MalformedReason::OutOfRange,
                         });
+                    }
+                }
+                // PositiveFloat: mechanically decidable over the float
+                // carrier. Defense in depth for non-finite values (already
+                // rejected by [`NormalizedValue::float`]): NaN has no honest
+                // ordering, and the infinities have no JSON wire encoding.
+                // Ordering is load-bearing: `is_finite()` must precede the
+                // `<= 0.0` check, because `NaN <= 0.0` is `false` and NaN
+                // would otherwise slip through as a valid positive rate.
+                ConfigValidation::PositiveFloat => {
+                    if let NormalizedValue::Float(value) = &value {
+                        if !value.is_finite() {
+                            return Err(ObservationError::MalformedValue {
+                                field: key.clone(),
+                                reason: MalformedReason::WrongShape,
+                            });
+                        }
+                        if *value <= 0.0 {
+                            return Err(ObservationError::MalformedValue {
+                                field: key.clone(),
+                                reason: MalformedReason::OutOfRange,
+                            });
+                        }
                     }
                 }
                 _ => {}
@@ -1287,6 +1395,31 @@ mod tests {
             ConfigurationObservationDraft::new(subject(scope), source(provenance, transport));
         build(&mut draft);
         draft.finish().expect("fixture observation finishes")
+    }
+
+    fn finish_float_observation(rate: f64) -> ConfigurationObservation {
+        finish(
+            ConfigurationProvenanceClass::CompiledDefault,
+            ObservationTransport::CompiledDefaultsEmitted,
+            ObservationScope::Global,
+            |draft| {
+                perl_test_must::must_with(
+                    draft.expect_canonical_fields(&["ai.rate_limit_rps"]),
+                    "known row",
+                );
+                perl_test_must::must_with(
+                    draft.record_present(
+                        ObservedFieldIdentity::canonical("ai.rate_limit_rps"),
+                        perl_test_must::must_some_with(
+                            NormalizedValue::float(rate),
+                            "finite float admits",
+                        ),
+                        None,
+                    ),
+                    "float row admits its carrier",
+                );
+            },
+        )
     }
 
     /// Falsifier #1: the same visible AI value from a trusted user adapter
@@ -2442,6 +2575,363 @@ mod tests {
         assert!(matches!(row.normalized_value(), Some(NormalizedValue::DigestOnly(_))));
     }
 
+    /// Falsifier #23: the float carrier admits the catalog's float row
+    /// (`ai.rate_limit_rps`, Float/PositiveFloat) through the landed channel
+    /// instead of failing closed as unsupported (issue #12970).
+    #[test]
+    fn float_carrier_admits_rate_limit_rps_row() -> anyhow::Result<()> {
+        let observation = finish(
+            ConfigurationProvenanceClass::CompiledDefault,
+            ObservationTransport::CompiledDefaultsEmitted,
+            ObservationScope::Global,
+            |draft| {
+                perl_test_must::must_with(
+                    draft.expect_canonical_fields(&["ai.rate_limit_rps"]),
+                    "known row",
+                );
+                let value = perl_test_must::must_some_with(
+                    NormalizedValue::float(12.5),
+                    "finite float admits",
+                );
+                perl_test_must::must_with(
+                    draft.record_present(
+                        ObservedFieldIdentity::canonical("ai.rate_limit_rps"),
+                        value,
+                        None,
+                    ),
+                    "float row admits its carrier",
+                );
+            },
+        );
+        let row = perl_test_must::must_some_with(
+            observation.observed_field("ai.rate_limit_rps"),
+            "recorded",
+        );
+        anyhow::ensure!(row.admission() == SourceAuthorityAdmission::CandidateAdmitted);
+        anyhow::ensure!(row.disposition() == ConfigurationObservationDisposition::Present);
+        anyhow::ensure!(row.normalized_value() == Some(&NormalizedValue::Float(12.5)));
+        Ok(())
+    }
+
+    /// Wire-encoding pin: a finite float travels as a JSON number inside the
+    /// externally tagged carrier, and the schema-visible carrier addition
+    /// moved the envelope to generation 3 (issue #12970).
+    #[test]
+    fn float_wire_encoding_and_generation_pin() -> anyhow::Result<()> {
+        let observation = finish(
+            ConfigurationProvenanceClass::CompiledDefault,
+            ObservationTransport::CompiledDefaultsEmitted,
+            ObservationScope::Global,
+            |draft| {
+                perl_test_must::must_with(
+                    draft.expect_canonical_fields(&["ai.rate_limit_rps"]),
+                    "known row",
+                );
+                let value = perl_test_must::must_some_with(
+                    NormalizedValue::float(12.5),
+                    "finite float admits",
+                );
+                perl_test_must::must_with(
+                    draft.record_present(
+                        ObservedFieldIdentity::canonical("ai.rate_limit_rps"),
+                        value,
+                        None,
+                    ),
+                    "float row admits its carrier",
+                );
+            },
+        );
+        let wire = perl_test_must::must_with(serde_json::to_string(&observation), "serializes");
+        anyhow::ensure!(
+            wire.contains(r#""schema_generation":3"#),
+            "generation 3 on the wire: {wire}"
+        );
+        anyhow::ensure!(wire.contains(r#""Float":12.5"#), "float JSON number on the wire: {wire}");
+        anyhow::ensure!(!wire.contains("null"), "no non-finite null leak: {wire}");
+        anyhow::ensure!(observation.schema_generation() == OBSERVATION_SCHEMA_GENERATION);
+        Ok(())
+    }
+
+    /// Wire fixtures pin both an integer-valued and fractional finite float as
+    /// exact externally tagged JSON numbers. Independent serializations must
+    /// remain byte-identical, rather than merely containing a matching token.
+    #[test]
+    fn finite_float_wire_fixtures_are_exact_and_repeatable() -> anyhow::Result<()> {
+        let fixtures: &[(f64, &[u8])] =
+            &[(12.0, br#"{"Float":12.0}"#), (12.5, br#"{"Float":12.5}"#)];
+
+        for (value, expected) in fixtures {
+            let carrier = perl_test_must::must_some_with(
+                NormalizedValue::float(*value),
+                "finite float admits",
+            );
+            let first = perl_test_must::must_with(serde_json::to_vec(&carrier), "serializes");
+            let second =
+                perl_test_must::must_with(serde_json::to_vec(&carrier), "serializes again");
+            anyhow::ensure!(&first == expected, "wire fixture for {value}");
+            anyhow::ensure!(first == second, "repeated serialization for {value}");
+        }
+        Ok(())
+    }
+
+    /// The carrier fixtures above are necessary but insufficient: they do not
+    /// exercise catalog admission, field insertion, the ordered field map, or
+    /// the complete receipt envelope. These whole-observation fixtures close
+    /// that gap for both an integer-valued and fractional finite rate.
+    #[test]
+    fn complete_float_observation_fixtures_are_exact_and_repeatable() -> anyhow::Result<()> {
+        let fixtures =
+            [(12.0, FLOAT_OBSERVATION_12_0_FIXTURE), (12.5, FLOAT_OBSERVATION_12_5_FIXTURE)];
+
+        for (rate, expected) in fixtures {
+            let first = perl_test_must::must_with(
+                serde_json::to_vec_pretty(&finish_float_observation(rate)),
+                "complete observation serializes",
+            );
+            let second = perl_test_must::must_with(
+                serde_json::to_vec_pretty(&finish_float_observation(rate)),
+                "complete observation serializes again",
+            );
+            anyhow::ensure!(first == second, "complete observation bytes for {rate}");
+            anyhow::ensure!(
+                perl_test_must::must_with(std::str::from_utf8(&first), "fixture is utf8").trim()
+                    == expected.trim(),
+                "complete observation fixture for {rate}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Pins both textual renderings of float evidence: fingerprint material
+    /// uses `Display` (which drops a trailing `.0`, so `12.0` renders as
+    /// `float=12`), while the JSON wire preserves the decimal (`12.0`). The
+    /// divergence is intentional and matches the `Count` treatment; this
+    /// fixture catches any future drift in either representation.
+    #[test]
+    fn float_fingerprint_material_and_wire_renderings_are_pinned() -> anyhow::Result<()> {
+        let fixtures: &[(f64, &str, &[u8])] =
+            &[(12.0, "float=12", br#"{"Float":12.0}"#), (12.5, "float=12.5", br#"{"Float":12.5}"#)];
+        for (value, material, wire) in fixtures {
+            let carrier = perl_test_must::must_some_with(
+                NormalizedValue::float(*value),
+                "finite float admits",
+            );
+            anyhow::ensure!(
+                carrier.evidence_material() == *material,
+                "fingerprint material for {value}"
+            );
+            anyhow::ensure!(
+                perl_test_must::must_with(serde_json::to_vec(&carrier), "serializes").as_slice()
+                    == *wire,
+                "wire bytes for {value}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A finite carrier round-trips through the supported JSON receipt format
+    /// without changing its value or its exact emitted bytes.
+    #[test]
+    fn finite_float_json_round_trip_preserves_value_and_bytes() -> anyhow::Result<()> {
+        for value in [12.0, 12.5] {
+            let original = perl_test_must::must_some_with(
+                NormalizedValue::float(value),
+                "finite float admits",
+            );
+            let encoded = perl_test_must::must_with(serde_json::to_vec(&original), "serializes");
+            let decoded: NormalizedValue =
+                perl_test_must::must_with(serde_json::from_slice(&encoded), "decodes");
+            let reencoded =
+                perl_test_must::must_with(serde_json::to_vec(&decoded), "serializes again");
+            anyhow::ensure!(decoded == original, "round-trip value for {value}");
+            anyhow::ensure!(reencoded == encoded, "round-trip bytes for {value}");
+        }
+        Ok(())
+    }
+
+    /// Hostile or malformed float payloads fail closed at the generic carrier
+    /// boundary. In particular, deserialization cannot introduce a non-finite
+    /// value that would later become an untruthful receipt.
+    #[test]
+    fn normalized_value_rejects_hostile_float_payloads() -> anyhow::Result<()> {
+        for payload in
+            [r#"{"Float":null}"#, r#"{"Float":"NaN"}"#, r#"{"Float":1e999}"#, r#"{"Float":NaN}"#]
+        {
+            anyhow::ensure!(
+                serde_json::from_str::<NormalizedValue>(payload).is_err(),
+                "hostile payload must be rejected: {payload}"
+            );
+        }
+
+        for hostile in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            anyhow::ensure!(
+                serde_json::to_vec(&NormalizedValue::Float(hostile)).is_err(),
+                "non-finite carrier must not serialize: {hostile}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Supply non-finite numbers directly so the custom serde guard, rather
+    /// than an upstream JSON parser, must reject them.
+    #[test]
+    fn generic_float_deserialization_rejects_non_finite() -> anyhow::Result<()> {
+        let decode = |value: f64| {
+            let entries = std::iter::once(("Float", value));
+            let map = serde::de::value::MapDeserializer::<_, serde::de::value::Error>::new(entries);
+            NormalizedValue::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        };
+        let finite = decode(12.5)?;
+        anyhow::ensure!(finite == NormalizedValue::Float(12.5), "finite float must round-trip");
+        for hostile in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = decode(hostile)
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("non-finite carrier admitted: {hostile}"))?;
+            anyhow::ensure!(
+                error.to_string() == "normalized float must be finite",
+                "custom finite guard must reject {hostile}, received {error}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Records a raw float against the `ai.rate_limit_rps` row, bypassing
+    /// the total constructor so hostile (non-finite) values can reach the
+    /// admission gate.
+    fn record_raw_float_error(rate: f64) -> Result<(), ObservationError> {
+        let mut draft = perl_test_must::must_with(
+            try_draft(
+                ObservationScope::Global,
+                ConfigurationProvenanceClass::CompiledDefault,
+                ObservationTransport::CompiledDefaultsEmitted,
+            ),
+            "draft builds",
+        );
+        perl_test_must::must_with(
+            draft.expect_canonical_fields(&["ai.rate_limit_rps"]),
+            "known row",
+        );
+        draft.record_present(
+            ObservedFieldIdentity::canonical("ai.rate_limit_rps"),
+            NormalizedValue::Float(rate),
+            None,
+        )
+    }
+
+    /// Falsifier: PositiveFloat executes mechanically — zero is not positive
+    /// and lands as typed malformed, not as an admitted observation.
+    #[test]
+    fn zero_rate_limit_is_malformed_out_of_range() -> anyhow::Result<()> {
+        let error = record_raw_float_error(0.0);
+        anyhow::ensure!(matches!(
+            error,
+            Err(ObservationError::MalformedValue { reason: MalformedReason::OutOfRange, .. })
+        ));
+        Ok(())
+    }
+
+    /// Falsifier: negative rates are bounded away by PositiveFloat.
+    #[test]
+    fn negative_rate_limit_is_malformed_out_of_range() -> anyhow::Result<()> {
+        let error = record_raw_float_error(-1.5);
+        anyhow::ensure!(matches!(
+            error,
+            Err(ObservationError::MalformedValue { reason: MalformedReason::OutOfRange, .. })
+        ));
+        Ok(())
+    }
+
+    /// Falsifier: a non-finite float constructed directly (bypassing the
+    /// total constructor) still fails closed at admission — NaN has no
+    /// ordering and no honest evidence meaning.
+    #[test]
+    fn non_finite_float_fails_closed_at_admission() -> anyhow::Result<()> {
+        for hostile in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = record_raw_float_error(hostile);
+            anyhow::ensure!(
+                matches!(
+                    error,
+                    Err(ObservationError::MalformedValue {
+                        reason: MalformedReason::WrongShape,
+                        ..
+                    })
+                ),
+                "hostile float {hostile} must be rejected"
+            );
+        }
+        Ok(())
+    }
+
+    /// The total constructor rejects non-finite input; finite input admits.
+    #[test]
+    fn float_constructor_rejects_non_finite() -> anyhow::Result<()> {
+        anyhow::ensure!(NormalizedValue::float(f64::NAN).is_none());
+        anyhow::ensure!(NormalizedValue::float(f64::INFINITY).is_none());
+        anyhow::ensure!(NormalizedValue::float(f64::NEG_INFINITY).is_none());
+        anyhow::ensure!(NormalizedValue::float(12.5) == Some(NormalizedValue::Float(12.5)));
+        Ok(())
+    }
+
+    /// Falsifier: the carrier stays kind-gated — a float offered to a
+    /// boolean-kind row still fails closed as unsupported.
+    #[test]
+    fn float_stays_kind_gated_for_non_float_rows() -> anyhow::Result<()> {
+        let mut draft = perl_test_must::must_with(
+            try_draft(
+                ObservationScope::Global,
+                ConfigurationProvenanceClass::CompiledDefault,
+                ObservationTransport::CompiledDefaultsEmitted,
+            ),
+            "draft builds",
+        );
+        perl_test_must::must_with(
+            draft.expect_canonical_fields(&["telemetry.enabled"]),
+            "known row",
+        );
+        let error = draft.record_present(
+            ObservedFieldIdentity::canonical("telemetry.enabled"),
+            NormalizedValue::Float(12.5),
+            None,
+        );
+        anyhow::ensure!(matches!(error, Err(ObservationError::UnsupportedValueKind { .. })));
+        Ok(())
+    }
+
+    /// Float evidence joins the fingerprint identity: two envelopes differing
+    /// only in the observed rate produce distinct identities, and the same
+    /// value reproduces the same identity.
+    #[test]
+    fn float_value_is_fingerprint_identity_material() -> anyhow::Result<()> {
+        let build = |rate: f64| {
+            finish(
+                ConfigurationProvenanceClass::CompiledDefault,
+                ObservationTransport::CompiledDefaultsEmitted,
+                ObservationScope::Global,
+                |draft| {
+                    perl_test_must::must_with(
+                        draft.expect_canonical_fields(&["ai.rate_limit_rps"]),
+                        "known row",
+                    );
+                    let value = perl_test_must::must_some_with(
+                        NormalizedValue::float(rate),
+                        "finite float admits",
+                    );
+                    perl_test_must::must_with(
+                        draft.record_present(
+                            ObservedFieldIdentity::canonical("ai.rate_limit_rps"),
+                            value,
+                            None,
+                        ),
+                        "float row admits its carrier",
+                    );
+                },
+            )
+        };
+        anyhow::ensure!(build(12.5).fingerprint() != build(24.0).fingerprint());
+        anyhow::ensure!(build(12.5).fingerprint() == build(12.5).fingerprint());
+        Ok(())
+    }
+
     /// Pins the current fixture format; any schema-visible change must update
     /// this deliberately.
     fn pin_golden_fixture(actual: &str) {
@@ -2450,7 +2940,7 @@ mod tests {
     }
 
     const GOLDEN_COMPILED_DEFAULT_FIXTURE: &str = r#"{
-  "schema_generation": 2,
+  "schema_generation": 3,
   "subject": {
     "observation_id": "obs-fixture",
     "scope": "Global",
@@ -2460,7 +2950,7 @@ mod tests {
   },
   "source": {
     "producer_id": "perl-lsp-rs-core/test",
-    "schema_generation": 2,
+    "schema_generation": 3,
     "provenance": "CompiledDefault",
     "transport": "CompiledDefaultsEmitted",
     "client_declared_labels": {}
@@ -2481,6 +2971,98 @@ mod tests {
       },
       "admission": "CandidateAdmitted",
       "validation": "Boolean",
+      "evidence_policy": "SafeValue",
+      "limitations": []
+    }
+  },
+  "completeness": {
+    "Complete": {
+      "expected": 1,
+      "observed": 1
+    }
+  },
+  "limitations": []
+}
+"#;
+
+    const FLOAT_OBSERVATION_12_0_FIXTURE: &str = r#"{
+  "schema_generation": 3,
+  "subject": {
+    "observation_id": "obs-fixture",
+    "scope": "Global",
+    "runtime_generation": 1,
+    "configuration_generation": 1,
+    "trust_generation": 1
+  },
+  "source": {
+    "producer_id": "perl-lsp-rs-core/test",
+    "schema_generation": 3,
+    "provenance": "CompiledDefault",
+    "transport": "CompiledDefaultsEmitted",
+    "client_declared_labels": {}
+  },
+  "expected_denominator": [
+    "ai.rate_limit_rps"
+  ],
+  "fields": {
+    "ai.rate_limit_rps": {
+      "identity": {
+        "Canonical": {
+          "id": "ai.rate_limit_rps"
+        }
+      },
+      "disposition": "Present",
+      "normalized_value": {
+        "Float": 12.0
+      },
+      "admission": "CandidateAdmitted",
+      "validation": "PositiveFloat",
+      "evidence_policy": "SafeValue",
+      "limitations": []
+    }
+  },
+  "completeness": {
+    "Complete": {
+      "expected": 1,
+      "observed": 1
+    }
+  },
+  "limitations": []
+}
+"#;
+
+    const FLOAT_OBSERVATION_12_5_FIXTURE: &str = r#"{
+  "schema_generation": 3,
+  "subject": {
+    "observation_id": "obs-fixture",
+    "scope": "Global",
+    "runtime_generation": 1,
+    "configuration_generation": 1,
+    "trust_generation": 1
+  },
+  "source": {
+    "producer_id": "perl-lsp-rs-core/test",
+    "schema_generation": 3,
+    "provenance": "CompiledDefault",
+    "transport": "CompiledDefaultsEmitted",
+    "client_declared_labels": {}
+  },
+  "expected_denominator": [
+    "ai.rate_limit_rps"
+  ],
+  "fields": {
+    "ai.rate_limit_rps": {
+      "identity": {
+        "Canonical": {
+          "id": "ai.rate_limit_rps"
+        }
+      },
+      "disposition": "Present",
+      "normalized_value": {
+        "Float": 12.5
+      },
+      "admission": "CandidateAdmitted",
+      "validation": "PositiveFloat",
       "evidence_policy": "SafeValue",
       "limitations": []
     }

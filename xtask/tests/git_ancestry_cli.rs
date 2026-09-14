@@ -78,6 +78,54 @@ fn run_cli(
     command.output().context("failed to execute git-ancestry CLI")
 }
 
+#[test]
+fn worktree_scoped_partial_clone_marker_guards_absence_proofs() -> Result<()> {
+    // Devin review, PR #15171: with extensions.worktreeConfig enabled, a
+    // worktree-scoped marker is honored by Git, so the observation must see
+    // it too — a scope-limited probe would miss it and let an incomplete
+    // graph produce a false unrelated verdict.
+    let (tmp, hermetic) = initialized_repository()?;
+    let repository = tmp.path().join("repo");
+    let original = hermetic.git(&repository, &["rev-parse", "HEAD"])?;
+    hermetic.git(&repository, &["switch", "--orphan", "orphan"])?;
+    hermetic.git(&repository, &["rm", "-rf", "--ignore-unmatch", "."])?;
+    commit_file(&hermetic, &repository, "orphan.txt", "orphan\n", "orphan")?;
+    hermetic.git(&repository, &["config", "extensions.worktreeConfig", "true"])?;
+    hermetic.git(&repository, &["config", "--worktree", "extensions.partialClone", "origin"])?;
+
+    let output = run_cli(&hermetic, &repository, &original, "HEAD", &[])?;
+
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("not_proven_partial_clone"));
+    Ok(())
+}
+
+#[test]
+fn global_partial_clone_marker_guards_like_git_does() -> Result<()> {
+    // Git honors extensions.* from every resolved scope, so the observation
+    // mirrors the effective configuration: a global marker guards absence
+    // proofs (fail-closed), instead of the classifier claiming completeness
+    // where Git itself would not.
+    let tmp = tempfile::tempdir()?;
+    let hermetic = HermeticGit::with_pins(
+        &tmp.path().join("git-fixture-pins"),
+        &[("extensions.partialClone", "origin")],
+    )?;
+    let repository: PathBuf = tmp.path().join("repo");
+    hermetic.init_repo(&repository)?;
+    commit_file(&hermetic, &repository, "tracked.txt", "base\n", "base")?;
+    let original = hermetic.git(&repository, &["rev-parse", "HEAD"])?;
+    hermetic.git(&repository, &["switch", "--orphan", "orphan"])?;
+    hermetic.git(&repository, &["rm", "-rf", "--ignore-unmatch", "."])?;
+    commit_file(&hermetic, &repository, "orphan.txt", "orphan\n", "orphan")?;
+
+    let output = run_cli(&hermetic, &repository, &original, "HEAD", &[])?;
+
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("not_proven_partial_clone"));
+    Ok(())
+}
+
 fn initialized_repository() -> Result<(TempDir, HermeticGit)> {
     let tmp = tempfile::tempdir()?;
     let hermetic = HermeticGit::at(&tmp.path().join("git-fixture-pins"))?;

@@ -9,6 +9,7 @@ const { spawnSync } = require('child_process');
 const root = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(root, '..');
 const serverPath = process.env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+const dapPath = process.env.PERL_LSP_DAP_PATH;
 const serverSourceRevision = (process.env.PERL_LSP_SERVER_SOURCE_SHA || '').trim();
 
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -183,6 +184,65 @@ function hasCompleteCandidateIdentity(env) {
   ].every((value) => typeof value === 'string' && value.trim().length > 0);
 }
 
+function candidateManifestConstructionRequested(env = process.env) {
+  return env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST === '1';
+}
+
+function requireCandidateManifestConstructionInputs(env, revision) {
+  if (
+    typeof env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST === 'string' &&
+    env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST.trim()
+  ) {
+    throw new Error(
+      'candidate manifest construction cannot be combined with a supplied artifact manifest',
+    );
+  }
+  const fields = {
+    candidateId: env.PERL_LSP_CANDIDATE_ID,
+    artifactSetId: env.PERL_LSP_ARTIFACT_SET_ID,
+    frozenProductSha: env.PERL_LSP_CURRENT_SOURCE_SHA,
+  };
+  const missing = Object.entries(fields)
+    .filter(([, value]) => typeof value !== 'string' || value.trim() === '')
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    throw new Error(
+      `candidate manifest construction requires candidate ID, artifact-set ID, and frozen product SHA; missing ${missing.join(', ')}`,
+    );
+  }
+  if (fields.frozenProductSha.trim() !== revision) {
+    throw new Error(
+      `candidate manifest frozen product SHA ${fields.frozenProductSha.trim()} does not match source revision ${revision}`,
+    );
+  }
+  return {
+    candidateId: fields.candidateId.trim(),
+    artifactSetId: fields.artifactSetId.trim(),
+    frozenProductSha: fields.frozenProductSha.trim(),
+  };
+}
+
+function constructCandidateArtifactManifest(
+  env,
+  revision,
+  platform,
+  vsixSha256,
+  bundledServerSha256,
+) {
+  if (!candidateManifestConstructionRequested(env)) {
+    return undefined;
+  }
+  const identity = requireCandidateManifestConstructionInputs(env, revision);
+  return JSON.stringify({
+    candidate_id: identity.candidateId,
+    frozen_product_sha: identity.frozenProductSha,
+    artifact_set_id: identity.artifactSetId,
+    platform,
+    vsix_sha256: vsixSha256,
+    bundled_server_sha256: bundledServerSha256,
+  });
+}
+
 function interpretTestExplorerExit(smokeRun, childReceipt, childEnv = {}) {
   if (smokeRun.phase === 'compile') {
     return {
@@ -301,43 +361,68 @@ function bundleTargetForPlatform(platform = process.platform, arch = process.arc
   };
 }
 
-function stageServerForPackage(serverPath, extensionRoot = root) {
+function stageServerForPackage(serverPath, extensionRoot = root, dapSource) {
   const { directory, binaryName } = bundleTargetForPlatform();
   const binRoot = path.join(extensionRoot, 'bin');
   const platformRoot = path.join(binRoot, directory);
-  const destination = path.join(platformRoot, binaryName);
-  const existing = fs.existsSync(destination) ? fs.lstatSync(destination) : null;
-  if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
-    throw new Error(`Refusing to replace non-regular packaged server path: ${destination}`);
-  }
-  const previous = existing ? { bytes: fs.readFileSync(destination), mode: existing.mode } : null;
   const createdBinRoot = !fs.existsSync(binRoot);
   const createdPlatformRoot = !fs.existsSync(platformRoot);
+  const staged = [];
 
   const restore = () => {
-    if (previous) {
-      fs.writeFileSync(destination, previous.bytes);
-      fs.chmodSync(destination, previous.mode);
-    } else {
-      fs.rmSync(destination, { force: true });
+    const errors = [];
+    for (const { destination, previous } of [...staged].reverse()) {
+      try {
+        if (previous) {
+          fs.writeFileSync(destination, previous.bytes);
+          fs.chmodSync(destination, previous.mode);
+        } else {
+          fs.rmSync(destination, { force: true });
+        }
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    if (
-      createdPlatformRoot &&
-      fs.existsSync(platformRoot) &&
-      fs.readdirSync(platformRoot).length === 0
-    ) {
-      fs.rmSync(platformRoot, { recursive: true, force: true });
+    try {
+      if (
+        createdPlatformRoot &&
+        fs.existsSync(platformRoot) &&
+        fs.readdirSync(platformRoot).length === 0
+      ) {
+        fs.rmSync(platformRoot, { recursive: true, force: true });
+      }
+      if (createdBinRoot && fs.existsSync(binRoot) && fs.readdirSync(binRoot).length === 0) {
+        fs.rmSync(binRoot, { recursive: true, force: true });
+      }
+    } catch (error) {
+      errors.push(error);
     }
-    if (createdBinRoot && fs.existsSync(binRoot) && fs.readdirSync(binRoot).length === 0) {
-      fs.rmSync(binRoot, { recursive: true, force: true });
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'failed to restore staged VSIX binaries');
     }
   };
 
   try {
     fs.mkdirSync(platformRoot, { recursive: true });
-    fs.copyFileSync(serverPath, destination);
-    if (process.platform !== 'win32') {
-      fs.chmodSync(destination, 0o755);
+    const binaries = [{ source: serverPath, name: binaryName }];
+    if (dapSource) {
+      binaries.push({
+        source: dapSource,
+        name: process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap',
+      });
+    }
+    for (const binary of binaries) {
+      const destination = path.join(platformRoot, binary.name);
+      const existing = fs.lstatSync(destination, { throwIfNoEntry: false });
+      if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+        throw new Error(`Refusing to replace non-regular packaged binary path: ${destination}`);
+      }
+      staged.push({
+        destination,
+        previous: existing ? { bytes: fs.readFileSync(destination), mode: existing.mode } : null,
+      });
+      fs.copyFileSync(binary.source, destination);
+      if (process.platform !== 'win32') fs.chmodSync(destination, 0o755);
     }
   } catch (error) {
     try {
@@ -398,6 +483,7 @@ function writeJsonAtomic(destination, value) {
  *   violations?: string[],
  *   post_host_exit_processes?: string[],
  *   transition?: unknown,
+ *   candidate_bound?: boolean,
  * }} SmokeStage
  */
 
@@ -826,6 +912,7 @@ function validateChildSmokeReceipt({
       `first-hour receipt outcome is ${JSON.stringify(receipt.outcome)}, not completed`,
     );
   }
+
   if (!Array.isArray(receipt.failures) || receipt.failures.length > 0) {
     violations.push('first-hour receipt reported failures');
   }
@@ -877,6 +964,132 @@ function validateChildSmokeReceipt({
   }
 
   return violations.length > 0 ? { ok: false, violations } : { ok: true, receipt };
+}
+
+function verifiedCandidateReceiptPath() {
+  return path.join(
+    receiptsRoot(),
+    smokeSourceLabel(),
+    smokePlatformLabel(),
+    'verified_child_receipt.json',
+  );
+}
+
+/**
+ * @returns {{ok: boolean, receipt?: any, source_receipt?: any, violations?: string[]}}
+ */
+function validateVerifiedCandidateReceipt({
+  receiptFile,
+  env,
+  expectedVsixSha256,
+  expectedBundledServerSha256,
+  sourceReceiptFile,
+  expectedPlatform,
+}) {
+  try {
+    const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
+    const violations = [];
+    const allowedStatuses = new Set(['pass', 'limited', 'blocked', 'not_proven']);
+    if (receipt.schema_version !== 'verified_child_receipt.v1') {
+      violations.push('verified child receipt schema is not verified_child_receipt.v1');
+    }
+    if (receipt.receipt_schema_version !== 'installed_acceptance.v1') {
+      violations.push('verified child receipt is not an installed acceptance envelope');
+    }
+    if (!allowedStatuses.has(receipt.status)) {
+      violations.push('verified child receipt has an invalid or missing bounded status');
+    }
+    for (const [field, expected] of [
+      ['candidate_id', env.PERL_LSP_CANDIDATE_ID],
+      ['frozen_product_sha', env.PERL_LSP_CURRENT_SOURCE_SHA],
+      ['artifact_set_id', env.PERL_LSP_ARTIFACT_SET_ID],
+    ]) {
+      if (receipt[field] !== expected) {
+        violations.push(`verified child ${field} does not bind this candidate`);
+      }
+    }
+    if (receipt.status === 'blocked') {
+      violations.push(
+        `verified child status ${JSON.stringify(receipt.status)} is not executable evidence`,
+      );
+    }
+    if (!receipt.source_receipt_sha256 || !sourceReceiptFile) {
+      violations.push('verified child receipt does not bind its packaged source receipt');
+    } else if (receipt.source_receipt_sha256 !== sha256File(sourceReceiptFile)) {
+      violations.push('verified child source receipt digest does not match this run');
+    }
+    if (receipt.artifact_hashes?.vsix_sha256 !== expectedVsixSha256) {
+      violations.push("verified child VSIX digest is not this run's package");
+    }
+    if (receipt.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
+      violations.push("verified child bundled-server digest is not this run's server");
+    }
+    let sourceReceipt;
+    try {
+      sourceReceipt = JSON.parse(fs.readFileSync(sourceReceiptFile, 'utf8'));
+    } catch (error) {
+      violations.push(
+        `packaged source receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (sourceReceipt?.repository_sha !== env.PERL_LSP_CURRENT_SOURCE_SHA) {
+      violations.push('packaged source receipt does not bind this candidate source');
+    }
+    if (sourceReceipt?.artifact_hashes?.vsix_sha256 !== expectedVsixSha256) {
+      violations.push("packaged source receipt VSIX digest is not this run's package");
+    }
+    if (sourceReceipt?.artifact_hashes?.bundled_server_sha256 !== expectedBundledServerSha256) {
+      violations.push("packaged source receipt bundled-server digest is not this run's server");
+    }
+    const expectedBundleMarker =
+      expectedPlatform === 'windows' ? 'win32-x64' : `${expectedPlatform}-x64`;
+    const sourceStartup = sourceReceipt?.startup;
+    const sourceIdentity = sourceReceipt?.server_identity;
+    const sourceRequests = sourceReceipt?.requests;
+    const providerKeys = ['completion', 'hover', 'definition', 'references', 'symbols'];
+    if (
+      !sourceReceipt ||
+      sourceReceipt.outcome !== 'not_proven' ||
+      !Array.isArray(sourceReceipt.product_blockers) ||
+      sourceReceipt.product_blockers.length !== 0 ||
+      sourceIdentity?.source !== 'packaged_vsix_bundle' ||
+      sourceIdentity?.startup_source !== 'bundled' ||
+      typeof sourceIdentity.path !== 'string' ||
+      !sourceIdentity.path.replaceAll('\\', '/').split('/').includes(expectedBundleMarker) ||
+      sourceStartup?.lifecycle_state !== 'running' ||
+      sourceStartup?.binary_resolution_status !== 'ok' ||
+      sourceStartup?.server_start_status !== 'ok' ||
+      sourceStartup?.initialize_status !== 'ok' ||
+      !sourceRequests?.after_edit ||
+      sourceRequests.after_edit.status !== 'ok' ||
+      sourceRequests.after_edit.immediate_requery?.status !== 'ok' ||
+      !sourceRequests.immediate ||
+      providerKeys.some((key) => sourceRequests.immediate[key]?.status !== 'ok') ||
+      sourceReceipt.shutdown !== 'stopped'
+    ) {
+      violations.push(
+        'packaged source receipt does not prove the bounded packaged startup/provider/edit journey',
+      );
+    }
+    return violations.length > 0
+      ? { ok: false, violations }
+      : { ok: true, receipt, source_receipt: sourceReceipt };
+  } catch (error) {
+    return {
+      ok: false,
+      violations: [
+        `verified child receipt could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      ],
+    };
+  }
+}
+
+function observedVscodeVersion(childReceipt, constructedManifest) {
+  if (!childReceipt?.ok) return undefined;
+  if (constructedManifest && 'source_receipt' in childReceipt) {
+    return childReceipt.source_receipt?.vscode_version;
+  }
+  return childReceipt.receipt?.environment?.vscode_version;
 }
 
 /** Must match `HOST_RESOLUTION_FAILURE_RECEIPT_NAME` in vscodeHostResolution.ts. */
@@ -2105,6 +2318,10 @@ function activationFailureLegEnv(baseEnv, leg, fault, context) {
   delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
   delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
   delete env.PERL_LSP_CURRENT_SOURCE_SHA;
+  delete env.PERL_LSP_CANDIDATE_ID;
+  delete env.PERL_LSP_ARTIFACT_SET_ID;
+  delete env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST;
+  delete env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST;
   return env;
 }
 
@@ -2329,6 +2546,10 @@ function crashRecoveryLegEnv(baseEnv, leg, context) {
   delete env.PERL_LSP_PACKAGED_BUNDLE_SMOKE;
   delete env.PERL_LSP_FIRST_HOUR_SERVER_PATH;
   delete env.PERL_LSP_CURRENT_SOURCE_SHA;
+  delete env.PERL_LSP_CANDIDATE_ID;
+  delete env.PERL_LSP_ARTIFACT_SET_ID;
+  delete env.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST;
+  delete env.PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST;
   delete env.PERL_LSP_ACTIVATION_FAILURE_SMOKE;
   delete env.PERL_LSP_ACTIVATION_FAILURE_LEG;
   delete env.PERL_LSP_EXTENSION_TEST_FAIL_ACTIVATION_PHASE;
@@ -2634,6 +2855,9 @@ function main() {
         `Server source revision ${serverSourceRevision} does not match extension source revision ${revision}`,
       );
     }
+    if (candidateManifestConstructionRequested(process.env)) {
+      requireCandidateManifestConstructionInputs(process.env, revision);
+    }
   } catch (error) {
     failInstrument(error);
     return concludeRun(receipt);
@@ -2645,11 +2869,12 @@ function main() {
 
   const runStageBody = () => {
     try {
-      restoreStagedServer = stageServerForPackage(serverPath);
+      restoreStagedServer = stageServerForPackage(serverPath, root, dapPath);
       /** @type {NodeJS.ProcessEnv} */
       const packageEnv = {
         ...process.env,
         PERL_LSP_CURRENT_SOURCE_SMOKE: '1',
+        PERL_LSP_CURRENT_SOURCE_DAP_STAGED: dapPath ? '1' : '0',
         PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot(),
       };
       delete packageEnv.PERL_LSP_TEST_EXPLORER_JOURNEY;
@@ -2722,6 +2947,17 @@ function main() {
       receipt.stages.package_creation = { status: 'pass', exit_code: 0 };
       persistReceipt(destination, receipt);
 
+      const constructedManifest = constructCandidateArtifactManifest(
+        process.env,
+        revision,
+        process.platform === 'win32' ? 'windows' : process.platform,
+        receipt.vsix.sha256,
+        sha256File(serverPath),
+      );
+      if (constructedManifest !== undefined) {
+        packageEnv.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = constructedManifest;
+      }
+
       receipt.stages.package_inventory = runInventoryTransition(packageEnv, revision, vsixPath);
       persistReceipt(destination, receipt);
 
@@ -2741,6 +2977,14 @@ function main() {
           PERL_LSP_SMOKE_SOURCE_LABEL: smokeSourceLabel(),
           PERL_LSP_VSIX_SHA256: receipt.vsix.sha256 ?? '',
         };
+        if (constructedManifest !== undefined) {
+          smokeEnv.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST = constructedManifest;
+          smokeEnv.PERL_LSP_PACKAGED_BUNDLE_SMOKE = '1';
+          delete smokeEnv.PERL_LSP_CURRENT_SOURCE_SMOKE;
+          delete smokeEnv.PERL_LSP_FIRST_HOUR_ONLY;
+          delete smokeEnv.PERL_LSP_FIRST_HOUR_RECEIPT;
+          delete smokeEnv.PERL_LSP_FIRST_HOUR_SERVER_PATH;
+        }
         // The first-hour child is one leg of the combined candidate run. Keep
         // its selector exclusive so the second Test Explorer leg can reuse the
         // same staged VSIX after this process completes.
@@ -2752,6 +2996,7 @@ function main() {
         const childReceiptFile = childReceiptPath();
         try {
           fs.rmSync(childReceiptFile, { force: true });
+          fs.rmSync(verifiedCandidateReceiptPath(), { force: true });
           fs.rmSync(hostResolutionFailurePath(), { force: true });
         } catch (error) {
           receipt.stages.behavioral_smoke = {
@@ -2788,29 +3033,54 @@ function main() {
             receiptsRoot: receiptsRoot(),
           });
         } else if (smokeResult.status === 0) {
-          const childReceipt = validateChildSmokeReceipt({
-            receiptFile: childReceiptFile,
-            expectedRevision: revision,
-            expectedVsixSha256: receipt.vsix.sha256,
-            expectedServerSourceSha: serverSourceRevision,
-            // Mirror the child's own default so an unset matrix version is not
-            // reported as an identity mismatch.
-            expectedVscodeVersion: (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
-            expectedSourceLabel: receipt.source_label,
-          });
+          const childReceipt =
+            constructedManifest !== undefined
+              ? validateVerifiedCandidateReceipt({
+                  receiptFile: verifiedCandidateReceiptPath(),
+                  env: smokeEnv,
+                  expectedVsixSha256: receipt.vsix.sha256,
+                  expectedBundledServerSha256: sha256File(serverPath),
+                  sourceReceiptFile: path.join(
+                    path.dirname(verifiedCandidateReceiptPath()),
+                    'packaged_bundle_journey_receipt.json',
+                  ),
+                  expectedPlatform: process.platform === 'win32' ? 'windows' : process.platform,
+                })
+              : validateChildSmokeReceipt({
+                  receiptFile: childReceiptFile,
+                  expectedRevision: revision,
+                  expectedVsixSha256: receipt.vsix.sha256,
+                  expectedServerSourceSha: serverSourceRevision,
+                  // Mirror the child's own default so an unset matrix version is not
+                  // reported as an identity mismatch.
+                  expectedVscodeVersion:
+                    (process.env.PERL_LSP_VSCODE_VERSION || '').trim() || 'stable',
+                  expectedSourceLabel: receipt.source_label,
+                });
           receipt.stages.behavioral_smoke = childReceipt.ok
-            ? { status: 'pass', exit_code: 0 }
+            ? {
+                status: 'pass',
+                exit_code: 0,
+                candidate_bound:
+                  constructedManifest !== undefined || hasCompleteCandidateIdentity(smokeEnv),
+              }
             : {
                 status: 'not_proven',
                 exit_code: 0,
                 reason: 'child_receipt_did_not_bind_this_run',
-                violations: childReceipt.violations,
+                ...(childReceipt.violations ? { violations: childReceipt.violations } : {}),
               };
           if (childReceipt.ok) {
             // Propagate the launched runtime version the bound child
             // observed; downstream exactness claims must bind to this, never
             // to the requested selector alone.
-            receipt.observed_vscode_version = childReceipt.receipt.environment.vscode_version;
+            const observedVersion = observedVscodeVersion(
+              childReceipt,
+              constructedManifest !== undefined,
+            );
+            if (observedVersion) {
+              receipt.observed_vscode_version = observedVersion;
+            }
           }
         }
       } else {
@@ -2829,7 +3099,7 @@ function main() {
 
       if (testExplorerRequested && shouldRunBehavioralSmoke(receipt.stages)) {
         receipt.stages.test_explorer_journey = runTestExplorerJourneyStage(
-          process.env,
+          packageEnv,
           revision,
           vsixPath,
           receipt.vsix.sha256 ?? '',
@@ -2908,6 +3178,8 @@ module.exports = {
   CRASH_RECOVERY_RECEIPTS,
   activationFailureLegEnv,
   bundleTargetForPlatform,
+  candidateManifestConstructionRequested,
+  constructCandidateArtifactManifest,
   childReceiptPath,
   composeActivationRecoveryReceipt,
   composeCheckSummary,
@@ -2923,6 +3195,8 @@ module.exports = {
   runTestExplorerJourneyStage,
   testExplorerSmokeEnv,
   validateTestExplorerReceipt,
+  validateVerifiedCandidateReceipt,
+  observedVscodeVersion,
   interpretTransitionResult,
   inventoryTransitionArgs,
   publishCheckSummary,
