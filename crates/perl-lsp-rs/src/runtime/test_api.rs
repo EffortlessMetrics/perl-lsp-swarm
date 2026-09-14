@@ -272,10 +272,10 @@ impl LspServer {
     ///
     /// # Returns
     /// - `Ok(Some(locations))`: Definition location(s) found.
-    /// - `Ok(None)`: No definition found at position.
+    /// - `Ok(Some(Value::Null))` or an empty location array: No definition found.
     ///
     /// # Errors
-    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    /// Returns [`JsonRpcError`] if provided params are invalid.
     pub fn test_handle_definition(
         &self,
         params: Option<Value>,
@@ -411,10 +411,11 @@ impl LspServer {
     ///
     /// # Returns
     /// - `Ok(Some(signature_help))`: Signature information found.
-    /// - `Ok(None)`: No signature help available at position.
+    /// - `Ok(Some(Value::Null))`: No signature help available at position or the
+    ///   document is not open.
     ///
     /// # Errors
-    /// Returns [`JsonRpcError`] if params are invalid or document not found.
+    /// Returns [`JsonRpcError`] if params are invalid or the feature is not advertised.
     pub fn test_handle_signature_help(
         &self,
         params: Option<Value>,
@@ -1349,6 +1350,9 @@ mod tests {
 
     #[test]
     fn test_notify_index_ready_wait_entered_forwards_to_readiness_observer() -> Result<()> {
+        // Same process-global wait-entered slot as the readiness contract
+        // tests (#15016). Serialize with every other notify-capable wait.
+        let _serial = crate::runtime::readiness::readiness_wait_path_test_lock();
         let server = LspServer::new();
         let coordinator = server
             .index_coordinator

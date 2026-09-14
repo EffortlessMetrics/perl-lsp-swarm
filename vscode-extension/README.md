@@ -5,6 +5,7 @@
 [![docs.rs](https://docs.rs/perl-lsp-rs/badge.svg)](https://docs.rs/perl-lsp-rs)
 [![crates.io downloads](https://img.shields.io/crates/d/perl-lsp-rs.svg?label=crates.io%20downloads)](https://crates.io/crates/perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:start -->
+
 [![VS Marketplace Installs (manual)](https://img.shields.io/badge/VS%20Marketplace-681%20installs-0078D4)](https://marketplace.visualstudio.com/items?itemName=EffortlessMetrics.perl-lsp-rs)
 <!-- perl-lsp:vs-marketplace-installs-badge:end -->
 
@@ -259,6 +260,12 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for
 | **Perl: Show Status Menu**             | Quick-access menu for all actions                          |
 | **Perl: Show Perl Workspace Status**   | Show the current server, workspace, and diagnostic state   |
 | **Perl: Report Issue**                 | Open a pre-filled issue report                             |
+
+Run Health Check reports binary presence separately from language-server runtime
+health. If the configured executable exists but startup or initialization fails,
+the runtime check remains an error. When cleanup cannot be confirmed, restart is
+blocked and the notification directs you to reload the VS Code window before
+trying again; this avoids launching a second server over an unknown process.
 
 ### Editing and refactoring
 

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14155,
-  "reason": "Accept the combined landed #14857 lifecycle and #14621 per-file configuration package, plus the #14919 Marketplace README refresh. Measured with Node 26.5.0 and npm 11.18.0 from an actual VSIX at main 42007301a43ad5287aa00df8e26683f9795655b9. The 29 payload paths are unchanged: out/extension.js grows by 1130 bytes to 1679645; readme.md grows by 8 bytes to 25230; total payload is 1857611 bytes. Installed behavior remains a separate proof surface.",
-  "base_baseline_file_sha256": "a0ff6132d090487820a562be18de96e17a9e0b6f1c22c5304386519490aac8c5",
-  "candidate_baseline_file_sha256": "71482686ee9c9e65c120c19a814034fd537dc61e826306b406d5b137cb1b2a5b",
-  "base_inventory_sha256": "58b0b7699290c02ba693c03393cc5fc7771c687386499ebd1d426ac3850b1b02",
-  "candidate_inventory_sha256": "0b5940446ee784e69435a7bf1f2f44f7ea49e17832178a82a559012a25c22584"
+  "owner_issue": 15451,
+  "reason": "Issue #15451 records the packaged DAP target-selection repair: compatible Windows ARM64 payloads prefer native ARM64, with Windows 11 x64 emulation only when supported; missing metadata follows the ordered host payload candidates. The exact candidate package measures out/extension.js at 1678528 bytes, a declared +114-byte size-only transition from the accepted base.",
+  "base_baseline_file_sha256": "b056bc5c2f0940e85f9d3710755f1a39805357f26502f0428a38edfa57e8100c",
+  "candidate_baseline_file_sha256": "97e252c780703cdac57817eb53c68e62fe8d8454364c4689569126f8dd7882f2",
+  "base_inventory_sha256": "efb6c015d76fa78802b07f0171e64bef7cd71651dbf78590112e68c22366d5f6",
+  "candidate_inventory_sha256": "4330c8d298776388ded382fe8ce8b3e810a47adf54cd214f25c5df4c0d033956"
 }

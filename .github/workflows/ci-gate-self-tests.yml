@@ -73,6 +73,7 @@ on:
       - '.github/workflows/ripr.yml'
       - '.github/workflows/ripr-infra-retry.yml'
       - 'scripts/ci/classify-ripr-lane-termination'
+      - 'scripts/ci/test_ripr_cache_authority_15055.py'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
       # Toolchain guard for bash entrypoints (issue #12593): the coverage
       # consistency test scans every cargo-invoking scripts/*.sh, so any
@@ -541,6 +542,9 @@ jobs:
 
       - name: Run ripr termination classifier + bounded-retry self-test
         run: bash scripts/tests/test-classify-ripr-lane-termination.sh
+
+      - name: Run RIPR cache-writer authority self-test
+        run: python3 -m unittest scripts/ci/test_ripr_cache_authority_15055.py
 
       - name: Summary
         if: always()

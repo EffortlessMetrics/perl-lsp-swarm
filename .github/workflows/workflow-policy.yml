@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'xtask/src/tasks/workflow_policy_lint.rs'
+      - 'policy/self-hosted-runner-isolation.toml'
       - 'xtask/src/tasks/ux_regression_receipt.rs'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
@@ -13,6 +14,8 @@ on:
       - 'xtask/tests/perl_version_matrix_cache_contract.rs'
       - 'xtask/tests/corpus_windows_reparse_cache_contract.rs'
       - 'xtask/tests/ci_nightly_cache_contract.rs'
+      - 'scripts/ci/candidate_proof_presence.py'
+      - 'scripts/ci/test_candidate_proof_presence.py'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
       - 'scripts/tests/test-public-api-ratchet.sh'
@@ -26,6 +29,7 @@ on:
     paths:
       - '.github/workflows/**'
       - 'xtask/src/tasks/workflow_policy_lint.rs'
+      - 'policy/self-hosted-runner-isolation.toml'
       - 'xtask/src/tasks/ux_regression_receipt.rs'
       - 'xtask/src/main.rs'
       - 'xtask/src/tasks/mod.rs'
@@ -34,6 +38,8 @@ on:
       - 'xtask/tests/perl_version_matrix_cache_contract.rs'
       - 'xtask/tests/corpus_windows_reparse_cache_contract.rs'
       - 'xtask/tests/ci_nightly_cache_contract.rs'
+      - 'scripts/ci/candidate_proof_presence.py'
+      - 'scripts/ci/test_candidate_proof_presence.py'
       - '.github/ci-config.yml'
       - 'scripts/gh/ensure-labels.sh'
       - 'scripts/tests/test-public-api-ratchet.sh'
@@ -60,7 +66,7 @@ jobs:
         with:
           toolchain: stable
       - name: Install just for executable recipe proofs
-        uses: taiki-e/install-action@e67fa11c4b9316fa714ddf0abed07a0c3143b95b  # v2.87.4
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
         with:
           tool: just
       - name: Verify tested candidate identity
@@ -69,17 +75,79 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse 'HEAD^{commit}')" = "$TESTED_SHA"
+      # GitHub composes the effective workflow from the merge commit while this
+      # job checks out the exact candidate head, so a head that predates a newly
+      # landed proof receives its step without its file (#13014). Classify each
+      # proof against the candidate tree first: absent-and-undeclared becomes a
+      # visible stale-head no-op, while present, deleted-but-declared, and
+      # non-regular proofs all stay red.
+      #
+      # The guard comes from the same revision as the effective workflow, so a
+      # candidate predating it is still classified; running the candidate's own
+      # copy would leave exactly the stale heads this repair targets unguarded.
+      # Sharing one revision also keeps the instrument and its --proof
+      # invocation in step, which pinning the guard to the base branch would
+      # not: a PR that adds a proof and extends the guard together would then
+      # run a base guard against a merged invocation it may not understand --
+      # the same workflow/tree skew this job exists to remove.
+      #
+      # On a pull request `github.sha` is the merge commit, so a candidate that
+      # edits the guard ships its own classifier here. That is the trust posture
+      # this job already has -- it runs candidate `cargo test` and candidate
+      # `bash scripts/tests/*.sh` by design -- and the control is review of the
+      # diff, so the resolved guard revision and digest are printed below to
+      # make the instrument that actually ran visible in the run.
+      - name: Fetch the proof-presence guard from the effective workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .effective-workflow
+          persist-credentials: false
+          sparse-checkout: scripts/ci/candidate_proof_presence.py
+          sparse-checkout-cone-mode: false
+      - name: Classify candidate proof presence
+        id: candidate-proofs
+        shell: bash
+        run: |
+          set -euo pipefail
+          guard=.effective-workflow/scripts/ci/candidate_proof_presence.py
+          guard_rev="$(git -C .effective-workflow rev-parse HEAD)"
+          guard_digest="$(sha256sum "$guard" | cut -d' ' -f1)"
+          printf 'proof-presence guard %s from %s\n' "$guard_digest" "$guard_rev"
+          {
+            echo "### Workflow Policy proof-presence guard"
+            echo
+            echo "- revision: \`$guard_rev\`"
+            echo "- sha256: \`$guard_digest\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          python3 .effective-workflow/scripts/ci/candidate_proof_presence.py \
+            --root . \
+            --workflow .github/workflows/workflow-policy.yml \
+            --proof ux_regression_gate_workflow_policy=xtask/tests/ux_regression_gate_workflow_policy.rs \
+            --proof perl_version_matrix_cache_contract=xtask/tests/perl_version_matrix_cache_contract.rs \
+            --proof ci_nightly_cache_contract=xtask/tests/ci_nightly_cache_contract.rs \
+            --proof public_api_pr_gating_workflow=xtask/tests/public_api_pr_gating_workflow.rs \
+            --proof corpus_windows_reparse_cache_contract=xtask/tests/corpus_windows_reparse_cache_contract.rs \
+            --proof public_api_label_stub=scripts/tests/test-public-api-label.sh \
+            --proof public_api_ratchet=scripts/tests/test-public-api-ratchet.sh
       - name: UX receipt workflow policy proof
+        if: steps.candidate-proofs.outputs.ux_regression_gate_workflow_policy != 'absent_and_undeclared'
         run: cargo test -p xtask --test ux_regression_gate_workflow_policy --locked
       - name: Perl matrix cache policy contract
+        if: steps.candidate-proofs.outputs.perl_version_matrix_cache_contract != 'absent_and_undeclared'
         run: cargo test -p xtask --test perl_version_matrix_cache_contract --locked
       - name: Nightly rust-cache writer contract
+        if: steps.candidate-proofs.outputs.ci_nightly_cache_contract != 'absent_and_undeclared'
         run: cargo test -p xtask --test ci_nightly_cache_contract --locked
       - name: Public API trigger label contract
+        if: steps.candidate-proofs.outputs.public_api_pr_gating_workflow != 'absent_and_undeclared'
         run: cargo test -p xtask --test public_api_pr_gating_workflow --locked
       - name: Public API label reconciliation stub proof
+        if: steps.candidate-proofs.outputs.public_api_label_stub != 'absent_and_undeclared'
         run: bash scripts/tests/test-public-api-label.sh
       - name: Public API ratchet executable proof
+        if: steps.candidate-proofs.outputs.public_api_ratchet != 'absent_and_undeclared'
         run: bash scripts/tests/test-public-api-ratchet.sh
       - name: Run workflow policy lint
         # `--check-lane-whitelist` enables the policy/ci-lane-whitelist.toml
@@ -89,6 +157,7 @@ jobs:
         # See #8166 ("CI economics rollout: deferred follow-ups").
         run: cargo xtask workflow-policy-lint --check-lane-whitelist --receipt target/receipts/workflow-policy.json
       - name: Run Windows reparse cache contract
+        if: steps.candidate-proofs.outputs.corpus_windows_reparse_cache_contract != 'absent_and_undeclared'
         run: cargo test --locked -p xtask --test corpus_windows_reparse_cache_contract
       - name: Upload workflow policy receipt
         if: always()

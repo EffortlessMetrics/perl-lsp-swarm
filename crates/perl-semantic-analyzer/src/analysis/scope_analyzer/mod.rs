@@ -235,10 +235,10 @@ impl Scope {
         // First check if already declared in this scope
         {
             let vars = self.variables.borrow();
-            if let Some(map) = &vars[idx] {
-                if map.contains_key(name) {
-                    return Some(IssueKind::VariableRedeclaration);
-                }
+            if let Some(map) = &vars[idx]
+                && map.contains_key(name)
+            {
+                return Some(IssueKind::VariableRedeclaration);
             }
         }
 
@@ -304,10 +304,10 @@ impl Scope {
         loop {
             {
                 let vars = current_scope.variables.borrow();
-                if let Some(map) = &vars[idx] {
-                    if map.contains_key(name) {
-                        return true;
-                    }
+                if let Some(map) = &vars[idx]
+                    && map.contains_key(name)
+                {
+                    return true;
                 }
             }
             if let Some(ref parent) = current_scope.parent {
@@ -325,11 +325,11 @@ impl Scope {
         loop {
             {
                 let vars = current_scope.variables.borrow();
-                if let Some(map) = &vars[idx] {
-                    if let Some(var) = map.get(name) {
-                        *var.is_used.borrow_mut() = true;
-                        return (true, *var.is_initialized.borrow());
-                    }
+                if let Some(map) = &vars[idx]
+                    && let Some(var) = map.get(name)
+                {
+                    *var.is_used.borrow_mut() = true;
+                    return (true, *var.is_initialized.borrow());
                 }
             }
 
@@ -348,11 +348,11 @@ impl Scope {
         loop {
             {
                 let vars = current_scope.variables.borrow();
-                if let Some(map) = &vars[idx] {
-                    if let Some(var) = map.get(name) {
-                        *var.is_initialized.borrow_mut() = true;
-                        return;
-                    }
+                if let Some(map) = &vars[idx]
+                    && let Some(var) = map.get(name)
+                {
+                    *var.is_initialized.borrow_mut() = true;
+                    return;
                 }
             }
 
@@ -373,12 +373,12 @@ impl Scope {
         loop {
             {
                 let vars = current_scope.variables.borrow();
-                if let Some(map) = &vars[idx] {
-                    if let Some(var) = map.get(name) {
-                        *var.is_used.borrow_mut() = true;
-                        *var.is_initialized.borrow_mut() = true;
-                        return true;
-                    }
+                if let Some(map) = &vars[idx]
+                    && let Some(var) = map.get(name)
+                {
+                    *var.is_used.borrow_mut() = true;
+                    *var.is_initialized.borrow_mut() = true;
+                    return true;
                 }
             }
 
@@ -1157,13 +1157,12 @@ impl ScopeAnalyzer {
             && let Some(parent) = ancestors.last()
             && let NodeKind::IndirectCall { object, args, .. } = &parent.kind
             && std::ptr::eq(object.as_ref(), node)
+            && let Some(first_arg) = args.first()
         {
-            if let Some(first_arg) = args.first() {
-                match &first_arg.kind {
-                    NodeKind::ArrayLiteral { .. } => return Some(("@", name)),
-                    NodeKind::Block { .. } => return Some(("%", name)),
-                    _ => {}
-                }
+            match &first_arg.kind {
+                NodeKind::ArrayLiteral { .. } => return Some(("@", name)),
+                NodeKind::Block { .. } => return Some(("%", name)),
+                _ => {}
             }
         }
 
@@ -1475,10 +1474,10 @@ impl ScopeAnalyzer {
                 continue;
             }
 
-            if let Some(name) = content.get(start..end) {
-                if !name.contains("::") {
-                    let _ = self.use_variable_parts_in_context(scope, sigil, name, context);
-                }
+            if let Some(name) = content.get(start..end)
+                && !name.contains("::")
+            {
+                let _ = self.use_variable_parts_in_context(scope, sigil, name, context);
             }
 
             index = if requires_closing_brace { end + 1 } else { end };
@@ -1517,10 +1516,10 @@ impl ScopeAnalyzer {
             | NodeKind::NamedParameter { variable, .. } => self.extract_variable_name(variable),
             NodeKind::ArrayLiteral { elements } => {
                 // Handle array reference patterns like @{$ref}
-                if elements.len() == 1 {
-                    if let Some(first) = elements.first() {
-                        return self.extract_variable_name(first);
-                    }
+                if elements.len() == 1
+                    && let Some(first) = elements.first()
+                {
+                    return self.extract_variable_name(first);
                 }
                 ExtractedName::Full(String::new())
             }
@@ -1632,10 +1631,11 @@ impl ScopeAnalyzer {
                 NodeKind::ArrayLiteral { .. } if i > 0 => {
                     // Check grandparent
                     let grandparent = ancestors[i - 1];
-                    if let NodeKind::Binary { op, right, .. } = &grandparent.kind {
-                        if op == "{}" && std::ptr::eq(right.as_ref(), parent) {
-                            return true;
-                        }
+                    if let NodeKind::Binary { op, right, .. } = &grandparent.kind
+                        && op == "{}"
+                        && std::ptr::eq(right.as_ref(), parent)
+                    {
+                        return true;
                     }
                     // ArrayLiteral used as keys in a slice: @hash{@keys} or %hash{@keys}
                     if matches!(&grandparent.kind,
@@ -1651,10 +1651,10 @@ impl ScopeAnalyzer {
                     for arg in args {
                         if std::ptr::eq(arg, current) {
                             // Check if object is a variable that looks like a hash
-                            if let NodeKind::Variable { sigil, .. } = &object.kind {
-                                if sigil == "$" {
-                                    return true;
-                                }
+                            if let NodeKind::Variable { sigil, .. } = &object.kind
+                                && sigil == "$"
+                            {
+                                return true;
                             }
                         }
                     }
@@ -1917,22 +1917,22 @@ fn collect_imported_barewords(ast: &Node) -> HashSet<String> {
                     push_symbol(imported, module, arg);
                 }
             }
-        } else if !in_eval {
-            if let NodeKind::Program { statements } | NodeKind::Block { statements } = &node.kind {
-                let required_modules: HashSet<String> = statements
-                    .iter()
-                    .filter_map(|stmt| require_module_name(inner_node(stmt)))
-                    .collect();
-                let dynamic_require_vars: HashSet<String> = statements
-                    .iter()
-                    .filter_map(|stmt| require_variable_name(inner_node(stmt)))
-                    .collect();
-                if !required_modules.is_empty() || !dynamic_require_vars.is_empty() {
-                    for stmt in statements {
-                        let inner = inner_node(stmt);
-                        maybe_record_manual_imports(inner, &required_modules, imported);
-                        maybe_record_dynamic_manual_imports(inner, &dynamic_require_vars, imported);
-                    }
+        } else if !in_eval
+            && let NodeKind::Program { statements } | NodeKind::Block { statements } = &node.kind
+        {
+            let required_modules: HashSet<String> = statements
+                .iter()
+                .filter_map(|stmt| require_module_name(inner_node(stmt)))
+                .collect();
+            let dynamic_require_vars: HashSet<String> = statements
+                .iter()
+                .filter_map(|stmt| require_variable_name(inner_node(stmt)))
+                .collect();
+            if !required_modules.is_empty() || !dynamic_require_vars.is_empty() {
+                for stmt in statements {
+                    let inner = inner_node(stmt);
+                    maybe_record_manual_imports(inner, &required_modules, imported);
+                    maybe_record_dynamic_manual_imports(inner, &dynamic_require_vars, imported);
                 }
             }
         }
@@ -2029,10 +2029,10 @@ fn collect_defined_packages(ast: &Node) -> HashSet<String> {
         match &node.kind {
             NodeKind::Program { statements } | NodeKind::Block { statements } => {
                 for stmt in statements {
-                    if let NodeKind::Package { name, block: None, .. } = &inner(stmt).kind {
-                        if name != "main" {
-                            packages.insert(name.clone());
-                        }
+                    if let NodeKind::Package { name, block: None, .. } = &inner(stmt).kind
+                        && name != "main"
+                    {
+                        packages.insert(name.clone());
                     }
                     visit(stmt, packages);
                 }
@@ -2160,8 +2160,8 @@ pub(super) fn is_builtin_global(sigil: &str, name: &str) -> bool {
                 } else {
                     name
                 };
-                if let Some(rest) = caret_name.strip_prefix('^') {
-                    if !rest.is_empty()
+                if let Some(rest) = caret_name.strip_prefix('^')
+                    && !rest.is_empty()
                         && rest
                             .as_bytes()
                             .iter()
@@ -2169,7 +2169,6 @@ pub(super) fn is_builtin_global(sigil: &str, name: &str) -> bool {
                     {
                         return true;
                     }
-                }
 
                 // Numbered capture variables ($1, $2, etc.)
                 // Note: $0-$9 are already handled in the match above, but this covers $10+
