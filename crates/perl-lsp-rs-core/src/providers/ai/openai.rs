@@ -112,12 +112,47 @@ impl Resolver for PinnedIpResolver {
 struct CumulativeOutput {
     text: String,
     chars: u64,
-    newlines: u64,
+    terminators: u64,
+    /// The previous delta ended on a carriage return, so a leading `\n` in the
+    /// next one completes that CRLF rather than starting a second line.
+    pending_cr: bool,
 }
 
 impl CumulativeOutput {
     const fn new() -> Self {
-        Self { text: String::new(), chars: 0, newlines: 0 }
+        Self { text: String::new(), chars: 0, terminators: 0, pending_cr: false }
+    }
+
+    /// Line terminators in `delta`, counted the way [`super::sanitize`] splits
+    /// lines: LF, CRLF as one, and a bare CR.
+    ///
+    /// Counting only `\n` would let a candidate that uses CR-only endings —
+    /// which the sanitizer downstream does split on — report a single line
+    /// however many lines it really spans, and so slip past the line ceiling.
+    /// `leading_lf_is_continuation` carries a CRLF split across two deltas.
+    fn count_terminators(delta: &str, leading_lf_is_continuation: bool) -> u64 {
+        let bytes = delta.as_bytes();
+        let mut terminators = 0_u64;
+        let mut index = 0_usize;
+        while let Some(&byte) = bytes.get(index) {
+            match byte {
+                b'\n' => {
+                    let continues_previous = index == 0 && leading_lf_is_continuation;
+                    if !continues_previous {
+                        terminators = terminators.saturating_add(1);
+                    }
+                    index = index.saturating_add(1);
+                }
+                b'\r' => {
+                    terminators = terminators.saturating_add(1);
+                    // Consume the LF of a CRLF pair so it is not counted twice.
+                    let pair = usize::from(bytes.get(index.saturating_add(1)) == Some(&b'\n'));
+                    index = index.saturating_add(1).saturating_add(pair);
+                }
+                _ => index = index.saturating_add(1),
+            }
+        }
+        terminators
     }
 
     /// The candidate accumulated so far.
@@ -136,15 +171,15 @@ impl CumulativeOutput {
         let chars = self.chars.saturating_add(delta.chars().count() as u64);
         budget.check(BudgetKind::CompletionChars, chars)?;
 
-        let newlines = self
-            .newlines
-            .saturating_add(delta.bytes().filter(|byte| *byte == b'\n').count() as u64);
-        // A non-empty candidate spans one more line than it holds newlines.
-        budget.check(BudgetKind::CompletionLines, newlines.saturating_add(1))?;
+        let terminators =
+            self.terminators.saturating_add(Self::count_terminators(delta, self.pending_cr));
+        // A non-empty candidate spans one more line than it holds terminators.
+        budget.check(BudgetKind::CompletionLines, terminators.saturating_add(1))?;
 
         self.text.push_str(delta);
         self.chars = chars;
-        self.newlines = newlines;
+        self.terminators = terminators;
+        self.pending_cr = delta.as_bytes().last() == Some(&b'\r');
         Ok(())
     }
 }
@@ -936,6 +971,53 @@ mod tests {
                 StreamControl::Continue
             });
         assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::EventCount));
+    }
+
+    #[test]
+    fn cr_only_line_endings_count_toward_the_line_ceiling() {
+        // `sanitize::line_bounds` splits on a bare CR, so a CR-only candidate
+        // really does span these lines downstream. Counting only `\n` reported
+        // one line and let it past the ceiling.
+        let deltas: Vec<String> = (0..10).map(|_| "line\r".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 4));
+        assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::CompletionLines));
+    }
+
+    #[test]
+    fn a_crlf_pair_counts_as_one_line_ending() {
+        // Negative control for the CR counting above: CRLF must not be
+        // double-counted, or a legitimate DOS-line candidate would be refused
+        // at half the configured ceiling.
+        let deltas: Vec<String> = (0..3).map(|_| "line\r\n".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 4));
+        assert!(outcome.is_ok(), "three CRLF lines must fit a limit of four: {outcome:?}");
+    }
+
+    #[test]
+    fn a_crlf_split_across_two_deltas_counts_once() {
+        // The CR arrives at the end of one delta and the LF at the start of
+        // the next; that is one terminator, not two.
+        let deltas = vec!["a\r".to_string(), "\nb\r".to_string(), "\nc".to_string()];
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 3));
+        assert!(outcome.is_ok(), "a split CRLF must not be counted twice: {outcome:?}");
+    }
+
+    #[test]
+    fn a_budget_breach_is_classified_as_a_resource_limit() {
+        use perl_parser_core::ErrorClass;
+        let error = BackendError::BudgetExceeded(BudgetViolation {
+            kind: BudgetKind::CompletionBytes,
+            limit: 16,
+            observed_at_least: 17,
+        });
+        // `ResourceLimit` is the class the framing guard gives `FrameTooLarge`,
+        // and it selects `Disposition::Cap` rather than an infrastructure
+        // notification.
+        assert_eq!(error.error_class(), perl_parser_core::ErrorCategory::ResourceLimit);
+        assert_eq!(
+            crate::protocol::error_disposition::disposition_for(error.error_class()),
+            crate::protocol::error_disposition::Disposition::Cap
+        );
     }
 
     #[test]

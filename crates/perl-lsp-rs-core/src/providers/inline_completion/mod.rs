@@ -390,13 +390,14 @@ impl std::error::Error for BackendError {}
 impl perl_parser_core::ErrorClass for BackendError {
     fn error_class(&self) -> perl_parser_core::ErrorCategory {
         match self {
-            // Network/IO or external service error — infrastructure. A
-            // resource-budget refusal joins them: the response, not the
-            // request, is at fault, and retrying it reproduces the breach
-            // rather than resolving it.
-            Self::Transport(_) | Self::Provider(_) | Self::BudgetExceeded(_) => {
-                perl_parser_core::ErrorCategory::Infra
-            }
+            // Network/IO or external service error — infrastructure.
+            Self::Transport(_) | Self::Provider(_) => perl_parser_core::ErrorCategory::Infra,
+            // A configured safety limit was exceeded, which is what
+            // `ResourceLimit` names. This is the same class the framing guard
+            // gives `FrameTooLarge`, and it selects `Disposition::Cap` rather
+            // than the infrastructure notification — the honest disposition
+            // for a response the server deliberately refused to grow.
+            Self::BudgetExceeded(_) => perl_parser_core::ErrorCategory::ResourceLimit,
             // Bad key or expired token — user configuration issue.
             Self::Auth(_) => perl_parser_core::ErrorCategory::UserError,
             // All three may succeed on retry after backoff or cancellation

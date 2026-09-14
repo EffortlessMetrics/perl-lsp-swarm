@@ -931,6 +931,36 @@ mod mock_streaming_completion_tests {
         }
     }
 
+    /// Emits one accepted chunk, then refuses the response on a resource
+    /// budget — the shape of a real endpoint that streams a legal prefix and
+    /// then crosses a line, event, delta, or cumulative limit.
+    struct MockBudgetExceededChunkBackend;
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for MockBudgetExceededChunkBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            let _ = sink(perl_lsp_rs_core::providers::inline_completion::StreamChunk {
+                text: "1".to_string(),
+                is_final: false,
+            });
+            Err(perl_lsp_rs_core::providers::inline_completion::BackendError::BudgetExceeded(
+                perl_lsp_rs_core::providers::ai::budget::BudgetViolation {
+                    kind: perl_lsp_rs_core::providers::ai::budget::BudgetKind::CompletionBytes,
+                    limit: 1,
+                    observed_at_least: 2,
+                },
+            ))
+        }
+    }
+
     struct MockAuthBackend;
 
     impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend for MockAuthBackend {
@@ -1282,6 +1312,58 @@ mod mock_streaming_completion_tests {
         assert!(
             final_items.is_empty(),
             "failed provider text must not be finalized without fallback, got: {final_items:?}"
+        );
+    }
+
+    #[test]
+    fn streaming_budget_refusal_never_finalizes_the_accepted_prefix() {
+        // The whole point of the response budget is that a refused response
+        // yields no candidate. Bounding the sink is not enough: chunks already
+        // handed to the session are retained, so the terminal recovery has to
+        // repudiate them too. Before this was wired, the accepted "1" prefix
+        // was published as an accepted final completion — a deliberate
+        // refusal turned into a truncated suggestion.
+        let (server, capture) = create_server();
+        server.test_configure_ai_completion(true, false);
+        server.test_install_ai_backend(Some(Arc::new(MockBudgetExceededChunkBackend)));
+
+        let uri = "file:///streaming-budget-exceeded.pl";
+        open_doc(&server, uri, "my $value = ");
+
+        let result = request_streaming_completion(&server, uri, 12, "stream-budget-1");
+        assert!(result.is_null());
+
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let progress = loop {
+            let progress =
+                wait_for_progress_messages(&capture, "stream-budget-1", Duration::from_millis(50));
+            let has_final = progress.iter().any(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            });
+            if has_final || Instant::now() >= deadline {
+                break progress;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        let final_progress =
+            progress.last().expect("budget refusal should emit at least one progress frame");
+        assert!(
+            final_progress
+                .pointer("/params/value/isFinal")
+                .and_then(Value::as_bool)
+                .is_some_and(|is_final| is_final),
+            "budget refusal must still emit a terminal isFinal frame"
+        );
+        let final_items = final_progress["params"]["value"]["items"]
+            .as_array()
+            .expect("final progress frame should carry items");
+        assert!(
+            final_items.is_empty(),
+            "refused response text must not be finalized without fallback, got: {final_items:?}"
         );
     }
 

@@ -232,7 +232,16 @@ impl<R: BufRead> SseParser<R> {
                 // retained, so an oversized event is refused rather than
                 // truncated. The `event:` value needs no separate bound; it is
                 // overwritten each time and already capped by the line budget.
-                let would_retain = data_bytes.saturating_add(value.len() as u64);
+                //
+                // Each retained field costs its value plus the one separator
+                // byte `join` will insert after it. Charging that byte is what
+                // bounds an event built from empty `data:` fields: by value
+                // length alone they are free, so a peer could push millions of
+                // `String` entries — and millions of join separators — while
+                // this counter stayed at zero, capped only by the far larger
+                // whole-response allowance.
+                let retained = (value.len() as u64).saturating_add(1);
+                let would_retain = data_bytes.saturating_add(retained);
                 if let Err(violation) = self.budget.check(BudgetKind::EventBytes, would_retain) {
                     return Err(self.refuse(violation));
                 }
@@ -454,11 +463,43 @@ mod tests {
 
     #[test]
     fn an_event_exactly_at_its_byte_limit_is_emitted() {
+        // Ten payload bytes plus the one separator byte the field is charged
+        // for: eleven is the exact cost, and it must be admitted.
         let body = "data: 0123456789\n\n";
-        let budget = narrowed(BudgetKind::EventBytes, 10);
+        let budget = narrowed(BudgetKind::EventBytes, 11);
         let mut parser = SseParser::with_budget(Cursor::new(body), budget);
         let event = parser.next_event().ok().flatten();
         assert_eq!(event.map(|e| e.data), Some("0123456789".to_string()));
+    }
+
+    #[test]
+    fn a_field_costs_one_byte_more_than_its_value() {
+        // One byte under the exact cost is refused — the boundary control for
+        // the separator charge above.
+        let body = "data: 0123456789\n\n";
+        let budget = narrowed(BudgetKind::EventBytes, 10);
+        let mut parser = SseParser::with_budget(Cursor::new(body), budget);
+        let Err(error) = parser.next_event() else {
+            unreachable!("a field costing eleven must not fit a limit of ten");
+        };
+        assert_eq!(budget_violation(&error).map(|v| v.kind), Some(BudgetKind::EventBytes));
+    }
+
+    #[test]
+    fn an_event_built_from_empty_data_fields_is_still_bounded() {
+        // By value length alone these fields are free, so without the
+        // separator charge this event would grow one `String` entry and one
+        // join separator per line until the whole-response allowance — orders
+        // of magnitude above the event limit — finally stopped it.
+        let body = "data:\n".repeat(64);
+        let budget = narrowed(BudgetKind::EventBytes, 8);
+        let mut parser = SseParser::with_budget(Cursor::new(body), budget);
+        let Err(error) = parser.next_event() else {
+            unreachable!("empty fields must not escape the event budget");
+        };
+        let violation = budget_violation(&error);
+        assert_eq!(violation.map(|v| v.kind), Some(BudgetKind::EventBytes));
+        assert_eq!(violation.map(|v| v.observed_at_least), Some(9));
     }
 
     #[test]
