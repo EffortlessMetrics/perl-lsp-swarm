@@ -921,6 +921,11 @@ impl DebugAdapter {
             let control_stream: Option<Box<dyn Read + Send>> = {
                 if let Ok(mut guard) = session.lock() {
                     guard.as_mut().and_then(|s| {
+                        if operation_broker.current_session_generation()
+                            != broker_session_generation
+                        {
+                            return None;
+                        }
                         if let Some(stderr) = s.process.stderr.take() {
                             Some(Box::new(stderr) as Box<dyn Read + Send>)
                         } else {
@@ -982,6 +987,8 @@ impl DebugAdapter {
             // Residual frame lines to filter after a capture is abandoned mid-frame:
             // (end marker, remaining budget).
             let mut logpoint_drain: Option<LogpointDrain> = None;
+            let mut framed_reader_marker: Option<(String, usize)> = None;
+            let mut suppress_prompt_after_frame = false;
 
             loop {
                 line.clear();
@@ -1021,6 +1028,11 @@ impl DebugAdapter {
                         break;
                     }
                     Ok(_) => {
+                        if operation_broker.current_session_generation()
+                            != broker_session_generation
+                        {
+                            break;
+                        }
                         // Strip only the transport delimiters here. A logpoint value
                         // may legitimately end in spaces or tabs, and `trim_end()`
                         // below would eat them before the capture ever sees the line.
@@ -1139,6 +1151,63 @@ impl DebugAdapter {
                                 "Failed to send output event - client may have disconnected"
                             );
                             break; // Exit the loop if client is gone
+                        }
+
+                        // Framed query payload belongs exclusively to its waiter.  It may
+                        // contain context-looking stack lines, and a late end marker can
+                        // arrive after the waiter has timed out; neither may rewrite the
+                        // live stop cache.  The prompt immediately following a completed
+                        // frame is part of that control exchange as well.
+                        if let Some(end) = operation_broker
+                            .take_reader_frame(&analysis_text, broker_session_generation)
+                        {
+                            framed_reader_marker = Some((end, super::RECENT_OUTPUT_MAX_LINES));
+                            suppress_prompt_after_frame = false;
+                            continue;
+                        }
+                        if let Some((end, remaining)) = framed_reader_marker.as_mut() {
+                            if super::operation_broker::OperationBroker::line_contains_full_marker(
+                                &analysis_text,
+                                end,
+                            ) {
+                                framed_reader_marker = None;
+                                suppress_prompt_after_frame = true;
+                            } else if *remaining == 0 {
+                                // Do not resume interpreting an unterminated payload as
+                                // fresh stop context when the bounded drain is exhausted.
+                                operation_broker.settle_all_if_current(
+                                    "debugger_frame_limit",
+                                    broker_session_generation,
+                                );
+                                DebugAdapter::clear_active_session_state_for_generation(
+                                    &session,
+                                    &tcp_session,
+                                    &attached_pid,
+                                    &termination_state,
+                                    session_generation,
+                                );
+                                if let Some(ref sender) = sender {
+                                    emit_terminated_event(
+                                        sender,
+                                        &seq,
+                                        &termination_state,
+                                        Some(session_generation),
+                                        Some(json!({"reason": "debugger_frame_limit"})),
+                                    );
+                                }
+                                break;
+                            } else {
+                                *remaining = remaining.saturating_sub(1);
+                            }
+                            continue;
+                        }
+                        if std::mem::take(&mut suppress_prompt_after_frame)
+                            && prompt_re().is_some_and(|re| re.is_match(&analysis_text))
+                            && lock_or_recover(&session, "debug_adapter.frame_prompt")
+                                .as_ref()
+                                .is_some_and(|session| matches!(session.state, DebugState::Stopped))
+                        {
+                            continue;
                         }
 
                         // perl5db prints this fixed line when the debuggee
@@ -1314,6 +1383,11 @@ impl DebugAdapter {
                                 };
 
                                 if let Some(ref mut s) = *guard {
+                                    if operation_broker.current_session_generation()
+                                        != broker_session_generation
+                                    {
+                                        continue;
+                                    }
                                     let was_running = matches!(s.state, DebugState::Running);
                                     let current_frame_id = current_stopped_frame_id(s, was_running);
                                     if !current_file.is_empty() && current_line > 0 {
@@ -1553,6 +1627,11 @@ impl DebugAdapter {
                                 };
                                 if let Some(ref mut s) = *guard {
                                     // A prompt can be observed after the context
+                                    if operation_broker.current_session_generation()
+                                        != broker_session_generation
+                                    {
+                                        continue;
+                                    }
                                     // branch (which already advanced the
                                     // suspension generation), or without a
                                     // parseable context. Preserve the existing
@@ -2880,9 +2959,10 @@ pub(super) fn emit_terminated_event_guarded(
 #[cfg(test)]
 mod tests {
     use super::super::sync_utils::EventSender;
+    use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use super::{
         DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
-        emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter,
+        emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter, lock_or_recover,
         reserve_terminated_event, terminated_delivery_is_current,
     };
     use crate::tcp_attach::DapEvent;
@@ -3900,6 +3980,258 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    fn spawn_reader_fixture_child(mode: &str) -> Result<super::Child, String> {
+        std::process::Command::new("perl")
+                .arg("-e")
+                .arg(r##"
+                    my $mode = shift; my $round = 0; my $active;
+                    select STDERR; $|=1; select STDOUT; $|=1;
+                    while (<STDIN>) {
+                        if (/DAP_BEGIN_(\d+)/) {
+                            ++$round; $active = $round == 1 ? $mode : 'valid';
+                            select undef, undef, undef, 0.9 if $active eq 'late_begin';
+                            print STDERR "DAP_BEGIN_$1\n";
+                        } elsif (/^T/) {
+                            if ($active eq 'valid') {
+                                print STDERR q{$ = main::run($value, [1, 2], "a,b") called from file `script.pl' line 7}, "\n";
+                            } elsif ($active eq 'internal') {
+                                print STDERR "# 0 DB::DB at /tmp/perl5db.pl line 8\n";
+                            } elsif ($active eq 'partial' || $active eq 'late') {
+                                print STDERR "main::(/tmp/poison.pl:9):\n";
+                            } elsif ($active eq 'overflow') {
+                                print STDERR "main::(/tmp/poison.pl:9):\n" for 1..2049;
+                            }
+                        } elsif (/DAP_END_(\d+)/) {
+                            my $id=$1;
+                            if ($active ne 'partial') {
+                                select undef, undef, undef, 0.9 if $active eq 'late';
+                                print STDERR "DAP_END_$id\nDB<1>\n";
+                            }
+                            print STDERR "READER_DONE_$round\n";
+                        } elsif (/^outside/) {
+                            print STDERR "DAP_BEGIN_999999\nmain::(/tmp/outside.pl:42):\nDAP_END_999999\nDB<9>\nOUTSIDE_DONE\n";
+                        }
+                    }
+                "##)
+                .arg(mode)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|error| format!("failed to spawn reader fixture: {error}"))
+    }
+
+    fn reader_stack_fixture(mode: &str) -> Result<Arc<DebugAdapter>, String> {
+        let adapter = Arc::new(DebugAdapter::new());
+        adapter.seed_stopped_session_with_frames_for_test(vec![super::StackFrame {
+            id: 1,
+            name: "sentinel".to_string(),
+            source: super::Source {
+                name: Some("sentinel.pl".to_string()),
+                path: "/tmp/sentinel.pl".to_string(),
+                source_reference: None,
+            },
+            line: 4,
+            column: 1,
+            end_line: None,
+            end_column: None,
+        }]);
+        adapter.seed_stack_frame_arguments_for_test(1, vec!["sentinel_arg".to_string()]);
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.reader_fixture");
+            let session = guard.as_mut().ok_or("Perl is required for the reader fixture")?;
+            session.stopped_generation = 1;
+            let child = spawn_reader_fixture_child(mode)?;
+            let mut previous = std::mem::replace(&mut session.process, child);
+            let _ = previous.kill();
+            previous.wait().map_err(|error| format!("failed to reap seed process: {error}"))?;
+        }
+        adapter.start_output_reader(PathBuf::from("."));
+        // Drop owns bounded child cleanup on both success and every error path.
+        Ok(adapter)
+    }
+
+    fn wait_for_reader_barrier(adapter: &DebugAdapter, marker: &str) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if lock_or_recover(&adapter.recent_output, "test.reader_barrier")
+                .lines
+                .iter()
+                .any(|line| line.normalized == marker)
+            {
+                // Reading this later line establishes that the preceding prompt
+                // passed through the single reader loop, not merely its buffer.
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("reader did not reach {marker}"));
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn assert_reader_stack(
+        adapter: &DebugAdapter,
+        response: DapMessage,
+        name: &str,
+        line: i32,
+        arguments: &[&str],
+    ) -> Result<(), String> {
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("stackTrace failed: {response:?}"));
+        };
+        let frame = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .and_then(|frames| frames.first())
+            .ok_or_else(|| format!("missing stack frame: {body}"))?;
+        if frame.get("name").and_then(Value::as_str) != Some(name)
+            || frame.get("line").and_then(Value::as_i64) != Some(i64::from(line))
+        {
+            return Err(format!("unexpected stack response: {body}"));
+        }
+        let guard = lock_or_recover(&adapter.session, "test.reader_cache");
+        let session = guard.as_ref().ok_or("reader lost the session")?;
+        let cached = session.stack_frames.first().ok_or("reader lost cached frames")?;
+        let expected = arguments.iter().map(|argument| (*argument).to_string()).collect::<Vec<_>>();
+        if cached.name != name
+            || cached.line != line
+            || session.stack_frame_arguments.get(&cached.id) != Some(&expected)
+        {
+            return Err("reader changed accepted frames or arguments".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn framed_reader_preserves_stack_and_recovers_after_partial_output() -> Result<(), String> {
+        for mode in ["empty", "internal", "partial", "late", "late_begin", "valid"] {
+            let adapter = reader_stack_fixture(mode)?;
+            let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+            wait_for_reader_barrier(&adapter, "READER_DONE_1")?;
+            if mode == "valid" {
+                assert_reader_stack(
+                    &adapter,
+                    response,
+                    "main::run",
+                    7,
+                    &["$value", "[1, 2]", "\"a,b\""],
+                )?;
+            } else {
+                assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
+            }
+            // A newer registered frame recovers even if the previous one lacked
+            // an end marker. It does not inherit the old poisoned context.
+            let recovered = adapter.handle_stack_trace(2, 2, Some(json!({"threadId": 1})));
+            wait_for_reader_barrier(&adapter, "READER_DONE_2")?;
+            assert_reader_stack(
+                &adapter,
+                recovered,
+                "main::run",
+                7,
+                &["$value", "[1, 2]", "\"a,b\""],
+            )?;
+
+            {
+                let mut guard = lock_or_recover(&adapter.session, "test.reader_resume");
+                let session = guard.as_mut().ok_or("missing session for next stop")?;
+                session.state = DebugState::Running;
+                let stdin = session.process.stdin.as_mut().ok_or("missing fixture stdin")?;
+                DebugAdapter::write_debugger_command(stdin, "outside\n")?;
+            }
+            wait_for_reader_barrier(&adapter, "OUTSIDE_DONE")?;
+            let guard = lock_or_recover(&adapter.session, "test.reader_new_stop");
+            let session = guard.as_ref().ok_or("outside output lost session")?;
+            if !matches!(session.state, DebugState::Stopped)
+                || session.stopped_generation <= 1
+                || session.stack_frames.first().map(|frame| frame.line) != Some(42)
+                || !session.stack_frame_arguments.is_empty()
+            {
+                return Err(format!(
+                    "{mode}: ordinary unowned output failed to establish next stop"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn framed_reader_exhaustion_clears_session_instead_of_interpreting_payload()
+    -> Result<(), String> {
+        let adapter = reader_stack_fixture("overflow")?;
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("unexpected exhausted-frame response: {response:?}"));
+        };
+        if body.get("stackFrames") != Some(&json!([])) {
+            return Err(format!(
+                "exhausted frame retained stack authority ({} frames)",
+                body.get("stackFrames").and_then(Value::as_array).map_or(0, Vec::len),
+            ));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if lock_or_recover(&adapter.session, "test.reader_exhausted").is_none() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("exhausted reader did not reap and clear the session".to_string());
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn framed_reader_late_begin_cannot_mutate_replacement_session() -> Result<(), String> {
+        let adapter = reader_stack_fixture("late_begin")?;
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        assert_reader_stack(&adapter, response, "sentinel", 4, &["sentinel_arg"])?;
+        adapter.begin_session_generation();
+        let mut old_child = {
+            let mut guard = lock_or_recover(&adapter.session, "test.reader_replacement");
+            let session = guard.as_mut().ok_or("missing old session")?;
+            let child = spawn_reader_fixture_child("valid")?;
+            session.stack_frames.first_mut().ok_or("missing old frame")?.name =
+                "replacement".to_string();
+            session.stack_frame_arguments.insert(1, vec!["replacement_arg".to_string()]);
+            std::mem::replace(&mut session.process, child)
+        };
+        adapter.operation_broker.open_session();
+        adapter.start_output_reader(PathBuf::from("."));
+        // Closing input lets the old fixture exit after its delayed output. Its
+        // reader may close the old pipe on detecting replacement; either outcome
+        // must leave the replacement's authorities intact.
+        drop(old_child.stdin.take());
+        let result = (|| {
+            if !DebugAdapter::wait_for_child_exit(&mut old_child, Duration::from_secs(5)) {
+                return Err("old reader fixture failed to finish delayed output".to_string());
+            }
+            {
+                let guard = lock_or_recover(&adapter.session, "test.reader_replacement_cache");
+                let session = guard.as_ref().ok_or("late reader cleared replacement")?;
+                if session.stack_frames.first().map(|frame| frame.name.as_str())
+                    != Some("replacement")
+                    || session.stack_frame_arguments.get(&1)
+                        != Some(&vec!["replacement_arg".to_string()])
+                {
+                    return Err("late old reader poisoned replacement".to_string());
+                }
+            }
+            let recovered = adapter.handle_stack_trace(2, 2, Some(json!({"threadId": 1})));
+            wait_for_reader_barrier(&adapter, "READER_DONE_1")?;
+            assert_reader_stack(
+                &adapter,
+                recovered,
+                "main::run",
+                7,
+                &["$value", "[1, 2]", "\"a,b\""],
+            )
+        })();
+        let _ = old_child.kill();
+        old_child.wait().map_err(|error| format!("failed to reap old reader fixture: {error}"))?;
+        result
     }
 
     /// Regression for issue #5149 / PR #5318 defect 2: the watchdog used to emit the
