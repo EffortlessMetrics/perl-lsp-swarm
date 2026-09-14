@@ -333,20 +333,67 @@ mod tests {
             "this guard strips line comments only; a block comment appeared in production code, so \
              re-derive the stripping rule rather than letting prose reach the needle scan"
         );
-        // `strip_line_comments` does not understand string literals, so a line
-        // holding both a literal `//` (a URL, say) and real code would be cut at
-        // the literal — the dangerous direction, since it removes code from the
-        // scan rather than prose. No such line exists today; fail closed if one
-        // appears rather than silently shrinking the scanned region.
-        for line in production.lines() {
-            assert!(
-                !(line.contains('"') && line.contains("//")),
-                "line mixes a string literal with `//`, which this guard cannot split correctly: \
-                 {line:?}. Re-derive the stripping rule rather than letting it cut code out of \
-                 the scanned region"
-            );
-        }
+        let hazards = literal_comment_hazards(production);
+        assert!(
+            hazards.is_empty(),
+            "these lines mix a string literal with `//`, which this guard cannot split correctly: \
+             {hazards:?}. Re-derive the stripping rule rather than letting it cut code out of the \
+             scanned region"
+        );
         strip_line_comments(production)
+    }
+
+    /// Lines `strip_line_comments` could mis-cut: a `//` inside a string literal
+    /// makes it remove *code* rather than prose, which is the direction that
+    /// could hide a real violation.
+    ///
+    /// Whole-line comments are exempt. They contain `//` by definition and are
+    /// removed in full, so a doc comment that happens to quote something with an
+    /// ASCII `"` carries no hazard — flagging those would fail the guard on
+    /// ordinary prose while catching nothing.
+    fn literal_comment_hazards(production: &str) -> Vec<&str> {
+        production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains('"') && line.contains("//"))
+            .collect()
+    }
+
+    #[test]
+    fn a_doc_comment_quoting_prose_is_not_a_stripping_hazard() {
+        // The fail-closed rule must not fire on ordinary documentation. Every
+        // `///` and `//!` line contains `//`, so a rule applied before comment
+        // stripping would reject any doc comment using an ASCII quote.
+        let documented = concat!(
+            "//! Module doc explaining why \"visible imports\" moved above this layer.\n",
+            "/// Returns the \"resolved\" symbol, or None.\n",
+            "pub fn resolved_symbol_at(&self, position: usize) -> Option<ResolvedSymbol> {\n",
+            "    self.model.definition_at(position).map(ResolvedSymbol::from)\n",
+            "}\n"
+        );
+
+        assert_eq!(
+            literal_comment_hazards(documented),
+            Vec::<&str>::new(),
+            "documentation quoting prose is stripped in full and cannot mis-cut code"
+        );
+    }
+
+    #[test]
+    fn a_code_line_holding_a_url_literal_is_a_stripping_hazard() {
+        // The direction that matters: `//` inside a literal on a code line would
+        // make the stripper cut real code out of the scanned region.
+        let hazardous = concat!(
+            "pub fn spec_link() -> &'static str {\n",
+            "    \"https://example.invalid/spec\"\n",
+            "}\n"
+        );
+
+        assert_eq!(
+            literal_comment_hazards(hazardous),
+            vec!["    \"https://example.invalid/spec\""],
+            "a literal `//` on a code line must fail closed, naming the line"
+        );
     }
 
     #[test]
