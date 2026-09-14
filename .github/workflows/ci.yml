@@ -1735,6 +1735,14 @@ jobs:
       - name: Direct command guidance contract (required merge surface)
         run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture
 
+      # The active cache denominator (#9177) is derived from workflow source, so it
+      # silently rots whenever a cache step, trigger, or save guard moves. This
+      # contract lives as the xtask binary's own unit tests (tasks::ci_cache_inventory),
+      # and the merge gate runs `cargo test --workspace --lib`, which never compiles or
+      # runs the xtask *binary*'s unit tests — so keep this step required here.
+      - name: CI cache inventory contract (required merge surface)
+        run: cargo test -p xtask --bin xtask tasks::ci_cache_inventory --locked -- --nocapture
+
       # Same reasoning as the Emacs contract above: the merge gate runs
       # `cargo test --workspace --lib`, so this integration test would otherwise
       # only execute via advisory pr-smoke. It guards the publish path that can
