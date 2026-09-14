@@ -64,6 +64,7 @@ catalog:
   - lsp.code_lens_resolve
   - lsp.code_lens_resolve_support_properties
   - lsp.color_presentation
+  - lsp.command_tooltip
   - lsp.completion
   - lsp.completion_item_resolve
   - lsp.completion_list_apply_kind

@@ -4181,6 +4181,27 @@ impl WorkspaceIndex {
         cap: Option<usize>,
     ) -> Vec<WorkspaceSymbol> {
         let search_idx = self.search_index.read();
+        Self::search_source_symbols_from_buckets(
+            search_idx.iter().map(|(name_key, symbols)| (name_key.as_str(), symbols)),
+            profile,
+            cap,
+        )
+    }
+
+    /// Applies the source-symbol admission and legacy materialization policy
+    /// to an ordered stream of index buckets.
+    ///
+    /// The iterator boundary keeps the production consumer identical to the
+    /// normal `HashMap` path while allowing tests to exercise a deliberate
+    /// weak-alias-first traversal without depending on hash-map iteration.
+    fn search_source_symbols_from_buckets<'a, I>(
+        buckets: I,
+        profile: &WorkspaceSymbolQueryProfile,
+        cap: Option<usize>,
+    ) -> Vec<WorkspaceSymbol>
+    where
+        I: IntoIterator<Item = (&'a str, &'a Vec<WorkspaceSymbol>)>,
+    {
         let mut seen: HashSet<(String, usize)> = HashSet::new();
         // Collect results with a relevance score for ranking. (#5087)
         // Match priority: exact > substring/prefix > subsequence (fuzzy).
@@ -4189,8 +4210,14 @@ impl WorkspaceIndex {
         // profile admits every key at the prefix slot -- the same set, and the
         // same score, that `contains("")` produced before. That is the desired
         // "list everything" behavior for an empty `workspace/symbol` query.
-        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
-        for (name_key, symbols) in search_idx.iter() {
+        // The legacy geometry deduplication below is intentionally retained.
+        // Order the admitted buckets first so a row indexed under several
+        // aliases is represented by the strongest current-profile evidence,
+        // regardless of HashMap iteration order. This does not establish row
+        // identity; canonical source/root/generation identity remains owned by
+        // #8756/#10641.
+        let mut admitted = Vec::new();
+        for (name_key, symbols) in buckets {
             // Admission/tier policy is owned by the compiled query profile;
             // comparison stays case-insensitive here so distinct Perl packages
             // remain separate index buckets that do not cross-match.
@@ -4202,6 +4229,14 @@ impl WorkspaceIndex {
             let Some(evidence) = match_searchable_key(profile, name_key, key_role) else {
                 continue;
             };
+            admitted.push((evidence, name_key, symbols));
+        }
+        admitted.sort_by(|(left, left_key, _), (right, right_key, _)| {
+            left.compare(right).then_with(|| left_key.cmp(right_key))
+        });
+
+        let mut scored: Vec<(u8, WorkspaceSymbol)> = Vec::new();
+        for (evidence, _name_key, symbols) in admitted {
             let score = legacy_index_match_rank(evidence.tier());
             for sym in symbols {
                 let dedup_key = (sym.uri.clone(), sym.range.start.byte);
@@ -12425,6 +12460,71 @@ mod entity_id_file_scoped_tests {
     }
 
     // ── search_index correctness: issue #2994 ──
+
+    #[test]
+    fn source_symbol_pipeline_prefers_exact_and_qualified_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let make_symbol = |name: &str,
+                           qualified_name: Option<&str>,
+                           uri: &str,
+                           start_byte: usize| WorkspaceSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Subroutine,
+            uri: uri.to_string(),
+            range: Range {
+                start: Position { byte: start_byte, line: 1, column: 1 },
+                end: Position { byte: start_byte + 3, line: 1, column: 4 },
+            },
+            qualified_name: qualified_name.map(str::to_string),
+            documentation: None,
+            container_name: qualified_name.and_then(|value| {
+                value.rsplit_once("::").map(|(container, _)| container.to_string())
+            }),
+            has_body: true,
+            workspace_folder_uri: None,
+            is_lexical: false,
+        };
+
+        let exact_row = make_symbol("run", Some("Pkg::run"), "file:///pkg.pm", 10);
+        let competing_row = make_symbol("a_run", None, "file:///other.pm", 20);
+        let ordered_buckets = [
+            ("Pkg::run".to_string(), vec![exact_row.clone()]),
+            ("run".to_string(), vec![exact_row.clone()]),
+            ("a_run".to_string(), vec![competing_row]),
+        ];
+        let profile = WorkspaceSymbolQueryProfile::compile("run");
+        let matches = WorkspaceIndex::search_source_symbols_from_buckets(
+            ordered_buckets.iter().map(|(key, symbols)| (key.as_str(), symbols)),
+            &profile,
+            Some(1),
+        );
+        let winner = matches.first().ok_or("bare exact query returned no symbol")?;
+        if winner.uri != "file:///pkg.pm" || winner.name != "run" {
+            return Err(format!("bare exact alias lost to {:?}", winner).into());
+        }
+
+        for qualified_key in ["Pkg::run", "Pkg'run"] {
+            let row = make_symbol("run", Some(qualified_key), "file:///qualified.pm", 30);
+            let buckets =
+                [(qualified_key.to_string(), vec![row.clone()]), ("run".to_string(), vec![row])];
+            let profile = WorkspaceSymbolQueryProfile::compile(qualified_key);
+            let matches = WorkspaceIndex::search_source_symbols_from_buckets(
+                buckets.iter().map(|(key, symbols)| (key.as_str(), symbols)),
+                &profile,
+                Some(1),
+            );
+            let winner = matches.first().ok_or_else(|| {
+                format!("qualified exact query {qualified_key:?} returned no symbol")
+            })?;
+            if winner.uri != "file:///qualified.pm" || winner.name != "run" {
+                return Err(
+                    format!("qualified exact alias {qualified_key:?} was not retained").into()
+                );
+            }
+        }
+
+        Ok(())
+    }
 
     /// Verify that `search_source_symbols` via the indexed path returns the same
     /// symbol set as iterating all files would, across multiple files, for both

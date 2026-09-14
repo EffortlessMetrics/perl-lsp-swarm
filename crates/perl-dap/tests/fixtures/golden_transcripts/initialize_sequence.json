@@ -32,14 +32,30 @@
         "supportsStepBack": false,
         "supportsSetVariable": false,
         "supportsRestartFrame": false,
-        "supportsConditionalBreakpoints": true,
+        "supportsConditionalBreakpoints": false,
         "supportsHitConditionalBreakpoints": false,
         "supportsLogPoints": false,
         "supportTerminateDebuggee": true,
         "supportsDelayedStackTraceLoading": false,
-        "supportsExceptionInfoRequest": false,
-        "supportsValueFormattingOptions": true,
-        "exceptionBreakpointFilters": []
+        "supportsExceptionInfoRequest": true,
+        "supportsValueFormattingOptions": false,
+        "exceptionBreakpointFilters": [
+          {
+            "filter": "die",
+            "label": "Perl die() and uncaught exceptions",
+            "default": true
+          },
+          {
+            "filter": "all",
+            "label": "All Perl exception events",
+            "default": false
+          },
+          {
+            "filter": "warn",
+            "label": "Perl warn() and Carp warnings",
+            "default": false
+          }
+        ]
       }
     },
     {

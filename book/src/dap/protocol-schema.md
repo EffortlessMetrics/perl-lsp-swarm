@@ -169,6 +169,17 @@ python3 scripts/ci/dap_protocol_authority.py check \
 
 The receipt records the canonical manifest SHA-256, complete extension and adapter-configuration rows, upstream content identity, standard request/event inventory, and the exact production command/event inventory. A receipt from before an authority metadata change is therefore distinguishable from one produced after it.
 
+To verify a saved receipt against the current tree without fetching upstream again, run:
+
+```bash
+python3 scripts/ci/dap_protocol_authority.py verify-receipt \
+  --root . \
+  --manifest .ci/dap/protocol-authority.json \
+  --receipt target/receipts/dap-protocol-authority.json
+```
+
+Relative receipt and manifest paths are resolved under `--root`. The command validates the current manifest and synchronized authority docs, then rejects receipts with stale manifest, extractor, or governed production-source identities, including receipts produced before those bindings existed. These comparisons detect recorded content identity and freshness; they do not authenticate the producer or prove that the extractor or authority rules are semantically correct, and verification does not refetch the upstream schema.
+
 Offline or hermetic verification can pass an already-fetched exact schema:
 
 ```bash

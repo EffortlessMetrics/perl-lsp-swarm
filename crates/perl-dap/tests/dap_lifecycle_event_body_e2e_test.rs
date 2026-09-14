@@ -9,10 +9,9 @@
 //! - `terminate` with no `restart` arg: event body must NOT include `restart`
 //! - `terminate` with empty args (`{}`): event body must NOT include `restart`
 //! - `terminate` twice in succession: both calls succeed and emit events
-//! - `terminate` then `disconnect`: each client terminal request emits its own
-//!   event (the request closes the session generation and re-arms the
-//!   single-emission gate)
-//! - `disconnect` (no session): terminated event body must be `None`
+//! - `terminate` then `disconnect`: disconnect succeeds without duplicating
+//!   the already-emitted terminal event
+//! - `disconnect` (no session): succeeds without inventing a terminal event
 //! - `restart` request (no session): fails cleanly per `unsupported` handler
 //!
 //! All tests are protocol-level: no `perl` process is spawned.
@@ -20,7 +19,7 @@
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -139,7 +138,7 @@ fn terminate_twice_in_succession_both_succeed_and_emit_events() -> TestResult {
 }
 
 #[test]
-fn terminate_then_disconnect_each_acknowledged_with_terminated_event() -> TestResult {
+fn terminate_then_disconnect_does_not_duplicate_terminated_event() -> TestResult {
     let (mut adapter, rx) = create_test_adapter();
 
     // First terminal request: terminate.
@@ -152,39 +151,36 @@ fn terminate_then_disconnect_each_acknowledged_with_terminated_event() -> TestRe
         "terminate must echo restart=false"
     );
 
-    // A subsequent disconnect is also a client-initiated terminal request and
-    // must be acknowledged with its own terminated event (null body: no
-    // restart arg was sent). Each client terminal request closes the session
-    // generation, re-arming the single-emission gate for the next one.
+    // VS Code may follow terminate with disconnect. The session is already
+    // closed, so disconnect must succeed without inventing a second event.
     let second = adapter.handle_request(2, "disconnect", None);
     assert_response_success(&second, "disconnect")?;
-    let second_body = must_some(wait_for_event(&rx, "terminated", 200));
-    assert!(
-        second_body.get("restart").is_none(),
-        "disconnect after terminate must not carry a restart field, got body={second_body}"
-    );
+    match rx.try_recv() {
+        Err(TryRecvError::Empty) => {}
+        Err(error) => return Err(format!("unexpected event receiver state: {error:?}").into()),
+        Ok(message) => {
+            return Err(format!("disconnect duplicated terminal event: {message:?}").into());
+        }
+    }
 
     Ok(())
 }
 
 #[test]
-fn disconnect_without_session_emits_terminated_event_with_null_body() -> TestResult {
+fn disconnect_without_session_does_not_emit_terminated_event() -> TestResult {
     let (mut adapter, rx) = create_test_adapter();
 
     let response = adapter.handle_request(1, "disconnect", None);
     assert_response_success(&response, "disconnect")?;
 
-    // Per session_lifecycle_tests.rs::test_session_lifecycle_disconnect_without_session,
-    // disconnect emits a terminated event. We tighten the contract by asserting
-    // the event body is null (no restart info) since no restart arg was sent.
-    let body = wait_for_event(&rx, "terminated", 200);
-    assert!(body.is_some(), "disconnect must emit a terminated event");
-    let body_value = must_some(body);
-    let has_restart = body_value.get("restart").is_some();
-    assert!(
-        !has_restart,
-        "disconnect (no args) must not include restart in terminated body, got {body_value}"
-    );
+    // No debugging session ended, so disconnect must not invent a terminated event.
+    match rx.try_recv() {
+        Err(TryRecvError::Empty) => {}
+        Err(error) => return Err(format!("unexpected event receiver state: {error:?}").into()),
+        Ok(message) => {
+            return Err(format!("no-session disconnect emitted an event: {message:?}").into());
+        }
+    }
 
     Ok(())
 }
@@ -193,14 +189,14 @@ fn disconnect_without_session_emits_terminated_event_with_null_body() -> TestRes
 fn restart_request_without_session_fails_cleanly() -> TestResult {
     let (mut adapter, _rx) = create_test_adapter();
 
-    // The DAP `restart` request is not implemented for the native adapter.
-    // The dispatcher's fall-through path must return success=false with a
-    // descriptive message rather than panicking.
+    // #9581: `restart` is a floored secondary capability. The dispatch gate
+    // rejects it before any teardown/spawn/state work, with an explicit
+    // unsupported message, rather than panicking or masquerading.
     let response = adapter.handle_request(1, "restart", None);
     let DapMessage::Response { success, command, message, .. } = &response else {
         return Err(format!("expected Response for restart, got {response:?}").into());
     };
-    assert!(!*success, "restart should not silently succeed when unimplemented");
+    assert!(!*success, "floored restart must fail explicitly (#9581)");
     assert_eq!(command, "restart");
     assert!(message.is_some(), "restart failure must carry a message for the IDE");
 

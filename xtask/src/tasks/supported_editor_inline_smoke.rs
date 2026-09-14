@@ -10,6 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const LSP_CLIENT_SUPPORT_POLICY: &str = "policy/lsp-client-support.toml";
+const LSP4IJ_SETUP_DOC: &str = "docs/EDITORS/INTELLIJ_IDEA_SETUP.md";
+const LSP4IJ_PROTOCOL_PROFILE_EVIDENCE: &str =
+    "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs";
 const RECEIPT_SCHEMA_VERSION: &str = "supported-editor-inline-smoke.v2";
 const DECLARED_PLANE_STATUSES: &[&str] =
     &["registered", "not_proven", "limited", "client_not_exposed"];
@@ -50,7 +53,7 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 owner: None,
                 declared_status: None,
                 proof_surfaces: &[ProofSurfaceRequirement {
-                    path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+                    path: LSP4IJ_SETUP_DOC,
                     markers: &["Recommended: LSP4IJ Upstream Integration", "perllsp --stdio"],
                 }],
             },
@@ -59,7 +62,7 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 owner: None,
                 declared_status: None,
                 proof_surfaces: &[ProofSurfaceRequirement {
-                    path: "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+                    path: LSP4IJ_PROTOCOL_PROFILE_EVIDENCE,
                     markers: &[
                         "fn initialize_static_advertises_inline_completion_when_dynamic_registration_false",
                         "/capabilities/inlineCompletionProvider",
@@ -72,7 +75,7 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 declared_status: None,
                 proof_surfaces: &[
                     ProofSurfaceRequirement {
-                        path: "crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs",
+                        path: LSP4IJ_PROTOCOL_PROFILE_EVIDENCE,
                         markers: &[
                             "fn initialized_registers_inline_completion_when_dynamic_registration_supported",
                             "client/registerCapability",
@@ -80,7 +83,7 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                         ],
                     },
                     ProofSurfaceRequirement {
-                        path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+                        path: LSP4IJ_SETUP_DOC,
                         markers: &["client/registerCapability", "textDocument/inlineCompletion"],
                     },
                 ],
@@ -90,7 +93,7 @@ const ROUTES: &[SupportedEditorRouteRequirement] = &[
                 owner: None,
                 declared_status: None,
                 proof_surfaces: &[ProofSurfaceRequirement {
-                    path: "docs/EDITORS/INTELLIJ_IDEA_SETUP.md",
+                    path: LSP4IJ_SETUP_DOC,
                     markers: &["not the same thing as IntelliJ/LSP4IJ host support", "#7719"],
                 }],
             },
@@ -403,20 +406,22 @@ fn validate_lsp4ij_policy(root: &Path) -> Result<()> {
         .and_then(toml::Value::as_array)
         .ok_or_else(|| color_eyre::eyre::eyre!("intellij_lsp4ij policy evidence is missing"))?;
     let documentation = evidence.iter().find(|entry| {
-        entry.get("path").and_then(toml::Value::as_str)
-            == Some("docs/EDITORS/INTELLIJ_IDEA_SETUP.md")
+        entry.get("path").and_then(toml::Value::as_str) == Some(LSP4IJ_SETUP_DOC)
             && entry.get("kind").and_then(toml::Value::as_str) == Some("documentation")
     });
     if documentation.is_none() {
-        bail!("intellij_lsp4ij policy is missing typed setup documentation evidence");
+        bail!(
+            "intellij_lsp4ij policy is missing typed setup documentation evidence (`{LSP4IJ_SETUP_DOC}`)"
+        );
     }
     let protocol = evidence.iter().find(|entry| {
-        entry.get("path").and_then(toml::Value::as_str)
-            == Some("crates/perl-lsp-rs/tests/lsp_inline_completion_registration_tests.rs")
+        entry.get("path").and_then(toml::Value::as_str) == Some(LSP4IJ_PROTOCOL_PROFILE_EVIDENCE)
             && entry.get("kind").and_then(toml::Value::as_str) == Some("protocol_profile")
     });
     let Some(protocol) = protocol else {
-        bail!("intellij_lsp4ij policy is missing typed protocol-profile evidence");
+        bail!(
+            "intellij_lsp4ij policy is missing typed protocol-profile evidence (`{LSP4IJ_PROTOCOL_PROFILE_EVIDENCE}`)"
+        );
     };
     for entry in [documentation, Some(protocol)].into_iter().flatten() {
         let evidence_path = entry.get("path").and_then(toml::Value::as_str).ok_or_else(|| {
@@ -1012,7 +1017,11 @@ mod tests {
         let Err(error) = validate_lsp4ij_policy(temp.path()) else {
             bail!("missing protocol-profile evidence must be rejected");
         };
-        assert!(error.to_string().contains("lsp_inline_completion_registration_tests.rs"));
+        let message = error.to_string();
+        assert!(
+            message.contains(LSP4IJ_PROTOCOL_PROFILE_EVIDENCE),
+            "error should name the expected protocol-profile evidence path, got {message}"
+        );
         Ok(())
     }
 

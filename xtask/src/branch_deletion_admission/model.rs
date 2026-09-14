@@ -135,9 +135,18 @@ pub struct ParentSubject {
     pub head_in_admitted_repository: bool,
 }
 
-/// The branch as it exists right now on the remote.
+/// The branch subject as observed for the terminal pull request.
+///
+/// Normal admissions read the remote head. A local-only admission sets
+/// `local_ref` (for example `codex/13178-dancer2-v1-integrated`) and reads that
+/// exact local ref instead; its route uses `git update-ref --no-deref` and
+/// never emits a remote deletion.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchSubject {
+    /// An optional local branch alias for the terminal PR head. When present,
+    /// the admission targets this local ref and never emits a remote delete.
+    #[serde(default)]
+    pub local_ref: Option<String>,
     /// `None` when the current tip could not be read — treated as movement,
     /// never as agreement.
     pub current_sha: Option<String>,
@@ -209,6 +218,28 @@ pub(crate) fn is_full_object_id(candidate: &str) -> bool {
         && candidate.chars().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
 }
 
+/// Match the restrictions Git applies to a branch ref below `refs/heads/`.
+///
+/// Live collection asks Git directly; snapshots cannot run that command, so
+/// they need the same fail-closed structural boundary before evaluation.
+fn is_valid_local_alias(alias: &str) -> bool {
+    if alias.is_empty()
+        || alias.starts_with('/')
+        || alias.ends_with('/')
+        || alias.ends_with('.')
+        || alias.contains("..")
+        || alias.contains("@{")
+        || alias.chars().any(|ch| {
+            ch.is_ascii_control() || matches!(ch, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
+    {
+        return false;
+    }
+    alias.split('/').all(|component| {
+        !component.is_empty() && !component.starts_with('.') && !component.ends_with(".lock")
+    })
+}
+
 impl AdmissionRequest {
     /// Structural validation of the request before any admission logic runs.
     ///
@@ -226,6 +257,16 @@ impl AdmissionRequest {
         }
         if self.parent.head_ref.trim().is_empty() {
             return Some("parent head_ref must be non-empty".to_string());
+        }
+        if let Some(local_ref) = self.branch.local_ref.as_deref()
+            && local_ref.trim().is_empty()
+        {
+            return Some("local branch alias must be non-empty".to_string());
+        }
+        if let Some(local_ref) = self.branch.local_ref.as_deref()
+            && !is_valid_local_alias(local_ref)
+        {
+            return Some(format!("local branch alias {local_ref:?} is not a valid Git ref"));
         }
         if self.remote.trim().is_empty() {
             return Some("remote must be non-empty".to_string());
@@ -347,6 +388,10 @@ pub struct AdmissionOutcome {
     pub repository: String,
     pub parent_number: u64,
     pub branch: String,
+    /// The local alias being retired, when this is a local-only admission.
+    /// `None` means the normal remote head branch route.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_ref: Option<String>,
     pub admission: DeletionAdmission,
     /// Why this outcome was reached, in terms a reconciler can act on.
     pub detail: String,
