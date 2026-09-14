@@ -6,6 +6,7 @@
 
 mod clippy;
 mod tautology;
+pub mod transition;
 
 use crate::tasks::file_policy;
 use chrono::{NaiveDate, Utc};
