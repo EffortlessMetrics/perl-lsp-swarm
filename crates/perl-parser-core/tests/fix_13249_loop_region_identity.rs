@@ -51,11 +51,11 @@ fn root_body(file: &HirFile) -> Result<&HirBody, Box<dyn Error>> {
     file.root_body().ok_or_else(|| "root body is missing".to_string().into())
 }
 
-fn root_block<'a>(body: &'a HirBody) -> Result<&'a HirBlock, Box<dyn Error>> {
+fn root_block(body: &HirBody) -> Result<&HirBlock, Box<dyn Error>> {
     body.block(body.root_block).ok_or_else(|| "root block is missing".to_string().into())
 }
 
-fn first_expr<'a>(body: &'a HirBody) -> Result<&'a HirExpr, Box<dyn Error>> {
+fn first_expr(body: &HirBody) -> Result<&HirExpr, Box<dyn Error>> {
     let block = root_block(body)?;
     let stmt_id = *block.stmts.first().ok_or_else(|| "root has no statements".to_string())?;
     let stmt = body.stmt(stmt_id).ok_or_else(|| "first statement is missing".to_string())?;
@@ -94,21 +94,22 @@ fn loops_by_region_id(body: &HirBody) -> Vec<&HirExpr> {
     loops
 }
 
-fn loop_region(expr: &HirExpr) -> HirLoopRegionId {
+fn loop_region(expr: &HirExpr) -> Result<HirLoopRegionId, Box<dyn Error>> {
     match expr {
-        HirExpr::Loop { region_id, .. } => *region_id,
-        other => panic!("expected HirExpr::Loop, got {other:?}"),
+        HirExpr::Loop { region_id, .. } => Ok(*region_id),
+        other => Err(format!("expected HirExpr::Loop, got {other:?}").into()),
     }
 }
 
-fn loop_control(
-    stmt: &HirStmt,
-) -> (&Option<String>, Option<HirLoopRegionId>, &LoopControlResolution) {
+type LoopControlParts<'a> =
+    (&'a Option<String>, Option<HirLoopRegionId>, &'a LoopControlResolution);
+
+fn loop_control(stmt: &HirStmt) -> Result<LoopControlParts<'_>, Box<dyn Error>> {
     match stmt {
         HirStmt::LoopControl { written_label, resolved_target, resolution, .. } => {
-            (written_label, *resolved_target, resolution)
+            Ok((written_label, *resolved_target, resolution))
         }
-        other => panic!("expected HirStmt::LoopControl, got {other:?}"),
+        other => Err(format!("expected HirStmt::LoopControl, got {other:?}").into()),
     }
 }
 
@@ -131,7 +132,7 @@ fn each_loop_kind_gets_a_stable_region_id() -> TestResult {
     assert_eq!(loops.len(), 4, "four loop kinds must each lower to a Loop node");
     let mut seen = std::collections::HashSet::new();
     for l in &loops {
-        let id = loop_region(l);
+        let id = loop_region(l)?;
         assert!(seen.insert(id), "region IDs must be distinct across loops in the same body");
     }
     // Region IDs allocated in body source order — the first loop takes 0.
@@ -140,7 +141,7 @@ fn each_loop_kind_gets_a_stable_region_id() -> TestResult {
             assert_eq!(region_id.as_u32(), 0, "first loop must allocate region 0");
             assert!(matches!(kind, LoopKind::While));
         }
-        other => panic!("expected first loop, got {other:?}"),
+        other => return Err(format!("expected first loop, got {other:?}").into()),
     }
     // Fourth loop is the foreach — allocated last in source order.
     match &loops[3] {
@@ -148,7 +149,7 @@ fn each_loop_kind_gets_a_stable_region_id() -> TestResult {
             assert_eq!(region_id.as_u32(), 3);
             assert!(matches!(kind, LoopKind::Foreach));
         }
-        other => panic!("expected fourth loop, got {other:?}"),
+        other => return Err(format!("expected fourth loop, got {other:?}").into()),
     }
     Ok(())
 }
@@ -218,12 +219,12 @@ fn unlabelled_next_resolves_to_innermost_loop() -> TestResult {
     let body = root_body(&file)?;
     let loops = loops_by_region_id(body);
     assert_eq!(loops.len(), 2, "expected outer + inner loops");
-    let outer_region = loop_region(loops[0]);
-    let inner_region = loop_region(loops[1]);
+    let outer_region = loop_region(loops[0])?;
+    let inner_region = loop_region(loops[1])?;
     assert_ne!(outer_region, inner_region);
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
-    let (written, resolved, disposition) = loop_control(controls[0]);
+    let (written, resolved, disposition) = loop_control(controls[0])?;
     assert!(written.is_none());
     assert_eq!(
         resolved,
@@ -241,9 +242,9 @@ fn labelled_last_resolves_across_nested_loop() -> TestResult {
     let file = lower_clean("OUTER: while ($a) { INNER: while ($b) { last OUTER; } }");
     let body = root_body(&file)?;
     let loops = loops_by_region_id(body);
-    let outer_region = loop_region(loops[0]);
+    let outer_region = loop_region(loops[0])?;
     let controls = collect_loop_controls(body);
-    let (written, resolved, disposition) = loop_control(controls[0]);
+    let (written, resolved, disposition) = loop_control(controls[0])?;
     assert_eq!(written.as_deref(), Some("OUTER"), "written_label must preserve the source label");
     assert_eq!(resolved, Some(outer_region), "`last OUTER` must resolve to the outer loop");
     assert!(matches!(disposition, LoopControlResolution::Resolved));
@@ -258,11 +259,11 @@ fn same_spelled_nested_labels_pick_innermost() -> TestResult {
     let body = root_body(&file)?;
     let loops = loops_by_region_id(body);
     assert_eq!(loops.len(), 2);
-    let outer_region = loop_region(loops[0]);
-    let inner_region = loop_region(loops[1]);
+    let outer_region = loop_region(loops[0])?;
+    let inner_region = loop_region(loops[1])?;
     assert_ne!(outer_region, inner_region, "two loops must not share a region ID");
     let controls = collect_loop_controls(body);
-    let (_, resolved, disposition) = loop_control(controls[0]);
+    let (_, resolved, disposition) = loop_control(controls[0])?;
     assert_eq!(
         resolved,
         Some(inner_region),
@@ -289,7 +290,7 @@ fn bare_next_outside_any_loop_reports_no_enclosing_loop() -> TestResult {
         .ok_or_else(|| "sub body is missing".to_string())?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
-    let (_, resolved, disposition) = loop_control(controls[0]);
+    let (_, resolved, disposition) = loop_control(controls[0])?;
     assert!(resolved.is_none(), "no enclosing loop → no resolved target");
     assert!(
         matches!(disposition, LoopControlResolution::NoEnclosingLoop),
@@ -310,7 +311,7 @@ fn labelled_loop_outside_enclosure_is_unresolved() -> TestResult {
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
-    let (written, resolved, disposition) = loop_control(controls[0]);
+    let (written, resolved, disposition) = loop_control(controls[0])?;
     assert_eq!(written.as_deref(), Some("OUTER"));
     assert!(resolved.is_none(), "OUTER is not an enclosing loop from this transfer");
     assert!(
@@ -339,7 +340,7 @@ fn labelled_non_loop_statement_reports_nonloop_target() -> TestResult {
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
-    let (written, resolved, disposition) = loop_control(controls[0]);
+    let (written, resolved, disposition) = loop_control(controls[0])?;
     assert_eq!(written.as_deref(), Some("LABEL"));
     assert!(resolved.is_none(), "non-loop target must not carry a resolved loop region");
     assert!(
@@ -355,14 +356,14 @@ fn labelled_non_loop_statement_reports_nonloop_target() -> TestResult {
 /// the block. This exercise depends on the enclosing loop's body being
 /// walked into its statements — the parser produces `while > body > block
 /// > statements > labeled_statement > statement > block > statements >
-/// last`, and the body lowerer descends the outer block.
+/// > last`, and the body lowerer descends the outer block.
 #[test]
 fn nonloop_target_from_bare_block_when_enclosed() -> TestResult {
     let file = lower_clean("while ($x) { BLK: { last BLK; next BLK; } }");
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 2, "all statements in a bare block must be lowered");
-    let (written, _, disposition) = loop_control(controls[0]);
+    let (written, _, disposition) = loop_control(controls[0])?;
     assert_eq!(written.as_deref(), Some("BLK"));
     assert!(
         matches!(disposition, LoopControlResolution::NonLoopTarget { label } if label == "BLK"),
@@ -378,7 +379,7 @@ fn labelled_bare_block_keeps_all_child_statements() -> TestResult {
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 2, "both transfers in the bare block must be lowered");
     for control in controls {
-        let (_, resolved, disposition) = loop_control(control);
+        let (_, resolved, disposition) = loop_control(control)?;
         assert!(resolved.is_none());
         assert!(
             matches!(disposition, LoopControlResolution::NonLoopTarget { label } if label == "BLK")
@@ -394,9 +395,9 @@ fn redo_resolves_to_enclosing_loop() -> TestResult {
     let file = lower_clean("while ($a) { redo; }");
     let body = root_body(&file)?;
     let loops = collect_loops(body);
-    let region = loop_region(loops[0]);
+    let region = loop_region(loops[0])?;
     let controls = collect_loop_controls(body);
-    let (_, resolved, disposition) = loop_control(controls[0]);
+    let (_, resolved, disposition) = loop_control(controls[0])?;
     match controls[0] {
         HirStmt::LoopControl { verb, .. } => {
             assert!(matches!(verb, ControlTransferKind::Redo));
@@ -466,7 +467,7 @@ fn last_inside_labelled_postfix_loop_does_not_create_a_target() -> TestResult {
     assert!(postfix_loop_region.is_none());
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
-    let (written, resolved, disposition) = loop_control(controls[0]);
+    let (written, resolved, disposition) = loop_control(controls[0])?;
     assert_eq!(written.as_deref(), Some("LOOP"));
     assert!(resolved.is_none());
     assert!(matches!(
@@ -483,7 +484,7 @@ fn postfix_control_does_not_target_the_modifier() -> TestResult {
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
-    let (_, resolved, disposition) = loop_control(controls[0]);
+    let (_, resolved, disposition) = loop_control(controls[0])?;
     assert!(resolved.is_none());
     assert!(matches!(disposition, LoopControlResolution::NoEnclosingLoop));
     Ok(())
@@ -495,7 +496,7 @@ fn c_style_initializer_control_is_outside_loop() -> TestResult {
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
-    let (_, resolved, disposition) = loop_control(controls[0]);
+    let (_, resolved, disposition) = loop_control(controls[0])?;
     assert!(resolved.is_none());
     assert!(matches!(disposition, LoopControlResolution::NoEnclosingLoop));
     Ok(())
@@ -507,7 +508,7 @@ fn inner_same_named_bare_block_shadows_outer_loop_label() -> TestResult {
     let body = root_body(&file)?;
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1);
-    let (_, resolved, disposition) = loop_control(controls[0]);
+    let (_, resolved, disposition) = loop_control(controls[0])?;
     assert!(resolved.is_none());
     assert!(
         matches!(disposition, LoopControlResolution::NonLoopTarget { label } if label == "OUTER")
@@ -524,9 +525,9 @@ fn next_inside_continue_block_targets_the_loop() -> TestResult {
     let file = lower_clean("while ($a) { } continue { next; }");
     let body = root_body(&file)?;
     let loops = collect_loops(body);
-    let region = loop_region(loops[0]);
+    let region = loop_region(loops[0])?;
     let controls = collect_loop_controls(body);
-    let (_, resolved, disposition) = loop_control(controls[0]);
+    let (_, resolved, disposition) = loop_control(controls[0])?;
     assert_eq!(resolved, Some(region), "continue-block `next` must target the loop");
     assert!(matches!(disposition, LoopControlResolution::Resolved));
     Ok(())
@@ -542,7 +543,10 @@ fn nested_loops_never_share_a_region_id() -> TestResult {
     let body = root_body(&file)?;
     let loops = collect_loops(body);
     assert_eq!(loops.len(), 3);
-    let ids: std::collections::HashSet<_> = loops.iter().map(|e| loop_region(e)).collect();
+    let ids: std::collections::HashSet<_> = loops
+        .iter()
+        .map(|e| loop_region(e))
+        .collect::<Result<std::collections::HashSet<_>, _>>()?;
     assert_eq!(ids.len(), 3, "three nested loops must produce three distinct region IDs");
     Ok(())
 }
@@ -618,7 +622,7 @@ fn descend<'a>(body: &'a HirBody, block_id: Option<HirBlockId>, out: &mut Vec<&'
     }
 }
 
-fn reachable_from_root<'a>(body: &'a HirBody) -> Result<Vec<&'a HirStmt>, Box<dyn Error>> {
+fn reachable_from_root(body: &HirBody) -> Result<Vec<&HirStmt>, Box<dyn Error>> {
     let mut out = Vec::new();
     reachable_stmts(body, root_block(body)?, &mut out);
     Ok(out)
@@ -660,7 +664,7 @@ fn labelled_bare_block_keeps_trailing_loop_control_reachable() -> TestResult {
     );
     let controls = collect_loop_controls(body);
     assert_eq!(controls.len(), 1, "the labelled block's `last BLK` must be lowered");
-    let (written, resolved, disposition) = loop_control(controls[0]);
+    let (written, resolved, disposition) = loop_control(controls[0])?;
     assert_eq!(written.as_deref(), Some("BLK"));
     assert!(resolved.is_none(), "a labelled bare block is not a loop region");
     assert!(matches!(
@@ -750,8 +754,10 @@ fn region_ids_are_dense_deterministic_and_outer_before_nested() -> TestResult {
     let collect = || -> Result<Vec<u32>, Box<dyn Error>> {
         let file = lower_clean(source);
         let body = root_body(&file)?;
-        let mut ids: Vec<u32> =
-            collect_loops(body).iter().map(|l| loop_region(l).as_u32()).collect();
+        let mut ids: Vec<u32> = collect_loops(body)
+            .iter()
+            .map(|l| loop_region(l).map(HirLoopRegionId::as_u32))
+            .collect::<Result<Vec<u32>, _>>()?;
         ids.sort_unstable();
         Ok(ids)
     };
