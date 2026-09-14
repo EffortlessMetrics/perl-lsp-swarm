@@ -568,8 +568,10 @@ fn bind_producer(
 /// observed discovery stream it claims to have been reconstructed from.
 ///
 /// Target, runner, and discovery frame are rebound from the observed discovery
-/// subject; scheduling has no observed counterpart, so it is taken from the
-/// caller's declaration (#7737) rather than from the candidate. The final
+/// subject. The discovery receipt carries no schedule, so scheduling is taken
+/// from the caller's declaration (#7737) rather than from the candidate; the
+/// separate per-invocation observation that *can* contradict that declaration
+/// is checked by [`validate_declared_scheduling`], not here. The final
 /// full-authority rebuild then proves items, order, membership, and scheduling
 /// are exactly what this matrix, these observed bytes, and that declaration
 /// produce; a coherent forgery carrying the right digests cannot pass it.
