@@ -69,8 +69,24 @@ not need a textual candidate guard merely for uniformity.
 The example uses a stable `shared-key` without `${{ hashFiles('Cargo.lock') }}` because
 `Swatinem/rust-cache` already incorporates the lockfile hash into its internal keying;
 adding it to `shared-key` prevents restore fallback when `Cargo.lock` changes (the action
-uses `shared-key` as a restore prefix). Existing workflows that include the hash for
-historical reasons are not changed by this writer-authority rollout.
+uses `shared-key` as a restore prefix). In the RIPR workflow, its primary hosted consumer,
+disk fallback, and trusted canonical seed use the same stable shared key so a lockfile
+change can restore the nearest reusable entry while the action still invalidates
+incompatible internal artifacts.
+
+When a workflow also performs analysis on manual dispatch, a typed boolean input may opt
+into a cache-only seed. The router must exclude only that opt-in dispatch from analysis;
+the default manual dispatch remains the ordinary analysis path. The seed job itself must
+be limited to schedule or opt-in dispatch on `main`/`master`, and its cache action must
+carry the same event/ref `save-if` guard as every other writer.
+
+The focused contract is checked with
+`python3 -m unittest scripts/ci/test_ripr_cache_authority_15055.py`. RIPR sets
+`cache-workspace-crates: true` because the seed builds the workspace `xtask` binary;
+without that option, rust-cache cleanup may remove workspace build outputs even when
+dependency and tool caches are retained. This improves reuse for the selected RIPR
+build path and does not establish that a hosted run will avoid every compile or survive
+runner teardown.
 
 ---
 

@@ -8,6 +8,8 @@
 //! increasing a timeout, budget constant, size cap, or iteration bound
 //! (NPC-010 ratchet).
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+
 #[path = "../benches/support/perf_subjects.rs"]
 mod perf_subjects;
 

@@ -42,7 +42,14 @@
 
 #![cfg(feature = "dap-phase2")]
 
+#[path = "common/dap_core_capability_witnesses.rs"]
+mod dap_core_capability_witnesses;
+
 use anyhow::Result;
+use dap_core_capability_witnesses::{
+    DAP_CORE_DERIVED_TRUE_SIBLINGS, FORMER_TRUE_SIBLINGS_NOW_FLOORED, VALUE_FORMAT_FLOOR_FIELD,
+    assert_capability_bool, require_capability_is_json_boolean,
+};
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_dap::feature_catalog::has_feature;
 use serde_json::{Value, json};
@@ -94,6 +101,42 @@ fn response_breakpoints(body: &Value) -> Result<&Vec<Value>> {
         .ok_or_else(|| anyhow::anyhow!("setBreakpoints body must carry a breakpoints array"))
 }
 
+#[test]
+fn capability_boolean_witness_requires_present_json_boolean() -> Result<()> {
+    for value in [Value::Bool(true), Value::Bool(false)] {
+        let body = json!({"supportsExample": value});
+        require_capability_is_json_boolean(&body, "supportsExample")?;
+    }
+
+    for (value, expected_detail) in
+        [(Value::Null, "Null"), (json!("true"), "true"), (json!(1), "1")]
+    {
+        let body = json!({"supportsExample": value});
+        let error = require_capability_is_json_boolean(&body, "supportsExample")
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("non-boolean capability unexpectedly accepted"))?;
+        let message = error.to_string();
+        if !message.contains("supportsExample")
+            || !message.contains("present value")
+            || !message.contains(expected_detail)
+        {
+            anyhow::bail!("boolean witness error lost field/value context: {message}");
+        }
+    }
+
+    let error = require_capability_is_json_boolean(&json!({}), "supportsExample")
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("missing capability unexpectedly accepted"))?;
+    let message = error.to_string();
+    if !message.contains("supportsExample")
+        || !message.contains("present value")
+        || !message.contains("None")
+    {
+        anyhow::bail!("missing witness error lost field/value context: {message}");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Advertisement floor
 // ---------------------------------------------------------------------------
@@ -127,49 +170,91 @@ fn all_four_optional_breakpoint_capabilities_are_false_while_catalog_advertises(
         "supportsLogPoints",
     ];
     for row in rows {
-        let actual = body.get(row).and_then(Value::as_bool);
-        assert_eq!(actual, Some(false), "{row} must be advertised false (#9578)");
+        require_capability_is_json_boolean(&body, row)?;
+        assert_capability_bool(&body, row, false, "must be advertised false (#9578)");
     }
     Ok(())
 }
 
 /// The floor must not be achieved by weakening neighboring capability rows:
-/// the surviving catalog-derived siblings keep their values, so a regression
-/// that simply deletes advertisement rows wholesale is visible.
+/// the surviving `dap.core`-derived siblings keep their values, so a
+/// regression that simply deletes advertisement rows wholesale, or flattens
+/// every boolean to false, is visible.
+///
+/// #9581 closed the previous true-witness (`supportsValueFormattingOptions`)
+/// and the previous `dap.breakpoints.basic` sibling
+/// (`supportsBreakpointLocationsRequest`). Re-pointing at either, or promoting
+/// either to keep this test green, is forbidden (#14933).
 #[test]
 fn optional_floor_does_not_widen_or_flatten_neighboring_capability_rows() -> Result<()> {
+    assert!(
+        has_feature("dap.core"),
+        "precondition: dap.core is advertised; without it the true-sibling table is not a dap.core witness"
+    );
+    assert!(
+        !DAP_CORE_DERIVED_TRUE_SIBLINGS.is_empty(),
+        "anti-flattening is vacuous without at least one surviving dap.core-derived true sibling; \
+         if none remain, replace this table with an explicit alternate proof rather than an empty list"
+    );
+
     let mut adapter = adapter();
     let body = initialize_body(&mut adapter)?;
 
-    // `supportsValueFormattingOptions` is still `dap.core`-derived and advertised.
-    assert_eq!(
-        body.get("supportsValueFormattingOptions").and_then(Value::as_bool),
-        Some(true),
-        "supportsValueFormattingOptions is the surviving dap.core sibling and must stay true"
-    );
-    // `supportsSetVariable` was `dap.core`-derived when #9578 landed; #8354
-    // later floored it on the exact-mutation authority, so it must now read
-    // false — pin the floor here so a later accidental widening is visible.
-    assert_eq!(
-        body.get("supportsSetVariable").and_then(Value::as_bool),
-        Some(false),
-        "supportsSetVariable carries the #8354 floor"
-    );
-    // `supportsBreakpointLocationsRequest` is still `dap.breakpoints.basic`-derived.
-    assert_eq!(
-        body.get("supportsBreakpointLocationsRequest").and_then(Value::as_bool),
-        Some(true),
-        "supportsBreakpointLocationsRequest is the surviving dap.breakpoints.basic sibling"
-    );
-    // The same catalog row that keeps breakpointLocations true cannot be
-    // re-derived into conditional support (#9578: no capability inherits
+    for name in DAP_CORE_DERIVED_TRUE_SIBLINGS {
+        require_capability_is_json_boolean(&body, name)?;
+        assert_capability_bool(
+            &body,
+            name,
+            true,
+            "surviving dap.core-derived sibling must stay true (#9578 anti-flattening; #14933)",
+        );
+    }
+
+    for (name, floor) in FORMER_TRUE_SIBLINGS_NOW_FLOORED {
+        require_capability_is_json_boolean(&body, name)?;
+        assert_capability_bool(
+            &body,
+            name,
+            false,
+            &format!(
+                "former true-sibling now carries the {floor} floor; do not promote it to satisfy anti-flattening"
+            ),
+        );
+    }
+
+    // The same catalog row that used to keep breakpointLocations true cannot
+    // be re-derived into conditional support (#9578: no capability inherits
     // another's receipt).
-    assert_eq!(
-        body.get("supportsConditionalBreakpoints").and_then(Value::as_bool),
-        Some(false),
-        "dap.breakpoints.basic must not widen supportsConditionalBreakpoints"
+    assert_capability_bool(
+        &body,
+        "supportsConditionalBreakpoints",
+        false,
+        "dap.breakpoints.basic must not widen supportsConditionalBreakpoints",
     );
     Ok(())
+}
+
+/// Each surviving true-sibling is an independent flattening detector: dropping
+/// one from the table would let a later floor close that row unnoticed while
+/// the remaining two still pass. The table must keep distinct names.
+#[test]
+fn anti_flattening_true_siblings_are_distinct_named_rows() {
+    let mut seen = std::collections::BTreeSet::new();
+    for name in DAP_CORE_DERIVED_TRUE_SIBLINGS {
+        assert!(seen.insert(*name), "duplicate anti-flattening witness {name}");
+    }
+    for (name, _) in FORMER_TRUE_SIBLINGS_NOW_FLOORED {
+        assert!(
+            !seen.contains(name),
+            "{name} cannot be both a surviving true-sibling and a former-sibling floor pin"
+        );
+    }
+    assert!(
+        FORMER_TRUE_SIBLINGS_NOW_FLOORED
+            .iter()
+            .any(|(name, floor)| { *name == VALUE_FORMAT_FLOOR_FIELD && *floor == "#9581" }),
+        "{VALUE_FORMAT_FLOOR_FIELD} must remain a #9581 former-sibling pin, not a true-sibling"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -430,31 +515,63 @@ fn mixed_request_preserves_input_order_and_per_item_truth() -> Result<()> {
     match response {
         DapMessage::Response { success: true, body: Some(body), .. } => {
             let breakpoints = response_breakpoints(&body)?;
-            assert_eq!(breakpoints.len(), 4, "one response per input, in order");
-            assert_eq!(
-                breakpoints[0].get("line").and_then(Value::as_i64),
-                Some(3),
-                "plain entry keeps its requested line"
-            );
-            assert_eq!(breakpoints[0].get("verified").and_then(Value::as_bool), Some(true));
-            assert_eq!(breakpoints[1].get("line").and_then(Value::as_i64), Some(1));
-            let condition_message = breakpoints[1]
+            if breakpoints.len() != 4 {
+                anyhow::bail!("one response per input, in order: {breakpoints:?}");
+            }
+            let plain = breakpoints.first().ok_or_else(|| anyhow::anyhow!("missing plain slot"))?;
+            if plain.get("line").and_then(Value::as_i64) != Some(3)
+                || plain.get("verified").and_then(Value::as_bool) != Some(false)
+            {
+                anyhow::bail!("plain entry must remain pending at its requested line: {plain:?}");
+            }
+            let pending_message = plain
                 .get("message")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("missing message"))?;
-            assert!(condition_message.contains(CONDITION_FLOOR_MARKER));
-            assert_eq!(breakpoints[2].get("line").and_then(Value::as_i64), Some(2));
-            let hit_message = breakpoints[2]
+                .ok_or_else(|| anyhow::anyhow!("missing pending message in plain: {plain:?}"))?;
+            if pending_message != "Breakpoint is pending debugger launch" {
+                anyhow::bail!("unexpected pending message: {pending_message:?}");
+            }
+            let condition =
+                breakpoints.get(1).ok_or_else(|| anyhow::anyhow!("missing condition slot"))?;
+            if condition.get("line").and_then(Value::as_i64) != Some(1)
+                || condition.get("verified").and_then(Value::as_bool) != Some(false)
+            {
+                anyhow::bail!("condition slot changed line: {condition:?}");
+            }
+            let condition_message =
+                condition.get("message").and_then(Value::as_str).ok_or_else(|| {
+                    anyhow::anyhow!("missing condition message in condition: {condition:?}")
+                })?;
+            if !condition_message.contains(CONDITION_FLOOR_MARKER) {
+                anyhow::bail!("condition refusal marker missing: {condition_message:?}");
+            }
+            let hit =
+                breakpoints.get(2).ok_or_else(|| anyhow::anyhow!("missing hit-condition slot"))?;
+            if hit.get("line").and_then(Value::as_i64) != Some(2)
+                || hit.get("verified").and_then(Value::as_bool) != Some(false)
+            {
+                anyhow::bail!("hit-condition slot changed line: {hit:?}");
+            }
+            let hit_message = hit
                 .get("message")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("missing message"))?;
-            assert!(hit_message.contains(HIT_CONDITION_FLOOR_MARKER));
-            assert_eq!(breakpoints[3].get("line").and_then(Value::as_i64), Some(4));
-            let log_message = breakpoints[3]
+                .ok_or_else(|| anyhow::anyhow!("missing hit-condition message in hit: {hit:?}"))?;
+            if !hit_message.contains(HIT_CONDITION_FLOOR_MARKER) {
+                anyhow::bail!("hit-condition refusal marker missing: {hit_message:?}");
+            }
+            let log = breakpoints.get(3).ok_or_else(|| anyhow::anyhow!("missing logpoint slot"))?;
+            if log.get("line").and_then(Value::as_i64) != Some(4)
+                || log.get("verified").and_then(Value::as_bool) != Some(false)
+            {
+                anyhow::bail!("logpoint slot changed line: {log:?}");
+            }
+            let log_message = log
                 .get("message")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("missing message"))?;
-            assert!(log_message.contains(LOG_MESSAGE_FLOOR_MARKER));
+                .ok_or_else(|| anyhow::anyhow!("missing logpoint message in log: {log:?}"))?;
+            if !log_message.contains(LOG_MESSAGE_FLOOR_MARKER) {
+                anyhow::bail!("logpoint refusal marker missing: {log_message:?}");
+            }
         }
         other => anyhow::bail!("expected a mixed-response, got {other:?}"),
     }

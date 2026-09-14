@@ -1,0 +1,9 @@
+project: product
+component: Continuous integration
+kind: Changed
+body: "Every reviewed RIPR consumer moves from 0.9.0 to 0.10.0 (#9113): the five routed execution lanes in ripr.yml, the badge-endpoints installer, the EXPECTED_RIPR_VERSION producer-receipt guard in scripts/generate-badges.py, and the documented install instructions. The 0.9.0/0.10.0 output-schema difference is dispositioned from captured producer output rather than inferred from version numbers: schema_version moves 0.1 to 0.2, findings[] gains assertion_texts and related_tests_total, and every field the repository consumer reads is unchanged, so no parser broadening was required. The version contract now also joins the badge consumer and the documented pins to the routed lanes, closing a false-green where bumping the workflows alone left generate-badges.py rejecting every produced receipt as unreviewed. ripr check output is additionally validated at ingest so a producer that drops or malforms a required summary count fails closed as an instrument failure instead of being read as zero gaps."
+time: 2026-09-07T00:00:00Z
+custom:
+  PR: "0000"
+  Slug: ripr-010-consumer-migration-9113
+  Breaking: "no"

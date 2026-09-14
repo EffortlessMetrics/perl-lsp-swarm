@@ -66,7 +66,8 @@ fn assert_response_message(
 // --- breakpointLocations ---
 
 #[test]
-// AC:16
+// AC:16 — #9581: breakpointLocations is floored, so even a missing-args
+// request gets the explicit unsupported rejection before argument parsing.
 fn test_breakpoint_locations_missing_args_returns_failure() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut adapter = make_adapter();
@@ -76,7 +77,8 @@ fn test_breakpoint_locations_missing_args_returns_failure() -> Result<(), Box<dy
 }
 
 #[test]
-// AC:16
+// AC:16 — #9581: a no-source-path request must NOT return an empty success;
+// the floor rejects it before any oracle work (no missing-session masquerade).
 fn test_breakpoint_locations_no_source_path_returns_empty_success()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
@@ -85,30 +87,29 @@ fn test_breakpoint_locations_no_source_path_returns_empty_success()
         "line": 5
     });
     let response = adapter.handle_request(1, "breakpointLocations", Some(args));
-    let body = assert_response(response, "breakpointLocations", true)?;
-    let body = body.ok_or("breakpointLocations should return a body")?;
-    assert!(body.get("breakpoints").is_some(), "body must include breakpoints array");
+    assert_response(response, "breakpointLocations", false)?;
     Ok(())
 }
 
 // --- cancel ---
 
 #[test]
-// AC:16
+// AC:16 — #9581: cancel is floored; the explicit unsupported disposition must
+// not touch the shared cancellation flag.
 fn test_cancel_succeeds_without_args() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "cancel", None);
-    assert_response(response, "cancel", true)?;
+    assert_response(response, "cancel", false)?;
     Ok(())
 }
 
 #[test]
-// AC:16
+// AC:16 — #9581: cancel with arguments keeps the floor disposition.
 fn test_cancel_succeeds_with_args() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let args = json!({ "requestId": 42 });
     let response = adapter.handle_request(1, "cancel", Some(args));
-    assert_response(response, "cancel", true)?;
+    assert_response(response, "cancel", false)?;
     Ok(())
 }
 
@@ -198,18 +199,13 @@ fn test_goto_targets_unsupported_regardless_of_source() -> Result<(), Box<dyn st
 // --- loadedSources ---
 
 #[test]
-// AC:16
+// AC:16 — #9581: loadedSources is floored; a no-session request is an explicit
+// unsupported, never a successful empty sources list.
 fn test_loaded_sources_no_session_returns_empty_sources() -> Result<(), Box<dyn std::error::Error>>
 {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "loadedSources", None);
-    let body = assert_response(response, "loadedSources", true)?;
-    let body = body.ok_or("loadedSources must return a body")?;
-    let sources = body.get("sources").ok_or("sources array required")?;
-    assert!(
-        sources.as_array().is_some_and(|a| a.is_empty()),
-        "without a session, sources must be empty"
-    );
+    assert_response(response, "loadedSources", false)?;
     Ok(())
 }
 
@@ -594,23 +590,22 @@ fn test_step_in_targets_unsupported_response_has_no_targets_body()
 }
 
 // --- loadedSources response body has sources[] ---
+// (#9581: loadedSources is floored, so the response is an explicit unsupported
+// with no sources body — the schema rows for floored responses assert the
+// failure shape instead.)
 
 #[test]
-// AC:16 (Schema: loadedSources response includes sources array)
+// AC:16 (Schema: loadedSources floored response is explicit unsupported)
 fn test_loaded_sources_response_body_has_sources_array() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
     let response = adapter.handle_request(1, "loadedSources", None);
-    let body = assert_response(response, "loadedSources", true)?;
-    let body = body.ok_or("loadedSources body is required")?;
-    let sources = body.get("sources").ok_or("loadedSources body must have 'sources'")?;
-    assert!(sources.is_array(), "'sources' must be an array");
+    let body = assert_response(response, "loadedSources", false)?;
+    assert!(body.is_none(), "a floored loadedSources must not carry a sources body");
     Ok(())
 }
 
-// --- breakpointLocations response body has breakpoints[] ---
-
 #[test]
-// AC:16 (Schema: breakpointLocations response includes breakpoints array)
+// AC:16 (Schema: breakpointLocations floored response is explicit unsupported)
 fn test_breakpoint_locations_response_body_has_breakpoints_array()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
@@ -619,10 +614,9 @@ fn test_breakpoint_locations_response_body_has_breakpoints_array()
         "line": 1
     });
     let response = adapter.handle_request(1, "breakpointLocations", Some(args));
-    let body = assert_response(response, "breakpointLocations", true)?;
-    let body = body.ok_or("breakpointLocations body is required")?;
-    let bps = body.get("breakpoints").ok_or("breakpointLocations body must have 'breakpoints'")?;
-    assert!(bps.is_array(), "'breakpoints' must be an array");
+    // #9581: the floored disposition carries no breakpoints body.
+    let body = assert_response(response, "breakpointLocations", false)?;
+    assert!(body.is_none(), "a floored breakpointLocations must not carry a body");
     Ok(())
 }
 
@@ -645,20 +639,28 @@ fn test_exception_info_response_body_has_required_fields() -> Result<(), Box<dyn
 // 5. Integration Scenarios
 // ---------------------------------------------------------------------------
 
-// --- Cancel clears the cancel flag (idempotent) ---
+// --- Cancel rejection is stable (idempotent disposition) ---
 
 #[test]
-// AC:16 (Integration: cancel can be called multiple times safely)
+// AC:16 — #9581 (Integration: cancel is rejected identically every time, and
+// the shared cancellation flag is never touched)
 fn test_cancel_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = make_adapter();
 
-    // First cancel
+    // First cancel: explicit unsupported, no flag mutation.
     let r1 = adapter.handle_request(1, "cancel", None);
-    assert_response(r1, "cancel", true)?;
+    let msg1 = assert_response_message(r1, "cancel")?;
+    assert!(msg1.as_deref().is_some_and(|m| m.contains("unsupported")));
 
-    // Second cancel — should still succeed
+    // Second cancel — same explicit disposition, no state drift.
     let r2 = adapter.handle_request(2, "cancel", None);
-    assert_response(r2, "cancel", true)?;
+    assert_response(r2, "cancel", false)?;
+    let msg2 = assert_response_message(adapter.handle_request(3, "cancel", None), "cancel")?;
+    assert_eq!(
+        msg1.as_deref(),
+        msg2.as_deref(),
+        "the #9581 floor disposition must be deterministic"
+    );
     Ok(())
 }
 
