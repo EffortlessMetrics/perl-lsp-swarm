@@ -222,8 +222,8 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
     );
     assert!(
         routed_rust.contains("if [ \"$ROUTE_RESULT\" = \"skipped\" ]; then")
-            && routed_rust.contains("required check is neutral/pass"),
-        "Rust Small result aggregation must treat an intentionally skipped draft route as neutral"
+            && routed_rust.contains("RUST_SMALL_GATE_VERDICT=draft-no-proof"),
+        "Rust Small result aggregation must refuse proof for an intentionally skipped draft route"
     );
     assert!(
         title_check
@@ -376,4 +376,16 @@ fn windows_platform_smoke_compiles_integration_targets_without_running_them()
         "Windows portability smoke must compile the Unix-only integration target without running it; command: {run}"
     );
     Ok(())
+}
+
+#[path = "support/draft_routed_result.rs"]
+mod draft_routed_result;
+
+#[test]
+fn rust_small_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
+    draft_routed_result::check_contract(
+        &project_root()?.join(".github/workflows/em-ci-routed-rust.yml"),
+        "rust-small-result",
+        "RUST_SMALL_GATE_VERDICT=draft-no-proof",
+    )
 }
