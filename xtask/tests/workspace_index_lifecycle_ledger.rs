@@ -1408,18 +1408,22 @@ fn validate_member_rows(rows: &[MemberRow], type_rows: &[PropositionRow]) -> Res
     Ok(())
 }
 
-/// Every declared variant, variant field and struct field of an overlapping type
-/// carries exactly one disposition, and no row survives a member that source no
-/// longer declares. Changing `Ready`, adding a variant, or removing a field must
-/// fail even though the enum declaration itself is untouched.
 /// The member-scoped module a mapped type row belongs to, if any.
+///
+/// The directory prefix is anchored at a path separator. A bare `starts_with`
+/// would fold a sibling such as `src/monitoring_v2/x.rs`, or a stray
+/// `src/monitoring.rs`, into the real module: two physically distinct modules
+/// would then share one label, a genuine cross-module collision between them
+/// would look single-module, and the denominator check below would never fire.
 fn member_scoped_module(source_path: &str) -> Option<&'static str> {
     if source_path == MIXED_MODULE {
         return Some("workspace_index");
     }
-    ["monitoring", "state_machine"]
-        .into_iter()
-        .find(|module| module_dir(module).is_some_and(|dir| source_path.starts_with(dir)))
+    ["monitoring", "state_machine"].into_iter().find(|module| {
+        module_dir(module)
+            .and_then(|dir| source_path.strip_prefix(dir))
+            .is_some_and(|rest| rest.starts_with('/'))
+    })
 }
 
 /// `OVERLAPPING_TYPES` is the member-level denominator, and it is hand-written.
@@ -1457,6 +1461,10 @@ fn validate_overlap_denominator_is_complete(rows: &[PropositionRow]) -> Result<(
     Ok(())
 }
 
+/// Every declared variant, variant field and struct field of an overlapping type
+/// carries exactly one disposition, and no row survives a member that source no
+/// longer declares. Changing `Ready`, adding a variant, or removing a field must
+/// fail even though the enum declaration itself is untouched.
 fn validate_member_coverage(rows: &[MemberRow]) -> Result<()> {
     for (module, type_name) in OVERLAPPING_TYPES {
         let declared = declared_members(module, type_name)?;
@@ -1514,6 +1522,40 @@ fn every_overlapping_member_is_dispositioned() -> Result<()> {
 fn every_name_identical_collision_carries_a_member_denominator() -> Result<()> {
     let rows = load_rows()?;
     validate_overlap_denominator_is_complete(&rows)
+}
+
+/// Module attribution must be a real directory boundary, not a string prefix.
+/// An unanchored prefix would fold a same-prefixed sibling into the real module,
+/// so a genuine collision between the two would compute as one module and the
+/// denominator check would never fire — silently undoing the guarantee above.
+#[test]
+fn a_same_prefixed_sibling_directory_is_not_the_lifecycle_module() -> Result<()> {
+    for sibling in [
+        "crates/perl-workspace/src/monitoring_v2/mod.rs",
+        "crates/perl-workspace/src/monitoring.rs",
+        "crates/perl-workspace/src/state_machine_legacy/mod.rs",
+    ] {
+        ensure!(
+            member_scoped_module(sibling).is_none(),
+            "{sibling} was attributed to module {:?}; the directory prefix is unanchored",
+            member_scoped_module(sibling)
+        );
+    }
+    // Non-vacuity: the real directories must still resolve, or the guard above
+    // would pass simply because nothing ever matches.
+    for (path, expected) in [
+        ("crates/perl-workspace/src/monitoring/mod.rs", "monitoring"),
+        ("crates/perl-workspace/src/monitoring/indexing_receipt.rs", "monitoring"),
+        ("crates/perl-workspace/src/state_machine/mod.rs", "state_machine"),
+        (MIXED_MODULE, "workspace_index"),
+    ] {
+        ensure!(
+            member_scoped_module(path) == Some(expected),
+            "{path} should resolve to {expected}, found {:?}",
+            member_scoped_module(path)
+        );
+    }
+    Ok(())
 }
 
 /// A type name entering a second member-scoped module must not be able to stop
