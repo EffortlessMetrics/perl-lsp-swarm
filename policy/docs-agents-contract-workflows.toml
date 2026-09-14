@@ -11,8 +11,7 @@
 # deliberate registry edit in the same PR as the deletion.
 #
 # `named_class` is the closed #14628 set. A present file in that set must have
-# a [[workflows]] row; an absent named file is not a failure
-# (`worked-lane-corpus.yml` is still proposed by #13789 and is not on main).
+# a [[workflows]] row; an absent named file is not a failure.
 
 schema_version = 1
 owner = "perl-lsp maintainers"
@@ -37,3 +36,7 @@ contract = "active maintainer and contributor authority entrypoints"
 [[workflows]]
 path = ".github/workflows/legacy-authority-banners.yml"
 contract = "legacy authority banner inertness"
+
+[[workflows]]
+path = ".github/workflows/worked-lane-corpus.yml"
+contract = "worked-lane category ledger against the corpus it accounts for"

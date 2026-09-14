@@ -14,9 +14,7 @@
 use super::activation::Dancer2FileActivations;
 use super::activation::Dancer2TwoXPackageActivation;
 use super::facts::CanonicalDancer2FileFacts;
-use perl_semantic_facts::framework_adapters::dancer2::{
-    DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
-};
+use perl_semantic_facts::framework_adapters::dancer2::{Dancer2KeywordState, DslKeywordScope};
 use perl_semantic_facts::hook::HookNameSelection;
 use perl_semantic_facts::route::{HandlerContextKind, RouteFact, RouteParameterKind};
 use perl_semantic_facts::route::{
@@ -70,14 +68,15 @@ pub fn hover_projection_at(
         return None;
     }
     let version = exact_version(&activation.facts)?;
+    let dsl_contract_version = activation.facts.dsl_contract_version;
 
     if let Some(hook) = facts.hook_at(offset) {
         return Some(hook_hover(hook, &version));
     }
     if let Some(route) = facts.route_at(offset) {
-        return Some(route_hover(route, facts, &version));
+        return Some(route_hover(route, facts, &version, dsl_contract_version));
     }
-    keyword_hover(&activation.facts, facts, ast, offset, &version, package)
+    keyword_hover(&activation.facts, facts, ast, offset, &version, dsl_contract_version, package)
 }
 
 /// Keyword hover under the 2.x contract, for COMPARISON consumers only
@@ -208,6 +207,7 @@ fn route_hover(
     fact: &RouteFact,
     facts: &CanonicalDancer2FileFacts,
     version: &str,
+    dsl_contract_version: &str,
 ) -> RouteHoverProjection {
     let route = &fact.route;
     let mut lines = Vec::new();
@@ -289,7 +289,7 @@ fn route_hover(
     lines.push(format!(
         "- provenance: canonical framework fact, DSL contract `{}`; generated/framework \
          projection anchored to source — no fictional body",
-        DANCER2_DSL_CONTRACT_VERSION
+        dsl_contract_version
     ));
     let exact = fact.status() == perl_semantic_facts::SemanticFactStatus::Exact;
     if !exact {
@@ -334,6 +334,7 @@ fn keyword_hover(
     ast: &perl_parser_core::Node,
     offset: usize,
     version: &str,
+    dsl_contract_version: &str,
     package: &str,
 ) -> Option<RouteHoverProjection> {
     // Hover on a DSL keyword usage (identifier or call) whose name the
@@ -354,17 +355,22 @@ fn keyword_hover(
         // Perl hover path covers it.
         return None;
     }
-    let content = format!(
-        "**Dancer2 DSL keyword `{keyword_name}`** (`Dancer2` {version})\n- availability: \
-         {}\n- keyword contract: `{DANCER2_DSL_CONTRACT_VERSION}`\n- provenance: \
-         canonical import fact of this activation (package `{package}`)",
-        match facts.keywords.iter().find(|keyword| keyword.keyword == keyword_name)?.scope {
+    let keyword = facts.keywords.iter().find(|keyword| keyword.keyword == keyword_name)?;
+    let availability = if keyword.deprecated {
+        "deprecated; invoking this keyword fails in the reviewed Dancer2 contract".to_string()
+    } else {
+        match keyword.scope {
             DslKeywordScope::Global => {
                 "global (available in any package scope that activated the DSL)".to_string()
             }
             DslKeywordScope::RouteHandlerOnly => request_context_availability(file_facts, offset),
             _ => "unknown scope".to_string(),
-        },
+        }
+    };
+    let content = format!(
+        "**Dancer2 DSL keyword `{keyword_name}`** (`Dancer2` {version})\n- availability: \
+         {availability}\n- keyword contract: `{dsl_contract_version}`\n- provenance: \
+         canonical import fact of this activation (package `{package}`)",
     );
     Some(RouteHoverProjection::Keyword { content })
 }
@@ -449,9 +455,13 @@ mod tests {
     }
 
     fn setup(source: &'static str) -> Setup {
+        setup_with_version(source, "1.1.1")
+    }
+
+    fn setup_with_version(source: &'static str, framework_version: &str) -> Setup {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
-        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", framework_version);
         let activations = file_activations(
             &ast,
             source,
@@ -833,6 +843,9 @@ get '/x' => sub { 1 };
         // Handler context mints in the same pass for the registering inline
         // handler: route-handler-only scope is now established for 2.x.
         assert_eq!(bundle.handler_contexts.len(), 1);
+        let context = must_some_with(bundle.handler_contexts.first(), "2.x handler context");
+        assert_eq!(context.dsl_contract_version,
+            perl_semantic_facts::framework_adapters::dancer2_two_x::DANCER2_TWO_X_DSL_CONTRACT_VERSION);
     }
 
     /// A 2.x-excluded keyword's route never mints, and the 1.x bundle stays
@@ -912,5 +925,54 @@ get '/x' => sub { 1 };
             perl_semantic_facts::framework_adapters::dancer2_routes::RouteFactsContract::OneX
         );
         assert!(!family.routes.is_empty(), "the producer still mints 1.x routes");
+    }
+    #[test]
+    fn deprecated_keyword_hover_states_that_invocation_fails() -> Result<(), String> {
+        let source =
+            "use Dancer2;\nget '/x' => sub { context; header; headers; push_header; request; };";
+        for version in ["1.0.0", "1.1.1"] {
+            let setup = setup_with_version(source, version);
+            for keyword in ["context", "header", "headers", "push_header", "request"] {
+                let offset = source.find(keyword).ok_or("missing keyword offset")?;
+                let projection = hover_projection_at(
+                    &setup.activations,
+                    &setup.facts,
+                    &setup.ast,
+                    "main",
+                    offset,
+                )
+                .ok_or("missing keyword hover")?;
+                let RouteHoverProjection::Keyword { content } = projection else {
+                    return Err(format!("{version}: wrong hover kind for {keyword}"));
+                };
+                let expected_deprecated = keyword != "request";
+                if content.contains("deprecated") != expected_deprecated
+                    || content.contains("invoking this keyword fails") != expected_deprecated
+                {
+                    return Err(format!("{version}: dishonest {keyword} hover: {content}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn versioned_keyword_hover_uses_the_activation_contract() {
+        let source = "use Dancer2;\nget '/x' => sub { params; };";
+        let setup = setup_with_version(source, "1.0.0");
+        let offset = must_some_with(source.find("params"), "keyword offset");
+        let projection = must_some_with(
+            hover_projection_at(&setup.activations, &setup.facts, &setup.ast, "main", offset),
+            "keyword hover",
+        );
+        let content = must_some_with(
+            match projection {
+                RouteHoverProjection::Keyword { content } => Some(content),
+                RouteHoverProjection::Route { .. } | RouteHoverProjection::Hook { .. } => None,
+            },
+            "expected keyword hover",
+        );
+        assert!(content.contains("dancer2-dsl.1-0.v3"), "{content}");
+        assert!(!content.contains("dancer2-dsl.1-1.v3"), "{content}");
     }
 }
