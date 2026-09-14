@@ -441,6 +441,18 @@ impl ParseFailure {
     fn from_diagnostic(diagnostic: &ParseDiagnostic) -> Option<Self> {
         match diagnostic {
             ParseDiagnostic::RecursionLimit => Some(Self::RecursionLimit),
+            // The expression-recursion guard emits `RecursionDepthExhausted`;
+            // the unit `RecursionLimit` is the older spelling of the same
+            // budget. Both are recursion exhaustion, so both classify as
+            // `RecursionLimit` here — mirroring `perl-parser-core`'s own
+            // unification of the pair into `RecursionBudgetExhausted`.
+            //
+            // It deliberately does NOT map to `NestingTooDeep`: that variant
+            // belongs to the structural guards (block nesting, postfix
+            // chains), and `ParseError::RecursionDepthExhausted`'s own docs
+            // forbid "relabeling expression-recursion exhaustion as
+            // structural nesting" (#12952, taxonomy settled by #14342).
+            ParseDiagnostic::RecursionDepthExhausted { .. } => Some(Self::RecursionLimit),
             ParseDiagnostic::NestingTooDeep { depth, max_depth } => {
                 Some(Self::NestingTooDeep { depth: *depth, max_depth: *max_depth })
             }
