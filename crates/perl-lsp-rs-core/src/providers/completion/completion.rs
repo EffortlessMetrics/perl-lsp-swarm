@@ -255,6 +255,39 @@ fn next_char_boundary_after(source: &str, index: usize) -> usize {
     source[index..].chars().next().map_or(source.len(), |ch| index + ch.len_utf8())
 }
 
+/// Render one constructor parameter key as the Perl source to insert.
+///
+/// `=>` auto-quotes only a plain identifier. Every other key an
+/// `Object::Pad`/native `:param(...)` may legally carry has to be quoted, or
+/// Perl reads the inserted text as an expression or a variable rather than as
+/// the key. Verified on perl 5.38.2:
+///
+/// | inserted | result |
+/// |---|---|
+/// | `plain => 1` | the key `plain` |
+/// | `foo-bar => 1` | dies: `Bareword "foo" not allowed while "strict subs"` |
+/// | `Foo::bar => 1` | dies under `use strict` |
+/// | `$dyn => 1` | inserts the *value* of `$dyn`, not the key |
+///
+/// The label and filter text keep the decoded key so the item still reads and
+/// matches as the user wrote it; only the inserted source is quoted.
+fn constructor_key_insertion(key: &str) -> String {
+    if is_bareword_constructor_key(key) {
+        return format!("{key} => ");
+    }
+    // Single-quoted Perl strings treat only `\` and `'` as special.
+    let escaped = key.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}' => ")
+}
+
+/// Return true when `=>` will auto-quote this key without altering it.
+fn is_bareword_constructor_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else { return false };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 fn word_prefix(source: &str, position: usize) -> (String, usize) {
     let word_start = source[..position]
         .rfind(|c: char| {
@@ -1577,7 +1610,8 @@ impl CompletionProvider {
             ),
         };
 
-        for field_name in model.object_pad_param_field_names() {
+        // `:param(external_name)` accepts `external_name`, not the field name.
+        for field_name in model.object_pad_constructor_param_names() {
             if !prefix.is_empty() && !field_name.starts_with(prefix) {
                 continue;
             }
@@ -1587,7 +1621,7 @@ impl CompletionProvider {
                 kind: CompletionItemKind::Property,
                 detail: Some(Cow::Owned(detail.clone())),
                 documentation: Some(Cow::Owned(documentation.clone())),
-                insert_text: Some(Cow::Owned(format!("{field_name} => "))),
+                insert_text: Some(Cow::Owned(constructor_key_insertion(field_name))),
                 sort_text: Some(Cow::Owned(format!("0f_{field_name}"))),
                 filter_text: Some(Cow::Owned(field_name.to_string())),
                 additional_edits: vec![],

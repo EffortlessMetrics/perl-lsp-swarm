@@ -3160,6 +3160,23 @@ enum PolicyCommand {
         #[arg(long, default_value = "target/receipts/policy-cadence.md")]
         markdown: PathBuf,
     },
+
+    /// Check that registered time-bound records did not move a governing date
+    /// later without a supported disposition and refreshed subject-bound
+    /// evidence. Read-only; mutates no ledger.
+    Transition {
+        /// Accepted base revision the candidate is compared against.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-transition.json")]
+        json: PathBuf,
+
+        /// Optional deterministic Markdown summary path.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
 }
 
 /// CLI-facing output format for non-Rust migration candidate reports.
@@ -7150,6 +7167,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tasks::policy_cadence::run(
                     &root,
                     tasks::policy_cadence::CadenceArgs { as_of, json, markdown },
+                )
+            }
+            PolicyCommand::Transition { base, json, markdown } => {
+                let root = utils::project_root()?;
+                tasks::policy_cadence::transition::run(
+                    &root,
+                    tasks::policy_cadence::transition::TransitionArgs { base, json, markdown },
                 )
             }
         },
