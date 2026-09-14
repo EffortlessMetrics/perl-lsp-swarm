@@ -97,6 +97,20 @@ jobs:
           shared-key: dap-editor-transport-${{ hashFiles('Cargo.lock') }}
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
+      - name: Clear cache-restored transport receipts
+        id: clear-receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for receipt in \
+            target/receipts/dap-editor-transport.json \
+            target/receipts/dap-editor-transport-security-static.json \
+            target/receipts/dap-editor-transport-security.json; do
+            if [ -e "$receipt" ]; then
+              rm -- "$receipt"
+            fi
+          done
+
       - name: Enforce current inventory and ruling
         run: |
           python3 scripts/ci/dap_editor_transport_inventory.py check \
@@ -143,7 +157,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload inventory receipt
-        if: always()
+        if: always() && steps.clear-receipts.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: dap-editor-transport-${{ env.DAP_TRANSPORT_CANDIDATE_SHA }}
