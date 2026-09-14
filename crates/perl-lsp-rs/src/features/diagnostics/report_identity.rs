@@ -121,6 +121,17 @@ pub enum NotReusable {
     /// The document path names no file — it is a filesystem root — so there is no
     /// logical source to identify.
     SourcePathHasNoFileName,
+    /// The document path is not a plain absolute descent, so it cannot be
+    /// positioned under a root. Either the form relative to the established
+    /// owning root still contains a non-ordinary component such as `..`, or the
+    /// path is not absolute and so names no directory that could be its root
+    /// without consulting the process working directory.
+    ///
+    /// Deliberately a refusal rather than a fall-through to the standalone case:
+    /// re-keying a document whose owning root *is* known, under a key still
+    /// carrying the components that made it unusable, would be less honest than
+    /// declining.
+    SourcePathNotPlainDescent,
     /// A path segment is not valid UTF-8, so it has no identity-bearing
     /// spelling. Refused rather than passed through `to_string_lossy`, which
     /// maps distinct files onto one spelling.
@@ -143,6 +154,9 @@ impl std::fmt::Display for NotReusable {
                 f.write_str("document URI does not decode to a filesystem path")
             }
             Self::SourcePathHasNoFileName => f.write_str("document path names no file"),
+            Self::SourcePathNotPlainDescent => {
+                f.write_str("document path is not a plain absolute descent under a root")
+            }
             Self::SourcePathNotRepresentable => {
                 f.write_str("document path contains a segment that is not valid UTF-8")
             }
@@ -425,20 +439,29 @@ fn root_and_logical_path(
         perl_uri::source_path_from_uri_or_path(uri).ok_or(NotReusable::SourcePathUnavailable)?;
 
     // Owned: the resolved root contains the document.
+    //
+    // Once `strip_prefix` succeeds the owning root is established, so a spelling
+    // failure from here is a refusal rather than a fall-through to standalone.
+    // Falling through would silently re-key a document whose owner the server
+    // knows, under a root key still carrying the very `.`/`..` components that
+    // made the spelling fail.
     if let Some(root_path) = context.identity_root_path.as_deref()
         && let Ok(relative) = document_path.strip_prefix(root_path)
-        && let Some(spelling) = forward_slash_spelling(relative)
     {
+        let spelling = forward_slash_spelling(relative)?;
         let logical_path = RootRelativeLogicalPath::parse(&spelling)
             .map_err(NotReusable::SourcePathNotCanonical)?;
         return Ok((WorkspaceRootId::from_project_and_root_key(&project, root_key), logical_path));
     }
 
-    // Standalone: the document's own directory is its root. Requiring an
-    // absolute path keeps relative, traversal-only and empty material out —
-    // such input names no directory that could serve as a root authority.
+    // Standalone: the document's own directory is its root, which requires an
+    // absolute path to name. A relative path reaching here would otherwise key
+    // the identity on a directory that depends on the process's working
+    // directory. `perl_uri` already rejects most such input with
+    // `SourcePathUnavailable`; this stays as the explicit invariant rather than
+    // an assumption about a lower crate's current behavior.
     if !document_path.is_absolute() {
-        return Err(NotReusable::SourcePathNotCanonical(LogicalPathError::LeadingSeparator));
+        return Err(NotReusable::SourcePathNotPlainDescent);
     }
     let parent = document_path.parent().ok_or(NotReusable::SourcePathHasNoFileName)?;
     let file_name = document_path
@@ -452,26 +475,31 @@ fn root_and_logical_path(
     Ok((WorkspaceRootId::from_project_and_root_key(&project, &standalone_root_key), logical_path))
 }
 
-/// Spell `relative` with forward slashes, or `None` if it is not a plain descent.
+/// Spell `relative` with forward slashes.
 ///
 /// Built from typed [`Component`] values rather than by rewriting separators in a
 /// string: anything that is not an ordinary segment (`..`, `.`, a root, a Windows
 /// prefix) makes the path unusable here instead of being folded into something
 /// that merely looks canonical. A non-UTF-8 segment is also rejected, because
 /// `to_string_lossy` maps distinct files onto one spelling.
-fn forward_slash_spelling(relative: &Path) -> Option<String> {
+///
+/// # Errors
+///
+/// Returns a typed refusal naming which of those two conditions applied, so the
+/// caller does not have to re-derive it from an `Option`.
+fn forward_slash_spelling(relative: &Path) -> Result<String, NotReusable> {
     let mut spelling = String::new();
     for component in relative.components() {
         let Component::Normal(segment) = component else {
-            return None;
+            return Err(NotReusable::SourcePathNotPlainDescent);
         };
-        let segment = segment.to_str()?;
+        let segment = segment.to_str().ok_or(NotReusable::SourcePathNotRepresentable)?;
         if !spelling.is_empty() {
             spelling.push('/');
         }
         spelling.push_str(segment);
     }
-    Some(spelling)
+    Ok(spelling)
 }
 
 fn push_set(output: &mut String, name: &str, values: &BTreeSet<String>) {
@@ -856,6 +884,47 @@ mod tests {
                 "{uri:?} must not produce a reusable subject, got {outcome:?}"
             );
         }
+    }
+
+    /// A document whose owning root *is* established, but whose root-relative form
+    /// is not a plain descent, is refused rather than silently re-keyed as
+    /// standalone under a root key carrying the offending `..`.
+    ///
+    /// Only reachable through the bare-path input route, since `url::Url` resolves
+    /// dot segments before this code sees them — which is exactly why it needs a
+    /// test rather than an assumption about the lower crate.
+    #[test]
+    fn dot_segments_under_an_established_root_are_refused_not_re_keyed() {
+        let context = context_with(Some("/root"));
+        assert_eq!(
+            pull_report_subject("/root/dir/../file.pm", CONTENT, Some(1), &context),
+            Err(NotReusable::SourcePathNotPlainDescent),
+            "a document the server knows the root of must not fall back to standalone"
+        );
+    }
+
+    /// A filesystem root names no file, so there is no logical source.
+    #[test]
+    fn a_document_path_naming_no_file_is_refused() {
+        let context = context_with(Some(ROOT_A));
+        assert_eq!(
+            pull_report_subject("file:///", CONTENT, Some(1), &context),
+            Err(NotReusable::SourcePathHasNoFileName)
+        );
+    }
+
+    /// A path segment that is not valid UTF-8 has no identity-bearing spelling.
+    /// `to_string_lossy` would map every such distinct file onto one U+FFFD
+    /// spelling, so it is refused instead.
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_path_segments_are_refused_not_lossily_spelled() {
+        let context = context_with(Some(ROOT_A));
+        // %FF decodes to a byte that is not valid UTF-8 on its own.
+        assert_eq!(
+            pull_report_subject("file:///tmp/ws-a/lib/%FF.pm", CONTENT, Some(1), &context),
+            Err(NotReusable::SourcePathNotRepresentable)
+        );
     }
 
     /// Negative control for the test above: an absolute path that genuinely names

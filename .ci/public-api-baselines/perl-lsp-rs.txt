@@ -169,6 +169,7 @@ pub perl_lsp::features::diagnostics::report_identity::NotReusable::MissingRootAu
 pub perl_lsp::features::diagnostics::report_identity::NotReusable::PolicyIncomplete(perl_lsp_rs_core::tooling::perl_critic::result_identity::CriticPolicyIdentityError)
 pub perl_lsp::features::diagnostics::report_identity::NotReusable::SourcePathHasNoFileName
 pub perl_lsp::features::diagnostics::report_identity::NotReusable::SourcePathNotCanonical(perl_source_identity::logical_path::LogicalPathError)
+pub perl_lsp::features::diagnostics::report_identity::NotReusable::SourcePathNotPlainDescent
 pub perl_lsp::features::diagnostics::report_identity::NotReusable::SourcePathNotRepresentable
 pub perl_lsp::features::diagnostics::report_identity::NotReusable::SourcePathUnavailable
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::clone(&self) -> perl_lsp::features::diagnostics::report_identity::NotReusable
@@ -205,6 +206,7 @@ pub perl_lsp::features::diagnostics::NotReusable::MissingRootAuthority
 pub perl_lsp::features::diagnostics::NotReusable::PolicyIncomplete(perl_lsp_rs_core::tooling::perl_critic::result_identity::CriticPolicyIdentityError)
 pub perl_lsp::features::diagnostics::NotReusable::SourcePathHasNoFileName
 pub perl_lsp::features::diagnostics::NotReusable::SourcePathNotCanonical(perl_source_identity::logical_path::LogicalPathError)
+pub perl_lsp::features::diagnostics::NotReusable::SourcePathNotPlainDescent
 pub perl_lsp::features::diagnostics::NotReusable::SourcePathNotRepresentable
 pub perl_lsp::features::diagnostics::NotReusable::SourcePathUnavailable
 pub fn perl_lsp::features::diagnostics::report_identity::NotReusable::clone(&self) -> perl_lsp::features::diagnostics::report_identity::NotReusable

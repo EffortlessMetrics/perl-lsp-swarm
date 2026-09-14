@@ -139,7 +139,15 @@ impl std::error::Error for LogicalPathError {}
 /// A validated path is well-formed, not *true*. It is not known to exist, to be
 /// contained by its root, or to be free of symlink escapes; percent-encoded
 /// material (`My%20File.pm`) is well-formed and passes, so decoding remains the
-/// caller's job. Those are physical-location questions owned above this crate.
+/// caller's job.
+///
+/// [`LogicalPathError::ControlCharacter`] rejects the `Cc` category (C0, C1 and
+/// DEL) and nothing more. Unicode *format* characters — a zero-width space, a
+/// bidi override — are not control characters and are accepted, so a path can
+/// still be spelled to look like a different path in a log or an editor. That is
+/// a presentation concern for whatever renders the path, not an identity one:
+/// such spellings are distinct sources here and are treated as such. Refusing
+/// them would be a folding policy, which this type deliberately does not own. Those are physical-location questions owned above this crate.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RootRelativeLogicalPath(String);
 
