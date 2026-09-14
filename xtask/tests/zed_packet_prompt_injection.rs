@@ -48,9 +48,20 @@ fn copy_tree(source: &Path, target: &Path) -> std::io::Result<()> {
         let entry = entry?;
         let path = entry.path();
         let destination = target.join(entry.file_name());
+        // Skip machine-local cargo output: anyone building the zed-perl
+        // fixture regenerates `target/` and `Cargo.lock`, and the positive
+        // control must stay hermetic to that. These are never committed
+        // packet content (both git-ignored), so excluding them from the
+        // harness copy weakens no committed-tree guarantee.
         if path.is_dir() {
+            if entry.file_name() == "target" {
+                continue;
+            }
             copy_tree(&path, &destination)?;
         } else {
+            if entry.file_name() == "Cargo.lock" {
+                continue;
+            }
             copy_file(&path, &destination)?;
         }
     }
