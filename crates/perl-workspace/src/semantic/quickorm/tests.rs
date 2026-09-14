@@ -56,35 +56,67 @@ fn canonical_names(facts: &[GeneratedMemberFact]) -> Vec<&str> {
 // contract guard keeps disagreement between normalized and exact-source extractors fail-closed.
 
 #[test]
-fn value_cross_extractor_disagreement_is_dynamic() {
-    let args = vec!["type".to_string(), "'orm'".to_string()];
+fn classify_import_shape_value_cross_extractor_disagreement_is_dynamic()
+-> Result<(), Box<dyn std::error::Error>> {
     let source = "use DBIx::QuickORM type => 'table';";
 
     assert_eq!(exact_source_import_pair(source), Some(("type", "table")));
-    assert_eq!(static_import_key(&args[0]), Some("type".to_string()));
-    assert_eq!(quoted_import_value(&args[1]), Some("orm".to_string()));
-    // The normalized value disagrees with the exact-source value while the key agrees.
-    assert_eq!(classify_import_shape(&args, Some(source)), QuickOrmImportShape::Dynamic);
+    assert_eq!(static_import_key("type"), Some("type".to_string()));
+    assert_eq!(quoted_import_value("'orm'"), Some("orm".to_string()));
+    // The normalized value disagrees while the normalized and source keys agree.
     assert_eq!(
-        classify_import_shape(&["type".into(), "'table'".into()], Some(source)),
+        classify_import_shape(
+            &["type".to_string(), "'orm'".to_string()],
+            Some("use DBIx::QuickORM type => 'table';"),
+        ),
+        QuickOrmImportShape::Dynamic
+    );
+    assert_eq!(
+        classify_import_shape(
+            &["type".to_string(), "'table'".to_string()],
+            Some("use DBIx::QuickORM type => 'table';"),
+        ),
         QuickOrmImportShape::UnfilteredTable
     );
+    assert_eq!(
+        canonical_names(&generated_facts_from_source(
+            "package User; use DBIx::QuickORM type => 'table'; table users => sub {};",
+        )?),
+        vec!["User::qorm_table"]
+    );
+    Ok(())
 }
 
 #[test]
-fn key_cross_extractor_disagreement_is_dynamic() {
-    let args = vec!["'kind'".to_string(), "'orm'".to_string()];
+fn classify_import_shape_key_cross_extractor_disagreement_is_dynamic()
+-> Result<(), Box<dyn std::error::Error>> {
     let source = "use DBIx::QuickORM type => 'orm';";
 
     assert_eq!(exact_source_import_pair(source), Some(("type", "orm")));
-    assert_eq!(static_import_key(&args[0]), Some("kind".to_string()));
-    assert_eq!(quoted_import_value(&args[1]), Some("orm".to_string()));
-    // The normalized key disagrees with the exact-source key while the value agrees.
-    assert_eq!(classify_import_shape(&args, Some(source)), QuickOrmImportShape::Dynamic);
+    assert_eq!(static_import_key("'kind'"), Some("kind".to_string()));
+    assert_eq!(quoted_import_value("'orm'"), Some("orm".to_string()));
+    // The normalized key disagrees while the normalized and source values agree.
     assert_eq!(
-        classify_import_shape(&["type".into(), "'orm'".into()], Some(source)),
+        classify_import_shape(
+            &["'kind'".to_string(), "'orm'".to_string()],
+            Some("use DBIx::QuickORM type => 'orm';"),
+        ),
+        QuickOrmImportShape::Dynamic
+    );
+    assert_eq!(
+        classify_import_shape(
+            &["type".to_string(), "'orm'".to_string()],
+            Some("use DBIx::QuickORM type => 'orm';"),
+        ),
         QuickOrmImportShape::UnfilteredOrm
     );
+    assert_eq!(
+        canonical_names(&generated_facts_from_source(
+            "package User; use DBIx::QuickORM type => 'table'; table users => sub {};",
+        )?),
+        vec!["User::qorm_table"]
+    );
+    Ok(())
 }
 
 #[test]
@@ -136,6 +168,36 @@ table users => sub {};
     assert_eq!(quickorm_with_source.symbols, ImportSymbols::Default);
     assert_eq!(quickorm_with_source.provenance, Provenance::ImportExportInference);
     assert_eq!(quickorm_with_source.confidence, Confidence::Medium);
+    Ok(())
+}
+
+#[test]
+fn source_key_other_than_type_does_not_publish_qorm_table() -> Result<(), Box<dyn std::error::Error>>
+{
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM kind => 'table'; table users => sub {};",
+    )?;
+    assert!(facts.is_empty());
+
+    let admitted = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {};",
+    )?;
+    assert_eq!(canonical_names(&admitted), vec!["User::qorm_table"]);
+    Ok(())
+}
+
+#[test]
+fn source_value_outside_admitted_set_does_not_publish_qorm_table()
+-> Result<(), Box<dyn std::error::Error>> {
+    let facts = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'view'; table users => sub {};",
+    )?;
+    assert!(facts.is_empty());
+
+    let admitted = generated_facts_from_source(
+        "package User; use DBIx::QuickORM type => 'table'; table users => sub {};",
+    )?;
+    assert_eq!(canonical_names(&admitted), vec!["User::qorm_table"]);
     Ok(())
 }
 
