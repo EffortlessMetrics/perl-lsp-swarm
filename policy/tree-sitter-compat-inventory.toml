@@ -377,14 +377,6 @@ removal_condition = "Reconciled by #9171 when public wording is cut over to the 
 note = "The public claim surface. Names parse_to_tree, to_ts_node, highlights, and to_sexp as the current Tier-A surface, which is the evidence separating the required rows above from incidental API."
 
 [[consumers]]
-path = "docs/policy/NON_RUST_INVENTORY.md"
-reference_kind = "documentation"
-disposition = "migration_only_entry_point"
-canonical_owner = "#8890"
-removal_condition = "No edit: the file is a frozen pointer; `cargo xtask non-rust inventory --check` re-derives the inventory from the tracked tree once the crate's files are deleted."
-note = "Frozen pointer to the generated non-Rust inventory evidence (the crate's files appear only in the CI artifact)."
-
-[[consumers]]
 path = "docs/project/status/quality.md"
 reference_kind = "documentation"
 disposition = "migration_only_entry_point"

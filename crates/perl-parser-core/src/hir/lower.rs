@@ -5,11 +5,14 @@ use perl_pragma::{CompileTimePragmaEnvironment, PragmaSnapshot};
 use perl_semantic_facts::AnchorId;
 use std::collections::BTreeMap;
 
+use crate::syntax::regex_analysis::RegexAnalysisFamily;
+
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
-    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirSubscript, HirVariable, Sigil, SubscriptKind, UnaryMode, VariableKind,
-    diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirRegex,
+    HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution,
+    HirTransliteration, HirVariable, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
+    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -465,6 +468,27 @@ impl Lowerer {
                     self.visit(arg, confidence);
                 }
             }
+            NodeKind::Identifier { name } if is_synthesized_operand(node, name) => {
+                // A parser-synthesized operand, not source text. Unbound `s///`,
+                // `tr///` and `y///` materialize their implicit `$_` topic as a
+                // zero-width `Identifier { name: "$_" }` (#14641).
+                //
+                // Adopting it would assert a maximum-strength claim — `ExactAst`
+                // provenance at `High` confidence — about a name unrepresentable
+                // in Perl source, over a range covering no text. Emit neither the
+                // `BarewordExpr` item nor the `BarewordFact`, so no downstream
+                // consumer can mistake the fabrication for a bareword. Modeling
+                // the implicit topic as a first-class operand is #6666's claim,
+                // not this arm's.
+                //
+                // The empty range is the proven discriminator. The sigil alone
+                // is not enough: `new $class` is a *written* dynamic indirect
+                // constructor whose receiver the parser records as a real,
+                // nonzero-width `Identifier { name: "$class" }`. Dropping that
+                // would discard a source-backed fact. Whether such a receiver
+                // should be a bareword at all is a separate defect (#15031); this
+                // arm deliberately leaves that behavior exactly as it was.
+            }
             NodeKind::Identifier { name } => {
                 let item_id = self.push_item(
                     node,
@@ -712,6 +736,69 @@ impl Lowerer {
                     );
                 }
                 self.visit_children(node, confidence);
+            }
+            // `tie`/`untie` change what a place *is*. After a tie, ordinary-looking
+            // reads and writes of the target dispatch to hidden TIE* methods, so
+            // flat HIR must not present the place as ordinary storage.
+            //
+            // Children are traversed *before* the boundary is pushed, unlike the
+            // pre-order shape used elsewhere in this lowerer. That is deliberate:
+            // Perl evaluates the target, the class expression, and the constructor
+            // arguments first, and only then dispatches the hidden TIE* method.
+            // `pir::lower` turns consecutive items into `Fallthrough` edges, so
+            // pushing the boundary first would make it fall through into its own
+            // arguments and assert an evaluation order Perl does not have. The
+            // boundary belongs at the hidden dispatch point, after the operands.
+            //
+            // The reasons are deliberately constant and do not name the tie class.
+            // Modeling the tied place identity, the hidden constructor dispatch,
+            // and the tied access classes belongs to #6683; a class name embedded
+            // in prose here would imply a machine-readable fact this slice has not
+            // established.
+            NodeKind::Tie { .. } => {
+                // Capture the tie *site's* context before traversing. An operand
+                // can contain a no-block `package Foo;` (legal inside a `do`
+                // block), which mutates `package_context` and leaves an unpopped
+                // package scope behind. Reading the context after traversal would
+                // then attribute the boundary to the operand's package and scope
+                // rather than the one the tie statement actually sits in.
+                let site_package = self.package_context.clone();
+                let site_scope = self.current_scope();
+                self.visit_children(node, confidence);
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::TiedPlaceBinding,
+                        reason: "tie binds the place to a tie class; subsequent access \
+                                 dispatches to hidden TIE* methods"
+                            .to_string(),
+                    }),
+                    site_package,
+                    Some(site_scope),
+                );
+            }
+            NodeKind::Untie { .. } => {
+                // Same site-context capture as `Tie` above: the target expression
+                // may carry a package declaration that must not be attributed to
+                // the untie boundary.
+                let site_package = self.package_context.clone();
+                let site_scope = self.current_scope();
+                self.visit_children(node, confidence);
+                self.push_item(
+                    node,
+                    None,
+                    confidence,
+                    HirKind::DynamicBoundary(DynamicBoundary {
+                        kind: DynamicBoundaryKind::TiedPlaceRelease,
+                        reason: "untie releases a tied place; hidden UNTIE/DESTROY effects \
+                                 and the resulting storage semantics are not modeled"
+                            .to_string(),
+                    }),
+                    site_package,
+                    Some(site_scope),
+                );
             }
             NodeKind::Regex { pattern, replacement, modifiers, has_embedded_code } => {
                 self.push_item(
@@ -2542,12 +2629,52 @@ fn is_export_symbol_name(value: &str) -> bool {
     let Some(first) = value.chars().next() else {
         return false;
     };
-    let body = if matches!(first, '$' | '@' | '%' | '&' | '*') {
-        &value[first.len_utf8()..]
-    } else {
-        value
-    };
+    let body = if PERL_SIGILS.contains(&first) { &value[first.len_utf8()..] } else { value };
     is_bareword_like(body)
+}
+
+/// Sigils that introduce a non-bareword Perl symbol form.
+///
+/// A bareword is by definition an unquoted name carrying no sigil, so each of
+/// these characters marks a name as something other than a bareword.
+const PERL_SIGILS: [char; 5] = ['$', '@', '%', '&', '*'];
+
+/// Whether `value` begins with a Perl sigil, and therefore cannot be a bareword.
+fn is_sigil_prefixed(value: &str) -> bool {
+    value.chars().next().is_some_and(|first| PERL_SIGILS.contains(&first))
+}
+
+/// Whether an `Identifier` node was fabricated by the parser rather than scanned
+/// from source, and so must not be recorded as a bareword (#14641).
+///
+/// Two conditions, of unequal strength:
+///
+/// - **the range is empty**, so the node covers no source text at all;
+/// - **the name carries a sigil**, so it could not be a bareword even if it had.
+///
+/// The empty range is the load-bearing half. The sigil alone is *not* sufficient
+/// and an earlier revision that relied on it was wrong: `new $class` is a legal
+/// dynamic indirect constructor whose receiver arrives here as a real
+/// `Identifier { name: "$class" }` spanning the characters the author typed.
+/// Discarding that would drop a source-backed fact. (Whether such a receiver
+/// should be classified as a *bareword* at all is a separate defect, #15031;
+/// this predicate deliberately leaves that behavior unchanged.)
+///
+/// The sigil test is defence in depth rather than a proven discriminator. A finite
+/// probe over malformed and recovery-path inputs found no zero-width
+/// `Identifier` with a non-sigil name; every zero-width identifier in that
+/// corpus was the `"$_"` topic. Keeping the sigil test
+/// means that if recovery ever does synthesize a zero-width placeholder named
+/// like an ordinary bareword, it is still recorded rather than silently dropped
+/// by this arm. `hir_synthesized_topic_not_a_bareword.rs` states that limit
+/// rather than implying the condition is falsifiable today.
+///
+/// Together they identify the synthesized shape: a name that cannot be a
+/// bareword, over a span containing nothing. The implicit `$_` topic of an
+/// unbound `s///`, `tr///` or `y///` is the only such node the parser builds
+/// today, at three sites (`expressions/quotes.rs`, `expressions/primary.rs`).
+fn is_synthesized_operand(node: &Node, name: &str) -> bool {
+    node.location.start == node.location.end && is_sigil_prefixed(name)
 }
 
 fn is_bareword_like(value: &str) -> bool {
@@ -3121,6 +3248,23 @@ fn classify_regex_target(expr: &Node) -> (RegexTargetKind, &'static str) {
     }
 }
 
+/// Whether a bound regex-family operand is a parser-synthesized default topic.
+///
+/// An unbound `s///` / `tr///` applies to `$_`. The parser materializes that
+/// operand as a zero-width `Identifier` node literally named `"$_"` — a
+/// fabricated identifier standing in for the implicit topic. Recognizing it
+/// here keeps that fabrication out of canonical body HIR, so an implicit topic
+/// stays distinguishable from an explicitly written `$_ =~ s///` (which parses
+/// as a real `Variable` node with a non-empty source range).
+///
+/// Both conditions are load-bearing: a source-visible bareword can never be
+/// named `$_`, and the zero-width range independently marks the node as
+/// synthesized rather than written.
+fn is_synthesized_default_topic(expr: &Node) -> bool {
+    matches!(&expr.kind, NodeKind::Identifier { name } if name == "$_")
+        && expr.location.start == expr.location.end
+}
+
 fn variable_binding(node: &Node) -> Option<VariableBinding> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => {
@@ -3326,6 +3470,27 @@ impl<'a> BodyBuilder2<'a> {
         let idx = self.exprs.alloc(expr);
         self.source_map.expr_ranges.push(range);
         HirExprId(idx)
+    }
+
+    /// Lower the operand of a `=~` / `!~` bound regex-family operator (#7136).
+    ///
+    /// The target is lowered exactly once, before the operator node is
+    /// allocated, so source evaluation order is preserved for a call-produced
+    /// target such as `make_target() =~ /x/`.
+    ///
+    /// Place-vs-expression classification reuses the flat path's
+    /// [`classify_regex_target`] rather than introducing a second classifier.
+    ///
+    /// A parser-synthesized `$_` operand is recorded as
+    /// [`HirRegexTarget::DefaultTopic`] so that an implicit topic stays
+    /// distinguishable from an explicitly written `$_ =~ /x/`.
+    fn lower_regex_target(&mut self, expr: &Node) -> HirRegexTarget {
+        if is_synthesized_default_topic(expr) {
+            return HirRegexTarget::DefaultTopic;
+        }
+        let (kind, ast_kind) = classify_regex_target(expr);
+        let id = self.lower_expr(expr);
+        HirRegexTarget::Bound { expr: id, kind, ast_kind }
     }
 
     fn alloc_stmt(&mut self, stmt: HirStmt, range: SourceLocation) -> HirStmtId {
@@ -3915,67 +4080,82 @@ impl<'a> BodyBuilder2<'a> {
 
             NodeKind::Glob { pattern } => self.alloc_expr(glob_expr(pattern), range),
 
-            // Regex/Match/Substitution lowering (#5043): these are important
-            // for effect analysis because has_embedded_code means the pattern
-            // or replacement can execute arbitrary Perl code via (?{...}) or
-            // the /e modifier. Lower the matched expression as a structured
-            // child so variable reads are captured.
-            NodeKind::Regex { has_embedded_code: _, .. } => {
-                // A bare regex literal (qr//) has no target expression to lower.
-                // Model as Opaque but tag it so effect analysis can check for
-                // embedded code without string sniffing.
-                self.alloc_expr(HirExpr::Opaque { ast_kind: "Regex".to_string() }, range)
-            }
-
-            NodeKind::Match { expr, has_embedded_code, negated: _, .. } => {
-                // Lower the matched expression so variable reads are captured.
-                // The match itself is modeled as a Call so effect analysis can
-                // see it as a potential code-execution site when
-                // has_embedded_code is true.
-                let arg_ids = vec![self.lower_expr(expr)];
+            // Regex-family lowering (#7136, superseding the #5043 shells).
+            //
+            // Each family gets a first-class typed body form. The previous
+            // fallback modeled these as `Opaque`/`Call`, which erased negation,
+            // modifiers, `/r` mutation mode and (for `qr//`) embedded code, and
+            // encoded the embedded-code fact by mangling the `ast_kind` string.
+            //
+            // Pattern text is never copied or rescanned here: each construct
+            // carries a `RegexAnalysisAnchor` holding its enclosing source
+            // range, which a consumer resolves against the canonical retained
+            // analysis table from #7018 via `find_enclosed_by`. For a bound
+            // operator that range covers the target and binding operator too,
+            // so it is an enclosing anchor and not an exact record key — see
+            // `RegexAnalysisAnchor`.
+            NodeKind::Regex { modifiers, has_embedded_code, .. } => {
+                // Unbound regex construct. The AST does not distinguish `qr//`
+                // (regex value) from an unbound `m//` or bare `/.../` against
+                // the default topic, so this form claims neither.
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: if *has_embedded_code {
-                            "MatchWithEmbeddedCode".to_string()
-                        } else {
-                            "Match".to_string()
+                    HirExpr::Regex(HirRegex {
+                        modifiers: modifiers.clone(),
+                        embedded_code: *has_embedded_code,
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Regex,
                         },
-                        callee_span: None,
-                    },
+                    }),
                     range,
                 )
             }
 
-            NodeKind::Substitution { expr, has_embedded_code, .. } => {
-                // Lower the target expression. Substitution with /e modifier
-                // evaluates the replacement as Perl code — model as Call so
-                // effect analysis can see the code-execution site.
-                let arg_ids = vec![self.lower_expr(expr)];
+            NodeKind::Match { expr, modifiers, has_embedded_code, negated, .. } => {
+                let target = self.lower_regex_target(expr);
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: if *has_embedded_code {
-                            "SubstitutionWithEmbeddedCode".to_string()
-                        } else {
-                            "Substitution".to_string()
+                    HirExpr::Match(HirRegexMatch {
+                        target,
+                        negated: *negated,
+                        modifiers: modifiers.clone(),
+                        embedded_code: *has_embedded_code,
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Match,
                         },
-                        callee_span: None,
-                    },
+                    }),
                     range,
                 )
             }
 
-            NodeKind::Transliteration { expr, .. } => {
-                // tr/// has no code execution risk but the target expression
-                // should still be lowered for variable reads.
-                let arg_ids = vec![self.lower_expr(expr)];
+            NodeKind::Substitution { expr, modifiers, has_embedded_code, negated, .. } => {
+                let target = self.lower_regex_target(expr);
                 self.alloc_expr(
-                    HirExpr::Call {
-                        args: arg_ids,
-                        ast_kind: "Transliteration".to_string(),
-                        callee_span: None,
-                    },
+                    HirExpr::Substitution(HirSubstitution {
+                        target,
+                        negated: *negated,
+                        replacement: ReplacementEvaluation::from_modifiers(modifiers),
+                        modifiers: modifiers.clone(),
+                        embedded_code: *has_embedded_code,
+                        analysis: RegexAnalysisAnchor {
+                            full_range: range,
+                            family: RegexAnalysisFamily::Substitution,
+                        },
+                    }),
+                    range,
+                )
+            }
+
+            NodeKind::Transliteration { expr, modifiers, negated, .. } => {
+                // tr/// is a character-list operator, not a regex: it carries
+                // no analysis anchor and must never reach pattern analysis.
+                let target = self.lower_regex_target(expr);
+                self.alloc_expr(
+                    HirExpr::Transliteration(HirTransliteration {
+                        target,
+                        negated: *negated,
+                        modifiers: modifiers.clone(),
+                    }),
                     range,
                 )
             }

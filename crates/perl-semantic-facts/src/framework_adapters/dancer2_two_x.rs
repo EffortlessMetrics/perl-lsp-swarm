@@ -565,6 +565,7 @@ pub fn dancer2_two_x_route_family_facts(
         declarations,
         prefix_declarations,
         crate::framework_adapters::dancer2_routes::RouteFactsContract::TwoX,
+        activation.dsl_contract_version,
     )
 }
 

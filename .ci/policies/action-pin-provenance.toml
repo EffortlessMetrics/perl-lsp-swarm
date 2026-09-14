@@ -169,6 +169,25 @@ sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
 kind = 'legacy_debt'
 value = 'v7'
 
+# Verified against upstream on 2026-09-01:
+#   gh api repos/actions/attest/git/ref/tags/v4.1.1
+#   a1948c3f048ba23858d222213b7c278aabede763  refs/tags/v4.1.1
+#   (gh api repos/actions/attest/git/ref/tags/v4.1.0 → 59d89421af93a897026c735860bf21b6eb4f7b26)
+[[pin]]
+action = 'actions/attest'
+sha = 'a1948c3f048ba23858d222213b7c278aabede763'
+kind = 'release_tag'
+value = 'v4.1.1'
+
+# Verified against upstream on 2026-09-09:
+#   git ls-remote --tags https://github.com/actions/attest v4.2.2
+#   1e69f48acb82d1966a394da916b4c1698aa569d6  refs/tags/v4.2.2
+[[pin]]
+action = 'actions/attest'
+sha = '1e69f48acb82d1966a394da916b4c1698aa569d6'
+kind = 'release_tag'
+value = 'v4.2.2'
+
 [[pin]]
 action = 'actions/upload-artifact'
 sha = '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
@@ -383,6 +402,14 @@ action = 'taiki-e/install-action'
 sha = 'e67fa11c4b9316fa714ddf0abed07a0c3143b95b'
 kind = 'release_tag'
 value = 'v2.87.4'
+
+# Verified against upstream on 2026-09-07 via the GitHub refs API:
+#   refs/tags/v2.87.5 -> lightweight tag on commit 5bf6ce016fd2e72eefc647cbca1e4213f65955b8
+[[pin]]
+action = 'taiki-e/install-action'
+sha = '5bf6ce016fd2e72eefc647cbca1e4213f65955b8'
+kind = 'release_tag'
+value = 'v2.87.5'
 
 # Verified against upstream on 2026-08-29:
 # github/codeql-action v4.37.8 -> db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28
