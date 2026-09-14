@@ -1766,4 +1766,64 @@ mod value_format_family_tests {
         assert_eq!(decimal["name"], "$expr");
         Ok(())
     }
+    #[test]
+    fn delayed_locals_query_does_not_hold_session_lock() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+        use std::process::{Command, Stdio};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let adapter = Arc::new(DebugAdapter::new());
+        adapter.seed_stopped_session_with_frames_for_test(vec![crate::types::StackFrame::new(
+            7,
+            "main::test",
+            crate::types::Source::new("fixture.pl"),
+            1,
+        )]);
+        let child = Command::new("perl")
+            .arg("-e")
+            .arg("while (<STDIN>) {}")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let old_child = {
+            let mut session = lock_or_recover(&adapter.session, "test.session");
+            std::mem::replace(&mut session.as_mut().ok_or("missing test session")?.process, child)
+        };
+        let mut old_child = old_child;
+        let _ = old_child.kill();
+        let _ = old_child.wait();
+        let wire = VariableReference::Scope { frame_id: 7, kind: ScopeKind::Locals }
+            .encode()
+            .ok_or("locals reference did not encode")?;
+        let request_adapter = Arc::clone(&adapter);
+        let request = std::thread::spawn(move || {
+            request_adapter.handle_variables(1, 1, Some(json!({ "variablesReference": wire })))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() == 0 {
+            return Err("locals query was not submitted".into());
+        }
+        let lock_available = (0..100).any(|_| {
+            if let Ok(guard) = adapter.session.try_lock() {
+                drop(guard);
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+                false
+            }
+        });
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+        adapter.push_recent_output_line_for_test("$local = 42");
+        adapter.push_recent_output_line_for_test("DAP_END_1");
+        let _response = request.join().map_err(|_| "locals thread panicked")?;
+        if !lock_available {
+            return Err("session lock remained held while locals response was pending".into());
+        }
+        Ok(())
+    }
 }
