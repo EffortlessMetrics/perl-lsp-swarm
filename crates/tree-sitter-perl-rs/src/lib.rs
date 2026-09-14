@@ -52,7 +52,7 @@
 use perl_ast::{Node as AstNode, NodeKind};
 use perl_module::parse_module_import_head;
 use perl_parser_core::{
-    ParseOutput, Parser as CoreParser,
+    ParseOutput, ParseStopCause, Parser as CoreParser,
     incremental::{FallbackReason as CoreFallbackReason, IncrementalEdit, IncrementalState},
 };
 use perl_pragma::{PragmaState, PragmaTracker};
@@ -145,12 +145,19 @@ impl Parser {
     pub fn parse_detailed(&mut self, source: &str) -> ParseOutcome {
         let mut core = CoreParser::new(source);
         let output = core.parse_with_recovery();
-        let terminated_early = output.terminated_early();
+        // `stop_cause` is the authority: `perl-parser-core` sets it at the exact
+        // branch that terminates the parse and documents that "the diagnostic
+        // population never determines the stop cause". Scanning `diagnostics`
+        // instead mis-reports a recovered-then-terminated parse as whatever was
+        // recovered first.
+        let stop_cause = output.stop_cause();
         let ParseOutput { ast, diagnostics, .. } = output;
-        let failure = terminated_early
-            .then(|| diagnostics.iter().find_map(ParseFailure::from_diagnostic))
-            .flatten();
-        let tree = failure.is_none().then(|| tree_from_parts(ast, source, diagnostics.clone()));
+        let failure =
+            stop_cause.and_then(|cause| ParseFailure::from_stop_cause(cause, &diagnostics));
+        // Withhold the tree on the invariant (`stop_cause.is_some() ==
+        // terminated_early()`), not on whether the cause could be classified, so
+        // an unclassifiable terminal cause can never publish a partial tree.
+        let tree = stop_cause.is_none().then(|| tree_from_parts(ast, source, diagnostics.clone()));
 
         ParseOutcome { tree, diagnostics, failure }
     }
@@ -438,26 +445,32 @@ pub enum ParseFailure {
 }
 
 impl ParseFailure {
-    fn from_diagnostic(diagnostic: &ParseDiagnostic) -> Option<Self> {
-        match diagnostic {
-            ParseDiagnostic::RecursionLimit => Some(Self::RecursionLimit),
-            // The expression-recursion guard emits `RecursionDepthExhausted`;
-            // the unit `RecursionLimit` is the older spelling of the same
-            // budget. Both are recursion exhaustion, so both classify as
-            // `RecursionLimit` here — mirroring `perl-parser-core`'s own
-            // unification of the pair into `RecursionBudgetExhausted`.
-            //
-            // It deliberately does NOT map to `NestingTooDeep`: that variant
-            // belongs to the structural guards (block nesting, postfix
-            // chains), and `ParseError::RecursionDepthExhausted`'s own docs
-            // forbid "relabeling expression-recursion exhaustion as
-            // structural nesting" (#12952, taxonomy settled by #14342).
-            ParseDiagnostic::RecursionDepthExhausted { .. } => Some(Self::RecursionLimit),
-            ParseDiagnostic::NestingTooDeep { depth, max_depth } => {
-                Some(Self::NestingTooDeep { depth: *depth, max_depth: *max_depth })
+    /// Classify the parser's terminal stop cause.
+    ///
+    /// Returns `None` only when a cause carries no classification this facade
+    /// can express and the parser recorded no diagnostic to attach — callers
+    /// must still treat the parse as terminated, which
+    /// [`Parser::parse_detailed`] enforces by withholding the tree on
+    /// `stop_cause` rather than on this value.
+    fn from_stop_cause(cause: ParseStopCause, diagnostics: &[ParseDiagnostic]) -> Option<Self> {
+        match cause {
+            ParseStopCause::Cancelled => Some(Self::Cancelled),
+            // Both the unit `RecursionLimit` and the fielded
+            // `RecursionDepthExhausted` budget paths arrive here. This is
+            // deliberately NOT `NestingTooDeep`: that belongs to the structural
+            // guards, and `ParseError::RecursionDepthExhausted` forbids
+            // "relabeling expression-recursion exhaustion as structural
+            // nesting" (#12952; taxonomy settled by #14342).
+            ParseStopCause::RecursionBudgetExhausted { .. } => Some(Self::RecursionLimit),
+            ParseStopCause::NestingOrDepthBudgetExhausted { limit, usage } => {
+                Some(Self::NestingTooDeep { depth: usage, max_depth: limit })
             }
-            ParseDiagnostic::Cancelled => Some(Self::Cancelled),
-            _ => Some(Self::Other { diagnostic: diagnostic.clone() }),
+            // Heredoc/lexer budgets and any future cause: report the terminal
+            // diagnostic, which the parser appends last, rather than the first
+            // recovered one.
+            _ => {
+                diagnostics.last().map(|diagnostic| Self::Other { diagnostic: diagnostic.clone() })
+            }
         }
     }
 }
