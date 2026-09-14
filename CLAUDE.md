@@ -233,6 +233,11 @@ The construction context must not be the only detection surface supporting a
 substantive merge. Independence comes from changed evidence, oracle, method, threat
 model, environment, or attention—not identity alone.
 
+Read-only review is non-exclusive. Multiple sessions may inspect the same candidate and
+publish useful findings concurrently without writer allocation, a claim, or a wait.
+Exclusivity begins at mutation: a reviewer that wants to change the candidate must take
+the one writer role or leave the finding for the current writer.
+
 A clean review is valid. Do not manufacture findings or edits to demonstrate that the
 review happened.
 

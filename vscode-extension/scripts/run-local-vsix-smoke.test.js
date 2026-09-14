@@ -762,6 +762,121 @@ void test('cleans failed staging after creating the platform directory', () => {
   }
 });
 
+void test('stages and restores an explicit DAP alongside the server', () => {
+  const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-dap-stage-'));
+  const serverPath = path.join(extensionRoot, 'server-source');
+  const dapSource = path.join(extensionRoot, 'dap-source');
+  fs.writeFileSync(serverPath, 'server');
+  fs.writeFileSync(dapSource, 'dap');
+  const target = bundleTargetForPlatform();
+  const dapDestination = path.join(
+    extensionRoot,
+    'bin',
+    target.directory,
+    process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap',
+  );
+  try {
+    const restore = stageServerForPackage(serverPath, extensionRoot, dapSource);
+    assert.equal(fs.readFileSync(dapDestination, 'utf8'), 'dap');
+    restore();
+    assert.equal(fs.existsSync(dapDestination), false);
+  } finally {
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+void test('refuses a non-regular preexisting DAP destination and leaves staging intact', () => {
+  const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-dap-stage-'));
+  const serverPath = path.join(extensionRoot, 'server-source');
+  const dapSource = path.join(extensionRoot, 'dap-source');
+  const target = bundleTargetForPlatform();
+  const dapDestination = path.join(
+    extensionRoot,
+    'bin',
+    target.directory,
+    process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap',
+  );
+  fs.writeFileSync(serverPath, 'server');
+  fs.writeFileSync(dapSource, 'dap');
+  fs.mkdirSync(dapDestination, { recursive: true });
+  try {
+    assert.throws(() => stageServerForPackage(serverPath, extensionRoot, dapSource), /non-regular/);
+    assert.equal(fs.statSync(dapDestination).isDirectory(), true);
+  } finally {
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+void test('restores both preexisting packaged binaries after explicit staging', () => {
+  const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-dap-stage-'));
+  const serverPath = path.join(extensionRoot, 'server-source');
+  const dapSource = path.join(extensionRoot, 'dap-source');
+  const target = bundleTargetForPlatform();
+  const dir = path.join(extensionRoot, 'bin', target.directory);
+  const serverDestination = path.join(dir, target.binaryName);
+  const dapDestination = path.join(dir, process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(serverPath, 'new-server');
+  fs.writeFileSync(dapSource, 'new-dap');
+  fs.writeFileSync(serverDestination, 'old-server');
+  fs.writeFileSync(dapDestination, 'old-dap');
+  try {
+    const restore = stageServerForPackage(serverPath, extensionRoot, dapSource);
+    assert.equal(fs.readFileSync(dapDestination, 'utf8'), 'new-dap');
+    restore();
+    assert.equal(fs.readFileSync(serverDestination, 'utf8'), 'old-server');
+    assert.equal(fs.readFileSync(dapDestination, 'utf8'), 'old-dap');
+  } finally {
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+void test('attempts server restoration when DAP restoration fails first', () => {
+  const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-dap-stage-'));
+  const serverPath = path.join(extensionRoot, 'server-source');
+  const dapSource = path.join(extensionRoot, 'dap-source');
+  const target = bundleTargetForPlatform();
+  const dir = path.join(extensionRoot, 'bin', target.directory);
+  const serverDestination = path.join(dir, target.binaryName);
+  const dapDestination = path.join(dir, process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(serverPath, 'new-server');
+  fs.writeFileSync(dapSource, 'new-dap');
+  fs.writeFileSync(serverDestination, 'old-server');
+  fs.writeFileSync(dapDestination, 'old-dap');
+  const originalWrite = fs.writeFileSync;
+  try {
+    const restore = stageServerForPackage(serverPath, extensionRoot, dapSource);
+    fs.writeFileSync = (file, data, options) => {
+      if (file === dapDestination && Buffer.isBuffer(data) && data.toString() === 'old-dap') {
+        throw new Error('injected DAP restore failure');
+      }
+      return originalWrite(file, data, options);
+    };
+    assert.throws(() => restore(), /failed to restore staged VSIX binaries/);
+    assert.equal(fs.readFileSync(serverDestination, 'utf8'), 'old-server');
+    assert.equal(fs.readFileSync(dapDestination, 'utf8'), 'new-dap');
+  } finally {
+    fs.writeFileSync = originalWrite;
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
+void test('restores the server when the explicit DAP copy fails after server staging', () => {
+  const extensionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-dap-stage-'));
+  const serverPath = path.join(extensionRoot, 'server-source');
+  const dapSource = path.join(extensionRoot, 'missing', 'dap-source');
+  const target = bundleTargetForPlatform();
+  const serverDestination = path.join(extensionRoot, 'bin', target.directory, target.binaryName);
+  fs.writeFileSync(serverPath, 'server');
+  try {
+    assert.throws(() => stageServerForPackage(serverPath, extensionRoot, dapSource), /ENOENT/);
+    assert.equal(fs.existsSync(serverDestination), false);
+  } finally {
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+  }
+});
+
 void test('runs behavioral smoke when a size-only policy result remains red', () => {
   assert.equal(
     shouldRunBehavioralSmoke({
@@ -3058,4 +3173,93 @@ void test('smoke source labels cannot forge summary rows or workflow commands', 
   const notice = summary.annotations.find((line) => line.startsWith('::notice'));
   if (!notice || notice.includes('\n') || !notice.includes('%0A::error::forged%25'))
     throw new Error('source label forged a workflow command');
+});
+
+void test('main forwards its constructed manifest to the Test Explorer child', () => {
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, 'run-local-vsix-smoke.js'), 'utf8');
+  const revision = 'a'.repeat(40);
+  const environment = {
+    PERL_LSP_FIRST_HOUR_SERVER_PATH: '/fixture/perllsp',
+    PERL_LSP_SERVER_SOURCE_SHA: revision,
+    PERL_LSP_CURRENT_SOURCE_SHA: revision,
+    PERL_LSP_CANDIDATE_ID: 'local-candidate',
+    PERL_LSP_ARTIFACT_SET_ID: 'local-artifacts',
+    PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1',
+    PERL_LSP_TEST_EXPLORER_JOURNEY: '1',
+    PERL_LSP_CURRENT_SOURCE_DAP_STAGED: '1',
+  };
+  const childEnvironments = [];
+  const packageEnvironments = [];
+  const sandbox = {
+    __dirname,
+    module: { exports: {} },
+    process: {
+      env: environment,
+      platform: 'win32',
+      arch: 'x64',
+      stderr: {
+        write(message) {
+          throw new Error(message);
+        },
+      },
+    },
+    require(name) {
+      if (name === 'fs')
+        return {
+          existsSync: () => true,
+          readFileSync: () => JSON.stringify({ name: 'fixture', version: '1.0.0' }),
+          rmSync() {},
+        };
+      return require(name);
+    },
+    capture: (env) => childEnvironments.push(env),
+    capturePackageEnv: (env) => packageEnvironments.push(env),
+  };
+  // Execute the actual main and manifest constructor. Only package/process IO
+  // and unrelated journey legs are replaced; the handoff itself is untouched.
+  vm.runInNewContext(
+    source +
+      `
+    gitRevision = () => '${revision}';
+    ensureCleanWorkingTree = () => {};
+    persistReceipt = () => {};
+    stageServerForPackage = () => () => {};
+    runNpm = (_args, env) => { capturePackageEnv(env); return { status: 0 }; };
+    sha256File = () => 'b'.repeat(64);
+    runInventoryTransition = () => ({ status: 'pass', behavior_safe: true });
+    runPublishedSmoke = () => ({ phase: 'child', result: { status: 0 } });
+    validateVerifiedCandidateReceipt = () => ({ ok: true });
+    runTestExplorerJourneyStage = (env, revision, vsixPath, digest) => {
+      capture(testExplorerSmokeEnv(env, revision, vsixPath, digest));
+      return { status: 'pass' };
+    };
+    shouldRunActivationFailureJourney = () => false;
+    shouldRunCrashRecoveryJourney = () => false;
+    finalizeSmokeRun = () => 0;
+    main();
+  `,
+    sandbox,
+    { filename: 'run-local-vsix-smoke-main-fixture.js' },
+  );
+  assert.equal(childEnvironments.length, 1, 'main must invoke the Test Explorer stage');
+  assert.equal(packageEnvironments.length, 1, 'main must package once');
+  assert.equal(packageEnvironments[0].PERL_LSP_CURRENT_SOURCE_DAP_STAGED, '0');
+  const child = childEnvironments[0];
+  assert.ok(
+    child.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST,
+    'main must forward the constructed manifest',
+  );
+  assert.deepEqual(JSON.parse(child.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST), {
+    candidate_id: 'local-candidate',
+    artifact_set_id: 'local-artifacts',
+    frozen_product_sha: revision,
+    platform: 'windows',
+    vsix_sha256: 'b'.repeat(64),
+    bundled_server_sha256: 'b'.repeat(64),
+  });
+  assert.equal(child.PERL_LSP_TEST_EXPLORER_SMOKE, '1');
+  assert.equal(child.PERL_LSP_TEST_EXPLORER_JOURNEY, undefined);
+  assert.equal(child.PERL_LSP_CURRENT_SOURCE_SMOKE, undefined);
+  assert.equal(environment.PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST, undefined);
 });

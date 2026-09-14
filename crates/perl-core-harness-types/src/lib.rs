@@ -648,8 +648,13 @@ pub fn validate_file_result_mechanisms(
     file_results: &[RunFileResult],
 ) -> Result<(), FileResultMechanismViolation> {
     // Scoped to execute: parse and compile artifacts legitimately carry no
-    // mechanism, and whether an empty observation of *any* mode is admissible
-    // evidence is a separate, pre-existing question tracked on #14375.
+    // mechanism, so emptiness is only a *mechanism* violation here — no rail is
+    // named for a rail-bearing mode. Whether an empty observation of any mode is
+    // admissible *transition* evidence is a different question with a different
+    // owner, settled on #14375: `transition::validate` refuses an empty
+    // observation in every mode, so a vacuous pair classifies `NotProven`. This
+    // check deliberately stays execute-scoped for the permissive receipt,
+    // report, and baseline readers, which do not run transition validation.
     if mode == HarnessMode::Execute && file_results.is_empty() {
         return Err(FileResultMechanismViolation::EmptyExecution {
             mode: mode.as_str().to_string(),
