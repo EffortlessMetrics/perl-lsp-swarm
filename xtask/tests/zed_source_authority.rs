@@ -454,3 +454,83 @@ fn the_generator_scan_does_not_follow_a_symlinked_directory_out_of_the_scan_root
     let receipt = run_verify(&manifest, dir.path())?;
     refuse_code(&receipt, "undeclared_generator")
 }
+
+const WORKFLOW: &str = ".github/workflows/zed-integration-candidate.yml";
+
+/// Match one GitHub Actions `paths:` pattern against a repository-relative
+/// path. Only the two shapes the workflow actually uses are supported:
+/// a trailing `/**` prefix, and `*` wildcards that do not cross a `/`.
+fn path_filter_matches(pattern: &str, path: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix("/**") {
+        return path.starts_with(prefix) && path[prefix.len()..].starts_with('/');
+    }
+    let (Some(dir), Some(file)) = (pattern.rfind('/'), path.rfind('/')) else {
+        return pattern == path;
+    };
+    if pattern[..dir] != path[..file] {
+        return false;
+    }
+    let (pattern, name) = (&pattern[dir + 1..], &path[file + 1..]);
+    let mut cursor = 0usize;
+    let mut segments = pattern.split('*').peekable();
+    let Some(first) = segments.next() else { return pattern == name };
+    if !name.starts_with(first) {
+        return false;
+    }
+    cursor += first.len();
+    while let Some(segment) = segments.next() {
+        if segments.peek().is_none() {
+            return name[cursor..].ends_with(segment) && name.len() >= cursor + segment.len();
+        }
+        match name[cursor..].find(segment) {
+            Some(offset) => cursor += offset + segment.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+#[test]
+fn every_declared_generator_triggers_the_enforcing_workflow() -> anyhow::Result<()> {
+    // The gate is only a gate if it runs. The workflow's `paths:` filter and
+    // the manifest's generator list are two separate declarations of the same
+    // surface, and they drifted: six of twelve declared generators did not
+    // match any filter, so a PR could change a live packet producer without
+    // ever running `zed-train source-check`.
+    //
+    // A `paths:` filter cannot be derived from the manifest at runtime, so
+    // this test is the join instead. It fails when a generator is declared
+    // without extending the trigger surface to cover it.
+    let manifest = load_repo_manifest()?;
+    let workflow = fs::read_to_string(repo_root().join(WORKFLOW))?;
+
+    let Some((_, rest)) = workflow.split_once("paths:") else {
+        bail!("{WORKFLOW} declares no pull_request paths filter");
+    };
+    let Some((block, _)) = rest.split_once("workflow_dispatch") else {
+        bail!("{WORKFLOW} paths filter is not bounded by workflow_dispatch");
+    };
+    let filters: Vec<&str> = block
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("- "))
+        .map(|entry| entry.trim_matches('\''))
+        .collect();
+    if filters.is_empty() {
+        bail!("{WORKFLOW} paths filter parsed as empty; the join below would vacuously pass");
+    }
+
+    let uncovered: Vec<&str> = manifest
+        .generators
+        .iter()
+        .map(|generator| generator.path.as_str())
+        .filter(|path| !filters.iter().any(|pattern| path_filter_matches(pattern, path)))
+        .collect();
+
+    if !uncovered.is_empty() {
+        bail!(
+            "declared generators that do not trigger {WORKFLOW}: {uncovered:?}; \
+             add a path filter covering them or the authority gate is bypassed"
+        );
+    }
+    Ok(())
+}
