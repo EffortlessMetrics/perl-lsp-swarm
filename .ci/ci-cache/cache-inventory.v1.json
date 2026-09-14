@@ -1575,7 +1575,7 @@
       "job_condition": null,
       "step_condition": null,
       "save_condition": "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}",
-      "save_authority_source": "event_guard",
+      "save_authority_source": "event_and_ref_guard",
       "payload_class": "cargo_target",
       "cached_paths": [],
       "key_dimensions": {
@@ -1586,7 +1586,7 @@
       "key_authority": "trusted",
       "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "reviewed_exception",
+      "writer_disposition": "trusted_guarded",
       "repair_owner": null,
       "notes": null
     },

@@ -490,6 +490,15 @@ fn is_canonical_ref_equality_term(term: &str) -> bool {
             | "github.ref=='refs/heads/master'"
             | "github.ref==\"refs/heads/master\""
             | "github.ref_name==github.event.repository.default_branch"
+            // The `format()` spelling of the line above: `github.ref` carries the
+            // full `refs/heads/<name>` form, so comparing it against
+            // `format('refs/heads/{0}', <default branch>)` is the same canonical
+            // default-branch equality, and is in fact more robust than the
+            // `main`/`master` literals because it follows the repository's actual
+            // default branch. Accepting one spelling and rejecting the other would
+            // understate a stronger guard's authority.
+            | "github.ref==format('refs/heads/{0}',github.event.repository.default_branch)"
+            | "github.ref==format(\"refs/heads/{0}\",github.event.repository.default_branch)"
     )
 }
 
@@ -2324,6 +2333,65 @@ jobs:
             WriterDisposition::TrustedGuarded,
             "a negated ref guard must never read as trusted_guarded: {row:#?}"
         );
+    }
+
+    /// Positive counterpart to 6b: hardening the ref-guard test must not
+    /// downgrade the `format()` spelling of a canonical default-branch
+    /// equality. `pr-candidate-set.yml` uses exactly this shape, and it is a
+    /// stronger guard than the `main`/`master` literals because it follows the
+    /// repository's real default branch — recognizing one spelling and not the
+    /// other would understate its authority.
+    #[test]
+    fn format_spelled_default_branch_ref_equality_is_a_ref_guard() {
+        let workflow = r#"
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: formatted-${{ hashFiles('Cargo.lock') }}
+          save-if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+"#;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflows = fixture_workflows_dir(&tmp, "formatted.yml", workflow);
+        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let row = &inventory.families[0];
+        assert_eq!(
+            row.save_authority_source,
+            SaveAuthoritySource::EventAndRefGuard,
+            "an event guard combined with a format()-spelled default-branch ref equality \
+             carries both dimensions: {row:#?}"
+        );
+        assert_eq!(
+            row.writer_disposition,
+            WriterDisposition::TrustedGuarded,
+            "a guard with both a PR-false event anchor and a canonical ref equality is \
+             trusted_guarded: {row:#?}"
+        );
+    }
+
+    /// The real `pr-candidate-set.yml` row is the production instance of the
+    /// shape above; pin it so a future ref-guard change cannot silently
+    /// downgrade it.
+    #[test]
+    fn pr_candidate_set_format_guard_is_trusted_guarded() {
+        let root = project_root();
+        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
+            .expect("derive inventory");
+        let row = find_row(&inventory.families, "pr-candidate-set.yml", "reconcile");
+        assert_eq!(
+            row.save_authority_source,
+            SaveAuthoritySource::EventAndRefGuard,
+            "pr-candidate-set.yml guards on schedule/dispatch AND the default-branch ref: {row:#?}"
+        );
+        assert_eq!(row.writer_disposition, WriterDisposition::TrustedGuarded, "{row:#?}");
     }
 
     /// 7. A checked-in row asserting trusted producer state (`trusted_tree` +
