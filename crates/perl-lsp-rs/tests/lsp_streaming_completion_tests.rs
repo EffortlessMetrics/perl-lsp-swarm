@@ -1373,6 +1373,21 @@ mod mock_streaming_completion_tests {
         // streaming at all. What the budget guarantees is that every such
         // frame was within budget when shown, and that none of them is
         // promoted: the terminal frame is the only final one, and it is empty.
+        // Positive witness first: without it the two assertions below are
+        // vacuously true for a lone empty final frame, and would stop proving
+        // that an under-budget prefix legitimately reached the client at all.
+        assert!(
+            progress.len() >= 2,
+            "the accepted prefix must reach the client as live progress before the breach, \
+             got {} frame(s): {progress:?}",
+            progress.len()
+        );
+        assert_eq!(
+            progress[0]["params"]["value"]["items"][0]["insertText"], "1",
+            "the first frame must carry the under-budget prefix, got: {:?}",
+            progress[0]
+        );
+
         for frame in progress.iter().take(progress.len().saturating_sub(1)) {
             let is_final =
                 frame.pointer("/params/value/isFinal").and_then(Value::as_bool).unwrap_or(false);
