@@ -2804,6 +2804,16 @@
       "target_owner": "perl-parser",
       "required_features": [],
       "exit_condition": "Inventory row for a test-only target."
+    },
+    {
+      "name": "fix_13378_incremental_document_stale_geometry",
+      "kind": "test",
+      "classification": "product_composition",
+      "disposition": "retain",
+      "owner": "#11373",
+      "target_owner": "perl-parser",
+      "required_features": [],
+      "exit_condition": "Inventory row for a test-only target."
     }
   ]
 }
