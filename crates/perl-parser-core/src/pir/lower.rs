@@ -1663,17 +1663,30 @@ impl BodyLowerer {
                 // guarantee that `finally` runs on every exit path. That gap is
                 // recorded explicitly below rather than implied by silence, and
                 // it is why no handler is reached by `Fallthrough`.
+                // The node control reaches the try region from, captured before
+                // the body is lowered. It is the fallback edge source for a try
+                // body that models no node of its own.
+                let entry_predecessor = self.last_in_scope.get(&None).copied();
+
                 let try_first = self.next_id;
                 self.lower_block(body, *try_body, file);
+
                 // Edge source (v0 approximation, same shape as the `Branch`
                 // condition link above): a throw may originate anywhere in the
                 // try body, so PIR v0 cannot name one true source node. The
-                // region's last modeled node stands in for the throw point. A
-                // try body that emitted no node at all (`try { 1 }`) yields no
-                // source, so the handler regions stay unlinked rather than
-                // gaining a fabricated predecessor.
-                let try_exit =
-                    (self.next_id > try_first).then(|| PirId::from_index(self.next_id - 1));
+                // region's last modeled node stands in for the throw point.
+                //
+                // A try body that models no node at all — `try { }`, or a body
+                // whose only content is opaque such as `try { 1 }` — still has
+                // a reachable region after it, so it falls back to the node
+                // control entered the try from. Without that fallback the
+                // handler and finally regions would be left with no incoming
+                // edge whatsoever, which reads as unreachable rather than as
+                // conditionally reached, and `PirEdgeKind::Unknown` exists
+                // precisely so such an edge is not dropped silently.
+                let try_exit = (self.next_id > try_first)
+                    .then(|| PirId::from_index(self.next_id - 1))
+                    .or(entry_predecessor);
 
                 for handler in catch_handlers {
                     // A handler is entered only by an exception, never as an
