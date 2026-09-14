@@ -3191,13 +3191,13 @@ pub(super) fn emit_terminated_event_guarded(
 #[cfg(test)]
 mod tests {
     use super::super::sync_utils::EventSender;
-    use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use super::{
         BufReader, DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, has_prompt_prefix,
-        is_valid_perl_interpreter, lock_or_recover, read_debugger_record,
-        reserve_terminated_event, terminated_delivery_is_current,
+        is_valid_perl_interpreter, lock_or_recover, read_debugger_record, reserve_terminated_event,
+        terminated_delivery_is_current,
     };
+    use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
     use std::collections::HashMap;
