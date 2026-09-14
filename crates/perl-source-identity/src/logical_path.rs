@@ -339,6 +339,28 @@ mod tests {
         }
     }
 
+    /// The drive heuristic is deliberately narrow: ASCII letter, then `:`, at the
+    /// very start. Each negative below is a spelling a wider rule would swallow,
+    /// so this pins the boundary rather than re-asserting the positive case.
+    ///
+    /// `Ω:` is the load-bearing one. Relaxing `is_ascii_alphabetic` to
+    /// `is_alphabetic` still rejects every input in
+    /// [`rejects_windows_drive_prefixes`], but would start refusing a legitimate
+    /// POSIX filename — and refusing a real source file is the failure this type
+    /// exists to avoid, since it costs that document its identity entirely.
+    #[test]
+    fn drive_detection_is_ascii_and_prefix_scoped() {
+        for path in ["1:/proj/App.pm", "Ω:/proj/App.pm", "_:App.pm", "C", "lib/C:/App.pm"] {
+            let parsed = RootRelativeLogicalPath::parse(path);
+            assert!(
+                parsed.is_ok(),
+                "{path:?} carries no drive qualifier and must validate, got {parsed:?}"
+            );
+            let parsed = parsed.expect("asserted ok above");
+            assert_eq!(parsed.as_str(), path, "a non-drive colon must not be rewritten");
+        }
+    }
+
     #[test]
     fn rejects_control_characters_including_nul() {
         for path in ["lib/App\0.pm", "lib/\u{1}App.pm", "lib/App.pm\n", "lib/\u{7f}x.pm"] {
