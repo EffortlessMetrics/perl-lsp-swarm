@@ -107,19 +107,19 @@ fn walk(
         {
             record_require(node, file_id, line_index, args.first(), result);
         }
-        NodeKind::Eval { block } => {
+        NodeKind::Eval { block }
             // The parser models both `eval { ... }` and `eval "..."` as
             // `Eval { block }`; the block form wraps a `Block`, the string/expr
             // form wraps an expression. Only the latter is a dynamic boundary.
-            if !matches!(block.kind, NodeKind::Block { .. }) {
-                result.boundaries.push(DynamicBoundary {
-                    file_id: file_id.clone(),
-                    range: range_of(node, line_index),
-                    kind: DynamicBoundaryKind::StringEval,
-                    reason: "string `eval` runs code assembled at runtime; its effects are not statically visible".to_string(),
-                    confidence: Confidence::Medium,
-                });
-            }
+            if !matches!(block.kind, NodeKind::Block { .. }) =>
+        {
+            result.boundaries.push(DynamicBoundary {
+                file_id: file_id.clone(),
+                range: range_of(node, line_index),
+                kind: DynamicBoundaryKind::StringEval,
+                reason: "string `eval` runs code assembled at runtime; its effects are not statically visible".to_string(),
+                confidence: Confidence::Medium,
+            });
         }
         NodeKind::Typeglob { name } => {
             result.boundaries.push(DynamicBoundary {

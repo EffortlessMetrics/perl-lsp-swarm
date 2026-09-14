@@ -347,10 +347,40 @@ pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+// #7725 intake law, restated locally because this file is included verbatim
+// by several crate roots (lib, runner-plan binary, integration proof); the
+// canonical definition lives in the library root next to `validate_digest`.
+fn is_lower_case_hex_byte(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+}
+
+fn is_canonical_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(is_lower_case_hex_byte)
+}
+
 fn validate_sha256(value: &str, label: &str) -> Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Err(format!("{label} must be a 64-character hexadecimal digest: {value}"))
+    if !is_canonical_sha256_hex(value) {
+        Err(format!(
+            "{label} must be a 64-character hexadecimal digest ([0-9a-f] lower-case): {value}"
+        ))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod digest_intake_case_tests {
+    //! #7725: digests entering the runner-plan authority must keep exactly
+    //! one canonical serialized spelling: lower-case hexadecimal.
+
+    use super::validate_sha256;
+
+    #[test]
+    fn runner_plan_digests_accept_only_canonical_lower_case_hex() {
+        assert!(validate_sha256(&"ab".repeat(32), "plan fingerprint").is_ok());
+        assert!(validate_sha256(&"AB".repeat(32), "plan fingerprint").is_err());
+        assert!(validate_sha256(&"aB".repeat(32), "plan fingerprint").is_err());
+        assert!(validate_sha256(&"zz".repeat(32), "plan fingerprint").is_err());
+        assert!(validate_sha256(&"ab".repeat(31), "plan fingerprint").is_err());
     }
 }

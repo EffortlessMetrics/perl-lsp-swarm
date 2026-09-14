@@ -1,34 +1,43 @@
 use super::super::model::{DeferredLint, LintEntry, LintLedger, PlannedLint, RustVersion};
 use super::super::read::collect_workspace_lints;
 use super::common::{parse_review_date, validate_level, validate_lint_name, validate_nonempty};
-use chrono::NaiveDate;
 use color_eyre::eyre::{Result, bail, eyre};
 use std::collections::BTreeMap;
 use toml::Value;
 
-const REQUIRED_DISPOSITIONS: &[&str] = &[
-    "rust::const_item_interior_mutations",
-    "rust::function_casts_as_integer",
-    "clippy::same_length_and_capacity",
-    "clippy::disallowed_fields",
-    "clippy::manual_checked_ops",
-    "clippy::manual_take",
-    "clippy::manual_pop_if",
+/// Required lint identities, with optional pinned level and pinned ledger status.
+///
+/// A pinned level alone is not enough to hold a promotion: `[[planned]]` and
+/// `[[deferred_due]]` rows also carry `level = "deny"`, so a row demoted out of
+/// active enforcement still satisfies a level pin. Pinning the status as well is
+/// what makes a promotion non-reversible without an explicit policy change.
+const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
+    ("rust::const_item_interior_mutations", None, None),
+    ("rust::function_casts_as_integer", None, None),
+    ("clippy::same_length_and_capacity", None, None),
+    ("clippy::manual_checked_ops", None, None),
+    ("clippy::manual_ilog2", Some("deny"), Some("active")),
+    ("clippy::manual_take", None, None),
+    ("clippy::manual_pop_if", None, None),
+    // Promoted by #9894 on a zero-finding denominator. A zero-finding promotion
+    // leaves no burn-down to redo, so a demotion would be invisible outside this
+    // pin: nothing in the source tree has to change for the lint to stop being
+    // enforced. Both level and status are pinned for that reason.
+    ("clippy::decimal_bitwise_operands", Some("deny"), Some("active")),
+    // The lock-guard invariant is split across two tools with non-overlapping
+    // coverage (#14444), so both rows are pinned. Pinning only one would let a
+    // rollback silently uncover either the standard-library guards or the
+    // `parking_lot` guards while the surviving row still looks like coverage.
+    ("rust::let_underscore_lock", Some("deny"), Some("active")),
+    ("clippy::let_underscore_lock", Some("deny"), Some("active")),
 ];
 
-pub(crate) fn validate_workspace_lints(
-    cargo: &Value,
-    ledger: &LintLedger,
-    today: NaiveDate,
-) -> Result<()> {
-    validate_unique_dispositions(ledger)?;
-
+pub(crate) fn validate_workspace_lints(cargo: &Value, ledger: &LintLedger) -> Result<()> {
+    validate_disposition_model(ledger)?;
     let cargo_lints = collect_workspace_lints(cargo)?;
-    let current_msrv = RustVersion::from_text(&ledger.msrv)?;
     let mut lint_by_name = BTreeMap::new();
 
     for lint in &ledger.lint {
-        validate_lint_entry(lint)?;
         if lint_by_name.insert(lint.name.clone(), lint).is_some() {
             bail!("duplicate lint ledger entry for {}", lint.name);
         }
@@ -58,22 +67,12 @@ pub(crate) fn validate_workspace_lints(
     }
 
     for planned in &ledger.planned {
-        validate_planned_lint(planned)?;
         if cargo_lints.contains_key(&planned.name) {
             bail!("future-planned lint {} is already active in Cargo.toml", planned.name);
-        }
-        let activation = RustVersion::from_text(&planned.activate_when_msrv)?;
-        if activation <= current_msrv {
-            bail!(
-                "planned lint {} is due at MSRV {}; activate it or move it to deferred_due",
-                planned.name,
-                planned.activate_when_msrv
-            );
         }
     }
 
     for deferred in &ledger.deferred_due {
-        validate_deferred_lint(deferred, current_msrv, today)?;
         if cargo_lints.contains_key(&deferred.name) {
             bail!("deferred_due lint {} is already active in Cargo.toml", deferred.name);
         }
@@ -97,6 +96,37 @@ pub(crate) fn validate_workspace_lints(
     Ok(())
 }
 
+/// Validate the merged disposition model without consulting workspace wiring.
+///
+/// `policy cadence` uses this boundary before projecting lifecycle rows. It
+/// must not label malformed Clippy policy as current merely because serde could
+/// deserialize it, while the candidate gate remains responsible for Cargo and
+/// toolchain integration checks.
+pub(super) fn validate_disposition_model(ledger: &LintLedger) -> Result<()> {
+    validate_unique_dispositions(ledger)?;
+
+    let current_msrv = RustVersion::from_text(&ledger.msrv)?;
+    for lint in &ledger.lint {
+        validate_lint_entry(lint)?;
+    }
+    for planned in &ledger.planned {
+        validate_planned_lint(planned)?;
+        let activation = RustVersion::from_text(&planned.activate_when_msrv)?;
+        if activation <= current_msrv {
+            bail!(
+                "planned lint {} is due at MSRV {}; activate it or move it to deferred_due",
+                planned.name,
+                planned.activate_when_msrv
+            );
+        }
+    }
+    for deferred in &ledger.deferred_due {
+        validate_deferred_lint(deferred, current_msrv)?;
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_required_dispositions(ledger: &LintLedger) -> Result<()> {
     let mut counts = BTreeMap::<&str, usize>::new();
     for name in ledger
@@ -109,11 +139,51 @@ pub(crate) fn validate_required_dispositions(ledger: &LintLedger) -> Result<()> 
         *counts.entry(name).or_default() += 1;
     }
 
-    for required in REQUIRED_DISPOSITIONS {
+    for (required, expected_level, expected_status) in REQUIRED_DISPOSITIONS {
         if counts.get(required).copied().unwrap_or_default() != 1 {
             bail!(
                 "required lint identity {required} must appear exactly once across the merged disposition model"
             );
+        }
+        let entry_level = ledger
+            .lint
+            .iter()
+            .find(|lint| lint.name == *required)
+            .map(|lint| lint.level.as_str())
+            .or_else(|| {
+                ledger
+                    .planned
+                    .iter()
+                    .find(|lint| lint.name == *required)
+                    .map(|lint| lint.level.as_str())
+            })
+            .or_else(|| {
+                ledger
+                    .deferred_due
+                    .iter()
+                    .find(|lint| lint.name == *required)
+                    .map(|lint| lint.level.as_str())
+            });
+        if let Some(expected_level) = expected_level
+            && entry_level != Some(*expected_level)
+        {
+            bail!(
+                "required lint {required} must remain at level {expected_level}, but ledger has {}",
+                entry_level.unwrap_or("missing")
+            );
+        }
+        if let Some(expected_status) = expected_status {
+            let entry_status = ledger
+                .lint
+                .iter()
+                .find(|lint| lint.name == *required)
+                .map(|lint| lint.status.as_str());
+            if entry_status != Some(*expected_status) {
+                bail!(
+                    "required lint {required} must remain an active ledger entry at status {expected_status}, but ledger has {}",
+                    entry_status.unwrap_or("no active entry (demoted to planned or deferred_due)")
+                );
+            }
         }
     }
     Ok(())
@@ -164,11 +234,7 @@ fn validate_planned_lint(planned: &PlannedLint) -> Result<()> {
     Ok(())
 }
 
-fn validate_deferred_lint(
-    deferred: &DeferredLint,
-    current_msrv: RustVersion,
-    today: NaiveDate,
-) -> Result<()> {
+fn validate_deferred_lint(deferred: &DeferredLint, current_msrv: RustVersion) -> Result<()> {
     validate_lint_name(&deferred.name)?;
     validate_level(&deferred.name, &deferred.level, false)?;
     validate_nonempty(&deferred.name, "class", &deferred.class)?;
@@ -187,10 +253,10 @@ fn validate_deferred_lint(
         );
     }
 
-    let review_after = parse_review_date(&deferred.name, &deferred.review_after)?;
-    if review_after < today {
-        bail!("deferred_due lint {} review date expired on {review_after}", deferred.name);
-    }
+    // Review dates schedule owner work. They remain structurally validated here,
+    // but cadence is reported by `cargo xtask policy cadence`; crossing midnight
+    // must not change an unrelated candidate's lint-policy verdict (#15267).
+    parse_review_date(&deferred.name, &deferred.review_after)?;
 
     Ok(())
 }

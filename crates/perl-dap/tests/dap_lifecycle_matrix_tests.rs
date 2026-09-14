@@ -11,13 +11,9 @@
 //! All tests skip gracefully when `perl` is not on `PATH`.
 //! AC: DAP lifecycle matrix — phase 2 e2e coverage.
 
-#![expect(
-    clippy::print_stderr,
-    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
-)]
 mod common;
 
-use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
@@ -68,10 +64,10 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// and each assertion documents the adapter contract it validates.
 #[test]
 fn test_lifecycle_full_ordered_sequence() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_full_ordered_sequence - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_lifecycle_full_ordered_sequence")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_matrix.pl");
@@ -87,7 +83,7 @@ fn test_lifecycle_full_ordered_sequence() -> TestResult {
 
     // ── Step 2: launch ─────────────────────────────────────────────
     // stopOnEntry=false: adapter does NOT emit stopped until configurationDone.
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
 
     // ── Step 3: setBreakpoints (verified=true) ──────────────────────────────────
     // DAP protocol ordering: setBreakpoints MUST be called before configurationDone.
@@ -214,12 +210,11 @@ fn test_lifecycle_full_ordered_sequence() -> TestResult {
 /// frames without a client request, this test would catch the race.
 #[test]
 fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
-    if !perl_available() {
-        eprintln!(
-            "Skipping test_lifecycle_stopped_event_precedes_stack_trace - perl not available"
-        );
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_stopped_event_precedes_stack_trace")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_ordering.pl");
@@ -229,7 +224,7 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -296,10 +291,10 @@ fn test_lifecycle_stopped_event_precedes_stack_trace() -> TestResult {
 /// re-exposes the internal-frame bug.
 #[test]
 fn test_lifecycle_scopes_locals_contract() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_scopes_locals_contract - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_lifecycle_scopes_locals_contract")
+    else {
         return Ok(());
-    }
+    };
 
     // Breakpoint line for THIS fixture only — one line past the first lexical
     // assignment so that `my $x = 10` has already executed when we stop.
@@ -324,7 +319,7 @@ fn test_lifecycle_scopes_locals_contract() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     let resolved = session.set_breakpoints_checked(&script_str, &[SCOPES_BP_LINE])?;
     let resolved_line =
         resolved.first().copied().ok_or("set_breakpoints_checked returned empty resolved lines")?;
@@ -420,12 +415,11 @@ fn test_lifecycle_scopes_locals_contract() -> TestResult {
 /// currently expose a `terminate` handler beyond this natural-exit path.
 #[test]
 fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
-    if !perl_available() {
-        eprintln!(
-            "Skipping test_lifecycle_continue_leads_to_terminated_event - perl not available"
-        );
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_continue_leads_to_terminated_event")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_exit.pl");
@@ -435,7 +429,7 @@ fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -468,10 +462,11 @@ fn test_lifecycle_continue_leads_to_terminated_event() -> TestResult {
 ///   name (string), value (string), variablesReference (number >= 0)
 #[test]
 fn test_lifecycle_variables_non_empty_at_stop() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_lifecycle_variables_non_empty_at_stop - perl not available");
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_lifecycle_variables_non_empty_at_stop")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_vars.pl");
@@ -481,7 +476,7 @@ fn test_lifecycle_variables_non_empty_at_stop() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints_checked(&script_str, &[BP_LINE])?;
     session.configuration_done()?;
 
@@ -913,11 +908,11 @@ fn test_relaunch_after_terminate_no_stale_state() -> TestResult {
 /// C6 — restart without prior launch args → clean protocol error; adapter
 /// remains usable afterwards.
 ///
-/// `handle_restart` falls back to `last_launch_args` when no arguments are
-/// provided. Without a prior successful launch, `last_launch_args` is None and
-/// the handler must return a descriptive, non-panicking error. This locks the
-/// error-path behaviour and validates that restart does not crash or produce
-/// an opaque "Unknown command" response.
+/// #9581: restart is a floored secondary capability, so the dispatch gate
+/// rejects the request before `handle_restart` is ever reached — no stored
+/// launch args are consulted, no session/generation state is touched. This
+/// locks the explicit unsupported disposition and validates that restart does
+/// not crash or produce an opaque "Unknown command" response.
 #[test]
 fn test_restart_without_prior_launch_fails_gracefully() -> TestResult {
     let (mut adapter, _rx) = make_adapter_with_rx();
@@ -928,20 +923,15 @@ fn test_restart_without_prior_launch_fails_gracefully() -> TestResult {
     match restart {
         DapMessage::Response { success, command, message, .. } => {
             assert_eq!(command, "restart", "command field must echo restart");
-            assert!(
-                !success,
-                "restart without prior launch must fail (no configuration to replay)"
-            );
+            assert!(!success, "restart without prior launch must fail (floored by #9581)");
             let msg = message.as_deref().unwrap_or("");
             assert!(
                 !msg.contains("Unknown command"),
                 "restart must route to its handler, not the unknown-command fallback: {msg}"
             );
             assert!(
-                msg.contains("no previous launch")
-                    || msg.contains("Cannot restart")
-                    || msg.contains("no launch configuration"),
-                "restart error must explain missing configuration, got: {msg}"
+                msg.contains("unsupported") && msg.contains("supportsRestartRequest"),
+                "restart error must be the explicit #9581 unsupported disposition, got: {msg}"
             );
         }
         other => {

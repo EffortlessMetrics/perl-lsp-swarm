@@ -22,21 +22,95 @@ use perl_lsp_ux_tests::{
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const HOVER_FILE: &str = "test.pl";
 const HOVER_SOURCE: &str = "use strict;\nuse warnings;\n\nmy $x = 42;\nmy $y = $x + 1;\n";
 const HOVER_LINE: u32 = 3;
 const HOVER_CHARACTER: u32 = 3;
-const HOVER_ATTEMPTS: usize = 5;
-const HOVER_RETRY_DELAY: Duration = Duration::from_millis(200);
 const HOVER_MARKERS: [&str; 2] = ["$x", "Scalar Variable"];
 
 const COMPLETION_FILE: &str = "complete.pl";
 const COMPLETION_SOURCE: &str = "pri\n";
 const COMPLETION_LABEL: &str = "print";
-const COMPLETION_ATTEMPTS: usize = 5;
-const COMPLETION_RETRY_DELAY: Duration = Duration::from_millis(200);
+
+/// Deadline for first useful results.
+const USEFUL_RESULT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Pacing for *re-issued product requests* — see the disposition on
+/// [`retry_until_useful`]. This is not a synchronization interval: readiness is
+/// waited for through [`await_document_ready`] before any attempt runs.
+const RETRY_PACE: Duration = Duration::from_millis(50);
+/// Bound on the readiness wait below. Observed locally at ~260 ms against a
+/// debug server, so this is generous; it is deliberately much smaller than
+/// [`USEFUL_RESULT_TIMEOUT`] so that a server which never publishes readiness
+/// degrades to the request attempts quickly instead of consuming the budget
+/// those attempts need.
+const DOCUMENT_READY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Block on the server's own `perl-lsp/active-document-ready` notification for
+/// `relative_path`.
+///
+/// This is the event-driven half of "wait until the answer can be useful": the
+/// scenario waits for the server to say the document is indexed rather than
+/// re-asking until an answer happens to appear. Without it, the first hover /
+/// completion request is issued while indexing is still in flight and only
+/// succeeds because a later retry catches up.
+///
+/// The result is intentionally ignored: readiness is an *optimization* for the
+/// attempts below, not an assertion. A server that never publishes it still
+/// gets its full [`USEFUL_RESULT_TIMEOUT`] worth of attempts, and the scenario
+/// still fails on the useful-result predicate rather than on a missing signal.
+fn await_document_ready(harness: &UxHarness, relative_path: &str) {
+    let uri = harness.workspace.uri(relative_path);
+    let _ = harness.wait_for_active_document_ready(&uri, DOCUMENT_READY_TIMEOUT);
+}
+
+/// Re-issue `attempt` until it reports a useful result, bounded by a wall-clock
+/// deadline instead of a fixed attempt count.
+///
+/// At least one attempt always runs before the deadline is tested, `Ok(None)`
+/// schedules another attempt, and `Err` propagates immediately (malformed
+/// content must not be retried away). Each attempt receives the remaining
+/// wall-clock budget and must bound its own blocking calls with it — the
+/// harness's independent per-request default (30 s) would otherwise let one
+/// slow attempt push the loop past the deadline.
+///
+/// # Timing disposition: product-owned retry, not harness synchronization
+///
+/// `attempt` issues a whole LSP *request*; hover and completion are
+/// request/response and publish no "now useful" notification a wait could
+/// block on, so a stale answer is only superseded by asking again. The
+/// observable readiness signal that *does* exist is consumed by
+/// [`await_document_ready`] before the first attempt, so on a warm server the
+/// first attempt succeeds and `RETRY_PACE` is never reached.
+fn retry_until_useful<T>(
+    timeout: Duration,
+    description: &str,
+    mut attempt: impl FnMut(Duration) -> Result<Option<T>>,
+) -> Result<T> {
+    let deadline = Instant::now() + timeout;
+    let mut first_attempt = true;
+    loop {
+        // At least one attempt always runs; later attempts get whatever
+        // budget is left, and a spent deadline bails before blocking again.
+        let remaining = if first_attempt {
+            first_attempt = false;
+            timeout
+        } else {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!("expected {description} within {timeout:?}");
+            }
+            remaining
+        };
+        if let Some(useful) = attempt(remaining)? {
+            return Ok(useful);
+        }
+        // ux-timing: product-retry — hover/completion publish no "now useful"
+        // notification; only a new request can supersede a stale answer.
+        std::thread::sleep(RETRY_PACE);
+    }
+}
 
 fn object_keys(map: &Map<String, Value>) -> BTreeSet<&str> {
     map.keys().map(String::as_str).collect()
@@ -106,18 +180,16 @@ fn useful_static_variable_hover(result: &Value) -> Result<String> {
 }
 
 fn static_variable_hover_with_retry(harness: &UxHarness) -> Result<Value> {
-    for attempt in 1..=HOVER_ATTEMPTS {
-        if let Some(result) = harness.hover(HOVER_FILE, HOVER_LINE, HOVER_CHARACTER)? {
-            useful_static_variable_hover(&result)?;
-            return Ok(result);
+    await_document_ready(harness, HOVER_FILE);
+    retry_until_useful(USEFUL_RESULT_TIMEOUT, "useful hover for `$x` at test.pl:3:3", |budget| {
+        match harness.hover_with_timeout(HOVER_FILE, HOVER_LINE, HOVER_CHARACTER, budget)? {
+            Some(result) => {
+                useful_static_variable_hover(&result)?;
+                Ok(Some(result))
+            }
+            None => Ok(None),
         }
-        if attempt < HOVER_ATTEMPTS {
-            std::thread::sleep(HOVER_RETRY_DELAY);
-        }
-    }
-    anyhow::bail!(
-        "expected useful hover for `$x` at {HOVER_FILE}:{HOVER_LINE}:{HOVER_CHARACTER} after {HOVER_ATTEMPTS} attempts"
-    )
+    })
 }
 
 fn position_is_valid(position: &Value) -> bool {
@@ -183,19 +255,26 @@ fn includes_useful_completion(items: &[Value]) -> Result<bool> {
 }
 
 fn completion_with_retry(harness: &UxHarness) -> Result<Vec<Value>> {
-    for attempt in 1..=COMPLETION_ATTEMPTS {
-        let items = harness.completion(COMPLETION_FILE, 0, 3)?;
-        if includes_useful_completion(&items)? {
-            return Ok(items);
-        }
-        if attempt == COMPLETION_ATTEMPTS {
-            anyhow::bail!(
-                "expected protocol-valid `print` completion for `pri` after {COMPLETION_ATTEMPTS} attempts; last items: {items:?}"
-            );
-        }
-        std::thread::sleep(COMPLETION_RETRY_DELAY);
+    await_document_ready(harness, COMPLETION_FILE);
+    let mut last_items: Vec<Value> = Vec::new();
+    match retry_until_useful(
+        USEFUL_RESULT_TIMEOUT,
+        "protocol-valid `print` completion for `pri`",
+        |budget| {
+            let items = harness.completion_with_timeout(COMPLETION_FILE, 0, 3, budget)?;
+            if includes_useful_completion(&items)? {
+                return Ok(Some(items));
+            }
+            last_items = items;
+            Ok(None)
+        },
+    ) {
+        Ok(items) => Ok(items),
+        Err(deadline_error) => Err(anyhow::anyhow!(
+            "expected protocol-valid `print` completion for `pri` within \
+             {USEFUL_RESULT_TIMEOUT:?}; last items: {last_items:?} ({deadline_error})"
+        )),
     }
-    anyhow::bail!("completion retry loop exhausted without an attempt")
 }
 
 #[test]
@@ -332,7 +411,7 @@ fn completion_predicate_rejects_empty_unrelated_and_malformed_results() {
         json!({ "label": 7 }),
     ] {
         assert!(
-            includes_useful_completion(&[item.clone()]).is_err(),
+            includes_useful_completion(std::slice::from_ref(&item)).is_err(),
             "malformed completion must be rejected: {item:?}"
         );
     }
@@ -355,7 +434,7 @@ fn completion_predicate_accepts_label_and_valid_text_edit() {
         }),
     ] {
         assert!(
-            includes_useful_completion(&[item.clone()]).is_ok_and(|found| found),
+            includes_useful_completion(std::slice::from_ref(&item)).is_ok_and(|found| found),
             "valid print completion must be accepted: {item:?}"
         );
     }

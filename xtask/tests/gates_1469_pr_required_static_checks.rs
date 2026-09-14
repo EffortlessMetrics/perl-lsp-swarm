@@ -280,7 +280,7 @@ fn ci_workflow_includes_clippy_full_in_matrix() -> Result<(), Box<dyn std::error
 /// TEST: unit_routed_full runs on every PR via pr-smoke (--tier pr_fast)
 ///
 /// The gate is in tier pr_fast, so it runs in the pr-smoke job with:
-///   cargo xtask gates --tier pr-fast --base origin/main
+///   cargo xtask gates --tier pr-fast --subject target/receipts/ci-subject.json
 /// This properly resolves {package_args} for the rust_scoped gate.
 ///
 /// It does NOT appear in merge-gate-shards because that shard uses --gate <name>,
@@ -290,30 +290,35 @@ fn ci_workflow_includes_clippy_full_in_matrix() -> Result<(), Box<dyn std::error
 fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let workflow = must(fs::read_to_string(root.join(".github/workflows/ci.yml")));
+    let pr_smoke_job = workflow
+        .split_once("  pr-smoke:")
+        .and_then(|(_, remainder)| remainder.split_once("\n  merge-gate-shards:"))
+        .map(|(job, _)| job)
+        .ok_or("ci workflow must define a pr-smoke job")?;
 
     // Verify that pr-smoke job runs --tier pr-fast
     // which includes all pr_fast gates (including unit_routed_full)
-    let has_pr_fast_tier = workflow.contains("gates --tier pr-fast");
-    let has_base_origin_main = workflow.contains("--base origin/main");
+    let has_pr_fast_tier = pr_smoke_job.contains("gates --tier pr-fast");
+    let has_immutable_subject = pr_smoke_job.contains("--subject target/receipts/ci-subject.json");
 
     assert!(
-        has_pr_fast_tier && has_base_origin_main,
-        "pr-smoke job must run gates --tier pr-fast --base origin/main \
+        has_pr_fast_tier && has_immutable_subject,
+        "pr-smoke job must run gates --tier pr-fast against the immutable CI subject \
          to properly resolve package_args for rust_scoped gates like unit_routed_full"
     );
     assert!(
-        workflow.contains("timeout-minutes: 50"),
-        "pr-smoke job timeout must include the observed heavy routed integration-test path"
+        pr_smoke_job.contains("timeout-minutes: 75"),
+        "pr-smoke job timeout must leave room for the inner watchdog and always-run receipt steps"
     );
     assert!(
-        workflow.contains("PR-fast timeout policy: GitHub job 50m, outer runner watchdog 45m"),
+        pr_smoke_job.contains("PR-fast timeout policy: GitHub job 75m, outer runner watchdog 45m"),
         "pr-smoke log message must document the active watchdog policy"
     );
     // The watchdog invocation is asserted by its durable parts rather than as one
     // literal line: the binary path spelling is incidental (it moved from
     // `./target/debug/xtask` to `"$CARGO_TARGET_DIR/debug/xtask"` in #4912), while the
     // signal, grace period, 2700s ceiling, tier, base, and --receipt are the contract.
-    let watchdog_line = workflow
+    let watchdog_line = pr_smoke_job
         .lines()
         .map(str::trim)
         .find(|line| line.starts_with("timeout ") && line.contains("gates --tier pr-fast"))
@@ -325,7 +330,7 @@ fn ci_workflow_runs_unit_routed_full_in_pr_smoke() -> Result<(), Box<dyn std::er
         "2700s",
         "/debug/xtask",
         "gates --tier pr-fast",
-        "--base origin/main",
+        "--subject target/receipts/ci-subject.json",
         "--receipt",
     ] {
         assert!(

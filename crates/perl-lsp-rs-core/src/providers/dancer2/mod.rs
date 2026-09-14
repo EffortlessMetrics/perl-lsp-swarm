@@ -47,7 +47,8 @@ mod targets;
 
 pub use activation::{
     Dancer2FileActivations, Dancer2PackageActivation, RuntimeDancer2Module,
-    activation_state_reason, file_activations, has_activation_site, read_declared_module_version,
+    activation_state_reason, file_activations, first_activation_site_offset, has_activation_site,
+    read_declared_module_version,
 };
 pub use completion::{
     Dancer2CompletionCandidate, keyword_completion_candidates, keyword_completion_rank_penalty,

@@ -1,12 +1,63 @@
 use crate::PragmaState;
 
-/// Parsed Perl version from a lexical `use v...;` or `use 5.xxx;` pragma.
+/// Legacy major/minor projection used by pragma compatibility behavior.
+///
+/// This does not represent exact Perl version literals or patch/developer identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PerlVersion {
     /// Major Perl version component.
     pub major: u32,
     /// Minor Perl version component.
     pub minor: u32,
+}
+
+/// Named reviewed feature-bundle identities retained by legacy state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FeatureBundle {
+    /// The reviewed Perl 5.42 bundle identity.
+    Perl5_42,
+    /// The reviewed Perl 5.44 bundle identity.
+    Perl5_44,
+    /// No named bundle authority is retained.
+    Unknown,
+}
+
+#[must_use]
+/// Map an admitted legacy value to the named bundle rows owned by this slice.
+pub(crate) const fn feature_bundle_for_version(version: PerlVersion) -> FeatureBundle {
+    match (version.major, version.minor) {
+        (5, 42) => FeatureBundle::Perl5_42,
+        (5, 44) => FeatureBundle::Perl5_44,
+        _ => FeatureBundle::Unknown,
+    }
+}
+
+/// Admit only reviewed stable two-component v-string declarations.
+#[must_use]
+pub(crate) fn admitted_vstring_version(module: &str) -> Option<PerlVersion> {
+    let body = module.strip_prefix('v')?;
+    let mut parts = body.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    if parts.next().is_some()
+        || major != "5"
+        || minor.is_empty()
+        || !minor.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let minor = minor.parse::<u32>().ok()?;
+    let version = PerlVersion::new(5, minor);
+    (minor % 2 == 0 && minor <= 44).then_some(version)
+}
+
+pub(crate) fn looks_like_version_literal(module: &str) -> bool {
+    let body = module.strip_prefix('v').unwrap_or(module);
+    let Some((major, _)) = body.split_once('.') else {
+        return false;
+    };
+    !major.is_empty() && major.chars().all(|c| c.is_ascii_digit()) && !module.contains("::")
 }
 
 impl PerlVersion {
@@ -18,19 +69,29 @@ impl PerlVersion {
 
 /// Parse a Perl version string into a major/minor pair.
 ///
+/// This lossy compatibility helper does not validate an exact language profile.
+/// Source-facing admission uses a separate conservative declaration boundary.
+///
 /// Handles lexical version pragmas such as:
 /// - `v5.36`
 /// - `v5.36.0`
 /// - `5.036`
+/// - `5.043011`
 /// - `5.10`
 /// - developer releases like `5.012_001`
+///
+/// Underscores in numeric VERSION literals are Perl visual digit separators,
+/// so repeated separators such as `5.043_0_11` name the same number as
+/// `5.043011`.
 pub fn parse_perl_version(module: &str) -> Option<PerlVersion> {
+    let is_v_string = module.starts_with('v');
     let s = module.strip_prefix('v').unwrap_or(module);
+    let is_decimal = !is_v_string && s.matches('.').count() == 1;
     let mut parts = s.splitn(3, '.');
 
     let major = parse_version_component(parts.next()?)?;
     let minor = match parts.next() {
-        Some(part) => parse_version_component(part)?,
+        Some(part) => parse_minor_version_component(part, is_decimal)?,
         None => 0,
     };
 
@@ -38,8 +99,45 @@ pub fn parse_perl_version(module: &str) -> Option<PerlVersion> {
 }
 
 fn parse_version_component(component: &str) -> Option<u32> {
-    let component = component.split_once('_').map_or(component, |(head, _)| head);
+    let component = validated_version_digits(component)?;
     component.parse().ok()
+}
+
+fn parse_minor_version_component(component: &str, is_decimal: bool) -> Option<u32> {
+    let component = validated_version_digits(component)?;
+    // Perl decimal versions group fractional digits in threes. The current
+    // public model retains only major/minor, so discard later patch groups
+    // instead of interpreting `5.043011` as the future minor version 43011.
+    let component =
+        if is_decimal && component.len() > 3 { component.get(..3)? } else { &component };
+    component.parse().ok()
+}
+
+/// Perl allows underscore characters between digits in numeric literals as
+/// visual separators (`5.012_001`, `5.043_0_11`). Accept any number of
+/// separators placed strictly between digits, reject misplaced ones
+/// (leading, trailing, or repeated), and return the digit sequence with
+/// separators removed.
+fn validated_version_digits(component: &str) -> Option<String> {
+    let mut digits = String::with_capacity(component.len());
+    // Start as if after a separator so a leading `_` is rejected.
+    let mut previous_was_separator = true;
+    for character in component.chars() {
+        match character {
+            '_' if previous_was_separator => return None,
+            '_' => previous_was_separator = true,
+            digit if digit.is_ascii_digit() => {
+                previous_was_separator = false;
+                digits.push(digit);
+            }
+            _ => return None,
+        }
+    }
+    // A trailing separator never saw its following digit.
+    if previous_was_separator {
+        return None;
+    }
+    Some(digits)
 }
 
 /// Whether `use VERSION` implies `strict` for this version.
@@ -67,6 +165,8 @@ pub fn version_implies_warnings(version: PerlVersion) -> bool {
 pub fn features_enabled_by_version(version: PerlVersion) -> Vec<&'static str> {
     let bundle = if version < PerlVersion::new(5, 10) {
         DEFAULT_FEATURES
+    } else if version >= PerlVersion::new(5, 44) {
+        BUNDLE_5_44_FEATURES
     } else if version >= PerlVersion::new(5, 42) {
         BUNDLE_5_42_FEATURES
     } else if version >= PerlVersion::new(5, 40) {
@@ -228,6 +328,10 @@ const BUNDLE_5_40_FEATURES: &[&str] = &[
     "unicode_strings",
 ];
 
+// Perl 5.44 has its own named bundle, with the same membership as 5.42.
+// enhanced_xx is explicit opt-in and belongs to neither implicit bundle.
+const BUNDLE_5_44_FEATURES: &[&str] = BUNDLE_5_42_FEATURES;
+
 const BUNDLE_5_42_FEATURES: &[&str] = &[
     "bitwise",
     "current_sub",
@@ -245,6 +349,7 @@ const BUNDLE_5_42_FEATURES: &[&str] = &[
 ];
 
 pub(crate) fn enable_effective_version_semantics(state: &mut PragmaState, version: PerlVersion) {
+    state.perl_version = Some(version);
     if version_implies_strict(version) {
         state.strict_vars = true;
         state.strict_subs = true;

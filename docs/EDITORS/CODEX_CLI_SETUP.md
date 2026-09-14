@@ -179,7 +179,10 @@ the initialized client disables `lsp.execute_command`, the response reports an
 empty `execute_commands` inventory and keeps only source-backed setup guidance;
 it does not advertise command-backed follow-ups for that session.
 
-For diagnostics without MCP, you can always run:
+For diagnostics without MCP, you can always run native CLI checks (these do
+not execute project Perl). `--check` is listed-file; `--check-project` is an
+80% parsability report, not a strict all-clean check. See
+[Checking Perl files](../reference/CHECKING.md).
 
 ```bash
 perllsp --check path/to/file.pl

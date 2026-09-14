@@ -16,6 +16,11 @@ let s:failures = []
 let s:responses = {}
 let s:cells = {}
 
+" Load the canonical adapter projection used by the host runners. This deep
+" smoke is an integration rail, so it must consume the adapter's projection
+" rather than carry a second Vim-specific marker policy.
+execute 'source ' . fnameescape(expand('$PERLLSP_VIM_ADAPTER'))
+
 function! s:Fail(message) abort
   call add(s:failures, a:message)
 endfunction
@@ -100,34 +105,11 @@ augroup perllsp_deep_receipt
   autocmd User lsp_server_exit let g:perllsp_server_exit += 1
 augroup END
 
-function! s:RootUri(server_info) abort
-  let l:root = lsp#utils#find_nearest_parent_file_directory(
-        \ expand('%:p'),
-        \ ['.perl-lsp.toml', 'Makefile.PL', 'Build.PL', 'cpanfile', 'dist.ini', '.git'])
-  if empty(l:root)
-    let l:root = getcwd()
-  endif
-  return lsp#utils#path_to_uri(l:root)
-endfunction
-
-call lsp#register_server({
-      \ 'name': 'perllsp-under-test',
-      \ 'cmd': {server_info -> [s:perllsp, '--stdio']},
-      \ 'allowlist': ['perl'],
-      \ 'root_uri': function('s:RootUri'),
-      \ 'workspace_config': {
-      \   'perl': {
-      \     'workspace': {
-      \       'includePaths': [s:workspace . '/lib'],
-      \     },
-      \   },
-      \ },
-      \ 'env': {
-      \   'PERL_LSP_LOG_FILE': s:server_trace,
-      \   'RUST_LOG': 'info',
-      \ },
-      \ })
-call lsp#enable()
+" The adapter owns registration, including the root callback. Keep this rail
+" on that public surface so a marker projection change cannot leave the deep
+" integration journey exercising a second registration policy.
+call VimLspHostRegister()
+call VimLspHostEnable()
 
 execute 'lcd ' . fnameescape(s:workspace)
 execute 'silent edit ' . fnameescape(s:workspace . '/main.pl')

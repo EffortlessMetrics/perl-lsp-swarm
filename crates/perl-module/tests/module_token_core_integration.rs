@@ -23,3 +23,16 @@ fn parser_with_legacy_separator_still_bounds_as_standalone_token() {
     assert_eq!(token, "App'Config");
     assert!(has_standalone_module_token_boundaries(line, span.start, span.end));
 }
+
+#[test]
+fn parser_and_boundary_align_for_unicode_import_statement() {
+    let module = "Δοκιμή::設定2";
+    let line = format!("use {module};");
+    let span = parse_module_token(&line, 4);
+    assert!(span.is_some(), "Unicode module token should parse");
+    let span = span.unwrap_or(ModuleTokenSpan { start: 0, end: 0 });
+
+    assert_eq!(&line[span.start..span.end], module);
+    assert_eq!(span.end, 4 + module.len());
+    assert!(has_standalone_module_token_boundaries(&line, span.start, span.end));
+}

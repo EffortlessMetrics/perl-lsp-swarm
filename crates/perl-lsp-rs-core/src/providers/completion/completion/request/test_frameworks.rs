@@ -57,7 +57,8 @@ pub(super) fn reconcile(
         .filter(|import| is_test2_module(import.module.as_str()))
         .map(|import| format!("{};\n", import.statement))
         .collect::<String>();
-    let test2_facts = Test2Facts::from_source(scoped_test2_source.as_str());
+    let test2_analysis = Test2Facts::from_source_with_analysis(scoped_test2_source.as_str());
+    let test2_facts = &test2_analysis.facts;
     let uses_test2 = test2_facts.uses_test2();
     let generic_test_table_present =
         completions.iter().any(|item| item.detail.as_deref() == Some(TEST_MORE_DETAIL));
@@ -88,6 +89,12 @@ pub(super) fn reconcile(
     }
 
     if !uses_test2 {
+        return;
+    }
+
+    // A failed transform parse yields a symbol floor, not a complete import
+    // set. Do not project guessed or incomplete facts into completions.
+    if test2_analysis.analysis_limited {
         return;
     }
 
@@ -183,7 +190,12 @@ fn looks_like_indirect_method_context(context: &CompletionContext, source: &str)
 
 fn collect_scoped_uses(source: &str) -> Option<Vec<ScopedUse>> {
     let mut parser = Parser::new(source);
-    let ast = parser.parse().ok()?;
+    // Import arguments can contain valid Perl expressions (including
+    // quote-like operators) that the strict parser may recover from only
+    // partially. The completion provider already operates on the recovery AST
+    // at this boundary; use the same source-preserving tree so a recoverable
+    // Test2 import does not lose its production completion facts.
+    let ast = parser.parse_with_recovery().ast;
     let mut imports = Vec::new();
     let mut current_package = "main".to_string();
     walk_scoped_uses(&ast, source, &mut current_package, &mut imports);
@@ -312,6 +324,51 @@ mod tests {
     }
 
     #[test]
+    fn a_limited_test2_analysis_withholds_the_projected_import_table() {
+        // Review finding (@coderabbitai on #14651). This module's contribution
+        // is the `analysis_limited` early return, and every other Test2 test
+        // here imports well-formed source — those resolve unlimited and pass
+        // whether or not the branch exists.
+        //
+        // A single unresolvable statement is not enough to see it: that
+        // statement already fails closed to an empty symbol set in the
+        // resolver, so the projection loop emits nothing either way. The branch
+        // is only observable when some *other* statement in the same file did
+        // resolve, leaving a non-empty floor that is nevertheless not the
+        // file's complete import set. The projection replaces the generic
+        // Test::More table, so emitting that floor would present a partial
+        // table as the authoritative in-scope test vocabulary while silently
+        // omitting the aliases the second statement installs.
+        let limited = complete(
+            "use Test2::V0 'ok';\nuse Test2::V0 is => {-as => 'my_is', -prefix => 'x_'};\no|",
+            Some("t/example.t"),
+        );
+        assert!(
+            !labels(&limited).contains(&"ok"),
+            "an incomplete import set must not be projected: {:?}",
+            labels(&limited)
+        );
+
+        // The alias side of the unresolvable statement is withheld too — under
+        // Importer only one transform applies per entry, so neither spelling is
+        // known to exist.
+        let aliases = complete(
+            "use Test2::V0 'ok';\nuse Test2::V0 is => {-as => 'my_is', -prefix => 'x_'};\nx|",
+            Some("t/example.t"),
+        );
+        assert!(!labels(&aliases).contains(&"x_is"), "an unproven alias must not be completed");
+
+        // Control: the same two-statement file whose second statement *is*
+        // resolvable still projects `ok`, so the assertions above are not
+        // passing because this shape never completes anything.
+        let resolved = complete(
+            "use Test2::V0 'ok';\nuse Test2::V0 is => {-as => 'my_is'};\no|",
+            Some("t/example.t"),
+        );
+        assert!(labels(&resolved).contains(&"ok"), "a complete import set still projects");
+    }
+
+    #[test]
     fn plain_test2_v1_completes_t2_in_a_non_test_file() {
         let items = complete("use Test2::V1;\nT|", Some("lib/Example.pm"));
         assert_eq!(labels(&items), vec!["T2"]);
@@ -365,5 +422,19 @@ mod tests {
     fn string_path_flow_cannot_gain_test2_items() {
         let items = complete("use Test2::V0;\nmy $path = 'is|';\n", Some("t/example.t"));
         assert!(!labels(&items).contains(&"is"));
+    }
+
+    #[test]
+    fn compact_call_like_targets_preserve_explicit_completion_only() {
+        for source in
+            ["use Test2::V0 -target => foo(), ok;\no|", "use Test2::V0 -target => (foo()), ok;\no|"]
+        {
+            let items = complete(source, Some("t/example.t"));
+            let labels = labels(&items);
+            assert!(labels.contains(&"ok"), "ok missing: {source:?}");
+            for leaked in ["CLASS", "foo", "1", "2", "is"] {
+                assert!(!labels.contains(&leaked), "{leaked} leaked: {source:?}");
+            }
+        }
     }
 }

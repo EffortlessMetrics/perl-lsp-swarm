@@ -90,6 +90,17 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // Identity before any debugger query (#8294): when an execution
+        // context is live, the request must name exactly that context. With no
+        // live context, the pre-existing honest empty-list response is kept.
+        if let Err(rejection) = self.validated_live_thread_id(
+            "stackTrace",
+            seq,
+            request_seq,
+            arguments.as_ref().and_then(|v| v.get("threadId")).and_then(Value::as_i64),
+        ) {
+            return rejection;
+        }
         let args: Option<StackTraceArguments> =
             arguments.and_then(|v| serde_json::from_value(v).ok());
         let start_frame =
@@ -103,13 +114,10 @@ impl DebugAdapter {
             && let Some(stdin) = session.process.stdin.as_mut()
         {
             let commands = vec!["T".to_string()];
-            match self.send_framed_debugger_commands(stdin, &commands) {
-                Ok((begin, end)) => {
-                    framed_output_lines = self.capture_framed_debugger_output(
-                        &begin,
-                        &end,
-                        DEBUGGER_QUERY_WAIT_MS * 8,
-                    );
+            match self.send_framed_debugger_query(stdin, &commands, DEBUGGER_QUERY_WAIT_MS * 8) {
+                Ok((operation, begin, end)) => {
+                    framed_output_lines =
+                        self.capture_framed_debugger_output_for_operation(&operation, &begin, &end);
                 }
                 Err(error) => {
                     tracing::warn!(%error, "Failed to send framed stackTrace command, falling back");

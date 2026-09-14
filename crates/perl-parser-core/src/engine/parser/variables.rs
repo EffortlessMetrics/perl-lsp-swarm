@@ -152,10 +152,8 @@ impl<'a> Parser<'a> {
             // A parenthesized RHS (`my $a = (1, $b);`) is unaffected: the
             // parens are parsed as a single primary term by `parse_ternary`
             // regardless of the outer precedence level.
-            let assign_op = self.peek_compound_assign_op();
-            let initializer = if let Some(op) = assign_op {
-                let op_token = self.tokens.next()?;
-                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+            let initializer = if let Some((op, op_start)) = self.consume_assignment_operator()? {
+                let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
                     missing
                 } else {
                     self.parse_assignment()?
@@ -180,10 +178,15 @@ impl<'a> Parser<'a> {
 
             // Don't consume semicolon here - let parse_statement handle it uniformly
 
-            let end = initializer.as_ref().map_or_else(
-                || self.previous_position(),
-                |node| node.location.end.max(self.previous_position()),
-            );
+            // `previous_position()` only advances through `consume_token`, and
+            // the `local` target above is parsed through `parse_assignment`,
+            // which pulls the operator and RHS straight from the token stream.
+            // Anchor the end on the parsed nodes so `local $x = EXPR` spans the
+            // whole assignment instead of stopping at `$x`.
+            let end = initializer
+                .as_ref()
+                .map_or(variable.location.end, |node| node.location.end)
+                .max(self.previous_position());
             let node = Node::new(
                 NodeKind::VariableDeclaration {
                     declarator,
@@ -331,7 +334,12 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let end = self.previous_position();
+        // See `parse_variable_declaration`: the localized lvalue and RHS are
+        // parsed from the raw token stream, so anchor the end on the nodes.
+        let end = initializer
+            .as_ref()
+            .map_or(variable.location.end, |node| node.location.end)
+            .max(self.previous_position());
         let node = Node::new(
             NodeKind::VariableDeclaration {
                 declarator,
@@ -349,20 +357,18 @@ impl<'a> Parser<'a> {
         // If the next token is a sigil token, delegate to parse_variable_from_sigil
         // This handles cases where the lexer splits sigil and name (e.g. "%" "hash" vs "%hash")
         // Also handles operators that can act as sigils in this context (%, &, *)
-        if let Some(kind) = self.peek_kind() {
-            match kind {
-                TokenKind::ScalarSigil
-                | TokenKind::ArraySigil
-                | TokenKind::HashSigil
-                | TokenKind::SubSigil
-                | TokenKind::GlobSigil
-                | TokenKind::Percent     // %hash
-                | TokenKind::BitwiseAnd  // &sub
-                | TokenKind::Star => {   // *glob
-                    return self.parse_variable_from_sigil();
-                }
-                _ => {}
-            }
+        if let Some(
+            TokenKind::ScalarSigil
+            | TokenKind::ArraySigil
+            | TokenKind::HashSigil
+            | TokenKind::SubSigil
+            | TokenKind::GlobSigil
+            | TokenKind::Percent      // %hash
+            | TokenKind::BitwiseAnd   // &sub
+            | TokenKind::Star,        // *glob
+        ) = self.peek_kind()
+        {
+            return self.parse_variable_from_sigil();
         }
 
         let token = self.consume_token()?;
@@ -1309,13 +1315,11 @@ impl<'a> Parser<'a> {
                 NodeKind::OptionalParameter { .. } => {
                     seen_optional = true;
                 }
-                NodeKind::MandatoryParameter { .. } => {
-                    if seen_optional {
-                        self.errors.push(ParseError::syntax(
-                            "Mandatory parameter cannot follow an optional parameter in signature",
-                            param.location.start,
-                        ));
-                    }
+                NodeKind::MandatoryParameter { .. } if seen_optional => {
+                    self.errors.push(ParseError::syntax(
+                        "Mandatory parameter cannot follow an optional parameter in signature",
+                        param.location.start,
+                    ));
                 }
                 _ => {}
             }

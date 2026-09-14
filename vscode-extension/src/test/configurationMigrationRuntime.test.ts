@@ -12,7 +12,7 @@ import {
 
 function compatibleRegistry(): ConfigurationMigrationRegistry {
   return {
-    schema_version: 'vscode_configuration_migration.v1',
+    schema_version: 'vscode_configuration_migration.v2',
     source_public_release: '0.17.0',
     target_release: '0.18.0',
     rows: [
@@ -31,7 +31,8 @@ function compatibleRegistry(): ConfigurationMigrationRegistry {
         old_plus_new_conflict_policy: 'current_wins',
         security_trust_class: 'ordinary',
         warning_reason_code: 'legacy_setting_renamed',
-        expiry_version_or_issue: '#9000',
+        compatibility_window: { kind: 'no_expiry' },
+        expiry_owner_issue: 9000,
         installed_proof_requirement: '#9001',
       },
     ],
@@ -49,7 +50,457 @@ function registryWithConflictPolicy(
   return { ...base, rows: [{ ...row, old_plus_new_conflict_policy: policy }] };
 }
 
+function expiringRegistry(
+  window: ConfigurationMigrationRow['compatibility_window'],
+): ConfigurationMigrationRegistry {
+  const base = compatibleRegistry();
+  const row = base.rows[0]!;
+  return {
+    ...base,
+    rows: [{ ...row, compatibility_window: window, expiry_owner_issue: 7838 }],
+  };
+}
+
 describe('configuration migration runtime', () => {
+  test.each([
+    ['0.18.0-rc.1', 'compatible_legacy'],
+    ['0.18.0', 'compatible_legacy'],
+    ['0.18.0+build.7', 'compatible_legacy'],
+    ['0.18.1', 'expired'],
+  ] as const)('applies a versioned expiry threshold at %s', (extensionVersion, status) => {
+    const result = interpretLegacyConfiguration(
+      expiringRegistry({
+        kind: 'through_extension_version',
+        version: '0.18.0',
+        post_expiry_disposition: 'action_required',
+      }),
+      {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+        extension_version: extensionVersion,
+      },
+    );
+
+    expect(result.status).toBe(status);
+    if (status === 'expired') {
+      expect(result.canonical_value_present).toBe(false);
+      expect(result.post_expiry_disposition).toBe('action_required');
+    }
+  });
+
+  test.each([
+    ['0.18.0-rc.2', 'compatible_legacy'],
+    ['0.18.0-rc.10', 'compatible_legacy'],
+    ['0.18.0-rc.11', 'expired'],
+  ] as const)('orders numeric prerelease identifiers at %s', (extensionVersion, status) => {
+    const result = interpretLegacyConfiguration(
+      expiringRegistry({
+        kind: 'through_extension_version',
+        version: '0.18.0-rc.10',
+        post_expiry_disposition: 'action_required',
+      }),
+      {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+        extension_version: extensionVersion,
+      },
+    );
+
+    expect(result.status).toBe(status);
+  });
+
+  test('removed-in windows expire at the named version while through windows include it', () => {
+    const input = {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource' as const,
+      legacy_value_present: true,
+      legacy_value: 'legacy',
+      current_value_present: false,
+      current_value: null,
+      extension_version: '0.18.0',
+    };
+
+    const through = interpretLegacyConfiguration(
+      expiringRegistry({
+        kind: 'through_extension_version',
+        version: '0.18.0',
+        post_expiry_disposition: 'action_required',
+      }),
+      input,
+    );
+    const removed = interpretLegacyConfiguration(
+      expiringRegistry({
+        kind: 'removed_in_extension_version',
+        version: '0.18.0',
+        post_expiry_disposition: 'action_required',
+      }),
+      input,
+    );
+
+    expect(through.status).toBe('compatible_legacy');
+    expect(removed.status).toBe('expired');
+  });
+
+  test('build metadata is accepted and ignored for version precedence', () => {
+    const result = interpretLegacyConfiguration(
+      expiringRegistry({
+        kind: 'removed_in_extension_version',
+        version: '0.18.0+policy.3',
+        post_expiry_disposition: 'action_required',
+      }),
+      {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+        extension_version: '0.17.0+local.1',
+      },
+    );
+
+    expect(result.status).toBe('compatible_legacy');
+  });
+
+  test('current configuration remains authoritative after compatibility expiry', () => {
+    const result = interpretLegacyConfiguration(
+      expiringRegistry({
+        kind: 'through_extension_version',
+        version: '0.18.0',
+        post_expiry_disposition: 'action_required',
+      }),
+      {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: true,
+        current_value: 'current',
+        extension_version: '0.18.1',
+      },
+    );
+
+    expect(result).toMatchObject({
+      status: 'expired',
+      canonical_key_or_authority: 'perl-lsp.newSetting',
+      canonical_value_present: true,
+      canonical_value: 'current',
+    });
+  });
+
+  test('expiry preserves a current value even when canonical authority metadata is absent', () => {
+    const registry = expiringRegistry({
+      kind: 'through_extension_version',
+      version: '0.18.0',
+      post_expiry_disposition: 'action_required',
+    });
+    registry.rows = [{ ...registry.rows[0]!, new_key_or_authority: null }];
+    expect(validateMigrationRegistry(registry)).toEqual([]);
+
+    const result = interpretLegacyConfiguration(registry, {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource',
+      legacy_value_present: true,
+      legacy_value: 'legacy',
+      current_value_present: true,
+      current_value: 'current',
+      extension_version: '0.18.1',
+    });
+
+    expect(result).toMatchObject({
+      status: 'expired',
+      canonical_value_present: true,
+      canonical_value: 'current',
+    });
+  });
+
+  test.each([
+    ['migration_disposition', 'future_disposition'],
+    ['old_scope', 'future_scope'],
+    ['new_scope', 'future_scope'],
+    ['old_plus_new_conflict_policy', 'future_policy'],
+    ['security_trust_class', 'future_security_class'],
+  ] as const)('unknown registry enum %s fails closed', (field, unknownValue) => {
+    const registry = compatibleRegistry();
+    registry.rows = [{ ...registry.rows[0]!, [field]: unknownValue } as never];
+
+    const result = interpretLegacyConfiguration(registry, {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource',
+      legacy_value_present: true,
+      legacy_value: 'legacy',
+      current_value_present: false,
+      current_value: null,
+      extension_version: '0.18.0',
+    });
+
+    expect(result).toMatchObject({
+      status: 'invalid',
+      reason_code: 'legacy_registry_invalid',
+      canonical_value_present: false,
+    });
+  });
+
+  test('malformed expiry thresholds invalidate the registry', () => {
+    const registry = expiringRegistry({
+      kind: 'through_extension_version',
+      version: 'not-a-version',
+      post_expiry_disposition: 'action_required',
+    });
+    expect(validateMigrationRegistry(registry)).toContain(
+      'migration expiry version is not valid SemVer: legacy_rename',
+    );
+    expect(
+      interpretLegacyConfiguration(registry, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+        extension_version: '0.19.0',
+      }),
+    ).toMatchObject({
+      status: 'invalid',
+      reason_code: 'legacy_registry_invalid',
+      canonical_value_present: false,
+    });
+  });
+
+  test.each([undefined, 'not-a-version'])(
+    'unknown extension version %s fails closed without asserting expiry',
+    (extensionVersion) => {
+      const invalid = interpretLegacyConfiguration(
+        expiringRegistry({
+          kind: 'through_extension_version',
+          version: '0.18.0',
+          post_expiry_disposition: 'action_required',
+        }),
+        {
+          old_key: 'perl-lsp.oldSetting',
+          source_scope: 'resource',
+          legacy_value_present: true,
+          legacy_value: 'legacy',
+          current_value_present: false,
+          current_value: null,
+          ...(extensionVersion === undefined ? {} : { extension_version: extensionVersion }),
+        },
+      );
+      expect(invalid).toMatchObject({
+        status: 'invalid',
+        reason_code: 'migration_extension_version_invalid',
+        canonical_value_present: false,
+        post_expiry_disposition: 'action_required',
+      });
+    },
+  );
+
+  test('missing extension version remains compatible for a row with no expiry', () => {
+    expect(
+      interpretLegacyConfiguration(compatibleRegistry(), {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+      }),
+    ).toMatchObject({ status: 'compatible_legacy', canonical_value: 'legacy' });
+  });
+
+  test('unknown compatibility variants fail closed without exposing their payload', () => {
+    const registry = expiringRegistry({
+      kind: 'through_extension_version',
+      version: '0.18.0',
+      post_expiry_disposition: 'action_required',
+    });
+    registry.rows[0] = {
+      ...registry.rows[0]!,
+      compatibility_window: {
+        kind: 'future_policy',
+        version: '0.18.0',
+        post_expiry_disposition: 'action_required',
+      } as never,
+    };
+
+    const result = interpretLegacyConfiguration(registry, {
+      old_key: 'perl-lsp.oldSetting',
+      source_scope: 'resource',
+      legacy_value_present: true,
+      legacy_value: 'secret legacy value',
+      current_value_present: false,
+      current_value: null,
+      extension_version: '0.19.0',
+    });
+
+    expect(result).toMatchObject({
+      status: 'invalid',
+      reason_code: 'legacy_registry_invalid',
+      canonical_value_present: false,
+    });
+    expect(JSON.stringify(safeMigrationRuntimeSnapshot(result))).not.toContain('secret legacy');
+  });
+
+  test('malformed rows fail closed before selection', () => {
+    const registry = compatibleRegistry();
+    registry.rows = [null as never];
+
+    expect(
+      interpretLegacyConfiguration(registry, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'secret legacy value',
+        current_value_present: false,
+        current_value: null,
+      }),
+    ).toMatchObject({
+      status: 'invalid',
+      reason_code: 'legacy_registry_invalid',
+      canonical_value_present: false,
+    });
+  });
+
+  test('missing or future registry envelopes fail closed', () => {
+    const futureRegistry = {
+      ...compatibleRegistry(),
+      schema_version: 'vscode_configuration_migration.v3',
+    } as never;
+
+    expect(
+      interpretLegacyConfiguration(futureRegistry, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: false,
+        legacy_value: null,
+        current_value_present: false,
+        current_value: null,
+      }),
+    ).toMatchObject({ status: 'not_applicable' });
+
+    expect(
+      interpretLegacyConfiguration(futureRegistry, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+      }),
+    ).toMatchObject({
+      status: 'invalid',
+      reason_code: 'legacy_registry_invalid',
+      canonical_value_present: false,
+    });
+  });
+
+  test('expiry ownership and network availability cannot affect runtime expiry', () => {
+    const first = expiringRegistry({
+      kind: 'through_extension_version',
+      version: '0.18.0',
+      post_expiry_disposition: 'action_required',
+    });
+    const second = {
+      ...first,
+      rows: [{ ...first.rows[0]!, expiry_owner_issue: 999999 }],
+    };
+    const unowned = {
+      ...first,
+      rows: [{ ...first.rows[0]!, expiry_owner_issue: null }],
+    };
+
+    for (const extensionVersion of ['0.17.0', '0.18.1']) {
+      const input = {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource' as const,
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: false,
+        current_value: null,
+        extension_version: extensionVersion,
+      };
+      const status = interpretLegacyConfiguration(first, input).status;
+      expect(interpretLegacyConfiguration(second, input).status).toBe(status);
+      expect(interpretLegacyConfiguration(unowned, input).status).toBe(status);
+    }
+  });
+
+  test('removed-inert expiry remains inert and unsupported expiry remains invalid', () => {
+    const base = compatibleRegistry().rows[0]!;
+    const inert = expiringRegistry({
+      kind: 'removed_in_extension_version',
+      version: '0.18.0',
+      post_expiry_disposition: 'inert',
+    });
+    inert.rows = [
+      {
+        ...base,
+        migration_disposition: 'removed_inert',
+        automatic_read_compatibility: false,
+        explicit_write_allowed: false,
+        new_key_or_authority: null,
+        new_scope: null,
+        old_plus_new_conflict_policy: 'not_applicable',
+        compatibility_window: inert.rows[0]!.compatibility_window,
+      },
+    ];
+    expect(
+      interpretLegacyConfiguration(inert, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'secret',
+        current_value_present: true,
+        current_value: 'must-not-become-authoritative',
+        extension_version: '0.18.0',
+      }),
+    ).toMatchObject({
+      status: 'expired',
+      post_expiry_disposition: 'inert',
+      canonical_value_present: false,
+      canonical_value: null,
+    });
+
+    const unsupported: ConfigurationMigrationRegistry = {
+      ...inert,
+      rows: [
+        {
+          ...inert.rows[0]!,
+          migration_disposition: 'unsupported_legacy_value',
+          compatibility_window: {
+            kind: 'removed_in_extension_version',
+            version: '0.18.0',
+            post_expiry_disposition: 'invalid',
+          },
+        },
+      ],
+    };
+    expect(
+      interpretLegacyConfiguration(unsupported, {
+        old_key: 'perl-lsp.oldSetting',
+        source_scope: 'resource',
+        legacy_value_present: true,
+        legacy_value: 'legacy',
+        current_value_present: true,
+        current_value: 'must-not-become-authoritative',
+        extension_version: '0.18.0',
+      }),
+    ).toMatchObject({
+      status: 'expired',
+      post_expiry_disposition: 'invalid',
+      canonical_value_present: false,
+      canonical_value: null,
+    });
+  });
+
   test('keeps removed MCP process-execution settings inert without carrying their value', () => {
     const secretLegacyValue = [
       { label: 'private', command: '/private/tool', env: { TOKEN: 'secret' } },

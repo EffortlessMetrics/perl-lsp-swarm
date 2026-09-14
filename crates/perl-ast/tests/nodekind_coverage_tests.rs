@@ -579,7 +579,9 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             Node::new(
                 NodeKind::DataSection {
                     marker: "__DATA__".to_string(),
+                    marker_span: Some(loc()),
                     body: Some("payload".to_string()),
+                    body_span: Some(loc()),
                 },
                 loc(),
             ),

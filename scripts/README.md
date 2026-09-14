@@ -22,7 +22,7 @@ Run these locally during normal contribution work.
 | Script | Purpose |
 |--------|---------|
 | `cleanup-worktrees.sh` | Remove stale git worktrees |
-| `cleanup-completed-worktrees.sh` | Remove worktrees whose branches are merged |
+| `cleanup-completed-worktrees.sh` | Remove worktrees whose branches are merged (`--dry-run` is strictly read-only) |
 | `worktree-manager.py` | Python interface to create and track named worktrees |
 | `validate-workspace-exclusions.sh` | Ensure excluded paths aren't accidentally included |
 | `gen-xlarge-workspace.sh` | Generate a large synthetic workspace for scale testing |
@@ -131,6 +131,7 @@ Run in order for a release. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-wor
 | `marketing/` | GIF rendering and demo scripts (see [docs/assets/gifs/README.md](../docs/assets/gifs/README.md)) |
 | `tests/` | Shell-level integration tests for scripts |
 | `requirements.txt` | Python dependencies for scripts that need them |
+| `requirements-release.txt` | Pinned JSON-schema validator runtime for release topology workflows |
 | `safe-pull.sh` | Pull with automatic conflict detection |
 | `inject-sha-assets.sh` | Inject SHA checksums into release assets |
 | `generate-receipt.sh` | Generate a single artifact receipt |

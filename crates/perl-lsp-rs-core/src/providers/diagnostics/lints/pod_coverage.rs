@@ -264,14 +264,13 @@ fn collect_names_from_expr(node: &Node, names: &mut Vec<(String, usize, usize)>)
                 }
             }
         }
-        NodeKind::String { value, .. } => {
+        NodeKind::String { value, .. }
             if !value.is_empty()
                 && !value.starts_with('$')
                 && !value.starts_with('@')
-                && !value.starts_with('%')
-            {
-                names.push((value.clone(), node.location.start, node.location.end));
-            }
+                && !value.starts_with('%') =>
+        {
+            names.push((value.clone(), node.location.start, node.location.end));
         }
         NodeKind::FunctionCall { args, .. } => {
             for arg in args {

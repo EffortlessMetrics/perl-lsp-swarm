@@ -1,0 +1,13 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: >-
+  Draft pull requests now receive exact-head Rust formatting and conflict-marker
+  feedback while the expensive merge suite stays deferred until ready for review;
+  skipped jobs stay labeled as skipped in the check list and are framed as
+  unverified by the draft-posture run summary.
+time: 2026-08-28T02:17:00Z
+custom:
+  PR: "13123"
+  Slug: draft-pr-cheap-feedback
+  Breaking: "no"

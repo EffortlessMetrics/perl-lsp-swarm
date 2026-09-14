@@ -476,3 +476,365 @@ fn falsifier_cross_generation_result_reuse_is_rejected() {
     let violations = must_err(r.validate());
     assert!(violations.iter().any(|v| v.contains("cross-generation reuse")));
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// callable_semantic_summary.v1 falsifiers (#12674, I02)
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn facet(
+    facet: SummaryFacetKind,
+    status: SummaryFacetStatus,
+    unsupported: u32,
+    missing: u32,
+    outbound_dependencies: u32,
+) -> FacetCompleteness {
+    FacetCompleteness {
+        facet,
+        status,
+        planned: 1,
+        selected: 1,
+        terminal: 0,
+        unsupported,
+        missing,
+        outbound_dependencies,
+    }
+}
+
+fn honest_facets() -> Vec<FacetCompleteness> {
+    // One entry per kind, canonical order: Result/Effect limited by one
+    // unresolved outbound call, Control limited by the missing CFG, the
+    // unprovable families declared NotProven with unsupported counts.
+    vec![
+        FacetCompleteness {
+            facet: SummaryFacetKind::Result,
+            status: SummaryFacetStatus::Limited,
+            planned: 2,
+            selected: 2,
+            terminal: 1,
+            unsupported: 0,
+            missing: 0,
+            outbound_dependencies: 1,
+        },
+        facet(SummaryFacetKind::ParameterBinding, SummaryFacetStatus::NotProven, 1, 0, 0),
+        facet(SummaryFacetKind::Place, SummaryFacetStatus::Complete, 0, 0, 0),
+        FacetCompleteness {
+            facet: SummaryFacetKind::Effect,
+            status: SummaryFacetStatus::Limited,
+            planned: 1,
+            selected: 1,
+            terminal: 1,
+            unsupported: 0,
+            missing: 0,
+            outbound_dependencies: 1,
+        },
+        facet(SummaryFacetKind::AliasEscape, SummaryFacetStatus::NotProven, 1, 0, 0),
+        facet(SummaryFacetKind::Diagnostic, SummaryFacetStatus::NotProven, 1, 0, 0),
+        facet(SummaryFacetKind::Exception, SummaryFacetStatus::NotProven, 1, 0, 0),
+        facet(SummaryFacetKind::Control, SummaryFacetStatus::Limited, 0, 1, 0),
+        facet(SummaryFacetKind::CompileEffect, SummaryFacetStatus::NotProven, 1, 0, 0),
+        facet(SummaryFacetKind::Boundary, SummaryFacetStatus::Complete, 0, 0, 0),
+        facet(SummaryFacetKind::OutboundCall, SummaryFacetStatus::Complete, 0, 0, 0),
+    ]
+}
+
+fn summary_ref_for(callable: EntityId) -> CallableSemanticSummaryRef {
+    CallableSemanticSummaryRef::new(
+        callable,
+        generation(),
+        vec![],
+        vec![boundary()],
+        CompositionPolicy::DirectOnly,
+        ResultFacets { result: true, effect: true, escape: false, control: true },
+        SummaryCurrentness::Fresh(generation()),
+        WorkBudget { max_units: 100 },
+        RefusalCeiling::Refuse,
+        ClaimCeiling::Provisional,
+        PrivacyClass::PrivateSafe,
+    )
+}
+
+fn summary_packet() -> CallableSemanticSummary {
+    let callable = entity(2);
+    CallableSemanticSummary {
+        schema_version: CALLABLE_SEMANTIC_SUMMARY_SCHEMA_VERSION,
+        callable,
+        callable_name: Some("f".to_string()),
+        body: BodyIdentity::Exact("fp:body-2".to_string()),
+        source_generation: generation(),
+        anchor: anchor(),
+        summary_ref: summary_ref_for(callable),
+        facets: honest_facets(),
+        result_exits: vec![
+            ResultExitRef {
+                kind: ResultExitKind::ExplicitReturn,
+                source: Some(CallableFactRef::PirOp { body: 1, op: 3 }),
+                anchor: Some(anchor()),
+            },
+            ResultExitRef { kind: ResultExitKind::ImplicitFallthrough, source: None, anchor: None },
+        ],
+        bindings: vec![BindingPlaceRef {
+            name: "$x".to_string(),
+            role: PlaceRole::Write,
+            source: CallableFactRef::PirOp { body: 1, op: 0 },
+            anchor: Some(anchor()),
+        }],
+        effects: vec![EffectRef {
+            kind: EffectKind::Assign,
+            source: CallableFactRef::PirOp { body: 1, op: 1 },
+            anchor: Some(anchor()),
+        }],
+        outbound_calls: vec![OutboundCallDependency::new(
+            CallableFactRef::HirItem(7),
+            Some(anchor()),
+            OutboundCallee::Named("g".to_string()),
+            vec![SummaryFacetKind::Effect, SummaryFacetKind::Result],
+            CallResolution::UnresolvedTransitive,
+        )],
+        boundary_sites: vec![BoundarySiteRef::new(
+            BoundaryKind::DynamicValue,
+            CallableFactRef::HirItem(9),
+            Some(anchor()),
+        )],
+        work: SummaryWorkLedger {
+            planned_callables: 1,
+            visited_callables: 1,
+            planned_ops: 5,
+            visited_ops: 5,
+            units_consumed: 5,
+            bytes_retained: 0,
+        },
+    }
+}
+
+/// A packet whose every facet is Complete and that carries no outbound
+/// dependencies — the only shape allowed to claim Exact.
+fn exact_packet() -> CallableSemanticSummary {
+    let mut packet = summary_packet();
+    packet.outbound_calls = vec![];
+    packet.facets = SummaryFacetKind::ALL
+        .iter()
+        .map(|kind| facet(*kind, SummaryFacetStatus::Complete, 0, 0, 0))
+        .collect();
+    packet.summary_ref.claim_ceiling = ClaimCeiling::Exact;
+    packet
+}
+
+#[test]
+fn valid_summary_packet_passes_and_serializes_deterministically() {
+    let packet = summary_packet();
+    assert!(packet.validate().is_ok(), "valid packet: {:?}", packet.validate());
+    // The dependency constructor canonicalized the blocked-facet order.
+    assert_eq!(
+        packet.outbound_calls[0].blocked_facets,
+        vec![SummaryFacetKind::Result, SummaryFacetKind::Effect]
+    );
+    let a = must(serde_json::to_vec(&packet));
+    let b = must(serde_json::to_vec(&summary_packet()));
+    assert_eq!(a, b, "two assemblies of the same packet must be byte-identical");
+    let exact = exact_packet();
+    assert!(
+        exact.validate().is_ok(),
+        "all-Complete packet may claim Exact: {:?}",
+        exact.validate()
+    );
+}
+
+#[test]
+fn falsifier_unknown_call_as_pure() {
+    // An unresolved call with an empty blocked set is a purity smuggle.
+    let mut packet = summary_packet();
+    packet.outbound_calls[0].blocked_facets = vec![];
+    let violations = must_err(packet.validate());
+    assert!(
+        violations.iter().any(|v| v.contains("never"))
+            && violations.iter().any(|v| v.contains("blocks"))
+    );
+
+    // An Unknown callee is still an unresolved transitive dependency: it must
+    // block facets, and the facets it names must not be Complete.
+    let mut packet = summary_packet();
+    packet.outbound_calls[0].callee = OutboundCallee::Unknown;
+    assert!(packet.validate().is_ok());
+    packet.facets[0].status = SummaryFacetStatus::Complete;
+    packet.facets[0].outbound_dependencies = 0;
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("cross-facet completeness join")));
+
+    // A Named callee must be a real name, never an empty passthrough.
+    let mut packet = summary_packet();
+    packet.outbound_calls[0].callee = OutboundCallee::Named(String::new());
+    assert!(packet.validate().is_err());
+}
+
+#[test]
+fn falsifier_missing_as_empty_summary() {
+    // A facet with declared missing evidence can never be Complete — a gap
+    // must not silently become an exact empty set.
+    let mut packet = summary_packet();
+    packet.facets[2].status = SummaryFacetStatus::Complete;
+    packet.facets[2].missing = 1;
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("can never be Complete")));
+
+    // Unsupported evidence precludes Complete just as hard (the status doc
+    // says so; validation enforces it).
+    let mut packet = summary_packet();
+    packet.facets[2].status = SummaryFacetStatus::Complete;
+    packet.facets[2].unsupported = 1;
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("unsupported=1")));
+
+    // The honest form — NotProven with the unsupported count declared —
+    // passes: AliasEscape is never Complete-with-zero.
+    let packet = summary_packet();
+    let alias = &packet.facets[4];
+    assert_eq!(alias.facet, SummaryFacetKind::AliasEscape);
+    assert_eq!(alias.status, SummaryFacetStatus::NotProven);
+    assert!(alias.unsupported > 0);
+    assert!(packet.validate().is_ok());
+}
+
+#[test]
+fn falsifier_cross_facet_completeness_summary() {
+    // Facet-specific completeness: Boundary Complete while Result stays
+    // Limited is valid — one facet never strengthens another.
+    let packet = summary_packet();
+    assert_eq!(packet.facets[9].status, SummaryFacetStatus::Complete);
+    assert_eq!(packet.facets[0].status, SummaryFacetStatus::Limited);
+    assert!(packet.validate().is_ok());
+
+    // But Exact claims over a non-Complete ledger are a strengthening smuggle.
+    let mut packet = summary_packet();
+    packet.summary_ref.claim_ceiling = ClaimCeiling::Exact;
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("facet-specific")));
+
+    // Unsorted or duplicated facet ledgers break the canonical join.
+    let mut packet = summary_packet();
+    packet.facets.swap(0, 1);
+    assert!(packet.validate().is_err());
+    let mut packet = summary_packet();
+    packet.facets.remove(0);
+    assert!(packet.validate().is_err());
+}
+
+#[test]
+fn falsifier_zero_work_summary() {
+    let mut packet = summary_packet();
+    packet.work.visited_ops = 0;
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("work law")));
+
+    // visited beyond planned is honest, never a violation: one offered
+    // expression can lower to several operations.
+    let mut packet = summary_packet();
+    packet.work.visited_ops = 6; // beyond planned_ops = 5
+    assert!(packet.validate().is_ok());
+
+    let mut packet = summary_packet();
+    packet.work.visited_callables = 0;
+    assert!(packet.validate().is_err());
+}
+
+#[test]
+fn falsifier_summary_ordering() {
+    let canonical = must(serde_json::to_vec(&summary_packet()));
+
+    // Normalized identity sets are canonicalized at construction: permuted
+    // blocked facets and referenced boundaries produce identical bytes.
+    let mut permuted = summary_packet();
+    permuted.outbound_calls[0] = OutboundCallDependency::new(
+        CallableFactRef::HirItem(7),
+        Some(anchor()),
+        OutboundCallee::Named("g".to_string()),
+        vec![SummaryFacetKind::Effect, SummaryFacetKind::Result],
+        CallResolution::UnresolvedTransitive,
+    );
+    assert_eq!(must(serde_json::to_vec(&permuted)), canonical);
+
+    // Hand-built (non-constructor) unsorted blocked facets are rejected.
+    let mut unsorted = summary_packet();
+    unsorted.outbound_calls[0].blocked_facets =
+        vec![SummaryFacetKind::Effect, SummaryFacetKind::Result];
+    assert!(unsorted.validate().is_err());
+
+    // Source-ordered lists are preserved verbatim, never normalized: moving
+    // the fallthrough exit changes the bytes AND fails validation.
+    let mut reordered = summary_packet();
+    reordered.result_exits.reverse();
+    assert_ne!(must(serde_json::to_vec(&reordered)), canonical);
+    let violations = must_err(reordered.validate());
+    assert!(violations.iter().any(|v| v.contains("ImplicitFallthrough")));
+
+    // A missing fallthrough exit is a structural violation.
+    let mut no_fallthrough = summary_packet();
+    no_fallthrough.result_exits.pop();
+    assert!(no_fallthrough.validate().is_err());
+}
+
+#[test]
+fn falsifier_summary_stale_reuse() {
+    // A stale packet must not carry Exact claims — re-checked at the packet
+    // join even though the envelope already enforces it.
+    let mut packet = exact_packet();
+    packet.summary_ref.currentness = SummaryCurrentness::Stale;
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("historical-as-current")));
+
+    // Stale with a Provisional ceiling is the honest historical form.
+    let mut packet = summary_packet();
+    packet.summary_ref.currentness = SummaryCurrentness::Stale;
+    assert!(packet.validate().is_ok());
+
+    // The packet and its envelope must name one freshness identity.
+    let mut packet = summary_packet();
+    packet.source_generation = SourceGeneration::known("gen-2");
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("one freshness identity")));
+
+    // The envelope must describe the packet's own callable.
+    let mut packet = summary_packet();
+    packet.summary_ref.callable = entity(999);
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("one subject, one identity")));
+}
+
+#[test]
+fn falsifier_summary_schema_and_anchor_guards() {
+    let mut packet = summary_packet();
+    packet.schema_version = 2;
+    assert!(packet.validate().is_err());
+
+    let mut packet = summary_packet();
+    packet.anchor = SourceAnchor::new(None, NO_FILE, 10, 20);
+    assert!(packet.validate().is_err());
+
+    let mut packet = summary_packet();
+    packet.body = BodyIdentity::Exact(String::new());
+    assert!(packet.validate().is_err());
+
+    let mut packet = summary_packet();
+    packet.callable_name = Some(String::new());
+    assert!(packet.validate().is_err());
+}
+
+#[test]
+fn falsifier_boundary_site_ledger_mismatch() {
+    // The Boundary facet's ledger must agree with the packet's site record:
+    // deduped or dropped provenance is a validation violation.
+    let mut packet = summary_packet();
+    assert!(packet.validate().is_ok(), "fixture: one site, selected=1");
+    packet.boundary_sites = vec![];
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("site/ledger mismatch")));
+
+    // Two sites with a deduped count of one is equally dishonest.
+    let mut packet = summary_packet();
+    packet.boundary_sites.push(BoundarySiteRef::new(
+        BoundaryKind::DynamicValue,
+        CallableFactRef::HirItem(11),
+        Some(anchor()),
+    ));
+    let violations = must_err(packet.validate());
+    assert!(violations.iter().any(|v| v.contains("site/ledger mismatch")));
+}

@@ -135,8 +135,11 @@ fn save_results(&self, results: &BenchmarkResults) -> Result<(), BenchmarkError>
 
 **Solution**: Created comprehensive test suites:
 
-#### Test Files Created:
-1. **`benchmark_output_tests.rs`** - 8 comprehensive tests covering:
+#### Test Files Created (historical record; files 1-3 below were deleted 2026-08-28 — see status note):
+
+> **Status (2026-08-28):** `benchmark_output_tests.rs`, `benchmark_output_integration_test.rs`, and `benchmark_error_handling_tests.rs` were deleted as unreachable: the repository root is a virtual workspace with no `[package]`, so `tests/*.rs` files were never compiled as test targets, and the `benchmark_parsers` binary they spawned has been archived. See flaky-census wave 1 (issue #11869, comment 5461166201).
+
+1. **`benchmark_output_tests.rs`** (deleted 2026-08-28) - 8 comprehensive tests covered:
    - Default output file creation and validation
    - Custom output path functionality
    - Directory creation with output paths
@@ -146,14 +149,14 @@ fn save_results(&self, results: &BenchmarkResults) -> Result<(), BenchmarkError>
    - Metadata details validation
    - Configuration override testing
 
-2. **`benchmark_output_integration_test.rs`** - 6 integration tests covering:
+2. **`benchmark_output_integration_test.rs`** (deleted 2026-08-28) - 6 integration tests covered:
    - End-to-end benchmark execution
    - Custom output path with directory creation
    - Error handling for invalid configurations
    - CLI help and version output validation
    - Real binary execution validation
 
-3. **`benchmark_error_handling_tests.rs`** - 8 error scenario tests covering:
+3. **`benchmark_error_handling_tests.rs`** (deleted 2026-08-28) - 8 error scenario tests covered:
    - Invalid iterations parameter handling
    - Permission denied scenarios (Unix-specific)
    - Invalid JSON configuration file handling
@@ -213,11 +216,11 @@ cargo test --test integration
 # test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured
 ```
 
-### Test Coverage Summary:
-- **22 new test cases** covering all new functionality
-- **Edge case coverage**: Permission denied, invalid inputs, file system errors
-- **Integration coverage**: End-to-end CLI workflow validation
-- **Error scenario coverage**: Comprehensive error path testing
+### Test Coverage Summary (historical record — see status note above):
+- **22 new test cases** covered the functionality at the time of the original work; all 22 lived in the three files deleted 2026-08-28, so the tree now carries none of them (only `tests/benchmark_cleanup_validation.rs` with its 6 validation tests remains)
+- **Edge case coverage** (historical): Permission denied, invalid inputs, file system errors
+- **Integration coverage** (historical): End-to-end CLI workflow validation
+- **Error scenario coverage** (historical): Comprehensive error path testing
 
 ## CLI Usage Examples
 
@@ -279,10 +282,10 @@ benchmark_parsers --version
 - **`crates/tree-sitter-perl-rs/src/bin/benchmark_parsers.rs`**: Complete rewrite with modern patterns
 
 ### Test Files:
-- **`tests/benchmark_output_tests.rs`**: Unit tests for output functionality
-- **`tests/benchmark_output_integration_test.rs`**: Integration tests for CLI workflow  
-- **`tests/benchmark_error_handling_tests.rs`**: Error scenario testing
-- **`tests/benchmark_cleanup_validation.rs`**: Validation tests for implementation patterns
+- ~~**`tests/benchmark_output_tests.rs`**: Unit tests for output functionality~~ (deleted 2026-08-28)
+- ~~**`tests/benchmark_output_integration_test.rs`**: Integration tests for CLI workflow~~ (deleted 2026-08-28)
+- ~~**`tests/benchmark_error_handling_tests.rs`**: Error scenario testing~~ (deleted 2026-08-28)
+- **`tests/benchmark_cleanup_validation.rs`**: Validation tests for implementation patterns (still present)
 
 ### Documentation:
 - **`BENCHMARK_CLEANUP_SUMMARY.md`**: This comprehensive summary document

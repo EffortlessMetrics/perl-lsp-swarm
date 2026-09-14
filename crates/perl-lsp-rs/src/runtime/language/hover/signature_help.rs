@@ -97,7 +97,7 @@ impl LspServer {
                         let declared =
                             crate::runtime::language::completion::dancer2_declared_sub_names(ast);
                         let Some(activation) = context.activations.for_package(&package) else {
-                            return Ok(None);
+                            return Ok(Some(Value::Null));
                         };
                         let keyword_imported = activation.facts.keywords.iter().any(|keyword| {
                             keyword.keyword == function_name
@@ -242,7 +242,9 @@ impl LspServer {
             return Err(invalid_signature_help_params());
         }
 
-        Ok(None)
+        // A signature-help request with no available signature still requires
+        // a terminal response. None is reserved for response-less notifications.
+        Ok(Some(Value::Null))
     }
 
     /// Find function context at position for signature help
@@ -286,10 +288,8 @@ impl LspServer {
                     }
                     depth -= 1;
                 }
-                '[' | '{' => {
-                    if depth > 0 {
-                        depth -= 1;
-                    }
+                '[' | '{' if depth > 0 => {
+                    depth -= 1;
                 }
                 _ => {}
             }
@@ -471,13 +471,11 @@ impl LspServer {
         name: &str,
     ) -> Option<&'a Node> {
         match &node.kind {
-            NodeKind::Subroutine { name: sub_name, .. } => {
-                if let Some(sub_name) = sub_name {
-                    let (_, sub_bare) = perl_parser::qualified_name::split_qualified_name(sub_name);
-                    let (_, name_bare) = perl_parser::qualified_name::split_qualified_name(name);
-                    if sub_bare == name_bare {
-                        return Some(node);
-                    }
+            NodeKind::Subroutine { name: Some(sub_name), .. } => {
+                let (_, sub_bare) = perl_parser::qualified_name::split_qualified_name(sub_name);
+                let (_, name_bare) = perl_parser::qualified_name::split_qualified_name(name);
+                if sub_bare == name_bare {
+                    return Some(node);
                 }
             }
             NodeKind::Method { name: method_name, .. } => {

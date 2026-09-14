@@ -1,0 +1,104 @@
+{
+  "schema_version": "authority_transfer_programme_fixture.v1",
+  "description": "Shift-left defect: a programme controller is marked builder-ready and would enter a builder frontier (#11697 static rejection case; ruling falsifier FF02).",
+  "expected_code": "CONTROLLER_MARKED_BUILDABLE",
+  "graph": {
+    "schema_version": "authority_transfer_programme_graph.v1",
+    "programme_issue": 11696,
+    "rails": [
+      "control_plane"
+    ],
+    "operation_profiles": [
+      "op.programme-controller.v1",
+      "op.static-contract.v1"
+    ],
+    "evidence_profiles": [
+      "ev.not-applicable.v1",
+      "ev.static-validator.v1"
+    ],
+    "first_falsifiers": [
+      {
+        "id": "FF02",
+        "statement": "A controller becomes buildable."
+      }
+    ],
+    "nodes": [
+      {
+        "node_id": "PGC",
+        "issue": 11696,
+        "controller": null,
+        "rail": "control_plane",
+        "phase": "programme_control",
+        "kind": "controller",
+        "buildable": true,
+        "observation_optional": false,
+        "edges": {
+          "hard": [],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.programme-controller.v1",
+        "evidence_profile": "ev.not-applicable.v1",
+        "authority_inputs": [],
+        "authority_outputs": [],
+        "conflicts": {
+          "exclusive": [],
+          "shared": []
+        },
+        "claim_ceiling": "Owns programme meaning only.",
+        "non_claims": [],
+        "first_falsifier": "FF02",
+        "artifacts": [],
+        "predecessor_exit": null,
+        "handoff": null,
+        "terminal_relation": "none"
+      },
+      {
+        "node_id": "AT01",
+        "issue": 11697,
+        "controller": "PGC",
+        "rail": "control_plane",
+        "phase": "stable_programme_graph",
+        "kind": "contract",
+        "buildable": true,
+        "observation_optional": false,
+        "edges": {
+          "hard": [],
+          "evidence": [],
+          "optional": [],
+          "parallel_after": [],
+          "fan_in": []
+        },
+        "operation_profile": "op.static-contract.v1",
+        "evidence_profile": "ev.static-validator.v1",
+        "authority_inputs": [],
+        "authority_outputs": [
+          {
+            "key": "authority_transfer.manifest",
+            "mode": "exclusive"
+          }
+        ],
+        "conflicts": {
+          "exclusive": [
+            "authority_transfer.manifest"
+          ],
+          "shared": []
+        },
+        "claim_ceiling": "One stable validated programme graph.",
+        "non_claims": [],
+        "first_falsifier": "FF02",
+        "artifacts": [
+          {
+            "id": "at.manifest",
+            "owner": "AT01"
+          }
+        ],
+        "predecessor_exit": null,
+        "handoff": "PGC",
+        "terminal_relation": "close_leaf"
+      }
+    ]
+  }
+}

@@ -249,7 +249,7 @@ fn candidate_commit_identity(repo_root: &Path) -> Result<String> {
 /// deliberately not enforced here: the subject manifest's
 /// `upstream_theoretical_prerequisites` are compatibility metadata, and the
 /// maintained host-envelope rows belong to #10966.
-const REQUIRED_VIM_FEATURES: [&str; 3] = ["channel", "job", "timers"];
+pub(crate) const REQUIRED_VIM_FEATURES: [&str; 3] = ["channel", "job", "timers"];
 
 pub fn verify_vim_features(version_output: &str) -> Result<()> {
     for feature in REQUIRED_VIM_FEATURES {
@@ -330,14 +330,10 @@ pub struct VimHostRunInputs {
 }
 
 /// A reused output directory silently concatenates driver event streams and
-/// inherits stale receipts, so the runner refuses instead of cleaning.
+/// inherits stale receipts, so the runner refuses instead of cleaning. The
+/// stale-receipt law is owned by `crate::editor_host`.
 pub fn ensure_fresh_output_root(out_root: &Path) -> Result<()> {
-    ensure!(
-        !out_root.exists(),
-        "output root already exists; use a fresh directory for each host run: {}",
-        out_root.display()
-    );
-    Ok(())
+    crate::editor_host::FreshReceiptTarget::refuse_existing(out_root, "output root")
 }
 
 /// The typed outcome of one host run. The receipt is written for every run
@@ -613,9 +609,22 @@ pub fn host_run(repo_root: &Path, run: &VimHostRunInputs) -> Result<HostRunOutco
             "#10944 {JOURNEY_SELECTOR}: hermetic actual-host substrate proof, no support claim"
         ),
     );
+    // Fresh-receipt law (#10894): the receipt is reserved by this run's
+    // identity composite, refuses any pre-existing file, and its write refuses
+    // to overwrite — a stale prior receipt can never satisfy this run.
     let receipt_path = run.out_root.join("receipt.json");
-    fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)
-        .with_context(|| format!("writing receipt {}", receipt_path.display()))?;
+    let subject_digest = crate::editor_host::sha256_bytes(
+        format!(
+            "{}\n{}\n{}\n",
+            plan.identity.candidate_sha,
+            plan.identity.candidate_artifact_sha256,
+            plan.identity.driver_sha256
+        )
+        .as_bytes(),
+    )?;
+    let receipt_target =
+        crate::editor_host::FreshReceiptTarget::reserve(receipt_path.clone(), subject_digest)?;
+    receipt_target.write(&serde_json::to_vec_pretty(&receipt)?)?;
     validate_receipt_binding(&receipt, &plan)
         .context("the emitted receipt failed its own freshness binding")?;
     Ok(HostRunOutcome {

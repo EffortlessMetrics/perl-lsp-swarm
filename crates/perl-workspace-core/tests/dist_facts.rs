@@ -51,6 +51,98 @@ fn builder_extracts_meta_json_facts() {
 }
 
 #[test]
+fn builder_retains_meta_v1_configure_build_and_runtime_phases() {
+    let model = build(
+        "meta-v1-phases",
+        &[(
+            "META.json",
+            r#"{
+                "configure_requires": {"ExtUtils::MakeMaker": "6.64"},
+                "build_requires": {"Test::More": "0.88"},
+                "requires": {"Carp": "0"}
+            }"#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let facts = model
+        .dist_metadata
+        .iter()
+        .find(|d| d.source == perl_workspace_core::DistMetadataSource::MetaJson)
+        .unwrap();
+
+    let mapped = facts
+        .prereqs
+        .iter()
+        .map(|p| (p.module.as_str(), p.phase.as_str(), p.relation.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        mapped,
+        vec![
+            ("Test::More", "build", "requires"),
+            ("ExtUtils::MakeMaker", "configure", "requires"),
+            ("Carp", "runtime", "requires"),
+        ],
+        "builder -> DistMetadata -> META.json extraction preserves all canonical phases"
+    );
+}
+
+#[test]
+fn builder_v2_prereqs_suppress_flat_v1_fallback() {
+    let model = build(
+        "meta-v2-precedence",
+        &[(
+            "META.json",
+            r#"{
+                "prereqs": {"runtime": {"requires": {"V2::Only": "1"}}},
+                "configure_requires": {"V1::Only": "1"},
+                "requires": {"V1::Runtime": "1"}
+            }"#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let facts = model
+        .dist_metadata
+        .iter()
+        .find(|d| d.source == perl_workspace_core::DistMetadataSource::MetaJson)
+        .unwrap();
+
+    assert_eq!(facts.prereqs.len(), 1);
+    assert_eq!(facts.prereqs[0].module, "V2::Only");
+    assert!(!facts.prereqs.iter().any(|p| p.module.starts_with("V1::")));
+}
+
+#[test]
+fn builder_malformed_v2_maps_fall_back_without_fabricated_facts() {
+    let model = build(
+        "meta-malformed-v2",
+        &[(
+            "META.json",
+            r#"{
+                "prereqs": {
+                    "runtime": {"requires": {"Not::A::Version": []}},
+                    "test": "not a relation map"
+                },
+                "configure_requires": {"V1::Only": "1"},
+                "build_requires": "not a module map",
+                "requires": {"V1::Runtime": "1"}
+            }"#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let facts = model
+        .dist_metadata
+        .iter()
+        .find(|d| d.source == perl_workspace_core::DistMetadataSource::MetaJson)
+        .unwrap();
+
+    assert_eq!(
+        facts.prereqs.iter().map(|p| p.module.as_str()).collect::<Vec<_>>(),
+        vec!["V1::Only", "V1::Runtime"]
+    );
+    assert!(!facts.prereqs.iter().any(|p| p.module == "Not::A::Version"));
+}
+
+#[test]
 fn builder_extracts_cpanfile_facts() {
     let model = build(
         "cpan",
@@ -70,4 +162,65 @@ fn dist_facts_absent_when_not_requested() {
     assert!(model.file_by_path("META.json").is_some());
     // …but its content is not parsed into dist facts.
     assert!(model.dist_metadata.is_empty(), "DIST not requested → no dist facts");
+}
+
+#[test]
+fn builder_keeps_postfix_conditions_out_of_distribution_facts() {
+    let model = build(
+        "cpan-postfix-conditions",
+        &[(
+            "cpanfile",
+            r#"
+                requires 'Win32::Conditional' if $^O eq 'MSWin32';
+                test_requires 'Author::Conditional' unless $enabled;
+                recommends('Loop::Conditional') for @targets;
+                requires 'Kept::Runtime', '1';
+                on 'test' => sub {
+                    requires 'Nested::Conditional' if $enabled;
+                    recommends 'Kept::Test', '2';
+                };
+            "#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let extracted = model.dist_metadata.iter().flat_map(|facts| &facts.prereqs).collect::<Vec<_>>();
+    assert_eq!(extracted.len(), 2, "only unconditional declarations may reach dist facts");
+    let aggregate = model.all_prereqs();
+    assert_eq!(aggregate.len(), 2, "the consumer aggregate must not restore conditional facts");
+    for facts in [&extracted, &aggregate] {
+        assert!(facts.iter().any(|p| p.module == "Kept::Runtime"
+            && p.phase == "runtime"
+            && p.relation == "requires"
+            && p.version.as_deref() == Some("1")));
+        assert!(facts.iter().any(|p| p.module == "Kept::Test"
+            && p.phase == "test"
+            && p.relation == "recommends"
+            && p.version.as_deref() == Some("2")));
+    }
+}
+
+#[test]
+fn builder_refuses_runtime_selected_callbacks_and_escaped_names() {
+    let model = build(
+        "cpan-runtime-selected",
+        &[(
+            "cpanfile",
+            r#"
+                on 'test' => $enabled ? sub { requires 'Leak::First'; } : sub { requires 'Leak::Second'; };
+                requires "Foo\x3a\x3aBar";
+                my $note = q#a { brace#;
+                requires 'Kept::Runtime', '1';
+                on test => sub { recommends 'Kept::Test'; };
+            "#,
+        )],
+        FactClasses::FILES | FactClasses::DIST,
+    );
+    let extracted = model.dist_metadata.iter().flat_map(|facts| &facts.prereqs).collect::<Vec<_>>();
+    assert_eq!(
+        extracted.len(),
+        2,
+        "run-time selected callbacks and escaped names are not facts: {extracted:?}"
+    );
+    assert!(extracted.iter().any(|p| p.module == "Kept::Runtime" && p.phase == "runtime"));
+    assert!(extracted.iter().any(|p| p.module == "Kept::Test" && p.phase == "test"));
 }

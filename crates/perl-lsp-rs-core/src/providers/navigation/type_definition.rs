@@ -296,18 +296,18 @@ impl TypeDefinitionProvider {
                     }
                 }
             }
-            NodeKind::Binary { op, left, right } if op == "=>" => {
-                if matches!(&left.kind, NodeKind::Identifier { name } if name == "isa")
+            NodeKind::Binary { op, left, right }
+                if op == "=>"
+                    && matches!(&left.kind, NodeKind::Identifier { name } if name == "isa")
                     && target_start >= right.location.start
-                    && target_end <= right.location.end
-                {
-                    return match &right.kind {
-                        NodeKind::Identifier { name } => Some(name.clone()),
-                        NodeKind::String { value, .. } => Some(value.clone()),
-                        NodeKind::Variable { name, .. } => Some(name.clone()),
-                        _ => None,
-                    };
-                }
+                    && target_end <= right.location.end =>
+            {
+                return match &right.kind {
+                    NodeKind::Identifier { name } => Some(name.clone()),
+                    NodeKind::String { value, .. } => Some(value.clone()),
+                    NodeKind::Variable { name, .. } => Some(name.clone()),
+                    _ => None,
+                };
             }
             _ => {}
         }
@@ -490,10 +490,11 @@ impl TypeDefinitionProvider {
         locations: &mut Vec<LocationLink>,
     ) {
         match &node.kind {
-            NodeKind::FunctionCall { name, args } if Self::is_type_declaration_call(name) => {
-                if Self::declared_type_name(args).as_deref() == Some(type_name) {
-                    self.push_location_link(node, uri, source_text, locations);
-                }
+            NodeKind::FunctionCall { name, args }
+                if Self::is_type_declaration_call(name)
+                    && Self::declared_type_name(args).as_deref() == Some(type_name) =>
+            {
+                self.push_location_link(node, uri, source_text, locations);
             }
             _ => {}
         }

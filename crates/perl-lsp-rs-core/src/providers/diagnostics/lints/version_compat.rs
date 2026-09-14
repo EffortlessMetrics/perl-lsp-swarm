@@ -120,11 +120,39 @@ const SMARTMATCH_DEPRECATION_VERSION: PerlVersion = PerlVersion::new(5, 38);
 /// The `smartmatch` feature is no longer in the `:5.42` bundle.
 const SMARTMATCH_FEATURE_GATE_VERSION: PerlVersion = PerlVersion::new(5, 42);
 
+/// Non-interpolated postfix dereference became unconditional in v5.24
+/// (perldelta 5.24: "Postfix dereferencing is no longer experimental"). Above
+/// this floor no lexical feature state can switch the syntax off — in
+/// particular `no feature 'postderef_qq'`, which only governs interpolation,
+/// must leave every non-interpolated spelling silent.
+const POSTDEREF_UNCONDITIONAL_VERSION: PerlVersion = PerlVersion::new(5, 24);
+
 /// Check for Perl version compatibility issues.
 ///
 /// Walks the AST looking for uses of version-gated features and emits
 /// `PL900` warnings when the declared version does not support them.
-pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
+/// `source` is the full document text the AST was parsed from. It is required
+/// because one postfix-dereference spelling (`$href->@{...}`) shares its
+/// [`NodeKind::HashSlice`] node kind with the ordinary and legacy slice
+/// families, and the node carries no spelling discriminator: classification
+/// reads the exact source gap between the receiver end and the keys start.
+/// The same source also supplies the exact expression end for the star-form
+/// spellings, whose `Unary` nodes span only the receiver.
+pub fn check_version_compat(node: &Node, source: &str, diagnostics: &mut Vec<Diagnostic>) {
+    check_version_compat_with_project_version(node, source, diagnostics, None);
+}
+
+/// Check version compatibility using an optional folder-owned fallback target.
+///
+/// A source `use VERSION` declaration remains authoritative. When the source
+/// declares no version, `project_version` supplies the PL900 target only if its
+/// complete configured spelling is valid; malformed values fail closed.
+pub fn check_version_compat_with_project_version(
+    node: &Node,
+    source: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+    project_version: Option<&str>,
+) {
     // Collect the declared version and builtin imports from top-level statements.
     let statements = match &node.kind {
         NodeKind::Program { statements } => statements,
@@ -132,12 +160,16 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
     };
 
     let mut declared_version: Option<PerlVersion> = None;
+    let mut source_version_declared = false;
     let mut builtin_imports: Vec<String> = Vec::new();
     let mut builtin_bundle_declared = false;
 
     for stmt in statements {
         if let NodeKind::Use { module, args, .. } = &stmt.kind {
             // Check for `use vN.NN` or `use N.NNN`
+            if looks_like_source_version(module) {
+                source_version_declared = true;
+            }
             if let Some(version) = parse_perl_version(module) {
                 // Take the highest declared version if multiple appear
                 match declared_version {
@@ -171,18 +203,42 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
         }
     }
 
-    // If no version was declared, skip all checks.
+    // Validate the configured target independently of source authority. An invalid
+    // project value is still actionable configuration state even when a valid
+    // source declaration supplies the effective PL900 target.
+    if let Some(project_version) = project_version
+        && parse_configured_project_version(project_version).is_none()
+    {
+        diagnostics.push(invalid_project_version_diagnostic(project_version));
+    }
+
+    // A project version is only a fallback. Source declarations remain authoritative.
+    let using_project_version = declared_version.is_none() && !source_version_declared;
     let declared_version = match declared_version {
         Some(v) => v,
-        None => return,
+        None if source_version_declared => return,
+        None => {
+            let Some(project_version) = project_version else {
+                return;
+            };
+            if contains_source_version_declaration(node) {
+                return;
+            }
+            let Some(version) = parse_configured_project_version(project_version) else {
+                return;
+            };
+            version
+        }
     };
 
     let pragma_map = PragmaTracker::build(node);
     let mut pragma_cursor = PragmaQueryCursor::new();
 
     // Second pass: walk AST for version-gated constructs.
+    let diagnostics_before_walk = diagnostics.len();
     walk_node(node, &mut |n| {
         let pragma_state = pragma_cursor.state_for_offset(&pragma_map, n.location.start);
+        let postfix_deref = postfix_deref_spelling(n, source);
 
         match &n.kind {
             // `class Foo { }` — the `class` feature shipped in v5.38 and is still
@@ -319,11 +375,11 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             }
 
             // `say` function call — requires v5.10
-            NodeKind::FunctionCall { name, .. } if name == "say" => {
-                if !pragma_state.has_feature("say") {
-                    let min = feature_min_version("say");
-                    diagnostics.push(make_diagnostic(n, "say", Some("say"), declared_version, min));
-                }
+            NodeKind::FunctionCall { name, .. }
+                if name == "say" && !pragma_state.has_feature("say") =>
+            {
+                let min = feature_min_version("say");
+                diagnostics.push(make_diagnostic(n, "say", Some("say"), declared_version, min));
             }
 
             // `defer { }` block — the `defer` feature shipped in v5.36 and is
@@ -397,81 +453,94 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             }
 
             // `state $x` declaration — requires v5.10
-            NodeKind::VariableDeclaration { declarator, .. } if declarator == "state" => {
-                if !pragma_state.has_feature("state") {
-                    let min = feature_min_version("state");
-                    diagnostics.push(make_diagnostic(
-                        n,
-                        "state",
-                        Some("state"),
-                        declared_version,
-                        min,
-                    ));
-                }
+            NodeKind::VariableDeclaration { declarator, .. }
+                if declarator == "state" && !pragma_state.has_feature("state") =>
+            {
+                let min = feature_min_version("state");
+                diagnostics.push(make_diagnostic(n, "state", Some("state"), declared_version, min));
             }
 
-            // Postfix dereference `$x->@*`, `$x->%*`, `$x->$*` — requires v5.20
-            NodeKind::Unary { op, .. }
-                if op == "->@*" || op == "->%*" || op == "->$*" || op == "->@[" || op == "->@{" =>
-            {
-                // Two distinct features, and only one governs this construct:
-                //
-                //   postderef     the `$r->@*` syntax itself, outside strings —
-                //                 what this arm matches (a `Unary` op node);
-                //   postderef_qq  extends it to double-quotish interpolation.
-                //
-                // Verified on perl v5.38.2:
-                //
-                //   no feature 'postderef_qq'; print "$r->@*"  -> ARRAY(0x..)->@*
-                //   no feature 'postderef';    my @a = $r->@*  -> still works
-                //
-                // so `postderef_qq` is the *interpolation* switch and naming it
-                // here would be advice about a different feature. It is also not
-                // supported on the versions this arm fires for: perl's own
-                // bundles gain `postderef_qq` only at `:5.24`, and neither
-                // bundle ever lists `postderef` (it became unconditional in
-                // v5.24). An author targeting v5.20–v5.23 needs `postderef`.
-                //
-                // `has_feature("postfix_deref")` canonicalizes to `postderef_qq`
-                // in `perl-pragma`, which is what makes v5.24+ correctly quiet
-                // via the bundle. But it also means an explicit
-                // `use feature 'postderef';` would not be seen, so following the
-                // remediation would leave the warning up. Querying both keeps
-                // the advice actionable without touching the bundle model.
-                let enabled = pragma_state.has_feature("postfix_deref")
-                    || pragma_state.has_feature("postderef");
-                if !enabled {
-                    let min = feature_min_version("postfix_deref");
-                    diagnostics.push(make_diagnostic(
-                        n,
-                        "postfix deref",
-                        Some("postderef"),
-                        declared_version,
-                        min,
-                    ));
+            // Postfix dereference — every parser-emitted non-interpolated
+            // spelling (issue #13761): `->$*`, `->$#*`, `->@*`, `->@[...]`,
+            // `->@{...}`, `->%*`, `->%{...}`, `->&*`, `->**`, classified by
+            // [`postfix_deref_spelling`].
+            //
+            // The `Unary` match this arm replaced also listed `->@[` and
+            // `->@{`, but no parser path emits those op strings: the real
+            // slice shapes are `Binary("->@[]")` / `Binary("->%{}")` and a
+            // `HashSlice` with a postfix receiver, so those two strings were
+            // unreachable phantom spellings and are deleted rather than
+            // matched. Ordinary and legacy slices are kept silent by the
+            // classifier, never by kind narrowing here.
+            //
+            // Two distinct features, and only one governs this construct:
+            //
+            //   postderef     the `$r->@*` syntax itself, outside strings —
+            //                 what this arm matches;
+            //   postderef_qq  extends it to double-quotish interpolation.
+            //
+            // Verified on perl v5.38.2:
+            //
+            //   no feature 'postderef_qq'; print "$r->@*"  -> ARRAY(0x..)->@*
+            //   no feature 'postderef';    my @a = $r->@*  -> still works
+            //
+            // so `postderef_qq` is the *interpolation* switch and naming it
+            // here would be advice about a different feature. It is also not
+            // supported on the versions this arm fires for: perl's own
+            // bundles gain `postderef_qq` only at `:5.24`, and neither
+            // bundle ever lists `postderef` (it became unconditional in
+            // v5.24). An author targeting v5.20–v5.23 needs `postderef`.
+            //
+            // Non-interpolated postfix dereference is unconditional from
+            // v5.24 (see [`POSTDEREF_UNCONDITIONAL_VERSION`]), so above that
+            // floor the syntax must stay silent regardless of lexical feature
+            // state. Below it, both feature names are queried because
+            // `has_feature("postfix_deref")` canonicalizes to `postderef_qq`
+            // in `perl-pragma`, which would not see an explicit
+            // `use feature 'postderef';` — the very remediation this arm
+            // advises — and following it would leave the warning up.
+            _ if postfix_deref.is_some() => {
+                if let Some((_, expression_range)) = postfix_deref {
+                    let enabled = declared_version >= POSTDEREF_UNCONDITIONAL_VERSION
+                        || pragma_state.has_feature("postfix_deref")
+                        || pragma_state.has_feature("postderef");
+                    if !enabled {
+                        let min = feature_min_version("postfix_deref");
+                        let mut diagnostic = make_diagnostic(
+                            n,
+                            "postfix deref",
+                            Some("postderef"),
+                            declared_version,
+                            min,
+                        );
+                        // The star-form `Unary` nodes span the receiver only;
+                        // the classifier recovered the exact expression range
+                        // from the source, so the diagnostic covers the whole
+                        // postfix-dereference expression for every spelling.
+                        diagnostic.range = expression_range;
+                        diagnostics.push(diagnostic);
+                    }
                 }
             }
 
             // Subroutine with a signature — requires v5.20
-            NodeKind::Subroutine { signature: Some(_), .. } => {
-                if !pragma_state.has_feature("signatures") {
-                    let min = feature_min_version("signatures");
-                    diagnostics.push(make_diagnostic(
-                        n,
-                        "subroutine signatures",
-                        Some("signatures"),
-                        declared_version,
-                        min,
-                    ));
-                }
+            NodeKind::Subroutine { signature: Some(_), .. }
+                if !pragma_state.has_feature("signatures") =>
+            {
+                let min = feature_min_version("signatures");
+                diagnostics.push(make_diagnostic(
+                    n,
+                    "subroutine signatures",
+                    Some("signatures"),
+                    declared_version,
+                    min,
+                ));
             }
 
             // `$obj isa 'ClassName'` — infix operator; stable at v5.36
-            NodeKind::Binary { op, .. } if op == "isa" => {
-                if !pragma_state.has_feature("isa") {
-                    let min = feature_min_version("isa");
-                    diagnostics.push(make_diagnostic(n, "isa", Some("isa"), declared_version, min));
-                }
+            NodeKind::Binary { op, .. } if op == "isa" && !pragma_state.has_feature("isa") => {
+                let min = feature_min_version("isa");
+                diagnostics.push(make_diagnostic(n, "isa", Some("isa"), declared_version, min));
             }
 
             // Smartmatch operator `~~` — enabled by `use feature 'switch'` in v5.10+,
@@ -495,6 +564,79 @@ pub fn check_version_compat(node: &Node, diagnostics: &mut Vec<Diagnostic>) {
             _ => {}
         }
     });
+
+    if using_project_version {
+        for diagnostic in &mut diagnostics[diagnostics_before_walk..] {
+            diagnostic.message.push_str(" (target from project [perl].version)");
+            if let Some(suggestion) = diagnostic.suggestion.as_mut() {
+                suggestion.push_str(&format!(
+                    ". This file declares no `use VERSION`, so the PL900 target v{}.{} came from \
+                     the project `[perl].version`; add an explicit `use VERSION` to this file or \
+                     raise `[perl].version`",
+                    declared_version.major, declared_version.minor
+                ));
+            }
+        }
+    }
+}
+
+fn contains_source_version_declaration(node: &Node) -> bool {
+    let mut found = false;
+    walk_node(node, &mut |n| {
+        if let NodeKind::Use { module, .. } = &n.kind
+            && looks_like_source_version(module)
+        {
+            found = true;
+        }
+    });
+    found
+}
+
+fn looks_like_source_version(module: &str) -> bool {
+    let value = module.strip_prefix('v').unwrap_or(module);
+    value.chars().next().is_some_and(|character| character.is_ascii_digit())
+}
+
+/// Parse the documented `[perl].version` spelling into its effective target.
+///
+/// Project configuration accepts only a major/minor pair, optionally prefixed
+/// with `v`; callers must not use the raw spelling as the effective target.
+pub fn parse_configured_project_version(value: &str) -> Option<PerlVersion> {
+    let version = value.strip_prefix('v').unwrap_or(value);
+    let mut components = version.split('.');
+    let (Some(major), Some(minor), None) =
+        (components.next(), components.next(), components.next())
+    else {
+        return None;
+    };
+    if major.is_empty()
+        || minor.is_empty()
+        || !major.chars().all(|character| character.is_ascii_digit())
+        || !minor.chars().all(|character| character.is_ascii_digit())
+    {
+        return None;
+    }
+
+    parse_perl_version(value)
+}
+
+fn invalid_project_version_diagnostic(value: &str) -> Diagnostic {
+    Diagnostic {
+        range: (0, 0),
+        severity: DiagnosticSeverity::Error,
+        code: Some(DiagnosticCode::VersionIncompatFeature.as_str().to_string()),
+        message: format!(
+            "Invalid project [perl].version value {value:?}; expected a major.minor Perl version such as 5.38"
+        ),
+        related_information: vec![],
+        tags: vec![],
+        suggestion: Some(
+            "Set [perl].version to a supported major.minor Perl version, for example \"5.38\"."
+                .to_string(),
+        ),
+        fixable: false,
+        critic_observation: None,
+    }
 }
 
 /// Return the minimum (major, minor) for a named feature from the table.
@@ -504,6 +646,128 @@ fn feature_min_version(feature: &str) -> (u32, u32) {
         .find(|(name, _, _)| *name == feature)
         .map(|(_, maj, min)| (*maj, *min))
         .unwrap_or((5, 0))
+}
+
+/// The postfix-dereference spellings the parser emits as `Unary` operator
+/// identities (issue #13761). Matched exactly, never inferred: `->$*`,
+/// `->$#*`, `->@*`, `->%*`, `->&*`, `->**`.
+const POSTFIX_DEREF_UNARY_OPS: &[&str] = &["->$*", "->$#*", "->@*", "->%*", "->&*", "->**"];
+
+/// Classify a node as one of the non-interpolated postfix-dereference
+/// spellings, returning the spelling identity that matched and the exact
+/// source range of the whole postfix-dereference expression.
+///
+/// Admitted shapes and their parser-emitted identities:
+///
+/// ```text
+/// ->$*       Unary("->$*")
+/// ->$#*      Unary("->$#*")
+/// ->@*       Unary("->@*")
+/// ->@[...]   Binary("->@[]")
+/// ->@{...}   HashSlice with a postfix receiver
+/// ->%*       Unary("->%*")
+/// ->%{...}   Binary("->%{}")
+/// ->&*       Unary("->&*")
+/// ->**       Unary("->**")
+/// ```
+///
+/// `HashSlice` is shared by three syntax families — the ordinary
+/// `@hash{...}`, the legacy prefix dereference `@$href{...}` /
+/// `@{$href}{...}`, and the postfix `$href->@{...}` — and the node carries no
+/// spelling discriminator. Only the postfix family has an arrow between the
+/// receiver and the keys, so the classification reads the exact source gap
+/// between the target's end and the keys' start: an arrow there (with
+/// perlderef's permitted whitespace/`#`-comment trivia between the tokens)
+/// means postfix, a bare `{` means one of the legacy families. Kind-only
+/// matching would flag slices that predate postfix dereference, so the source
+/// text is load-bearing here.
+///
+/// The `Unary` and `Binary` arms match parser-emitted operator identities;
+/// the parser normalizes inter-token trivia away from those identities
+/// (`$r-> @*` still surfaces as `Unary("->@*")`), which the matrix tests pin.
+/// The `Binary` slice ops `->@[]` / `->%{}` are produced only by the arrow
+/// path in the parser, so the operator identity alone discriminates them.
+/// Pre-5.20 arrow element access (`->[...]`, `->{...}`, `->(...)`) emits
+/// different identities and never matches, and nothing here scans document
+/// text outside these node-anchored ranges.
+fn postfix_deref_spelling<'a>(node: &'a Node, source: &str) -> Option<(&'a str, (usize, usize))> {
+    let spelling: &'a str = match &node.kind {
+        NodeKind::Unary { op, .. } if POSTFIX_DEREF_UNARY_OPS.contains(&op.as_str()) => op,
+        NodeKind::Binary { op, .. } if op == "->@[]" || op == "->%{}" => op,
+        NodeKind::HashSlice { target, keys } => {
+            let gap = source.get(target.location.end..keys.location.start)?;
+            if !is_postfix_hash_slice_gap(gap) {
+                return None;
+            }
+            "->@{"
+        }
+        _ => return None,
+    };
+    Some((spelling, postfix_deref_expression_range(node, source)))
+}
+
+/// The exact source range of a classified postfix-dereference expression.
+///
+/// The `Binary` slice and `HashSlice` nodes already span the full written
+/// expression. The star-form `Unary` nodes end at the receiver — the parser's
+/// arrow-chain tokens do not advance the node's end — so the exact end is
+/// recovered from the source between the operand's end and the operator
+/// spelling, skipping the trivia perlderef permits there. If the source does
+/// not confirm the operator at that spot (a parser-surface change), the
+/// node's own span is kept rather than a guessed range.
+fn postfix_deref_expression_range(node: &Node, source: &str) -> (usize, usize) {
+    if let NodeKind::Unary { op, operand } = &node.kind
+        && let Some(tail) = op.strip_prefix("->")
+    {
+        let arrow = skip_perl_trivia(source, operand.location.end);
+        if source.get(arrow..arrow + 2) == Some("->") {
+            let sigil = skip_perl_trivia(source, arrow + 2);
+            if source.get(sigil..sigil + tail.len()) == Some(tail) {
+                return (node.location.start, sigil + tail.len());
+            }
+        }
+    }
+    (node.location.start, node.location.end)
+}
+
+/// Advance past the trivia Perl's tokenizer ignores between tokens —
+/// whitespace and `#` line comments — starting at `offset`.
+fn skip_perl_trivia(source: &str, mut offset: usize) -> usize {
+    let bytes = source.as_bytes();
+    loop {
+        while offset < bytes.len() && bytes[offset].is_ascii_whitespace() {
+            offset += 1;
+        }
+        if bytes.get(offset) == Some(&b'#') {
+            match source[offset..].find('\n') {
+                Some(newline) => offset += newline + 1,
+                // A comment running to end-of-input; nothing follows it.
+                None => return bytes.len(),
+            }
+        } else {
+            return offset;
+        }
+    }
+}
+
+/// Does the source gap between a `HashSlice` target and its keys spell the
+/// postfix form — `->`, then `@`, then `{`, with only trivia between them?
+///
+/// The ordinary (`@hash{...}`) and legacy (`@$href{...}`, `@{$href}{...}`)
+/// families have no arrow in this gap, so they cannot match no matter how the
+/// trivia falls. Only the receiver-adjacent gap is examined, never the
+/// document at large.
+fn is_postfix_hash_slice_gap(gap: &str) -> bool {
+    let arrow = skip_perl_trivia(gap, 0);
+    let Some(after_arrow) = gap.get(arrow..).and_then(|rest| rest.strip_prefix("->")) else {
+        return false;
+    };
+    let sigil = skip_perl_trivia(after_arrow, 0);
+    let Some(after_sigil) = after_arrow.get(sigil..).and_then(|rest| rest.strip_prefix('@')) else {
+        return false;
+    };
+    let brace = skip_perl_trivia(after_sigil, 0);
+    after_sigil.get(brace..).is_some_and(|rest| rest.starts_with('{'))
 }
 
 /// Return the minimum Perl version for a `builtin::name` call or named import.
@@ -879,8 +1143,209 @@ mod tests {
     fn version_compat_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
         let mut diags = Vec::new();
-        check_version_compat(&ast, &mut diags);
+        check_version_compat(&ast, source, &mut diags);
         diags
+    }
+
+    fn version_compat_diags_with_project_version(
+        source: &str,
+        project_version: Option<&str>,
+    ) -> Vec<Diagnostic> {
+        let ast = must(Parser::new(source).parse());
+        let mut diags = Vec::new();
+        check_version_compat_with_project_version(&ast, source, &mut diags, project_version);
+        diags
+    }
+
+    #[test]
+    fn project_version_is_used_as_pl900_fallback() {
+        let diags =
+            version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some("v5.20"));
+        assert!(
+            diags.iter().any(|diagnostic| diagnostic.message.contains("requires Perl v5.36+")),
+            "v5.20 project fallback must remain the effective PL900 target: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn nested_source_version_suppresses_project_fallback() {
+        let nested = version_compat_diags_with_project_version(
+            "{ use v5.36; sub f ($x) { return $x; } }\n",
+            Some("v5.20"),
+        );
+        assert!(
+            nested.iter().all(|diagnostic| !diagnostic
+                .message
+                .contains("target from project [perl].version")),
+            "nested source version must defeat the project fallback: {nested:?}"
+        );
+
+        let control =
+            version_compat_diags_with_project_version("sub f ($x) { return $x; }\n", Some("v5.20"));
+        assert!(
+            control.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("target from project [perl].version")),
+            "a file without a source version must use the project fallback: {control:?}"
+        );
+    }
+
+    #[test]
+    fn project_fallback_suggestion_explains_missing_source_version() {
+        let project_diags =
+            version_compat_diags_with_project_version("sub f ($x) { return $x; }\n", Some("v5.20"));
+        let project_diagnostic = project_diags
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code.as_deref() == Some("PL900")
+                    && diagnostic.message.contains("subroutine signatures")
+            })
+            .expect("project fallback must emit a signatures diagnostic");
+        let project_suggestion = project_diagnostic
+            .suggestion
+            .as_deref()
+            .expect("project fallback diagnostic must have a suggestion");
+        assert!(project_suggestion.contains("This file declares no `use VERSION`"));
+        assert!(project_suggestion.contains("PL900 target v5.20"));
+        assert!(project_suggestion.contains("add an explicit `use VERSION`"));
+        assert!(project_suggestion.contains("raise `[perl].version`"));
+
+        let source_diags = version_compat_diags_with_project_version(
+            "use v5.20;\nsub f ($x) { return $x; }\n",
+            Some("v5.40"),
+        );
+        let source_diagnostic = source_diags
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code.as_deref() == Some("PL900")
+                    && diagnostic.message.contains("subroutine signatures")
+            })
+            .expect("source version must emit a signatures diagnostic");
+        let source_suggestion = source_diagnostic
+            .suggestion
+            .as_deref()
+            .expect("source diagnostic must have a suggestion");
+        assert!(!source_suggestion.contains("This file declares no `use VERSION`"));
+    }
+
+    #[test]
+    fn source_version_wins_over_project_fallback() {
+        let diags = version_compat_diags_with_project_version(
+            "use v5.40; use builtin 'inf'; my $value = builtin::inf();",
+            Some("5.20"),
+        );
+        assert!(
+            !diags.iter().any(|diagnostic| diagnostic.message.contains("project [perl].version"))
+        );
+    }
+
+    #[test]
+    fn invalid_project_version_reports_one_actionable_diagnostic_and_fails_closed() {
+        let diags = version_compat_diags_with_project_version(
+            "use builtin 'inf'; builtin::inf();",
+            Some("not-a-version"),
+        );
+        assert_eq!(diags.len(), 1, "invalid project values must report once: {diags:?}");
+        let diagnostic = &diags[0];
+        assert_eq!(diagnostic.code.as_deref(), Some("PL900"));
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(diagnostic.message.contains("Invalid project [perl].version"));
+        assert!(diagnostic.suggestion.is_some());
+        assert!(
+            diags.iter().all(|diagnostic| !diagnostic.message.contains("requires Perl")),
+            "invalid project values must not run PL900: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_project_version_suffix_reports_once_without_runtime_fallback() {
+        for value in ["5.20.garbage", "5.20.1", " 5.20"] {
+            let diags = version_compat_diags_with_project_version(
+                "use builtin 'inf'; builtin::inf();",
+                Some(value),
+            );
+            assert_eq!(diags.len(), 1, "malformed value {value:?}: {diags:?}");
+            assert!(diags[0].message.contains("Invalid project [perl].version"));
+            assert!(
+                !diags[0].message.contains("requires Perl"),
+                "malformed value {value:?} must not use a runtime/implicit PL900 target"
+            );
+        }
+    }
+
+    #[test]
+    fn project_version_rejects_trailing_components_and_patch_suffixes() {
+        for value in ["5.20.1", "v5.20.1", "5.20_1", "v5.20_1", " 5.20", "5.20 ", " 5.20 "] {
+            let diags =
+                version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some(value));
+            assert_eq!(diags.len(), 1, "project version {value:?} must report once");
+            assert!(diags[0].message.contains("Invalid project [perl].version"));
+        }
+    }
+
+    #[test]
+    fn invalid_project_version_is_ignored_when_source_declares_a_version() {
+        let diags = version_compat_diags_with_project_version(
+            "use v5.40; use builtin 'inf'; builtin::inf();",
+            Some("not-a-version"),
+        );
+        assert_eq!(
+            diags
+                .iter()
+                .filter(|diagnostic| diagnostic.message.contains("Invalid project [perl].version"))
+                .count(),
+            1,
+            "invalid project values must remain actionable with source authority: {diags:?}"
+        );
+        assert!(
+            diags.iter().all(|diagnostic| !diagnostic.message.contains("requires Perl")),
+            "the valid source target should not receive a fallback PL900: {diags:?}"
+        );
+        assert!(
+            diags.iter().all(|diagnostic| !diagnostic.message.contains("target from project")),
+            "invalid project values must not become the effective fallback target: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_source_version_does_not_fall_back_to_project_target() {
+        let diags = version_compat_diags_with_project_version(
+            "use v5.20.1; use builtin 'inf'; builtin::inf();",
+            Some("v5.40"),
+        );
+        assert!(
+            diags.iter().any(|diagnostic| diagnostic.code.as_deref() == Some("PL900")),
+            "the parser-supported source spelling must remain authoritative: {diags:?}"
+        );
+        assert!(
+            diags.iter().all(|diagnostic| !diagnostic.message.contains("target from project")),
+            "source authority must prevent project fallback on a recovered spelling: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn project_version_v5_40_fallback_is_applied() {
+        let below = version_compat_diags_with_project_version(
+            "use builtin 'inf'; builtin::inf();",
+            Some("v5.38"),
+        );
+        assert!(below.iter().any(|diagnostic| diagnostic.code.as_deref() == Some("PL900")));
+
+        let supported = version_compat_diags_with_project_version(
+            "use builtin 'inf'; builtin::inf();",
+            Some("v5.40"),
+        );
+        assert!(supported.iter().all(|diagnostic| diagnostic.code.as_deref() != Some("PL900")));
+    }
+
+    #[test]
+    fn project_version_fallback_does_not_enable_lexical_features() {
+        let diags =
+            version_compat_diags_with_project_version("sub f ($x) { return $x; }", Some("v5.40"));
+        assert!(
+            diags.iter().any(|diagnostic| diagnostic.message.contains("subroutine signatures")),
+            "a fallback target must not enable lexical signature features: {diags:?}"
+        );
     }
 
     #[test]
@@ -1635,7 +2100,10 @@ mod tests {
         "use v5.36;\nno feature 'say';\nsay 'hi';\n",
         "use v5.36;\nno feature 'state';\nstate $x = 1;\n",
         "use v5.36;\nno feature 'isa';\nmy $o = bless {}, 'X';\nmy $b = $o isa 'X';\n",
-        "use v5.36;\nno feature 'postderef_qq';\nmy $r = [];\nmy @a = $r->@*;\n",
+        // NOTE: no `no feature 'postderef_qq'` row — non-interpolated postfix
+        // dereference is unconditional from v5.24, so that source is now
+        // required to be silent (pinned by
+        // `lexical_no_feature_postderef_qq_keeps_v5_24_silent_for_every_postfix_spelling`).
         // smartmatch's own downgrade path: below v5.38 with `switch` off, the
         // arm routes through `make_smartmatch_feature_diagnostic`. Without this
         // row only its below-minimum path was covered, so the
@@ -1806,5 +2274,350 @@ mod tests {
             }
         }
         out
+    }
+
+    // ---------------------------------------------------------------------------
+    // PL900 non-interpolated postfix-dereference spellings (issue #13761)
+    //
+    // The lint claimed the Perl 5.20 postfix-dereference family but matched
+    // only three `Unary` spellings plus two phantom op strings the parser never
+    // emits. The actual parser-emitted shapes are:
+    //
+    //   ->$*       Unary("->$*")
+    //   ->$#*      Unary("->$#*")
+    //   ->@*       Unary("->@*")
+    //   ->@[...]   Binary("->@[]")
+    //   ->@{...}   HashSlice (postfix receiver)
+    //   ->%*       Unary("->%*")
+    //   ->%{...}   Binary("->%{}")
+    //   ->&*       Unary("->&*")
+    //   ->**       Unary("->**")
+    //
+    // `HashSlice` is shared with the ordinary (`@hash{...}`) and legacy prefix
+    // (`@$href{...}`, `@{$href}{...}`) slice families, so classification must be
+    // source-aware over exact child ranges — never kind-only. These tests pin
+    // both directions: every postfix spelling warns on v5.20–v5.23 and goes
+    // quiet under the `postderef` remediation, while every legacy form stays
+    // silent.
+    // ---------------------------------------------------------------------------
+
+    /// One entry per non-interpolated postfix-dereference spelling, written as
+    /// an expression over a predeclared `$r` reference.
+    const POSTFIX_DEREF_SPELLINGS: &[&str] = &[
+        "$r->$*",
+        "$r->$#*",
+        "$r->@*",
+        "$r->@[0, 1]",
+        "$r->@{qw(a b)}",
+        "$r->%*",
+        "$r->%{a => 1}",
+        "$r->&*",
+        "$r->**",
+    ];
+
+    /// A v5.20 source using one postfix-dereference `spelling`.
+    fn postfix_spelling_source(spelling: &str) -> String {
+        format!("use v5.20;\nmy $r = [];\nmy $x = {spelling};\n")
+    }
+
+    /// The PL900 diagnostics whose message names the postfix-deref construct.
+    fn postfix_pl900s(source: &str) -> Vec<Diagnostic> {
+        version_compat_diags(source)
+            .into_iter()
+            .filter(|d| d.code.as_deref() == Some("PL900") && d.message.contains("postfix deref"))
+            .collect()
+    }
+
+    #[test]
+    fn every_non_interpolated_postfix_spelling_emits_one_pl900_on_v5_20() {
+        for spelling in POSTFIX_DEREF_SPELLINGS {
+            let source = postfix_spelling_source(spelling);
+            let diags = postfix_pl900s(&source);
+            assert_eq!(
+                diags.len(),
+                1,
+                "`{spelling}` on v5.20 should emit exactly one PL900: {diags:#?}"
+            );
+            let d = &diags[0];
+            let expr_start = source.find(spelling).expect("spelling present in source");
+            let expr_end = expr_start + spelling.len();
+            assert_eq!(
+                d.severity,
+                DiagnosticSeverity::Warning,
+                "PL900 for `{spelling}` must be Warning, not Error"
+            );
+            // The diagnostic range is the exact postfix-dereference
+            // expression for every row: the slice nodes already span the full
+            // expression, and the classifier recovers the star forms' ends
+            // from the source because their `Unary` nodes end at the
+            // receiver.
+            assert_eq!(
+                d.range,
+                (expr_start, expr_end),
+                "the PL900 range must be the exact postfix-dereference expression \
+                 `{spelling}`"
+            );
+        }
+    }
+
+    #[test]
+    fn every_postfix_spelling_remediation_names_postderef() {
+        for spelling in POSTFIX_DEREF_SPELLINGS {
+            let source = postfix_spelling_source(spelling);
+            for d in postfix_pl900s(&source) {
+                let suggestion = d.suggestion.as_deref().unwrap_or_default();
+                assert!(
+                    suggestion.contains("use feature \"postderef\""),
+                    "`{spelling}` remediation must name the `postderef` feature: {suggestion}"
+                );
+                assert!(
+                    !suggestion.contains("postderef_qq"),
+                    "`{spelling}` remediation must not name the interpolation switch: \
+                     {suggestion}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_postderef_pragma_silences_every_postfix_spelling() {
+        for spelling in POSTFIX_DEREF_SPELLINGS {
+            let source =
+                format!("use v5.20;\nuse feature 'postderef';\nmy $r = [];\nmy $x = {spelling};\n");
+            let diags = postfix_pl900s(&source);
+            assert!(
+                diags.is_empty(),
+                "following the remediation must silence `{spelling}`: {diags:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn v5_24_bundle_is_silent_for_every_postfix_spelling() {
+        for spelling in POSTFIX_DEREF_SPELLINGS {
+            let source = format!("use v5.24;\nmy $r = [];\nmy $x = {spelling};\n");
+            let diags = version_compat_diags(&source);
+            assert!(
+                diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
+                "the v5.24 bundle enables postfix dereference; `{spelling}` must be silent: \
+                 {diags:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_declared_version_is_silent_for_every_postfix_spelling() {
+        for spelling in POSTFIX_DEREF_SPELLINGS {
+            let source = format!("my $r = [];\nmy $x = {spelling};\n");
+            let diags = version_compat_diags(&source);
+            assert!(
+                diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
+                "an undeclared version is out of PL900's scope; `{spelling}` must be silent: \
+                 {diags:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lexical_no_feature_postderef_qq_keeps_v5_24_silent_for_every_postfix_spelling() {
+        // Non-interpolated postfix dereference became unconditional in v5.24
+        // (perldelta 5.24), and `postderef_qq` governs only double-quotish
+        // interpolation. Disabling that interpolation switch lexically must
+        // not resurrect PL900 for any non-interpolated spelling.
+        for spelling in POSTFIX_DEREF_SPELLINGS {
+            let source = format!(
+                "use v5.24;\nno feature 'postderef_qq';\nmy $r = [];\nmy $x = {spelling};\n"
+            );
+            let diags = version_compat_diags(&source);
+            assert!(
+                diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
+                "`no feature 'postderef_qq'` cannot disable unconditional non-interpolated \
+                 syntax; `{spelling}` must stay silent on v5.24: {diags:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lexical_no_feature_postderef_re_enables_below_the_unconditional_floor() {
+        // Inside the v5.20–v5.23 window the syntax is still feature-gated, so
+        // a lexical `no feature 'postderef'` must switch PL900 back on at the
+        // operator offset — while the occurrence outside that scope stays
+        // silent under the pragma.
+        let source = "use v5.20;\nuse feature 'postderef';\nmy $r = [];\n{\n    no feature \
+                      'postderef';\n    my @a = $r->@*;\n}\nmy @b = $r->@*;\n";
+        let diags = postfix_pl900s(source);
+        assert_eq!(
+            diags.len(),
+            1,
+            "only the occurrence inside the `no feature` scope warns: {diags:#?}"
+        );
+        let disabled_start = source.find("$r->@*").expect("in-scope spelling present");
+        assert_eq!(
+            diags[0].range,
+            (disabled_start, disabled_start + "$r->@*".len()),
+            "the warning must sit on the in-scope-disabled occurrence"
+        );
+    }
+
+    #[test]
+    fn inter_token_trivia_spellings_emit_one_exact_pl900() {
+        // perlderef permits whitespace and `#` line comments between `->` and
+        // the dereference character, and the parser skips that trivia while
+        // still producing the same node shapes. Every trivia variant must warn
+        // exactly once, over the exact written expression.
+        let variants = [
+            "$r-> @{qw(a b)}",
+            "$r ->@{qw(a b)}",
+            "$r-> @ {qw(a b)}",
+            "$r-># slice comment\n@{qw(a b)}",
+            "$r-> @*",
+            "$r ->@*",
+            "$r-> @[0, 1]",
+            "$r-> %{a => 1}",
+        ];
+        for spelling in variants {
+            let source = postfix_spelling_source(spelling);
+            let diags = postfix_pl900s(&source);
+            assert_eq!(
+                diags.len(),
+                1,
+                "trivia variant `{spelling}` should emit exactly one PL900: {diags:#?}"
+            );
+            let expr_start = source.find(spelling).expect("spelling present in source");
+            assert_eq!(
+                diags[0].range,
+                (expr_start, expr_start + spelling.len()),
+                "the PL900 range must cover the exact written expression `{spelling}`"
+            );
+        }
+    }
+
+    #[test]
+    fn parser_emits_the_pinned_identity_for_every_postfix_spelling() {
+        // The classifier matches parser-emitted operator identities exactly;
+        // this test is the single point of failure if the parser ever changes
+        // them — a normalization, a re-spelled op, a re-spanned arrow chain —
+        // instead of the lint silently going quiet. The spaced rows pin the
+        // parser's trivia normalization of the op identity.
+        let expected: &[(&str, &str, &str)] = &[
+            ("$r->$*", "Unary", "->$*"),
+            ("$r->$#*", "Unary", "->$#*"),
+            ("$r->@*", "Unary", "->@*"),
+            ("$r-> @*", "Unary", "->@*"),
+            ("$r->@[0, 1]", "Binary", "->@[]"),
+            ("$r-> @[0, 1]", "Binary", "->@[]"),
+            ("$r->@{qw(a b)}", "HashSlice", ""),
+            ("$r-> @{qw(a b)}", "HashSlice", ""),
+            ("$r->%*", "Unary", "->%*"),
+            ("$r->%{a => 1}", "Binary", "->%{}"),
+            ("$r->&*", "Unary", "->&*"),
+            ("$r->**", "Unary", "->**"),
+        ];
+        for &(spelling, kind, op) in expected {
+            let source = format!("my $r = [];\nmy $x = {spelling};\n");
+            let ast = must(Parser::new(&source).parse());
+            let mut found = false;
+            walk_node(&ast, &mut |n| {
+                found |= match (&n.kind, kind) {
+                    (NodeKind::Unary { op: actual, .. }, "Unary") => actual == op,
+                    (NodeKind::Binary { op: actual, .. }, "Binary") => actual == op,
+                    (NodeKind::HashSlice { .. }, "HashSlice") => true,
+                    _ => false,
+                };
+            });
+            assert!(found, "the parser must emit {kind}({op:?}) for `{spelling}`");
+        }
+    }
+
+    #[test]
+    fn lexical_postderef_scopes_follow_the_operator_offset() {
+        // The inner block enables the feature lexically; the postfix form after
+        // the block closes is outside that scope and must still warn, with no
+        // duplicate squiggles from the inner occurrence.
+        let source = "use v5.20;\nmy $r = [];\n{\n    use feature 'postderef';\n    my @a = \
+                      $r->@*;\n}\nmy @b = $r->@[0, 1];\n";
+        let diags = postfix_pl900s(source);
+        assert_eq!(diags.len(), 1, "only the out-of-scope occurrence warns: {diags:#?}");
+        let expr_start = source.find("$r->@[0, 1]").expect("outer spelling present");
+        assert_eq!(
+            diags[0].range,
+            (expr_start, expr_start + "$r->@[0, 1]".len()),
+            "the warning must sit on the out-of-scope occurrence"
+        );
+    }
+
+    #[test]
+    fn multiple_postfix_occurrences_emit_one_diagnostic_each() {
+        let source = "use v5.20;\nmy $r = [];\nmy @a = $r->@*;\nmy @b = $r->@[0, 1];\nmy $c = \
+                      $r->$#*;\n";
+        let diags = postfix_pl900s(source);
+        assert_eq!(
+            diags.len(),
+            3,
+            "one diagnostic per occurrence, no duplicate squiggles: {diags:#?}"
+        );
+        let mut ranges: Vec<_> = diags.iter().map(|d| d.range).collect();
+        ranges.sort_unstable();
+        ranges.dedup();
+        assert_eq!(ranges.len(), 3, "each occurrence squiggles its own range");
+    }
+
+    /// Legacy slice and pre-5.20 arrow forms that must stay silent. The slice
+    /// rows share `HashSlice`/`KeyValueSlice`/`ArraySlice` node kinds with the
+    /// postfix `->@{...}` spelling, so they are the kind-only-overmatch
+    /// controls; the spaced slice rows additionally guard against a
+    /// classifier that over-deletes gap trivia and starts seeing an arrow
+    /// where none was written; the arrow rows pin the pre-5.20 element-access
+    /// family.
+    const LEGACY_SILENT_FORMS: &[&str] = &[
+        "@hash{qw(a b)}",
+        "@hash {qw(a b)}",
+        "%hash{a => 1}",
+        "@$href{qw(a b)}",
+        "@$href {qw(a b)}",
+        "@{$href}{qw(a b)}",
+        "@{$href} {qw(a b)}",
+        "%$href{a => 1}",
+        "%{$href}{a => 1}",
+        "$r->[0]",
+        "$r->{k}",
+        "$r->(1)",
+    ];
+
+    /// A v5.20 source using one legacy (non-postfix) `form` over predeclared
+    /// variables.
+    fn legacy_silent_source(form: &str) -> String {
+        format!(
+            "use v5.20;\nmy %hash = (a => 1, b => 2);\nmy $href = \\%hash;\nmy $r = [];\nmy $x \
+             = {form};\n"
+        )
+    }
+
+    #[test]
+    fn legacy_slice_and_element_forms_emit_no_pl900() {
+        for form in LEGACY_SILENT_FORMS {
+            let source = legacy_silent_source(form);
+            let diags = version_compat_diags(&source);
+            assert!(
+                diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
+                "`{form}` predates or falls outside postfix dereference and must stay silent: \
+                 {diags:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_mentions_of_postfix_spellings_do_not_trigger_pl900() {
+        // Mutation control against whole-document substring search: the lint
+        // classifies AST nodes over exact ranges, so spellings appearing inside
+        // a string literal or a comment must not warn. This claim owns
+        // non-interpolated syntax; interpolated postfix dereference is tracked
+        // separately against #6730 / #8636.
+        let source = "use v5.20;\nmy $s = '$r->@* $r->@[0,1] $r->@{x}';\n# $r->%*\n";
+        let diags = version_compat_diags(source);
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("PL900")),
+            "spellings inside strings or comments are not postfix dereference: {diags:#?}"
+        );
     }
 }

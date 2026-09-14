@@ -1,5 +1,26 @@
 //! Hashing utilities shared by core crates and workspace tools.
 
+use std::fmt::Write as _;
+
+use sha2::{Digest, Sha256};
+
+/// Compute a SHA-256 digest and return it as an algorithm-tagged hex string.
+///
+/// This is the workspace's collision-resistant content digest: the
+/// `sha256:` prefix names the algorithm on the wire, so consumers can
+/// version-stamp or reject digests whose algorithm changes. Use it wherever
+/// a value substitutes for identity across processes; reserve FNV-1a
+/// ([`fnv1a64_hex`]) for non-adversarial locality such as cache keys.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    format!("sha256:{hex}")
+}
+
 /// Compute an FNV-1a 64-bit hash of `bytes`.
 ///
 /// Deterministic and process-safe: the same bytes hash to the same value in
@@ -23,8 +44,28 @@ pub fn fnv1a64_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::fnv1a64_hex;
+    use super::{fnv1a64_hex, sha256_hex};
     use std::error::Error;
+
+    #[test]
+    fn sha256_hex_matches_known_vectors() -> Result<(), Box<dyn Error>> {
+        assert_eq!(
+            sha256_hex(b""),
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"hello"),
+            "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sha256_hex_is_deterministic_and_separates_inputs() -> Result<(), Box<dyn Error>> {
+        assert_eq!(sha256_hex(b"abc"), sha256_hex(b"abc"));
+        assert_ne!(sha256_hex(b"abc"), sha256_hex(b"abd"));
+        Ok(())
+    }
 
     #[test]
     fn fnv1a64_hex_matches_known_vectors() -> Result<(), Box<dyn Error>> {

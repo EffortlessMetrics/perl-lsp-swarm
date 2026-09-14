@@ -63,7 +63,6 @@
     clippy::items_after_statements,
     clippy::return_self_not_must_use,
     clippy::unused_self,
-    clippy::collapsible_match,
     clippy::only_used_in_recursion,
     clippy::items_after_test_module,
     clippy::while_let_loop,
@@ -133,12 +132,13 @@ pub use syntax::qualified_name;
 pub use syntax::quote::{parse_quote_operator_content, parse_qw_words};
 /// Source-generation-bound regex analysis records and freshness identities.
 pub use syntax::regex_analysis::{
-    REGEX_ANALYSIS_MODEL_VERSION, RegexAnalysisAvailability, RegexAnalysisId, RegexAnalysisRecord,
-    RegexAnalysisTable, RegexSourceDigest, RetainedRegexPatternAnalysis,
+    REGEX_ANALYSIS_MODEL_VERSION, RegexAnalysisAvailability, RegexAnalysisFamily, RegexAnalysisId,
+    RegexAnalysisRecord, RegexAnalysisTable, RegexSourceDigest, RetainedRegexPatternAnalysis,
 };
 /// Generation-bound lexical source region index.
 pub use syntax::source_context::{
-    RangeClassification, SourceRegion, SourceRegionIndex, SourceRegionKind,
+    RangeClassification, SourceRangeClassification, SourceRegion, SourceRegionIndex,
+    SourceRegionKind,
 };
 /// Perl source-file classification helpers.
 pub use syntax::source_file;

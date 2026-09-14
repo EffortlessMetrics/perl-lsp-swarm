@@ -110,6 +110,96 @@ branch_pr_status() {
     fi
 }
 
+# Ask the shared live admission before deleting a local branch. A merged PR is
+# required because the admission is intentionally bound to the exact parent
+# PR, repository, branch tip, and live child graph. No PR, failed lookup, or a
+# retaining/unknown admission is a fail-closed refusal.
+branch_deletion_admitted() {
+    local branch="$1" pr_number
+
+    if ! command -v gh >/dev/null 2>&1; then
+        return 1
+    fi
+
+    # Bind the lookup to the repository origin actually points at. Without
+    # --repo, gh infers the repository from the working directory, so the PR
+    # this branch is matched against may not belong to the repo whose branch
+    # is about to be deleted. An underivable origin is a fail-closed refusal.
+    local repo_slug
+    repo_slug="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null \
+        | sed -E 's#\.git$##; s#^.*[:/]([^/]+/[^/]+)$#\1#')" || return 1
+    if [[ -z "$repo_slug" || "$repo_slug" != */* ]]; then
+        return 1
+    fi
+
+    if ! pr_number="$(gh pr list --repo "$repo_slug" --head "$branch" --state merged \
+        --json number --jq '.[0].number' 2>/dev/null)"; then
+        return 1
+    fi
+    if [[ ! "$pr_number" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+
+    bash "$SCRIPT_DIR/branch-deletion-admission" plan --pr "$pr_number" --remote origin \
+        >/dev/null 2>&1
+}
+
+# Succeed only when the local branch tip is the tip the admission was granted
+# for. The admission reasons about the REMOTE branch; deleting the local ref is
+# a separate act, and a local tip carrying commits that never reached the remote
+# is unsalvaged work no admission covered.
+#
+# A `-d`/`-D` ladder cannot supply this. Squash-merge leaves the branch unmerged
+# by reachability, so `-d` always refuses and any fallback to `-D` is
+# unconditional — the safe form would be decorative. Compare tips instead.
+local_tip_is_admitted() {
+    local branch="$1" local_sha remote_sha
+
+    local_sha="$(git -C "$REPO_ROOT" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null)" \
+        || return 1
+    [[ -n "$local_sha" ]] || return 1
+
+    # Prefer the live remote. Squash-merge often deletes the remote branch, so
+    # an absent ref falls back to the last-known remote-tracking ref; when
+    # neither can be read we retain rather than guess.
+    remote_sha="$(git -C "$REPO_ROOT" ls-remote origin "refs/heads/$branch" 2>/dev/null \
+        | awk 'NR==1{print $1}')"
+    if [[ -z "$remote_sha" ]]; then
+        remote_sha="$(git -C "$REPO_ROOT" rev-parse --verify --quiet \
+            "refs/remotes/origin/$branch" 2>/dev/null)"
+    fi
+    [[ -n "$remote_sha" ]] || return 1
+
+    [[ "$local_sha" == "$remote_sha" ]] || return 1
+    # Emit the proven oid: the deletion must use THIS value, not a fresh read.
+    printf '%s\n' "$local_sha"
+}
+
+# Delete the local ref with an atomic compare-and-delete on its admitted tip.
+#
+# `git branch -D` deletes whatever the ref points at NOW, so a ref that advanced
+# between the tip check and the delete loses that work. git does provide a
+# compare-and-delete: `git update-ref -d <ref> <expected-old-oid>` fails with
+# "cannot lock ref ... is at X but expected Y" and preserves the ref when the
+# oid is stale (verified against real git 2.43.0: stale exits 1 and the branch
+# survives; current exits 0 and it is deleted). An earlier revision of this PR
+# claimed no such lease existed; that was wrong.
+delete_branch_at_admitted_tip() {
+    local branch="$1" expected="$2"
+
+    # The oid is the caller's, proven equal to the admitted remote tip. Re-reading
+    # it here would defeat the whole point: a ref that advanced after the equality
+    # check would become the new expected value and be deleted successfully, so the
+    # CAS would be atomic only against its own read, never against admission.
+    if [[ -z "$expected" ]]; then
+        echo "    -> retaining local branch $branch: no admitted tip was carried" >&2
+        return 0
+    fi
+    if ! git -C "$REPO_ROOT" update-ref -d "refs/heads/$branch" "$expected" 2>/dev/null; then
+        echo "    -> retaining local branch $branch: it moved between admission and deletion" >&2
+    fi
+}
+
 # Remove a worktree. Uses git worktree remove (no --force) so git's own dirty-check
 # remains as a second safety net even though we've already classified the worktree clean.
 # Never falls back to raw rm -rf (spec requirement).
@@ -120,8 +210,22 @@ remove_worktree() {
     # before removing it. This is belt-and-suspenders: the classifier already confirmed
     # clean status, but we keep git's own safety check active.
     if git -C "$REPO_ROOT" worktree remove "$wt_path" 2>/dev/null; then
-        # Also clean up the local branch if it still exists.
-        git -C "$REPO_ROOT" branch -D "$branch" 2>/dev/null || true
+        # Remove the local branch only after the worktree is gone, so the
+        # shared #3957 ownership read does not retain the worktree we just
+        # removed. Every refusal retains the branch and reports why.
+        if branch_deletion_admitted "$branch"; then
+            # The admission covers the remote branch. Delete the local ref only
+            # when it is the same tip, so unpushed local commits are never
+            # discarded under a remote-scoped authorization.
+            local admitted_tip
+            if admitted_tip="$(local_tip_is_admitted "$branch")"; then
+                delete_branch_at_admitted_tip "$branch" "$admitted_tip"
+            else
+                echo "    -> retaining local branch $branch: local tip is not the admitted remote tip" >&2
+            fi
+        else
+            echo "    -> retaining local branch $branch: branch-deletion admission refused" >&2
+        fi
         # Prune metadata for any already-gone paths.
         git -C "$REPO_ROOT" worktree prune 2>/dev/null || true
         return 0

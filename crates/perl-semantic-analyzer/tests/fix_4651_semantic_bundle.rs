@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Tests for issue #4651 — semantic analyzer bundle:
 //!   1. `local $non_builtin` treated as lexical instead of dynamic global
 //!   2. Implicit `$_` for `for (@list)` not declared in loop scope

@@ -1,0 +1,1311 @@
+{
+  "schema": "lsp_runtime_train.v1",
+  "schema_version": 1,
+  "planning_basis": "G01 of the #10360 control plane: one versioned stable node and authority contract for the reusable LSP-runtime programme, carrying no current, live, or observed state.",
+  "population_status": "schema_fixture_subset",
+  "population_successor": "GRAPH11037",
+  "programme": {
+    "control_plane_issue": 10360,
+    "runtime_architecture_issue": 7384,
+    "integrated_product_issue": 9150,
+    "schema_issue": 11036,
+    "static_population_successor_issue": 11037,
+    "shared_extraction_gate_issue": 10554,
+    "method_authority": "docs/agents/DEVELOPMENT_METHOD.md and the repository deliver-pr route"
+  },
+  "authority_planes": [
+    {
+      "plane": "stable_graph",
+      "owns": "architecture intent, roles, dependencies, authority moves, conflict, supersession, exits, claim ceilings, rollback, and stop conditions",
+      "never_substitutes": "current-tree integration, offline readiness, live collaboration state, or behavioral evidence"
+    },
+    {
+      "plane": "artifact_and_proof_map",
+      "owns": "accepted repository contract, test, docs, and evidence owners plus their regeneration and proof routes",
+      "never_substitutes": "whether one proposition is actually integrated on an exact tree"
+    },
+    {
+      "plane": "current_tree_observation",
+      "owns": "whether one proposition is integrated on one exact tree",
+      "never_substitutes": "behavioral, support, package, or release evidence"
+    },
+    {
+      "plane": "offline_frontier",
+      "owns": "which concrete leaves are structurally buildable and conflict-safe from exact repository facts",
+      "never_substitutes": "a claim that work is unclaimed, or any live candidate or writer fact"
+    },
+    {
+      "plane": "live_collaboration",
+      "owns": "which candidate, writer, review, and check work currently exists",
+      "never_substitutes": "stable graph truth or current-tree integration truth"
+    },
+    {
+      "plane": "external_authorization",
+      "owns": "freshly granted permission for an action outside this repository",
+      "never_substitutes": "any dependency completion, however total"
+    }
+  ],
+  "role_vocabulary": [
+    {
+      "role": "controller",
+      "owns": "grouping, sequencing, and closing a programme stage",
+      "selectable": false,
+      "takes_dependency_edges": false
+    },
+    {
+      "role": "implementation",
+      "owns": "one authority move landed by one reviewable candidate",
+      "selectable": true,
+      "takes_dependency_edges": true
+    },
+    {
+      "role": "proof",
+      "owns": "one discriminating executable obligation over an already-owned authority",
+      "selectable": true,
+      "takes_dependency_edges": true
+    },
+    {
+      "role": "decision",
+      "owns": "one recorded ruling that unblocks or narrows later nodes",
+      "selectable": false,
+      "takes_dependency_edges": true
+    },
+    {
+      "role": "cutover",
+      "owns": "one migration that withdraws a superseded path behind an exact exit",
+      "selectable": true,
+      "takes_dependency_edges": true
+    },
+    {
+      "role": "external_action",
+      "owns": "one action outside this repository that requires fresh authorization",
+      "selectable": false,
+      "takes_dependency_edges": true
+    },
+    {
+      "role": "historical",
+      "owns": "one retained prior node kept for provenance only",
+      "selectable": false,
+      "takes_dependency_edges": false
+    }
+  ],
+  "release_horizon_ladder": [
+    {
+      "rank": 0,
+      "value": "shipped_correctness",
+      "owns": "defects reachable by a released consumer today"
+    },
+    {
+      "rank": 1,
+      "value": "runtime_spine",
+      "owns": "structural interior work that later horizons stand on"
+    },
+    {
+      "rank": 2,
+      "value": "package_api",
+      "owns": "published surface, naming, and compatibility commitments"
+    },
+    {
+      "rank": 3,
+      "value": "product_cutover",
+      "owns": "withdrawal of a superseded interior path once its successor is current"
+    },
+    {
+      "rank": 4,
+      "value": "externalization",
+      "owns": "work whose completion requires an action outside this repository"
+    },
+    {
+      "rank": 5,
+      "value": "optional_breadth",
+      "owns": "elective coverage that no earlier horizon may be blocked on"
+    }
+  ],
+  "claim_ceiling_ladder": [
+    {
+      "rank": 0,
+      "value": "none",
+      "owns": "records or authorizes; never claims an implemented authority"
+    },
+    {
+      "rank": 1,
+      "value": "schema_contract",
+      "owns": "a data contract, vocabulary, or ruling with no populated graph or behavior"
+    },
+    {
+      "rank": 2,
+      "value": "implementation_slice",
+      "owns": "one coherent authority move landed by one candidate"
+    },
+    {
+      "rank": 3,
+      "value": "programme_stage",
+      "owns": "one named stage of a programme, closed by its own leaves"
+    },
+    {
+      "rank": 4,
+      "value": "programme",
+      "owns": "an entire programme outcome, closed only by every stage"
+    }
+  ],
+  "role_claim_caps": [
+    {
+      "role": "controller",
+      "max_claim": "programme"
+    },
+    {
+      "role": "implementation",
+      "max_claim": "implementation_slice"
+    },
+    {
+      "role": "proof",
+      "max_claim": "implementation_slice"
+    },
+    {
+      "role": "decision",
+      "max_claim": "schema_contract"
+    },
+    {
+      "role": "cutover",
+      "max_claim": "implementation_slice"
+    },
+    {
+      "role": "external_action",
+      "max_claim": "none"
+    },
+    {
+      "role": "historical",
+      "max_claim": "none"
+    }
+  ],
+  "edge_kinds": [
+    {
+      "kind": "hard",
+      "owns": "a prerequisite that must be integrated before this node can be implemented",
+      "serializes_implementation": true
+    },
+    {
+      "kind": "evidence",
+      "owns": "a fact this node's claim depends on; it constrains the claim, not the build order",
+      "serializes_implementation": false
+    },
+    {
+      "kind": "authorization",
+      "owns": "a permission class that must be freshly granted; completion never implies it",
+      "serializes_implementation": false
+    },
+    {
+      "kind": "consumer",
+      "owns": "a later node that reads this node's authority; it is never a prerequisite of this node",
+      "serializes_implementation": false
+    }
+  ],
+  "old_path_dispositions": [
+    {
+      "value": "none",
+      "owns": "no authority moves, so no prior path is left behind",
+      "requires_exit_owner": false
+    },
+    {
+      "value": "delete",
+      "owns": "the prior path is removed in the same candidate",
+      "requires_exit_owner": true
+    },
+    {
+      "value": "unreachable",
+      "owns": "the prior path remains compiled but no live caller selects it",
+      "requires_exit_owner": true
+    },
+    {
+      "value": "forwarding_with_exit",
+      "owns": "the prior entrypoint forwards to the successor until a named exit removes it",
+      "requires_exit_owner": true
+    },
+    {
+      "value": "oracle_with_exit",
+      "owns": "the prior path is retained only as a differential oracle until a named exit retires it",
+      "requires_exit_owner": true
+    },
+    {
+      "value": "intentionally_independent",
+      "owns": "the prior path is a deliberate peer and is never withdrawn",
+      "requires_exit_owner": false
+    },
+    {
+      "value": "external_transition",
+      "owns": "withdrawal depends on an action outside this repository",
+      "requires_exit_owner": true
+    }
+  ],
+  "stack_relations": [
+    {
+      "value": "independent",
+      "owns": "the node stands on integrated authority only"
+    },
+    {
+      "value": "stacked_on",
+      "owns": "the node is built on a named unintegrated candidate and names it exactly"
+    }
+  ],
+  "parallel_dispositions": [
+    {
+      "value": "parallel_safe",
+      "owns": "no exclusive writer key is shared with a concurrently selectable node"
+    },
+    {
+      "value": "serialized_by_conflict",
+      "owns": "an exclusive writer key is shared, so an exact stack relation orders the work"
+    },
+    {
+      "value": "serialized_by_hard_dependency",
+      "owns": "a hard edge already orders the work"
+    }
+  ],
+  "authorization_classes": [
+    {
+      "id": "#maintainer_submission",
+      "subject": "a human maintainer submits prepared material to a repository this programme does not own"
+    },
+    {
+      "id": "#external_registry_publication",
+      "subject": "a package or extension registry entry is created or updated"
+    },
+    {
+      "id": "#release_publication",
+      "subject": "a tag, release, or published artifact is produced"
+    },
+    {
+      "id": "#repository_creation",
+      "subject": "a new repository or published namespace is created"
+    }
+  ],
+  "generic_mechanics_boundary": {
+    "note": "Generic schema mechanics carry graph semantics only; product implementation vocabulary stays in node payloads and never in the mechanics sections.",
+    "generic_mechanics_sections": [
+      "role_vocabulary",
+      "release_horizon_ladder",
+      "claim_ceiling_ladder",
+      "edge_kinds",
+      "old_path_dispositions",
+      "stack_relations",
+      "parallel_dispositions"
+    ],
+    "forbidden_type_substrings": [
+      "Perl",
+      "Provider",
+      "DocumentStore",
+      "WorkspaceModel",
+      "Backend"
+    ]
+  },
+  "forbidden_mutable_fields": [
+    "current_main_sha",
+    "current_tree_result",
+    "issue_state",
+    "issue_labels",
+    "pr_state",
+    "branch_state",
+    "worktree_state",
+    "head_sha",
+    "check_state",
+    "review_state",
+    "writer_assignment",
+    "agent_assignment",
+    "implementation_status",
+    "readiness",
+    "frontier_status",
+    "observed_at",
+    "observation_timestamp",
+    "model_identity",
+    "provider_identity",
+    "token_cost",
+    "support_verdict",
+    "release_verdict"
+  ],
+  "global_conflict_key_sentinels": [
+    "*",
+    "global",
+    "all",
+    "repository",
+    "workspace"
+  ],
+  "forbidden_value_patterns": [
+    {
+      "pattern": "\\b[0-9a-f]{7,40}\\b",
+      "owns": "a commit-shaped identifier: a stable node never names a tree it was true on"
+    },
+    {
+      "pattern": "(?i)\\b(pr|issue)\\s*#\\s*\\d+\\s+(is|was|has)\\b",
+      "owns": "a verdict about a live pull request or issue"
+    },
+    {
+      "pattern": "(?i)\\b(is|are|was|were)\\s+(green|red|merged|approved|passing|failing)\\b",
+      "owns": "a check, review, or merge verdict"
+    },
+    {
+      "pattern": "(?i)\\bready\\s*=\\s*(true|false)\\b",
+      "owns": "a readiness verdict, which the offline frontier owns and this contract never records"
+    },
+    {
+      "pattern": "(?i)\\bassigned\\s+to\\b",
+      "owns": "a writer or agent assignment"
+    },
+    {
+      "pattern": "(?i)\\b(current|latest)\\s+(main|head|sha|commit)\\b",
+      "owns": "a claim about the current tree"
+    }
+  ],
+  "schema_evolution": {
+    "unknown_version_policy": "reject: an unrecognized schema_version fails closed rather than being read under v1 semantics",
+    "unknown_field_policy": "reject: deserialization denies unknown fields so an execution-significant field can never be silently dropped",
+    "additive_forward_policy": "a forward-compatible additive field requires an explicit schema_version increment and its own preserve-or-reject rule",
+    "digest_exclusions": [
+      "every forbidden_mutable_fields entry",
+      "incidental JSON formatting, key order, and array order"
+    ]
+  },
+  "determinism": {
+    "normalization_note": "The canonical digest is a recursive content walk with byte-ordinal ordering, so identical semantic inputs normalize to identical bytes across map order, locale, clock, checkout path, and retrieval order.",
+    "stable_id_rule": "stable_node_id survives issue-title edits and generated projection changes; it is never derived from a title or a live projection"
+  },
+  "shared_mechanics_ruling": {
+    "inventory": [
+      {
+        "subject": "import_cleanup_train.v1",
+        "path": "xtask/src/import_cleanup_train_manifest.rs",
+        "landed": true,
+        "reusable_seam": "manifest-as-data loading shape: strict deny-unknown-fields deserialization, closed vocabularies, contiguous ladders, and a pinned canonical digest"
+      },
+      {
+        "subject": "emacs_train_context",
+        "path": "xtask/src/tasks/emacs_train_context/mod.rs",
+        "landed": true,
+        "reusable_seam": "train context resolution and digest rendering; its model is client-subject specific and carries no node or authority vocabulary"
+      },
+      {
+        "subject": "module_train",
+        "path": "xtask/src/tasks/module_train_tests.rs",
+        "landed": true,
+        "reusable_seam": "train projection digest family; no stable node or authority contract"
+      }
+    ],
+    "reused": "the landed import_cleanup_train.v1 loading shape (strict schema, closed vocabularies, ladders, pinned digest) is mirrored rather than reinvented",
+    "runtime_local_reason": "node roles, release horizons, edge kinds, old-path dispositions, and authorization classes are runtime-programme semantics; centralizing them now would satisfy structural symmetry, not landed reuse",
+    "extraction_gate_disposition": "#10554 stays deferred: two manifests sharing a loading shape is not the landed duplication its own start gate requires",
+    "duplication_evidence_for_10554": [
+      "canonical_digest recursive content walk is now implemented twice with identical semantics",
+      "contiguous-rank ladder validation is now implemented twice",
+      "pinned-digest drift rejection is now implemented twice"
+    ]
+  },
+  "nodes": [
+    {
+      "stable_node_id": "CTRL10360",
+      "issue_ref": 10360,
+      "controller_ref": null,
+      "role": "controller",
+      "lane": "control_plane",
+      "release_horizon": "runtime_spine",
+      "one_pr_proposition": "none: this node groups and closes the control-plane stage and is never selected as work",
+      "claim_ceiling": "programme",
+      "authority_before": [],
+      "authority_after": [],
+      "consumed_authorities": [],
+      "hard_dependencies": [],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [],
+      "shared_artifact_keys": [],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "parallel_safe",
+      "old_path_disposition": "none",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [],
+      "positive_proof_obligation_ids": [],
+      "artifact_map_required": false,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [],
+      "rollback_boundary": "none: no candidate is ever opened against this node",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "a stage leaf reports that the stage decomposition itself is wrong"
+      ],
+      "stop_conditions": [
+        "never assign this node; select one of its stage leaves instead"
+      ],
+      "limitations": [
+        "controller nodes carry no proposition and no rollback unit"
+      ]
+    },
+    {
+      "stable_node_id": "SCHEMA11036",
+      "issue_ref": 11036,
+      "controller_ref": "CTRL10360",
+      "role": "implementation",
+      "lane": "control_plane",
+      "release_horizon": "runtime_spine",
+      "one_pr_proposition": "define the versioned stable node and authority contract, its validator, and its fixtures, with no populated graph and no current state",
+      "claim_ceiling": "schema_contract",
+      "authority_before": [
+        "no repository-owned stable contract can represent the runtime programme"
+      ],
+      "authority_after": [
+        "lsp_runtime_train.v1 owns the stable node and authority vocabulary"
+      ],
+      "consumed_authorities": [],
+      "hard_dependencies": [],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [
+        "GRAPH11037",
+        "PROOF11033",
+        "DECIDE10554"
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.schema"
+      ],
+      "shared_artifact_keys": [
+        ".spec/11036-lsp-runtime-train-schema"
+      ],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "parallel_safe",
+      "old_path_disposition": "none",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [
+        "controller_as_leaf",
+        "missing_authority_delta",
+        "edge_kind_conflation",
+        "external_action_without_authorization",
+        "cutover_without_old_path_exit",
+        "parallel_exclusive_writers",
+        "mutable_live_fact_in_stable_manifest",
+        "global_conflict_key",
+        "product_type_in_generic_mechanics",
+        "premature_generic_extraction",
+        "unknown_version_or_field",
+        "nondeterministic_normalization"
+      ],
+      "positive_proof_obligation_ids": [
+        "every_role_represented",
+        "every_horizon_represented",
+        "every_old_path_disposition_represented"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": true,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_manifest_loads"
+      ],
+      "rollback_boundary": "revert the manifest, loader module, and focused tests; no other node reads them yet",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "a later stage needs a semantic distinction this vocabulary cannot express"
+      ],
+      "stop_conditions": [
+        "stop before populating the complete graph",
+        "stop before deriving current-tree state or readiness",
+        "stop before any GitHub query or agent packet"
+      ],
+      "limitations": [
+        "the node set here is a schema fixture subset, not the runtime programme graph"
+      ]
+    },
+    {
+      "stable_node_id": "GRAPH11037",
+      "issue_ref": 11037,
+      "controller_ref": "CTRL10360",
+      "role": "implementation",
+      "lane": "control_plane",
+      "release_horizon": "runtime_spine",
+      "one_pr_proposition": "populate every current node under the stable contract and reject cycles, duplicate authority, and stale supersession",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "the stable contract exists but no complete graph is represented"
+      ],
+      "authority_after": [
+        "the complete static runtime graph is represented and integrity-checked"
+      ],
+      "consumed_authorities": [
+        "lsp_runtime_train.v1 owns the stable node and authority vocabulary"
+      ],
+      "hard_dependencies": [
+        "SCHEMA11036"
+      ],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [
+        "ARTMAP11072"
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.graph"
+      ],
+      "shared_artifact_keys": [
+        ".spec/11036-lsp-runtime-train-schema"
+      ],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "serialized_by_hard_dependency",
+      "old_path_disposition": "none",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [
+        "cycle_rejected",
+        "duplicate_authority_rejected",
+        "stale_supersession_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "every_current_node_populated"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": true,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_graph_complete"
+      ],
+      "rollback_boundary": "revert the populated node set; the contract itself remains current",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "population reveals a role or edge kind the contract cannot express"
+      ],
+      "stop_conditions": [
+        "stop before proof routing or current-tree probes"
+      ],
+      "limitations": [
+        "population does not establish that any node is implemented"
+      ]
+    },
+    {
+      "stable_node_id": "ARTMAP11072",
+      "issue_ref": 11072,
+      "controller_ref": "CTRL10360",
+      "role": "implementation",
+      "lane": "control_plane",
+      "release_horizon": "runtime_spine",
+      "one_pr_proposition": "bind every active leaf to its canonical contract, spec, test, docs, and evidence owners",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "the graph names nodes but not their artifact owners"
+      ],
+      "authority_after": [
+        "every active leaf names its canonical artifact and regeneration owner"
+      ],
+      "consumed_authorities": [
+        "the complete static runtime graph is represented and integrity-checked"
+      ],
+      "hard_dependencies": [
+        "GRAPH11037"
+      ],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [
+        "PROOF11033"
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.artifact_map"
+      ],
+      "shared_artifact_keys": [
+        ".spec/11036-lsp-runtime-train-schema"
+      ],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "serialized_by_hard_dependency",
+      "old_path_disposition": "none",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [
+        "agent_only_parallel_spec_system_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "every_active_leaf_has_an_artifact_owner"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": true,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_artifact_map_complete"
+      ],
+      "rollback_boundary": "revert the artifact map; the graph remains current",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "a leaf has no existing artifact owner and creating one needs its own review"
+      ],
+      "stop_conditions": [
+        "stop before resolving proof commands"
+      ],
+      "limitations": [
+        "naming an artifact owner does not prove the artifact is current"
+      ]
+    },
+    {
+      "stable_node_id": "PROOF11033",
+      "issue_ref": 11033,
+      "controller_ref": "CTRL10360",
+      "role": "proof",
+      "lane": "control_plane",
+      "release_horizon": "shipped_correctness",
+      "one_pr_proposition": "map every leaf to the smallest sufficient falsifiers and the broader routed gates that select it",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "artifact owners are named but no proof route is resolved"
+      ],
+      "authority_after": [
+        "every leaf names its focused falsifiers and its routed gates"
+      ],
+      "consumed_authorities": [
+        "every active leaf names its canonical artifact and regeneration owner"
+      ],
+      "hard_dependencies": [
+        "ARTMAP11072"
+      ],
+      "evidence_dependencies": [
+        "SCHEMA11036"
+      ],
+      "authorization_dependencies": [],
+      "consumer_edges": [
+        "PROBE11038"
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.proof_profile"
+      ],
+      "shared_artifact_keys": [
+        ".spec/11036-lsp-runtime-train-schema"
+      ],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "serialized_by_hard_dependency",
+      "old_path_disposition": "none",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [
+        "stale_or_skipped_proof_is_non_pass"
+      ],
+      "positive_proof_obligation_ids": [
+        "every_leaf_has_a_focused_falsifier"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_proof_profile_resolves"
+      ],
+      "rollback_boundary": "revert the proof profile; the artifact map remains current",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "a leaf has no discriminating proof at any layer"
+      ],
+      "stop_conditions": [
+        "stop before running current-tree probes"
+      ],
+      "limitations": [
+        "a resolved proof route is not a passing proof"
+      ]
+    },
+    {
+      "stable_node_id": "PROBE11038",
+      "issue_ref": 11038,
+      "controller_ref": "CTRL10360",
+      "role": "implementation",
+      "lane": "control_plane",
+      "release_horizon": "runtime_spine",
+      "one_pr_proposition": "classify each node against one exact tree as absent, partial, landed, superseded, transferred, contradictory, or not-proven",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "no offline probe classifies a node against an exact tree"
+      ],
+      "authority_after": [
+        "proposition-specific probes classify every node on one exact tree"
+      ],
+      "consumed_authorities": [
+        "every leaf names its focused falsifiers and its routed gates"
+      ],
+      "hard_dependencies": [
+        "PROOF11033"
+      ],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [
+        "FRONTIER11306"
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.probe"
+      ],
+      "shared_artifact_keys": [],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "serialized_by_hard_dependency",
+      "old_path_disposition": "none",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [
+        "probe_claims_readiness_rejected",
+        "probe_queries_github_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "every_node_classified_on_one_tree"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_probe_classifies"
+      ],
+      "rollback_boundary": "revert the probe module; the proof profile remains current",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "a proposition cannot be probed offline without running the product"
+      ],
+      "stop_conditions": [
+        "stop before computing readiness or reading GitHub"
+      ],
+      "limitations": [
+        "a probe classifies integration, never behavior or support"
+      ]
+    },
+    {
+      "stable_node_id": "FRONTIER11306",
+      "issue_ref": 11306,
+      "controller_ref": "CTRL10360",
+      "role": "implementation",
+      "lane": "control_plane",
+      "release_horizon": "runtime_spine",
+      "one_pr_proposition": "derive all and only structurally ready leaves, shortest blocker explanations, and conflict-safe parallel groups from exact repository facts",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "#7384 and #9150 each maintain a hand-kept operational frontier"
+      ],
+      "authority_after": [
+        "one derived offline frontier replaces every hand-kept frontier"
+      ],
+      "consumed_authorities": [
+        "proposition-specific probes classify every node on one exact tree"
+      ],
+      "hard_dependencies": [
+        "PROBE11038"
+      ],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [
+        "OBSERVE11040",
+        "PACKET11042"
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.frontier"
+      ],
+      "shared_artifact_keys": [],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "serialized_by_hard_dependency",
+      "old_path_disposition": "forwarding_with_exit",
+      "old_path_exit_owner": "CUTOVER7384",
+      "required_falsifier_ids": [
+        "frontier_claims_work_unclaimed_rejected",
+        "frontier_mutates_state_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "ready_set_is_exactly_derivable"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_frontier_derives"
+      ],
+      "rollback_boundary": "revert the frontier derivation; the hand-kept frontiers still forward until CUTOVER7384 removes them",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "readiness cannot be derived without a live fact"
+      ],
+      "stop_conditions": [
+        "stop before observing live collaboration state"
+      ],
+      "limitations": [
+        "structural readiness never implies that no one is already working on the leaf"
+      ]
+    },
+    {
+      "stable_node_id": "OBSERVE11040",
+      "issue_ref": 11040,
+      "controller_ref": "CTRL10360",
+      "role": "implementation",
+      "lane": "control_plane",
+      "release_horizon": "runtime_spine",
+      "one_pr_proposition": "observe live candidate, check, and review state read-only and return a routing recommendation without mutating anything",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "no read-only observation of live collaboration state exists"
+      ],
+      "authority_after": [
+        "live collaboration state is observable and returns a typed recommendation"
+      ],
+      "consumed_authorities": [
+        "one derived offline frontier replaces every hand-kept frontier"
+      ],
+      "hard_dependencies": [
+        "FRONTIER11306"
+      ],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [
+        "CLOSEOUT11044"
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.observation"
+      ],
+      "shared_artifact_keys": [
+        "lsp_runtime_train.generated_outputs"
+      ],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "parallel_safe",
+      "old_path_disposition": "intentionally_independent",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [
+        "observation_mutates_github_rejected",
+        "observation_overwrites_stable_truth_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "recommendation_is_typed_and_read_only"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_observation_read_only"
+      ],
+      "rollback_boundary": "revert the observer; offline planes stay current and unchanged",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "a recommendation cannot be made without mutating remote state"
+      ],
+      "stop_conditions": [
+        "stop before any write to a remote surface"
+      ],
+      "limitations": [
+        "a rate-limited or refused observation is not evidence that no candidate exists"
+      ]
+    },
+    {
+      "stable_node_id": "PACKET11042",
+      "issue_ref": 11042,
+      "controller_ref": "CTRL10360",
+      "role": "implementation",
+      "lane": "control_plane",
+      "release_horizon": "runtime_spine",
+      "one_pr_proposition": "emit content-addressed builder and independent reviewer packets bounded to one authority delta",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "no bounded handoff packet exists for a builder or a reviewer"
+      ],
+      "authority_after": [
+        "builder and reviewer packets are derived from stable and offline facts"
+      ],
+      "consumed_authorities": [
+        "one derived offline frontier replaces every hand-kept frontier"
+      ],
+      "hard_dependencies": [
+        "FRONTIER11306"
+      ],
+      "evidence_dependencies": [
+        "OBSERVE11040"
+      ],
+      "authorization_dependencies": [],
+      "consumer_edges": [
+        "CLOSEOUT11044"
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.packet"
+      ],
+      "shared_artifact_keys": [
+        "lsp_runtime_train.generated_outputs"
+      ],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "parallel_safe",
+      "old_path_disposition": "none",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [
+        "offline_packet_infers_no_candidate_rejected",
+        "packet_authorizes_mutation_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "packet_is_content_addressed_and_bounded"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_packet_bounded"
+      ],
+      "rollback_boundary": "revert the packet generator; no consumer depends on its output yet",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "a bounded packet cannot carry enough context to start work"
+      ],
+      "stop_conditions": [
+        "stop before authorizing any mutation from a packet"
+      ],
+      "limitations": [
+        "an offline packet cannot conclude that no candidate exists"
+      ]
+    },
+    {
+      "stable_node_id": "CLOSEOUT11044",
+      "issue_ref": 11044,
+      "controller_ref": "CTRL10360",
+      "role": "implementation",
+      "lane": "control_plane",
+      "release_horizon": "shipped_correctness",
+      "one_pr_proposition": "extend the canonical PR checker so one exact candidate head proves one node's structural authority move",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "structural closeout is asserted in prose rather than checked on an exact head"
+      ],
+      "authority_after": [
+        "one exact head is checked against one node's structural authority move"
+      ],
+      "consumed_authorities": [
+        "live collaboration state is observable and returns a typed recommendation",
+        "builder and reviewer packets are derived from stable and offline facts"
+      ],
+      "hard_dependencies": [
+        "OBSERVE11040",
+        "PACKET11042"
+      ],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [
+        "DOGFOOD11311"
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.closeout"
+      ],
+      "shared_artifact_keys": [],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "serialized_by_hard_dependency",
+      "old_path_disposition": "oracle_with_exit",
+      "old_path_exit_owner": "DOGFOOD11311",
+      "required_falsifier_ids": [
+        "closeout_passing_treated_as_review_rejected",
+        "controller_scope_accepted_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "exact_head_structural_evidence"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_closeout_checks"
+      ],
+      "rollback_boundary": "revert the checker extension; the existing checker behavior is unchanged",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "structural closeout cannot be decided without substantive review"
+      ],
+      "stop_conditions": [
+        "stop before treating a passing check as review, merge, or release"
+      ],
+      "limitations": [
+        "passing closeout is not substantive review, CI, merge, or authorization"
+      ]
+    },
+    {
+      "stable_node_id": "DOGFOOD11311",
+      "issue_ref": 11311,
+      "controller_ref": "CTRL10360",
+      "role": "proof",
+      "lane": "control_plane",
+      "release_horizon": "optional_breadth",
+      "one_pr_proposition": "prove fresh start, resume, repair, safe parallel work, and correct refusal across disposable agent cohorts",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "the control-plane interface is unproven against an agent with no prior conversation"
+      ],
+      "authority_after": [
+        "the interface is proven for fresh, resuming, and correctly refusing agents"
+      ],
+      "consumed_authorities": [
+        "one exact head is checked against one node's structural authority move"
+      ],
+      "hard_dependencies": [
+        "CLOSEOUT11044"
+      ],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.dogfood"
+      ],
+      "shared_artifact_keys": [],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "serialized_by_hard_dependency",
+      "old_path_disposition": "none",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [
+        "cohort_result_not_reproducible_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "fresh_agent_can_start_resume_or_refuse"
+      ],
+      "artifact_map_required": false,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_dogfood_cohorts"
+      ],
+      "rollback_boundary": "revert the cohort harness; no production surface is touched",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "a cohort exposes an interface defect owned by an earlier node"
+      ],
+      "stop_conditions": [
+        "stop before changing an earlier node's contract to make a cohort pass"
+      ],
+      "limitations": [
+        "a cohort result is evidence about the interface, not about product behavior"
+      ]
+    },
+    {
+      "stable_node_id": "DECIDE10554",
+      "issue_ref": 10554,
+      "controller_ref": "CTRL10360",
+      "role": "decision",
+      "lane": "shared_mechanics",
+      "release_horizon": "package_api",
+      "one_pr_proposition": "none: record whether landed duplication now satisfies the shared extraction start gate",
+      "claim_ceiling": "schema_contract",
+      "authority_before": [
+        "each train implements its own loading shape"
+      ],
+      "authority_after": [
+        "a recorded ruling states whether extraction is warranted yet"
+      ],
+      "consumed_authorities": [],
+      "hard_dependencies": [],
+      "evidence_dependencies": [
+        "SCHEMA11036"
+      ],
+      "authorization_dependencies": [],
+      "consumer_edges": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [],
+      "shared_artifact_keys": [],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "parallel_safe",
+      "old_path_disposition": "none",
+      "old_path_exit_owner": null,
+      "required_falsifier_ids": [],
+      "positive_proof_obligation_ids": [],
+      "artifact_map_required": false,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [],
+      "rollback_boundary": "none: a ruling is superseded by a later ruling, never rolled back",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "a third train lands the same loading shape"
+      ],
+      "stop_conditions": [
+        "do not extract while the start gate is unmet"
+      ],
+      "limitations": [
+        "planned schemas and similar prose are not extraction evidence"
+      ]
+    },
+    {
+      "stable_node_id": "CUTOVER7384",
+      "issue_ref": 7384,
+      "controller_ref": "CTRL10360",
+      "role": "cutover",
+      "lane": "control_plane",
+      "release_horizon": "product_cutover",
+      "one_pr_proposition": "withdraw the hand-kept operational frontiers once the derived frontier is current",
+      "claim_ceiling": "implementation_slice",
+      "authority_before": [
+        "two hand-kept frontiers compete with the derived frontier"
+      ],
+      "authority_after": [
+        "the derived frontier is the only operational frontier"
+      ],
+      "consumed_authorities": [
+        "one derived offline frontier replaces every hand-kept frontier"
+      ],
+      "hard_dependencies": [
+        "FRONTIER11306"
+      ],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [],
+      "supersedes": [
+        "HISTORICAL9799"
+      ],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [
+        "lsp_runtime_train.frontier"
+      ],
+      "shared_artifact_keys": [],
+      "stack_relation": "stacked_on",
+      "stack_target": "FRONTIER11306",
+      "parallel_disposition": "serialized_by_conflict",
+      "old_path_disposition": "delete",
+      "old_path_exit_owner": "CUTOVER7384",
+      "required_falsifier_ids": [
+        "hand_kept_frontier_still_readable_rejected"
+      ],
+      "positive_proof_obligation_ids": [
+        "no_competing_frontier_remains"
+      ],
+      "artifact_map_required": true,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [
+        "lsp_runtime_train_single_frontier"
+      ],
+      "rollback_boundary": "restore the hand-kept frontier documents; the derived frontier keeps working",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "the derived frontier cannot express a distinction the hand-kept one carried"
+      ],
+      "stop_conditions": [
+        "do not withdraw the old frontier before the derived one is current"
+      ],
+      "limitations": [
+        "withdrawal is documentation-level and changes no runtime behavior"
+      ]
+    },
+    {
+      "stable_node_id": "EXTERNAL11311P",
+      "issue_ref": 11311,
+      "controller_ref": "CTRL10360",
+      "role": "external_action",
+      "lane": "externalization",
+      "release_horizon": "externalization",
+      "one_pr_proposition": "none: a human publishes the proven control-plane interface outside this repository",
+      "claim_ceiling": "none",
+      "authority_before": [
+        "the interface is proven only inside this repository"
+      ],
+      "authority_after": [
+        "the interface is published under a freshly granted external authorization"
+      ],
+      "consumed_authorities": [
+        "the interface is proven for fresh, resuming, and correctly refusing agents"
+      ],
+      "hard_dependencies": [
+        "DOGFOOD11311"
+      ],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [
+        "#maintainer_submission",
+        "#release_publication"
+      ],
+      "consumer_edges": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [],
+      "shared_artifact_keys": [],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "serialized_by_hard_dependency",
+      "old_path_disposition": "external_transition",
+      "old_path_exit_owner": "CTRL10360",
+      "required_falsifier_ids": [
+        "authorization_inferred_from_dependencies_rejected"
+      ],
+      "positive_proof_obligation_ids": [],
+      "artifact_map_required": false,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [],
+      "rollback_boundary": "none: an external action is withdrawn externally, never by reverting this repository",
+      "transfer_owner": "a human maintainer",
+      "return_to_issue_conditions": [
+        "authorization is refused or withdrawn"
+      ],
+      "stop_conditions": [
+        "never perform this action from an automated context"
+      ],
+      "limitations": [
+        "completing every dependency never grants this authorization"
+      ]
+    },
+    {
+      "stable_node_id": "HISTORICAL9799",
+      "issue_ref": 9799,
+      "controller_ref": "CTRL10360",
+      "role": "historical",
+      "lane": "control_plane",
+      "release_horizon": "runtime_spine",
+      "one_pr_proposition": "none: retained for provenance after its live-state architecture was superseded",
+      "claim_ceiling": "none",
+      "authority_before": [],
+      "authority_after": [],
+      "consumed_authorities": [],
+      "hard_dependencies": [],
+      "evidence_dependencies": [],
+      "authorization_dependencies": [],
+      "consumer_edges": [],
+      "supersedes": [],
+      "superseded_by": [
+        "CUTOVER7384"
+      ],
+      "duplicate_of": null,
+      "exclusive_writer_conflict_keys": [],
+      "shared_artifact_keys": [],
+      "stack_relation": "independent",
+      "stack_target": null,
+      "parallel_disposition": "parallel_safe",
+      "old_path_disposition": "unreachable",
+      "old_path_exit_owner": "GRAPH11037",
+      "required_falsifier_ids": [],
+      "positive_proof_obligation_ids": [],
+      "artifact_map_required": false,
+      "checked_spec_disposition_required": false,
+      "current_tree_probe_ids": [],
+      "rollback_boundary": "none: historical nodes are never selected",
+      "transfer_owner": null,
+      "return_to_issue_conditions": [
+        "provenance is disputed"
+      ],
+      "stop_conditions": [
+        "never select a historical node as work"
+      ],
+      "limitations": [
+        "retained for provenance only; it carries no current authority"
+      ]
+    }
+  ],
+  "limitations": [
+    "This revision is a schema fixture subset: it proves the contract can express every role, horizon, edge kind, and old-path disposition, and it does not represent the runtime programme graph.",
+    "No node here asserts that its proposition is implemented on any tree.",
+    "Mutable state is refused at two layers: a closed field set that forbids mutable field names, and a bounded value scan over every string. This is bounded rejection, not a structural impossibility proof — prose fields remain prose, so a sufficiently novel phrasing of live state would pass. Closing that further means replacing prose with typed vocabularies, which is a later revision, not a v1 claim.",
+    "The stack vocabulary carries only the relations the fixtures actually exercise. A restack relation describes candidate history, which belongs to the live-collaboration plane; it is added here only if the stable graph is ever shown to need it.",
+    "The canonical digest escapes the backslash and semicolon that terminate its own scalar tokens. Container delimiters are not escaped inside string content; that is safe here because every scalar token is self-terminating and object keys are fixed by the strict field set, but it is a bound of this canonicalization rather than a general guarantee."
+  ]
+}

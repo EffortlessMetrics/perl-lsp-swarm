@@ -11,9 +11,10 @@ mod model;
 
 pub use body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
-    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirStmt,
-    HirStmtId, HirSubscript, HirVariable, LoopControlVerb, Sigil, SubscriptKind, UnaryMode,
-    VariableKind, lower_body,
+    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirRegex,
+    HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution,
+    HirTransliteration, HirVariable, LoopControlVerb, RegexAnalysisAnchor, ReplacementEvaluation,
+    Sigil, SubscriptKind, UnaryMode, VariableKind, lower_body,
 };
 pub use lower::lower_ast;
 pub use model::{
@@ -22,13 +23,13 @@ pub use model::{
     ClassDecl, CompileConfidence, CompileDirective, CompileDirectiveAction, CompileDirectiveKind,
     CompileEffect, CompileEffectFactKind, CompileEffectKind, CompileEffectSourceKind,
     CompileEnvironment, CompileEnvironmentBoundary, CompileEnvironmentBoundaryKind, CompilePhase,
-    CompilePhaseBlock, CompileProvenance, ControlTransfer, ControlTransferKind, DeferExpr,
-    DerefAggregateKind, DerefExpr, DerefOperandKind, DynamicBoundary, DynamicBoundaryKind,
-    ExportDeclaration, ExportDeclarationKind, FrameworkAdapterKind, FrameworkAdapterRegistry,
-    FrameworkDynamicBoundaryFact, FrameworkExportedSymbolFact, FrameworkExportedSymbolKind,
-    FrameworkFactGraph, GlobMigrationAdapter, GlobSlot, GlobSlotKind, GlobSlotSource,
-    HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId, HirFile, HirId, HirItem,
-    HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
+    CompilePhaseBlock, CompileProvenance, ControlTransfer, ControlTransferKind, DataSectionDecl,
+    DataSectionMarker, DeferExpr, DerefAggregateKind, DerefExpr, DerefOperandKind, DynamicBoundary,
+    DynamicBoundaryKind, ExportDeclaration, ExportDeclarationKind, FrameworkAdapterKind,
+    FrameworkAdapterRegistry, FrameworkDynamicBoundaryFact, FrameworkExportedSymbolFact,
+    FrameworkExportedSymbolKind, FrameworkFactGraph, GlobMigrationAdapter, GlobSlot, GlobSlotKind,
+    GlobSlotSource, HIR_BODY_MODEL_VERSION, HeredocMigrationAdapter, HirBindingId, HirFile, HirId,
+    HirItem, HirKind, HirScopeId, IncRootAction, IncRootFact, IncRootKind, IndirectCallExpr,
     InheritanceSource, LiteralExpr, LiteralKind, LoopKind, LoopShell, MatchExpr, MethodCallExpr,
     MethodDecl, ModuleRequest, ModuleRequestKind, ModuleResolutionCacheInvalidation,
     ModuleResolutionCacheKey, ModuleResolutionCacheRootKey, ModuleResolutionCandidate,

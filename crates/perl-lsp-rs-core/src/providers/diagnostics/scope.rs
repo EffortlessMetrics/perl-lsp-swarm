@@ -1362,4 +1362,74 @@ mod tests {
         );
         Ok(())
     }
+    #[test]
+    fn undeclared_variable_without_candidates_keeps_actionable_fallback() {
+        let diagnostic = scope_issues_to_diagnostics_with_semantics(
+            vec![undeclared_issue("$cont", (10, 15))],
+            FileId(1),
+            &NullStubQueries,
+        )
+        .into_iter()
+        .next()
+        .expect("one issue should produce one diagnostic");
+
+        assert_eq!(
+            diagnostic.message,
+            "Variable '$cont' is used but not declared -- add 'my $cont' to declare it in this scope"
+        );
+        assert_eq!(diagnostic.suggestion.as_deref(), Some("Add 'my $cont;' before this line"));
+        assert!(
+            !diagnostic.message.to_ascii_lowercase().contains("did you mean"),
+            "the no-candidate baseline must not fabricate a nearest-match hint"
+        );
+    }
+
+    #[test]
+    fn undeclared_variable_diagnostic_uses_the_offending_name_not_description_text() {
+        let issue = ScopeIssue::new(
+            IssueKind::UndeclaredVariable,
+            "$cont",
+            1,
+            (10, 15),
+            "unrelated analyzer description",
+        );
+
+        let diagnostic =
+            scope_issues_to_diagnostics_with_semantics(vec![issue], FileId(1), &NullStubQueries)
+                .into_iter()
+                .next()
+                .expect("one issue should produce one diagnostic");
+
+        assert!(
+            diagnostic.message.contains("$cont"),
+            "diagnostic must identify the offending variable: {}",
+            diagnostic.message
+        );
+        assert!(
+            !diagnostic.message.contains("unrelated analyzer description"),
+            "diagnostic should remain owned by the diagnostic projection"
+        );
+    }
+
+    #[test]
+    fn unrelated_diagnostic_kinds_do_not_receive_nearest_match_language() {
+        let diagnostic = scope_issues_to_diagnostics_with_semantics(
+            vec![bareword_issue("pritn", (10, 14))],
+            FileId(1),
+            &NullStubQueries,
+        )
+        .into_iter()
+        .next()
+        .expect("one issue should produce one diagnostic");
+
+        assert!(
+            diagnostic.message.contains("Bareword 'pritn'"),
+            "bareword diagnostic should retain its own message: {}",
+            diagnostic.message
+        );
+        assert!(
+            !diagnostic.message.to_ascii_lowercase().contains("did you mean"),
+            "nearest-match language must not leak into unsupported diagnostic kinds"
+        );
+    }
 }

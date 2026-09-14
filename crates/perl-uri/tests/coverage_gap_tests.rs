@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Targeted coverage tests for `perl-uri` gaps surfaced by `cargo llvm-cov`.
 //!
 //! Each test references the specific code path it exercises so that
