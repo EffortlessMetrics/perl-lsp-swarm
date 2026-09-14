@@ -41,16 +41,16 @@ use tasks::{
     ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
     ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
     code_action_generation_ledger, command_evidence, compare, compat_inventory,
-    compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof,
-    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
+    compiler_lexical_cutline, compiler_performance_receipt, corpus_audit, count_ratchet,
+    cpan_corpus, critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs,
+    devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context,
+    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
+    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
+    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
+    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
+    intent_diff_gate, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
     parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
     perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
@@ -177,6 +177,9 @@ enum Commands {
 
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
+
+    /// Validate the compiler performance receipt schema, its vocabularies, and every committed fixture.
+    CheckCompilerPerformanceReceipt,
 
     /// Validate the shared typed train edge and claim-profile contract
     /// (train_edge_contract.v1), its programme-neutral fixtures, and the
@@ -5020,6 +5023,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckCompilerPerformanceReceipt => compiler_performance_receipt::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CandidateSecurityContract { contract } => {
             tasks::candidate_security_contract::run(&contract)
