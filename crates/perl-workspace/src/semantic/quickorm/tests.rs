@@ -52,6 +52,93 @@ fn canonical_names(facts: &[GeneratedMemberFact]) -> Vec<&str> {
     names
 }
 
+// Source-level parser input does not currently produce one-sided divergence; this
+// contract guard keeps disagreement between normalized and exact-source extractors fail-closed.
+
+#[test]
+fn value_cross_extractor_disagreement_is_dynamic() {
+    let args = vec!["type".to_string(), "'orm'".to_string()];
+    let source = "use DBIx::QuickORM type => 'table';";
+
+    assert_eq!(exact_source_import_pair(source), Some(("type", "table")));
+    assert_eq!(static_import_key(&args[0]), Some("type".to_string()));
+    assert_eq!(quoted_import_value(&args[1]), Some("orm".to_string()));
+    // The normalized value disagrees with the exact-source value while the key agrees.
+    assert_eq!(classify_import_shape(&args, Some(source)), QuickOrmImportShape::Dynamic);
+    assert_eq!(
+        classify_import_shape(&["type".into(), "'table'".into()], Some(source)),
+        QuickOrmImportShape::UnfilteredTable
+    );
+}
+
+#[test]
+fn key_cross_extractor_disagreement_is_dynamic() {
+    let args = vec!["'kind'".to_string(), "'orm'".to_string()];
+    let source = "use DBIx::QuickORM type => 'orm';";
+
+    assert_eq!(exact_source_import_pair(source), Some(("type", "orm")));
+    assert_eq!(static_import_key(&args[0]), Some("kind".to_string()));
+    assert_eq!(quoted_import_value(&args[1]), Some("orm".to_string()));
+    // The normalized key disagrees with the exact-source key while the value agrees.
+    assert_eq!(classify_import_shape(&args, Some(source)), QuickOrmImportShape::Dynamic);
+    assert_eq!(
+        classify_import_shape(&["type".into(), "'orm'".into()], Some(source)),
+        QuickOrmImportShape::UnfilteredOrm
+    );
+}
+
+#[test]
+fn semantic_facade_wrappers_compose_core_and_quickorm_facts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = "\
+package User;
+use Moo;
+has name => (is => 'ro');
+use DBIx::QuickORM type => 'table';
+table users => sub {};
+";
+    let mut parser = Parser::new(source);
+    let ast =
+        parser.parse().map_err(|error| format!("failed to parse wrapper fixture: {error:?}"))?;
+
+    let generated_without_source =
+        super::super::generated_member_extractor::extract_generated_member_facts(&ast, FileId(2));
+    let generated_with_source =
+        super::super::generated_member_extractor::extract_generated_member_facts_with_source(
+            &ast,
+            FileId(2),
+            source,
+        );
+    let names_without_source = canonical_names(&generated_without_source);
+    let names_with_source = canonical_names(&generated_with_source);
+
+    assert!(names_without_source.contains(&"User::name"));
+    assert!(!names_without_source.contains(&"User::qorm_table"));
+    assert!(names_with_source.contains(&"User::name"));
+    assert!(names_with_source.contains(&"User::qorm_table"));
+
+    let imports_without_source =
+        super::super::workspace_import_extractor::extract_import_specs(&ast, FileId(3));
+    let imports_with_source =
+        super::super::workspace_import_extractor::extract_import_specs_with_source(
+            &ast,
+            FileId(3),
+            source,
+        );
+    let quickorm_without_source = quickorm_spec(&imports_without_source)?;
+    let quickorm_with_source = quickorm_spec(&imports_with_source)?;
+
+    assert_eq!(quickorm_without_source.kind, ImportKind::ManualImport);
+    assert_eq!(quickorm_without_source.symbols, ImportSymbols::Dynamic);
+    assert_eq!(quickorm_without_source.provenance, Provenance::DynamicBoundary);
+    assert_eq!(quickorm_without_source.confidence, Confidence::Low);
+    assert_eq!(quickorm_with_source.kind, ImportKind::Use);
+    assert_eq!(quickorm_with_source.symbols, ImportSymbols::Default);
+    assert_eq!(quickorm_with_source.provenance, Provenance::ImportExportInference);
+    assert_eq!(quickorm_with_source.confidence, Confidence::Medium);
+    Ok(())
+}
+
 #[test]
 fn configured_table_import_uses_default_dsl_exports() -> Result<(), Box<dyn std::error::Error>> {
     let specs = import_specs_from_source(
