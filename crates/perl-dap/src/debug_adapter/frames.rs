@@ -846,4 +846,63 @@ mod pagination_tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn framed_stack_trace_fallback_and_rejection_preserve_their_contracts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for mode in ["empty", "internal", "rejected"] {
+            let adapter = std::sync::Arc::new(DebugAdapter::new());
+            let frame_id = if mode == "rejected" { FRAME_ID_MODULUS } else { 1 };
+            install_stack_trace_test_session(&adapter, vec![make_frame(frame_id, "prior")])?;
+            adapter.seed_stack_frame_arguments_for_test(frame_id, vec!["prior_arg".to_string()]);
+            let request_adapter = std::sync::Arc::clone(&adapter);
+            let request = std::thread::spawn(move || {
+                request_adapter.handle_stack_trace(1, 1, Some(json!({ "threadId": 1 })))
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while adapter.debugger_query_count_for_test() == 0
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            if adapter.debugger_query_count_for_test() == 0 {
+                let _ = request.join();
+                return Err(format!("{mode}: query was not submitted").into());
+            }
+            adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+            if mode == "internal" {
+                adapter.push_recent_output_line_for_test("# 0 DB::DB at /tmp/perl5db.pl line 8");
+            } else if mode == "rejected" {
+                adapter.push_recent_output_line_for_test("# 0 main::run at /tmp/current.pl line 8");
+            }
+            adapter.push_recent_output_line_for_test("DAP_END_1");
+            let response = request.join().map_err(|_| "stack snapshot thread panicked")?;
+            let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+                return Err(format!("{mode}: unsuccessful response {response:?}").into());
+            };
+            let guard = lock_or_recover(&adapter.session, "test.snapshot_outcome");
+            let session = guard.as_ref().ok_or("missing current session")?;
+            if mode == "rejected" {
+                if body.get("stackFrames") != Some(&json!([]))
+                    || body.get("totalFrames") != Some(&json!(0))
+                    || !session.stack_frames.is_empty()
+                    || !session.stack_frame_arguments.is_empty()
+                {
+                    return Err(format!("rejected frame namespace was retained: {body}").into());
+                }
+            } else if body.get("totalFrames") != Some(&json!(1))
+                || body
+                    .get("stackFrames")
+                    .and_then(Value::as_array)
+                    .and_then(|v| v.first())
+                    .and_then(|v| v.get("name"))
+                    .and_then(Value::as_str)
+                    != Some("prior")
+                || session.stack_frame_arguments.get(&1) != Some(&vec!["prior_arg".to_string()])
+            {
+                return Err(format!("{mode}: same-stop fallback lost its authority: {body}").into());
+            }
+        }
+        Ok(())
+    }
 }
