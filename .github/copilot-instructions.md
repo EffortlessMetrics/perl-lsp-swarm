@@ -127,6 +127,10 @@ statuses; it is not the review verdict.
 - formatting, editorial cleanup, or unrelated generated refresh → no full review
   restart merely because the SHA changed.
 
+Read-only review is non-exclusive: multiple reviewers may inspect the same candidate and
+publish useful findings without writer allocation. Writer exclusivity begins at
+mutation; a reviewer does not push a repair merely because it found one.
+
 A clean review is valid. Green CI, mergeability, zero threads, bot approval, or labels
 cannot create substantive review.
 
@@ -170,9 +174,13 @@ execute the new line.
 
 - use one worktree per genuine concurrent write claim, not per lifecycle pass;
 - never edit the coordination checkout directly;
-- never use `git stash` in worktrees;
+- never use `git stash` in this shared multi-worktree repository; `refs/stash` is
+  repository-global, so another worktree can pop or drop your entry without knowing it
+  is yours;
 - stage intended paths explicitly;
-- use `--force-with-lease=<branch>:<expected-sha>` for an authorized rewrite;
+- rewrite published candidate history only with established sole mutation ownership and
+  an explicit expected remote SHA; if exclusivity is unknown, preserve the observed
+  remote head and use a non-rewriting integration or stop;
 - preserve dirty, unpushed, or salvageable work;
 - clean only lane-owned branches, worktrees, and scratch after reconciliation.
 

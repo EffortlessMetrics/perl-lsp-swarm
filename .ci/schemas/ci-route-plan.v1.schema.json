@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.github.io/perl-lsp/schemas/ci-route-plan.v1.schema.json",
+  "title": "ci_route_plan.v1",
+  "description": "Canonical route-plan payload published by `ci-route-plan compile`. Structural projection of the Rust domain in xtask/src/ci_route_plan; the Rust typed model and semantic validator remain the authority, and drift between the two is checked mechanically by xtask/tests/ci_route_plan_canonical.rs. Canonical bytes: object keys sorted by UTF-8 byte order, minimal string escaping, plain decimal integers, omitted optional values, no whitespace. Semantic fingerprint preimage: the full payload minus `summary` and `semantic_fingerprint`, prefixed by the domain separator `ci_route_plan.v1\\0`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "producer",
+    "subject",
+    "requested_profile",
+    "included_native_tiers",
+    "expansion_fingerprint",
+    "policy_digest",
+    "disposition_digest",
+    "workflow_digest",
+    "denominator",
+    "selection",
+    "rows",
+    "summary",
+    "semantic_fingerprint"
+  ],
+  "properties": {
+    "schema": { "const": "ci_route_plan.v1" },
+    "producer": { "const": "xtask::ci_route_plan" },
+    "subject": { "$ref": "#/$defs/subject" },
+    "requested_profile": {
+      "description": "Closed profile vocabulary owned by ci_route_profile.v1 (#10178).",
+      "enum": ["commit", "pr_fast", "merge_gate", "nightly", "all", "release"]
+    },
+    "included_native_tiers": {
+      "description": "Set-like: normalized to ascending canonical order in the canonical encoding; duplicates are rejected by the domain validator.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "expansion_fingerprint": { "$ref": "#/$defs/digest" },
+    "policy_digest": { "$ref": "#/$defs/digest" },
+    "disposition_digest": { "$ref": "#/$defs/digest" },
+    "workflow_digest": { "$ref": "#/$defs/digest" },
+    "denominator": {
+      "description": "Set-like: governed gate ids from #10178, ascending unique; exactly one row each in the same order.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/gate_id" }
+    },
+    "selection": { "$ref": "#/$defs/selection" },
+    "rows": {
+      "description": "Ordered: aligned with the governed denominator, one row per gate.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/row" }
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "semantic_fingerprint": {
+      "description": "SHA-256(\"ci_route_plan.v1\\0\" || canonical semantic bytes), lowercase hex. Never part of its own preimage.",
+      "$ref": "#/$defs/digest"
+    }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gate_id": { "type": "string", "pattern": "^[a-z0-9_.-]+$" },
+    "reason_token": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "head_sha", "subject_digest"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/reason_token" },
+        "head_sha": { "$ref": "#/$defs/sha" },
+        "base_sha": { "$ref": "#/$defs/sha" },
+        "subject_digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base",
+        "scope_ok",
+        "fallback_used",
+        "package_args",
+        "selector_digest"
+      ],
+      "properties": {
+        "base": { "type": "string", "minLength": 1 },
+        "scope_ok": { "type": "boolean" },
+        "fallback_used": { "type": "boolean" },
+        "fallback_reason": { "type": "string", "minLength": 1 },
+        "package_args": {
+          "description": "Ordered command-token sequence; never sorted by the canonical encoding.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "scope": { "$ref": "#/$defs/scope" },
+        "selector_digest": { "$ref": "#/$defs/digest" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "fallback_used": { "const": true } },
+            "required": ["fallback_used"]
+          },
+          "then": { "required": ["fallback_reason"] }
+        },
+        {
+          "if": {
+            "properties": { "fallback_used": { "const": false } },
+            "required": ["fallback_used"]
+          },
+          "then": { "not": { "required": ["fallback_reason"] } }
+        }
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Bound to the exact route subject head SHA; all identity lists are set-like (ascending unique).",
+      "required": [
+        "head_sha",
+        "diff_class",
+        "direct_crates",
+        "reverse_dependencies",
+        "architecture_wideners",
+        "risk_tags"
+      ],
+      "properties": {
+        "head_sha": { "$ref": "#/$defs/sha" },
+        "diff_class": { "$ref": "#/$defs/reason_token" },
+        "direct_crates": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/scoped_identity" }
+        },
+        "reverse_dependencies": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/scoped_identity" }
+        },
+        "architecture_wideners": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/scoped_identity" }
+        },
+        "risk_tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "scoped_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "reason"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "native_tier",
+        "policy_role",
+        "lifecycle",
+        "selector_role",
+        "selector_placement",
+        "applicability",
+        "outcome"
+      ],
+      "properties": {
+        "gate_id": { "$ref": "#/$defs/gate_id" },
+        "native_tier": { "type": "string", "minLength": 1 },
+        "policy_role": {
+          "description": "#6858/#10176 authority projection; never derived from the requested profile.",
+          "enum": ["required", "advisory"]
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "resolution"],
+          "properties": {
+            "state": {
+              "enum": ["active", "dormant", "quarantined", "retired", "blocked"]
+            },
+            "resolution": { "enum": ["current", "expired", "invalid"] }
+          }
+        },
+        "selector_role": {
+          "enum": [
+            "always_on",
+            "rust_scoped",
+            "rust_fallback",
+            "rust_package_scoped",
+            "static",
+            "unspecified"
+          ]
+        },
+        "selector_placement": { "enum": ["selected", "skipped"] },
+        "applicability": { "enum": ["applicable", "not_applicable", "unknown"] },
+        "outcome": { "$ref": "#/$defs/outcome" }
+      }
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "command", "timeout_seconds", "reason"],
+          "properties": {
+            "kind": { "const": "run" },
+            "command": { "type": "string", "minLength": 1 },
+            "timeout_seconds": { "type": "integer", "minimum": 1 },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason", "selector_digest"],
+          "properties": {
+            "kind": { "const": "scoped_noop" },
+            "reason": { "type": "string", "minLength": 1 },
+            "selector_digest": { "$ref": "#/$defs/digest" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason", "owner", "review_after"],
+          "properties": {
+            "kind": { "const": "quarantined" },
+            "reason": { "type": "string", "minLength": 1 },
+            "owner": { "type": "string", "minLength": 1 },
+            "owner_issue": { "type": "string", "minLength": 1 },
+            "review_after": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "code", "message"],
+          "properties": {
+            "kind": { "const": "error" },
+            "code": {
+              "description": "Closed vocabulary mirrored from CLOSED_ERROR_CODES; unknown codes fail closed.",
+              "enum": [
+                "disposition_expired",
+                "disposition_invalid",
+                "lifecycle_non_runnable",
+                "selector_evidence_missing",
+                "selector_contradiction",
+                "execution_identity_missing",
+                "run_timeout_invalid"
+              ]
+            },
+            "message": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "summary": {
+      "description": "Complete derived shape, recomputed from rows by the domain validator; does not participate in the semantic fingerprint preimage.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "governed",
+        "run",
+        "scoped_noop",
+        "quarantined",
+        "error",
+        "by_policy_role"
+      ],
+      "properties": {
+        "governed": { "type": "integer", "minimum": 0 },
+        "run": { "type": "integer", "minimum": 0 },
+        "scoped_noop": { "type": "integer", "minimum": 0 },
+        "quarantined": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 },
+        "by_policy_role": {
+          "type": "object",
+          "additionalProperties": false,
+          "propertyNames": { "enum": ["required", "advisory"] },
+          "properties": {
+            "required": { "type": "integer", "minimum": 0 },
+            "advisory": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

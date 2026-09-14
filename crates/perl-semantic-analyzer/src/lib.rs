@@ -7,6 +7,8 @@
 
 #![deny(unsafe_code)]
 #![deny(unreachable_pub)]
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 #![cfg_attr(
     test,
     allow(
@@ -37,7 +39,6 @@
     clippy::items_after_statements,
     clippy::return_self_not_must_use,
     clippy::unused_self,
-    clippy::collapsible_match,
     clippy::collapsible_if,
     clippy::only_used_in_recursion,
     clippy::items_after_test_module,

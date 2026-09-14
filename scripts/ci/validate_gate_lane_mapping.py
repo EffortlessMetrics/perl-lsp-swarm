@@ -52,6 +52,9 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "published_crate_count_pr_fast": {"lanes": ["pr_smoke"]},
     "release_history_check": {"lanes": ["pr_smoke"]},
     "source_commit_api_check": {"lanes": ["pr_smoke", "merge_gate_shards"]},
+    # The serialization ratchet runs in pr-fast and again in the required
+    # merge-gate policy shard, so both execution lanes own its economics.
+    "serial_test_ratchet": {"lanes": ["pr_smoke", "merge_gate_shards"]},
     # Arrived from the release lineage in the reconciliation merge (#4976). The
     # gate was defined in .ci/gate-policy.yaml there but never mapped here, so
     # this validator failed the moment both files met. tier: pr_fast, and it is
@@ -85,6 +88,18 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "unit_lsp_core_full": {"lanes": ["merge_gate_shards"]},
     "unit_lsp_full": {"lanes": ["merge_gate_shards"]},
     "unit_dap_support_full": {"lanes": ["merge_gate_shards"]},
+    # #11933 freshness gates run in the same required `lsp` merge-gate shard as
+    # unit_lsp_full/unit_lsp_core_full, so they share that shard's economics.
+    "pending_parse_freshness": {"lanes": ["merge_gate_shards"]},
+    "pull_diagnostics_freshness": {"lanes": ["merge_gate_shards"]},
+    # The must-context guard runs in the required merge-gate shard. Keep this
+    # explicit so gate-policy additions cannot silently leave the
+    # policy/economics mapping incomplete.
+    "must_context_check": {"lanes": ["merge_gate_shards"]},
+    # Always-running required existence check for docs/agents contract
+    # workflows (#14628). Lives in the policy shard so deleting one of those
+    # path-filtered workflows cannot silently stop enforcement.
+    "docs_agents_contract_workflows": {"lanes": ["merge_gate_shards"]},
     "compile_all_targets": {"lanes": ["check_all_targets"]},
     "lsp_smoke": {"lanes": ["ux_tests"]},
 
@@ -108,6 +123,8 @@ GATE_TO_LANE_MAP: dict[str, dict[str, Any]] = {
     "compiler_concept_ledger": {"lanes": ["merge_gate_shards"]},
     "compiler_proof_policy": {"lanes": ["merge_gate_shards"]},
     "compiler_concept_proof": {"lanes": ["merge_gate_shards"]},
+    "postfix_capability_closure": {"lanes": ["merge_gate_shards"]},
+    "release_trust_invariants": {"lanes": ["merge_gate_shards"]},
 
     # commit-tier staged-tree hygiene (local pre-commit; not CI)
     "staged_tree_identity": {"lanes": ["commit_checks"]},

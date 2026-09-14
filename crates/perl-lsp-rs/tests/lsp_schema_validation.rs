@@ -3,7 +3,6 @@
 //! Validates that all LSP messages conform to the Language Server Protocol 3.17 specification
 //! using strict JSON schema validation.
 
-#![allow(clippy::collapsible_if)]
 // Integration tests print diagnostic output for CI troubleshooting; this is
 // not the LSP server's stdio transport, so print_stdout doesn't apply the
 // way it does to production code.
@@ -13,6 +12,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 mod support;
+use support::lsp_client::LspClient;
 use support::lsp_harness::LspHarness as TestHarness;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -163,10 +163,10 @@ fn validate_diagnostic(diag: &Value) -> Result<(), String> {
     } else {
         validate_markup_content(message)
             .map_err(|e| format!("Diagnostic.message MarkupContent: {e}"))?;
-        if let Some(value) = message.get("value").and_then(Value::as_str) {
-            if value.is_empty() {
-                return Err("Diagnostic.message MarkupContent.value cannot be empty".into());
-            }
+        if let Some(value) = message.get("value").and_then(Value::as_str)
+            && value.is_empty()
+        {
+            return Err("Diagnostic.message MarkupContent.value cannot be empty".into());
         }
     }
 
@@ -178,16 +178,17 @@ fn validate_diagnostic(diag: &Value) -> Result<(), String> {
         }
     }
 
-    if let Some(code) = diag.get("code") {
-        if !code.is_string() && !code.is_number() {
-            return Err("code must be string or number".into());
-        }
+    if let Some(code) = diag.get("code")
+        && !code.is_string()
+        && !code.is_number()
+    {
+        return Err("code must be string or number".into());
     }
 
-    if let Some(source) = diag.get("source") {
-        if !source.is_string() {
-            return Err("source must be string".into());
-        }
+    if let Some(source) = diag.get("source")
+        && !source.is_string()
+    {
+        return Err("source must be string".into());
     }
 
     // 3.15+ fields
@@ -268,10 +269,58 @@ fn validate_markup_content(content: &Value) -> Result<(), String> {
 
 // ======================== INITIALIZE RESPONSE VALIDATION ========================
 
+const INITIALIZE_RESULT_FIELDS: &[&str] = &["capabilities", "serverInfo"];
+
+/// Validate the selected LSP InitializeResult envelope, including its closed
+/// top-level field set. LSP version-specific evidence belongs to capabilities
+/// and method payloads, not an invented protocolVersion member.
+fn validate_initialize_result(result: &Value) -> Result<(), String> {
+    let object = result.as_object().ok_or("InitializeResult must be an object")?;
+    for key in object.keys() {
+        if !INITIALIZE_RESULT_FIELDS.contains(&key.as_str()) {
+            return Err(format!("InitializeResult has unknown top-level field `{key}`"));
+        }
+    }
+
+    let capabilities =
+        object.get("capabilities").ok_or("InitializeResult missing required `capabilities`")?;
+    if !capabilities.is_object() {
+        return Err("InitializeResult.capabilities must be an object".into());
+    }
+
+    if let Some(info) = object.get("serverInfo") {
+        let info = info.as_object().ok_or("serverInfo must be an object")?;
+        if !info.get("name").is_some_and(Value::is_string) {
+            return Err("serverInfo.name must be a string".into());
+        }
+        if let Some(version) = info.get("version")
+            && !version.is_string()
+        {
+            return Err("serverInfo.version must be a string".into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn initialize_result_schema_rejects_unowned_top_level_fields() -> TestResult {
+    let mut mutated = json!({"capabilities": {}, "serverInfo": {"name": "perl-lsp"}});
+    mutated["protocolVersion"] = json!("3.18");
+
+    assert!(
+        validate_initialize_result(&mutated).is_err(),
+        "reintroducing protocolVersion must fail the closed InitializeResult validator"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_initialize_response_schema_3_17() -> TestResult {
     let mut harness = TestHarness::new();
     let result = harness.initialize_default()?;
+
+    validate_initialize_result(&result).map_err(|e| e.to_string())?;
 
     // LSP 3.17 structure validation
     assert!(result.is_object(), "Initialize result must be object");
@@ -300,6 +349,49 @@ fn test_initialize_response_schema_3_17() -> TestResult {
 
     // Validate capability structure
     validate_server_capabilities(capabilities)?;
+    Ok(())
+}
+
+#[test]
+fn exact_process_initialize_result_matches_selected_schema() -> TestResult {
+    let binary = support::product_binary_path()?;
+    let profiles = [
+        ("minimal", json!({"capabilities": {}})),
+        (
+            "vscode-like",
+            json!({
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-16", "utf-8"]},
+                    "textDocument": {
+                        "completion": {"completionItem": {"snippetSupport": true}},
+                        "hover": {"contentFormat": ["markdown", "plaintext"]}
+                    },
+                    "workspace": {"workspaceFolders": true, "configuration": true}
+                },
+                "clientInfo": {"name": "Visual Studio Code", "version": "1.99.0"}
+            }),
+        ),
+        (
+            "bounded-standard",
+            json!({
+                "capabilities": {
+                    "general": {"positionEncodings": ["utf-16"]},
+                    "textDocument": {"hover": {"contentFormat": ["plaintext"]}}
+                },
+                "clientInfo": {"name": "standard-lsp-client", "version": "1"}
+            }),
+        ),
+    ];
+
+    for (profile, params) in profiles {
+        let client = LspClient::spawn_with_initialize_params(&binary, params)?;
+        let result = client.initialize_response().get("result").ok_or_else(|| {
+            format!("{profile}: exact process initialize response missing result")
+        })?;
+        validate_initialize_result(result).map_err(|e| format!("{profile}: {e}"))?;
+        assert!(result.get("protocolVersion").is_none(), "{profile}: protocolVersion leaked");
+        assert_eq!(result["serverInfo"]["name"], json!("perl-lsp"));
+    }
     Ok(())
 }
 
@@ -1512,10 +1604,10 @@ fn validate_partial_result_contract(exchange: &[Value]) -> Result<(), String> {
     let mut pr_tokens = HashSet::new();
 
     for m in exchange {
-        if m.get("method").and_then(|s| s.as_str()) == Some("$/progress") {
-            if let Some(t) = m.get("params").and_then(|p| p.get("token")) {
-                pr_tokens.insert(t.clone());
-            }
+        if m.get("method").and_then(|s| s.as_str()) == Some("$/progress")
+            && let Some(t) = m.get("params").and_then(|p| p.get("token"))
+        {
+            pr_tokens.insert(t.clone());
         }
     }
     if pr_tokens.is_empty() {
@@ -1529,10 +1621,10 @@ fn validate_partial_result_contract(exchange: &[Value]) -> Result<(), String> {
         .ok_or("no final response found for partial result stream")?;
 
     // If result is an array, it must be empty
-    if let Some(arr) = resp["result"].as_array() {
-        if !arr.is_empty() {
-            return Err("final response must be empty when partialResultToken is used".into());
-        }
+    if let Some(arr) = resp["result"].as_array()
+        && !arr.is_empty()
+    {
+        return Err("final response must be empty when partialResultToken is used".into());
     }
     Ok(())
 }

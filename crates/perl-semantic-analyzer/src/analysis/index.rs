@@ -118,6 +118,12 @@ impl WorkspaceIndex {
     }
 
     /// Index import dependencies from raw file contents.
+    #[expect(
+        clippy::map_err_ignore,
+        reason = "PoisonError<RwLockWriteGuard<_>> guard retention is unsound at this boundary; \
+                  the lock-poison class is the complete diagnostic context — retaining the guard \
+                  would propagate undefined state, so the error is mapped to a typed string message."
+    )]
     pub fn index_file_str(&self, uri: &str, content: &str) -> Result<(), String> {
         let dependencies = Self::extract_dependencies(content)?;
         let mut imports = self

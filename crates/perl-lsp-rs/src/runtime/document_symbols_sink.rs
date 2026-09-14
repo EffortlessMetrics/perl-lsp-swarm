@@ -14,9 +14,27 @@
 //! result-ID consumer exists on current main (the `textDocument/documentSymbol`
 //! request path computes live), so this claim only records the identity.
 //!
-//! Lock order: sink lock -> documents lock (brief validation read) and sink
-//! lock -> `symbol_index` lock (the mutation itself). No path acquires either
-//! pair in reverse order.
+//! Outcomes use the shared #11672 contract vocabulary
+//! [`ParseEffectCommitOutcomeV1`] with the sink-local mapping:
+//!
+//! - document absent from the map (closed entirely or never opened) ->
+//!   [`ParseEffectCommitOutcomeV1::RejectedLifecycleState`]: the close/open
+//!   lifecycle left no live sink subject the ticket could validate against;
+//! - live document on a different instance than the candidate (close/reopen
+//!   ABA) -> [`ParseEffectCommitOutcomeV1::RejectedWrongDocumentInstance`];
+//! - same instance but a newer generation was accepted before this candidate
+//!   reached the boundary -> [`ParseEffectCommitOutcomeV1::RejectedStaleTicket`];
+//! - currency passed but the ledger already recorded a newer committed
+//!   generation for this instance ->
+//!   [`ParseEffectCommitOutcomeV1::RejectedSinkGenerationAdvanced`].
+//!
+//! The local store mutation cannot fail on its own, so transport/failure
+//! variants are unreachable here and never returned.
+//!
+//! Lock order: sink lock -> documents lock -> `symbol_index` lock. The
+//! documents guard is held across the serialized install so lifecycle
+//! eviction cannot interleave with the store mutation; no path acquires any
+//! pair of these locks in reverse order.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,6 +43,27 @@ use std::sync::atomic::AtomicU32;
 use parking_lot::Mutex;
 
 use super::LspServer;
+use super::parse_effect_contract::ParseEffectCommitOutcomeV1;
+
+/// `(instance matches, live generation)` observed for one candidate URI
+/// while holding the documents lock.
+type DocumentCurrency = Option<(bool, u32)>;
+
+/// Boundary rejection for a candidate that is no longer current against the
+/// live document map. `None` means the ticket may proceed to install.
+fn classify_currency_rejection(
+    currency: DocumentCurrency,
+    identity: &DocumentSymbolIdentity,
+) -> Option<ParseEffectCommitOutcomeV1> {
+    match currency {
+        None => Some(ParseEffectCommitOutcomeV1::RejectedLifecycleState),
+        Some((false, _)) => Some(ParseEffectCommitOutcomeV1::RejectedWrongDocumentInstance),
+        Some((true, live_generation)) if live_generation != identity.generation => {
+            Some(ParseEffectCommitOutcomeV1::RejectedStaleTicket)
+        }
+        Some((true, _)) => None,
+    }
+}
 
 /// Accepted parse state a document-symbol candidate was derived from. Same
 /// identity shape as the push-diagnostics sink (#11673) and
@@ -56,27 +95,6 @@ impl DocumentSymbolIdentity {
 pub(crate) enum DocumentSymbolsDisposition {
     Replace(Vec<String>),
     Clear,
-}
-
-/// Exact outcome of one sink-boundary symbol commit attempt. Claim-local
-/// vocabulary (#11674), shaped for retargeting onto #11672's
-/// `ParseEffectCommitOutcome` family when that contract lands. The local
-/// store mutation cannot fail on its own, so there is no transport outcome.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DocumentSymbolCommitOutcome {
-    /// Current exact replacement installed atomically.
-    CommittedCurrent,
-    /// Current clear installed atomically.
-    SafeClearCommitted,
-    /// Document absent from the map: closed entirely or never opened.
-    RejectedDocumentClosed,
-    /// Live document exists but is a different instance than the candidate's
-    /// (close/reopen ABA).
-    RejectedWrongDocumentInstance,
-    /// Same instance but a newer generation was accepted before this
-    /// candidate reached the boundary, or the ledger already recorded a
-    /// newer commit.
-    RejectedSupersededGeneration,
 }
 
 struct CommittedDocumentSymbols {
@@ -111,55 +129,72 @@ impl LspServer {
         &self,
         identity: &DocumentSymbolIdentity,
         disposition: DocumentSymbolsDisposition,
-    ) -> DocumentSymbolCommitOutcome {
+    ) -> ParseEffectCommitOutcomeV1 {
         let mut committed = self.document_symbols_sink.committed.lock();
 
-        let currency = {
-            let docs = self.documents.lock();
-            docs.get(&identity.normalized_uri).map(|doc| {
-                (
-                    Arc::ptr_eq(&doc.generation, &identity.document_instance),
-                    doc.current_generation(),
-                )
-            })
-        };
-        let rejection = match currency {
-            None => DocumentSymbolCommitOutcome::RejectedDocumentClosed,
-            Some((false, _)) => DocumentSymbolCommitOutcome::RejectedWrongDocumentInstance,
-            Some((true, live_generation)) if live_generation != identity.generation => {
-                DocumentSymbolCommitOutcome::RejectedSupersededGeneration
-            }
-            Some((true, _)) => {
-                return self.install_committed_document_symbols(
-                    &mut committed,
-                    identity,
-                    disposition,
-                );
-            }
-        };
+        let currency = self.documents.lock().get(&identity.normalized_uri).map(|doc| {
+            (Arc::ptr_eq(&doc.generation, &identity.document_instance), doc.current_generation())
+        });
+        if let Some(rejection) = classify_currency_rejection(currency, identity) {
+            tracing::debug!(
+                uri = %identity.normalized_uri,
+                generation = identity.generation,
+                ?rejection,
+                "Rejected document-symbol candidate at sink boundary"
+            );
+            return rejection;
+        }
 
-        tracing::debug!(
-            uri = %identity.normalized_uri,
-            generation = identity.generation,
-            ?rejection,
-            "Rejected document-symbol candidate at sink boundary"
-        );
-        rejection
+        // Test seam mirroring #11673: fires after the currency precheck
+        // passes and before the serialized install, letting a falsifier
+        // mutate lifecycle state in the exact validation -> mutation window.
+        #[cfg(test)]
+        if let Some(hook) = self.document_symbols_before_install_hook.lock().as_ref() {
+            hook();
+        }
+
+        self.install_committed_document_symbols(&mut committed, identity, disposition)
     }
 
     /// Ledger compare/record + atomic store mutation. Caller has proven
-    /// ticket currency and holds the sink lock.
+    /// ticket currency against the precheck and holds the sink lock.
+    ///
+    /// The store mutation is additionally serialized against lifecycle
+    /// eviction (#11674): the precheck above releases `documents`, and the
+    /// didClose sweep clears this store through `clear_document_symbols`
+    /// without taking the sink lock, so a candidate that passed the precheck
+    /// could otherwise reinstall symbols for a URI the lifecycle already
+    /// closed. Re-validating under a documents guard held across both the
+    /// ledger record and the irreversible store mutation totally orders
+    /// eviction against commit: whichever runs second observes the other's
+    /// effect. Lock order stays sink -> documents -> `symbol_index`; the
+    /// sweep holds no lock while taking `symbol_index`, so close cannot
+    /// deadlock against this section.
     fn install_committed_document_symbols(
         &self,
         committed: &mut HashMap<String, CommittedDocumentSymbols>,
         identity: &DocumentSymbolIdentity,
         disposition: DocumentSymbolsDisposition,
-    ) -> DocumentSymbolCommitOutcome {
+    ) -> ParseEffectCommitOutcomeV1 {
+        let documents = self.documents.lock();
+        let currency = documents.get(&identity.normalized_uri).map(|doc| {
+            (Arc::ptr_eq(&doc.generation, &identity.document_instance), doc.current_generation())
+        });
+        if let Some(rejection) = classify_currency_rejection(currency, identity) {
+            tracing::debug!(
+                uri = %identity.normalized_uri,
+                generation = identity.generation,
+                ?rejection,
+                "Rejected document-symbol candidate at serialized install boundary"
+            );
+            return rejection;
+        }
+
         if let Some(entry) = committed.get(&identity.normalized_uri)
             && Arc::ptr_eq(&entry.document_instance, &identity.document_instance)
             && identity.generation < entry.generation
         {
-            return DocumentSymbolCommitOutcome::RejectedSupersededGeneration;
+            return ParseEffectCommitOutcomeV1::RejectedSinkGenerationAdvanced;
         }
 
         let sequence =
@@ -174,43 +209,44 @@ impl LspServer {
             },
         );
 
-        // Irreversible local-store mutation inside the boundary.
-        match disposition {
-            DocumentSymbolsDisposition::Replace(symbols) => {
-                self.symbol_index
-                    .lock()
-                    .replace_document_symbols(&identity.normalized_uri, symbols);
-                tracing::debug!(
-                    uri = %identity.normalized_uri,
-                    generation = identity.generation,
-                    sequence,
-                    "Committed document symbols at sink boundary"
-                );
-                self.attach_active_document_effect(
-                    &identity.normalized_uri,
-                    &identity.document_instance,
-                    identity.generation,
-                    crate::runtime::readiness::CoreEffectKind::DocumentSymbols,
-                );
-                DocumentSymbolCommitOutcome::CommittedCurrent
+        // Irreversible local-store mutation inside the boundary. The
+        // documents guard stays held across it; the readiness projection is
+        // attached only after the guard drops so the notification write
+        // never extends the documents hold.
+        let outcome = {
+            let mut index = self.symbol_index.lock();
+            match disposition {
+                DocumentSymbolsDisposition::Replace(symbols) => {
+                    index.replace_document_symbols(&identity.normalized_uri, symbols);
+                    tracing::debug!(
+                        uri = %identity.normalized_uri,
+                        generation = identity.generation,
+                        sequence,
+                        "Committed document symbols at sink boundary"
+                    );
+                    ParseEffectCommitOutcomeV1::CommittedCurrent
+                }
+                DocumentSymbolsDisposition::Clear => {
+                    index.remove_document(&identity.normalized_uri);
+                    tracing::debug!(
+                        uri = %identity.normalized_uri,
+                        generation = identity.generation,
+                        sequence,
+                        "Committed document-symbol clear at sink boundary"
+                    );
+                    ParseEffectCommitOutcomeV1::SafeClearCommitted
+                }
             }
-            DocumentSymbolsDisposition::Clear => {
-                self.symbol_index.lock().remove_document(&identity.normalized_uri);
-                tracing::debug!(
-                    uri = %identity.normalized_uri,
-                    generation = identity.generation,
-                    sequence,
-                    "Committed document-symbol clear at sink boundary"
-                );
-                self.attach_active_document_effect(
-                    &identity.normalized_uri,
-                    &identity.document_instance,
-                    identity.generation,
-                    crate::runtime::readiness::CoreEffectKind::DocumentSymbols,
-                );
-                DocumentSymbolCommitOutcome::SafeClearCommitted
-            }
-        }
+        };
+        drop(documents);
+
+        self.attach_active_document_effect(
+            &identity.normalized_uri,
+            &identity.document_instance,
+            identity.generation,
+            crate::runtime::readiness::CoreEffectKind::DocumentSymbols,
+        );
+        outcome
     }
 
     /// Receipt observation for focused tests.

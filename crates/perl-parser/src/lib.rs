@@ -65,8 +65,6 @@
     clippy::items_after_statements,
     clippy::return_self_not_must_use,
     clippy::unused_self,
-    clippy::collapsible_match,
-    clippy::collapsible_if,
     clippy::only_used_in_recursion,
     clippy::items_after_test_module,
     clippy::while_let_loop,
@@ -238,7 +236,7 @@ pub use incremental::incremental_advanced_reuse;
 /// Checkpoint-based incremental parsing with rollback support.
 pub use incremental::incremental_checkpoint;
 #[cfg(feature = "incremental")]
-/// Document-level incremental parsing state management.
+/// Experimental IncrementalDocument generation: fail-closed full fresh parse.
 pub use incremental::incremental_document;
 #[cfg(feature = "incremental")]
 /// Edit representation and application for incremental updates.

@@ -1,0 +1,566 @@
+{
+  "changes": [
+    {
+      "behavior_hint": "predicate_boundary",
+      "change_id": "change:file:lib/App.pm:9:9",
+      "changed_observable": "($amount >= 500)",
+      "changed_text_digest": "fnv64:aa8ff904d2789276",
+      "file_id": "file:lib/App.pm",
+      "missing_discriminator": null,
+      "owner_id": "owner:lib/App.pm:sub:App::discount:41-161",
+      "provenance_refs": [],
+      "range": {
+        "end_column": 25,
+        "end_line": 9,
+        "start_column": 0,
+        "start_line": 9
+      }
+    },
+    {
+      "behavior_hint": "exception_path",
+      "change_id": "change:file:lib/App.pm:15:16",
+      "changed_observable": "boom\" if $x < 0",
+      "changed_text_digest": "fnv64:aab3376966267fd5",
+      "file_id": "file:lib/App.pm",
+      "missing_discriminator": null,
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "provenance_refs": [],
+      "range": {
+        "end_column": 25,
+        "end_line": 16,
+        "start_column": 0,
+        "start_line": 15
+      }
+    }
+  ],
+  "dynamic_boundaries": [
+    {
+      "boundary_id": "boundary:lib/App.pm:eval_or_string_code:1",
+      "confidence": "high",
+      "file_id": "file:lib/App.pm",
+      "kind": "eval_or_string_code",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "provenance_refs": [],
+      "range": {
+        "end_column": 10,
+        "end_line": 14,
+        "start_column": 4,
+        "start_line": 14
+      }
+    }
+  ],
+  "files": [
+    {
+      "digest": "sha256:caa60376a6a6ae0039fae62095662e6d8e6ad92f49ae59844ea3340d77e568b1",
+      "file_id": "file:lib/App.pm",
+      "package_names": [
+        "App"
+      ],
+      "path": "lib/App.pm",
+      "provenance_refs": [
+        "prov:syntax:file:lib/App.pm"
+      ],
+      "role": [
+        "source"
+      ]
+    },
+    {
+      "digest": "sha256:440a0db1f9964b09515fc236ca1cee670ae9533ee812e15cf4005b92fd9f3a0f",
+      "file_id": "file:lib/Other.pm",
+      "package_names": [
+        "Other"
+      ],
+      "path": "lib/Other.pm",
+      "provenance_refs": [
+        "prov:syntax:file:lib/Other.pm"
+      ],
+      "role": [
+        "source"
+      ]
+    },
+    {
+      "digest": "sha256:a9245fbe27b96148238d12e5d284d701d6ba276532e01020d60a176d405162c2",
+      "file_id": "file:t/app.t",
+      "package_names": [],
+      "path": "t/app.t",
+      "provenance_refs": [
+        "prov:syntax:file:t/app.t"
+      ],
+      "role": [
+        "test"
+      ]
+    },
+    {
+      "digest": "sha256:aafdf9c3403ada01fbce61b163f4b7e7f8dd465f6c9f1f61287455eb5ceb5694",
+      "file_id": "file:t/other.t",
+      "package_names": [],
+      "path": "t/other.t",
+      "provenance_refs": [
+        "prov:syntax:file:t/other.t"
+      ],
+      "role": [
+        "test"
+      ]
+    }
+  ],
+  "input": {
+    "base": "origin/main",
+    "diff_id": null,
+    "head": "HEAD",
+    "requested_fact_classes": [
+      "files",
+      "owners",
+      "changes",
+      "tests",
+      "oracles",
+      "relations",
+      "dynamic_boundaries",
+      "verify_commands",
+      "limitations",
+      "provenance"
+    ]
+  },
+  "limitations": [
+    {
+      "evidence_refs": [
+        "owner:lib/App.pm:sub:App::risky:163-215"
+      ],
+      "kind": "eval_or_string_code",
+      "limitation_id": "limitation:boundary:lib/App.pm:eval_or_string_code:1",
+      "message": "Dynamic boundary `eval {` detected in lib/App.pm; ripr fails closed on this boundary kind."
+    },
+    {
+      "evidence_refs": [],
+      "kind": "partial_emitter",
+      "limitation_id": "emitter-partial",
+      "message": "Parser-backed tests/oracles, relations/discriminators (incl. a parser-backed direct_owner_call), boundaries/commands, files/owners, (when a diff is supplied) diff-owned changes, and a deterministic packet_fingerprint are emitted. Export-aware relation reachability and the managed-producer diff source land in later slices."
+    },
+    {
+      "evidence_refs": [],
+      "kind": "narrowed_representation",
+      "limitation_id": "oracle-representation",
+      "message": "oracle facts locate the whole assertion call range; the ripr-perl-facts-v1 schema has no observed/expected expression sub-range fields, so those are conveyed as string expressions only."
+    },
+    {
+      "evidence_refs": [],
+      "kind": "unverified_provenance",
+      "limitation_id": "diff-provenance-unverified",
+      "message": "base/head/diff are caller-asserted and not verified against a repository; this packet does not confirm the supplied diff is the actual base->head diff."
+    },
+    {
+      "evidence_refs": [
+        "file:lib/App.pm"
+      ],
+      "kind": "unattributable_change",
+      "limitation_id": "unattributable-change:file:lib/App.pm:1",
+      "message": "diff hunk at lines 1-1 of `lib/App.pm` is not inside any package/sub/method owner (file- or script-level code); no change fact emitted"
+    },
+    {
+      "evidence_refs": [
+        "change:file:lib/App.pm:15:16",
+        "owner:lib/App.pm:sub:App::risky:163-215",
+        "file:lib/App.pm"
+      ],
+      "kind": "eval_or_string_code",
+      "limitation_id": "diff-dynamic-boundary:change:file:lib/App.pm:15:16:eval_or_string_code",
+      "message": "diff-added dynamic boundary `eval {` detected in `lib/App.pm`; ripr fails closed on this boundary kind."
+    },
+    {
+      "evidence_refs": [
+        "file:lib/Missing.pm"
+      ],
+      "kind": "unresolved_diff_path",
+      "limitation_id": "diff-file-not-found:lib/Missing.pm",
+      "message": "diff hunk touches `lib/Missing.pm`, which was not parsed under the packet root; no change fact emitted"
+    },
+    {
+      "evidence_refs": [],
+      "kind": "range_precision",
+      "limitation_id": "change-range-imprecise",
+      "message": "change ranges are line-granular with best-effort column data derived from the diff, not the byte-accurate LineIndex ranges used for owners."
+    },
+    {
+      "evidence_refs": [],
+      "kind": "partial_inference",
+      "limitation_id": "change-behavior-hint-partial",
+      "message": "only predicate_boundary / return_value / exception_path behavior_hints are inferred from added-line text; every other change resolves to \"unknown\", and missing_discriminator is always null in this slice. Whole-line comments are skipped, but a die/return/comparison token inside a string literal can still be misclassified (a robust fix needs tokenization)."
+    }
+  ],
+  "oracles": [
+    {
+      "confidence": "medium",
+      "expected_expression": null,
+      "expression": "is(App::discount(50), 50, 'no discount under threshold')",
+      "kind": "exact_return_assertion",
+      "observed_sink": "($amount >= 500)",
+      "oracle_id": "oracle:t/app.t:is:53-109",
+      "provenance_refs": [
+        "prov:oracle_extraction:file:t/app.t"
+      ],
+      "range": {
+        "end_column": 56,
+        "end_line": 6,
+        "start_column": 0,
+        "start_line": 6
+      },
+      "strength": "strong_exact",
+      "target_owner_id": "owner:lib/App.pm:sub:App::discount:41-161",
+      "test_id": "test:t/app.t"
+    },
+    {
+      "confidence": "medium",
+      "expected_expression": null,
+      "expression": "is(App::discount(200), 180, 'discount applied above threshold')",
+      "kind": "exact_return_assertion",
+      "observed_sink": null,
+      "oracle_id": "oracle:t/app.t:is:111-174",
+      "provenance_refs": [
+        "prov:oracle_extraction:file:t/app.t"
+      ],
+      "range": {
+        "end_column": 63,
+        "end_line": 7,
+        "start_column": 0,
+        "start_line": 7
+      },
+      "strength": "strong_exact",
+      "target_owner_id": null,
+      "test_id": "test:t/app.t"
+    },
+    {
+      "confidence": "medium",
+      "expected_expression": null,
+      "expression": "ok(App::risky(), 'risky returns true')",
+      "kind": "smoke_ok",
+      "observed_sink": null,
+      "oracle_id": "oracle:t/app.t:ok:176-214",
+      "provenance_refs": [
+        "prov:oracle_extraction:file:t/app.t"
+      ],
+      "range": {
+        "end_column": 38,
+        "end_line": 8,
+        "start_column": 0,
+        "start_line": 8
+      },
+      "strength": "weak_smoke",
+      "target_owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "test_id": "test:t/app.t"
+    },
+    {
+      "confidence": "medium",
+      "expected_expression": null,
+      "expression": "like(App::discount(200), qr/^\\d+(\\.\\d+)?$/, 'discount looks numeric')",
+      "kind": "predicate_boundary_assertion",
+      "observed_sink": null,
+      "oracle_id": "oracle:t/app.t:like:216-285",
+      "provenance_refs": [
+        "prov:oracle_extraction:file:t/app.t"
+      ],
+      "range": {
+        "end_column": 69,
+        "end_line": 9,
+        "start_column": 0,
+        "start_line": 9
+      },
+      "strength": "weak_broad",
+      "target_owner_id": null,
+      "test_id": "test:t/app.t"
+    },
+    {
+      "confidence": "medium",
+      "expected_expression": null,
+      "expression": "ok(other_sub(), 'bare call after use')",
+      "kind": "smoke_ok",
+      "observed_sink": null,
+      "oracle_id": "oracle:t/other.t:ok:55-93",
+      "provenance_refs": [
+        "prov:oracle_extraction:file:t/other.t"
+      ],
+      "range": {
+        "end_column": 38,
+        "end_line": 6,
+        "start_column": 0,
+        "start_line": 6
+      },
+      "strength": "weak_smoke",
+      "target_owner_id": null,
+      "test_id": "test:t/other.t"
+    }
+  ],
+  "owners": [
+    {
+      "confidence": "high",
+      "file_id": "file:lib/App.pm",
+      "kind": "package",
+      "name": "App",
+      "owner_id": "owner:lib/App.pm:package:App:27-38",
+      "package": "main",
+      "provenance_refs": [
+        "prov:syntax:file:lib/App.pm"
+      ],
+      "range": {
+        "end_column": 11,
+        "end_line": 3,
+        "start_column": 0,
+        "start_line": 3
+      }
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:lib/App.pm",
+      "kind": "sub",
+      "name": "discount",
+      "owner_id": "owner:lib/App.pm:sub:App::discount:41-161",
+      "package": "App",
+      "provenance_refs": [
+        "prov:syntax:file:lib/App.pm"
+      ],
+      "range": {
+        "end_column": 1,
+        "end_line": 11,
+        "start_column": 0,
+        "start_line": 5
+      }
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:lib/App.pm",
+      "kind": "sub",
+      "name": "risky",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "package": "App",
+      "provenance_refs": [
+        "prov:syntax:file:lib/App.pm"
+      ],
+      "range": {
+        "end_column": 1,
+        "end_line": 16,
+        "start_column": 0,
+        "start_line": 13
+      }
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:lib/Other.pm",
+      "kind": "package",
+      "name": "Other",
+      "owner_id": "owner:lib/Other.pm:package:Other:0-13",
+      "package": "main",
+      "provenance_refs": [
+        "prov:syntax:file:lib/Other.pm"
+      ],
+      "range": {
+        "end_column": 13,
+        "end_line": 0,
+        "start_column": 0,
+        "start_line": 0
+      }
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:lib/Other.pm",
+      "kind": "sub",
+      "name": "other_sub",
+      "owner_id": "owner:lib/Other.pm:sub:Other::other_sub:16-47",
+      "package": "Other",
+      "provenance_refs": [
+        "prov:syntax:file:lib/Other.pm"
+      ],
+      "range": {
+        "end_column": 1,
+        "end_line": 4,
+        "start_column": 0,
+        "start_line": 2
+      }
+    }
+  ],
+  "packet_fingerprint": "sha256:8fc37c160dc0bb48ce47c7eb4544202a5413ccce1b0f3c5c0456b176820ea3dd",
+  "packet_id": "perl-lsp-ripr-facts-ripr-perl-facts-v1-target/ripr-characterization/with-diff-files,owners,changes,tests,oracles,relations,dynamic_boundaries,verify_commands,limitations,provenance",
+  "packet_status": "partial",
+  "producer": {
+    "capabilities": [
+      "files",
+      "owners",
+      "changes",
+      "tests",
+      "oracles",
+      "relations",
+      "dynamic_boundaries",
+      "verify_commands",
+      "limitations",
+      "provenance",
+      "test_facts"
+    ],
+    "name": "perl-lsp",
+    "version": "0.17.0"
+  },
+  "provenance": [
+    {
+      "confidence": "high",
+      "provenance_id": "cli-surface",
+      "source": "operator_config"
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:t/app.t",
+      "provenance_id": "prov:test_discovery:file:t/app.t",
+      "range": "2:0-2:14",
+      "source": "test_discovery"
+    },
+    {
+      "confidence": "medium",
+      "file_id": "file:t/app.t",
+      "provenance_id": "prov:oracle_extraction:file:t/app.t",
+      "range": null,
+      "source": "oracle_extraction"
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:t/other.t",
+      "provenance_id": "prov:test_discovery:file:t/other.t",
+      "range": "2:0-2:14",
+      "source": "test_discovery"
+    },
+    {
+      "confidence": "medium",
+      "file_id": "file:t/other.t",
+      "provenance_id": "prov:oracle_extraction:file:t/other.t",
+      "range": null,
+      "source": "oracle_extraction"
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:lib/App.pm",
+      "provenance_id": "prov:syntax:file:lib/App.pm",
+      "source": "syntax"
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:lib/Other.pm",
+      "provenance_id": "prov:syntax:file:lib/Other.pm",
+      "source": "syntax"
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:t/app.t",
+      "provenance_id": "prov:syntax:file:t/app.t",
+      "source": "syntax"
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:t/other.t",
+      "provenance_id": "prov:syntax:file:t/other.t",
+      "source": "syntax"
+    }
+  ],
+  "relations": [
+    {
+      "change_id": "change:file:lib/App.pm:9:9",
+      "confidence": "medium",
+      "oracle_id": "oracle:t/app.t:is:53-109",
+      "owner_id": "owner:lib/App.pm:sub:App::discount:41-161",
+      "provenance_refs": [],
+      "reachability_hint": "reachable",
+      "relation_id": "relation:file:t/app.t:lib/App.pm:owner_lib/App.pm_sub_App__discount_41-161:change:file:lib/App.pm:9:9",
+      "relation_kind": "direct_owner_call",
+      "test_id": "test:t/app.t"
+    },
+    {
+      "change_id": "change:file:lib/App.pm:15:16",
+      "confidence": "medium",
+      "oracle_id": "oracle:t/app.t:ok:176-214",
+      "owner_id": "owner:lib/App.pm:sub:App::risky:163-215",
+      "provenance_refs": [],
+      "reachability_hint": "reachable",
+      "relation_id": "relation:file:t/app.t:lib/App.pm:owner_lib/App.pm_sub_App__risky_163-215:change:file:lib/App.pm:15:16",
+      "relation_kind": "direct_owner_call",
+      "test_id": "test:t/app.t"
+    },
+    {
+      "change_id": "change:unresolved",
+      "confidence": "medium",
+      "oracle_id": null,
+      "owner_id": "owner:lib/Other.pm:package:Other:0-13",
+      "provenance_refs": [],
+      "reachability_hint": "weakly_reachable",
+      "relation_id": "relation:file:t/other.t:lib/Other.pm:owner_lib/Other.pm_package_Other_0-13",
+      "relation_kind": "file_proximity",
+      "test_id": "test:t/other.t"
+    }
+  ],
+  "root": {
+    "path_style": "posix",
+    "repo_relative": "target/ripr-characterization/with-diff",
+    "vcs_head": "HEAD"
+  },
+  "schema_version": "ripr-perl-facts-v1",
+  "tests": [
+    {
+      "confidence": "high",
+      "file_id": "file:t/app.t",
+      "framework": "Test::More",
+      "name": "t/app.t",
+      "provenance_refs": [
+        "prov:test_discovery:file:t/app.t"
+      ],
+      "range": {
+        "end_column": 0,
+        "end_line": 12,
+        "start_column": 0,
+        "start_line": 0
+      },
+      "runner_hints": [
+        "prove"
+      ],
+      "test_id": "test:t/app.t"
+    },
+    {
+      "confidence": "high",
+      "file_id": "file:t/other.t",
+      "framework": "Test::More",
+      "name": "t/other.t",
+      "provenance_refs": [
+        "prov:test_discovery:file:t/other.t"
+      ],
+      "range": {
+        "end_column": 0,
+        "end_line": 9,
+        "start_column": 0,
+        "start_line": 0
+      },
+      "runner_hints": [
+        "prove"
+      ],
+      "test_id": "test:t/other.t"
+    }
+  ],
+  "verify_commands": [
+    {
+      "argv": [
+        "prove",
+        "t/app.t"
+      ],
+      "command_id": "verify_cmd:t/app.t:1",
+      "confidence": "high",
+      "preconditions": [],
+      "provenance_refs": [],
+      "runner": "prove",
+      "scope": "test",
+      "test_id": "test:t/app.t"
+    },
+    {
+      "argv": [
+        "prove",
+        "t/other.t"
+      ],
+      "command_id": "verify_cmd:t/other.t:2",
+      "confidence": "high",
+      "preconditions": [],
+      "provenance_refs": [],
+      "runner": "prove",
+      "scope": "test",
+      "test_id": "test:t/other.t"
+    }
+  ]
+}

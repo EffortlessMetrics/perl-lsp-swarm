@@ -21,31 +21,32 @@ Receipt JSON uses `.ci/receipts/schemas/merge-readiness.schema.json` and include
 
 ## Required checks source
 
-This repository's `main` branch is gated by **two separate GitHub mechanisms**,
-and a merge is blocked by the union of both. Conventional required checks are
+This repository's `main` branch is gated by GitHub enforcement mechanisms,
+and a merge is blocked by their union. Conventional required checks are
 read from `.ci/policies/required-checks.toml` first.
 
 Only entries explicitly marked `required = true` are treated as required. The
 current proof-floor contexts, by source mechanism, are:
 
-Classic branch protection (`GET /repos/{owner}/{repo}/branches/main/protection`):
+Ruleset `main` (id `16664791`, `GET /repos/{owner}/{repo}/rules/branches/main`):
 
 - `Perl LSP Rust Small Result`
 - `ripr+ New Gap Gate`
-
-Ruleset `main` (id `16664791`, `GET /repos/{owner}/{repo}/rules/branches/main`):
-
 - `Compile All Targets (bit-rot guard)`
 - `Conflict marker check`
 - `validate-title`
+
+Classic branch protection (`GET /repos/{owner}/{repo}/branches/main/protection`)
+no longer requires any status context. Rulesets bind administrators, so none of
+these contexts can be bypassed by a manual admin probe while pending.
 
 This list must match the live branch protection and ruleset state exactly. It
 is not self-verifying: nothing compares it against GitHub, so a context added
 to either surface without a corresponding `required = true` entry here
 silently understates the gate set in every emitted receipt's `required_checks`
 inventory and in `gate_graph_version`, which is hashed over this file. When a
-required context is added or removed on either surface, update this file in
-the same change. See issue #5418 for this gap's discovery. Reading the live
+required context is added or removed on either surface, update this file in the
+same change. See issue #5418 for this gap's discovery. Reading the live
 surfaces instead of trusting this checked-in list remains unbuilt, and is the
 recurrence risk this leaves open.
 
@@ -53,6 +54,20 @@ recurrence risk this leaves open.
 is the external Codecov status context posted after Codecov processes an
 explicit coverage upload. Both are advisory and must not block normal PR or
 merge-queue flow.
+
+## Draft pull requests
+
+A draft PR is work in progress, not merge-ready. Every draft push still gets
+exact-head `Rust formatting` and `Conflict marker check` results. The remaining
+ready-tier jobs are intentionally deferred until `ready_for_review` to preserve
+CI budget.
+
+GitHub does not allow a pull request to merge while it remains draft, but its
+skipped jobs can still look successful in the check list. Treat only completed
+checks as evidence: a skipped job is not verification. Marking the PR ready
+triggers the full workflow against the current candidate. Do not emit or accept
+a `merge-ready` receipt while the PR is draft or while a required ready-tier
+context has only a skipped result.
 
 ## Gate graph versioning
 

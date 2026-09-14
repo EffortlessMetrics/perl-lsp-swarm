@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "na",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.notapplicable",
+  "subject": "notapplicable@docs-site",
+  "source_result": "not_applicable",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:3d9fc4bde7ceef058d65b00186e79c1f14b42687b491644c303065135b644e18",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": {}
+}

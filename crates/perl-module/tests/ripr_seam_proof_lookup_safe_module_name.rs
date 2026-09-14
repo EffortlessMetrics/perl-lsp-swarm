@@ -1,8 +1,8 @@
 //! RIPR seam proof for `is_lookup_safe_module_name` segment predicates (`path/mod.rs`, #5009).
 //!
-//! Each test pins ONE decision boundary in the `normalized.split("::").all(|part| { ... })`
-//! closure so a single-line mutation of the guarding sub-condition causes exactly that
-//! test to fail via a direct boolean assertion.
+//! Each test pins ONE decision boundary in the normalized package-segment closure so a
+//! single-line mutation of the guarding sub-condition causes exactly that test to fail
+//! via a direct boolean assertion.
 
 use perl_module::is_lookup_safe_module_name;
 
@@ -20,6 +20,13 @@ fn seam_segment_start_equality_boundary() {
     assert!(is_lookup_safe_module_name("_Private::Util"));
     assert!(!is_lookup_safe_module_name("1Foo"));
     assert!(!is_lookup_safe_module_name("Foo::1Bar"));
+}
+
+#[test]
+fn seam_unicode_segment_class_boundary() {
+    assert!(is_lookup_safe_module_name("Δοκιμή::設定2"));
+    assert!(is_lookup_safe_module_name("Módulo::Версия2"));
+    assert!(!is_lookup_safe_module_name("Foo::💥"));
 }
 
 #[test]
@@ -50,4 +57,5 @@ fn seam_rejects_empty_package_segments() {
 #[test]
 fn seam_accepts_legacy_quote_separator_when_normalized() {
     assert!(is_lookup_safe_module_name("Foo'Bar"));
+    assert!(is_lookup_safe_module_name("Δοκιμή'設定"));
 }

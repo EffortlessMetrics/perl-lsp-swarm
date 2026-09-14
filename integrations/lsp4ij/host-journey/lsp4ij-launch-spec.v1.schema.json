@@ -1,0 +1,86 @@
+{
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/integrations/lsp4ij/host-journey/lsp4ij-launch-spec.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LSP4IJ declared-host launch spec",
+  "description": "Precondition contract for one hermetic IntelliJ-platform IDE launch running current-source perllsp over stdio. A spec declares what will be launched before anything is observed; it is configuration, never evidence. See integrations/lsp4ij/host-journey/README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "stage",
+    "source_sha",
+    "declared_ide",
+    "lsp4ij_plugin",
+    "server_binary",
+    "sandbox",
+    "fixture_project"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "stage": { "const": "declared_host" },
+    "source_sha": { "pattern": "^[0-9a-f]{40}$", "type": "string" },
+    "declared_ide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product", "build_number", "platform", "arch", "distribution_root"],
+      "properties": {
+        "product": { "minLength": 1, "type": "string" },
+        "build_number": { "pattern": "^[A-Z]{2}-[0-9]{3,4}(\\.[0-9]+)+$", "type": "string" },
+        "platform": { "enum": ["linux", "macos", "windows"] },
+        "arch": { "enum": ["x64", "arm64"] },
+        "distribution_root": { "minLength": 2, "type": "string" }
+      }
+    },
+    "lsp4ij_plugin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "upstream_repository", "source"],
+      "properties": {
+        "id": { "const": "com.redhat.devtools.lsp4ij" },
+        "version": { "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$", "type": "string" },
+        "upstream_repository": { "const": "redhat-developer/lsp4ij" },
+        "pinned_commit": { "pattern": "^[0-9a-f]{40}$", "type": "string" },
+        "source": { "enum": ["released_marketplace", "pinned_release_archive"] }
+      }
+    },
+    "server_binary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "command"],
+      "properties": {
+        "path": { "minLength": 1, "type": "string" },
+        "sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" },
+        "command": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            { "minLength": 1, "type": "string" },
+            { "const": "--stdio" }
+          ],
+          "type": "array"
+        }
+      }
+    },
+    "sandbox": {
+      "description": "Run-owned IDE state roots; user profiles, ambient plugin dirs, and ambient settings must be bypassed entirely.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["config_root", "system_root", "plugins_root", "log_root"],
+      "properties": {
+        "config_root": { "minLength": 1, "type": "string" },
+        "system_root": { "minLength": 1, "type": "string" },
+        "plugins_root": { "minLength": 1, "type": "string" },
+        "log_root": { "minLength": 1, "type": "string" }
+      }
+    },
+    "fixture_project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root"],
+      "properties": {
+        "root": { "pattern": "host-fixture$", "type": "string" },
+        "sha256": { "pattern": "^[0-9a-f]{64}$", "type": "string" }
+      }
+    }
+  }
+}

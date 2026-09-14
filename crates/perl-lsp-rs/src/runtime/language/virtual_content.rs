@@ -596,6 +596,45 @@ mod tests {
     }
 
     #[test]
+    fn parser_workspace_text_document_content_preserves_invalid_pod_commands() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("workspace");
+        let module_dir = root.join("lib").join("Local");
+        fs::create_dir_all(&module_dir)?;
+        fs::write(
+            module_dir.join("Doc.pm"),
+            "package Local::Doc;\n\n=head1 DESCRIPTION\n\nBefore invalid directives.\n=cut!\n=head10 not a heading\n=heаd1 not a heading\nAfter invalid directives.\n\n=cut\n\n1;\n",
+        )?;
+
+        let server = LspServer::new();
+        let workspace_uri =
+            url::Url::from_directory_path(&root).map_err(|_| "failed to create workspace URI")?;
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+                .with_path(root),
+        ];
+        {
+            let mut config = server.workspace_config.lock();
+            config.include_paths = vec!["lib".to_string()];
+            config.use_perl5lib = false;
+            config.use_system_inc = false;
+        }
+
+        let result = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Local::Doc" })))?
+            .ok_or("expected workspace textDocumentContent result")?;
+        let text = result.get("text").and_then(Value::as_str).ok_or("expected text result")?;
+
+        assert!(
+            text.contains(
+                "DESCRIPTION\nBefore invalid directives.\n=cut!\n=head10 not a heading\n=heаd1 not a heading\nAfter invalid directives."
+            ),
+            "invalid commands must remain documentation in the real LSP virtual-content response: {text}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn parser_fetch_workspace_perldoc_ignores_local_module_without_pod() -> TestResult {
         let temp = tempfile::tempdir()?;
         let root = temp.path().join("workspace");

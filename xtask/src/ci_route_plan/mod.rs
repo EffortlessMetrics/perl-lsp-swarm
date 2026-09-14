@@ -17,11 +17,20 @@
 //!
 //! The binary-side adapters in `tasks/gates/planning_types.rs` project the
 //! resolved authority results into these input types. Canonical byte
-//! encoding, the semantic fingerprint, JSON-Schema conformance, and CLI/filesystem
-//! publication are the separate leaf #10179 and are intentionally absent here.
+//! encoding and the semantic fingerprint are owned by [`canonical`] (leaf
+//! #10179); the checked-in JSON-Schema projection lives at
+//! `.ci/schemas/ci-route-plan.v1.schema.json`; CLI/filesystem publication
+//! lives in the `ci-route-plan` binary. This module still performs no
+//! filesystem, clock, or network access.
 
+mod canonical;
 mod compile;
 mod validate;
+
+pub use canonical::{CanonicalPayload, FINGERPRINT_DOMAIN, SemanticProjection};
+
+use canonical::deserialize_option_reject_null;
+pub use validate::KNOWN_PROFILES;
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -66,16 +75,25 @@ pub struct CiRoutePlanV1 {
     pub selection: RouteSelectionEvidence,
     pub rows: Vec<RoutePlanRow>,
     pub summary: RoutePlanSummary,
+    /// Domain-separated SHA-256 fingerprint of the canonical semantic
+    /// projection (#10179): `SHA-256("ci_route_plan.v1\0" || bytes)`.
+    /// Recomputed and compared at validation; never part of its own
+    /// preimage.
+    pub semantic_fingerprint: String,
 }
 
 impl CiRoutePlanV1 {
     /// Compile the typed domain payload from projected authority results and
     /// runner adapter inputs. Pure: no filesystem, clock, or network access.
+    /// The compiled plan carries its semantic fingerprint, computed over
+    /// the canonical semantic projection.
     pub fn compile(input: CompileRoutePlanInput) -> Result<Self, String> {
         compile::compile(input)
     }
 
-    /// Validate every cross-field invariant of the compiled payload.
+    /// Validate every cross-field invariant of the compiled payload,
+    /// including that `semantic_fingerprint` equals the recomputed digest
+    /// of the canonical semantic projection.
     pub fn validate(&self) -> Result<(), String> {
         validate::validate(self)
     }
@@ -87,7 +105,11 @@ impl CiRoutePlanV1 {
 pub struct RouteSubjectRef {
     pub kind: String,
     pub head_sha: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub base_sha: Option<String>,
     /// Digest of the complete subject payload supplied by its owner.
     pub subject_digest: String,
@@ -102,10 +124,18 @@ pub struct RouteSelectionEvidence {
     pub base: String,
     pub scope_ok: bool,
     pub fallback_used: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub fallback_reason: Option<String>,
     pub package_args: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub scope: Option<RouteScopeEvidence>,
     /// #9149 selector-payload identity. Required whenever any row claims
     /// selector-proved non-applicability.
@@ -277,7 +307,11 @@ pub enum PlannedOutcome {
     Quarantined {
         reason: String,
         owner: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_option_reject_null"
+        )]
         owner_issue: Option<String>,
         /// Review horizon (`YYYY-MM-DD`) from #10176 quarantine evidence.
         review_after: String,
@@ -303,7 +337,12 @@ pub struct RoutePlanSummary {
 // Compile inputs (projected authority results + runner adapter inputs)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Compile input for the `ci-route-plan` CLI handoff: the binary-side
+/// adapters build this from resolved authority results and the runner's
+/// planning facts; the CLI deserializes exactly this shape (unknown fields
+/// fail closed, matching the rest of the domain).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CompileRoutePlanInput {
     pub subject: RouteSubjectRef,
     /// #10178 expansion result, projected by the binary-side adapter.
@@ -334,7 +373,11 @@ pub struct RouteProfileExpansionInput {
     pub policy_digest: String,
     pub denominator: Vec<String>,
     pub resolution: ExpansionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub detail: Option<String>,
 }
 
@@ -367,10 +410,18 @@ pub struct RouteDispositionInput {
     pub native_tier: String,
     /// Present exactly when the lifecycle claim is `Quarantined` with
     /// complete current evidence.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub quarantine: Option<RouteQuarantineEvidence>,
     /// Closed error detail when the resolution is not `Current`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub detail: Option<String>,
 }
 
@@ -378,7 +429,11 @@ pub struct RouteDispositionInput {
 #[serde(deny_unknown_fields)]
 pub struct RouteQuarantineEvidence {
     pub owner: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub owner_issue: Option<String>,
     pub reason_token: String,
     /// Review horizon (`YYYY-MM-DD`).
@@ -393,10 +448,18 @@ pub struct RouteQuarantineEvidence {
 pub struct GateSelectorInput {
     pub gate_id: String,
     pub placement: SelectorPlacement,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub role: Option<SelectorRole>,
     pub reason: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_reject_null"
+    )]
     pub proof: Option<SelectorProof>,
 }
 

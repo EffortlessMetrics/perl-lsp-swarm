@@ -16,11 +16,12 @@
 //!
 //! ## Deadlock analysis
 //!
-//! `try_send` is non-blocking — it never waits on the consumer. The writer thread
-//! holds the `output` lock (for `spawn_writer_shared`) only while performing the
-//! actual write, and it reads from the channel via `blocking_recv`/`try_recv` with
-//! no other lock held. No producer holds a lock when calling `try_send`. Therefore
-//! there is no circular lock+channel dependency and deadlock is impossible.
+//! `try_send` is non-blocking — it never waits on the consumer. Producers take
+//! the short admission-gate lock only to snapshot the shared sender and perform
+//! `try_send`; the writer thread never takes that gate. The writer thread holds
+//! the `output` lock (for `spawn_writer_shared`) only while performing the actual
+//! write, and it reads from the channel via `blocking_recv`/`try_recv` with no
+//! other lock held. Therefore there is no circular lock+channel dependency.
 
 #[cfg(test)]
 use crate::protocol::JsonRpcId;
@@ -29,7 +30,9 @@ use crate::runtime::types::ServerRequestId;
 use crate::transport::frame;
 use serde_json::{Value, json};
 use std::io::{self, Write};
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 /// Capacity of the bounded outbound message channel.
 ///
@@ -124,7 +127,31 @@ impl OutboundSink for RecordingSink {
 /// all messages are serialized by the single writer thread.
 #[derive(Clone)]
 pub(crate) struct OutboundSender {
-    tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+    /// The only sender admitted to the writer channel. Clones share this gate
+    /// so shutdown can close admission for every producer at once.
+    gate: Arc<parking_lot::Mutex<Option<tokio::sync::mpsc::Sender<OutboundMessage>>>>,
+    completion: Arc<WriterCompletion>,
+}
+
+#[derive(Default)]
+struct WriterCompletion {
+    outcome: parking_lot::Mutex<Option<WriterTerminalOutcome>>,
+    ready: parking_lot::Condvar,
+}
+
+impl WriterCompletion {
+    fn publish(&self, outcome: WriterTerminalOutcome) {
+        *self.outcome.lock() = Some(outcome);
+        self.ready.notify_all();
+    }
+
+    fn wait(&self, timeout: Duration) -> Option<WriterTerminalOutcome> {
+        let mut outcome = self.outcome.lock();
+        if outcome.is_none() {
+            self.ready.wait_for(&mut outcome, timeout);
+        }
+        outcome.clone()
+    }
 }
 
 /// Map a [`tokio::sync::mpsc::error::TrySendError`] to an [`io::Error`].
@@ -145,9 +172,37 @@ fn map_try_send_error<T>(e: tokio::sync::mpsc::error::TrySendError<T>) -> io::Er
 }
 
 impl OutboundSender {
+    fn from_parts(
+        tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+        completion: Arc<WriterCompletion>,
+    ) -> Self {
+        Self { gate: Arc::new(parking_lot::Mutex::new(Some(tx))), completion }
+    }
+
+    #[cfg(test)]
+    fn from_tx(tx: tokio::sync::mpsc::Sender<OutboundMessage>) -> Self {
+        Self::from_parts(tx, Arc::new(WriterCompletion::default()))
+    }
+
+    fn try_send(&self, message: OutboundMessage) -> io::Result<()> {
+        let gate = self.gate.lock();
+        let tx = gate
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))?;
+        tx.try_send(message).map_err(map_try_send_error)
+    }
+
+    /// Close admission for every clone and wait briefly for admitted output.
+    /// A timeout is deliberately unsettled: callers must not report successful
+    /// output settlement when the sink is still blocked.
+    pub(crate) fn close_and_wait(&self, timeout: Duration) -> Option<WriterTerminalOutcome> {
+        self.gate.lock().take();
+        self.completion.wait(timeout)
+    }
+
     /// Send a JSON-RPC response.
     pub fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
-        self.tx.try_send(OutboundMessage::Response(response)).map_err(map_try_send_error)
+        self.try_send(OutboundMessage::Response(response))
     }
 
     /// Send a JSON-RPC notification.
@@ -162,9 +217,7 @@ impl OutboundSender {
                 format!("outbound notification `{method}` {reason}"),
             ));
         }
-        self.tx
-            .try_send(OutboundMessage::Notification { method: method.to_string(), params })
-            .map_err(map_try_send_error)
+        self.try_send(OutboundMessage::Notification { method: method.to_string(), params })
     }
 
     /// Send a server→client JSON-RPC request.
@@ -182,9 +235,7 @@ impl OutboundSender {
                 format!("outbound request `{method}` {reason}"),
             ));
         }
-        self.tx
-            .try_send(OutboundMessage::Request { id, method: method.to_string(), params })
-            .map_err(map_try_send_error)
+        self.try_send(OutboundMessage::Request { id, method: method.to_string(), params })
     }
 }
 
@@ -205,13 +256,21 @@ impl OutboundSink for OutboundSender {
 /// Create an `OutboundSender` backed by a writer thread.
 ///
 /// Returns the sender handle and a join-handle for the writer thread.
-/// The writer thread runs until the last sender is dropped (channel closes).
+/// The writer thread runs until the last sender is dropped (channel closes),
+/// then resolves to its [`WriterTerminalOutcome`] so connection/session
+/// settlement can retain the first causal transport failure (#8402).
 pub(crate) fn spawn_writer(
     output: Box<dyn Write + Send>,
-) -> (OutboundSender, thread::JoinHandle<()>) {
+) -> (OutboundSender, thread::JoinHandle<WriterTerminalOutcome>) {
     let (tx, rx) = tokio::sync::mpsc::channel(OUTBOUND_CAPACITY);
-    let handle = thread::spawn(move || writer_loop_batched(rx, output));
-    (OutboundSender { tx }, handle)
+    let completion = Arc::new(WriterCompletion::default());
+    let thread_completion = Arc::clone(&completion);
+    let handle = thread::spawn(move || {
+        let outcome = writer_loop_batched(rx, output);
+        thread_completion.publish(outcome.clone());
+        outcome
+    });
+    (OutboundSender::from_parts(tx, completion), handle)
 }
 
 /// Create an `OutboundSender` backed by a shared `Arc<Mutex<Box<dyn Write + Send>>>`.
@@ -219,29 +278,123 @@ pub(crate) fn spawn_writer(
 /// Backward-compatible variant for `with_output()` constructors.
 pub(crate) fn spawn_writer_shared(
     output: std::sync::Arc<parking_lot::Mutex<Box<dyn Write + Send>>>,
-) -> (OutboundSender, thread::JoinHandle<()>) {
+) -> (OutboundSender, thread::JoinHandle<WriterTerminalOutcome>) {
     let (tx, rx) = tokio::sync::mpsc::channel(OUTBOUND_CAPACITY);
-    let handle = thread::spawn(move || writer_loop_batched_shared(rx, output));
-    (OutboundSender { tx }, handle)
+    let completion = Arc::new(WriterCompletion::default());
+    let thread_completion = Arc::clone(&completion);
+    let handle = thread::spawn(move || {
+        let outcome = writer_loop_batched_shared(rx, output);
+        thread_completion.publish(outcome.clone());
+        outcome
+    });
+    (OutboundSender::from_parts(tx, completion), handle)
 }
 
 /// Create an already-closed sender for shutdown replacement paths.
 pub(crate) fn closed_sender() -> OutboundSender {
     let (tx, rx) = tokio::sync::mpsc::channel(1);
     drop(rx);
-    OutboundSender { tx }
+    OutboundSender::from_parts(tx, Arc::new(WriterCompletion::default()))
+}
+
+/// Terminal outcome of the outbound writer thread (#8402).
+///
+/// The writer loop stops at its first sink I/O failure and records that first
+/// causal outcome; later channel-closed observations by producers (`BrokenPipe`
+/// from [`map_try_send_error`]) can never overwrite it, because the thread has
+/// already exited with the outcome fixed.
+///
+/// A distinct `shutdown` outcome is intentionally absent: the writer's only
+/// termination signal today is channel close (whether from Drop settlement or
+/// an explicit shutdown path), which maps to [`WriterTerminalOutcome::NormalClose`]
+/// when no I/O failure occurred. Runtime shutdown ownership (#8388) can layer an
+/// explicit distinction on top without changing this shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WriterTerminalOutcome {
+    /// The channel closed and every batch was written and flushed with no I/O
+    /// failure. Non-error settlement.
+    NormalClose,
+    /// `write_all` failed. The `batch_messages` accepted messages coalesced
+    /// into the failed batch (`batch_bytes` frame bytes) were not confirmed
+    /// delivered; `queued` messages were accepted by the channel but never
+    /// attempted.
+    WriteFailed { kind: io::ErrorKind, queued: usize, batch_messages: usize, batch_bytes: usize },
+    /// `write_all` succeeded but `flush` failed. The `batch_messages` accepted
+    /// messages (`batch_bytes` frame bytes) were handed to the sink but
+    /// delivery is not confirmed; `queued` messages were accepted by the
+    /// channel but never attempted.
+    FlushFailed { kind: io::ErrorKind, queued: usize, batch_messages: usize, batch_bytes: usize },
+}
+
+impl WriterTerminalOutcome {
+    /// True only when the writer terminated on an outbound sink I/O failure.
+    /// Normal close/shutdown is non-error.
+    pub(crate) fn is_io_failure(&self) -> bool {
+        !matches!(self, WriterTerminalOutcome::NormalClose)
+    }
+
+    /// Conservative count of accepted messages that may not have been
+    /// delivered, or `None` when the writer closed normally with every batch
+    /// written and flushed. The exact messages coalesced into the failed
+    /// batch plus the still-queued depth are counted; message payloads are
+    /// never retained (bounded context). Messages accepted by producers
+    /// between the queued snapshot and the sink failure are not counted, so
+    /// the result stays a lower bound on accepted-but-unconfirmed work.
+    pub(crate) fn possibly_undelivered_messages(&self) -> Option<usize> {
+        match self {
+            WriterTerminalOutcome::NormalClose => None,
+            WriterTerminalOutcome::WriteFailed { queued, batch_messages, .. } => {
+                Some(queued + batch_messages)
+            }
+            WriterTerminalOutcome::FlushFailed { queued, batch_messages, .. } => {
+                Some(queued + batch_messages)
+            }
+        }
+    }
+
+    /// Structured settlement evidence at connection/session shutdown (#8402).
+    /// The writer thread itself never blocks on reporting; the joining thread
+    /// consumes the terminal outcome at settlement time.
+    pub(crate) fn report_settlement(&self) {
+        if !self.is_io_failure() {
+            tracing::debug!("outbound writer settled: normal channel close, no I/O failure");
+            return;
+        }
+        let (phase, kind, queued, batch_messages, batch_bytes) = match self {
+            WriterTerminalOutcome::NormalClose => return,
+            WriterTerminalOutcome::WriteFailed { kind, queued, batch_messages, batch_bytes } => {
+                ("write", kind, queued, batch_messages, batch_bytes)
+            }
+            WriterTerminalOutcome::FlushFailed { kind, queued, batch_messages, batch_bytes } => {
+                ("flush(written-bytes-unconfirmed)", kind, queued, batch_messages, batch_bytes)
+            }
+        };
+        tracing::error!(
+            phase,
+            error_kind = %kind,
+            queued_messages = queued,
+            batch_messages = batch_messages,
+            batch_bytes = batch_bytes,
+            possibly_undelivered = ?self.possibly_undelivered_messages(),
+            "outbound writer settled: transport I/O failure; accepted messages may not have been delivered"
+        );
+    }
 }
 
 /// Blocking receive loop with message batching.
 ///
 /// Drains the channel and writes all immediately-available messages
 /// in a single write+flush cycle, reducing syscalls under burst load.
+///
+/// Returns the first causal terminal outcome: the loop exits at the first
+/// sink I/O failure, so later producer observations cannot overwrite it.
 fn writer_loop_batched(
     mut rx: tokio::sync::mpsc::Receiver<OutboundMessage>,
     mut output: Box<dyn Write + Send>,
-) {
+) -> WriterTerminalOutcome {
     let mut batch_buf = Vec::with_capacity(4096);
     while let Some(msg) = rx.blocking_recv() {
+        let mut batch_messages = 1usize;
         // Serialize first message.
         let bytes = serialize_message(&msg);
         let framed = frame(&bytes);
@@ -252,17 +405,30 @@ fn writer_loop_batched(
             let bytes = serialize_message(&msg);
             let framed = frame(&bytes);
             batch_buf.extend_from_slice(&framed);
+            batch_messages += 1;
         }
 
         // Single write+flush for the whole batch.
-        if output.write_all(&batch_buf).is_err() {
-            break;
+        let queued = rx.len();
+        if let Err(e) = output.write_all(&batch_buf) {
+            return WriterTerminalOutcome::WriteFailed {
+                kind: e.kind(),
+                queued,
+                batch_messages,
+                batch_bytes: batch_buf.len(),
+            };
         }
-        if output.flush().is_err() {
-            break;
+        if let Err(e) = output.flush() {
+            return WriterTerminalOutcome::FlushFailed {
+                kind: e.kind(),
+                queued,
+                batch_messages,
+                batch_bytes: batch_buf.len(),
+            };
         }
         batch_buf.clear();
     }
+    WriterTerminalOutcome::NormalClose
 }
 
 /// Blocking receive loop with message batching for shared writer.
@@ -272,9 +438,10 @@ fn writer_loop_batched(
 fn writer_loop_batched_shared(
     mut rx: tokio::sync::mpsc::Receiver<OutboundMessage>,
     output: std::sync::Arc<parking_lot::Mutex<Box<dyn Write + Send>>>,
-) {
+) -> WriterTerminalOutcome {
     let mut batch_buf = Vec::with_capacity(4096);
     while let Some(msg) = rx.blocking_recv() {
+        let mut batch_messages = 1usize;
         // Serialize first message.
         let bytes = serialize_message(&msg);
         let framed = frame(&bytes);
@@ -285,19 +452,32 @@ fn writer_loop_batched_shared(
             let bytes = serialize_message(&msg);
             let framed = frame(&bytes);
             batch_buf.extend_from_slice(&framed);
+            batch_messages += 1;
         }
 
         // Acquire lock once for the entire batch.
         let mut out = output.lock();
-        if out.write_all(&batch_buf).is_err() {
-            break;
+        let queued = rx.len();
+        if let Err(e) = out.write_all(&batch_buf) {
+            return WriterTerminalOutcome::WriteFailed {
+                kind: e.kind(),
+                queued,
+                batch_messages,
+                batch_bytes: batch_buf.len(),
+            };
         }
-        if out.flush().is_err() {
-            break;
+        if let Err(e) = out.flush() {
+            return WriterTerminalOutcome::FlushFailed {
+                kind: e.kind(),
+                queued,
+                batch_messages,
+                batch_bytes: batch_buf.len(),
+            };
         }
         drop(out);
         batch_buf.clear();
     }
+    WriterTerminalOutcome::NormalClose
 }
 
 /// Serialize an `OutboundMessage` to JSON bytes.
@@ -338,7 +518,7 @@ fn serialize_message(msg: &OutboundMessage) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // Test assertions favor `unwrap()`/`panic!` over propagating errors;
     // the workspace-wide deny is a production-code rule.
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -347,6 +527,55 @@ mod tests {
     use std::error::Error;
     use std::io::Write;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    /// Shared in-memory writer that records everything the tracing `fmt`
+    /// layer emits, so tests can assert on the settlement records.
+    #[derive(Clone, Default)]
+    pub(crate) struct CapturedOutput(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CapturedOutput {
+        pub(crate) fn text(&self) -> String {
+            let bytes = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for CapturedOutput {
+        type Writer = CapturedGuard;
+        fn make_writer(&self) -> Self::Writer {
+            CapturedGuard(self.0.clone())
+        }
+    }
+
+    pub(crate) struct CapturedGuard(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for CapturedGuard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Run `f` under a thread-local tracing subscriber whose `fmt` output is
+    /// captured, and return the rendered records. The subscriber is scoped to
+    /// the calling thread only, so `f` must not log from other threads.
+    pub(crate) fn capture_tracing_records<F: FnOnce()>(f: F) -> String {
+        let captured = CapturedOutput::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(captured.clone())
+            .with_ansi(false)
+            .with_max_level(tracing_subscriber::filter::LevelFilter::TRACE)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        captured.text()
+    }
 
     #[derive(Clone, Default)]
     struct SharedBuffer {
@@ -425,6 +654,88 @@ mod tests {
     }
 
     #[test]
+    fn closing_one_sender_rejects_all_clones_after_admission_closes() -> Result<(), Box<dyn Error>>
+    {
+        let (sender, handle) = spawn_writer(Box::new(std::io::sink()));
+        let clone = sender.clone();
+        sender.send_notification("window/logMessage", json!({"before": true}))?;
+        let outcome = sender
+            .close_and_wait(Duration::from_secs(1))
+            .ok_or("writer should publish a terminal outcome")?;
+        assert_eq!(outcome, WriterTerminalOutcome::NormalClose);
+        let error = clone
+            .send_notification("window/logMessage", json!({"after": true}))
+            .err()
+            .ok_or("clone send after close must fail")?;
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        drop(clone);
+        drop(sender);
+        assert_eq!(handle.join().map_err(|_| "writer thread panicked")?, outcome);
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_writer_wait_is_bounded_and_releases_cleanly() -> Result<(), Box<dyn Error>> {
+        struct GatedSink {
+            entered: Arc<std::sync::atomic::AtomicBool>,
+            release: Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
+        }
+
+        impl Write for GatedSink {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                let (lock, cvar) = &*self.release;
+                let mut released = lock.lock();
+                while !*released {
+                    cvar.wait(&mut released);
+                }
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release = Arc::new((parking_lot::Mutex::new(false), parking_lot::Condvar::new()));
+        let (sender, handle) = spawn_writer(Box::new(GatedSink {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        }));
+        let send_result = sender.send_notification("window/logMessage", json!({"blocked": true}));
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let reached_gate = loop {
+            if entered.load(std::sync::atomic::Ordering::SeqCst) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+
+        let wait_started = std::time::Instant::now();
+        let unsettled = sender.close_and_wait(Duration::from_millis(20));
+        let wait_elapsed = wait_started.elapsed();
+        {
+            let (lock, cvar) = &*release;
+            *lock.lock() = true;
+            cvar.notify_all();
+        }
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        send_result?;
+        assert!(reached_gate, "writer did not reach its releasable gate");
+        assert!(unsettled.is_none(), "a blocked writer must remain unsettled after a bounded wait");
+        assert!(
+            wait_elapsed < Duration::from_secs(1),
+            "bounded wait took too long: {wait_elapsed:?}"
+        );
+        assert_eq!(outcome, WriterTerminalOutcome::NormalClose);
+        Ok(())
+    }
+
+    #[test]
     fn spawn_writer_serializes_response_notification_and_request() -> Result<(), Box<dyn Error>> {
         let buffer = SharedBuffer::new();
         let (sender, handle) = spawn_writer(Box::new(buffer.clone()));
@@ -438,7 +749,17 @@ mod tests {
         sender.send_request(request_id, "workspace/configuration", json!({"items": []}))?;
 
         drop(sender);
-        handle.join().map_err(|_| "writer thread panicked")?;
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(outcome, WriterTerminalOutcome::NormalClose);
+        assert!(
+            !outcome.is_io_failure(),
+            "normal channel close must not be reported as an I/O failure"
+        );
+        assert_eq!(
+            outcome.possibly_undelivered_messages(),
+            None,
+            "normal close must not claim undelivered accepted work"
+        );
 
         let payloads = parse_framed_payloads(&buffer.bytes())?;
         assert_eq!(payloads.len(), 3);
@@ -449,6 +770,32 @@ mod tests {
         assert_eq!(payloads[2]["method"], "workspace/configuration");
 
         Ok(())
+    }
+
+    /// #8402: normal channel closure must exercise the settlement reporting
+    /// path and emit the non-error debug record — and must never emit an
+    /// error-level record for a clean close.
+    #[test]
+    fn normal_close_reports_non_error_settlement() {
+        let records =
+            capture_tracing_records(|| WriterTerminalOutcome::NormalClose.report_settlement());
+
+        assert!(
+            records.contains("outbound writer settled: normal channel close, no I/O failure"),
+            "normal close must emit the non-error settlement record, got: {records}"
+        );
+        assert!(
+            records.contains("DEBUG"),
+            "normal-close settlement must be non-error (debug level), got: {records}"
+        );
+        assert!(
+            !records.contains("ERROR"),
+            "normal close must not emit an error-level settlement record, got: {records}"
+        );
+        assert!(
+            !records.contains("transport I/O failure"),
+            "normal close must not be reported as a transport I/O failure, got: {records}"
+        );
     }
 
     #[test]
@@ -467,7 +814,8 @@ mod tests {
         )?;
 
         drop(sender);
-        handle.join().map_err(|_| "writer thread panicked")?;
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(outcome, WriterTerminalOutcome::NormalClose);
 
         let payloads = parse_framed_payloads(&buffer.bytes())?;
         assert_eq!(payloads.len(), 2);
@@ -475,6 +823,264 @@ mod tests {
         assert_eq!(payloads[1]["id"], 9);
         assert_eq!(payloads[1]["method"], "client/registerCapability");
 
+        Ok(())
+    }
+
+    /// Sink whose `write` always fails with a fixed error kind and records how
+    /// many bytes reached the write boundary at all.
+    struct WriteFailsSink {
+        write_kind: io::ErrorKind,
+        attempted_bytes: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Write for WriteFailsSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.attempted_bytes.fetch_add(buf.len(), std::sync::atomic::Ordering::SeqCst);
+            Err(io::Error::new(self.write_kind, "controlled write failure (#8402)"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Sink whose `write` succeeds (bytes recorded) but whose `flush` always
+    /// fails with a fixed error kind.
+    struct FlushFailsSink {
+        flush_kind: io::ErrorKind,
+        written: SharedBuffer,
+    }
+
+    impl Write for FlushFailsSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.written.write(buf)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(io::Error::new(self.flush_kind, "controlled flush failure (#8402)"))
+        }
+    }
+
+    /// #8402: a forced `write_all` failure must surface as the typed
+    /// `WriteFailed` first cause with bounded context, never as the channel's
+    /// `BrokenPipe`, and later producer observations (which only ever see the
+    /// closed channel) cannot overwrite the recorded first cause.
+    #[test]
+    fn writer_write_failure_preserves_first_cause_against_broken_pipe_observations()
+    -> Result<(), Box<dyn Error>> {
+        // Distinct from BrokenPipe so a masquerading channel error cannot pass.
+        let sink_kind = io::ErrorKind::ConnectionAborted;
+        let attempted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (sender, handle) = spawn_writer(Box::new(WriteFailsSink {
+            write_kind: sink_kind,
+            attempted_bytes: Arc::clone(&attempted),
+        }));
+
+        sender.send_notification("window/logMessage", json!({"n": 1}))?;
+        // Keep a probe alive so the channel-closed surface can be exercised
+        // after the writer has settled.
+        let probe = sender.clone();
+        let settled = sender
+            .close_and_wait(Duration::from_secs(1))
+            .ok_or("write-failure writer did not publish a terminal outcome")?;
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(settled, outcome, "close_and_wait must observe the same write failure");
+
+        // After writer death the receiver is gone: later producer observations
+        // are Closed→BrokenPipe, never the causal sink error, and they cannot
+        // overwrite the already-recorded first cause.
+        let producer_error = probe
+            .send_notification("window/logMessage", json!({"n": 2}))
+            .err()
+            .ok_or("send after writer death must fail")?;
+        assert_eq!(
+            producer_error.kind(),
+            io::ErrorKind::BrokenPipe,
+            "producers must observe the closed channel after writer death"
+        );
+        assert_ne!(
+            producer_error.kind(),
+            sink_kind,
+            "producer channel error must not masquerade as the causal sink error"
+        );
+        match &outcome {
+            WriterTerminalOutcome::WriteFailed { kind, batch_bytes, .. } => {
+                assert_eq!(*kind, sink_kind, "first causal I/O class must be preserved");
+                assert!(*batch_bytes > 0, "failed batch context must be bounded and non-empty");
+            }
+            other => panic!("expected WriteFailed first cause, got {other:?}"),
+        }
+        assert!(outcome.is_io_failure(), "write failure is an I/O failure settlement");
+        assert!(
+            outcome.possibly_undelivered_messages().unwrap_or(0) >= 1,
+            "accepted messages must be represented conservatively as possibly undelivered"
+        );
+        assert!(
+            attempted.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "the failed batch must have reached the write boundary"
+        );
+        Ok(())
+    }
+
+    /// #8402: a forced `flush` failure must be recorded as the distinct
+    /// `FlushFailed` outcome — never misclassified as a write failure — with
+    /// the written-but-unconfirmed batch represented conservatively.
+    #[test]
+    fn writer_flush_failure_is_distinct_from_write_failure() -> Result<(), Box<dyn Error>> {
+        let sink_kind = io::ErrorKind::BrokenPipe;
+        let buffer = SharedBuffer::new();
+        let (sender, handle) = spawn_writer(Box::new(FlushFailsSink {
+            flush_kind: sink_kind,
+            written: buffer.clone(),
+        }));
+
+        sender.send_notification("telemetry/event", json!({"x": 1}))?;
+        let settled = sender
+            .close_and_wait(Duration::from_secs(1))
+            .ok_or("flush-failure writer did not publish a terminal outcome")?;
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        assert_eq!(settled, outcome, "close_and_wait must observe the same flush failure");
+        match &outcome {
+            WriterTerminalOutcome::FlushFailed { kind, batch_bytes, .. } => {
+                assert_eq!(*kind, sink_kind, "flush failure class must be preserved");
+                assert!(
+                    *batch_bytes > 0,
+                    "unconfirmed batch context must be bounded and non-empty"
+                );
+            }
+            WriterTerminalOutcome::WriteFailed { .. } => {
+                panic!("forced flush failure must not be misclassified as write failure")
+            }
+            other => panic!("expected FlushFailed outcome, got {other:?}"),
+        }
+        assert!(
+            !buffer.bytes().is_empty(),
+            "the batch was written to the sink even though flush failed"
+        );
+        assert!(
+            outcome.possibly_undelivered_messages().unwrap_or(0) >= 1,
+            "flush failure leaves delivery unconfirmed for accepted work"
+        );
+        Ok(())
+    }
+
+    /// #8402: a coalesced batch of several accepted messages that fails must
+    /// count *every* accepted message as possibly undelivered — the batch
+    /// message count, not a single undercount.
+    ///
+    /// Deterministic by construction: a warmup message parks the writer
+    /// inside the gated first `write`, so all five burst messages are
+    /// accepted into the channel while it cannot drain. After the gate
+    /// releases, those five must coalesce into exactly one failed batch
+    /// (`queued == 0`), and the outcome must account for all five.
+    #[test]
+    fn multi_message_failed_batch_counts_every_accepted_message() -> Result<(), Box<dyn Error>> {
+        struct GatedThenFailingSink {
+            warmup_entered: Arc<AtomicBool>,
+            release: Arc<(parking_lot::Mutex<bool>, parking_lot::Condvar)>,
+        }
+
+        impl Write for GatedThenFailingSink {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                if !self.warmup_entered.swap(true, Ordering::SeqCst) {
+                    let (lock, cvar) = &*self.release;
+                    let mut guard = lock.lock();
+                    let timed_out =
+                        cvar.wait_while_for(&mut guard, |r| !*r, Duration::from_secs(30));
+                    if timed_out.timed_out() && !*guard {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "warmup gate timed out; test hung",
+                        ));
+                    }
+                    return Ok(buf.len());
+                }
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "controlled coalesced-batch write failure (#8402)",
+                ))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let release = Arc::new((parking_lot::Mutex::new(false), parking_lot::Condvar::new()));
+        let warmup_entered = Arc::new(AtomicBool::new(false));
+        let (sender, handle) = spawn_writer(Box::new(GatedThenFailingSink {
+            warmup_entered: Arc::clone(&warmup_entered),
+            release: Arc::clone(&release),
+        }));
+
+        sender.send_notification("warmup/one", json!({"n": 0}))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !warmup_entered.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "writer never reached the gated warmup write");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Accepted while the writer is parked: all five must coalesce into
+        // the next batch.
+        for n in 1..=5 {
+            sender.send_notification("burst/event", json!({"n": n}))?;
+        }
+
+        {
+            let (lock, cvar) = &*release;
+            *lock.lock() = true;
+            cvar.notify_all();
+        }
+
+        drop(sender);
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        match &outcome {
+            WriterTerminalOutcome::WriteFailed { kind, queued, batch_messages, batch_bytes } => {
+                assert_eq!(
+                    *kind,
+                    io::ErrorKind::ConnectionAborted,
+                    "first causal sink error kind must be preserved"
+                );
+                assert_eq!(
+                    *batch_messages, 5,
+                    "every coalesced message must be counted in the failed batch"
+                );
+                assert_eq!(*queued, 0, "the coalesced batch must have drained the channel");
+                assert!(*batch_bytes > 0, "failed batch must carry bounded non-empty context");
+            }
+            other => panic!("expected WriteFailed outcome, got {other:?}"),
+        }
+        assert_eq!(
+            outcome.possibly_undelivered_messages(),
+            Some(5),
+            "all five accepted messages must be reported as possibly undelivered"
+        );
+        Ok(())
+    }
+
+    /// #8402: the shared-writer variant must produce the same typed terminal
+    /// outcomes as the owned-writer variant.
+    #[test]
+    fn shared_writer_flush_failure_keeps_typed_outcome() -> Result<(), Box<dyn Error>> {
+        let sink_kind = io::ErrorKind::ConnectionReset;
+        let buffer = SharedBuffer::new();
+        let shared = Arc::new(parking_lot::Mutex::new(Box::new(FlushFailsSink {
+            flush_kind: sink_kind,
+            written: buffer.clone(),
+        }) as Box<dyn Write + Send>));
+
+        let (sender, handle) = spawn_writer_shared(shared);
+        sender.send_notification("telemetry/event", json!({"x": 2}))?;
+        drop(sender);
+
+        let outcome = handle.join().map_err(|_| "writer thread panicked")?;
+        assert!(
+            matches!(
+                &outcome,
+                WriterTerminalOutcome::FlushFailed { kind, .. } if *kind == sink_kind
+            ),
+            "shared writer must keep the typed flush-failure outcome, got {outcome:?}"
+        );
         Ok(())
     }
 
@@ -489,7 +1095,7 @@ mod tests {
     fn outbound_sender_returns_would_block_when_channel_is_full() -> Result<(), Box<dyn Error>> {
         // Use a tiny capacity so we don't have to send 64 messages.
         let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(2);
-        let sender = OutboundSender { tx };
+        let sender = OutboundSender::from_tx(tx);
 
         // Fill both slots.
         sender.send_notification("slot/one", json!({}))?;
@@ -583,7 +1189,7 @@ mod tests {
     #[test]
     fn outbound_admission_refuses_client_to_server_methods() -> Result<(), Box<dyn Error>> {
         let (tx, _rx) = tokio::sync::mpsc::channel::<OutboundMessage>(4);
-        let sender = OutboundSender { tx };
+        let sender = OutboundSender::from_tx(tx);
         let request_id = ServerRequestId::new(1).ok_or("valid id")?;
 
         for method in ["initialize", "textDocument/hover", "textDocument/didOpen"] {
@@ -615,7 +1221,7 @@ mod tests {
     #[test]
     fn outbound_admission_allows_server_to_client_methods() -> Result<(), Box<dyn Error>> {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<OutboundMessage>(4);
-        let sender = OutboundSender { tx };
+        let sender = OutboundSender::from_tx(tx);
         let request_id = ServerRequestId::new(7).ok_or("valid id")?;
 
         sender.send_request(request_id, "workspace/configuration", json!({"items": []}))?;

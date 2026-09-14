@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "Emit one versioned deterministic AST structural schema identity and a freshness-gated NodeKind inventory from the compiled structural registry. Field-only structural change is observable; stale checked status is non-green. Parser and AST structure are unchanged."
+time: 2026-08-26T21:30:00Z
+custom:
+  PR: "12806"
+  Slug: ast-structural-schema-identity
+  Breaking: "no"

@@ -69,88 +69,25 @@ fn assert_reason_admitted_by_schema_token(
     Ok(())
 }
 
-/// Every current Rust reason, including the field-specific partial reasons.
-fn all_reasons() -> Vec<BinaryCompatibilityReason> {
-    use BinaryCompatibilityReason::*;
-    vec![
-        ServerProductMismatch,
-        ProductRepositoryMismatch,
-        PacketSchemaUnsupported,
-        ProductIdentityVersionUnsupported,
-        DapPostureMismatch,
-        ExtensionPublisherMismatch,
-        ExtensionPackageMismatch,
-        ExtensionIdentityMismatch,
-        ExtensionAuthorityNotProven,
-        ExtensionPackageDigestNotProven,
-        VersionMismatch,
-        TargetMismatch,
-        TargetNotProven,
-        SourceRevisionMismatch,
-        SourceRevisionNotProven,
-        SourceTreeDigestMismatch,
-        SourceTreeDigestNotProven,
-        ProfileMismatch,
-        ProfileNotProven,
-        CandidateMismatch,
-        CandidateNotProven,
-        ArtifactRoleMismatch,
-        ArtifactRoleNotProven,
-        ArtifactDigestMismatch,
-        ArtifactDigestNotProven,
-        DapRoleMismatch,
-        DapIdentityAbsent,
-        BuildIdentityPartial,
-        BuildIdentityNotProven,
-        PayloadNotRedacted,
-        ServerInstanceStale,
-        EnvironmentSnapshotStale,
-        FeatureVersionUnsupported,
-        ExactIdentityMatch,
-    ]
-}
-
-/// Compile-time exhaustiveness guard for `all_reasons`: a new variant that is
-/// not listed there fails THIS match, so neither the TypeScript projection
-/// ratchet nor the schema-token ratchet can silently go stale.
-fn every_reason_is_listed_by_all_reasons(specimen: BinaryCompatibilityReason) {
-    use BinaryCompatibilityReason::*;
-    match specimen {
-        ServerProductMismatch => {}
-        ProductRepositoryMismatch => {}
-        PacketSchemaUnsupported => {}
-        ProductIdentityVersionUnsupported => {}
-        DapPostureMismatch => {}
-        ExtensionPublisherMismatch => {}
-        ExtensionPackageMismatch => {}
-        ExtensionIdentityMismatch => {}
-        ExtensionAuthorityNotProven => {}
-        ExtensionPackageDigestNotProven => {}
-        VersionMismatch => {}
-        TargetMismatch => {}
-        TargetNotProven => {}
-        SourceRevisionMismatch => {}
-        SourceRevisionNotProven => {}
-        SourceTreeDigestMismatch => {}
-        SourceTreeDigestNotProven => {}
-        ProfileMismatch => {}
-        ProfileNotProven => {}
-        CandidateMismatch => {}
-        CandidateNotProven => {}
-        ArtifactRoleMismatch => {}
-        ArtifactRoleNotProven => {}
-        ArtifactDigestMismatch => {}
-        ArtifactDigestNotProven => {}
-        DapRoleMismatch => {}
-        DapIdentityAbsent => {}
-        BuildIdentityPartial => {}
-        BuildIdentityNotProven => {}
-        PayloadNotRedacted => {}
-        ServerInstanceStale => {}
-        EnvironmentSnapshotStale => {}
-        FeatureVersionUnsupported => {}
-        ExactIdentityMatch => {}
+/// Observable oracle for reason parity: returns the drift message instead of
+/// panicking inline so the missing-reason failure variant is assertable.
+///
+/// The enumeration is [`BinaryCompatibilityReason::ALL`], which the enum's own
+/// declaration generates from the same list that names the variants. There is no
+/// second copy here to fall behind it, so a newly added reason is covered by this
+/// check from the moment the variant exists.
+fn assert_projection_declares_every_reason(
+    typescript: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for &reason in BinaryCompatibilityReason::ALL {
+        let name = serde_name(reason)?;
+        if !typescript_declares(typescript, &name) {
+            return Err(
+                format!("TypeScript projection is missing compatibility reason {name:?}").into()
+            );
+        }
     }
+    Ok(())
 }
 
 #[test]
@@ -197,14 +134,47 @@ fn checked_typescript_projection_contains_every_current_literal()
         );
     }
 
-    for reason in all_reasons() {
+    assert_projection_declares_every_reason(&typescript)?;
+    assert_projection_bounds_unknown_reasons_and_redaction(&typescript)?;
+    Ok(())
+}
+
+#[test]
+fn every_reason_dropped_from_the_projection_is_reported() -> Result<(), Box<dyn std::error::Error>>
+{
+    // Negative control for the parity oracle, run once per reason. A green
+    // `checked_typescript_projection_contains_every_current_literal` only means
+    // "no reason the check walked is missing"; on its own it cannot distinguish a
+    // complete projection from a short enumeration. Removing each reason in turn
+    // and requiring it to be named proves the walk is not vacuous for any of
+    // them, so a reason that exists but is skipped would surface here.
+    let root = repository_root()?;
+    let typescript = read(&root.join("vscode-extension/src/binaryIdentityProtocol.generated.ts"))?;
+    let placeholder = "reason_withheld_by_this_control";
+
+    for &reason in BinaryCompatibilityReason::ALL {
         let name = serde_name(reason)?;
+        let doctored = typescript
+            .replace(&format!("'{name}'"), &format!("'{placeholder}'"))
+            .replace(&format!("\"{name}\""), &format!("\"{placeholder}\""));
         assert!(
-            typescript_declares(&typescript, &name),
-            "TypeScript projection is missing compatibility reason {name:?}"
+            !typescript_declares(&doctored, &name),
+            "the control must actually withhold reason {name:?} from the projection"
+        );
+
+        let error = match assert_projection_declares_every_reason(&doctored) {
+            Err(error) => error.to_string(),
+            Ok(()) => {
+                return Err(
+                    format!("a projection withholding reason {name:?} must be rejected").into()
+                );
+            }
+        };
+        assert!(
+            error.contains(&name),
+            "the withheld reason must be named in the report, got: {error}"
         );
     }
-    assert_projection_bounds_unknown_reasons_and_redaction(&typescript)?;
     Ok(())
 }
 
@@ -278,7 +248,7 @@ fn response_schema_preserves_mismatch_and_redaction_semantics()
             "schema compatibility enum is missing state {name:?}"
         );
     }
-    for reason in all_reasons() {
+    for &reason in BinaryCompatibilityReason::ALL {
         let name = serde_name(reason)?;
         assert_reason_admitted_by_schema_token(&schema, &name)?;
     }

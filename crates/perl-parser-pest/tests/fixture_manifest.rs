@@ -3,6 +3,8 @@
 //! These tests own the fail-closed instrument contract. They do not assert that
 //! the current parser is correct, and they do not promote `Ok` into acceptance.
 
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
+
 mod support;
 
 use std::error::Error;

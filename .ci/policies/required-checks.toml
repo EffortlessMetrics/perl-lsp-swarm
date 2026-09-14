@@ -39,6 +39,19 @@ contract_role = "advisory-workflow-shape"
 # inferred from the workflow, job, producer class, or context name.
 
 [[checks]]
+name = "Non-Rust policy exact-tree"
+producer = "repository-job"
+workflow = ".github/workflows/non-rust-policy.yml"
+job = "exact-tree"
+workflow_result = "propagate"
+events = ["pull_request_target", "merge_group", "push", "workflow_dispatch"]
+required = false
+policy_role = "advisory"
+applicability = "always-or-scoped-noop"
+enforcement = "neither"
+reason = "Shadow exact-tree policy evaluator; advisory until canaries and ruleset promotion complete."
+
+[[checks]]
 name = "Perl LSP Rust Small Result"
 producer = "repository-job"
 workflow = ".github/workflows/em-ci-routed-rust.yml"
@@ -48,9 +61,9 @@ events = ["pull_request", "merge_group", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
-enforcement = "github-branch-protection"
-classic_app_id = 15368
-reason = "Live main protection requires the routed Rust aggregate and its recorded-main-red refusal before merge."
+enforcement = "github-ruleset"
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires the routed Rust aggregate and its recorded-main-red refusal before merge, bound to the GitHub Actions integration."
 
 [[checks]]
 name = "ripr+ New Gap Gate"
@@ -62,9 +75,9 @@ events = ["pull_request", "merge_group", "workflow_dispatch"]
 required = true
 policy_role = "required"
 applicability = "always-or-scoped-noop"
-enforcement = "github-branch-protection"
-classic_app_id = 15368
-reason = "Deterministic RIPR receipts are required; named new gaps in changed production files block, while sensor availability remains advisory."
+enforcement = "github-ruleset"
+ruleset_integration_id = 15368
+reason = "Live main ruleset (id 16664791) requires deterministic RIPR receipts from the GitHub Actions integration; named new gaps in changed production files block, while sensor availability remains advisory."
 
 [[checks]]
 name = "Compile All Targets (bit-rot guard)"
@@ -116,7 +129,7 @@ required = false
 policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "Post-merge promotion target tracked by #6202 and #7087; live ruleset promotion is deferred until the candidate lands and merge-group evidence is current."
+reason = "Advisory receipt-producing dedicated formatter context. Live merge blocking is owned by the required Perl LSP Rust Small Result path (#9127/#12320). Duplicate meta-shard fmt execution is retired by #9959. Settings-app promotion of this context remains #7087 and is not claimed here."
 
 [[checks]]
 name = "Codecov / Patch 95"
@@ -124,12 +137,12 @@ producer = "repository-job"
 workflow = ".github/workflows/ci-nightly.yml"
 job = "test-coverage"
 workflow_result = "propagate"
-events = ["pull_request", "schedule", "workflow_dispatch"]
+events = ["schedule", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
 applicability = "conditional"
 enforcement = "neither"
-reason = "Coverage is advisory and expensive; the workflow selects it for scheduled, manual, or labelled coverage runs."
+reason = "Coverage is advisory and expensive; the workflow selects it only for scheduled or explicitly manual coverage runs."
 
 [[checks]]
 name = "codecov/patch"
@@ -189,9 +202,9 @@ workflow_result = "propagate"
 events = ["pull_request", "merge_group", "push", "workflow_dispatch"]
 required = false
 policy_role = "advisory"
-applicability = "conditional"
+applicability = "always-or-scoped-noop"
 enforcement = "neither"
-reason = "Selected deterministic contexts are promoted separately from this advisory summary."
+reason = "#12911 hardens this candidate-controlled aggregate for advisory diagnostics only; trusted enforcement requires the separate organization-ruleset workflow plan."
 
 [[checks]]
 name = "Gate Enforcement Contract"
@@ -218,3 +231,29 @@ policy_role = "advisory"
 applicability = "always-or-scoped-noop"
 enforcement = "neither"
 reason = "CP00 containment guard (#10413) fails internally contradictory terminal close relations and NOT_PROVEN evidence before semantic evaluation; required-promotion review stays under #10168."
+
+[[checks]]
+name = "Public API Surface (facade PR)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "public-api-pr"
+workflow_result = "propagate"
+events = ["pull_request"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "#2266 auto-runs the cargo-public-api baseline ratchet when a PR touches a published facade surface or .ci/public-api-baselines/; out-of-scope diffs settle as green scoped-noops so a later ruleset promotion resolves cleanly instead of pending forever."
+
+[[checks]]
+name = "Semver Compatibility (facade PR)"
+producer = "repository-job"
+workflow = ".github/workflows/ci.yml"
+job = "semver-pr"
+workflow_result = "continue"
+events = ["pull_request"]
+required = false
+policy_role = "advisory"
+applicability = "conditional"
+enforcement = "neither"
+reason = "#2266 auto-runs cargo-semver-checks against the newest canonical release tag for the five published parser-stack crates; stays advisory (continue-on-error) until baseline confidence supports hard-gating."

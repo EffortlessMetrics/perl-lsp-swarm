@@ -3,8 +3,6 @@
 //! These tests verify fundamental JSON-RPC and LSP protocol invariants
 //! that should always hold regardless of server state.
 
-#![allow(clippy::collapsible_if)]
-
 mod common;
 use common::{
     initialize_lsp, send_notification, send_request, shutdown_and_exit, start_lsp_server,
@@ -308,10 +306,9 @@ fn test_concurrent_request_handling() -> Result<(), Box<dyn std::error::Error>> 
     for _ in 0..5 {
         if let Some(resp) =
             common::read_response_timeout(&server, std::time::Duration::from_secs(5))
+            && let Some(id) = resp["id"].as_i64()
         {
-            if let Some(id) = resp["id"].as_i64() {
-                received_ids.push(id);
-            }
+            received_ids.push(id);
         }
     }
 

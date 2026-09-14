@@ -1,0 +1,330 @@
+# Code-action provider-generation ledger
+
+Machine-readable source of truth: `policy/code-action-generation-ledger.toml`.
+Executable parity corpus: `crates/perl-lsp-rs/tests/code_action_generation_parity_corpus.rs`.
+Drift check: `cargo xtask check-code-action-generation-ledger`.
+
+This page freezes what production code actions do **today**, per generation and
+per user-visible action family, so the convergence train can change routing
+against recorded behavior instead of against assumption.
+
+- Controlling issue: #9188 — this ledger and its parity corpus. No routing change.
+- Cutover consumer: #9189 — make one generation the single publisher per family.
+- Retirement: #9190 — delete retired generations and convert parity fixtures into
+  canonical-route regression proof.
+
+The ledger subordinates itself, it does not replace: the provider contract
+remains #8068, the provider-selection policy remains #8392, and the remediation
+contract remains #4205. Nothing here promotes a support tier or advertises a
+capability.
+
+**Family names are this ledger's own labels, not IDs borrowed from an upstream
+registry.** #9188 asks for #8068/#8392 IDs to be used rather than a parallel
+registry, and #4205's definition of done names "one registry [linking]
+diagnostic codes to stable action IDs and safety metadata" — but no such
+registry exists in the tree today. Searching the workspace for an action-ID or
+fixability registry finds only `tooling/perl_critic/remediation.rs`, which
+classifies *critic remediation eligibility*, not action identity. So a family
+here is `<emitted CodeActionKind>:<capability name>` — a label chosen to name
+the user-visible capability a generation answers, deliberately shaped so it can
+be mapped onto real action IDs later rather than competing with them.
+
+Two consequences #9189 must not gloss over. This ledger's rows cannot be joined
+to remediation IDs by key today, only by reading. And if the #4205 registry
+lands with a different partition of capabilities, these family names are the
+side that gives way — the dispositions attach to the capability, not to the
+label.
+
+## Production order
+
+Every `textDocument/codeAction` request enters at
+`crates/perl-lsp-rs/src/runtime/dispatch/routing.rs` and is answered by
+`handle_code_action` in `crates/perl-lsp-rs/src/runtime/language/code_actions.rs`.
+When the document has an AST, that function invokes ten producers in a fixed
+order; when it does not, it falls through to a single degraded text generation.
+
+| Stage | Generation | Path | Reachability |
+| --- | --- | --- | --- |
+| 1 | `explain_diagnostic` | ast | production |
+| 2 | `missing_pragmas` | ast | production |
+| 3 | `native_critic` | ast | production |
+| 4 | `legacy_critic` | ast | production |
+| 5 | `provider_v2` | ast | production |
+| 6 | `provider_original` | ast | production |
+| 7 | `provider_enhanced` | ast | production |
+| 8 | `disabled_extract_placeholder` | both | production |
+| 9 | `test_generator` | ast | production |
+| 10 | `source_fix_all_aggregate` | ast | production |
+| 11 | `text_fallback` | no_ast | production |
+| — | `lsp_compat_stub` | none | unreachable_stub |
+
+Stages 3 and 4 are mutually exclusive: the configured critic engine selects one
+of them, so they never publish together.
+
+Stage 8 is called from *both* branches — once on the AST path and once again in
+the degraded no-AST branch — so it is the only generation besides
+`text_fallback` that still answers when the current generation has no published
+parse snapshot.
+
+Anchors are resolved **only inside `handle_code_action` itself**. That scoping
+is load-bearing rather than tidiness: `missing_pragmas_actions` is also called
+from `handle_code_actions_pragmas`, a separate `#[allow(dead_code)]` test-only
+handler that sits after the no-AST boundary in the file. A file-wide search made
+`missing_pragmas` look like a both-branch producer and briefly recorded fallback
+behavior that does not exist. Review caught it; the check now rejects an anchor
+whose only occurrences are outside the handler.
+
+## Disposition ledger
+
+`Disposition` is what #9190 may do with the row, not a quality judgement.
+
+| Generation | Family | Disposition | Retirement blockers |
+| --- | --- | --- | --- |
+| explain_diagnostic | quickfix:explain_diagnostic | canonical_candidate | — |
+| missing_pragmas | quickfix:pragma | canonical_candidate | — |
+| provider_original | quickfix:pragma | redundant_behavior | — |
+| provider_enhanced | quickfix:pragma | unique_behavior | combined_pragma_fix_has_no_other_producer |
+| provider_enhanced | quickfix:utf8_pragma | canonical_candidate | — |
+| provider_original | quickfix:utf8_pragma | redundant_behavior | — |
+| text_fallback | quickfix:pragma | compatibility_only | canonical_route_has_no_degraded_path_equivalent |
+| provider_original | quickfix:diagnostic_routed | canonical_candidate | — |
+| provider_v2 | quickfix:diagnostic_routed | unique_behavior | canonical_route_omits_diagnostic_association |
+| native_critic | quickfix:critic_finding | canonical_candidate | — |
+| legacy_critic | quickfix:critic_finding | compatibility_only | opt_in_engine_has_no_canonical_equivalent |
+| provider_original | quickfix:hardcoded_shebang | canonical_candidate | — |
+| provider_enhanced | refactor.extract:variable | canonical_candidate | — |
+| provider_original | refactor.extract:variable | redundant_behavior | — |
+| provider_enhanced | refactor.extract:subroutine | canonical_candidate | — |
+| provider_original | refactor.extract:subroutine | redundant_behavior | — |
+| provider_original | refactor.extract:basic_fallback | shadow_only_candidate | — |
+| disabled_extract_placeholder | refactor.extract:disabled_placeholder | unique_behavior | capability_gated_disabled_state_has_no_other_producer |
+| provider_enhanced | refactor.rewrite:enhanced_transforms | canonical_candidate | — |
+| provider_original | refactor.rewrite:enhanced_transforms | redundant_behavior | — |
+| text_fallback | refactor.rewrite:text_fallback | compatibility_only | canonical_route_has_no_degraded_path_equivalent |
+| provider_original | source.modernize:modernize | canonical_candidate | — |
+| test_generator | source:test_generation | canonical_candidate | — |
+| source_fix_all_aggregate | source.fixAll:aggregate | canonical_candidate | — |
+| lsp_compat_stub | none:unreachable_stub | retire_candidate | — |
+
+## What the inventory found
+
+Six findings decide how much freedom #9189 and #9190 actually have.
+
+### The enhanced generation runs twice per request
+
+`provider_original` does not implement extraction or rewriting itself.
+`CodeActionsProvider::get_code_actions` calls
+`refactors::get_refactoring_actions`, which constructs its own
+`EnhancedCodeActionsProvider` and makes the same
+`get_enhanced_refactoring_actions(ast, range)` call the orchestrator makes
+independently at stage 7. Both results are pushed, and `dedupe_code_actions`
+collapses the byte-identical pair before aggregation.
+
+So the overlap between stages 6 and 7 for the extract and rewrite families is
+not two implementations that happen to agree — it is one implementation invoked
+twice. Those rows are `redundant_behavior` rather than `unique_behavior`, and
+retiring the stage-6 path for those families cannot change the published result.
+
+`get_refactoring_actions` extends with the **whole** enhanced result, so this
+applies to every enhanced family — variable extraction, subroutine extraction
+and the rewrite transforms alike. The subroutine duplicate was missing from an
+earlier draft of this ledger; review caught it, and omitting it would have let
+#9189 treat an active nested publisher as nonexistent.
+
+The literal extract arms that do live in `refactors.rs` are guarded by
+`actions.is_empty()`, so they only run when the nested enhanced call returned
+nothing. That is `shadow_only_candidate`, not a second authority.
+
+### Within the diagnostic-routed family, only V2 associates a fix with its diagnostic
+
+`provider_v2` and `provider_original` route an overlapping set of diagnostic
+codes, so both can answer `quickfix:diagnostic_routed`. They are not
+interchangeable: the V2 mapping matches each action back to the published
+diagnostic by code and range and attaches it as `CodeAction.diagnostics`, while
+the `provider_original` mapping emits `title`, `kind` and `edit` only.
+
+The claim is scoped to this family, not global. Other generations do attach
+diagnostics for their own families — both critic generations embed the finding
+they fix, and `source.fixAll` carries the diagnostics it aggregates. What no
+other generation does is supply that association *for a diagnostic-routed quick
+fix*, which is the comparison #9189 actually has to make.
+
+That is why the V2 row is `unique_behavior` with a named blocker rather than
+`redundant_behavior`. Cutting production to `provider_original` before it emits
+the diagnostic association would silently remove the diagnostic-to-fix link that
+#4205 consumers depend on.
+
+### The degraded text generation is not a malformed-source path
+
+`text_fallback` runs only when the request finds no AST for the current
+document generation. Malformed source does not get it there: the v3
+recursive-descent parser recovers, so `ParsedSnapshot::ast()` stays `Some` and
+the AST-path generations answer normally. The repository already records this at
+the snapshot layer — no malformed input reliably forces `ast: None`, and tests
+that guarded on it were vacuous (#3760). `cac-parity-parse-error-recovery-keeps-ast-path`
+pins the same fact at the protocol surface.
+
+What remains is `current_parsed()` returning `None` because the current
+generation has no published parse snapshot yet — a timing window, not a source
+shape. No corpus fixture can pin that without racing the parser, so both
+`text_fallback` rows carry a `proof_gap` instead of a fixture. #9189 must not
+treat them as parity-proven, and #9190 should decide whether a generation
+reachable only inside that window is worth keeping at all.
+
+### The legacy critic engine is unreachable from any LSP client setting
+
+`legacy_critic` is opt-in, but not through the channels a client controls.
+`parse_lsp_critic_engine` maps `Legacy` to `None`, so `critic.engine =
+"legacy"` is rejected as an invalid setting on `initializationOptions`,
+`didChangeConfiguration`, and `workspace/configuration` alike. Only the trusted
+`.perl-lsp.toml` project channel still accepts it, and that path logs a
+deprecation naming #8253 and #9072 as the owning migration.
+
+So the row is `compatibility_only` with a recorded `proof_gap` rather than a
+fixture: reaching it needs a workspace fixture that writes a project config
+selecting a deprecated engine. Before #9190 spends effort proving parity here,
+it should check whether #9072 has already retired the engine.
+
+### Pragma duplicate authority is user-visible, not suppressed
+
+An earlier draft of this page claimed ordering and deduplication hide the
+pragma overlap. That is wrong, and review caught it.
+
+`dedupe_code_actions` keys on `(kind, title, edit, command)`, so it collapses
+only *byte-identical* actions. Three generations insert `use strict` under
+three different titles on the same pragma-less request:
+
+| Title | Generation |
+| --- | --- |
+| `Add use strict;` | `missing_pragmas` |
+| `Add 'use strict'` | `native_critic` |
+| `Add missing pragmas (use strict;, use warnings;)` | `provider_enhanced` |
+
+A client sees all three at once, plus `Modernize: add use strict; and use
+warnings;` under `source.modernize`. Ordering only decides which insertion
+point `source.fixAll` prefers; it hides nothing.
+
+So this is the clearest user-visible duplicate authority in the inventory, and
+`cac-parity-pragma-duplicate-authority-is-user-visible` freezes it as fact
+rather than asserting the tidier claim that the family answers once. When #9189
+resolves the duplication that fixture must fail, forcing this ledger to be
+updated alongside the routing change.
+
+### Two CodeActionKinds are serializable but unreachable
+
+`handle_code_action` maps `InternalCodeActionKind::Refactor` to `"refactor"`
+and `RefactorInline` to `"refactor.inline"`, but no producer anywhere in the
+workspace constructs either variant. Both kinds are dead mappings: reachable in
+the serializer, unreachable in practice.
+
+They are recorded in `unreachable_kinds` rather than left implicit, because the
+drift check requires every kind literal in the handler to be either a
+registered family's kind or an explicitly recorded exception. #9190 can drop
+the variants and their match arms together.
+
+## What this ledger cannot check
+
+The module ratchet catches a new code-action **module**, and the kind ratchet
+catches a new **CodeActionKind**. Neither catches a new *family* added inside a
+module and kind that already have rows — say, a second distinct quick fix added
+to `quick_fixes.rs` under the existing `quickfix` kind.
+
+That gap is real and inherent: a family is a user-visible capability, and
+deciding that two actions are different capabilities is the semantic judgment
+this ledger exists to record. No source scan supplies it. Reviewers adding a
+code-action behavior must add its row; the checks narrow how much can drift
+unnoticed, they do not remove the obligation.
+
+The fixture binding has a narrower limit of the same kind. Identities are taken
+from a `syn` parse, so a comment or a constant referenced only from a helper no
+longer counts — but a reference reached from inside a `#[test]` body counts
+whether or not it participates in an assertion. Emptying a fixture's body while
+leaving its constant in a surviving `assert!` message would keep the row
+looking covered. What the check guarantees is that the id is bound to a test
+that still exists and still compiles; that the test still discriminates is the
+reviewer's judgment, which is why the vacuity section below is stated as a
+standing obligation rather than a rule the checker enforces.
+
+## Parity corpus
+
+`crates/perl-lsp-rs/tests/code_action_generation_parity_corpus.rs` drives the
+real server through `LspHarness` and asserts hand-written expectations against
+the published protocol payload. It never calls a provider directly, so it
+remains valid proof after #9190 deletes a generation.
+
+Every fixture id named by a ledger row exists in the corpus, and every fixture
+in the corpus is claimed by a ledger row; `cargo xtask
+check-code-action-generation-ledger` fails otherwise.
+
+A row that the corpus cannot reach declares a `proof_gap` instead of a fixture.
+A gap is a recorded `NOT_PROVEN` boundary, not coverage: the check rejects a row
+that names neither, and rejects a row that claims both.
+
+The corpus covers the outcome classes #9188 requires:
+
+| Class | Fixtures |
+| --- | --- |
+| successful | `cac-parity-diagnostic-routed-quickfix-edit`, `cac-parity-pragma-duplicate-authority-is-user-visible`, `cac-parity-critic-quickfix-safe-only`, `cac-parity-source-fixall-aggregates-after-dedupe`, `cac-parity-enhanced-combined-pragma-fix`, `cac-parity-utf8-pragma-only-for-non-ascii-source` |
+| disabled / refused | `cac-parity-disabled-extract-requires-selection`, `cac-parity-refused-without-disabled-support` |
+| stale | `cac-parity-stale-superseded-document-version` |
+| ambiguous | `cac-parity-extract-variable-requires-selection`, `cac-parity-duplicate-authority-collapsed` |
+| refactor families | `cac-parity-enhanced-rewrite-transform-publishes-an-edit` |
+| malformed | `cac-parity-parse-error-recovery-keeps-ast-path` |
+| legitimate empty | `cac-parity-legitimate-empty-out-of-range-source-action`, `cac-parity-kind-filter-excludes-other-families`, `cac-parity-unknown-document-is-empty-not-error` |
+| identity without edit | `cac-parity-explain-diagnostic-command-only`, `cac-parity-test-generation-command-only`, `cac-parity-v2-attaches-originating-diagnostic` |
+| recorded gap (`NOT_PROVEN`) | `text_fallback` (both rows), `legacy_critic`, `refactor.extract:subroutine` on both the enhanced and the original generation, and `refactor.extract:basic_fallback` carry a `proof_gap` instead of a fixture — six rows |
+
+Every `cac-parity-*` id named anywhere on this page is checked against the
+ledger's routes. This table previously named a fixture that had been renamed,
+and nothing caught it — that check exists now because of it.
+
+## Duplicate production authority is a failing contract
+
+The drift check rejects a ledger in which two generations both claim
+`canonical_candidate` for one exact family. The negative fixture proving that
+rejection lives in the validator's own tests
+(`rejects_two_canonical_candidates_for_one_family`), so the rule is proven
+against a synthetic ledger rather than by mutating the tracked one.
+
+## Vacuity is the failure mode this corpus has to resist
+
+Every fixture that filters the published set before asserting can pass by
+matching nothing. Four of them originally did, and independent review caught
+all four:
+
+- the critic fixture used a source whose only native finding carries
+  `FixSafety::Suggested`, which the orchestrator filters out, so no critic
+  action was ever published to assert against;
+- the explain fixture used a PL103 source, but the explain generation answers
+  only PL701 and PL109;
+- the `source.fixAll` fixture asserted *at most one* aggregate, which zero
+  satisfies;
+- the enhanced generation's pragma and UTF-8 families had no fixture at all,
+  because the ledger did not know it published them.
+
+Each now asserts presence before asserting the property, and the sources were
+chosen so that presence is real. When adding a fixture, assume the filter will
+one day match nothing and make that a failure.
+
+## Maintaining this ledger
+
+Run `cargo xtask check-code-action-generation-ledger`. It fails when:
+
+- a disposition, family, or retirement blocker is outside its registry;
+- a `(generation, family)` row is duplicated;
+- two generations claim `canonical_candidate` for one family;
+- a route names a generation that does not exist;
+- a generation names a module that does not exist;
+- a generation's `production_anchor` no longer occurs in the orchestrator;
+- a `.rs` file under an owned module root is claimed by no generation;
+- a `unique_behavior` row cites no retirement blocker;
+- a non-`retire_candidate` row cites neither a parity fixture nor a `proof_gap`;
+- a row claims both a `proof_gap` and parity fixtures;
+- a fixture id is named by the ledger but is not declared by a corpus constant
+  that some test actually references, or is declared there but claimed by no
+  row (a fixture id left behind in a comment after its test was deleted is not
+  coverage);
+- a generation's declared `stage` order contradicts the order its anchors occur
+  in, or its declared branch (`ast` / `no_ast` / `both`) does not match which
+  side of the no-AST boundary its anchor sits on;
+- this page and the TOML disagree on any row.

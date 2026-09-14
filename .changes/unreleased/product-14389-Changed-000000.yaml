@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Changed
+body: Removed the unreachable MAX_DELIM_NEST depth arm from the lexer's budget_guard (#14389) — its only caller passed depth 0, and delimiter nesting is enforced earlier by consume_nested_opener's rejection with local recovery in the balanced-segment helpers. budget_guard is now a byte-budget-only guard and the contract docs name the early rejection as the delimiter-nesting budget stop; no token stream changes.
+time: 2026-08-31T00:00:00Z
+custom:
+  PR: "14389"
+  Slug: remove-unreachable-budget-guard-depth-arm
+  Breaking: "no"

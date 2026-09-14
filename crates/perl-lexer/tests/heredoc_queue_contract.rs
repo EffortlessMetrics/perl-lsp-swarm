@@ -48,7 +48,15 @@ fn collect_remaining(lexer: &mut PerlLexer<'_>) -> Vec<Token> {
 }
 
 fn body_tokens(tokens: &[Token]) -> Vec<&Token> {
-    tokens.iter().filter(|token| matches!(&token.token_type, TokenType::HeredocBody(_))).collect()
+    tokens
+        .iter()
+        .filter(|token| {
+            matches!(
+                &token.token_type,
+                TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+            )
+        })
+        .collect()
 }
 
 fn body_slices<'a>(source: &'a str, tokens: &[Token]) -> Vec<&'a str> {
@@ -391,7 +399,12 @@ fn false_openers_are_inert_and_preserve_clean_continuation() -> R {
             tokens.iter().filter(|token| token.start < valid_opener_start).collect::<Vec<_>>();
         require(
             before_valid.iter().all(|token| {
-                !matches!(&token.token_type, TokenType::HeredocStart | TokenType::HeredocBody(_))
+                !matches!(
+                    &token.token_type,
+                    TokenType::HeredocStart
+                        | TokenType::HeredocBody(_)
+                        | TokenType::InterpolatedHeredocBody(_)
+                )
             }),
             format!("false opener queued or emitted a heredoc for {prefix:?}"),
         )?;
@@ -435,7 +448,12 @@ fn false_openers_are_inert_and_preserve_clean_continuation() -> R {
         require(
             tokens
                 .iter()
-                .filter(|token| !matches!(&token.token_type, TokenType::HeredocBody(_)))
+                .filter(|token| {
+                    !matches!(
+                        &token.token_type,
+                        TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+                    )
+                })
                 .all(|token| token.end <= body.end || token.start >= tail_start),
             format!("ordinary token overlaps the REAL terminator after {prefix:?}"),
         )?;
@@ -548,7 +566,6 @@ fn exact_terminators_cover_lf_crlf_cr_and_indentation() -> R {
         ("print <<EOF;\nbody\nEOF\nmy $x = 1;\n", "body\n", "print <<EOF;\n".len()),
         ("print <<EOF;\r\nbody\r\nEOF\r\nmy $x = 1;\r\n", "body\r\n", "print <<EOF;\r\n".len()),
         ("print <<EOF;\rbody\rEOF\rmy $x = 1;\r", "body\r", "print <<EOF;\r".len()),
-        ("print <<~EOF;\n  body\n\tEOF\nmy $x = 1;\n", "  body\n", "print <<~EOF;\n".len()),
     ];
 
     for (source, expected_body, body_start) in cases {
@@ -578,6 +595,26 @@ fn exact_terminators_cover_lf_crlf_cr_and_indentation() -> R {
         assert_clean_terminal(&tokens)?;
     }
     Ok(())
+}
+
+#[test]
+fn mixed_tab_space_indentation_is_not_a_valid_indented_terminator() -> R {
+    // Perl 5.32.1 rejects this exact source with "Indentation on line 1 of
+    // here-doc doesn't match delimiter". Keep the original tab-indented
+    // fixture as a negative control: a tab is not a byte-prefix of two spaces.
+    let source = "print <<~EOF;\n  body\n\tEOF\nmy $x = 1;\n";
+    let tokens = PerlLexer::with_body_tokens(source).collect_tokens();
+
+    require_eq(&body_tokens(&tokens).len(), &0, "mixed-indentation body token count")?;
+    let unknown = tokens
+        .iter()
+        .find(|token| matches!(&token.token_type, TokenType::UnknownRest))
+        .ok_or_else(|| missing("expected recovery for mixed tab/space indentation"))?;
+    require_eq(
+        &source.get(unknown.start..unknown.end),
+        &Some("  body\n\tEOF\nmy $x = 1;\n"),
+        "mixed-indentation recovery payload",
+    )
 }
 
 #[test]

@@ -151,12 +151,12 @@ impl DocumentParser {
         match self {
             DocumentParser::Full { content, ast } => {
                 // Full document replacement
-                if let Some(change) = changes.first() {
-                    if let Some(text) = change["text"].as_str() {
-                        *content = text.to_string();
-                        let mut parser = Parser::new(content);
-                        *ast = parser.parse().ok().map(Arc::new);
-                    }
+                if let Some(change) = changes.first()
+                    && let Some(text) = change["text"].as_str()
+                {
+                    *content = text.to_string();
+                    let mut parser = Parser::new(content);
+                    *ast = parser.parse().ok().map(Arc::new);
                 }
                 Ok(())
             }

@@ -3,8 +3,6 @@
 //! These tests ensure our LSP implementation maintains stable API contracts
 //! and properly validates all inputs/outputs according to the LSP specification.
 
-#![allow(clippy::collapsible_if)]
-
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashSet};
 use std::time::{Duration, Instant};
@@ -267,27 +265,27 @@ fn test_hover_response_shape() -> TestResult {
     );
 
     // Hover might return null for positions without hover info
-    if let Ok(hover) = response {
-        if !hover.is_null() {
-            // Check for contents field (required by LSP)
-            let contents = hover.get("contents").ok_or("Hover must have contents field")?;
+    if let Ok(hover) = response
+        && !hover.is_null()
+    {
+        // Check for contents field (required by LSP)
+        let contents = hover.get("contents").ok_or("Hover must have contents field")?;
 
-            // Contents can be string, MarkupContent, or MarkedString[]
-            if contents.is_string() {
-                let text = contents.as_str().ok_or("string contents")?;
-                assert!(!text.is_empty());
-            } else if let Some(obj) = contents.as_object() {
-                // MarkupContent with kind and value
-                assert!(
-                    obj.get("kind").is_some() && obj.get("value").is_some(),
-                    "MarkupContent must have kind and value"
-                );
-            } else if let Some(arr) = contents.as_array() {
-                // MarkedString[]
-                assert!(!arr.is_empty());
-            } else {
-                return Err(format!("Invalid hover contents format: {:?}", contents).into());
-            }
+        // Contents can be string, MarkupContent, or MarkedString[]
+        if contents.is_string() {
+            let text = contents.as_str().ok_or("string contents")?;
+            assert!(!text.is_empty());
+        } else if let Some(obj) = contents.as_object() {
+            // MarkupContent with kind and value
+            assert!(
+                obj.get("kind").is_some() && obj.get("value").is_some(),
+                "MarkupContent must have kind and value"
+            );
+        } else if let Some(arr) = contents.as_array() {
+            // MarkedString[]
+            assert!(!arr.is_empty());
+        } else {
+            return Err(format!("Invalid hover contents format: {:?}", contents).into());
         }
     }
 
@@ -309,27 +307,24 @@ fn test_document_highlight_contract() -> TestResult {
         }),
     );
 
-    if let Ok(highlights) = response {
-        if let Some(items) = highlights.as_array() {
-            // Should have multiple highlights
-            assert!(items.len() >= 2, "Should highlight multiple occurrences");
+    if let Ok(highlights) = response
+        && let Some(items) = highlights.as_array()
+    {
+        // Should have multiple highlights
+        assert!(items.len() >= 2, "Should highlight multiple occurrences");
 
-            for item in items {
-                // Each highlight must have a range
-                assert!(is_range(&item["range"]), "Highlight must have valid range");
+        for item in items {
+            // Each highlight must have a range
+            assert!(is_range(&item["range"]), "Highlight must have valid range");
 
-                // Kind is optional but if present must be 1, 2, or 3
-                if let Some(kind) = item.get("kind").and_then(|v| v.as_u64()) {
-                    assert!((1..=3).contains(&kind), "Invalid highlight kind: {}", kind);
-                }
+            // Kind is optional but if present must be 1, 2, or 3
+            if let Some(kind) = item.get("kind").and_then(|v| v.as_u64()) {
+                assert!((1..=3).contains(&kind), "Invalid highlight kind: {}", kind);
             }
-
-            // At least one should be Write (3) for declaration
-            assert!(
-                items.iter().any(|i| i["kind"] == 3),
-                "Should have at least one Write highlight"
-            );
         }
+
+        // At least one should be Write (3) for declaration
+        assert!(items.iter().any(|i| i["kind"] == 3), "Should have at least one Write highlight");
     }
 
     Ok(())

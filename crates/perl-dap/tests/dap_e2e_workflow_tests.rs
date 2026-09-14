@@ -9,13 +9,9 @@
 //!
 //! AC:3486 — End-to-end workflow: launch -> breakpoint -> inspect -> step -> continue -> exit
 
-#![expect(
-    clippy::print_stderr,
-    reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
-)]
 mod common;
 
-use common::{DapWorkflowSession, perl_available, workflow_timeout};
+use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
 use serde_json::Value;
 use std::fs::write;
 use tempfile::tempdir;
@@ -64,10 +60,11 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 /// debugger stops at that breakpoint the `stackTrace` reports the same line.
 #[test]
 fn test_e2e_single_breakpoint_hit_inspect_continue() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_single_breakpoint_hit_inspect_continue - perl not available");
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_e2e_single_breakpoint_hit_inspect_continue")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_e2e.pl");
@@ -78,7 +75,7 @@ fn test_e2e_single_breakpoint_hit_inspect_continue() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
 
     // DAP ordering: setBreakpoints BEFORE configurationDone.
     // set_breakpoints_checked asserts verified=true and returns adapter-resolved lines.
@@ -151,10 +148,10 @@ fn test_e2e_single_breakpoint_hit_inspect_continue() -> TestResult {
 /// assert that stopped-frame lines match the adapter-resolved lines exactly.
 #[test]
 fn test_e2e_multi_breakpoint_sequence() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_multi_breakpoint_sequence - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_multi_breakpoint_sequence")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_multi.pl");
@@ -165,7 +162,7 @@ fn test_e2e_multi_breakpoint_sequence() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
 
     // set_breakpoints_checked: asserts verified=true for each entry, returns resolved lines.
     let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2, BP_LINE_3])?;
@@ -242,10 +239,10 @@ fn test_e2e_multi_breakpoint_sequence() -> TestResult {
 /// debugger receives after the stop.
 #[test]
 fn test_e2e_step_over_changes_execution() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_step_over_changes_execution - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_step_over_changes_execution")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_step.pl");
@@ -256,7 +253,7 @@ fn test_e2e_step_over_changes_execution() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     // Use BP_LINE_2 (line 5) so that configurationDone's `c` runs FROM the
     // initial implicit stop at line 4 TO the breakpoint at line 5, not past it.
     session.set_breakpoints(&script_str, &[BP_LINE_2])?;
@@ -314,18 +311,51 @@ fn test_e2e_attach_workflow_stopped_event() -> TestResult {
 
     let _thread_id = attached.thread_id;
 
-    // After attach, we can set breakpoints (the adapter accepts them).
-    // Use set_breakpoints_checked to assert verified=true for all entries.
+    // This legacy self-PID attach has no debugger engine installed.  The
+    // adapter must retain the executable breakpoint as a pending request until
+    // an engine acknowledges it; this test does not claim an actual OS attach.
     let workspace = tempdir()?;
     let script = workspace.path().join("dummy.pl");
     write(&script, workflow_script_content())?;
     let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
 
-    let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2])?;
-    assert!(
-        !resolved.is_empty(),
-        "setBreakpoints after attach must return at least one verified breakpoint"
-    );
+    let body = session
+        .set_breakpoints(&script_str, &[BP_LINE_2])?
+        .ok_or("setBreakpoints after attach returned no body")?;
+    let breakpoints = body
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .ok_or("setBreakpoints after attach returned no breakpoint array")?;
+    if breakpoints.len() != 1 {
+        return Err(format!(
+            "engine-less attach must return exactly one pending breakpoint, got {}",
+            breakpoints.len()
+        )
+        .into());
+    }
+    let breakpoint = breakpoints.first().ok_or("pending breakpoint entry disappeared")?;
+    let line = breakpoint
+        .get("line")
+        .and_then(Value::as_i64)
+        .ok_or("pending breakpoint must include an integer line")?;
+    if line != BP_LINE_2 as i64 {
+        return Err(format!("pending breakpoint line must remain {}, got {line}", BP_LINE_2).into());
+    }
+    if breakpoint.get("id").and_then(Value::as_i64).is_none() {
+        return Err("pending breakpoint must include an integer id".into());
+    }
+    if breakpoint.get("verified").and_then(Value::as_bool) != Some(false) {
+        return Err(
+            format!("engine-less attach breakpoint must remain pending: {breakpoint:?}").into()
+        );
+    }
+    let message = breakpoint
+        .get("message")
+        .and_then(Value::as_str)
+        .ok_or("pending breakpoint must include its pending reason")?;
+    if message != "Breakpoint is pending debugger launch" {
+        return Err(format!("unexpected pending breakpoint reason: {message:?}").into());
+    }
 
     session.disconnect()?;
 
@@ -379,10 +409,9 @@ fn test_e2e_attach_workflow_stop_on_entry() -> TestResult {
 /// follow-up.  This test validates the DAP protocol round-trip.
 #[test]
 fn test_e2e_step_into_subroutine() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_step_into_subroutine - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_step_into_subroutine") else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_stepinto.pl");
@@ -393,7 +422,7 @@ fn test_e2e_step_into_subroutine() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     // BP_LINE_2 (line 5): same rationale as step-over test — configurationDone's `c`
     // runs from the initial implicit stop at line 4 to the breakpoint at line 5.
     session.set_breakpoints(&script_str, &[BP_LINE_2])?;
@@ -431,10 +460,10 @@ fn test_e2e_step_into_subroutine() -> TestResult {
             the non-emptiness assertion could not distinguish from a real observation. \
             Un-ignore once `$global_var` is genuinely enumerated (see issue #10162)"]
 fn test_e2e_globals_scope_inspection() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_globals_scope_inspection - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_globals_scope_inspection")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_globals.pl");
@@ -448,7 +477,7 @@ fn test_e2e_globals_scope_inspection() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints(&script_str, &[BP_LINE_2])?;
     session.configuration_done()?;
 
@@ -497,10 +526,10 @@ fn test_e2e_globals_scope_inspection() -> TestResult {
 /// and `variablesReference` to render and expand rows correctly.
 #[test]
 fn test_e2e_locals_scope_payload_contract() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_locals_scope_payload_contract - perl not available");
+    let Some(debuggee_perl) = debuggee_perl_or_typed_skip("test_e2e_locals_scope_payload_contract")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_locals_contract.pl");
@@ -511,7 +540,7 @@ fn test_e2e_locals_scope_payload_contract() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     session.set_breakpoints(&script_str, &[BP_LINE_2])?;
     session.configuration_done()?;
 
@@ -556,10 +585,11 @@ fn test_e2e_locals_scope_payload_contract() -> TestResult {
 /// unit tests without an active process cannot exercise.
 #[test]
 fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
-    if !perl_available() {
-        eprintln!("Skipping test_e2e_evaluate_expression_in_stopped_frame - perl not available");
+    let Some(debuggee_perl) =
+        debuggee_perl_or_typed_skip("test_e2e_evaluate_expression_in_stopped_frame")
+    else {
         return Ok(());
-    }
+    };
 
     let workspace = tempdir()?;
     let script = workspace.path().join("workflow_evaluate.pl");
@@ -570,7 +600,7 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
     let timeout = workflow_timeout();
     let mut session = DapWorkflowSession::new(timeout)?;
 
-    session.launch(&script_str)?;
+    session.launch_pinned(&debuggee_perl.binary, &script_str)?;
     // set_breakpoints_checked asserts verified=true and returns adapter-resolved lines,
     // so the stopped-frame line can be bound to the resolved line rather than merely `> 0`.
     let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2])?;

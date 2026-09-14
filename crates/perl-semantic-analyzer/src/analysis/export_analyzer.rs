@@ -233,34 +233,35 @@ impl ExportSymbolExtractor {
             // the module is loaded but callers must invoke `Exporter::import` explicitly, or
             // rely on `@EXPORT` being populated before import time.  We treat both forms as
             // Exporter-based so that @EXPORT/@EXPORT_OK are still extracted.
-            NodeKind::Use { module, args, .. } if module == "Exporter" => {
+            NodeKind::Use { module, args, .. }
+                if module == "Exporter"
+                    && (args.is_empty()
+                        || args.iter().any(|arg| {
+                            let arg_stripped = arg.trim_matches('\'');
+                            arg_stripped == "import" || arg == "import"
+                        })) =>
+            {
                 // Accept `use Exporter;` (args empty) or `use Exporter 'import';`
-                if args.is_empty()
-                    || args.iter().any(|arg| {
-                        let arg_stripped = arg.trim_matches('\'');
-                        arg_stripped == "import" || arg == "import"
-                    })
-                {
-                    return Some(ExporterDetector::UseExporterImport);
-                }
+                return Some(ExporterDetector::UseExporterImport);
             }
             // Pattern 2: `use parent 'Exporter';` or `use parent qw(Exporter ...)`
             //
             // The parser stores qw-lists as a single normalised string like `"qw(Exporter)"`,
             // so we must check both single-quoted strings and the qw-expanded form.
-            NodeKind::Use { module, args, .. } if module == "parent" => {
-                if args.iter().any(|arg| Self::arg_contains_exporter(arg)) {
-                    return Some(ExporterDetector::UseParentExporter);
-                }
+            NodeKind::Use { module, args, .. }
+                if module == "parent"
+                    && args.iter().any(|arg| Self::arg_contains_exporter(arg)) =>
+            {
+                return Some(ExporterDetector::UseParentExporter);
             }
             // Pattern 3: `use base 'Exporter';` or `use base qw(Exporter ...)`
             //
             // `use base` is the older form of `use parent` and is still widely used in
             // legacy CPAN code. The same qw-normalisation applies.
-            NodeKind::Use { module, args, .. } if module == "base" => {
-                if args.iter().any(|arg| Self::arg_contains_exporter(arg)) {
-                    return Some(ExporterDetector::UseBaseExporter);
-                }
+            NodeKind::Use { module, args, .. }
+                if module == "base" && args.iter().any(|arg| Self::arg_contains_exporter(arg)) =>
+            {
+                return Some(ExporterDetector::UseBaseExporter);
             }
             // Pattern 4a: `our @ISA = qw(Exporter ...);` (declared form)
             NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {

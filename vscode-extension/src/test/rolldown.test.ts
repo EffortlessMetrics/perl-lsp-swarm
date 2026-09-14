@@ -36,6 +36,147 @@ describe('Rolldown bundle configuration', () => {
     expect(fs.existsSync(configPath)).toBe(true);
   });
 
+  test('patches only the pinned language-client source and rejects drift', () => {
+    const sourcePath = path.join(
+      EXT_ROOT,
+      'node_modules',
+      'vscode-languageclient',
+      'lib',
+      'common',
+      'client.js',
+    );
+    const script = `
+      import fs from 'node:fs';
+      import { patchPinnedLanguageClientSource } from './rolldown.config.mjs';
+      const sourcePath = ${JSON.stringify(sourcePath)};
+      const source = fs.readFileSync(sourcePath, 'utf8');
+      const patched = patchPinnedLanguageClientSource(source, sourcePath);
+      if (!patched || !patched.includes('return promise;')) process.exit(11);
+      const start = patched.indexOf('    async start() {');
+      const end = patched.indexOf('    createOnStartPromise()', start);
+      const body = patched.slice(start, end);
+      if ((body.match(/return this\\._onStart;/g) || []).length !== 1) process.exit(14);
+      if ((body.match(/return promise;/g) || []).length !== 1) process.exit(15);
+      if (body.indexOf('return this._onStart;') > body.indexOf('return promise;')) process.exit(16);
+      if (patchPinnedLanguageClientSource(source, 'other-module/client.js') !== null) process.exit(12);
+      let rejected = false;
+      try { patchPinnedLanguageClientSource(source + '\\n', sourcePath); } catch { rejected = true; }
+      if (!rejected) process.exit(13);
+    `;
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: EXT_ROOT,
+      stdio: 'pipe',
+      timeout: 15_000,
+    });
+  });
+
+  test('patches the pinned jsonrpc write-failure rejection without an orphaned throw', () => {
+    const packageEntry = require.resolve('vscode-jsonrpc');
+    const packageRoot = path.dirname(path.dirname(path.dirname(packageEntry)));
+    const sourcePath = path.join(packageRoot, 'lib', 'common', 'connection.js');
+    const script = `
+      import fs from 'node:fs';
+      import { patchPinnedJsonRpcConnectionSource } from './rolldown.config.mjs';
+      const sourcePath = ${JSON.stringify(sourcePath)};
+      const source = fs.readFileSync(sourcePath, 'utf8');
+      const patched = patchPinnedJsonRpcConnectionSource(source, sourcePath);
+      if (!patched) process.exit(21);
+      const expected = [
+        'responsePromise.reject(new messages_1.ResponseError(messages_1.ErrorCodes.MessageWriteError',
+        'logger.error(\`Sending request failed.\`);',
+        '                    return;',
+      ];
+      const rejectionOffset = patched.indexOf(expected[0]);
+      const rejectionBlock = patched.slice(rejectionOffset, rejectionOffset + 500);
+      if (rejectionOffset < 0 || expected.some((text) => !rejectionBlock.includes(text))) process.exit(22);
+      if (rejectionBlock.includes('                    throw error;')) process.exit(23);
+      if (patchPinnedJsonRpcConnectionSource(source, 'other-module/connection.js') !== null) process.exit(26);
+      let rejected = false;
+      try { patchPinnedJsonRpcConnectionSource(source + '\\n', sourcePath); } catch { rejected = true; }
+      if (!rejected) process.exit(27);
+    `;
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: EXT_ROOT,
+      stdio: 'pipe',
+      timeout: 15_000,
+    });
+  });
+
+  test('the transformed jsonrpc connection rejects failed writes without an unhandled rejection', () => {
+    const script = `
+      import Module, { createRequire } from 'node:module';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      import { patchPinnedJsonRpcConnectionSource } from './rolldown.config.mjs';
+      const require = createRequire(import.meta.url);
+      const packageEntry = require.resolve('vscode-jsonrpc');
+      const packageRoot = packageEntry.slice(0, packageEntry.lastIndexOf('node_modules'));
+      const sourcePath = path.join(packageRoot, 'node_modules', 'vscode-jsonrpc', 'lib', 'common', 'connection.js');
+      const source = fs.readFileSync(sourcePath, 'utf8');
+      const patched = patchPinnedJsonRpcConnectionSource(source, sourcePath);
+      if (!patched) process.exit(31);
+      const originalLoader = Module._extensions['.js'];
+      Module._extensions['.js'] = (module, filename) => {
+        if (filename === sourcePath) module._compile(patched, filename);
+        else originalLoader(module, filename);
+      };
+      const { createMessageConnection, ErrorCodes } = await import('vscode-jsonrpc/node');
+      const disposable = () => ({ dispose() {} });
+      const reader = {
+        onClose: disposable,
+        onError: disposable,
+        listen() { return disposable(); },
+      };
+      let unhandled = 0;
+      const onUnhandled = () => { unhandled += 1; };
+      process.on('unhandledRejection', onUnhandled);
+      const failingWriter = {
+        onClose: disposable,
+        onError: disposable,
+        write() { return Promise.reject(new Error('write boom')); },
+        end() {},
+        dispose() {},
+      };
+      const failing = createMessageConnection(reader, failingWriter);
+      failing.listen();
+      let failure;
+      try { await failing.sendRequest('test/failure', {}); } catch (error) { failure = error; }
+      if (!(failure instanceof Error) || failure.code !== ErrorCodes.MessageWriteError || !failure.message.includes('write boom')) process.exit(32);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      if (unhandled !== 0) process.exit(33);
+      failing.dispose();
+
+      let response;
+      const successReader = {
+        onClose: disposable,
+        onError: disposable,
+        listen(callback) {
+          setTimeout(() => callback({ jsonrpc: '2.0', id: 0, result: 'ok' }), 0);
+          return disposable();
+        },
+      };
+      const successWriter = {
+        onClose: disposable,
+        onError: disposable,
+        write() { return Promise.resolve(); },
+        end() {},
+        dispose() {},
+      };
+      const successful = createMessageConnection(successReader, successWriter);
+      successful.listen();
+      response = await successful.sendRequest('test/success', {});
+      if (response !== 'ok') process.exit(34);
+      successful.dispose();
+      process.off('unhandledRejection', onUnhandled);
+      Module._extensions['.js'] = originalLoader;
+    `;
+    execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: EXT_ROOT,
+      stdio: 'pipe',
+      timeout: 15_000,
+    });
+  });
+
   test('rolldown.config.mjs targets the exact main/debugger entry path (out/extension.js)', () => {
     const configPath = path.join(EXT_ROOT, 'rolldown.config.mjs');
     const source = fs.readFileSync(configPath, 'utf8');
@@ -124,7 +265,7 @@ describe('VSIX packaging ships a single bundled artifact and no raw node_modules
   // release.
   //
   // Since the Rolldown production bundle inlines every runtime dependency
-  // (adm-zip, tar, vscode-languageclient — verified pure JS, no
+  // (yauzl, tar, vscode-languageclient — verified pure JS, no
   // __dirname-relative asset loading, no native .node bindings anywhere in
   // their transitive trees) into the single out/extension.js artifact,
   // node_modules/** is excluded from the VSIX entirely (see

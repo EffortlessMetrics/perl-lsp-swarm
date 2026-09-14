@@ -192,6 +192,10 @@ pub fn validate_trace_receipt_subject_binding(
     if payload.claim_boundary != crate::invocation_trace::model::INVOCATION_TRACE_CLAIM_BOUNDARY {
         return Err("invocation trace receipts retain their fixed claim boundary".to_string());
     }
+    // The intake law binds deserialized receipts too, not only construction:
+    // retagging the runner artifact with an alternate digest spelling and
+    // recomputing the payload digest cannot pass validation (#7725).
+    crate::invocation_trace::build::validate_artifact(&payload.runner_artifact)?;
     let recomputed = trace_payload_digest(payload)?;
     if recomputed != receipt.payload_digest {
         return Err("payload digest does not bind the recorded payload".to_string());

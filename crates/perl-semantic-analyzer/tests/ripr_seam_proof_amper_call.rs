@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! RIPR seam proofs for `handle_amper_call` (#1730).
 //!
 //! Covers the scope-analyzer path for `NodeKind::AmperCall` introduced when

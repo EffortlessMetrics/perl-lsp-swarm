@@ -1,0 +1,46 @@
+name: Release History
+
+on:
+  pull_request:
+    paths:
+      - "RELEASE_HISTORY.md"
+      - "docs/releases/**"
+      - "policy/release-tag-provenance.toml"
+      - "scripts/check_release_history.sh"
+      - "scripts/check_release_tag_provenance.py"
+  push:
+    branches: [main]
+    paths:
+      - "RELEASE_HISTORY.md"
+      - "docs/releases/**"
+      - "policy/release-tag-provenance.toml"
+      - "scripts/check_release_history.sh"
+      - "scripts/check_release_tag_provenance.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+
+jobs:
+  release-history:
+    name: Release history provenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Fetch release tags
+        run: git fetch origin --tags --force
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+      - name: Install just
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8  # v2.87.5
+        with:
+          tool: just
+      - name: Run release-history provenance checks
+        run: just ci-release-history

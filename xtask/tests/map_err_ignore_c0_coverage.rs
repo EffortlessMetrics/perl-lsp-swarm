@@ -35,7 +35,7 @@ const C0_CRATES: &[&str] = &[
     "perl-ripr-facts",
     "perllsp",
     "perl-ci-hygiene",
-    "perl-kwalitee",
+    "perl-release-readiness",
     "perl-workspace-core",
 ];
 

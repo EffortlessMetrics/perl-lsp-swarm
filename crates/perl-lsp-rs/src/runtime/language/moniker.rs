@@ -559,10 +559,8 @@ impl LspServer {
                         }
                     }
                 }
-                NodeKind::Subroutine { body, .. } => {
-                    if check(body, name, sigil) {
-                        return true;
-                    }
+                NodeKind::Subroutine { body, .. } if check(body, name, sigil) => {
+                    return true;
                 }
                 _ => {}
             }

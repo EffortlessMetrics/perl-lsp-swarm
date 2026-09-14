@@ -273,6 +273,28 @@ pub fn hook_fact_identity(
     (FactId(fact), EntityId(fact.wrapping_add(1)))
 }
 
+/// Domain separator keeping hook *handler-context* identities disjoint from
+/// both hook fact identities and route handler-context identities minted over
+/// the same (file, declaration order, generation).
+const HOOK_HANDLER_CONTEXT_IDENTITY_DOMAIN: u64 = 0x600D_5100_4841_4E44;
+
+/// Deterministic hook handler-context identity for one (file, declaration,
+/// generation).
+///
+/// The entity is the owning hook's entity, so the context and its hook are
+/// two facts about one entity; the fact identity uses its own domain
+/// separator so it can never collide with the hook fact or with a route
+/// handler context of the same file/order/generation.
+#[must_use]
+pub fn hook_handler_context_identity(
+    file_id: crate::FileId,
+    declaration_index: u32,
+    generation: &SourceGeneration,
+) -> (FactId, EntityId) {
+    let (fact_id, hook_entity) = hook_fact_identity(file_id, declaration_index, generation);
+    (FactId(fact_id.0 ^ HOOK_HANDLER_CONTEXT_IDENTITY_DOMAIN), hook_entity)
+}
+
 /// Build the canonical envelope for one minted hook fact.
 ///
 /// Shared by framework adapters so every hook fact carries the same

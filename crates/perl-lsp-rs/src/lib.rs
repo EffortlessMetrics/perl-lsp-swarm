@@ -25,7 +25,6 @@
 #![warn(missing_docs)]
 #![allow(
     // Migrated from perl-parser - these patterns are acceptable in LSP runtime code
-    clippy::collapsible_match,
     clippy::only_used_in_recursion,
     clippy::while_let_loop,
     clippy::needless_range_loop,
@@ -55,6 +54,7 @@ pub mod server;
 pub mod state;
 pub mod textdoc;
 pub mod transport;
+#[path = "util_root.rs"]
 pub mod util;
 
 // Re-exports for key types

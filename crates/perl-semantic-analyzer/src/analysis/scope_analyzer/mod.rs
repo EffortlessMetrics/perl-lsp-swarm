@@ -177,10 +177,15 @@ fn index_to_sigil(index: usize) -> &'static str {
     }
 }
 
+type VariableMaps = [Option<FxHashMap<String, Rc<Variable>>>; 6];
+
 #[derive(Debug)]
 pub(super) struct Scope {
     // Outer key: sigil index, Inner key: name
-    variables: RefCell<[Option<FxHashMap<String, Rc<Variable>>>; 6]>,
+    variables: RefCell<VariableMaps>,
+    /// Lexicals declared within the current unfinished statement modifier.
+    pending_variables: RefCell<VariableMaps>,
+    deferring_declarations: Cell<bool>,
     parent: Option<Rc<Scope>>,
     /// Whether a regex match operation (`=~`, `m//`, `s///`) has been seen in this scope.
     has_regex_match: Cell<bool>,
@@ -189,13 +194,21 @@ pub(super) struct Scope {
 impl Scope {
     fn new() -> Self {
         let vars = std::array::from_fn(|_| None);
-        Self { variables: RefCell::new(vars), parent: None, has_regex_match: Cell::new(false) }
+        Self {
+            variables: RefCell::new(vars),
+            pending_variables: RefCell::new(std::array::from_fn(|_| None)),
+            deferring_declarations: Cell::new(false),
+            parent: None,
+            has_regex_match: Cell::new(false),
+        }
     }
 
     fn with_parent(parent: Rc<Scope>) -> Self {
         let vars = std::array::from_fn(|_| None);
         Self {
             variables: RefCell::new(vars),
+            pending_variables: RefCell::new(std::array::from_fn(|_| None)),
+            deferring_declarations: Cell::new(false),
             parent: Some(parent),
             has_regex_match: Cell::new(false),
         }
@@ -229,6 +242,18 @@ impl Scope {
             }
         }
 
+        // Pending declarations still own declaration metadata and participate
+        // in redeclaration checks, but lookup must not see them yet.
+        if self
+            .pending_variables
+            .borrow()
+            .get(idx)
+            .and_then(Option::as_ref)
+            .is_some_and(|map| map.contains_key(name))
+        {
+            return Some(IssueKind::VariableRedeclaration);
+        }
+
         // Check if it shadows a parent scope variable
         let shadows = if let Some(ref parent) = self.parent {
             parent.has_variable_parts(sigil, name)
@@ -236,21 +261,40 @@ impl Scope {
             false
         };
 
-        // Now insert the variable
-        let mut vars = self.variables.borrow_mut();
-        let inner = vars[idx].get_or_insert_with(FxHashMap::default);
-
-        inner.insert(
-            name.to_string(),
-            Rc::new(Variable {
-                declaration_offset: offset,
-                is_used: RefCell::new(is_our), // 'our' variables are considered used
-                is_our,
-                is_initialized: RefCell::new(is_initialized),
-            }),
-        );
+        let variable = Rc::new(Variable {
+            declaration_offset: offset,
+            is_used: RefCell::new(is_our), // 'our' variables are considered used
+            is_our,
+            is_initialized: RefCell::new(is_initialized),
+        });
+        if self.deferring_declarations.get() && !is_our {
+            if let Some(slot) = self.pending_variables.borrow_mut().get_mut(idx) {
+                slot.get_or_insert_with(FxHashMap::default).insert(name.to_string(), variable);
+            }
+        } else {
+            let mut vars = self.variables.borrow_mut();
+            let inner = vars[idx].get_or_insert_with(FxHashMap::default);
+            inner.insert(name.to_string(), variable);
+        }
 
         if shadows { Some(IssueKind::VariableShadowing) } else { None }
+    }
+
+    fn finish_deferred_declarations(&self) {
+        self.deferring_declarations.set(false);
+        let mut vars = self.variables.borrow_mut();
+        let mut pending = self.pending_variables.borrow_mut();
+        for (visible, deferred) in vars.iter_mut().zip(pending.iter_mut()) {
+            if let Some(declarations) = deferred.take() {
+                visible.get_or_insert_with(FxHashMap::default).extend(declarations);
+            }
+        }
+    }
+
+    /// Declaration-target metadata access, never ordinary name visibility.
+    /// Duplicate declarations retain the existing slot just as visible ones do.
+    fn pending_declaration_parts(&self, sigil: &str, name: &str) -> Option<Rc<Variable>> {
+        self.pending_variables.borrow().get(sigil_to_index(sigil))?.as_ref()?.get(name).cloned()
     }
 
     fn has_variable_parts(&self, sigil: &str, name: &str) -> bool {
@@ -997,17 +1041,35 @@ impl ScopeAnalyzer {
             }
 
             NodeKind::StatementModifier { statement, condition, .. } => {
-                // Perl hoists a `my` declaration in the modifier condition to the
-                // enclosing block, so the condition must be analyzed BEFORE the
-                // statement.  The default children() order is statement-first,
-                // which causes a false-positive UndeclaredVariable for idioms like
-                //   `print $x if my $x = 1;`
-                // Analyze the condition first so any `my` it introduces is visible
-                // to the statement.
+                // Perl exposes new my/state bindings only after the whole statement,
+                // so neither child can see declarations in the other (#1772).
+                // Deferral belongs to this Scope: a nested block owns independent
+                // declarations; a nested modifier in this same scope cannot flush us.
+                //
+                // Deferral covers lexical *visibility*, which is what makes that rule
+                // symmetric. It does not cover the effects that depend on evaluation order,
+                // and a modifier's condition genuinely runs BEFORE the statement it guards.
+                // So the children are visited in that runtime order, which is what the
+                // existing per-scope machinery already models correctly:
+                //
+                //   capture state   `print $1 if /a(.)/;`  the match sets $1 for the statement
+                //                   `/a(.)/ if $1;`        the condition's $1 has no match yet
+                //   initialization  `my $x; $x = 1 if $x;`  the condition reads $x uninitialized
+                //                   `my $x; print $x if ($x = 1);`  the condition initializes it
+                //
+                // Visiting the statement first inverts all four. Note this is deliberately
+                // *not* symmetric with the declaration rule: `our` is not deferred, so
+                // `our $x = 1 if $x;` still reports its condition as undeclared. That is a
+                // pre-existing source-order alias gap, unchanged by this arm, tracked as
+                // #15048 — it is not worth inverting four runtime facts to paper over.
+                let already_deferred = scope.deferring_declarations.replace(true);
                 ancestors.push(node);
                 self.analyze_node(condition, scope, ancestors, issues, context);
                 self.analyze_node(statement, scope, ancestors, issues, context);
                 ancestors.pop();
+                if !already_deferred {
+                    scope.finish_deferred_declarations();
+                }
             }
 
             _ => {
@@ -1269,6 +1331,25 @@ impl ScopeAnalyzer {
         context: &AnalysisContext<'_>,
     ) {
         match &node.kind {
+            NodeKind::VariableDeclaration { declarator, variable, .. } => {
+                let extracted = self.extract_variable_name(variable);
+                let (sigil, name) = extracted.parts();
+                if matches!(declarator.as_str(), "my" | "state")
+                    && let Some(declaration) = scope.pending_declaration_parts(sigil, name)
+                {
+                    // Same declaration-identity rule as `mark_builtin_declaration_arg_consumed`:
+                    // initialize the pending slot only when this declaration created it. A
+                    // duplicate name in the same statement modifier was rejected, so the
+                    // retained slot belongs to the other declaration and must keep its state.
+                    if declaration.declaration_offset == variable.location.start {
+                        *declaration.is_initialized.borrow_mut() = true;
+                    }
+                } else {
+                    for child in node.children() {
+                        self.mark_initialized(child, scope, context);
+                    }
+                }
+            }
             NodeKind::Variable { sigil, name } => {
                 if !name.contains("::") {
                     self.initialize_variable_parts_in_context(scope, sigil, name, context);
@@ -1310,12 +1391,30 @@ impl ScopeAnalyzer {
         context: &AnalysisContext<'_>,
     ) {
         match &node.kind {
-            NodeKind::VariableDeclaration { variable, .. } => {
+            NodeKind::VariableDeclaration { declarator, variable, .. } => {
                 let extracted = self.extract_variable_name(variable);
                 let (sigil, name) = extracted.parts();
                 if !sigil.is_empty() && !name.is_empty() && !name.contains("::") {
-                    let _ = self
-                        .initialize_and_use_variable_parts_in_context(scope, sigil, name, context);
+                    if matches!(declarator.as_str(), "my" | "state")
+                        && let Some(declaration) = scope.pending_declaration_parts(sigil, name)
+                    {
+                        // A pending slot for this name exists, so we are inside a statement
+                        // modifier. Consume it only when it is the slot THIS declaration
+                        // created: a duplicate name in the same statement is rejected by
+                        // `declare_variable_parts`, and the slot that was retained belongs to
+                        // the other declaration. Mutating it there would erase a real warning —
+                        // `open my $fh, '<', $p if my $fh; print $fh;` keeps the condition's
+                        // uninitialized binding, and perl 5.38.2 warns
+                        // `Use of uninitialized value $fh` on that read.
+                        if declaration.declaration_offset == variable.location.start {
+                            *declaration.is_initialized.borrow_mut() = true;
+                            *declaration.is_used.borrow_mut() = true;
+                        }
+                    } else {
+                        let _ = self.initialize_and_use_variable_parts_in_context(
+                            scope, sigil, name, context,
+                        );
+                    }
                 }
             }
             NodeKind::VariableListDeclaration { variables, .. } => {
@@ -1487,42 +1586,40 @@ impl ScopeAnalyzer {
 
             match &parent.kind {
                 // Method call: Class->method (Class is bareword)
-                NodeKind::Binary { op, left, right: _ } if op == "->" => {
+                NodeKind::Binary { op, left, right: _ }
+                    if op == "->" && std::ptr::eq(left.as_ref(), current) =>
+                {
                     // Check if current node is the class name (left side of the -> operation)
-                    if std::ptr::eq(left.as_ref(), current) {
-                        return true;
-                    }
+                    return true;
                 }
-                NodeKind::MethodCall { object, .. } => {
+                NodeKind::MethodCall { object, .. } if std::ptr::eq(object.as_ref(), current) => {
                     // Check if current node is the class name (object)
-                    if std::ptr::eq(object.as_ref(), current) {
-                        return true;
-                    }
+                    return true;
                 }
                 // Hash subscript: $hash{key} or %hash{key}
-                NodeKind::Binary { op, left: _, right } if op == "{}" => {
+                NodeKind::Binary { op, left: _, right }
+                    if op == "{}" && std::ptr::eq(right.as_ref(), current) =>
+                {
                     // Check if current node is the key (right side of the {} operation)
-                    if std::ptr::eq(right.as_ref(), current) {
-                        return true;
-                    }
+                    return true;
                 }
                 // Hash/key-value slice keys: @hash{...} or %hash{...}
-                NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. } => {
-                    if std::ptr::eq(keys.as_ref(), current) {
-                        return true;
-                    }
+                NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. }
+                    if std::ptr::eq(keys.as_ref(), current) =>
+                {
+                    return true;
                 }
                 // Arrow-deref hash subscript/slice: $ref->{key}, $obj->method()->{key},
                 // $a->{b}{c}, $ref->%{key}
                 // Anchor on `node`, not `current`: only direct simple keys are auto-quoted,
                 // so composite or qualified keys like `$ref->{FOO + 1}` and `$ref->{FOO::BAR}`
                 // must still flag their barewords.
-                NodeKind::Binary { op, left: _, right } if op == "->{}" || op == "->%{}" => {
-                    if std::ptr::eq(right.as_ref(), node)
-                        && Self::is_simple_autoquoted_hash_key(node)
-                    {
-                        return true;
-                    }
+                NodeKind::Binary { op, left: _, right }
+                    if (op == "->{}" || op == "->%{}")
+                        && std::ptr::eq(right.as_ref(), node)
+                        && Self::is_simple_autoquoted_hash_key(node) =>
+                {
+                    return true;
                 }
                 NodeKind::HashLiteral { pairs } => {
                     // Check if current node is a key in any of the pairs
@@ -1532,22 +1629,20 @@ impl ScopeAnalyzer {
                         }
                     }
                 }
-                NodeKind::ArrayLiteral { .. } => {
+                NodeKind::ArrayLiteral { .. } if i > 0 => {
                     // Check grandparent
-                    if i > 0 {
-                        let grandparent = ancestors[i - 1];
-                        if let NodeKind::Binary { op, right, .. } = &grandparent.kind {
-                            if op == "{}" && std::ptr::eq(right.as_ref(), parent) {
-                                return true;
-                            }
-                        }
-                        // ArrayLiteral used as keys in a slice: @hash{@keys} or %hash{@keys}
-                        if matches!(&grandparent.kind,
-                            NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. }
-                            if std::ptr::eq(keys.as_ref(), parent))
-                        {
+                    let grandparent = ancestors[i - 1];
+                    if let NodeKind::Binary { op, right, .. } = &grandparent.kind {
+                        if op == "{}" && std::ptr::eq(right.as_ref(), parent) {
                             return true;
                         }
+                    }
+                    // ArrayLiteral used as keys in a slice: @hash{@keys} or %hash{@keys}
+                    if matches!(&grandparent.kind,
+                        NodeKind::HashSlice { keys, .. } | NodeKind::KeyValueSlice { keys, .. }
+                        if std::ptr::eq(keys.as_ref(), parent))
+                    {
+                        return true;
                     }
                 }
                 // Handle IndirectCall which parser sometimes produces for $hash{key} in print statements

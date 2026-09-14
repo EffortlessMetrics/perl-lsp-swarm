@@ -683,15 +683,31 @@ fn sync_status_index(content: &str, surface: &ReleaseSurface) -> Result<String> 
     Ok(restore_trailing_newline(content, &lines))
 }
 
+/// Standing first-RC authority is granted per release train, never inherited.
+///
+/// #13768 authorized v0.18.0's bounded first RC. A future train must establish
+/// its own controller; the synchronizer must not re-issue v0.18 authority
+/// under a new version number.
+fn first_rc_standing_authority(version: &str) -> Option<&'static str> {
+    match version {
+        "0.18.0" => Some("#13768"),
+        _ => None,
+    }
+}
+
 fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String> {
     let mut train_seen = false;
     let mut workspace_seen = false;
     let mut surface_seen = false;
-    let mut remaining_seen = false;
+    let mut remaining_count = 0;
+    let mut current_heading: Option<&str> = None;
 
     let mut lines: Vec<String> = Vec::new();
     for line in content.lines() {
-        if line.starts_with("**Current release train**: `v") {
+        if line.starts_with("## ") {
+            current_heading = Some(line);
+            lines.push(line.to_string());
+        } else if line.starts_with("**Current release train**: `v") {
             lines.push(if let Some(shipped_date) = surface.shipped_date.as_deref() {
                 format!(
                     "**Current release train**: `v{}` — shipped {} as public beta",
@@ -715,21 +731,44 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
             surface_seen = true;
         } else if (line.starts_with("- Remaining work is operational: finish `v")
             && line.contains(" prep verification, then publish and record final channel receipts"))
+            || (line.starts_with("- Remaining work is operational: finish `v")
+                && line.contains(
+                    " prep verification; #12876 product-policy closure and #12230 publication projection remain blocked, and #4343 release controller retains NO-GO authority until explicit human approval is recorded.",
+                ))
+            || (line.starts_with("- Remaining work is operational: finish `v")
+                && line.contains(" bounded first RC proceeds under #13768 standing authorization"))
+            || (line.starts_with("- Remaining work is operational: finish `v")
+                && line.contains(" bounded first RC has no standing authorization yet"))
             || (line.starts_with("- Remaining work is operational: verify the existing `v")
                 && line.contains(" release receipt and close the remaining channel receipts"))
         {
+            if current_heading != Some("## Active Blockers") {
+                bail!(
+                    "status/release.md: remaining work anchor must be under `## Active Blockers`"
+                );
+            }
+            remaining_count += 1;
+            if remaining_count > 1 {
+                bail!(
+                    "status/release.md: duplicate remaining work anchors under `## Active Blockers`"
+                );
+            }
             lines.push(if surface.shipped_date.is_some() {
                 format!(
                     "- Remaining work is operational: verify the existing `v{}` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.",
                     surface.version
                 )
+            } else if let Some(authority) = first_rc_standing_authority(&surface.version) {
+                format!(
+                    "- Remaining work is operational: finish `v{0}` prep verification; #12876 product-policy closure remains blocked, the bounded first RC proceeds under {authority} standing authorization through `rc_published_verified` with no second approval, and stable `v{0}` remains explicitly unauthorized.",
+                    surface.version
+                )
             } else {
                 format!(
-                    "- Remaining work is operational: finish `v{}` prep verification, then publish and record final channel receipts.",
+                    "- Remaining work is operational: finish `v{0}` prep verification; #12876 product-policy closure remains blocked, the bounded first RC has no standing authorization yet and requires explicit human-established controller authority before proceeding, and stable `v{0}` remains explicitly unauthorized.",
                     surface.version
                 )
             });
-            remaining_seen = true;
         } else {
             lines.push(line.to_string());
         }
@@ -744,7 +783,7 @@ fn sync_release_notes(content: &str, surface: &ReleaseSurface) -> Result<String>
     if !surface_seen {
         bail!("status/release.md: published crate surface line not found");
     }
-    if !remaining_seen {
+    if remaining_count == 0 {
         bail!("status/release.md: remaining blockers prep verification line not found");
     }
     Ok(restore_trailing_newline(content, &lines))
@@ -933,10 +972,12 @@ channels remain independently versioned and must be verified before editor use.\
         let input = "**Current release train**: `v0.16.0` — release preparation\n\
 **Workspace version line**: `v0.16.0`\n\
 **Published crate surface**: 31 crates\n\
+## Active Blockers\n\
 - Remaining work is operational: finish `v0.16.0` prep verification, then publish and record final channel receipts\n";
         let expected = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
 **Workspace version line**: `v0.17.0`\n\
 **Published crate surface**: 32 crates\n\
+## Active Blockers\n\
 - Remaining work is operational: verify the existing `v0.17.0` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.\n";
 
         let first = sync_release_notes(input, &release_surface())?;
@@ -946,6 +987,181 @@ channels remain independently versioned and must be verified before editor use.\
         let second = sync_release_notes(&first, &release_surface())?;
         if second != first {
             bail!("second release-notes sync was not idempotent");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_writes_preparation_anchor_only_in_active_blockers() -> Result<()> {
+        let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
+**Workspace version line**: `v0.17.0`\n\
+**Published crate surface**: 32 crates\n\
+## Active Blockers\n\
+- Remaining work is operational: verify the existing `v0.17.0` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.\n\
+## Shipped v0.17.0 Closeout\n\
+This closeout remains historical.\n";
+        let synced = sync_release_notes(&input, &preparation_release_surface())?;
+        let active_blockers = synced
+            .split_once("## Active Blockers\n")
+            .ok_or_else(|| color_eyre::eyre::eyre!("active blockers heading disappeared"))?
+            .1;
+        let closeout = active_blockers
+            .split_once("## Shipped v0.17.0 Closeout\n")
+            .ok_or_else(|| color_eyre::eyre::eyre!("closeout heading disappeared"))?;
+        if !closeout.0.contains("finish `v0.18.0` prep verification") {
+            bail!("preparation wording was not kept under Active Blockers");
+        }
+        if closeout.1.contains("finish `v0.18.0` prep verification") {
+            bail!("preparation wording leaked into the shipped closeout");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_rejects_preparation_publication_authority_leak() -> Result<()> {
+        let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
+**Workspace version line**: `v0.17.0`\n\
+**Published crate surface**: 34 crates\n\
+## Active Blockers\n\
+- Remaining work is operational: finish `v0.18.0` prep verification, then publish and record final channel receipts\n";
+        let synced = sync_release_notes(&input, &preparation_release_surface())?;
+        if synced.contains("then publish and record final channel receipts") {
+            bail!("preparation sync emitted unconditional publication authority");
+        }
+        for boundary in [
+            "#12876 product-policy closure",
+            "bounded first RC proceeds under #13768 standing authorization",
+            "no second approval",
+            "stable `v0.18.0` remains explicitly unauthorized",
+        ] {
+            if !synced.contains(boundary) {
+                bail!("preparation sync omitted authority boundary: {boundary}");
+            }
+        }
+        for retired in [
+            "#12230 publication projection",
+            "NO-GO authority until explicit human approval is recorded",
+        ] {
+            if synced.contains(retired) {
+                bail!("preparation sync kept retired authority wording: {retired}");
+            }
+        }
+        let second = sync_release_notes(&synced, &preparation_release_surface())?;
+        if second != synced {
+            bail!("blocker-safe preparation sync was not idempotent");
+        }
+        for boundary in [
+            "#12876 product-policy closure",
+            "bounded first RC proceeds under #13768 standing authorization",
+            "no second approval",
+            "stable `v0.18.0` remains explicitly unauthorized",
+        ] {
+            if !second.contains(boundary) {
+                bail!("second preparation sync omitted authority boundary: {boundary}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_preparation_names_first_rc_controller() -> Result<()> {
+        let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
+**Workspace version line**: `v0.17.0`\n\
+**Published crate surface**: 34 crates\n\
+## Active Blockers\n\
+- Remaining work is operational: finish `v0.18.0` prep verification; #12876 product-policy closure and #12230 publication projection remain blocked, and #4343 release controller retains NO-GO authority until explicit human approval is recorded.\n";
+        let synced = sync_release_notes(&input, &preparation_release_surface())?;
+        for boundary in [
+            "through `rc_published_verified`",
+            "with no second approval",
+            "stable `v0.18.0` remains explicitly unauthorized",
+        ] {
+            if !synced.contains(boundary) {
+                bail!("migrated preparation sync omitted controller boundary: {boundary}");
+            }
+        }
+        for retired in [
+            "#12230 publication projection remain blocked",
+            "retains NO-GO authority",
+            "until explicit human approval is recorded",
+        ] {
+            if synced.contains(retired) {
+                bail!("migrated preparation sync kept retired controller wording: {retired}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_future_train_does_not_inherit_first_rc_authority() -> Result<()> {
+        let surface = ReleaseSurface {
+            version: "0.19.0".to_string(),
+            published_crate_count: 32,
+            shipped_date: None,
+            prior_version: Some("0.18.0".to_string()),
+            prior_shipped_date: None,
+            next_version: "0.20.0".to_string(),
+        };
+        let input = "**Current release train**: `v0.18.0` — release preparation; shipped release receipt pending\n\
+**Workspace version line**: `v0.18.0`\n\
+**Published crate surface**: 32 crates\n\
+## Active Blockers\n\
+- Remaining work is operational: finish `v0.18.0` prep verification; #12876 product-policy closure remains blocked, the bounded first RC proceeds under #13768 standing authorization through `rc_published_verified` with no second approval, and stable `v0.18.0` remains explicitly unauthorized.\n";
+        let synced = sync_release_notes(&input, &surface)?;
+        if synced.contains("#13768") {
+            bail!("future train inherited v0.18 first-RC authority");
+        }
+        for boundary in [
+            "finish `v0.19.0` prep verification",
+            "bounded first RC has no standing authorization yet",
+            "requires explicit human-established controller authority before proceeding",
+            "stable `v0.19.0` remains explicitly unauthorized",
+        ] {
+            if !synced.contains(boundary) {
+                bail!("future train sync omitted neutral authority boundary: {boundary}");
+            }
+        }
+        let second = sync_release_notes(&synced, &surface)?;
+        if second != synced {
+            bail!("neutral-authority preparation sync was not idempotent");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_rejects_duplicate_preparation_anchors() -> Result<()> {
+        let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
+**Workspace version line**: `v0.17.0`\n\
+**Published crate surface**: 34 crates\n\
+## Active Blockers\n\
+- Remaining work is operational: finish `v0.18.0` prep verification; #12876 product-policy closure and #12230 publication projection remain blocked, and #4343 release controller retains NO-GO authority until explicit human approval is recorded.\n\
+- Remaining work is operational: finish `v0.18.0` prep verification, then publish and record final channel receipts\n";
+        let error = match sync_release_notes(&input, &preparation_release_surface()) {
+            Ok(_) => bail!("duplicate preparation anchors were accepted"),
+            Err(error) => error,
+        };
+        if !error
+            .to_string()
+            .contains("duplicate remaining work anchors under `## Active Blockers`")
+        {
+            bail!("duplicate anchors returned the wrong diagnostic: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sync_release_notes_rejects_anchor_under_shipped_closeout() -> Result<()> {
+        let input = "**Current release train**: `v0.17.0` — shipped 2026-06-28 as public beta\n\
+**Workspace version line**: `v0.17.0`\n\
+**Published crate surface**: 32 crates\n\
+## Shipped v0.17.0 Closeout\n\
+- Remaining work is operational: verify the existing `v0.17.0` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.\n";
+        let error = match sync_release_notes(&input, &preparation_release_surface()) {
+            Ok(_) => bail!("misplaced preparation anchor was accepted"),
+            Err(error) => error,
+        };
+        if !error.to_string().contains("must be under `## Active Blockers`") {
+            bail!("misplaced anchor returned the wrong diagnostic: {error}");
         }
         Ok(())
     }
