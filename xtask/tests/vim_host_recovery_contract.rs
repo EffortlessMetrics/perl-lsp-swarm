@@ -645,6 +645,31 @@ fn the_stimulus_matcher_binds_only_the_serving_server_process() -> Result<()> {
 }
 
 #[test]
+fn the_stimulus_selects_only_the_server_this_host_run_owns() -> Result<()> {
+    use std::collections::BTreeMap;
+    use xtask::vim_host_recovery_run::is_descendant_of;
+
+    // Two servers launched from the same candidate binary: one under this
+    // host run (xtask 100 -> vim 200 -> server 300) and one under a
+    // developer's own editor (900 -> 901). Both satisfy the exact-path and
+    // --stdio binding, so only descent from this xtask process tells them
+    // apart. Without it the journey kills someone's live editor session.
+    let parents: BTreeMap<u32, u32> =
+        [(200, 100), (300, 200), (901, 900), (900, 1), (100, 1)].into_iter().collect();
+
+    assert!(is_descendant_of(300, 100, &parents), "this run's server is owned");
+    assert!(is_descendant_of(200, 100, &parents), "the vim it spawned is owned");
+    assert!(!is_descendant_of(901, 100, &parents), "another editor's server is not ours");
+    assert!(!is_descendant_of(900, 100, &parents), "another editor is not ours");
+    // An unknown pid and a self-parenting cycle both terminate as not-ours
+    // rather than hanging the watcher.
+    assert!(!is_descendant_of(4242, 100, &parents));
+    let cyclic: BTreeMap<u32, u32> = [(5, 6), (6, 5)].into_iter().collect();
+    assert!(!is_descendant_of(5, 100, &cyclic));
+    Ok(())
+}
+
+#[test]
 fn decoy_wire_evidence_never_satisfies_the_governed_document() -> Result<()> {
     // The fixture carries two files named main.pl by design: the governed
     // workspace/project/main.pl and the outer decoy workspace/main.pl. If
@@ -783,6 +808,27 @@ fn initialize_generation_counting_ignores_response_echoes() -> Result<()> {
 // ---------------------------------------------------------------------------
 // Judgment laws
 // ---------------------------------------------------------------------------
+
+#[test]
+fn a_generation_cannot_borrow_the_next_generations_initialized() -> Result<()> {
+    let root = repo_root().join("target/test-recovery-contract/judgment-borrowed-initialized");
+    let _ = fs::remove_dir_all(&root);
+    let plan = scratch_recovery_plan(&root)?;
+    let events = complete_recovery_events(&plan.identity.candidate_artifact_sha256);
+    let mut wire = canonical_wire();
+    // Generation 2's own `initialized` never arrives. Generation 3's still
+    // does, and it lands after generation 2's `initialize` — so an
+    // unbounded "some later initialized exists" check reads generation 2 as
+    // ready and the replacement chain passes on a generation that never
+    // completed its handshake.
+    let second_initialize = wire.initialize_lines[1];
+    let third_initialize = wire.initialize_lines[2];
+    wire.initialized_lines.retain(|line| !(*line > second_initialize && *line < third_initialize));
+    let judgment = canonical_judgment(&plan, events, &wire, &landed_stimulus_records());
+    assert_eq!(judgment.cells.get(CELL_INITIALIZED_NEW_GENERATION), Some(&ObservationResult::Fail));
+    assert_ne!(judgment.result, ObservationResult::Partial);
+    Ok(())
+}
 
 #[test]
 fn canonical_evidence_passes_affirming_cells_with_partial_adverse_exit() -> Result<()> {

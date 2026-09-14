@@ -600,11 +600,41 @@ pub fn unix_args_match_serving_server(args: &str, normalized_needle: &str) -> bo
 /// transport. On unix the `ps` probe reports full command lines; on Windows
 /// the process set is first name-filtered to `perllsp.exe` (tasklist exposes
 /// only image names) and then the same serving-command binding applies.
+/// Whether `pid` is a descendant of `root` in the given child->parent map.
+/// The recovery host spawns Vim itself, and Vim spawns the server, so the
+/// serving process this run owns is always a descendant of this xtask
+/// process. Ancestry is what makes the stimulus *this run's*: the exact
+/// candidate path plus `--stdio` identifies the program, not the instance,
+/// and a developer's own editor on a shared checkout matches both.
+pub fn is_descendant_of(pid: u32, root: u32, parents: &BTreeMap<u32, u32>) -> bool {
+    let mut current = pid;
+    // Bounded by the map size: a malformed cycle terminates instead of
+    // hanging the watcher.
+    for _ in 0..=parents.len() {
+        match parents.get(&current) {
+            Some(&parent) if parent == root => return true,
+            Some(&parent) if parent == current || parent == 0 => return false,
+            Some(&parent) => current = parent,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Find the running serving servers this host run owns: argv[0] equal to the
+/// exact candidate path, the canonical `--stdio` transport, **and** descent
+/// from this xtask process. On unix the `ps` probe reports full command
+/// lines; on Windows the process set is first name-filtered to `perllsp.exe`
+/// (only image names are indexed) and then the same binding applies.
 fn find_candidate_pids(needle: &str) -> Result<Vec<u32>> {
     let normalized_needle = needle.to_lowercase().replace('\\', "/");
+    let own_pid = std::process::id();
+    let mut parents: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut matched: Vec<u32> = Vec::new();
     if cfg!(windows) {
-        let script = "Get-CimInstance Win32_Process -Filter \"Name='perllsp.exe'\" | ForEach-Object { \
-             \"$($_.ProcessId)|$($_.CommandLine)\" }";
+        let script = "Get-CimInstance Win32_Process -Filter \"Name='perllsp.exe' OR \
+             Name='vim.exe' OR Name='xtask.exe' OR Name='cargo.exe'\" | ForEach-Object { \
+             \"$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)\" }";
         let output = std::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .stdin(std::process::Stdio::null())
@@ -612,40 +642,49 @@ fn find_candidate_pids(needle: &str) -> Result<Vec<u32>> {
             .context("powershell process probe failed")?;
         ensure!(output.status.success(), "powershell process probe exited with {}", output.status);
         let text = String::from_utf8_lossy(&output.stdout).into_owned();
-        let mut pids = Vec::new();
         for line in text.lines() {
-            let Some((pid, command)) = line.split_once('|') else { continue };
-            if unix_args_match_serving_server(command, &normalized_needle)
-                && let Ok(pid) = pid.trim().parse::<u32>()
-            {
-                pids.push(pid);
+            let mut fields = line.splitn(3, '|');
+            let (Some(pid), Some(ppid), Some(command)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            let (Ok(pid), Ok(ppid)) = (pid.trim().parse::<u32>(), ppid.trim().parse::<u32>())
+            else {
+                continue;
+            };
+            parents.insert(pid, ppid);
+            if unix_args_match_serving_server(command, &normalized_needle) {
+                matched.push(pid);
             }
         }
-        pids.sort_unstable();
-        pids.dedup();
-        Ok(pids)
     } else {
         let output = std::process::Command::new("ps")
-            .args(["-eo", "pid=,args="])
+            .args(["-eo", "pid=,ppid=,args="])
             .stdin(std::process::Stdio::null())
             .output()
             .context("ps process probe failed")?;
         ensure!(output.status.success(), "ps process probe exited with {}", output.status);
         let text = String::from_utf8_lossy(&output.stdout).into_owned();
-        let mut pids = Vec::new();
         for line in text.lines() {
             let trimmed = line.trim_start();
-            let Some((pid, args)) = trimmed.split_once(char::is_whitespace) else { continue };
-            if unix_args_match_serving_server(args.trim(), &normalized_needle)
-                && let Ok(pid) = pid.parse::<u32>()
-            {
-                pids.push(pid);
+            let Some((pid, rest)) = trimmed.split_once(char::is_whitespace) else { continue };
+            let rest = rest.trim_start();
+            let Some((ppid, args)) = rest.split_once(char::is_whitespace) else { continue };
+            let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.trim().parse::<u32>()) else {
+                continue;
+            };
+            parents.insert(pid, ppid);
+            if unix_args_match_serving_server(args.trim(), &normalized_needle) {
+                matched.push(pid);
             }
         }
-        pids.sort_unstable();
-        pids.dedup();
-        Ok(pids)
     }
+    let mut pids: Vec<u32> =
+        matched.into_iter().filter(|pid| is_descendant_of(*pid, own_pid, &parents)).collect();
+    pids.sort_unstable();
+    pids.dedup();
+    Ok(pids)
 }
 
 /// Terminate one exact PID (an adverse crash stimulus, never a graceful
@@ -847,8 +886,13 @@ pub fn host_recovery_run(
     // driver observes only the client's own exit evidence.
     let (watcher, watcher_handle) =
         spawn_stimulus_watcher(&stimulus_dir, &plan.paths.candidate_executable);
-    let mut observation = run_owned_process(&mut command, &plan, &layout)?;
+    // The watcher is stopped and joined whether or not the host run
+    // succeeded: an early `?` here would leave the thread polling the
+    // process table — and holding a live kill capability — for the rest of
+    // the xtask process.
+    let run_result = run_owned_process(&mut command, &plan, &layout);
     let stimulus_records = stop_stimulus_watcher(&watcher, watcher_handle);
+    let mut observation = run_result?;
 
     let (client_log_bytes, client_log_error) = match fs::read(layout.client_log()) {
         Ok(bytes) => (bytes, None),
@@ -1167,7 +1211,15 @@ pub fn evaluate_recovery_observation(
     let generation_count = recovery_wire.initialize_lines.len();
     let chain_ok = |generation: usize| -> bool {
         let Some(init_line) = recovery_wire.initialize_line_of(generation) else { return false };
-        if !recovery_wire.initialized_lines.iter().any(|line| *line > init_line) {
+        // The notification must land inside this generation's own window.
+        // An unbounded "any later initialized" lets a generation whose
+        // notification never arrived borrow the next generation's and pass.
+        let next_init = recovery_wire.initialize_line_of(generation + 1).unwrap_or(usize::MAX);
+        if !recovery_wire
+            .initialized_lines
+            .iter()
+            .any(|line| *line > init_line && *line < next_init)
+        {
             return false;
         }
         replays.iter().any(|event| {

@@ -2869,8 +2869,11 @@ enum VimEditorCompatCommand {
 
         /// Fixture variant for the bootstrap-diagnostics,
         /// freshness-generations, recovery-generations, and save-format
-        /// journeys (canonical must pass; the negative controls must fail
-        /// with their typed reason).
+        /// journeys. The canonical variant must reach its journey's honest
+        /// top-line — `pass`, except `recovery-generations`, whose
+        /// adverse-exit cell is never a passing observation, so its honest
+        /// canonical top-line is `partial`. The negative controls must fail
+        /// with their typed reason.
         #[arg(long, default_value = "canonical")]
         fixture_variant: String,
 
