@@ -1,4 +1,8 @@
-# Worktree forensic evidence v1
+# Worktree forensic evidence v1 (historical wire format)
+
+The current JSON wire contract is [v2](WORKTREE_FORENSIC_EVIDENCE_V2.md).
+The observer and no-mutation contracts below remain applicable; v2 changes only
+observation representation, validation, and digest identity.
 
 The `worktree-recovery plan` route is a read-only, explicit-input observer for
 one repository and one candidate. It does not discover candidates and does not

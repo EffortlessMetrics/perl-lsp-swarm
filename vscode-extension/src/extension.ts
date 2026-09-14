@@ -374,6 +374,7 @@ const crashRecoveryArbiter = new CrashRecoveryArbiter(
   STABLE_RUN_GRACE_MS,
 );
 let watchdogTimer: NodeJS.Timeout | undefined;
+let watchdogEpoch = 0;
 let userInitiatedStopPending = false;
 
 /**
@@ -510,6 +511,21 @@ export function _languageClientConnectionOptionsForTest(): Readonly<{ maxRestart
  */
 export function _watchdogFailureForTest(generation?: number): Promise<void> {
   return recoverFromObservedCrash('watchdog', generation);
+}
+
+/** @internal */
+export function _startWatchdogForTest(): void {
+  startWatchdog();
+}
+
+/** @internal */
+export function _stopWatchdogForTest(): void {
+  stopWatchdog();
+}
+
+/** @internal */
+export function _setOutputChannelForTest(channel: vscode.LogOutputChannel): void {
+  outputChannel = channel;
 }
 
 /**
@@ -3673,6 +3689,7 @@ async function reportCrashBudgetExhausted(): Promise<void> {
  */
 function startWatchdog(): void {
   stopWatchdog();
+  const epoch = watchdogEpoch;
   watchdogTimer = setInterval(async () => {
     if (languageClientLifecycle?.snapshot.state !== 'running') {
       return;
@@ -3693,6 +3710,9 @@ function startWatchdog(): void {
         }),
       ]);
     } catch {
+      if (epoch !== watchdogEpoch) {
+        return;
+      }
       outputChannel.warn('[watchdog] Server unresponsive — triggering restart');
       // Watchdog observations route through the same arbiter (#7845): a
       // hung generation is a failure episode keyed by generation + process
@@ -3711,6 +3731,7 @@ function startWatchdog(): void {
 
 /** Stop the watchdog timer. */
 function stopWatchdog(): void {
+  watchdogEpoch += 1;
   if (watchdogTimer) {
     clearInterval(watchdogTimer);
     watchdogTimer = undefined;
