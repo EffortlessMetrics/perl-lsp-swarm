@@ -116,6 +116,7 @@
       "positive_source": null,
       "negative_source": null,
       "expected": {
+        "character_set_mode": "conflict",
         "diagnostic_codes": ["conflicting_character_set_modifiers"]
       },
       "completeness": "proven",
@@ -132,6 +133,7 @@
       "positive_source": null,
       "negative_source": null,
       "expected": {
+        "character_set_mode": "conflict",
         "diagnostic_codes": ["conflicting_character_set_modifiers"]
       },
       "completeness": "proven",
