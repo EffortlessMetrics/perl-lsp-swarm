@@ -4,6 +4,6 @@ kind: Changed
 body: "DAP responds promptly to unsupported cancellation requests while debugger inspection is waiting, bounds queued work, and shuts down cleanly after output failure."
 time: 2026-09-14T00:00:00Z
 custom:
-  PR: "14527"
+  PR: "15614"
   Slug: dap-stdio-bounded-intake
   Breaking: "no"
