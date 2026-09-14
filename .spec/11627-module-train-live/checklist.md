@@ -100,9 +100,13 @@ git diff --check -> clean
    selected field disappears**. That last part carries the real risk — because
    the adapter fails closed, a schema rename would silently switch the feature
    off rather than break it, which reads exactly like normal operation.
-   (A tracking issue was attempted during #14242 but GitHub secondary rate
-   limits blocked creation; this register is the durable record until one is
-   filed.)
+   Tracked by **#15477**.
+   Partially narrowed during #14242 review: an independent reviewer reports
+   checking each selected field against GitHub's published GraphQL reference
+   and finding all of them present with the expected types. That is a second
+   party's reading, not a verification performed here, so it narrows the gap
+   rather than closing it — step 1 above is corroborated, while live
+   execution, the recorded fixture, and the drift check remain owed.
 
 ## Schema evolution
 
