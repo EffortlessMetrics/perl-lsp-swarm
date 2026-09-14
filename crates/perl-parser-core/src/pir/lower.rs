@@ -1648,6 +1648,103 @@ impl BodyLowerer {
                 // shell must not be mistaken for a known match set.
                 *self.unsupported.entry("Glob").or_insert(0) += 1;
             }
+
+            HirExpr::Try { body: try_body, catch_handlers, finally_block } => {
+                // #15567. The statements inside a try/catch/finally region are
+                // ordinary, statically knowable code: before this arm existed
+                // the whole construct reached PIR-A as `HirExpr::Call` over
+                // three childless `Opaque` blocks, so every read, write, and
+                // call inside the regions was dropped and the construct was
+                // counted as an unsupported `Call`.
+                //
+                // Lower each region so its effects are recorded. What PIR v0
+                // still does not model is the *exceptional* control flow: which
+                // operations can throw, which handler a throw selects, and the
+                // guarantee that `finally` runs on every exit path. That gap is
+                // recorded explicitly below rather than implied by silence, and
+                // it is why no handler is reached by `Fallthrough`.
+                // The node control reaches the try region from, captured before
+                // the body is lowered. It is the fallback edge source for a try
+                // body that models no node of its own.
+                let entry_predecessor = self.last_in_scope.get(&None).copied();
+
+                let try_first = self.next_id;
+                self.lower_block(body, *try_body, file);
+
+                // Edge source (v0 approximation, same shape as the `Branch`
+                // condition link above): a throw may originate anywhere in the
+                // try body, so PIR v0 cannot name one true source node. The
+                // region's last modeled node stands in for the throw point.
+                //
+                // A try body that models no node at all — `try { }`, or a body
+                // whose only content is opaque such as `try { 1 }` — still has
+                // a reachable region after it, so it falls back to the node
+                // control entered the try from. Without that fallback the
+                // handler and finally regions would be left with no incoming
+                // edge whatsoever, which reads as unreachable rather than as
+                // conditionally reached, and `PirEdgeKind::Unknown` exists
+                // precisely so such an edge is not dropped silently.
+                let try_exit = (self.next_id > try_first)
+                    .then(|| PirId::from_index(self.next_id - 1))
+                    .or(entry_predecessor);
+
+                for handler in catch_handlers {
+                    // A handler is entered only by an exception, never as an
+                    // unconditional successor of the try body or of a previous
+                    // handler. Severing `last_in_scope` first — the same
+                    // mechanism `lower_branch_arm` uses for mutually exclusive
+                    // arms — stops a spurious `Fallthrough` predecessor, and
+                    // the region is reached by the conservative `Unknown` edge
+                    // that must not be dropped silently.
+                    self.last_in_scope.remove(&None);
+                    let handler_first = self.next_id;
+                    if let Some(binding) = handler.binding {
+                        self.lower_expr(body, binding, file);
+                    }
+                    self.lower_block(body, handler.block, file);
+                    if let Some(from) = try_exit
+                        && self.next_id > handler_first
+                    {
+                        self.edges.push(PirEdge {
+                            from,
+                            to: Some(PirId::from_index(handler_first)),
+                            kind: PirEdgeKind::Unknown,
+                        });
+                    }
+                }
+
+                if let Some(finally_id) = finally_block {
+                    // `finally` runs on both the ordinary and the exceptional
+                    // exit path. PIR v0 can express only one of those, so it is
+                    // reached by `Unknown` too: claiming `Fallthrough` would
+                    // assert an ordinary-only successor that is wrong whenever
+                    // the try body throws.
+                    self.last_in_scope.remove(&None);
+                    let finally_first = self.next_id;
+                    self.lower_block(body, *finally_id, file);
+                    if let Some(from) = try_exit
+                        && self.next_id > finally_first
+                    {
+                        self.edges.push(PirEdge {
+                            from,
+                            to: Some(PirId::from_index(finally_first)),
+                            kind: PirEdgeKind::Unknown,
+                        });
+                    }
+                }
+
+                // The regions are modeled; the exceptional edges between them
+                // are not. Record that residue under its own key so a consumer
+                // cannot read a lowered try region as a complete exception CFG,
+                // and so this construct stops being counted as a `Call`.
+                // A dedicated exceptional-edge taxonomy is #6661.
+                *self.unsupported.entry("TryExceptionalEdges").or_insert(0) += 1;
+
+                // A try region has no unconditional successor a following
+                // statement may inherit: control may leave the try body through
+                // a throw. Mirrors the `Branch` arm's conservative severing.
+                self.last_in_scope.remove(&None);
+            }
         }
     }
 
