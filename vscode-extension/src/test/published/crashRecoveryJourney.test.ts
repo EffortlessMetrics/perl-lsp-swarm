@@ -32,7 +32,7 @@ import {
  * - two supported Perl documents reach accepted readiness on the bundled
  *   candidate and one representative provider answers;
  * - the exact server process is terminated FROM THE HARNESS (external
- *   taskkill/SIGKILL, never the extension's user restart command), so the
+ *   direct SIGKILL, never the extension's user restart command), so the
  *   extension observes a genuine unexpected Running→Stopped transition;
  * - the dead generation's readiness is superseded (generation-scoped
  *   invalidation), exactly one bounded automatic recovery episode runs, and
