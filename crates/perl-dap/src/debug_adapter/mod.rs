@@ -916,6 +916,7 @@ impl DebugAdapter {
                 last_resume_mode: ResumeMode::Continue,
                 initial_stop_pending: false,
                 stopped_generation: 0,
+                pending_auto_continued_stop: false,
             });
         }
     }
@@ -950,6 +951,7 @@ impl DebugAdapter {
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
             stopped_generation: 0,
+            pending_auto_continued_stop: false,
         });
         Ok(())
     }
@@ -1057,6 +1059,7 @@ impl DebugAdapter {
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
             stopped_generation: 0,
+            pending_auto_continued_stop: false,
         });
     }
 
