@@ -90,6 +90,16 @@ const SCHEMA_VERSION: u32 = 1;
 /// Value the ledger's `policy` key must carry.
 const POLICY_NAME: &str = "tdd-support-surface";
 
+/// Marks a `--propose` skeleton field the author still has to write.
+///
+/// `validate_entry` refuses any authored field that still begins with it, so an
+/// unfilled skeleton cannot reach the committed ledger. The marker deliberately
+/// avoids the usual deferred-work annotation: that word reads as an ordinary
+/// code comment, and the repository's production-risk scanner flags every
+/// occurrence of it, which buries the one case that matters — a row nobody
+/// authored.
+const PROPOSE_PLACEHOLDER_PREFIX: &str = "FILL:";
+
 /// Dispositions a ledger row may carry.
 ///
 /// The set is closed on purpose: a row that cannot be expressed here is a row
@@ -1011,6 +1021,17 @@ fn validate_entry(entry: &LedgerEntry, shown: &str) -> Result<()> {
         if value.trim().is_empty() {
             bail!("{shown}: row `{id}` has empty required field `{field}`");
         }
+        // An unfilled `--propose` skeleton is worse than an empty field: it
+        // reads as authored judgment and satisfies every other check, so a row
+        // asserting a disposition nobody chose can land unnoticed. This is not
+        // hypothetical — 31 variant-payload rows reached review that way.
+        if value.trim_start().starts_with(PROPOSE_PLACEHOLDER_PREFIX) {
+            bail!(
+                "{shown}: row `{id}` still carries the `--propose` placeholder in `{field}`. \
+                 A skeleton is a prompt, not a disposition: replace it with the authored \
+                 judgment before the row is committed"
+            );
+        }
     }
     if !API_KINDS.contains(&entry.api_kind.as_str()) {
         bail!(
@@ -1765,7 +1786,7 @@ pub(crate) fn render_projection(ledger: &Ledger, edges: &[ConsumerEdge]) -> Stri
 ///
 /// A member (`method`, `field`, `variant`) whose owning type already has a row
 /// inherits that row's classification and derived consumers, so the proposal
-/// is complete rather than a `TODO` skeleton: a member cannot be reached by a
+/// is complete rather than an unfilled skeleton: a member cannot be reached by a
 /// consumer the type is not reached by, and its fate follows the type's.
 fn propose(discovered: &[Discovered], ledger: &Ledger, edges: &[ConsumerEdge]) -> Result<()> {
     let governed: BTreeSet<&str> = ledger.entry.iter().map(|e| e.id.as_str()).collect();
@@ -1820,14 +1841,18 @@ fn propose(discovered: &[Discovered], ledger: &Ledger, edges: &[ConsumerEdge]) -
                 println!("proof_command = {}", toml_string(&owner_row.proof_command));
             }
             None => {
-                println!("behavior = \"TODO: what this item does today\"");
+                println!("behavior = \"{PROPOSE_PLACEHOLDER_PREFIX} what this item does today\"");
                 println!("consumers = [{consumers_toml}]");
                 println!("consumer_class = \"not_proven\"");
                 println!("compatibility = \"published\"");
                 println!("disposition = \"legacy_internal_until_issue\"");
-                println!("replacement_owner = \"TODO: replacement API or owning package\"");
+                println!(
+                    "replacement_owner = \"{PROPOSE_PLACEHOLDER_PREFIX} replacement API or owning package\""
+                );
                 println!("owner_issue = 8418");
-                println!("exit_condition = \"TODO: when this row is removed or revisited\"");
+                println!(
+                    "exit_condition = \"{PROPOSE_PLACEHOLDER_PREFIX} when this row is removed or revisited\""
+                );
                 println!("proof_command = \"cargo test -p {SUBJECT_CRATE} --locked\"");
             }
         }

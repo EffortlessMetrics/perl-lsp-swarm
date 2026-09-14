@@ -355,6 +355,30 @@ fn a_row_without_an_exit_condition_is_rejected() -> Result<()> {
 }
 
 #[test]
+fn an_unfilled_propose_skeleton_is_rejected() -> Result<()> {
+    // The failure this pins actually happened: 31 variant-payload rows reached
+    // review carrying `--propose` placeholders in `behavior`,
+    // `replacement_owner` and `exit_condition`, plus the skeleton's default
+    // disposition. Every other check passed, because a placeholder is a
+    // non-empty string from a well-formed row.
+    for field in ["behavior", "replacement_owner", "exit_condition"] {
+        let mut bad = entry("struct:perl_tdd_support::A", "struct", "perl_tdd_support::A");
+        let placeholder = "FILL: what this item does today".to_string();
+        match field {
+            "behavior" => bad.behavior = placeholder,
+            "replacement_owner" => bad.replacement_owner = placeholder,
+            _ => bad.exit_condition = placeholder,
+        }
+        expect_err(
+            validate_ledger(&ledger(vec![bad]), Path::new("ledger.toml")),
+            "placeholder",
+            "an unauthored skeleton presented as a settled disposition",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
 fn a_wildcard_row_is_rejected() -> Result<()> {
     let mut bad = entry("struct:perl_tdd_support::*", "struct", "perl_tdd_support::*");
     bad.id = "struct:perl_tdd_support::*".to_string();
