@@ -634,6 +634,38 @@ fn adversarial_corpus_is_total_and_deterministic() -> TestResult {
         assert_eq!(first, second, "repeated parses of {text:?} must be identical");
         assert_eq!(first.is_ok(), admits, "{text:?} must classify deterministically");
     }
+
+    // Escape spelling must not move a budget. A scalar is charged the UTF-8
+    // length of what it decodes to, so the escaped and direct spellings of the
+    // same character admit and refuse identically under every budget. The rows
+    // above only ever used direct spellings, which left the new escape path's
+    // budgeting unpinned.
+    let spelled: [(StructuredMutationLimits, &str, &str); 4] = [
+        (scalar_two, r#"json:"é""#, r#"json:"\u00e9""#),
+        (scalar_two, r#"json:"€""#, r#"json:"\u20ac""#),
+        (aggregate_two, r#"json:"€""#, r#"json:"\u20ac""#),
+        (aggregate_three, r#"json:"€""#, r#"json:"\u20ac""#),
+    ];
+    for (limits, direct, escaped) in spelled {
+        assert_eq!(
+            parse_structured_mutation(direct, &limits),
+            parse_structured_mutation(escaped, &limits),
+            "{escaped:?} must charge the same budget as {direct:?}"
+        );
+    }
+
+    // A surrogate pair is charged the four bytes it decodes to, not the twelve
+    // bytes of its escape text and not the two of a BMP scalar.
+    let pair = r#"json:"\ud83d\ude00""#;
+    for (max_scalar_bytes, admits) in [(3usize, false), (4usize, true)] {
+        let limits =
+            StructuredMutationLimits { max_scalar_bytes, ..StructuredMutationLimits::default() };
+        assert_eq!(
+            parse_structured_mutation(pair, &limits).is_ok(),
+            admits,
+            "a four-byte decoded scalar under a {max_scalar_bytes}-byte scalar budget"
+        );
+    }
     Ok(())
 }
 
