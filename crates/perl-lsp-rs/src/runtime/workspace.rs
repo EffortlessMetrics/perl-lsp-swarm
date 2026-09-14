@@ -45,7 +45,7 @@ use perl_semantic_facts::{
 use perl_workspace::folder::extract_workspace_folder_change;
 #[cfg(feature = "workspace")]
 use perl_workspace::ignore::is_skipped_dir_name;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 #[cfg(feature = "workspace")]
 use std::io::Read;
 
@@ -55,6 +55,7 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
 }
 #[cfg(feature = "workspace")]
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 #[cfg(feature = "workspace")]
@@ -325,6 +326,9 @@ struct IndexingResources {
     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
     indexing_commit_gate:
         Arc<std::sync::Mutex<Option<super::readiness::WorkspaceIndexingStartGate>>>,
+    #[cfg(test)]
+    indexing_scan_observation:
+        Arc<Mutex<Option<super::scan_gate_observation::ScanObservationRegistration>>>,
     invocation_count: Arc<std::sync::atomic::AtomicUsize>,
     outbound: outbound::OutboundSender,
     work_done_progress: bool,
@@ -537,7 +541,7 @@ impl LspServer {
         };
         let mut folders = self.workspace_folders.lock();
         let init_options_perl = self.initialization_options_perl_settings.lock();
-        configuration_response::apply_workspace_configuration_results(
+        let metadata_roots = configuration_response::apply_workspace_configuration_results(
             &mut folders,
             &pending.folder_uris,
             pending.includes_global_item,
@@ -545,6 +549,9 @@ impl LspServer {
             i64::from(id.as_i32()),
             init_options_perl.as_ref(),
         );
+        drop(init_options_perl);
+        drop(folders);
+        self.refresh_project_metadata_facts(&metadata_roots);
     }
 
     /// Handle workspace/symbol request (v2 implementation with lifecycle-aware dispatch)
@@ -929,7 +936,7 @@ impl LspServer {
             (false, true) => "partial_live_generated_labeled_pilot",
             (false, false) => "shadowed",
         };
-        let compiler_receipt = if no_live_behavior_change {
+        let source_backed_receipt = if no_live_behavior_change {
             Value::Null
         } else {
             let (source, provenance, confidence) =
@@ -965,13 +972,13 @@ impl LspServer {
             "live_provider_result": live_provider_result,
             "live_provider_count": live_provider_count,
             "shadow_state": shadow_state,
-            "compiler_receipt": compiler_receipt,
+            "source_backed_receipt": source_backed_receipt,
             "gated_expansion_receipt": gated_expansion_receipt,
             "no_live_behavior_change": no_live_behavior_change,
             "notes": [
                 format!(
                     "workspace-symbol runtime quality receipt: query={:?}; live_provider_count={}; \
-                     source_backed_compiler_symbols={}; \
+                     source_backed_candidates={}; \
                      labeled_generated_pilot_symbols={}; \
                      generated_dynamic_noise_candidates={}; \
                      fresh ready-state workspace index symbols and labeled source-backed generated/framework pilot symbols are live for non-empty queries; \
@@ -1659,6 +1666,14 @@ impl LspServer {
                 // settings once the client responds, but we update now so the window between
                 // didChangeConfiguration arrival and the pull response doesn't leave folders
                 // with stale settings.
+                let metadata_roots: BTreeSet<PathBuf> = self
+                    .workspace_folders
+                    .lock()
+                    .iter()
+                    .filter_map(|folder| {
+                        folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri))
+                    })
+                    .collect();
                 {
                     let mut folders = self.workspace_folders.lock();
                     let init_options_perl = self.initialization_options_perl_settings.lock();
@@ -1712,10 +1727,14 @@ impl LspServer {
                                 "rejected client includePaths entry"
                             );
                         }
-                        folder.effective_workspace_config = effective_config;
-                        folder.refresh_workspace_metadata();
+                        folder.replace_effective_workspace_config(effective_config);
                     }
                 }
+
+                // Configuration settings and metadata facts have separate
+                // owners. Refresh after releasing the folder lock so the
+                // current open-buffer snapshot can be captured safely (#15088).
+                self.refresh_project_metadata_facts(&metadata_roots);
 
                 // A configuration notification starts a new user-visible
                 // configuration session; do not let an old auth failure
@@ -1770,6 +1789,13 @@ impl LspServer {
             return Ok(None);
         };
 
+        // Project-metadata roots affected by events this call handles
+        // synchronously (#13640). Debounced CREATED/CHANGED events are
+        // collected instead by `handle_watched_file_batch`, so each event
+        // contributes to exactly one coalesced refresh.
+        let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
+            std::collections::BTreeSet::new();
+
         for change in params.changes {
             let uri = change.uri.to_string();
             let change_type = change.typ;
@@ -1778,6 +1804,10 @@ impl LspServer {
 
             match change_type {
                 FileChangeType::DELETED => {
+                    // A deleted metadata file must downgrade its facts now, on
+                    // the same immediate path as index cleanup (#13640).
+                    metadata_roots.extend(self.project_metadata_roots_for_uri(&uri));
+
                     // DELETED must be processed immediately — the file is gone and
                     // stale index data should not linger.
                     #[cfg(feature = "workspace")]
@@ -1805,11 +1835,15 @@ impl LspServer {
                     // reported Overflowed/Unavailable/ShuttingDown (#8064).
                     // Either way, fall through to immediate synchronous
                     // processing so degraded modes never lose events.
+                    metadata_roots.extend(self.project_metadata_roots_for_uri(&uri));
                     self.process_file_watcher_uri_immediate(&uri);
                 }
                 _ => {}
             }
         }
+
+        // One refresh per affected folder for the whole notification (#13640).
+        self.refresh_project_metadata_facts(&metadata_roots);
 
         // This is a notification, no response needed
         Ok(None)
@@ -1826,6 +1860,11 @@ impl LspServer {
         for uri in &uris {
             self.process_file_watcher_uri_immediate(uri);
         }
+
+        // The debouncer already coalesced this burst; refresh each affected
+        // folder once for the whole batch (#13640).
+        let metadata_roots = self.project_metadata_roots_for_batch(uris.iter().map(String::as_str));
+        self.refresh_project_metadata_facts(&metadata_roots);
     }
 
     /// Evict every indexed URI whose filesystem path is a descendant of
@@ -2059,10 +2098,19 @@ impl LspServer {
         if let Some(params) = params
             && let Some(files) = params["files"].as_array()
         {
+            // Client file-operation authority is a second delivery path for
+            // metadata changes (#13640). A client may send these without a
+            // matching watched-file event, so route them too; a client that
+            // sends both simply refreshes twice, which is idempotent.
+            let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
+                std::collections::BTreeSet::new();
+
             for file in files {
                 let Some(uri) = file["uri"].as_str() else {
                     continue;
                 };
+
+                metadata_roots.extend(self.project_metadata_roots_for_uri(uri));
 
                 tracing::debug!(uri, "File deleted");
 
@@ -2076,6 +2124,8 @@ impl LspServer {
                     coordinator.notify_parse_complete(uri);
                 }
             }
+
+            self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file deletions
             if let Err(e) = self.refresh_controller.refresh_all(self) {
@@ -2206,10 +2256,17 @@ impl LspServer {
         if let Some(params) = params
             && let Some(files) = params["files"].as_array()
         {
+            // Second delivery path for metadata changes (#13640); see
+            // `handle_did_delete_files`.
+            let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
+                std::collections::BTreeSet::new();
+
             for file in files {
                 let Some(uri) = file["uri"].as_str() else {
                     continue;
                 };
+
+                metadata_roots.extend(self.project_metadata_roots_for_uri(uri));
 
                 tracing::debug!("File created: {}", uri);
 
@@ -2238,6 +2295,8 @@ impl LspServer {
                 self.process_file_watcher_uri_immediate(uri);
             }
 
+            self.refresh_project_metadata_facts(&metadata_roots);
+
             // Trigger client refresh after file creations
             if let Err(e) = self.refresh_controller.refresh_all(self) {
                 tracing::warn!("Failed to refresh client after file creations: {}", e);
@@ -2256,6 +2315,11 @@ impl LspServer {
         if let Some(params) = params
             && let Some(files) = params["files"].as_array()
         {
+            // Second delivery path for metadata changes (#13640); see
+            // `handle_did_delete_files`.
+            let mut metadata_roots: std::collections::BTreeSet<std::path::PathBuf> =
+                std::collections::BTreeSet::new();
+
             for file in files {
                 let Some(old_uri) = file["oldUri"].as_str() else {
                     continue;
@@ -2270,6 +2334,12 @@ impl LspServer {
                 // the client-supplied URIs (#3665).
                 let old_uri = self.normalize_uri_key(old_uri);
                 let new_uri = self.normalize_uri_key(new_uri);
+
+                // Both ends matter (#13640): renaming `cpanfile` away retires
+                // its declarations, and renaming a file onto `cpanfile`
+                // establishes them.
+                metadata_roots.extend(self.project_metadata_roots_for_uri(&old_uri));
+                metadata_roots.extend(self.project_metadata_roots_for_uri(&new_uri));
 
                 tracing::debug!("File renamed: {} -> {}", old_uri, new_uri);
 
@@ -2368,6 +2438,8 @@ impl LspServer {
                 // keeps its URI and instance until the client's own document
                 // lifecycle (didOpen/didClose) resolves the rename handoff.
             }
+
+            self.refresh_project_metadata_facts(&metadata_roots);
 
             // Trigger client refresh after file renames
             if let Err(e) = self.refresh_controller.refresh_all(self) {
@@ -2498,6 +2570,8 @@ impl LspServer {
             indexing_transition_lock: Arc::clone(&self.indexing_transition_lock),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             indexing_commit_gate: Arc::clone(&self.indexing_commit_gate),
+            #[cfg(test)]
+            indexing_scan_observation: Arc::clone(&self.indexing_scan_observation),
             invocation_count: Arc::clone(&self.workspace_indexing_invocation_count),
             outbound: self.outbound.clone(),
             work_done_progress: self.client_capabilities.lock().work_done_progress_support,
@@ -2515,6 +2589,19 @@ impl LspServer {
         });
     }
 
+    #[cfg(all(test, feature = "workspace"))]
+    fn test_observe_indexing_scan(
+        &self,
+    ) -> Result<super::scan_gate_observation::ScanGateObservation, &'static str> {
+        let mut slot = self.indexing_scan_observation.lock();
+        if slot.is_some() {
+            return Err("a scan observation is already waiting for admission on this server");
+        }
+        let (registration, observation) = super::scan_gate_observation::observe_scan();
+        *slot = Some(registration);
+        Ok(observation)
+    }
+
     #[cfg(feature = "workspace")]
     fn start_workspace_indexing_with_resources(resources: IndexingResources) {
         resources.invocation_count.fetch_add(1, Ordering::SeqCst);
@@ -2527,6 +2614,15 @@ impl LspServer {
             tracing::debug!("Workspace indexing already in progress, queued a follow-up scan");
             return;
         }
+
+        // Take this registration only after admission. A queued follow-up or a
+        // different server must not complete the current scan's observation.
+        #[cfg(test)]
+        let scan_observation = resources
+            .indexing_scan_observation
+            .lock()
+            .take()
+            .map(super::scan_gate_observation::ScanObservationRegistration::admitted);
 
         let restart_resources = resources.clone();
         let indexing_guard = IndexingGuard {
@@ -2596,12 +2692,20 @@ impl LspServer {
         let readiness_observer_id = resources.readiness_observer_id;
 
         std::thread::spawn(move || {
+            // Declare first so exit is observed after the indexing/cancellation
+            // guards have completed their cleanup, including early returns.
+            #[cfg(test)]
+            let mut scan_observation = scan_observation;
             let _guard = indexing_guard; // moved into closure, drops when closure exits
             let _cancellation_guard = work_done_progress.then(|| WorkspaceIndexCancellationGuard {
                 progress_tokens,
                 progress_token_to_request,
                 request_id: progress_request_id.clone(),
             });
+            #[cfg(test)]
+            if let Some(observation) = &scan_observation {
+                observation.worker_started();
+            }
             let budget_start = Instant::now();
             {
                 let mut receipt = readiness_receipt.lock();
@@ -2864,6 +2968,10 @@ impl LspServer {
                 let indexed_uri = url.to_string();
                 let index_result = {
                     let _transition = indexing_transition_lock.lock();
+                    #[cfg(test)]
+                    if let Some(observation) = &mut scan_observation {
+                        observation.first_commit_gate();
+                    }
                     #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
                     crate::runtime::readiness::notify_indexing_commit_gate(&indexing_commit_gate);
                     let current_folders = current_workspace_folders.lock();
@@ -5485,6 +5593,78 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn scan_gate_observation_reports_real_empty_scan_exit_with_sender_retained()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let server = gated_scan_server(&dir)?;
+        let (started, receiver) = std::sync::mpsc::channel();
+        let (_release, release_receiver) = std::sync::mpsc::channel();
+        server.test_gate_indexing_commit(started, release_receiver);
+        let mut observation = server.test_observe_indexing_scan()?;
+        server.start_workspace_indexing();
+        observation.wait_for_exit(std::time::Duration::from_secs(5));
+        let snapshot = observation.snapshot_at(std::time::Instant::now());
+        if snapshot.state() != "exited_before_first_commit_gate" {
+            return Err(
+                format!("empty real scan did not report its terminal state: {snapshot:?}").into()
+            );
+        }
+        if receiver.try_recv() != Err(std::sync::mpsc::TryRecvError::Empty) {
+            return Err(
+                "empty scan control did not retain its unconsumed commit-gate sender".into()
+            );
+        }
+        if server.indexing_in_progress.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("scan exit was observed before the indexing guard released its slot".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "workspace")]
+    #[test]
+    fn scan_gate_observation_is_consumed_only_when_a_queued_scan_is_admitted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let server = gated_scan_server(&dir)?;
+        let mut first = server.test_observe_indexing_scan()?;
+        let (started, receiver) = std::sync::mpsc::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        server.test_gate_workspace_indexing_start(started, release_receiver);
+        server.start_workspace_indexing();
+        if let Err(error) = receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+            let _ = release.send(());
+            first.wait_for_exit(std::time::Duration::from_secs(1));
+            return Err(error.into());
+        }
+
+        // The first scan owns the slot while parked at startup. A request to
+        // rescan must leave the second registration for the admitted follow-up.
+        let mut second = match server.test_observe_indexing_scan() {
+            Ok(observation) => observation,
+            Err(error) => {
+                let _ = release.send(());
+                first.wait_for_exit(std::time::Duration::from_secs(1));
+                return Err(error.into());
+            }
+        };
+        server.start_workspace_indexing();
+        let queued_snapshot = second.snapshot_at(std::time::Instant::now());
+        let _ = release.send(());
+        first.wait_for_exit(std::time::Duration::from_secs(5));
+        second.wait_for_exit(std::time::Duration::from_secs(5));
+        if queued_snapshot.state() != "no_scan_admission_observed"
+            || first.snapshot_at(std::time::Instant::now()).state()
+                != "exited_before_first_commit_gate"
+            || second.snapshot_at(std::time::Instant::now()).state()
+                != "exited_before_first_commit_gate"
+        {
+            return Err("queued scan observation was consumed outside its admitted owner".into());
+        }
+        Ok(())
+    }
+
     /// Shared harness for the transition-lock insertion-wait proof: pause the
     /// real scan at its commit seam, then run `didOpen` on a thread and prove
     /// the handler cannot complete (and therefore cannot insert the document)
@@ -5498,10 +5678,23 @@ mod tests {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         server.test_gate_indexing_commit(started_tx, release_rx);
+        let mut observation = server.test_observe_indexing_scan()?;
         server.start_workspace_indexing();
-        started_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|_| "scan never reached its commit gate")?;
+        let wait_started = std::time::Instant::now();
+        let wait_budget = std::time::Duration::from_secs(5);
+        let deadline =
+            wait_started.checked_add(wait_budget).ok_or("commit-gate deadline overflow")?;
+        if let Err(error) = started_rx.recv_timeout(wait_budget) {
+            return Err(observation
+                .failed_gate_wait(
+                    error,
+                    deadline,
+                    wait_started.elapsed(),
+                    &release_tx,
+                    std::time::Duration::from_secs(1),
+                )
+                .into());
+        }
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let did_open_server = Arc::clone(&server);

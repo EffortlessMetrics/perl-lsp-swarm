@@ -7,8 +7,13 @@
 //! `perl-lsp-rs-core::transport` in Wave G3 (#4535).
 
 pub mod framing;
+pub mod incoming;
 
 pub use framing::{
-    ContentLengthFramer, ContentLengthMessageReader, FramingError, frame, log_response,
-    read_message, write_message, write_notification,
+    ContentLengthFramer, FramingError, MAX_FRAME_SIZE, frame, log_response, write_message,
+    write_notification,
+};
+pub use incoming::{
+    ContentLengthMessageReader, IncomingMessageError, IncomingMessageStage, decode_incoming_body,
+    read_message, read_message_outcome,
 };

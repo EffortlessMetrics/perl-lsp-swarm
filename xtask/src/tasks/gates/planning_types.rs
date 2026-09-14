@@ -310,15 +310,90 @@ mod route_plan_seam_tests {
     use crate::tasks::gates::route_profile::{RequestedProfile, expand};
     use crate::tasks::gates::{GlobalSettings, TierDefinition};
     use chrono::NaiveDate;
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
+    use serde::Serialize;
+    use serde::de::DeserializeOwned;
     use std::collections::HashMap;
     use xtask::ci_route_plan::{
-        Applicability, CiRoutePlanV1, CompileRoutePlanInput, PlannedOutcome, RouteSubjectRef,
+        Applicability, CiRoutePlanV1, CompileRoutePlanInput, PlannedOutcome, RouteDispositionInput,
+        RouteSubjectRef,
     };
 
-    pub(super) const TODAY: NaiveDate = NaiveDate::from_ymd_opt(2026, 8, 24).unwrap();
     pub(super) const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     pub(super) const DIGEST: &str =
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[track_caller]
+    fn fixture_ymd(year: i32, month: u32, day: u32) -> NaiveDate {
+        must_some_with(
+            NaiveDate::from_ymd_opt(year, month, day),
+            "fixture today is a valid calendar date",
+        )
+    }
+
+    #[track_caller]
+    pub(super) fn fixture_today() -> NaiveDate {
+        fixture_ymd(2026, 8, 24)
+    }
+
+    #[track_caller]
+    pub(super) fn compile_plan(input: CompileRoutePlanInput, context: &str) -> CiRoutePlanV1 {
+        must_with(CiRoutePlanV1::compile(input), context)
+    }
+
+    #[track_caller]
+    pub(super) fn project_authority(
+        authority: &DispositionAuthority,
+        context: &str,
+    ) -> (Vec<RouteDispositionInput>, String) {
+        must_with(route_disposition_inputs(authority), context)
+    }
+
+    #[track_caller]
+    fn first_selector(inputs: Vec<GateSelectorInput>) -> GateSelectorInput {
+        must_some_with(inputs.into_iter().next(), "one selector input")
+    }
+
+    #[track_caller]
+    fn required_quarantined(outcome: &PlannedOutcome) -> (&str, Option<&str>, &str) {
+        match outcome {
+            PlannedOutcome::Quarantined { owner, owner_issue, review_after, .. } => {
+                (owner, owner_issue.as_deref(), review_after)
+            }
+            other => must_with(
+                Err::<(&str, Option<&str>, &str), _>(format!("{other:?}")),
+                "expected quarantined outcome",
+            ),
+        }
+    }
+
+    #[track_caller]
+    fn required_error_code<'a>(outcome: &'a PlannedOutcome, context: &str) -> &'a str {
+        match outcome {
+            PlannedOutcome::Error { code, .. } => code,
+            other => must_with(Err::<&str, _>(format!("{other:?}")), context),
+        }
+    }
+
+    #[track_caller]
+    pub(super) fn canonical_bytes(plan: &CiRoutePlanV1, context: &str) -> Vec<u8> {
+        must_with(plan.canonical_json(), context)
+    }
+
+    #[track_caller]
+    pub(super) fn deserialize_json<T: DeserializeOwned>(bytes: &[u8], context: &str) -> T {
+        must_with(serde_json::from_slice(bytes), context)
+    }
+
+    #[track_caller]
+    pub(super) fn serialize_json<T: Serialize>(value: &T, context: &str) -> Vec<u8> {
+        must_with(serde_json::to_vec(value), context)
+    }
+
+    #[track_caller]
+    pub(super) fn validate_plan(plan: &CiRoutePlanV1, context: &str) {
+        must_with(plan.validate(), context);
+    }
 
     pub(super) fn gate(name: &str, tier: &str, required: bool, quarantine: bool) -> GateDefinition {
         GateDefinition {
@@ -391,8 +466,7 @@ mod route_plan_seam_tests {
         authority: &DispositionAuthority,
         selectors: Vec<GateSelectorInput>,
     ) -> CompileRoutePlanInput {
-        let (dispositions, disposition_digest) =
-            route_disposition_inputs(authority).unwrap_or_else(|error| panic!("{error}"));
+        let (dispositions, disposition_digest) = project_authority(authority, "authority projects");
         CompileRoutePlanInput {
             subject: RouteSubjectRef {
                 kind: "pull_request".to_string(),
@@ -456,7 +530,7 @@ mod route_plan_seam_tests {
         };
 
         let expansion = expand(&policy, RequestedProfile::PrFast, None);
-        let authority = resolve_from(&policy, Some(&ledger), TODAY);
+        let authority = resolve_from(&policy, Some(&ledger), fixture_today());
         let input = compile_input(
             &policy,
             &expansion,
@@ -467,19 +541,15 @@ mod route_plan_seam_tests {
                 Some(SelectorProof::NotApplicableToSubject),
             )],
         );
-        let plan = CiRoutePlanV1::compile(input).expect("compile");
+        let plan = compile_plan(input, "compile");
         assert_eq!(plan.summary.quarantined, 1);
         assert_eq!(plan.summary.scoped_noop, 0);
         let row = &plan.rows[0];
         assert_eq!(row.applicability, Applicability::NotApplicable);
-        match &row.outcome {
-            PlannedOutcome::Quarantined { owner, owner_issue, review_after, .. } => {
-                assert_eq!(owner, "ci-owner");
-                assert_eq!(owner_issue.as_deref(), Some("10176"));
-                assert_eq!(review_after, "2030-01-01");
-            }
-            other => panic!("expected quarantined outcome, got {other:?}"),
-        }
+        let (owner, owner_issue, review_after) = required_quarantined(&row.outcome);
+        assert_eq!(owner, "ci-owner");
+        assert_eq!(owner_issue, Some("10176"));
+        assert_eq!(review_after, "2030-01-01");
     }
 
     /// Wake falsifier from #9148: an invalid lifecycle (ownerless quarantine
@@ -496,7 +566,7 @@ mod route_plan_seam_tests {
         };
 
         let expansion = expand(&policy, RequestedProfile::PrFast, None);
-        let authority = resolve_from(&policy, Some(&ledger), TODAY);
+        let authority = resolve_from(&policy, Some(&ledger), fixture_today());
         assert_eq!(
             authority.get("sec_gate").map(|row| row.resolution),
             Some(DispositionResolution::Invalid)
@@ -512,11 +582,11 @@ mod route_plan_seam_tests {
                 Some(SelectorProof::NotApplicableToSubject),
             )],
         );
-        let plan = CiRoutePlanV1::compile(input).expect("compile");
-        match &plan.rows[0].outcome {
-            PlannedOutcome::Error { code, .. } => assert_eq!(code, "disposition_invalid"),
-            other => panic!("expected error outcome, got {other:?}"),
-        }
+        let plan = compile_plan(input, "compile");
+        assert_eq!(
+            required_error_code(&plan.rows[0].outcome, "expected error outcome"),
+            "disposition_invalid"
+        );
         assert_eq!(plan.summary.scoped_noop, 0);
         assert_eq!(plan.summary.error, 1);
     }
@@ -537,7 +607,7 @@ mod route_plan_seam_tests {
         };
 
         let expansion = expand(&policy, RequestedProfile::PrFast, None);
-        let authority = resolve_from(&policy, Some(&ledger), TODAY);
+        let authority = resolve_from(&policy, Some(&ledger), fixture_today());
         assert_eq!(
             authority.get("sec_gate").map(|row| row.resolution),
             Some(DispositionResolution::Expired)
@@ -553,11 +623,11 @@ mod route_plan_seam_tests {
                 Some(SelectorProof::NotApplicableToSubject),
             )],
         );
-        let plan = CiRoutePlanV1::compile(input).expect("compile");
-        match &plan.rows[0].outcome {
-            PlannedOutcome::Error { code, .. } => assert_eq!(code, "disposition_expired"),
-            other => panic!("expected error outcome, got {other:?}"),
-        }
+        let plan = compile_plan(input, "compile");
+        assert_eq!(
+            required_error_code(&plan.rows[0].outcome, "expected error outcome"),
+            "disposition_expired"
+        );
     }
 
     /// The authority with unattributable quarantine sources must not be
@@ -579,8 +649,8 @@ mod route_plan_seam_tests {
                 failure_pattern: None,
             }],
         };
-        let authority = resolve_from(&policy, Some(&ledger), TODAY);
-        let error = route_disposition_inputs(&authority).expect_err("must refuse");
+        let authority = resolve_from(&policy, Some(&ledger), fixture_today());
+        let error = must_err_with(route_disposition_inputs(&authority), "must refuse");
         assert!(error.contains("unattributable"));
     }
 
@@ -594,25 +664,29 @@ mod route_plan_seam_tests {
         ]);
         let pr_fast = expand(&policy, RequestedProfile::PrFast, None);
         let merge_gate = expand(&policy, RequestedProfile::MergeGate, None);
-        let authority = resolve_from(&policy, None, TODAY);
+        let authority = resolve_from(&policy, None, fixture_today());
 
-        let fmt_only = CiRoutePlanV1::compile(compile_input(
-            &policy,
-            &pr_fast,
-            &authority,
-            vec![selected("fmt_gate", GatePlanningRole::AlwaysOn, "always on")],
-        ))
-        .expect("pr_fast plan");
-        let both = CiRoutePlanV1::compile(compile_input(
-            &policy,
-            &merge_gate,
-            &authority,
-            vec![
-                selected("fmt_gate", GatePlanningRole::AlwaysOn, "always on"),
-                selected("static_gate", GatePlanningRole::Static, "tier static"),
-            ],
-        ))
-        .expect("merge_gate plan");
+        let fmt_only = compile_plan(
+            compile_input(
+                &policy,
+                &pr_fast,
+                &authority,
+                vec![selected("fmt_gate", GatePlanningRole::AlwaysOn, "always on")],
+            ),
+            "pr_fast plan",
+        );
+        let both = compile_plan(
+            compile_input(
+                &policy,
+                &merge_gate,
+                &authority,
+                vec![
+                    selected("fmt_gate", GatePlanningRole::AlwaysOn, "always on"),
+                    selected("static_gate", GatePlanningRole::Static, "tier static"),
+                ],
+            ),
+            "merge_gate plan",
+        );
 
         let role_of = |plan: &CiRoutePlanV1, id: &str| {
             plan.rows.iter().find(|row| row.gate_id == id).map(|row| row.policy_role)
@@ -719,7 +793,7 @@ mod route_plan_seam_tests {
     fn fallback_fired_selection_never_becomes_a_proof_backed_run() {
         let policy = policy(vec![gate("rust_fallback_gate", "pr_fast", true, false)]);
         let expansion = expand(&policy, RequestedProfile::PrFast, None);
-        let authority = resolve_from(&policy, None, TODAY);
+        let authority = resolve_from(&policy, None, fixture_today());
 
         // The adapter projects a fallback-fired RustFallback selection
         // with no positive proof.
@@ -739,19 +813,17 @@ mod route_plan_seam_tests {
             skipped: vec![],
             staged_tree_oid: None,
         };
-        let selector = route_selector_inputs(&plan).into_iter().next().expect("one selector input");
+        let selector = first_selector(route_selector_inputs(&plan));
         assert_eq!(selector.proof, None);
 
         let input = compile_input(&policy, &expansion, &authority, vec![selector]);
-        let compiled = CiRoutePlanV1::compile(input).expect("compile");
+        let compiled = compile_plan(input, "compile");
         assert_eq!(compiled.summary.run, 0);
         assert_eq!(compiled.summary.error, 1);
-        match &compiled.rows[0].outcome {
-            PlannedOutcome::Error { code, .. } => {
-                assert_eq!(code, "selector_evidence_missing");
-            }
-            other => panic!("expected typed error outcome, got {other:?}"),
-        }
+        assert_eq!(
+            required_error_code(&compiled.rows[0].outcome, "expected typed error outcome"),
+            "selector_evidence_missing"
+        );
 
         // Contrast: the same gate selected by the scope selector (no
         // fallback) is a proof-backed run.
@@ -761,9 +833,95 @@ mod route_plan_seam_tests {
             &authority,
             vec![selected("rust_fallback_gate", GatePlanningRole::RustFallback, "scope decided")],
         );
-        let compiled = CiRoutePlanV1::compile(selected_proof_input).expect("compile");
+        let compiled = compile_plan(selected_proof_input, "compile");
         assert_eq!(compiled.summary.run, 1);
         assert!(compiled.rows[0].applicability == Applicability::Applicable);
+    }
+
+    // -------------------------------------------------------------------
+    // Conversion falsifiers: helpers still fail with named context
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn planning_types_converted_must_wrappers_carry_track_caller() {
+        let src = include_str!("planning_types.rs");
+        let mut failures = Vec::new();
+        for helper in [
+            "fn fixture_ymd(",
+            "fn fixture_today(",
+            "fn compile_plan(",
+            "fn project_authority(",
+            "fn first_selector(",
+            "fn required_quarantined(",
+            "fn required_error_code<",
+            "fn canonical_bytes(",
+            "fn deserialize_json<",
+            "fn serialize_json<",
+            "fn validate_plan(",
+        ] {
+            let Some(idx) = src.find(helper) else {
+                failures.push(format!("missing wrapper {helper}"));
+                continue;
+            };
+            let preceding = src.get(..idx).unwrap_or("");
+            let last_attr_line = preceding
+                .lines()
+                .rev()
+                .find(|line| {
+                    let trimmed = line.trim();
+                    !trimmed.is_empty() && !trimmed.starts_with("pub(")
+                })
+                .unwrap_or("");
+            if last_attr_line.trim() != "#[track_caller]" {
+                failures.push(format!(
+                    "{helper} is not immediately preceded by #[track_caller] (found {last_attr_line:?})"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: fixture today is a valid calendar date:")]
+    fn planning_types_converted_option_assertion_still_fails_when_fixture_date_is_invalid() {
+        let _ = fixture_ymd(2026, 13, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "must: compile:")]
+    fn planning_types_converted_result_assertion_still_fails_when_compile_input_is_invalid() {
+        let policy = policy(vec![gate("fmt_gate", "pr_fast", true, false)]);
+        let expansion = expand(&policy, RequestedProfile::PrFast, None);
+        let authority = resolve_from(&policy, None, fixture_today());
+        let mut input = compile_input(
+            &policy,
+            &expansion,
+            &authority,
+            vec![selected("fmt_gate", GatePlanningRole::AlwaysOn, "always on")],
+        );
+        input.subject.head_sha = "not-a-sha".to_string();
+        let _ = compile_plan(input, "compile");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: must refuse:")]
+    fn planning_types_converted_err_assertion_still_fails_when_authority_projects() {
+        let policy = policy(vec![gate("fmt_gate", "pr_fast", true, false)]);
+        let authority = resolve_from(&policy, None, fixture_today());
+        let _ = must_err_with(route_disposition_inputs(&authority), "must refuse");
+    }
+
+    #[test]
+    #[should_panic(expected = "must: expected quarantined outcome:")]
+    fn planning_types_converted_outcome_assertion_still_fails_when_row_is_error() {
+        let outcome = PlannedOutcome::Error { code: "x".into(), message: "y".into() };
+        let _ = required_quarantined(&outcome);
+    }
+
+    #[test]
+    #[should_panic(expected = "must: bytes reparse:")]
+    fn planning_types_converted_json_assertion_still_fails_when_bytes_are_invalid() {
+        let _: CiRoutePlanV1 = deserialize_json(b"{not json}", "bytes reparse");
     }
 }
 
@@ -775,7 +933,10 @@ mod route_plan_seam_tests {
 /// `route_plan_seam_tests` above).
 #[cfg(test)]
 mod route_plan_canonical_seam_tests {
-    use super::route_plan_seam_tests::{DIGEST, SHA, TODAY, gate, policy};
+    use super::route_plan_seam_tests::{
+        DIGEST, SHA, canonical_bytes, compile_plan, deserialize_json, fixture_today, gate, policy,
+        project_authority, serialize_json, validate_plan,
+    };
     use super::*;
     use crate::tasks::gates::disposition::resolve_from;
     use crate::tasks::gates::route_profile::{RequestedProfile, expand};
@@ -791,9 +952,9 @@ mod route_plan_canonical_seam_tests {
             gate("scope_gate", "pr_fast", false, false),
         ]);
         let expansion = expand(&policy, RequestedProfile::PrFast, None);
-        let authority = resolve_from(&policy, None, TODAY);
-        let (dispositions, disposition_digest) = route_disposition_inputs(&authority)
-            .unwrap_or_else(|error| panic!("authority projects: {error}"));
+        let authority = resolve_from(&policy, None, fixture_today());
+        let (dispositions, disposition_digest) =
+            project_authority(&authority, "authority projects");
         CompileRoutePlanInput {
             subject: RouteSubjectRef {
                 kind: "pull_request".to_string(),
@@ -840,11 +1001,11 @@ mod route_plan_canonical_seam_tests {
     #[test]
     fn adapter_output_round_trips_canonical_publication() {
         let input = canonical_pipeline_input();
-        let compiled = CiRoutePlanV1::compile(input).expect("adapter output compiles");
-        let bytes = compiled.canonical_json().expect("canonical bytes");
-        let reparsed: CiRoutePlanV1 = serde_json::from_slice(&bytes).expect("bytes reparse");
-        reparsed.validate().expect("reparsed plan validates against the domain validator");
-        assert_eq!(reparsed.canonical_json().expect("re-encode"), bytes);
+        let compiled = compile_plan(input, "adapter output compiles");
+        let bytes = canonical_bytes(&compiled, "canonical bytes");
+        let reparsed: CiRoutePlanV1 = deserialize_json(&bytes, "bytes reparse");
+        validate_plan(&reparsed, "reparsed plan validates against the domain validator");
+        assert_eq!(canonical_bytes(&reparsed, "re-encode"), bytes);
     }
 
     /// The CLI handoff shape: serializing the adapter-produced compile
@@ -853,15 +1014,11 @@ mod route_plan_canonical_seam_tests {
     #[test]
     fn adapter_input_survives_the_cli_json_handoff() {
         let input = canonical_pipeline_input();
-        let direct = CiRoutePlanV1::compile(input.clone()).expect("direct compile");
-        let json = serde_json::to_vec(&input).expect("serialize compile input");
-        let handed_off: CompileRoutePlanInput =
-            serde_json::from_slice(&json).expect("compile input reparses");
-        let through_handoff = CiRoutePlanV1::compile(handed_off).expect("handoff compile");
+        let direct = compile_plan(input.clone(), "direct compile");
+        let json = serialize_json(&input, "serialize compile input");
+        let handed_off: CompileRoutePlanInput = deserialize_json(&json, "compile input reparses");
+        let through_handoff = compile_plan(handed_off, "handoff compile");
         assert_eq!(through_handoff.semantic_fingerprint, direct.semantic_fingerprint);
-        assert_eq!(
-            through_handoff.canonical_json().expect("bytes"),
-            direct.canonical_json().expect("bytes")
-        );
+        assert_eq!(canonical_bytes(&through_handoff, "bytes"), canonical_bytes(&direct, "bytes"));
     }
 }

@@ -52,7 +52,9 @@ pub use event::{
     EventAdmissionError, EventLedger, EventSequence, LimitEvidence, ProcessEvent, ProcessEventKind,
     StreamChunkEvidence, TerminationPhase,
 };
-pub use fake::{FAKE_BACKEND_NAME, FakeSupervisor, ScriptedOutcome, ScriptedRun};
+pub use fake::{
+    FAKE_BACKEND_NAME, FakeSupervisor, ScriptedOutcome, ScriptedRun, ScriptedRunContradiction,
+};
 pub use identity::{
     AuthorizationEvidence, AuthorizationStrength, CwdPolicy, EvidenceFreshness, ExecutableIdentity,
     ExecutableResolution, ExecutionProfile, OperationId, OwnerDomain, PlanId, PlatformRequirement,
