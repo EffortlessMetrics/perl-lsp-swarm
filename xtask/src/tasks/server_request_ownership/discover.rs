@@ -105,7 +105,24 @@ fn declared_path(parent: &Path, attrs: &[syn::Attribute]) -> PathAttr {
     let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(literal), .. }) = &meta.value else {
         return Some(Err(()));
     };
-    Some(parent.parent().map_or(Err(()), |dir| Ok(lexically_normal(&dir.join(literal.value())))))
+    Some(parent.parent().map_or(Err(()), |dir| {
+        let joined = dir.join(literal.value());
+        let normal = lexically_normal(&joined);
+        // Collapsing `link/..` is only sound when nothing before the `..` is a
+        // symlink: otherwise the lexical answer names a different file than the
+        // filesystem does, and excluding it would hide a real production file.
+        // Where they can disagree, the two are compared and a mismatch is
+        // reported rather than picked between.
+        if joined.components().any(|component| component == Component::ParentDir) {
+            let resolved = std::fs::canonicalize(&joined);
+            let lexical = std::fs::canonicalize(&normal);
+            return match (resolved, lexical) {
+                (Ok(resolved), Ok(lexical)) if resolved == lexical => Ok(normal),
+                _ => Err(()),
+            };
+        }
+        Ok(normal)
+    }))
 }
 
 /// The files a `mod name;` declaration inside `parent` can resolve to.
@@ -548,9 +565,10 @@ pub(super) fn scan_emission(
             "emission-module-path-unresolvable",
             relative.clone(),
             format!(
-                "{relative} declares a test module with a computed `#[path]`; the file it \
-                 occupies cannot be known without expanding macros, so a send there could \
-                 not be told from production"
+                "{relative} declares a test module whose `#[path]` cannot be resolved to one \
+                 file -- it is computed, or it traverses `..` across a symlink, so the \
+                 lexical and filesystem targets differ; a send in the file it really names \
+                 could not be told from production"
             ),
         ));
     }

@@ -895,6 +895,59 @@ impl Server {
     Ok(())
 }
 
+/// `link/../x.rs` and `x.rs` are the same file only when `link` is a real
+/// directory. Across a symlink pointing out of the tree they are different
+/// files, so collapsing the `..` lexically would exclude a production file the
+/// module never named and leave the one it did name in the scan -- a miss.
+#[cfg(unix)]
+#[test]
+fn a_parent_traversal_across_a_symlink_is_reported() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let src = dir.path().join("src");
+    let runtime = src.join("runtime");
+    let outside = src.join("outside");
+    std::fs::create_dir_all(runtime.join("nested"))?;
+    std::fs::create_dir_all(outside.join("target"))?;
+
+    // `runtime/nested/link` -> `src/outside/target`, so `link/../sibling.rs`
+    // resolves to `src/outside/sibling.rs`, while collapsing it lexically names
+    // `runtime/nested/sibling.rs` -- a different, real, production file.
+    std::os::unix::fs::symlink(&outside.join("target"), runtime.join("nested").join("link"))?;
+    std::fs::write(outside.join("sibling.rs"), "// the file the module really names\n")?;
+    std::fs::write(
+        runtime.join("nested").join("owner.rs"),
+        r#"
+#[cfg(test)]
+#[path = "link/../sibling.rs"]
+mod moved;
+"#,
+    )?;
+    std::fs::write(
+        runtime.join("nested").join("sibling.rs"),
+        r#"
+impl Server {
+    fn emit(&self) -> io::Result<()> {
+        self.send_request(id, "window/showDocument", params)
+    }
+}
+"#,
+    )?;
+
+    let constants = BTreeMap::new();
+    let (emitted, _ambiguous, findings) = scan_emission(dir.path(), "src", &constants)?;
+
+    assert_eq!(
+        findings.iter().map(|finding| finding.rule).collect::<Vec<_>>(),
+        vec!["emission-module-path-unresolvable"],
+        "a target the two readings disagree about is reported: {findings:?}"
+    );
+    assert!(
+        emitted.contains_key("window/showDocument"),
+        "and the production file is not excluded on the strength of the guess: {emitted:?}"
+    );
+    Ok(())
+}
+
 /// `#[path = concat!(..)]` is legal, and this repository's own fixtures carry
 /// it. Its target cannot be known without expanding macros, so the reader must
 /// say so rather than treat whatever file it names as production.
