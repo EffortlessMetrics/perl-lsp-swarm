@@ -104,8 +104,30 @@
       },
       "then": {
         "properties": {
+          "parse": {"properties": {"axes": {"properties": {"observation": {"not": {"enum": ["failures_observed", "process_or_protocol_failed"]}}}}}},
           "files": {"not": {"contains": {"type": "object", "required": ["axes"], "properties": {"axes": {"type": "object", "required": ["observation"], "properties": {"observation": {"enum": ["failures_observed", "process_or_protocol_failed"]}}}}}}},
           "invocations": {"not": {"contains": {"type": "object", "required": ["axes"], "properties": {"axes": {"type": "object", "required": ["observation"], "properties": {"observation": {"enum": ["failures_observed", "process_or_protocol_failed"]}}}}}}}
+        }
+      }
+    },
+    {
+      "$comment": "A positive aggregate support claim names a supported subset, so the support distribution must contain at least one generally or partially supported subject. Whether that subset is the right size is a comparison against the denominator, which JSON Schema cannot express; RunAxesReport::validate is the stricter authority there.",
+      "if": {
+        "properties": {"axes": {"properties": {"support": {"enum": ["general", "partial"]}}, "required": ["support"]}},
+        "required": ["axes"]
+      },
+      "then": {
+        "properties": {
+          "admission": {
+            "properties": {
+              "by_support": {
+                "anyOf": [
+                  {"required": ["general"], "properties": {"general": {"minimum": 1}}},
+                  {"required": ["partial"], "properties": {"partial": {"minimum": 1}}}
+                ]
+              }
+            }
+          }
         }
       }
     },
@@ -208,6 +230,11 @@
               "mechanism": {"not": {"const": "fixture_replay"}}
             }
           }
+        },
+        {
+          "$comment": "Support 'unavailable' asserts that no support rail exists, while any mechanism other than 'none' asserts that one produced a signal. A subject whose rail ran is 'blocked' or 'not_assessed'.",
+          "if": {"properties": {"support": {"const": "unavailable"}}, "required": ["support"]},
+          "then": {"properties": {"mechanism": {"const": "none"}}}
         }
       ]
     },

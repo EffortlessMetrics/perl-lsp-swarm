@@ -351,6 +351,11 @@ pub enum ResultAxisViolation {
     },
     /// Fixture replay was presented as general semantic support.
     FixtureReplayClaimedGeneralSupport,
+    /// Support 'unavailable' names the mechanism of a rail it says does not exist.
+    UnavailableSupportNamedAMechanism {
+        /// The mechanism the record claims produced a signal.
+        mechanism: CorrectnessMechanism,
+    },
 }
 
 impl fmt::Display for ResultAxisViolation {
@@ -395,6 +400,12 @@ impl fmt::Display for ResultAxisViolation {
             Self::FixtureReplayClaimedGeneralSupport => f.write_str(
                 "mechanism 'fixture_replay' cannot imply semantic support 'general'; \
                  replay proves recorded output, not runtime semantics",
+            ),
+            Self::UnavailableSupportNamedAMechanism { mechanism } => write!(
+                f,
+                "support 'unavailable' says no support rail exists, but mechanism \
+                 '{mechanism}' says one produced a signal; a subject whose rail ran is \
+                 'blocked' or 'not_assessed', not 'unavailable'"
             ),
         }
     }
@@ -505,6 +516,14 @@ impl ResultAxes {
             if mechanism == CorrectnessMechanism::FixtureReplay {
                 return Err(ResultAxisViolation::FixtureReplayClaimedGeneralSupport);
             }
+        }
+        // `unavailable` is the one non-positive support level that asserts
+        // something about the rail itself: that none exists. Every mechanism
+        // other than `none` asserts the opposite, so the pair is contradictory.
+        // A subject whose rail ran and found no support is `blocked`; one whose
+        // support was never examined is `not_assessed`.
+        if support == SemanticSupport::Unavailable && mechanism != CorrectnessMechanism::None {
+            return Err(ResultAxisViolation::UnavailableSupportNamedAMechanism { mechanism });
         }
         Ok(Self { evidence, observation, admission, support, mechanism })
     }
@@ -1059,6 +1078,23 @@ pub enum ResultReportViolation {
         /// Declared denominator.
         denominator: usize,
     },
+    /// A positive aggregate claim names a supported subset its distribution denies.
+    PositiveSupportWithoutSupportedSubject {
+        /// The positive support claim.
+        support: SemanticSupport,
+    },
+    /// A partial aggregate sits over a distribution in which every subject is general.
+    PartialRollupOverWhollyGeneralDistribution {
+        /// Declared denominator, every subject of which is distributed as general.
+        denominator: usize,
+    },
+    /// A general aggregate rests on subjects whose admission cannot underwrite it.
+    GeneralSupportOverUnimplementedSubjects {
+        /// Subjects distributed as implemented.
+        implemented: usize,
+        /// Declared denominator.
+        denominator: usize,
+    },
     /// The parse rail reported more passes than subjects.
     ParsePassedExceedsTotal,
     /// The parse rail denominator disagrees with the aggregate denominator.
@@ -1170,7 +1206,8 @@ impl fmt::Display for ResultReportViolation {
             Self::AggregateSupportWithoutRail { support, mechanism } => write!(
                 f,
                 "the aggregate claims support '{support}' from mechanism '{mechanism}', but no \
-                 correctness rail in this report ran with that mechanism"
+                 correctness rail in this report backs that claim strongly enough: a rail must \
+                 have run with that mechanism and demonstrated the successes the claim asserts"
             ),
             Self::CompleteMeasurementObservedNothing => f.write_str(
                 "a complete measurement with valid evidence recorded no observation; \
@@ -1197,6 +1234,24 @@ impl fmt::Display for ResultReportViolation {
                 f,
                 "the aggregate claims general support while only {general} of {denominator} \
                  subjects are distributed as generally supported"
+            ),
+            Self::PositiveSupportWithoutSupportedSubject { support } => write!(
+                f,
+                "the aggregate claims support '{support}' while its support distribution \
+                 contains no generally or partially supported subject; the claimed subset \
+                 does not exist in this report"
+            ),
+            Self::PartialRollupOverWhollyGeneralDistribution { denominator } => write!(
+                f,
+                "the aggregate claims partial support while all {denominator} subjects are \
+                 distributed as generally supported; 'partial' names a declared subset, so \
+                 a wholly general distribution must be reported as general"
+            ),
+            Self::GeneralSupportOverUnimplementedSubjects { implemented, denominator } => write!(
+                f,
+                "the aggregate claims general support while only {implemented} of \
+                 {denominator} subjects are admitted as implemented; only an implemented \
+                 admission underwrites general support"
             ),
             Self::ParsePassedExceedsTotal => {
                 f.write_str("parse rail passed more subjects than it covered")
@@ -1335,16 +1390,51 @@ impl RunAxesReport {
                 total: self.parse.files_total,
             });
         }
-        if self.axes.support() == SemanticSupport::General {
-            let general = self
-                .admission
-                .by_support
-                .get(SemanticSupport::General.as_str())
-                .copied()
-                .unwrap_or(0);
-            if general != self.subject.denominator {
-                return Err(ResultReportViolation::AggregateSupportOverstatesDistribution {
-                    general,
+        // The aggregate support axis and the per-subject distribution are two
+        // statements about the same subjects, so each aggregate level is
+        // reconciled with the distribution rather than only `general`.
+        if self.axes.support().is_positive_claim() {
+            let distributed = |support: SemanticSupport| {
+                self.admission.by_support.get(support.as_str()).copied().unwrap_or(0)
+            };
+            let general = distributed(SemanticSupport::General);
+            let partial = distributed(SemanticSupport::Partial);
+            // A positive claim names a supported subset. If the distribution
+            // records no supported subject at all, that subset does not exist.
+            if general == 0 && partial == 0 {
+                return Err(ResultReportViolation::PositiveSupportWithoutSupportedSubject {
+                    support: self.axes.support(),
+                });
+            }
+            if self.axes.support() == SemanticSupport::General {
+                if general != self.subject.denominator {
+                    return Err(ResultReportViolation::AggregateSupportOverstatesDistribution {
+                        general,
+                        denominator: self.subject.denominator,
+                    });
+                }
+                // Every subject is generally supported, and only an implemented
+                // admission underwrites general support, so every subject must
+                // be admitted as implemented. Without this the aggregate axes
+                // can claim `implemented`/`general` over a distribution that is
+                // wholly accepted debt, promoting debt to general support.
+                let implemented = self
+                    .admission
+                    .by_admission
+                    .get(CompatibilityAdmission::Implemented.as_str())
+                    .copied()
+                    .unwrap_or(0);
+                if implemented != self.subject.denominator {
+                    return Err(ResultReportViolation::GeneralSupportOverUnimplementedSubjects {
+                        implemented,
+                        denominator: self.subject.denominator,
+                    });
+                }
+            } else if general == self.subject.denominator {
+                // `partial` means "a declared subset", so it is not the label
+                // for a distribution in which every subject is general. The two
+                // levels partition: general ⟺ all general.
+                return Err(ResultReportViolation::PartialRollupOverWhollyGeneralDistribution {
                     denominator: self.subject.denominator,
                 });
             }
@@ -1457,7 +1547,11 @@ impl RunAxesReport {
                     ObservedOutcome::FailuresObserved | ObservedOutcome::ProcessOrProtocolFailed
                 )
             };
-            let failing_detail = self.files.iter().any(|file| unclean(file.axes.observation()))
+            // The parse rail is a report-level detail like any file or
+            // invocation record: a rollup that omits it can publish a failed
+            // parse as a clean run.
+            let failing_detail = unclean(self.parse.axes.observation())
+                || self.files.iter().any(|file| unclean(file.axes.observation()))
                 || self.invocations.iter().any(|run| unclean(run.axes.observation()));
             if failing_detail {
                 return Err(ResultReportViolation::CleanAggregateOverFailingDetail);
@@ -2661,6 +2755,154 @@ mod tests {
         Ok(())
     }
 
+    // ---- Fixture class 9: rollups that contradict their own distribution ----
+
+    #[test]
+    fn a_partial_rollup_cannot_contradict_its_support_distribution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut overstated = valid_report()?;
+        overstated.axes = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        overstated.admission.by_support = distribution(&[("blocked", 4)]);
+
+        assert_eq!(
+            overstated.validate(),
+            Err(ResultReportViolation::PositiveSupportWithoutSupportedSubject {
+                support: SemanticSupport::Partial,
+            }),
+            "a partial rollup over a wholly blocked distribution names a supported subset \
+             that the report itself says does not exist"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_partial_rollup_cannot_underclaim_a_wholly_general_distribution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut underclaimed = valid_report()?;
+        underclaimed.axes = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        // by_support stays {"general": 4} from `valid_report`.
+
+        assert_eq!(
+            underclaimed.validate(),
+            Err(ResultReportViolation::PartialRollupOverWhollyGeneralDistribution {
+                denominator: 4,
+            }),
+            "partial means 'a declared subset', so it must not be the label for a \
+             distribution in which every subject is generally supported"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_general_rollup_cannot_launder_accepted_debt() -> Result<(), Box<dyn std::error::Error>> {
+        let mut laundered = valid_report()?;
+        laundered.admission.by_admission = distribution(&[("accepted_debt", 4)]);
+        laundered.admission.accepted_debt_count = 4;
+
+        assert_eq!(
+            laundered.validate(),
+            Err(ResultReportViolation::GeneralSupportOverUnimplementedSubjects {
+                implemented: 0,
+                denominator: 4,
+            }),
+            "only an implemented admission underwrites general support, so a general \
+             rollup over a wholly-debt distribution must be rejected at the aggregate too"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_clean_rollup_cannot_hide_a_failing_parse_rail() -> Result<(), Box<dyn std::error::Error>> {
+        let mut hidden = valid_report()?;
+        hidden.parse.axes = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::FailuresObserved,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::NotAssessed,
+            CorrectnessMechanism::None,
+        )?;
+        hidden.parse.files_passed = 3;
+
+        assert_eq!(
+            hidden.validate(),
+            Err(ResultReportViolation::CleanAggregateOverFailingDetail),
+            "the parse rail is a report-level detail like any other: a clean rollup \
+             must not sit over a parse rail that observed failures"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_support_cannot_name_a_mechanism() {
+        assert_eq!(
+            axes(
+                EvidenceValidity::Valid,
+                ObservedOutcome::Clean,
+                CompatibilityAdmission::Implemented,
+                SemanticSupport::Unavailable,
+                CorrectnessMechanism::EirExecution,
+            ),
+            Err(ResultAxisViolation::UnavailableSupportNamedAMechanism {
+                mechanism: CorrectnessMechanism::EirExecution,
+            }),
+            "'unavailable' says no support rail exists; a mechanism says one produced a \
+             signal. Both cannot be true of the same subject."
+        );
+    }
+
+    #[test]
+    fn a_rail_that_demonstrated_nothing_is_named_as_insufficient_not_absent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut zero_success = valid_report()?;
+        zero_success.axes = axes(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::EirExecution,
+        )?;
+        zero_success.admission.by_support = distribution(&[("partial", 1), ("blocked", 3)]);
+        zero_success.correctness_rails.insert(
+            "eir".to_string(),
+            CorrectnessRailSummary {
+                mechanism: CorrectnessMechanism::EirExecution,
+                availability: CompatibilityRailAvailability::Partial,
+                reason: "ran, demonstrated nothing".to_string(),
+                evidence_refs: vec!["bundle-1".to_string()],
+                files_total: Some(4),
+                files_passed: Some(0),
+            },
+        );
+
+        let Err(violation) = zero_success.validate() else {
+            return Err("a rail that passed nothing must not back a support claim".into());
+        };
+        let message = violation.to_string();
+        assert!(
+            !message.contains("ran with that mechanism"),
+            "a matching rail *did* run; saying otherwise sends producers toward the \
+             wrong repair. Message was: {message}"
+        );
+        assert!(
+            message.contains("strongly enough"),
+            "the diagnostic must name insufficient evidence, not absence. Message was: \
+             {message}"
+        );
+        Ok(())
+    }
+
     /// How the published schema is expected to relate to the Rust validator for
     /// one report fixture.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2942,6 +3184,86 @@ mod tests {
         fixtures.push((
             "parse rail passing more than it covered",
             serde_json::to_value(parse_overrun)?,
+            false,
+            SchemaAgreement::RustStricter,
+        ));
+
+        let partial_axes = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::Clean,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::Partial,
+            CorrectnessMechanism::EirExecution,
+        )?;
+
+        // Both validators can see that a positive claim needs *some* supported
+        // subject, because that compares a count against a constant.
+        let mut partial_over_blocked = valid_report()?;
+        partial_over_blocked.axes = partial_axes;
+        partial_over_blocked.admission.by_support = distribution(&[("blocked", 4)]);
+        fixtures.push((
+            "partial rollup over a wholly blocked distribution",
+            serde_json::to_value(partial_over_blocked)?,
+            false,
+            SchemaAgreement::Same,
+        ));
+
+        let mut clean_over_failing_parse = valid_report()?;
+        clean_over_failing_parse.parse.axes = ResultAxes::new(
+            EvidenceValidity::Valid,
+            ObservedOutcome::FailuresObserved,
+            CompatibilityAdmission::Implemented,
+            SemanticSupport::NotAssessed,
+            CorrectnessMechanism::None,
+        )?;
+        clean_over_failing_parse.parse.files_passed = 3;
+        fixtures.push((
+            "clean rollup over a parse rail that observed failures",
+            serde_json::to_value(clean_over_failing_parse)?,
+            false,
+            SchemaAgreement::Same,
+        ));
+
+        // The remaining rollup rules compare one count against the declared
+        // denominator, so they join the enumerated cross-field arithmetic gap.
+        let mut partial_over_general = valid_report()?;
+        partial_over_general.axes = partial_axes;
+        fixtures.push((
+            "partial rollup over a wholly general distribution",
+            serde_json::to_value(partial_over_general)?,
+            false,
+            SchemaAgreement::RustStricter,
+        ));
+
+        let mut general_over_debt = valid_report()?;
+        general_over_debt.admission.by_admission = distribution(&[("accepted_debt", 4)]);
+        general_over_debt.admission.accepted_debt_count = 4;
+        fixtures.push((
+            "general rollup over a wholly accepted-debt admission distribution",
+            serde_json::to_value(general_over_debt)?,
+            false,
+            SchemaAgreement::RustStricter,
+        ));
+
+        // Reaching into a nested rail's counts to weigh them against the
+        // aggregate claim is likewise beyond the schema.
+        let mut zero_success_rail = valid_report()?;
+        zero_success_rail.axes = partial_axes;
+        zero_success_rail.admission.by_support = distribution(&[("partial", 1), ("blocked", 3)]);
+        zero_success_rail.correctness_rails.insert(
+            "eir".to_string(),
+            CorrectnessRailSummary {
+                mechanism: CorrectnessMechanism::EirExecution,
+                availability: CompatibilityRailAvailability::Partial,
+                reason: "ran, demonstrated nothing".to_string(),
+                evidence_refs: vec!["bundle-1".to_string()],
+                files_total: Some(4),
+                files_passed: Some(0),
+            },
+        );
+        fixtures.push((
+            "partial support backed only by a rail that passed nothing",
+            serde_json::to_value(zero_success_rail)?,
             false,
             SchemaAgreement::RustStricter,
         ));
