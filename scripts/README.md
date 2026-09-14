@@ -131,6 +131,7 @@ Run in order for a release. See [CONTRIBUTING.md](../CONTRIBUTING.md#release-wor
 | `marketing/` | GIF rendering and demo scripts (see [docs/assets/gifs/README.md](../docs/assets/gifs/README.md)) |
 | `tests/` | Shell-level integration tests for scripts |
 | `requirements.txt` | Python dependencies for scripts that need them |
+| `requirements-release.txt` | Pinned JSON-schema validator runtime for release topology workflows |
 | `safe-pull.sh` | Pull with automatic conflict detection |
 | `inject-sha-assets.sh` | Inject SHA checksums into release assets |
 | `generate-receipt.sh` | Generate a single artifact receipt |
