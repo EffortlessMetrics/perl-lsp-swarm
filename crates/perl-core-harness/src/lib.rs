@@ -8983,9 +8983,12 @@ mod tests {
 
     #[test]
     fn an_empty_compile_report_stays_admissible() -> TestResult {
-        // Scope boundary: whether an empty observation of any mode is evidence
-        // is a separate pre-existing question (#14375). This contract refuses
-        // only the execute case, where emptiness means no rail is named.
+        // Scope boundary, deliberately retained after #14375. The *reader*
+        // contract refuses only the execute case, where emptiness means no rail
+        // is named; it stays permissive so existing artifacts keep decoding.
+        // Refusing an empty observation as comparable evidence is owned by
+        // `transition::validate`, which now rejects it in every mode, so such a
+        // report can be read but can never classify as `NoChange`.
         let temp = tempfile::tempdir()?;
         let mut empty = sample_compile_report();
         empty.file_results.clear();

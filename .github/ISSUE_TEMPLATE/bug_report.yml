@@ -102,6 +102,7 @@ body:
       description: |
         In VS Code run `Perl: Report Issue`, use `Show Support Packet` to review it or `Copy Support Packet` to copy it, then paste it here.
         The packet is user-triggered and should contain bounded/redacted product state rather than full logs or source.
+        The schema version appears in the packet. Older known versions remain useful; unknown or malformed versions are limited evidence. You can file the report without a packet.
         Leave blank for other editors or if packet generation is unavailable.
       render: text
 
