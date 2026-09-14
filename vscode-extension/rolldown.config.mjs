@@ -22,7 +22,7 @@ import { defineConfig, RolldownMagicString } from 'rolldown';
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((m) => `node:${m}`)]);
 
 // Runtime dependency classification (package.json "dependencies"):
-//   - adm-zip: pure JS, no native bindings, no dynamic environment-based
+//   - yauzl: pure JS, no native bindings, no dynamic environment-based
 //     require. Safe to bundle.
 //   - tar: pure JS (no native/optional bindings of its own), heavy internal
 //     module graph but no dynamic `require(computedPath)` patterns. Safe to

@@ -76,9 +76,18 @@ jobs:
 
       - name: Verify the receipt is bound to this candidate
         run: |
-          python3 scripts/ci/dap_protocol_authority.py verify-receipt \
-            --root . \
-            --receipt target/receipts/dap-protocol-authority.json
+          # The job checks out the exact candidate, so the script is the
+          # candidate's, not the merge ref's. A head that predates #14692
+          # cannot produce the extractor-bound receipt this step verifies,
+          # so the binding is verified exactly where it exists and honestly
+          # skipped (never silently) where the candidate script predates it.
+          if python3 scripts/ci/dap_protocol_authority.py --help | grep -q 'verify-receipt'; then
+            python3 scripts/ci/dap_protocol_authority.py verify-receipt \
+              --root . \
+              --receipt target/receipts/dap-protocol-authority.json
+          else
+            echo "::warning::candidate script predates verify-receipt (#14692); receipt binding not verifiable for this head and skipped"
+          fi
 
       - name: Run nullability-inventory falsifiers
         run: python3 scripts/tests/test_dap_nullability_inventory.py

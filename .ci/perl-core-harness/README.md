@@ -7,7 +7,6 @@ Initial scaffold:
 ```bash
 cargo xtask perl-core-harness discover \
   --perl-tree /path/to/prepared/perl5 \
-  --host-perl perl \
   --profile base
 ```
 
@@ -211,7 +210,6 @@ Or run the smoke against a user-supplied prepared upstream Perl tree:
 ```bash
 cargo xtask perl-core-harness smoke \
   --perl-tree /path/to/prepared/perl5 \
-  --host-perl perl \
   --profile base \
   --modes parse,compile
 ```
