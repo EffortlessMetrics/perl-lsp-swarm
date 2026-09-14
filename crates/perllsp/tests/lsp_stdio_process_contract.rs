@@ -214,6 +214,12 @@ fn references_trace_selector_refuses_overwritten_request_and_keeps_latest_id() -
                 .is_some_and(|message| message.contains("No request evidence is attached")),
         "failed request 99 must not invent trace evidence: {failed_explanation}"
     );
+    let retained_latest = explain_trace_for_id(&mut client, "references", json!("41"))?;
+    ensure!(
+        retained_latest.pointer("/request_receipt/request_id") == Some(&json!("41"))
+            && retained_latest.pointer("/request_receipt/uri") == Some(&json!(uri)),
+        "an unrelated failed request must preserve the latest string-ID receipt: {retained_latest}"
+    );
     let too_large = Value::Number(
         serde_json::Number::from_u128(9_223_372_036_854_775_808_u128)
             .ok_or_else(|| anyhow::anyhow!("failed to construct out-of-range JSON-RPC ID"))?,
