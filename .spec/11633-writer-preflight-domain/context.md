@@ -92,7 +92,7 @@ unique-work risk → `unique_state_at_risk`; ambient overrides →
 Pass; a verified read-only subject gains `safe_read_only_subject`.
 
 Advisories (never deny, never weaken a required fact):
-`advisory_behind_only` (behind without divergence), 
+`advisory_behind_only` (behind without divergence),
 `advisory_shared_stash_present`, `advisory_unrelated_host_load`.
 
 ## Provider ownership for every fact
