@@ -101,6 +101,12 @@ if ! python3 scripts/check_release_tag_provenance.py --verify-git --repo-root "$
     error "Release-tag provenance drift check failed"
 fi
 
+# The provenance validator carries its own unittest suite; run it so the
+# classifier regressions fail here rather than in review (#15263).
+if ! python3 scripts/tests/test_release_tag_provenance.py; then
+    error "Release-tag provenance unit tests failed"
+fi
+
 for tag in "${ALL_TAGS[@]}"; do
     # Skip (CL) entries — they have no tag by definition
     if [[ -n "${CL_ONLY_VERSIONS[$tag]:-}" ]]; then

@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Comprehensive integration tests for the perl-lexer crate.
 //!
 //! Covers: tokenization of real Perl snippets, edge cases, unicode,
@@ -1002,7 +1003,7 @@ fn checkpoint_save_and_restore() -> R {
     let cp = lexer.checkpoint();
     let second = lexer.next_token().ok_or("no second token")?;
 
-    lexer.restore(&cp);
+    assert!(lexer.restore(&cp).is_ok());
     let replayed = lexer.next_token().ok_or("no token after restore")?;
 
     assert_eq!(second.start, replayed.start, "restore should replay from checkpoint");
@@ -1017,19 +1018,19 @@ fn checkpoint_save_and_restore() -> R {
 #[test]
 fn can_restore_checks() -> R {
     let lexer = PerlLexer::new("my $x = 1;");
-    let cp = LexerCheckpoint::new();
-    assert!(lexer.can_restore(&cp), "should be able to restore to start");
+    let cp = lexer.checkpoint();
+    assert!(lexer.can_restore(&cp), "live origin must restore onto the same source");
 
     let far_cp = LexerCheckpoint::at_position(99999);
-    assert!(!lexer.can_restore(&far_cp), "should not restore past input end");
+    assert!(!lexer.can_restore(&far_cp), "caller-selected positions must not restore");
     Ok(())
 }
 
 #[test]
 fn checkpoint_validity() -> R {
     let input = "my $x";
-    let cp = LexerCheckpoint::at_position(3);
-    assert!(cp.is_valid_for(input), "position 3 should be valid for 5-byte input");
+    let cp = LexerCheckpoint::origin(input);
+    assert!(cp.is_valid_for(input), "origin must be valid for its source");
 
     let cp2 = LexerCheckpoint::at_position(100);
     assert!(!cp2.is_valid_for(input), "position 100 should not be valid for 5-byte input");
