@@ -171,6 +171,6 @@
   },
   "migration_reference": {
     "path": "expected/migration_reference.md",
-    "sha256": "a06ed3af60be4ef66c8df9edb21082031b89f31113cfa50e87deb18d72eae765"
+    "sha256": "b8dea11d240dc3b67db1114d7e3c470151b938e875d465cdf6ca8b79ae89ae8f"
   }
 }

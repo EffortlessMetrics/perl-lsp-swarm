@@ -31,6 +31,8 @@ import {
   buildGeneratedStepStub,
   classifyStepDefinitionStatus,
   collectWorkspaceStepDefinitionSources,
+  MAX_STEP_DEFINITION_FILE_BYTES,
+  MAX_STEP_DEFINITION_TOTAL_READ_BYTES,
   scanStepDefinitions,
   writeGeneratedStepDefinitionFile,
 } from '../gherkinStepDefinitions';
@@ -304,10 +306,18 @@ describe('bounded workspace step-definition scan', () => {
     return filePath;
   }
 
-  function scan(): ReturnType<typeof collectWorkspaceStepDefinitionSources> {
-    return collectWorkspaceStepDefinitionSources({
-      uri: { fsPath: workspaceRoot },
-    } as never);
+  function scan(
+    reader?: (
+      filePath: string,
+      limit: number,
+    ) => Promise<{ bytes: Uint8Array; text: string; byteLength: number } | null>,
+  ): ReturnType<typeof collectWorkspaceStepDefinitionSources> {
+    return collectWorkspaceStepDefinitionSources(
+      {
+        uri: { fsPath: workspaceRoot },
+      } as never,
+      reader,
+    );
   }
 
   it('accepts an ordinary step-definition file', async () => {
@@ -354,10 +364,14 @@ describe('bounded workspace step-definition scan', () => {
 
   it('marks a capped file listing incomplete instead of treating it as exhaustive', async () => {
     const filePath = await writeStepFile('capped_steps.pm', 'Given qr/^ok$/, sub { return; };\n');
-    findFiles.mockResolvedValue(Array.from({ length: 500 }, () => ({ fsPath: filePath })));
+    findFiles.mockResolvedValue(Array.from({ length: 501 }, () => ({ fsPath: filePath })));
 
-    const result = await scan();
-    expect(result.sources).toHaveLength(500);
+    const result = await scan(async () => ({
+      bytes: Buffer.from('Given qr/^ok$/, sub { return; };\n', 'utf8'),
+      text: 'Given qr/^ok$/, sub { return; };\n',
+      byteLength: Buffer.byteLength('Given qr/^ok$/, sub { return; };\n', 'utf8'),
+    }));
+    expect(result.sources).toHaveLength(0);
     expect(result.complete).toBe(false);
   });
 
@@ -368,23 +382,22 @@ describe('bounded workspace step-definition scan', () => {
     );
     const grown = 'Test::BDD::Cucumber::StepFile\n'.padEnd(PER_FILE_LIMIT * 4, 'x');
 
-    // A hostile workspace process grows the file in the window between a
-    // path-based size decision and a path-based read: the size observation
-    // returns the small file, and any later read of the path returns the large
-    // one. An implementation that reads a bounded window from its own
-    // descriptor never opens that window, so nothing here fires and it accepts
-    // the small file. One that decides on `lstat`/`stat` and then re-reads the
-    // path admits the grown file past its own limit.
+    // Controlled spies cover metadata followed by a path-based read. The
+    // candidate's first lstat only checks regular-file admission; later path
+    // observations can update the fixture after the descriptor read. A
+    // path-based readFile sees the updated content, while the bounded
+    // descriptor reader retains the small bytes it already read.
     const realLstat = fs.promises.lstat.bind(fs.promises);
     const realStat = fs.promises.stat.bind(fs.promises);
     const realReadFile = fs.promises.readFile.bind(fs.promises);
+    let candidateLstatCalls = 0;
     const grow = async () => {
       await fs.promises.writeFile(filePath, grown, 'utf8');
     };
     const spies = [
       jest.spyOn(fs.promises, 'lstat').mockImplementation(async (candidate, ...rest) => {
         const stats = await realLstat(candidate as fs.PathLike, ...(rest as []));
-        if (candidate === filePath) {
+        if (candidate === filePath && ++candidateLstatCalls >= 2) {
           await grow();
         }
         return stats;
@@ -458,8 +471,33 @@ describe('bounded workspace step-definition scan', () => {
       0,
     );
     expect(total).toBeLessThanOrEqual(TOTAL_LIMIT);
-    expect(result.sources).toHaveLength(fits);
+    const fixtureBytes = Buffer.byteLength(chunk, 'utf8');
+    const worstCaseNextRead = PER_FILE_LIMIT + 1;
+    const expected = Math.min(
+      fits + 2,
+      Math.floor((TOTAL_LIMIT - worstCaseNextRead) / fixtureBytes) + 1,
+    );
+    expect(result.sources).toHaveLength(expected);
     expect(result.complete).toBe(false);
+  });
+
+  it('stops attempted reads before the next oversized candidate crosses the envelope', async () => {
+    const paths = Array.from({ length: 40 }, (_unused, index) => ({
+      fsPath: path.join(workspaceRoot, `oversized_${index}.pm`),
+    }));
+    const attempted: string[] = [];
+    findFiles.mockResolvedValue(paths);
+
+    const result = await scan(async (filePath) => {
+      attempted.push(filePath);
+      return null;
+    });
+
+    expect(result.sources).toEqual([]);
+    expect(result.complete).toBe(false);
+    expect(attempted).toHaveLength(
+      Math.floor(MAX_STEP_DEFINITION_TOTAL_READ_BYTES / (MAX_STEP_DEFINITION_FILE_BYTES + 1)),
+    );
   });
 
   it('does not read through a symlinked candidate', async () => {

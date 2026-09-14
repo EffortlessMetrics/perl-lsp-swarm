@@ -19,7 +19,7 @@ name = "clippy::let_underscore_must_use"
 level = "deny"
 status = "tracked"
 class = "silent-failure"
-reason = "Must-use values cannot be discarded with let-underscore."
+reason = "Must-use values cannot be discarded with let-underscore. This row also owns the owned (`*_arc`) and mapped lock-guard discards that neither let_underscore_lock row sees: those guard types are #[must_use], and the coverage is measured, not assumed (#14579; activation through #11240 after #11236)."
 
 # The two let_underscore_lock identities partition one invariant across two
 # tools; they do not overlap. Measured on the selected 1.95.0 toolchain
@@ -29,17 +29,28 @@ reason = "Must-use values cannot be discarded with let-underscore."
 # therefore uncovers real lock types rather than duplicating the other row's
 # coverage.
 #
-# Known gap, measured rather than assumed: both rows recognise exactly one
+# Known boundary, measured rather than assumed: both rows recognise exactly one
 # shape, `let _ = <expr>` whose type is a known borrowed guard. Three discards
-# with identical meaning fall outside it and are silently accepted --
-# `let _ = m.lock_arc()` (owned ArcMutexGuard/ArcRwLock*Guard), `drop(m.lock())`
-# for either family, and a discarded mapped guard. The owned family is
-# production-reachable: the workspace enables `arc_lock` and perl-workspace's
-# workspace_index holds an ArcMutexGuard. `drop(m.lock())` matters for a
-# different reason -- it is the rewrite a blocked contributor reaches for, and
-# #14444 already names it a dishonest repair. Owned by #14579; the boundary is
-# asserted by xtask/src/tasks/check_lint_policy/tests/lock_partition.rs so it
-# cannot drift unrecorded.
+# with identical meaning fall outside it, and #14579 ruled on each:
+#
+# - `let _ = m.lock_arc()` (owned ArcMutexGuard/ArcRwLock*Guard) and a discarded
+#   mapped guard are #[must_use] types, so `clippy::let_underscore_must_use`
+#   above is the row that sees them -- measured on the selected toolchain with
+#   both lock rows silenced. That row is tracked here and activates through
+#   #11240 after #11236; nothing lock-specific is missing from that path. The
+#   owned family is production-reachable: the workspace enables `arc_lock` and
+#   perl-workspace's workspace_index holds an ArcMutexGuard.
+# - `drop(m.lock())` for either family has no `let _` for any row to inspect,
+#   and a sweep of every Clippy group on the selected toolchain reports nothing
+#   on it. It is the rewrite a blocked contributor reaches for, and #14444
+#   already names it a dishonest repair. #11236's deliberate-discard contract
+#   owns `drop(...)` discards and will need a non-Clippy instrument for this
+#   one; no lock-only syntactic check is built ahead of that contract. The
+#   tree holds zero such sites.
+#
+# Each boundary is asserted in the direction it was measured by
+# xtask/src/tasks/check_lint_policy/tests/lock_partition.rs, so none of them
+# can drift unrecorded.
 [[lint]]
 name = "rust::let_underscore_lock"
 level = "deny"
@@ -52,7 +63,7 @@ name = "clippy::let_underscore_lock"
 level = "deny"
 status = "active"
 class = "silent-failure"
-reason = "Borrowed non-std lock acquisitions (parking_lot mutex and read/write guards) must be held by named guards with visible scope; rustc does not cover these types, and owned arc guards are covered by neither lint (#14579)."
+reason = "Borrowed non-std lock acquisitions (parking_lot mutex and read/write guards) must be held by named guards with visible scope; rustc does not cover these types. Owned arc and mapped guard discards fall to clippy::let_underscore_must_use, and drop(m.lock()) to the #11236 discard contract (#14579)."
 
 [[lint]]
 name = "clippy::unused_result_ok"

@@ -1,0 +1,23 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  The `perl-lexer` local-subroutine prepass no longer learns declaration names
+  out of Perl `format` bodies, so report text such as `sub NAME` on a picture
+  line can no longer create a false known sub and flip a later `name /pattern/`
+  from division to the regex path. Terminator handling matches perl exactly: a
+  line whose content is exactly `.`, allowing trailing horizontal whitespace and
+  rejecting leading whitespace. The opener covers the single-line forms — an
+  optional name (qualified, or absent for `format =`), optionally preceded by
+  statement labels, followed by `=` as the last non-comment token on the line;
+  openers that perl accepts across several lines are not recognized and keep
+  their existing behavior. A body is treated as a region only when a terminator
+  is present, so an opener-shaped line that is really prose cannot hide the
+  declarations after it. A `sub` declared on a format *argument* line is
+  deliberately not recorded; both bounded limitations are documented on
+  `LocalSymbolTable::scan_subs`.
+time: 2026-09-06T00:00:00Z
+custom:
+  PR: "14943"
+  Slug: format-body-prepass-exclusion-14916
+  Breaking: "no"

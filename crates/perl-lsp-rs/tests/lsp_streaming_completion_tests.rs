@@ -15,7 +15,7 @@
 
 mod support;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::Duration;
 use support::lsp_harness::LspHarness;
 
@@ -28,57 +28,122 @@ fn init_harness() -> Result<LspHarness, String> {
     Ok(harness)
 }
 
+/// Await a cheap later request so a prior notification is known consumed.
+///
+/// Notifications (`workspace/didChangeConfiguration`, `textDocument/didClose`)
+/// have no response. The harness dispatches inbound messages in order, so any
+/// later JSON-RPC response proves the earlier handler returned.
+///
+/// This uses an unknown request rather than `workspace/symbol`: that handler
+/// WaitBriefly for index readiness (up to 2s), while this harness's adaptive
+/// request timeout is 600ms at `RUST_TEST_THREADS=2`. Index wait is a
+/// different wait than "notification consumed" and would time out without
+/// proving the claim. MethodNotFound (-32601) is still a dispatch-path
+/// response (see `punctuated_unknown_method_returns_32601_not_32600`).
+///
+/// Not a generation-bound configuration wait (#10840). Unlike
+/// `LspHarness::barrier`, a timeout is a test failure.
+fn await_prior_notification(harness: &mut LspHarness) -> Result<Value, Box<dyn std::error::Error>> {
+    match harness.request_with_timeout(
+        "perl-lsp/__testOrderBarrier",
+        json!({}),
+        Duration::from_secs(2),
+    ) {
+        Ok(result) => Ok(result),
+        Err(err) if request_failed_without_response(&err) => Err(err.into()),
+        Err(err) if err.contains("-32601") => Ok(json!({ "code": -32601 })),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn request_failed_without_response(err: &str) -> bool {
+    err.contains("timed out") || err.contains("No response") || err.contains("Server send error")
+}
+
+fn notify_and_await(
+    harness: &mut LspHarness,
+    method: &str,
+    params: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    harness.notify(method, params);
+    await_prior_notification(harness)
+}
+
+fn notify_generic_ai_config(
+    harness: &mut LspHarness,
+    ai_completion: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    notify_and_await(
+        harness,
+        "workspace/didChangeConfiguration",
+        json!({
+            "settings": {
+                "perl": {
+                    "aiCompletion": ai_completion
+                }
+            }
+        }),
+    )
+}
+
 /// Helper: send a generic-client AI enable attempt via didChangeConfiguration.
 ///
 /// Since #4997 no generic LSP settings channel can arm remote AI egress or
 /// toggle its streaming authorization: this payload is rejected by the
 /// server and previously accepted state is preserved. The helper remains so
 /// transport-level regressions prove that exact rejection end-to-end.
-fn enable_ai_streaming(harness: &mut LspHarness) {
-    harness.notify(
-        "workspace/didChangeConfiguration",
+fn enable_ai_streaming(harness: &mut LspHarness) -> TestResult {
+    notify_generic_ai_config(
+        harness,
         json!({
-            "settings": {
-                "perl": {
-                    "aiCompletion": {
-                        "enabled": true,
-                        "streaming": {
-                            "enabled": true
-                        }
-                    }
-                }
+            "enabled": true,
+            "streaming": {
+                "enabled": true
             }
         }),
-    );
-    // Give the server time to process the configuration change.
-    std::thread::sleep(Duration::from_millis(50));
+    )?;
+    Ok(())
 }
 
 /// Helper: generic enable attempt with fallback=false, the payload shape that
 /// used to select the no-backend progress contract before #4997.
-fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) {
-    harness.notify(
-        "workspace/didChangeConfiguration",
+fn enable_ai_streaming_progress_contract(harness: &mut LspHarness) -> TestResult {
+    notify_generic_ai_config(
+        harness,
         json!({
-            "settings": {
-                "perl": {
-                    "aiCompletion": {
-                        "enabled": true,
-                        "fallback": false,
-                        "streaming": {
-                            "enabled": true
-                        }
-                    }
-                }
+            "enabled": true,
+            "fallback": false,
+            "streaming": {
+                "enabled": true
             }
         }),
-    );
-    std::thread::sleep(Duration::from_millis(50));
+    )?;
+    Ok(())
 }
 
 /// Helper: generic enable-plus-disable-streaming attempt. Both directions are
 /// unauthorized under #4997; neither may change AI state.
-fn enable_ai_disable_streaming(harness: &mut LspHarness) {
+fn enable_ai_disable_streaming(harness: &mut LspHarness) -> TestResult {
+    notify_generic_ai_config(
+        harness,
+        json!({
+            "enabled": true,
+            "streaming": {
+                "enabled": false
+            }
+        }),
+    )?;
+    Ok(())
+}
+
+// ==================== Order-preserving notification round-trip (#14865) ====================
+
+/// The round-trip helper must wait for a JSON-RPC response, not a wall-clock
+/// sleep. A sleep-only helper cannot produce MethodNotFound (-32601).
+#[test]
+fn await_prior_notification_after_did_change_configuration_returns_json_rpc_response() -> TestResult
+{
+    let mut harness = init_harness()?;
     harness.notify(
         "workspace/didChangeConfiguration",
         json!({
@@ -86,15 +151,89 @@ fn enable_ai_disable_streaming(harness: &mut LspHarness) {
                 "perl": {
                     "aiCompletion": {
                         "enabled": true,
-                        "streaming": {
-                            "enabled": false
-                        }
+                        "streaming": { "enabled": true }
                     }
                 }
             }
         }),
     );
-    std::thread::sleep(Duration::from_millis(50));
+    let response = await_prior_notification(&mut harness)?;
+    assert_eq!(
+        response.get("code").and_then(Value::as_i64),
+        Some(-32601),
+        "later in-order unknown request must be answered after didChangeConfiguration"
+    );
+    Ok(())
+}
+
+/// Opposite-direction control: the round-trip request itself is not a
+/// configuration notification. It must still be answered with no preceding
+/// `didChangeConfiguration`.
+#[test]
+fn await_prior_notification_without_preceding_notify_still_returns_json_rpc_response() -> TestResult
+{
+    let mut harness = init_harness()?;
+    let response = await_prior_notification(&mut harness)?;
+    assert_eq!(
+        response.get("code").and_then(Value::as_i64),
+        Some(-32601),
+        "order-preserving round-trip must succeed without a preceding configuration notify"
+    );
+    Ok(())
+}
+
+/// Two sequential configuration notifications each get their own round-trip.
+/// A helper that awaited only once would leave the second notification
+/// unacknowledged.
+#[test]
+fn sequential_did_change_configuration_notifications_each_await_a_response() -> TestResult {
+    let mut harness = init_harness()?;
+    let first = notify_generic_ai_config(
+        &mut harness,
+        json!({
+            "enabled": true,
+            "streaming": { "enabled": true }
+        }),
+    )?;
+    let second = notify_generic_ai_config(
+        &mut harness,
+        json!({
+            "enabled": true,
+            "streaming": { "enabled": false }
+        }),
+    )?;
+    assert_eq!(first.get("code").and_then(Value::as_i64), Some(-32601));
+    assert_eq!(second.get("code").and_then(Value::as_i64), Some(-32601));
+    Ok(())
+}
+
+/// didClose of an unknown URI must not break in-order dispatch: the later
+/// barrier request is still answered, and streaming is null.
+#[test]
+fn did_close_of_never_opened_uri_then_round_trip_streaming_is_null() -> TestResult {
+    let mut harness = init_harness()?;
+    let uri = "file:///never_opened.pl";
+    harness.close(uri)?;
+    let response = await_prior_notification(&mut harness)?;
+    assert_eq!(
+        response.get("code").and_then(Value::as_i64),
+        Some(-32601),
+        "didClose of an unknown URI must not prevent the order-preserving round-trip"
+    );
+
+    let result = harness.request(
+        "textDocument/perlInlineCompletionStream",
+        json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "position": { "line": 0, "character": 0 },
+            "partialResultToken": "never-opened-token"
+        }),
+    )?;
+    assert!(
+        result.is_null(),
+        "streaming on a never-opened URI after didClose round-trip should return null"
+    );
+    Ok(())
 }
 
 // ==================== Generic-channel rejection (#4997) ====================
@@ -108,7 +247,7 @@ fn enable_ai_disable_streaming(harness: &mut LspHarness) {
 #[test]
 fn hostile_generic_enable_cannot_enter_streaming_route() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_streaming_progress_contract(&mut harness);
+    enable_ai_streaming_progress_contract(&mut harness)?;
 
     let uri = "file:///streaming_test.pl";
     harness.open(uri, "use strict;\nmy $obj = Package->")?;
@@ -159,7 +298,7 @@ fn hostile_generic_enable_cannot_enter_streaming_route() -> TestResult {
 #[test]
 fn hostile_generic_disable_streaming_is_equally_unauthorized() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_disable_streaming(&mut harness);
+    enable_ai_disable_streaming(&mut harness)?;
 
     let uri = "file:///fallback_streaming_disabled.pl";
     harness.open(uri, "my $obj = Package->")?;
@@ -256,7 +395,7 @@ fn streaming_completion_without_ai_falls_back_to_one_shot() -> TestResult {
 #[test]
 fn streaming_completion_with_streaming_disabled_falls_back() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_disable_streaming(&mut harness);
+    enable_ai_disable_streaming(&mut harness)?;
 
     let uri = "file:///fallback_streaming_disabled.pl";
     harness.open(uri, "my $obj = Package->")?;
@@ -290,7 +429,7 @@ fn streaming_completion_with_streaming_disabled_falls_back() -> TestResult {
 #[test]
 fn streaming_completion_without_partial_result_token_falls_back() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_streaming(&mut harness);
+    enable_ai_streaming(&mut harness)?;
 
     let uri = "file:///no_token.pl";
     harness.open(uri, "my $obj = Package->")?;
@@ -328,21 +467,22 @@ fn streaming_completion_without_partial_result_token_falls_back() -> TestResult 
 
 /// After closing a document, subsequent streaming requests for that URI
 /// should return null without crashing.
+///
+/// Opposite control: open documents in this file's fallback tests return
+/// items, not null. This test only asserts the close path.
 #[test]
 fn streaming_completion_on_closed_doc_returns_null() -> TestResult {
     let mut harness = init_harness()?;
-    enable_ai_streaming(&mut harness);
+    enable_ai_streaming(&mut harness)?;
 
     let uri = "file:///closed_doc.pl";
     harness.open(uri, "use strict;\nmy $x = 1;\n")?;
     harness.wait_for_idle(Duration::from_millis(200));
     let _ = harness.drain_notifications(None, 100);
 
-    // Close the document
     harness.close(uri)?;
-    std::thread::sleep(Duration::from_millis(50));
+    await_prior_notification(&mut harness)?;
 
-    // Request streaming on the now-closed document.
     let result = harness.request(
         "textDocument/perlInlineCompletionStream",
         json!({
@@ -352,7 +492,6 @@ fn streaming_completion_on_closed_doc_returns_null() -> TestResult {
         }),
     )?;
 
-    // Should gracefully return null (document not found).
     assert!(result.is_null(), "streaming on closed doc should return null");
 
     Ok(())

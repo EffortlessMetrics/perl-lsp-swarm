@@ -23,11 +23,15 @@
 # `scripts/reviews/disposition` (#3693 R1 FILE 3).
 #
 # ── Usage ────────────────────────────────────────────────────────────────────
-#   scripts/reviews/inline --pr <n> --body <summary> \
+#   scripts/reviews/inline --pr <n> --body-file <path> \
 #       [--findings <file>] [--repo <owner/repo>] [--event <COMMENT|REQUEST_CHANGES|APPROVE>] \
 #       [--commit <sha>] [--dry-run]
 #
-# Findings arrive as a JSON array on stdin, or from --findings <file>:
+# Use --body-file for literal UTF-8 Markdown (including trailing newlines).
+# --body <summary> remains supported for simple, safely quoted callers; do not
+# relay multiline Markdown through an outer shell command string.
+# Findings arrive as a JSON array on stdin, or from --findings <file>.
+# Pass [] explicitly for a clean cumulative review with no inline findings:
 #
 #   [ { "path": "crates/a/src/lib.rs",   # required, repo-relative
 #       "line": 42,                      # required, line in the diff
@@ -50,24 +54,30 @@ set -euo pipefail
 
 die_usage() { echo "ERROR: $1" >&2; exit 2; }
 
-PR="" REPO="" BODY="" FINDINGS_FILE="" EVENT="COMMENT" COMMIT="" DRY_RUN=0
+PR="" REPO="" BODY="" BODY_FILE="" BODY_SET=0 FINDINGS_FILE="" EVENT="COMMENT" COMMIT="" DRY_RUN=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --pr)        PR="${2:-}"; shift 2 ;;
         --repo)      REPO="${2:-}"; shift 2 ;;
-        --body)      BODY="${2:-}"; shift 2 ;;
+        --body)      [[ $# -ge 2 ]] || die_usage "--body requires a value"; BODY="${2}"; BODY_SET=1; shift 2 ;;
+        --body-file) [[ $# -ge 2 && -n "$2" ]] || die_usage "--body-file requires a path"; BODY_FILE="$2"; shift 2 ;;
         --findings)  FINDINGS_FILE="${2:-}"; shift 2 ;;
         --event)     EVENT="${2:-}"; shift 2 ;;
         --commit)    COMMIT="${2:-}"; shift 2 ;;
         --dry-run)   DRY_RUN=1; shift ;;
-        -h|--help)   sed -n '2,50p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help)   sed -n '/^# scripts\/reviews\/inline/,/^set -euo pipefail/p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
 
 [[ -n "$PR" ]] || die_usage "--pr is required"
 [[ "$PR" =~ ^[0-9]+$ ]] || die_usage "--pr must be a positive integer (got '$PR')"
-[[ -n "$BODY" ]] || die_usage "--body <summary> is required (the review's top-level text)"
+if [[ -n "$BODY_FILE" ]]; then
+    [[ "$BODY_SET" -eq 0 ]] || die_usage "use only one of --body and --body-file"
+    [[ -f "$BODY_FILE" && -r "$BODY_FILE" && -s "$BODY_FILE" ]] || die_usage "--body-file must name a readable, non-empty file: $BODY_FILE"
+else
+    [[ -n "$BODY" ]] || die_usage "--body-file <path> or --body <summary> is required (the review's top-level text)"
+fi
 case "$EVENT" in
     COMMENT|REQUEST_CHANGES|APPROVE) ;;
     *) die_usage "invalid --event '$EVENT' (COMMENT|REQUEST_CHANGES|APPROVE)" ;;
@@ -84,9 +94,13 @@ else
     RAW="$(cat)"
 fi
 
-jq -e . >/dev/null 2>&1 <<<"$RAW" || die_usage "findings are not valid JSON"
-jq -e 'type == "array"' >/dev/null <<<"$RAW" || die_usage "findings must be a JSON array of objects"
-jq -e 'length > 0' >/dev/null <<<"$RAW" || die_usage "findings array is empty — nothing to post"
+# Validate the whole JSON stream: -e on individual values only reports the
+# final result. Slurp makes zero inputs and multiple inputs explicit without
+# relying on empty-stream exit semantics, before any GitHub request.
+jq -e -s 'length == 1 and (.[0] | type == "array")' >/dev/null 2>&1 <<<"$RAW" \
+    || die_usage "findings must contain exactly one JSON array of objects"
+# [] is deliberate: it still submits one useful cumulative review. Malformed
+# input and non-empty findings continue through the same atomic validators.
 
 #
 # Types are checked, not coerced: `{"path": 123}` must fail HERE with a useful
@@ -231,7 +245,13 @@ if [[ -z "$COMMIT" && "$DRY_RUN" -eq 0 ]]; then
     exit 2
 fi
 
-PAYLOAD="$(jq -c --arg body "$BODY" --arg event "$EVENT" --arg commit "$COMMIT" '{
+# --rawfile avoids shell substitution (which would strip trailing newlines),
+# and keeps potentially large Markdown out of argv entirely.
+BODY_ARGS=(--arg body "$BODY")
+if [[ -n "$BODY_FILE" ]]; then
+    BODY_ARGS=(--rawfile body "$BODY_FILE")
+fi
+PAYLOAD="$(jq -c "${BODY_ARGS[@]}" --arg event "$EVENT" --arg commit "$COMMIT" '{
     body: $body,
     event: $event,
     comments: map({
