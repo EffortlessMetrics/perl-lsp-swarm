@@ -111,10 +111,14 @@ def load_json(path: Path, violations: Violations, label: str) -> dict | None:
         return None
     try:
         with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+            data = json.load(handle)
     except json.JSONDecodeError as exc:
         violations.add(f"{label}: {path.name} is not valid JSON: {exc}")
         return None
+    if not isinstance(data, dict):
+        violations.add(f"{label}: {path.name} is not a JSON object")
+        return None
+    return data
 
 
 def canonical_digest(document: dict) -> str:
@@ -200,10 +204,15 @@ def validate_structure(profile: dict, violations: Violations) -> bool:
 
     cells = profile.get("cells")
     if not isinstance(cells, dict) or sorted(cells) != sorted(ALL_FAMILIES):
-        violations.add(
+        violations.add_structural(
             "cells: the aggregate invented or dropped a cell; the denominator is fixed "
             f"(expected {sorted(ALL_FAMILIES)}, found {sorted(cells) if isinstance(cells, dict) else cells!r})"
         )
+        return False
+    for family in ALL_FAMILIES:
+        if not isinstance(cells[family], dict):
+            violations.add_structural(f"cells.{family}: expected an object")
+            return False
     return ok
 
 
@@ -254,7 +263,16 @@ def validate_receipt_reference(
         violations.add(f"{label}: receipt reference missing sha256 artifact digest")
         return empty
 
-    path = repo_root / relpath
+    # Receipts are repository artifacts: an absolute or traversing path would
+    # let a reference hash and read arbitrary host files.
+    path = (repo_root / relpath).resolve()
+    if (
+        Path(relpath).is_absolute()
+        or ".." in Path(relpath).parts
+        or not path.is_relative_to(repo_root)
+    ):
+        violations.add(f"{label}: receipt artifact path escapes the repository: {relpath}")
+        return empty
     if not path.is_file():
         violations.add(f"{label}: referenced receipt artifact missing: {relpath}")
         return empty
@@ -285,6 +303,18 @@ def validate_receipt_reference(
         ]
         violations.add(f"{label}: subject equality block missing fields: {missing}")
         return empty
+    # The declared block is an assertion beside the receipt, not the receipt's
+    # own identity. Every field the dialect carries is derived from the receipt
+    # and must agree with the declaration; the vim-lsp commit/tree pair is the
+    # one identity the dialect does not carry, so it is checked only against the
+    # #11369 pin and the other composed references.
+    derived = receipt_identity(receipt)
+    for field, value in derived.items():
+        if declared.get(field) != value:
+            violations.add(
+                f"{label}: subject_equality.{field} declares {declared.get(field)!r} but the "
+                f"receipt carries {value!r}; a foreign receipt cannot satisfy this subject (NC3)"
+            )
     for field, value in declared.items():
         previous = equality.setdefault(field, value)
         if previous != value:
@@ -304,6 +334,23 @@ def validate_receipt_reference(
         for cell in receipt.get("journey") or []
         if isinstance(cell, dict) and isinstance(cell.get("id"), str)
     }
+    # The shared dialect's own validator (`EditorClientCompatReceipt::validate`)
+    # is the authority over receipt well-formedness and runs over every committed
+    # reference in the xtask contract. This offline fan-in only refuses to fold a
+    # journey result it cannot read honestly: unknown vocabulary, or a pass that
+    # observed nothing.
+    for cell_id, cell in journey_index.items():
+        result = cell.get("result")
+        observed = cell.get("observed")
+        if result not in CELL_RESULTS or not isinstance(observed, bool):
+            violations.add(
+                f"{label}: journey cell {cell_id!r} is outside the {RECEIPT_DIALECT} "
+                f"result/observed vocabulary (NC13)"
+            )
+            return empty
+        if result == "pass" and not observed:
+            violations.add(f"{label}: journey cell {cell_id!r} claims a pass it never observed")
+            return empty
     bound_ids = reference.get("journey_cell_ids")
     if not isinstance(bound_ids, list) or not bound_ids:
         violations.add(f"{label}: reference binds no journey cell ids")
@@ -326,6 +373,26 @@ def validate_receipt_reference(
             continue
         results.append(str(cell.get("result")))
     return results, usable
+
+
+def receipt_identity(receipt: dict) -> dict[str, object]:
+    """The subject-equality fields an `editor_client_compat.v1` receipt owns itself."""
+
+    def field(section: str, key: str) -> object:
+        block = receipt.get(section)
+        return block.get(key) if isinstance(block, dict) else None
+
+    return {
+        "candidate_sha": receipt.get("candidate_sha"),
+        "platform_os": field("platform", "os"),
+        "platform_arch": field("platform", "arch"),
+        "perllsp_build_revision": field("server", "build_revision"),
+        "perllsp_artifact_sha256": field("server", "artifact_sha256"),
+        "workspace_fixture_id": field("workspace_fixture", "id"),
+        "workspace_fixture_digest": field("workspace_fixture", "digest"),
+        "expectation_set_id": field("workspace_fixture", "expectation_set_id"),
+        "expectation_set_digest": field("workspace_fixture", "expectation_set_digest"),
+    }
 
 
 def worst(results: list[str]) -> str:
@@ -397,39 +464,54 @@ def recompose(
             return "pass_with_explicit_limitations"
         return "pass"
 
-    # Optional families may append visible limitations but can neither lift nor
-    # lower the required-only aggregate floor (NC9).
+    # The required families alone set the aggregate floor. An optional family
+    # composes under `consumes_if_available` (#11376): it can neither lift nor
+    # lower that floor, but any non-pass optional evidence (missing, unsupported,
+    # mismatched, or failed) turns a clean pass into an explicit limitation and
+    # must stay visible in the aggregate rather than vanish from promotion (NC9,
+    # NC10). It never touches the narrower #10962 core profile.
     required_only = aggregate(REQUIRED_FAMILIES)
+    optional_limited = sorted(
+        family for family in OPTIONAL_FAMILIES if expected_cells[family]["result"] != "pass"
+    )
+    aggregate_disposition = required_only
+    if required_only == "pass" and optional_limited:
+        aggregate_disposition = "pass_with_explicit_limitations"
     allowed = sorted(
-        family
-        for family in REQUIRED_FAMILIES
-        if expected_cells[family]["result"] == "unsupported"
+        [
+            family
+            for family in REQUIRED_FAMILIES
+            if expected_cells[family]["result"] == "unsupported"
+        ]
+        + optional_limited
     )
     open_required = sorted(
         family for family in REQUIRED_FAMILIES if inputs[family].get("state") == "producer_open"
     )
     return {
         "cells": expected_cells,
-        "aggregate": required_only,
+        "aggregate": aggregate_disposition,
         "allowed_limitations_retained": allowed,
         "open_required": open_required,
+        "optional_limited": optional_limited,
     }
 
 
 def compare_stored_vs_recomposed(
     profile: dict, recomputed: dict, violations: Violations
 ) -> None:
-    cells = profile.get("cells") or {}
+    cells = profile["cells"]
     inputs = profile["inputs"]
     for family in ALL_FAMILIES:
         expected = recomputed["cells"][family]
-        stored = cells.get(family)
-        if not isinstance(stored, dict):
-            continue
+        stored = cells[family]
         stored_refs = stored.get("receipt_references") or []
         input_refs = inputs[family].get("receipt_references") or []
-        if len(stored_refs) != len(input_refs):
-            violations.add(f"cells.{family}.receipt_references drifted from its inputs")
+        if stored_refs != input_refs:
+            violations.add(
+                f"cells.{family}.receipt_references drifted from its inputs; a cell cannot "
+                "cite evidence that did not determine its result"
+            )
         if stored.get("result") != expected["result"]:
             violations.add(
                 f"cells.{family}.result: stored {stored.get('result')!r} but inputs compose "
@@ -469,6 +551,13 @@ def compare_stored_vs_recomposed(
                     f"profile: aggregate limitations must surface open required family "
                     f"{family} (#{issue})"
                 )
+        for family in recomputed["optional_limited"]:
+            issue = inputs[family].get("authority_issue")
+            if str(issue) not in joined:
+                violations.add(
+                    f"profile: aggregate limitations must surface the optional family "
+                    f"{family} limitation (#{issue}) instead of dropping it (NC10)"
+                )
     stored_allowed = profile.get("allowed_limitations_retained") or []
     if sorted(str(item) for item in stored_allowed) != recomputed["allowed_limitations_retained"]:
         violations.add(
@@ -491,7 +580,7 @@ def main(argv: list[str]) -> int:
 
     violations = Violations()
     profile = load_json(repo_root / PROFILE_RELPATH, violations, "profile")
-    if profile is None or not isinstance(profile, dict):
+    if profile is None:
         return finish(violations, args.quiet)
 
     check_forbidden_keys(profile, "profile", violations)

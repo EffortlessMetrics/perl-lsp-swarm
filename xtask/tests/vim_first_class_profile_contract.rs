@@ -14,6 +14,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use xtask::editor_client_compat::EditorClientCompatReceipt;
 
 const PROFILE_RELPATH: &str = ".ci/editor-clients/vim-vim-lsp-first-class-profile.v1.json";
 const SUBJECT_RELPATH: &str = ".ci/editor-clients/vim-vim-lsp-subject.v1.json";
@@ -21,6 +22,7 @@ const VALIDATOR_RELPATH: &str = "scripts/ux/validate_vim_first_class_profile.py"
 
 const REQUIRED_FAMILIES: [&str; 6] =
     ["baseline_core", "freshness", "save", "recovery", "host_lifecycle", "expanded_activation"];
+const OPTIONAL_FAMILIES: [&str; 1] = ["workspace_folders"];
 
 /// The #11369 pinned prabirshrestha/vim-lsp subject the fan-in consumes.
 const PINNED_VIM_LSP_COMMIT: &str = "e10d186452743beb7b43d2b3427020832f930c2b";
@@ -65,14 +67,15 @@ fn profile_binds_current_subject_manifest_digest() -> Result<(), Box<dyn Error>>
 }
 
 struct ValidatorCopy {
+    /// Owns the temp tree; dropped after `root` so the path stays valid.
+    _dir: tempfile::TempDir,
     root: PathBuf,
 }
 
 impl ValidatorCopy {
     fn new(source_root: &Path, label: &str) -> Result<Self, Box<dyn Error>> {
-        let root =
-            std::env::temp_dir().join(format!("vim-fanin-contract-{label}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        let dir = tempfile::Builder::new().prefix(&format!("vim-fanin-{label}-")).tempdir()?;
+        let root = dir.path().to_path_buf();
         fs::create_dir_all(root.join(".ci/editor-clients"))?;
         fs::create_dir_all(root.join("scripts/ux"))?;
         for name in [
@@ -88,7 +91,7 @@ impl ValidatorCopy {
             )?;
         }
         fs::copy(source_root.join(VALIDATOR_RELPATH), root.join(VALIDATOR_RELPATH))?;
-        Ok(Self { root })
+        Ok(Self { _dir: dir, root })
     }
 
     fn edit_profile(
@@ -114,12 +117,6 @@ impl ValidatorCopy {
             String::from_utf8_lossy(&output.stderr)
         );
         Ok((output.status.success(), combined))
-    }
-}
-
-impl Drop for ValidatorCopy {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -155,7 +152,10 @@ fn aggregate_stays_not_proven_while_producers_are_open() -> Result<(), Box<dyn E
         "workspace folders stay optional per #11376"
     );
 
-    for family in REQUIRED_FAMILIES {
+    // Every family, the optional one included: the validator recomposes all of
+    // them, so the contract must not leave a seam where an optional cell can
+    // claim a stronger disposition than the test inspects.
+    for family in REQUIRED_FAMILIES.into_iter().chain(OPTIONAL_FAMILIES) {
         let issue = profile
             .pointer(&format!("/inputs/{family}/authority_issue"))
             .and_then(serde_json::Value::as_i64)
@@ -196,7 +196,7 @@ fn aggregate_stays_not_proven_while_producers_are_open() -> Result<(), Box<dyn E
         .filter_map(serde_json::Value::as_str)
         .collect::<Vec<_>>()
         .join(" ");
-    for family in REQUIRED_FAMILIES {
+    for family in REQUIRED_FAMILIES.into_iter().chain(OPTIONAL_FAMILIES) {
         let issue = profile
             .pointer(&format!("/inputs/{family}/authority_issue"))
             .and_then(serde_json::Value::as_u64)
@@ -207,6 +207,44 @@ fn aggregate_stays_not_proven_while_producers_are_open() -> Result<(), Box<dyn E
         );
     }
     assert!(joined.contains("10962"), "aggregate must keep the bounded-core separability visible");
+    assert_eq!(
+        profile.pointer("/allowed_limitations_retained"),
+        Some(&serde_json::json!(["workspace_folders"])),
+        "the absent optional family is a retained, visible limitation, not a dropped one (NC10)"
+    );
+    Ok(())
+}
+
+/// Every receipt the committed profile registers must be a well-formed
+/// `editor_client_compat.v1` receipt by the dialect's own validator. The
+/// offline fan-in reads journey cells; it does not restate this contract, so
+/// the canonical validator is the surface that rejects fabricated receipts.
+#[test]
+fn registered_receipts_satisfy_the_shared_dialect_contract() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let profile = load_profile(&root)?;
+    let inputs = profile
+        .get("inputs")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("profile inputs must be an object")?;
+    for (family, spec) in inputs {
+        let references = spec
+            .get("receipt_references")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for reference in references {
+            let artifact = reference
+                .get("artifact")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| format!("{family}: reference without artifact path"))?;
+            let receipt: EditorClientCompatReceipt =
+                serde_json::from_str(&fs::read_to_string(root.join(artifact))?)?;
+            receipt
+                .validate()
+                .map_err(|error| format!("{family}: {artifact} is not a valid receipt: {error}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -273,21 +311,11 @@ fn dropped_required_cell_cannot_hide_a_not_proven_dimension() -> Result<(), Box<
     Ok(())
 }
 
-/// A fabricated registered receipt drives the otherwise-unreachable
-/// reference-validation path (all real families are producer_open today).
-/// One probe fires two independent negative controls: NC3 — the receipt's
-/// declared vim-lsp commit diverges from the #11369 pin, so one Vim build
-/// cannot combine with another; and NC7 — the same journey cell id is bound
-/// by a second family, so families cannot cross-fill each other's
-/// observations. Deterministic and offline: temp-copy files only.
-#[test]
-fn synthetic_registered_receipt_fires_subject_and_cross_fill_controls() -> Result<(), Box<dyn Error>>
-{
-    let root = repo_root()?;
-    let copy = ValidatorCopy::new(&root, "synthetic-receipt")?;
-
-    let receipt_path = copy.root.join(".ci/editor-clients/vim-fanin-probe.v1.json");
-    let receipt = serde_json::json!({
+/// A synthetic exact-source receipt that the dialect's own validator accepts as
+/// a passing receipt, so the fan-in tests below exercise the real composition
+/// path rather than a JSON blob that only looks like one.
+fn synthetic_receipt() -> serde_json::Value {
+    serde_json::json!({
         "schema_version": "editor_client_compat.v1",
         "observed_at": "2026-08-23T12:00:00Z",
         "stage": "exact_source_local",
@@ -339,59 +367,102 @@ fn synthetic_registered_receipt_fires_subject_and_cross_fill_controls() -> Resul
         "process_cleanup": "pass",
         "result": "pass",
         "limitations": [],
-        "artifacts": [],
+        "artifacts": [
+            {"kind": "client_log", "id": "client.log", "sha256": format!("sha256:{}", "8".repeat(64))},
+            {"kind": "server_stderr", "id": "server.stderr", "sha256": format!("sha256:{}", "9".repeat(64))},
+            {"kind": "capability_snapshot", "id": "initialize.json", "sha256": format!("sha256:{}", "a".repeat(64))},
+            {"kind": "process_ledger", "id": "processes.json", "sha256": format!("sha256:{}", "b".repeat(64))}
+        ],
         "claim_boundary": "synthetic probe receipt exercising fan-in controls only"
-    });
-    fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt)?)?;
-    let artifact = ".ci/editor-clients/vim-fanin-probe.v1.json";
+    })
+}
+
+/// The subject-equality declaration that matches `synthetic_receipt` and the
+/// #11369 pin, with the vim-lsp commit left to the caller.
+fn equality_for(commit: &str) -> serde_json::Value {
+    serde_json::json!({
+        "vim_lsp_selected_commit": commit,
+        "vim_lsp_tree_digest": PINNED_VIM_LSP_TREE,
+        "platform_os": "linux",
+        "platform_arch": "x86_64",
+        "perllsp_build_revision": "b".repeat(40),
+        "perllsp_artifact_sha256": format!("sha256:{}", "4".repeat(64)),
+        "candidate_sha": "a".repeat(40),
+        "workspace_fixture_id": "vim_first_class_fixture",
+        "workspace_fixture_digest": format!("sha256:{}", "5".repeat(64)),
+        "expectation_set_id": "canonical_expectation_set",
+        "expectation_set_digest": format!("sha256:{}", "6".repeat(64))
+    })
+}
+
+const PROBE_ARTIFACT: &str = ".ci/editor-clients/vim-fanin-probe.v1.json";
+
+/// Write the synthetic receipt into the copy after proving the dialect's own
+/// validator accepts it; return the reference fields that bind it.
+fn register_synthetic_receipt(copy: &ValidatorCopy) -> Result<(String, String), Box<dyn Error>> {
+    let receipt = synthetic_receipt();
+    let parsed: EditorClientCompatReceipt = serde_json::from_value(receipt.clone())?;
+    parsed.validate()?;
+    let path = copy.root.join(PROBE_ARTIFACT);
+    fs::write(&path, serde_json::to_vec_pretty(&receipt)?)?;
     let digest = format!(
         "sha256:{}",
-        Sha256::digest(fs::read(&receipt_path)?)
+        Sha256::digest(fs::read(&path)?)
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     );
+    Ok((PROBE_ARTIFACT.to_string(), digest))
+}
 
-    let equality_for = |commit: &str| {
-        serde_json::json!({
-            "vim_lsp_selected_commit": commit,
-            "vim_lsp_tree_digest": PINNED_VIM_LSP_TREE,
-            "platform_os": "linux",
-            "platform_arch": "x86_64",
-            "perllsp_build_revision": "b".repeat(40),
-            "perllsp_artifact_sha256": format!("sha256:{}", "4".repeat(64)),
-            "candidate_sha": "a".repeat(40),
-            "workspace_fixture_id": "vim_first_class_fixture",
-            "workspace_fixture_digest": format!("sha256:{}", "5".repeat(64)),
-            "expectation_set_id": "canonical_expectation_set",
-            "expectation_set_digest": format!("sha256:{}", "6".repeat(64))
-        })
-    };
+fn reference(
+    artifact: &str,
+    digest: &str,
+    fills: &str,
+    equality: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "artifact": artifact,
+        "artifact_sha256": digest,
+        "fills": fills,
+        "journey_cell_ids": ["freshness_route_observed"],
+        "subject_equality": equality
+    })
+}
+
+/// A fabricated registered receipt drives the otherwise-unreachable
+/// reference-validation path (all real families are producer_open today).
+/// One probe fires two independent negative controls: NC3 — the receipt's
+/// declared vim-lsp commit diverges from the #11369 pin, so one Vim build
+/// cannot combine with another; and NC7 — the same journey cell id is bound
+/// by a second family, so families cannot cross-fill each other's
+/// observations. Deterministic and offline: temp-copy files only.
+#[test]
+fn synthetic_registered_receipt_fires_subject_and_cross_fill_controls() -> Result<(), Box<dyn Error>>
+{
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root, "synthetic-receipt")?;
+    let (artifact, digest) = register_synthetic_receipt(&copy)?;
 
     copy.edit_profile(|profile| {
         // NC3: this reference declares a vim-lsp commit that is not the pin.
         let wrong_commit = "d".repeat(40);
-        let freshness_reference = serde_json::json!({
-            "artifact": artifact,
-            "artifact_sha256": digest,
-            "fills": "freshness",
-            "journey_cell_ids": ["freshness_route_observed"],
-            "subject_equality": equality_for(&wrong_commit)
-        });
         profile["inputs"]["freshness"]["state"] = "receipt_registered".into();
-        profile["inputs"]["freshness"]["receipt_references"] =
-            serde_json::json!([freshness_reference]);
+        profile["inputs"]["freshness"]["receipt_references"] = serde_json::json!([reference(
+            &artifact,
+            &digest,
+            "freshness",
+            equality_for(&wrong_commit)
+        )]);
         // NC7: save binds the same journey cell id the freshness reference
         // already claimed.
-        let save_reference = serde_json::json!({
-            "artifact": artifact,
-            "artifact_sha256": digest,
-            "fills": "save",
-            "journey_cell_ids": ["freshness_route_observed"],
-            "subject_equality": equality_for(PINNED_VIM_LSP_COMMIT)
-        });
         profile["inputs"]["save"]["state"] = "receipt_registered".into();
-        profile["inputs"]["save"]["receipt_references"] = serde_json::json!([save_reference]);
+        profile["inputs"]["save"]["receipt_references"] = serde_json::json!([reference(
+            &artifact,
+            &digest,
+            "save",
+            equality_for(PINNED_VIM_LSP_COMMIT)
+        )]);
     })?;
 
     let (ok, output) = copy.validate()?;
@@ -404,5 +475,86 @@ fn synthetic_registered_receipt_fires_subject_and_cross_fill_controls() -> Resul
         output.contains("cannot cross-fill each other's observations"),
         "NC7 did not fire: {output}"
     );
+    Ok(())
+}
+
+/// The positive path: a dialect-valid exact-subject receipt registered for one
+/// family composes into an observed passing cell, and the stored profile that
+/// records exactly that composition validates. The aggregate stays not_proven
+/// because every other required producer is still open.
+#[test]
+fn registered_exact_receipt_composes_into_an_observed_pass() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root, "registered-pass")?;
+    let (artifact, digest) = register_synthetic_receipt(&copy)?;
+    let freshness = reference(&artifact, &digest, "freshness", equality_for(PINNED_VIM_LSP_COMMIT));
+
+    copy.edit_profile(|profile| {
+        profile["inputs"]["freshness"]["state"] = "receipt_registered".into();
+        profile["inputs"]["freshness"]["receipt_references"] = serde_json::json!([freshness]);
+        profile["cells"]["freshness"] = serde_json::json!({
+            "result": "pass",
+            "observed": true,
+            "receipt_references": [freshness]
+        });
+    })?;
+    let (ok, output) = copy.validate()?;
+    assert!(ok, "a registered exact receipt must compose: {output}");
+
+    // Provenance is exact: a stored cell citing a different receipt than the
+    // one that determined its result is stale, even at equal length.
+    copy.edit_profile(|profile| {
+        profile["cells"]["freshness"]["receipt_references"][0]["artifact_sha256"] =
+            format!("sha256:{}", "f".repeat(64)).into();
+    })?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "drifted stored provenance must fail closed");
+    assert!(output.contains("receipt_references drifted"), "{output}");
+    Ok(())
+}
+
+/// A subject-equality block is an assertion beside the receipt; the receipt's
+/// own identity must agree with it, or a receipt produced for another
+/// candidate could satisfy the exact-subject profile (NC3).
+#[test]
+fn foreign_receipt_cannot_satisfy_declared_subject_equality() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root, "foreign-receipt")?;
+    let (artifact, digest) = register_synthetic_receipt(&copy)?;
+    let mut equality = equality_for(PINNED_VIM_LSP_COMMIT);
+    equality["candidate_sha"] = "c".repeat(40).into();
+
+    copy.edit_profile(|profile| {
+        profile["inputs"]["freshness"]["state"] = "receipt_registered".into();
+        profile["inputs"]["freshness"]["receipt_references"] =
+            serde_json::json!([reference(&artifact, &digest, "freshness", equality)]);
+    })?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "a receipt for another candidate must fail closed");
+    assert!(output.contains("subject_equality.candidate_sha declares"), "{output}");
+    Ok(())
+}
+
+/// Receipt references name repository artifacts only; a traversing path must
+/// be refused before anything is read or hashed.
+#[test]
+fn receipt_reference_cannot_escape_the_repository() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root, "path-escape")?;
+    let (_, digest) = register_synthetic_receipt(&copy)?;
+    let escaping = format!("../{PROBE_ARTIFACT}");
+
+    copy.edit_profile(|profile| {
+        profile["inputs"]["freshness"]["state"] = "receipt_registered".into();
+        profile["inputs"]["freshness"]["receipt_references"] = serde_json::json!([reference(
+            &escaping,
+            &digest,
+            "freshness",
+            equality_for(PINNED_VIM_LSP_COMMIT)
+        )]);
+    })?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "a traversing artifact path must fail closed");
+    assert!(output.contains("escapes the repository"), "{output}");
     Ok(())
 }

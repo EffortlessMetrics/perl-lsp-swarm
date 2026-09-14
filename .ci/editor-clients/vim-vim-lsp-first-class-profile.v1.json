@@ -129,9 +129,12 @@
   "aggregate_disposition": "not_proven",
   "aggregate_limitations": [
     "No editor_client_compat.v1 receipt exists yet for any required vim/vim-lsp family: core #10962, freshness #11390, save #11396, recovery #11398, host lifecycle #11401, and expanded activation #11403 are all open producers, so the first-class profile composes to not_proven end to end.",
+    "Optional #10960 workspace-folder evidence is absent (#11405 has registered no cells); under consumes_if_available this is an explicit first-class limitation that stays visible in the aggregate and never downgrades core.",
     "The narrower #10962 bounded core profile remains independently claimable and is unaffected by this aggregate."
   ],
-  "allowed_limitations_retained": [],
+  "allowed_limitations_retained": [
+    "workspace_folders"
+  ],
   "subject_equality_required_fields": [
     "vim_lsp_selected_commit",
     "vim_lsp_tree_digest",
