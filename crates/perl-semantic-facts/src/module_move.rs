@@ -2026,6 +2026,53 @@ mod tests {
         }
     }
 
+    /// The exclusion list duplicates policy this crate cannot import, so a
+    /// `unicode-ident` upgrade could silently move a character between the two
+    /// owners. These assertions fail loudly instead: each excluded character
+    /// must still be admitted by XID (or the exclusion is dead) and still be
+    /// outside `\w`'s alphabetic core (or the exclusion is now wrong).
+    #[test]
+    fn every_word_class_exclusion_is_still_load_bearing() {
+        for (label, character) in [
+            ("U+2118", '\u{2118}'),
+            ("U+212E", '\u{212e}'),
+            ("U+00B7", '\u{b7}'),
+            ("U+0387", '\u{387}'),
+            ("U+1369", '\u{1369}'),
+            ("U+1371", '\u{1371}'),
+            ("U+19DA", '\u{19da}'),
+        ] {
+            assert!(
+                is_xid_start(character) || is_xid_continue(character),
+                "{label} left XID; the exclusion is now dead code"
+            );
+            assert!(
+                !character.is_alphabetic(),
+                "{label} became Alphabetic; Perl's word class now admits it and \
+                 the exclusion must be dropped"
+            );
+            assert!(!perl_word_admits(character), "{label} is no longer excluded");
+        }
+    }
+
+    /// The converse guard: characters deliberately *not* excluded. U+1885 and
+    /// U+1886 are `Other_ID_Start` that Unicode later made Alphabetic, so `\w`
+    /// admits them and excluding them would reject valid Perl; U+309B and
+    /// U+309C are already outside XID, so excluding them would be dead code.
+    #[test]
+    fn characters_needing_no_exclusion_are_still_admitted() {
+        for (label, character) in [("U+1885", '\u{1885}'), ("U+1886", '\u{1886}')] {
+            assert!(character.is_alphabetic(), "{label} is no longer Alphabetic");
+            assert!(perl_word_admits(character), "{label} must stay admitted");
+        }
+        for (label, character) in [("U+309B", '\u{309b}'), ("U+309C", '\u{309c}')] {
+            assert!(
+                !is_xid_start(character) && !is_xid_continue(character),
+                "{label} entered XID and now needs an explicit decision"
+            );
+        }
+    }
+
     /// The same characters must not read as identifier continuations either,
     /// or an occurrence bordering one would be refused as a longer name.
     #[test]
