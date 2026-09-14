@@ -392,11 +392,6 @@ impl PullReportSubject {
 /// own schema field so the two layers cannot be confused.
 const PULL_REPORT_IDENTITY_V1_TAG: &str = "perl-lsp:pull-report-identity:v1";
 
-/// Reduce a document URI to a stable logical path spelling.
-///
-/// Forward-slash separated, no leading slash. Documents outside any root fall
-/// back to their absolute URI path; the value only ever feeds the digested
-/// logical-source ID and never appears in a public result ID.
 /// Resolve the root authority and the document's path *relative to that root*.
 ///
 /// Both halves come out of one decision so the pair is always coherent: the
@@ -424,6 +419,17 @@ const PULL_REPORT_IDENTITY_V1_TAG: &str = "perl-lsp:pull-report-identity:v1";
 ///   pending the #4832 authority bridge, instead of into the logical source,
 ///   which must stay root-relative. Behavior is preserved for these documents:
 ///   they keep a reusable result ID rather than losing one.
+///
+///   The context's `identity_root_key` is deliberately **not** the root key here.
+///   It gates admission — no key, no identity — but the standalone root is keyed
+///   on the document's own directory instead, and that substitution is what keeps
+///   the branch sound. Reusing the context key with a bare file name would make
+///   `/a/Mod.pm` and `/b/Mod.pm` one logical source whenever they share a key,
+///   which the provider-default constructors guarantee: they ship
+///   `identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY)` with no path, so
+///   every path-less document would collapse onto that one synthetic root.
+///   `standalone_documents_are_identified_relative_to_their_own_directory` pins
+///   the non-collision.
 ///
 /// Absent root authority is still absent (#7480): a missing root key yields
 /// [`NotReusable::MissingRootAuthority`] rather than a standalone identity.
@@ -915,6 +921,85 @@ mod tests {
             pull_report_subject("/root/dir/../file.pm", CONTENT, Some(1), &context),
             Err(NotReusable::SourcePathNotPlainDescent),
             "a document the server knows the root of must not fall back to standalone"
+        );
+    }
+
+    /// Exhaustive over the refusal enum: adding a variant without naming it here is
+    /// a compile error, so no refusal can ship without a rendered message.
+    fn not_reusable_label(outcome: &NotReusable) -> &'static str {
+        match outcome {
+            NotReusable::MissingRootAuthority => "MissingRootAuthority",
+            NotReusable::PolicyIncomplete(_) => "PolicyIncomplete",
+            NotReusable::SourcePathUnavailable => "SourcePathUnavailable",
+            NotReusable::SourcePathHasNoFileName => "SourcePathHasNoFileName",
+            NotReusable::SourcePathNotPlainDescent => "SourcePathNotPlainDescent",
+            NotReusable::SourcePathNotRepresentable => "SourcePathNotRepresentable",
+            NotReusable::SourcePathNotCanonical(_) => "SourcePathNotCanonical",
+            // `#[non_exhaustive]` only constrains other crates; in-crate this match
+            // stays exhaustive on purpose so a new refusal cannot skip its message.
+        }
+    }
+
+    /// Every refusal must render something a maintainer can act on, and the
+    /// variants must be distinguishable from each other.
+    ///
+    /// Deliberately does *not* assert the absence of `/`: these messages contain
+    /// no input, and separators appear legitimately as prose and punctuation
+    /// ("workspace/root authority", "` `` /`` `"). Leak-freedom is a property of
+    /// refusals carrying real rejected material, and is proven against a canary by
+    /// `refusal_text_does_not_leak_document_or_root_paths`.
+    #[test]
+    fn every_not_reusable_variant_renders_a_distinct_message() {
+        let all = [
+            NotReusable::MissingRootAuthority,
+            NotReusable::SourcePathUnavailable,
+            NotReusable::SourcePathHasNoFileName,
+            NotReusable::SourcePathNotPlainDescent,
+            NotReusable::SourcePathNotRepresentable,
+            NotReusable::SourcePathNotCanonical(LogicalPathError::ParentDirectorySegment),
+        ];
+
+        let mut rendered = Vec::new();
+        for outcome in &all {
+            let text = format!("{outcome}");
+            assert!(!text.is_empty(), "{} must render", not_reusable_label(outcome));
+            assert!(
+                text.contains("document") || text.contains("authority"),
+                "{} must name its subject, got {text:?}",
+                not_reusable_label(outcome)
+            );
+            rendered.push(text);
+        }
+
+        let mut unique = rendered.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            rendered.len(),
+            "each refusal must be distinguishable: {rendered:?}"
+        );
+    }
+
+    /// The exact configuration the provider-default constructors ship — a synthetic
+    /// `identity_root_key` with no `identity_root_path` — must not collapse every
+    /// path-less document onto that one synthetic root. This is why the standalone
+    /// branch keys on the document's own directory instead of the context key.
+    #[test]
+    fn provider_default_key_without_a_path_does_not_collapse_distinct_documents() {
+        let context = PullDiagnosticsContext::new();
+        assert!(
+            context.identity_root_key.is_some() && context.identity_root_path.is_none(),
+            "this test is only meaningful for the provider-default key/path shape"
+        );
+
+        let first = subject_for(&context, "file:///a/Mod.pm", CONTENT).compose().ok();
+        let second = subject_for(&context, "file:///b/Mod.pm", CONTENT).compose().ok();
+
+        assert!(first.is_some(), "a path-less document must still compose");
+        assert_ne!(
+            first, second,
+            "same file name under one synthetic key must not become one logical source"
         );
     }
 

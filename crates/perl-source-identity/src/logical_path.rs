@@ -139,7 +139,7 @@ impl std::error::Error for LogicalPathError {}
 /// A validated path is well-formed, not *true*. It is not known to exist, to be
 /// contained by its root, or to be free of symlink escapes; percent-encoded
 /// material (`My%20File.pm`) is well-formed and passes, so decoding remains the
-/// caller's job.
+/// caller's job. Those are physical-location questions owned above this crate.
 ///
 /// [`LogicalPathError::ControlCharacter`] rejects the `Cc` category (C0, C1 and
 /// DEL) and nothing more. Unicode *format* characters — a zero-width space, a
@@ -147,7 +147,7 @@ impl std::error::Error for LogicalPathError {}
 /// still be spelled to look like a different path in a log or an editor. That is
 /// a presentation concern for whatever renders the path, not an identity one:
 /// such spellings are distinct sources here and are treated as such. Refusing
-/// them would be a folding policy, which this type deliberately does not own. Those are physical-location questions owned above this crate.
+/// them would be a folding policy, which this type deliberately does not own.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RootRelativeLogicalPath(String);
 
@@ -385,6 +385,59 @@ mod tests {
             "NFC and NFD spellings must remain distinct logical paths"
         );
         assert_eq!(composed.as_str(), "lib/caf\u{e9}.pm", "bytes must be preserved");
+    }
+
+    // ── Every refusal is renderable, distinct, and path-free ──────────────────
+
+    /// Exhaustive over the error enum: adding a variant without naming it here is
+    /// a compile error, so no refusal can ship without a rendered message.
+    fn variant_label(error: LogicalPathError) -> &'static str {
+        match error {
+            LogicalPathError::Empty => "Empty",
+            LogicalPathError::LeadingSeparator => "LeadingSeparator",
+            LogicalPathError::BackslashSeparator => "BackslashSeparator",
+            LogicalPathError::WindowsDrivePrefix => "WindowsDrivePrefix",
+            LogicalPathError::CurrentDirectorySegment => "CurrentDirectorySegment",
+            LogicalPathError::ParentDirectorySegment => "ParentDirectorySegment",
+            LogicalPathError::EmptySegment => "EmptySegment",
+            LogicalPathError::ControlCharacter => "ControlCharacter",
+        }
+    }
+
+    /// A typed refusal nobody can read is not much better than an untyped one.
+    #[test]
+    fn every_error_variant_renders_a_distinct_message() {
+        let all = [
+            LogicalPathError::Empty,
+            LogicalPathError::LeadingSeparator,
+            LogicalPathError::BackslashSeparator,
+            LogicalPathError::WindowsDrivePrefix,
+            LogicalPathError::CurrentDirectorySegment,
+            LogicalPathError::ParentDirectorySegment,
+            LogicalPathError::EmptySegment,
+            LogicalPathError::ControlCharacter,
+        ];
+
+        let mut rendered = Vec::new();
+        for error in all {
+            let text = format!("{error}");
+            assert!(!text.is_empty(), "{} must render a message", variant_label(error));
+            assert!(
+                text.contains("logical path"),
+                "{} must name its subject, got {text:?}",
+                variant_label(error)
+            );
+            rendered.push(text);
+        }
+
+        let mut unique = rendered.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            rendered.len(),
+            "each refusal must be distinguishable from the others: {rendered:?}"
+        );
     }
 
     // ── Privacy ───────────────────────────────────────────────────────────────
