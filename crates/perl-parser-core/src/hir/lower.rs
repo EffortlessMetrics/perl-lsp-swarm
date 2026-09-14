@@ -930,7 +930,7 @@ impl Lowerer {
                 );
                 self.visit_children(node, confidence);
             }
-            NodeKind::Try { catch_blocks, finally_block, .. } => {
+            NodeKind::Try { body, catch_blocks, finally_block } => {
                 self.push_item(
                     node,
                     None,
@@ -942,11 +942,57 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                // The try body, each catch handler body, and the finally body
-                // (when present) are all visited via the AST's own child
-                // iteration, same mechanism as Eval/Do/Match, so nested
-                // statements still lower to their own HIR items.
-                self.visit_children(node, confidence);
+
+                // Children are visited explicitly rather than through
+                // `visit_children` because a `catch ($e)` binding needs a scope
+                // frame that `visit_children` cannot provide (#15567).
+                //
+                // The parser stores the catch variable as tuple metadata on
+                // `NodeKind::Try`, not as a child `NodeKind::Variable`, so no
+                // arm of this traversal ever recorded it. Reads of `$e` inside
+                // the handler then resolved against the *enclosing* scope:
+                // `catch ($e) { h($e) }` produced a `StashRead` for `$e`, and
+                // an outer `my $e` was not shadowed but silently reused.
+                //
+                // Each handler that binds a variable gets its own frame,
+                // spanning the binding through the end of the handler block, so
+                // the block scope created by the `Block` arm nests inside it and
+                // ordinary parent-chain resolution finds the binding.
+                self.visit(body, confidence);
+
+                for (catch_variable, handler) in catch_blocks {
+                    let Some((spelling, variable_range)) = catch_variable else {
+                        // Bare `catch { … }` and `catch Class with { … }` bind
+                        // nothing, so they need no frame of their own.
+                        self.visit(handler, confidence);
+                        continue;
+                    };
+
+                    let (sigil, name) = split_catch_variable(spelling);
+                    let frame_range =
+                        SourceLocation::new(variable_range.start, handler.location.end);
+                    let scope_id = self.enter_scope(
+                        ScopeKind::Block,
+                        frame_range,
+                        self.package_context.clone(),
+                    );
+                    // `catch ($e)` introduces a lexical, so the binding storage
+                    // is the same class an explicit `my $e` would record.
+                    self.record_binding(
+                        sigil.to_string(),
+                        name.to_string(),
+                        *variable_range,
+                        StorageClass::LexicalMy,
+                        scope_id,
+                        None,
+                    );
+                    self.visit(handler, confidence);
+                    self.exit_scope();
+                }
+
+                if let Some(finally_block) = finally_block {
+                    self.visit(finally_block, confidence);
+                }
             }
             NodeKind::Class { name, name_span, parents, .. } => {
                 // First slice: shell + child traversal only. Unlike `Package`,
@@ -4314,7 +4360,7 @@ impl<'a> BodyBuilder2<'a> {
                     // so it is lowered first and the arena order matches source
                     // evaluation order.
                     let binding = binding.as_ref().map(|(spelling, binding_range)| {
-                        self.lower_catch_binding(spelling, *binding_range)
+                        self.lower_catch_binding(spelling, *binding_range, block)
                     });
                     let block = self.lower_nested_block(block);
                     catch_handlers.push(HirCatchHandler { binding, block });
@@ -4899,19 +4945,31 @@ impl<'a> BodyBuilder2<'a> {
     /// rather than the whole `catch (…)` header — the same anchoring rule as
     /// [`lower_iterator_binding`](Self::lower_iterator_binding).
     ///
-    /// The parser only admits a scalar catch variable, so a spelling without a
-    /// recognized sigil is treated as a bare name under the scalar sigil rather
-    /// than silently keeping a sigil character inside `name`.
-    fn lower_catch_binding(&mut self, spelling: &str, range: SourceLocation) -> HirExprId {
-        let (sigil, name) = match spelling.split_at_checked(1) {
-            Some((sigil, rest)) if matches!(sigil, "$" | "@" | "%" | "&" | "*") => (sigil, rest),
-            _ => ("$", spelling),
-        };
+    /// The binding kind is resolved through the scope graph rather than assumed
+    /// lexical, from inside the handler's own scope. The first pass registers
+    /// the binding in a frame wrapping the handler (see the `NodeKind::Try` arm
+    /// there), so resolving from the handler block finds it and agrees with how
+    /// reads of the same variable inside that handler resolve. Assuming
+    /// `Lexical` here instead would emit a lexical write whose reads resolve as
+    /// package accesses — the exact mismatch this slice exists to remove.
+    fn lower_catch_binding(
+        &mut self,
+        spelling: &str,
+        range: SourceLocation,
+        handler: &Node,
+    ) -> HirExprId {
+        let (sigil, name) = split_catch_variable(spelling);
+
+        let previous_scope = self.start_scope;
+        self.start_scope = find_body_scope(self.scope_graph, handler.location);
+        let kind = self.resolve_variable_kind(sigil, name);
+        self.start_scope = previous_scope;
+
         self.alloc_expr(
             HirExpr::Variable(HirVariable {
                 sigil: sigil_from_str(sigil),
                 name: name.to_string(),
-                kind: VariableKind::Lexical,
+                kind,
                 access: AccessMode::Write,
             }),
             range,
@@ -5026,6 +5084,20 @@ fn find_body_scope(scope_graph: &ScopeGraph, body_loc: SourceLocation) -> HirSco
     best.map(|(_, id)| id)
         .or_else(|| scope_graph.scopes.first().map(|s| s.id))
         .unwrap_or_else(|| HirScopeId::from_index(0))
+}
+
+/// Split a `catch ($e)` variable spelling into its sigil and bare name.
+///
+/// `parse_try` records the catch variable as `format!("{sigil}{name}")`, while
+/// every binding and `HirVariable` in this crate keeps the sigil in its own
+/// field. The parser only admits a scalar catch variable, so a spelling without
+/// a recognized sigil is treated as a bare name under the scalar sigil rather
+/// than silently keeping a sigil character inside the name.
+fn split_catch_variable(spelling: &str) -> (&str, &str) {
+    match spelling.split_at_checked(1) {
+        Some((sigil, rest)) if matches!(sigil, "$" | "@" | "%" | "&" | "*") => (sigil, rest),
+        _ => ("$", spelling),
+    }
 }
 
 fn sigil_from_str(s: &str) -> Sigil {

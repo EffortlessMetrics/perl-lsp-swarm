@@ -111,6 +111,19 @@ fn lexical_writes(graph: &PirGraph, name: &str) -> usize {
         .count()
 }
 
+/// The lexical PIR operation names touching `name`, in emission order.
+fn lexical_op_names(graph: &PirGraph, name: &str) -> Vec<&'static str> {
+    graph
+        .nodes
+        .iter()
+        .filter_map(|n| match &n.operation {
+            PirOperation::LexicalWrite { name: n } if n.name == name => Some("LexicalWrite"),
+            PirOperation::LexicalRead { name: n } if n.name == name => Some("LexicalRead"),
+            _ => None,
+        })
+        .collect()
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 1. The load-bearing behavioral claim
 // ──────────────────────────────────────────────────────────────────────────────
@@ -400,6 +413,98 @@ fn handler_stays_reachable_when_try_body_models_no_node() {
     assert!(
         !incoming.contains(&PirEdgeKind::Fallthrough),
         "the fallback must not claim ordinary control flow; incoming = {incoming:?}"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 3b. The catch binding is a real binding, not a synthesized place
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Reads of the catch variable inside its handler must resolve to the binding.
+///
+/// The binding is lowered as a *lexical write place*. If the first pass does not
+/// register it in the scope graph, reads of the same variable in the same
+/// handler resolve against the enclosing scope instead and come back as
+/// `StashRead` — a body that writes a lexical and reads a package global under
+/// one name. That is an internally inconsistent fact set, and exactly the class
+/// of untruth this slice exists to remove.
+///
+/// The `foreach` iterator binding is the control: it is the precedent this
+/// lowering follows, and it is consistent because the parser emits a real child
+/// node for `my $i` that the first pass records. The catch variable is tuple
+/// metadata on `NodeKind::Try`, so it must be registered deliberately.
+#[test]
+fn catch_binding_reads_resolve_lexically_like_a_foreach_binding() {
+    let catch_ops =
+        lexical_op_names(&lower_pir("sub f { try { g() } catch ($e) { h($e); } }"), "e");
+    let foreach_ops = lexical_op_names(&lower_pir("sub f { for my $i (1, 2) { h($i); } }"), "i");
+
+    assert_eq!(
+        catch_ops,
+        ["LexicalWrite", "LexicalRead"],
+        "the catch binding and its read must both be lexical; got {catch_ops:?}. \
+         A missing LexicalRead means the read resolved as a package access."
+    );
+    assert_eq!(
+        catch_ops, foreach_ops,
+        "a catch binding must behave like the foreach iterator binding it is modeled on: \
+         catch = {catch_ops:?}, foreach = {foreach_ops:?}"
+    );
+}
+
+/// `catch ($e)` shadows an outer `my $e` rather than reusing it.
+///
+/// Negative control for the scope frame: without a handler-scoped frame the
+/// read resolves to the outer binding, which is both wrong and invisible in the
+/// PIR operation names alone — both spellings produce `LexicalRead`. This
+/// asserts the resolved binding identity, not just the operation kind.
+#[test]
+fn catch_binding_shadows_an_outer_lexical_of_the_same_name() {
+    let source = "sub f { my $e = 1; try { g() } catch ($e) { h($e); } }";
+    let file = lower(source);
+    let graph = &file.scope_graph;
+
+    let outer_start = source.find("my $e").map(|i| i + 3).expect("probe declares my $e");
+    let catch_start = source.find("catch ($e)").map(|i| i + 7).expect("probe has catch ($e)");
+
+    let binding_at = |start: usize| {
+        graph.bindings.iter().find(|b| b.name == "e" && b.range.start == start).unwrap_or_else(
+            || {
+                panic!(
+                    "no binding for $e at byte {start}; bindings = {:?}",
+                    graph.bindings.iter().map(|b| (&b.name, b.range.start)).collect::<Vec<_>>()
+                )
+            },
+        )
+    };
+
+    let outer_binding = binding_at(outer_start);
+    let catch_binding = binding_at(catch_start);
+    assert_ne!(
+        outer_binding.id, catch_binding.id,
+        "the catch binding must be distinct from the outer declaration"
+    );
+    assert_ne!(
+        outer_binding.scope_id, catch_binding.scope_id,
+        "the catch binding must live in its own handler-scoped frame"
+    );
+    assert_eq!(
+        catch_binding.shadows,
+        Some(outer_binding.id),
+        "the catch binding must record that it shadows the outer $e"
+    );
+
+    // The read inside the handler must resolve to the catch binding.
+    let read_start = source.find("h($e)").map(|i| i + 2).expect("probe reads $e in the handler");
+    let read = graph
+        .references
+        .iter()
+        .find(|r| r.name == "e" && r.range.start == read_start)
+        .expect("handler read of $e must be recorded");
+    assert_eq!(
+        read.resolved_binding,
+        Some(catch_binding.id),
+        "the handler read must resolve to the catch binding, not the outer $e"
     );
 }
 
