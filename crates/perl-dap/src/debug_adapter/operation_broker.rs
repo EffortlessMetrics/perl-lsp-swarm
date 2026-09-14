@@ -67,6 +67,16 @@ pub(crate) struct SessionGeneration(u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct SuspensionGeneration(u64);
 
+impl SuspensionGeneration {
+    pub(crate) fn from_u64(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 /// Cooperative cancellation flag for one pending operation.
 #[derive(Debug, Clone)]
 pub(crate) struct CancellationToken(Arc<AtomicBool>);
@@ -298,6 +308,28 @@ impl OperationBroker {
         }
         table.fifo.push_back(PendingEntry { operation: operation.clone() });
         Ok(operation)
+    }
+
+    /// Run one final acceptance step while arbitrating against session
+    /// settlement.  The callback must be bounded and must not wait: the
+    /// pending-table lock is held so `settle_under_lock` cannot invalidate the
+    /// generation between validation and acceptance. The callback must not perform
+    /// I/O or acquire another broker lock.
+    pub(crate) fn accept_if_current<T>(
+        &self,
+        expected: SessionGeneration,
+        accept: impl FnOnce() -> T,
+    ) -> Result<T, BrokerTerminal> {
+        let table = lock_or_recover(&self.pending, "operation_broker.pending");
+        if expected != self.current_session_generation() {
+            return Err(BrokerTerminal::StaleGeneration);
+        }
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(BrokerTerminal::SessionGone("session_not_ready"));
+        }
+        let accepted = accept();
+        drop(table);
+        Ok(accepted)
     }
 
     /// Whether the operation is still registered as pending.
@@ -557,8 +589,8 @@ mod tests {
         BrokerFacingLine, BrokerOperation, BrokerOperationSpec, BrokerTerminal, CancellationToken,
         OperationBroker, OperationClass,
     };
-    use std::sync::atomic::Ordering;
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, mpsc};
     use std::time::{Duration, Instant};
 
     /// Short await budget for negative waits: long enough to survive poll
@@ -587,6 +619,108 @@ mod tests {
             timeout,
             cancellation: None,
         }
+    }
+
+    #[test]
+    fn final_acceptance_rejects_generation_after_settle() -> Result<(), String> {
+        let broker = OperationBroker::new();
+        let expected = broker.current_session_generation();
+        broker.settle_all("terminated");
+
+        let result = broker.accept_if_current(expected, || "accepted");
+        if result != Err(BrokerTerminal::StaleGeneration) {
+            return Err(format!("settled generation was accepted: {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn final_acceptance_serializes_before_later_settle() -> Result<(), String> {
+        let broker = OperationBroker::new();
+        let expected = broker.current_session_generation();
+        let accepted = broker.accept_if_current(expected, || 42);
+        if accepted != Ok(42) {
+            return Err(format!("current generation was not accepted: {accepted:?}"));
+        }
+
+        // Settlement after the acceptance is a later linearization point. It
+        // may invalidate the session afterward, but cannot retroactively
+        // turn the already-committed callback into a stale acceptance.
+        broker.settle_all("restart");
+        let rejected = broker.accept_if_current(expected, || 7);
+        if rejected != Err(BrokerTerminal::StaleGeneration) {
+            return Err(format!("settled generation was accepted again: {rejected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn final_acceptance_excludes_settlement_during_callback() -> Result<(), String> {
+        // The callback performs only bounded, nonblocking work. A competing
+        // settle is started after callback entry; with the arbitration lock it
+        // must wait until the callback has returned.
+        for _ in 0..16 {
+            let broker = Arc::new(OperationBroker::new());
+            let expected = broker.current_session_generation();
+            let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+            let settled = Arc::new(AtomicBool::new(false));
+            let overlapped = Arc::new(AtomicBool::new(false));
+            let callback_reentered = Arc::new(AtomicBool::new(false));
+
+            let accepting = {
+                let broker = Arc::clone(&broker);
+                let broker_for_probe = Arc::clone(&broker);
+                let settled = Arc::clone(&settled);
+                let overlapped = Arc::clone(&overlapped);
+                let callback_reentered = Arc::clone(&callback_reentered);
+                std::thread::spawn(move || {
+                    broker.accept_if_current(expected, || {
+                        if !matches!(
+                            broker_for_probe.pending.try_lock(),
+                            Err(std::sync::TryLockError::WouldBlock)
+                        ) {
+                            callback_reentered.store(true, Ordering::Release);
+                        }
+                        let _ = entered_tx.try_send(());
+                        for _ in 0..250_000 {
+                            if settled.load(Ordering::Acquire) {
+                                overlapped.store(true, Ordering::Release);
+                            }
+                            std::hint::spin_loop();
+                        }
+                        42
+                    })
+                })
+            };
+            let settling = {
+                let broker = Arc::clone(&broker);
+                let settled = Arc::clone(&settled);
+                std::thread::spawn(move || {
+                    entered_rx
+                        .recv_timeout(Duration::from_secs(1))
+                        .map_err(|_| "acceptance callback did not start")?;
+                    broker.settle_all("terminated");
+                    settled.store(true, Ordering::Release);
+                    Ok::<(), String>(())
+                })
+            };
+
+            let accepted = accepting.join().map_err(|_| "acceptance thread panicked")?;
+            settling
+                .join()
+                .map_err(|_| "settlement thread panicked")?
+                .map_err(|error| error.to_string())?;
+            if accepted != Ok(42) {
+                return Err(format!("current acceptance was rejected: {accepted:?}"));
+            }
+            if overlapped.load(Ordering::Acquire) {
+                return Err("settlement entered while final acceptance callback was running".into());
+            }
+            if callback_reentered.load(Ordering::Acquire) {
+                return Err("acceptance callback reacquired the broker arbitration lock".into());
+            }
+        }
+        Ok(())
     }
 
     fn markers(operation: &BrokerOperation) -> (String, String) {

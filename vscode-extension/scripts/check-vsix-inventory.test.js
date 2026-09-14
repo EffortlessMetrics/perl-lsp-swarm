@@ -8,9 +8,11 @@ const { spawnSync } = require('node:child_process');
 const JSZip = require('jszip');
 const {
   baselineForPlatform,
+  bundleTargetForPackagedFile,
   classifyInventoryViolations,
   compareInventory,
   currentSourceBundleFile,
+  currentSourceBundleFiles,
   parseArgs,
   platformForPackagedFile,
   summarizeInventory,
@@ -247,6 +249,65 @@ void test('checks an explicitly staged current-source target already in the base
   );
 });
 
+void test('allows only the exact current-source server and DAP target', () => {
+  const baseline = {
+    total_files: 1,
+    total_bytes: 2,
+    files: { 'README.md': 2 },
+  };
+  /** @type {[string, string]} */
+  const allowed = /** @type {[string, string]} */ (currentSourceBundleFiles('linux', 'x64', true));
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 12,
+        files: { 'README.md': 2, [allowed[0]]: 4, [allowed[1]]: 6 },
+      },
+      baseline,
+      'linux',
+      { allowedFiles: allowed, arch: 'x64' },
+    ),
+    [],
+  );
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 12,
+        files: { 'README.md': 2, [allowed[0]]: 4, [allowed[1]]: 6 },
+      },
+      baseline,
+      'linux',
+      { allowedFiles: [allowed[0]], arch: 'x64' },
+    ),
+    [
+      'file count grew from 1 to 2',
+      'total bytes grew from 2 to 8',
+      'new packaged file: bin/linux-x64/perl-dap',
+    ],
+  );
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 12,
+        files: { 'README.md': 2, [allowed[0]]: 4, 'bin/linux-arm64/perl-dap': 6 },
+      },
+      baseline,
+      'linux',
+      { allowedFiles: allowed, arch: 'x64' },
+    ),
+    ['unexpected foreign-platform packaged file: bin/linux-arm64/perl-dap'],
+  );
+});
+
+void test('does not exempt a DAP target when this run staged only the server', () => {
+  const currentSourceServer = currentSourceBundleFiles('linux', 'x64', false);
+  assert.deepEqual(currentSourceServer, ['bin/linux-x64/perllsp']);
+});
+
 void test('selects the exact platform and architecture baseline', () => {
   const baseline = {
     total_files: 3,
@@ -280,6 +341,129 @@ void test('does not classify ordinary files as platform-owned', () => {
   assert.equal(platformForPackagedFile('bin/darwin-arm64/perllsp'), 'darwin');
 });
 
+void test('classifies musl bundle members as alpine-owned', () => {
+  assert.equal(platformForPackagedFile('bin/alpine-x64/perllsp'), 'alpine');
+  assert.equal(platformForPackagedFile('bin/alpine-arm64/perllsp'), 'alpine');
+  assert.equal(bundleTargetForPackagedFile('bin/alpine-x64/perllsp'), 'alpine-x64');
+  assert.equal(bundleTargetForPackagedFile('bin/alpine-arm64/perl-dap'), 'alpine-arm64');
+  assert.equal(bundleTargetForPackagedFile('assets/demo-project/main.pl'), null);
+});
+
+void test('scopes an alpine baseline member to the alpine target', () => {
+  const baseline = {
+    total_files: 3,
+    total_bytes: 20,
+    files: {
+      'README.md': 2,
+      'bin/alpine-x64/perllsp': 8,
+      'bin/linux-x64/perllsp': 10,
+    },
+  };
+
+  assert.deepEqual(baselineForPlatform(baseline, 'linux', 'x64'), {
+    schema_version: 1,
+    total_files: 2,
+    total_bytes: 12,
+    files: { 'README.md': 2, 'bin/linux-x64/perllsp': 10 },
+  });
+  assert.deepEqual(baselineForPlatform(baseline, 'alpine', 'x64'), {
+    schema_version: 1,
+    total_files: 2,
+    total_bytes: 10,
+    files: { 'README.md': 2, 'bin/alpine-x64/perllsp': 8 },
+  });
+});
+
+void test('reports a musl payload inside a glibc package as foreign', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 12,
+    files: { 'README.md': 2, 'bin/linux-x64/perllsp': 10 },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 20,
+        files: {
+          'README.md': 2,
+          'bin/linux-x64/perllsp': 10,
+          'bin/alpine-x64/perllsp': 8,
+        },
+      },
+      baseline,
+      'linux',
+      { arch: 'x64' },
+    ),
+    ['unexpected foreign-platform packaged file: bin/alpine-x64/perllsp'],
+  );
+});
+
+void test('reports a glibc payload inside a musl package as foreign', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 10,
+    files: { 'README.md': 2, 'bin/alpine-x64/perllsp': 8 },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 3,
+        total_bytes: 20,
+        files: {
+          'README.md': 2,
+          'bin/alpine-x64/perllsp': 8,
+          'bin/linux-x64/perllsp': 10,
+        },
+      },
+      baseline,
+      'alpine',
+      { arch: 'x64' },
+    ),
+    ['unexpected foreign-platform packaged file: bin/linux-x64/perllsp'],
+  );
+});
+
+void test('accepts an alpine package that carries only its own musl payload', () => {
+  const baseline = {
+    total_files: 2,
+    total_bytes: 10,
+    files: { 'README.md': 2, 'bin/alpine-x64/perllsp': 8 },
+  };
+
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 10,
+        files: { 'README.md': 2, 'bin/alpine-x64/perllsp': 8 },
+      },
+      baseline,
+      'alpine',
+      { arch: 'x64' },
+    ),
+    [],
+  );
+  assert.deepEqual(
+    compareInventory(
+      {
+        total_files: 2,
+        total_bytes: 10,
+        files: { 'README.md': 2, 'bin/alpine-arm64/perllsp': 8 },
+      },
+      baseline,
+      'alpine',
+      { arch: 'x64' },
+    ),
+    [
+      'unexpected foreign-platform packaged file: bin/alpine-arm64/perllsp',
+      'baseline packaged file is missing: bin/alpine-x64/perllsp',
+    ],
+  );
+});
+
 const extensionRoot = path.resolve(__dirname, '..');
 const checker = path.join(__dirname, 'check-vsix-inventory.js');
 const baseline = JSON.parse(
@@ -305,14 +489,24 @@ function semanticInventory(files) {
   return { inventory, sha: sha256(Buffer.from(JSON.stringify(inventory))) };
 }
 
-async function fixture(directory, extraFiles = {}, missingMembers = []) {
+async function fixture(
+  directory,
+  extraFiles = {},
+  missingMembers = [],
+  { platform = 'win32', arch = 'x64' } = {},
+) {
+  const target = `${platform}-${arch}`;
+  const executableSuffix = platform === 'win32' ? '.exe' : '';
   const files = {
     ...baseline.files,
-    'bin/win32-x64/perllsp.exe': 6,
-    'bin/win32-x64/perl-dap.exe': 3,
+    [`bin/${target}/perllsp${executableSuffix}`]: 6,
+    [`bin/${target}/perl-dap${executableSuffix}`]: 3,
     ...extraFiles,
   };
-  for (const member of missingMembers) delete files[`bin/win32-x64/${member}`];
+  for (const member of missingMembers) {
+    const filename = member.endsWith(executableSuffix) ? member : `${member}${executableSuffix}`;
+    delete files[`bin/${target}/${filename}`];
+  }
   const archive = new JSZip();
   for (const [name, bytes] of Object.entries(files)) {
     archive.file(`extension/${name}`, Buffer.alloc(bytes));
@@ -372,7 +566,9 @@ async function fixture(directory, extraFiles = {}, missingMembers = []) {
   return { manifest, manifestPath, projectionPath, vsixPath, files };
 }
 
-function runChecker(paths, { currentSourceSmoke = false } = {}) {
+/** @param {{ manifest?: boolean, currentSourceSmoke?: boolean, currentSourceDapStaged?: boolean }} [options] */
+function runChecker(paths, options = {}) {
+  const { currentSourceSmoke = false, currentSourceDapStaged, manifest = true } = options;
   /** @type {Record<string, string>} */
   const environment = {
     ...process.env,
@@ -380,7 +576,15 @@ function runChecker(paths, { currentSourceSmoke = false } = {}) {
     PERL_LSP_VSIX_PROJECTION_INPUT: paths.projectionPath,
     PERL_LSP_VSCODE_TARGET: 'win32-x64',
   };
+  delete environment.PERL_LSP_CURRENT_SOURCE_DAP_STAGED;
   if (currentSourceSmoke) environment.PERL_LSP_CURRENT_SOURCE_SMOKE = '1';
+  if (currentSourceDapStaged !== undefined) {
+    environment.PERL_LSP_CURRENT_SOURCE_DAP_STAGED = currentSourceDapStaged ? '1' : '0';
+  }
+  if (!manifest) {
+    delete environment.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST;
+    delete environment.PERL_LSP_VSIX_PROJECTION_INPUT;
+  }
   const result = spawnSync(process.execPath, [checker, '--vsix', paths.vsixPath], {
     cwd: extensionRoot,
     env: environment,
@@ -390,6 +594,27 @@ function runChecker(paths, { currentSourceSmoke = false } = {}) {
   if (result.error) throw new Error(`checker failed to launch: ${result.error.message}`);
   return result;
 }
+
+void test('CLI exposes an unstaged current-source DAP instead of exempting stale state', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-current-source-dap-'));
+  try {
+    const paths = await fixture(directory, {}, [], {
+      platform: process.platform,
+      arch: process.arch,
+    });
+    const unstaged = runChecker(paths, { currentSourceSmoke: true, manifest: false });
+    assert.notEqual(unstaged.status, 0, `${unstaged.stdout}\n${unstaged.stderr}`);
+    assert.match(`${unstaged.stdout}\n${unstaged.stderr}`, /perl-dap|packaged file/);
+    const staged = runChecker(paths, {
+      currentSourceSmoke: true,
+      currentSourceDapStaged: true,
+      manifest: false,
+    });
+    assert.equal(staged.status, 0, `${staged.stdout}\n${staged.stderr}`);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 void test('CLI admits validated manifest server and DAP members', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-manifest-'));
