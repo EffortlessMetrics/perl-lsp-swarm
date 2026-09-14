@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 15124,
-  "reason": "PR #15126 registers the build-script proof in the serialized receipt command while retaining the landed packaging wrapper. The fresh Windows x64 VSIX from the combined candidate tree measured total inventory at 1864341 bytes; package.json is 59413 bytes, 115 bytes below the captured main baseline 59528, while out/extension.js is 3384 bytes larger and the other 27 archive paths match. A same-environment rebuild of captured main 3e96f31f9e458bbf7030668e5c9d96866f4ccb74 produced the same 1686496-byte out/extension.js, so that bundle delta is baseline-generation drift rather than a candidate source delta. This declaration records the exact measured archive; no validator, threshold, or admission rule changes.",
-  "base_baseline_file_sha256": "6eb7b8787bbea24c30ef1c5185a80b03e404e974eb83ed653cbd8db33b6f5ecc",
-  "candidate_baseline_file_sha256": "eaef617cee329a98c217809c7b330c51c8ea246eb13b983ecc78d83e4487d945",
-  "base_inventory_sha256": "44a4ea77a0c71a226b925d62743d30fce3845d4448c5a942124253601214938b",
-  "candidate_inventory_sha256": "2b68285babc5d03bd46afa00260919d43ed466415a40fc92e3a4ce79ed579766"
+  "owner_issue": 15451,
+  "reason": "Issue #15451 records the packaged DAP target-selection repair: compatible Windows ARM64 payloads prefer native ARM64, with Windows 11 x64 emulation only when supported; missing metadata follows the ordered host payload candidates. The exact candidate package measures out/extension.js at 1678528 bytes, a declared +114-byte size-only transition from the accepted base.",
+  "base_baseline_file_sha256": "b056bc5c2f0940e85f9d3710755f1a39805357f26502f0428a38edfa57e8100c",
+  "candidate_baseline_file_sha256": "97e252c780703cdac57817eb53c68e62fe8d8454364c4689569126f8dd7882f2",
+  "base_inventory_sha256": "efb6c015d76fa78802b07f0171e64bef7cd71651dbf78590112e68c22366d5f6",
+  "candidate_inventory_sha256": "4330c8d298776388ded382fe8ce8b3e810a47adf54cd214f25c5df4c0d033956"
 }

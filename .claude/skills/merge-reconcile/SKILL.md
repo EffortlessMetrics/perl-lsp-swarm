@@ -269,3 +269,5 @@ rather than dropping them silently.
 - `PR_IN_FLIGHT` → update the claim frame with the wake event and return to `deliver-goal`
 - `CANDIDATE_MOVED` → refresh only affected proof/review/integration
 - `MERGE_BLOCKED` / `NOT_PROVEN` → preserve the exact blocker or missing evidence
+
+> Self-authored reversible corrections follow the canonical [correction and disclosure contract](../../../docs/agents/DEVELOPMENT_METHOD.md); this reference does not override higher-precedence instructions.

@@ -463,7 +463,7 @@ future_owner = "perl-parser-pest"
 migration_owner = "#7372"
 publish_disposition = "published"
 current_integration_mode = "workspace_path"
-metadata_authority = "workspace_inherited"
+metadata_authority = "package_explicit"
 
 [[packages]]
 name = "perl-pod"

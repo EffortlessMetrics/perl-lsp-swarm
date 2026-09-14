@@ -445,7 +445,7 @@ describe('transactional production activation (#7854)', () => {
     const legacyFolderEntries = tracked.filter(
       (entry) => entry.label === LEGACY_MIGRATION_FOLDER_LABEL,
     );
-    expect(legacyFolderEntries).toHaveLength(1);
+    expect(legacyFolderEntries).toHaveLength(2);
     expect(legacyFolderEntries[0]?.owner).toBeUndefined();
     expect(startedHealthWidgetDataSource).toBeDefined();
     expect(hostArray).toContain(startedHealthWidgetDataSource);

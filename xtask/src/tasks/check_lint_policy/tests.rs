@@ -7,14 +7,9 @@ mod summary;
 use super::model::{
     DebtEntry, DebtLedger, DeferredLint, LintEntry, LintLedger, LintPolicy, PlannedLint,
 };
-use chrono::NaiveDate;
 use color_eyre::eyre::{Result, bail, eyre};
 use std::path::Path;
 use toml::Value;
-
-pub(super) fn test_date() -> Result<NaiveDate> {
-    NaiveDate::from_ymd_opt(2026, 8, 15).ok_or_else(|| eyre!("invalid test date"))
-}
 
 pub(super) fn policy() -> LintPolicy {
     LintPolicy {
@@ -107,7 +102,7 @@ fn repository_catalog_and_workspace_inputs_validate() -> Result<()> {
     let lint_ledger = super::read::load_lint_ledger(root)?;
     let debt_ledger: DebtLedger = super::read::read_toml_as(root.join(super::DEBT_LEDGER))?;
 
-    super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, test_date()?)?;
+    super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger)?;
     Ok(())
 }
 
@@ -137,12 +132,47 @@ fn synchronized_manual_ilog2_rollback_fails_closed_through_validate_all() -> Res
         .ok_or_else(|| eyre!("lint ledger should carry clippy::manual_ilog2"))?
         .level = "warn".to_owned();
 
-    let Err(error) =
-        super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, test_date()?)
-    else {
+    let Err(error) = super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger) else {
         bail!("synchronized manual_ilog2 rollback must fail closed through validate_all");
     };
     assert!(error.to_string().contains("clippy::manual_ilog2"));
+    assert!(error.to_string().contains("must remain at level deny"));
+    Ok(())
+}
+
+#[test]
+fn synchronized_decimal_bitwise_operands_rollback_fails_closed_through_validate_all() -> Result<()>
+{
+    // Binds the *shipped* Cargo.toml and catalog fragment, not a synthetic
+    // ledger: this fails if either authority stops carrying the #9894
+    // promotion, which is what makes the zero-finding activation durable.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| eyre!("xtask manifest should have the workspace root as its parent"))?;
+    let mut cargo = super::read::read_toml(root.join(super::ROOT_MANIFEST))?;
+    let mut lint_ledger = super::read::load_lint_ledger(root)?;
+    let debt_ledger: DebtLedger = super::read::read_toml_as(root.join(super::DEBT_LEDGER))?;
+
+    *cargo
+        .get_mut("workspace")
+        .and_then(|workspace| workspace.get_mut("lints"))
+        .and_then(|lints| lints.get_mut("clippy"))
+        .and_then(|clippy| clippy.get_mut("decimal_bitwise_operands"))
+        .ok_or_else(|| eyre!("workspace clippy lints should carry decimal_bitwise_operands"))? =
+        Value::String("warn".to_owned());
+    lint_ledger
+        .lint
+        .iter_mut()
+        .find(|lint| lint.name == "clippy::decimal_bitwise_operands")
+        .ok_or_else(|| eyre!("lint ledger should carry clippy::decimal_bitwise_operands"))?
+        .level = "warn".to_owned();
+
+    let Err(error) = super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger) else {
+        bail!(
+            "synchronized decimal_bitwise_operands rollback must fail closed through validate_all"
+        );
+    };
+    assert!(error.to_string().contains("clippy::decimal_bitwise_operands"));
     assert!(error.to_string().contains("must remain at level deny"));
     Ok(())
 }
@@ -183,8 +213,7 @@ fn synchronized_lock_guard_rollback_fails_closed_through_validate_all() -> Resul
             .ok_or_else(|| eyre!("lint ledger should carry {identity}"))?
             .level = "warn".to_owned();
 
-        let Err(error) =
-            super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, test_date()?)
+        let Err(error) = super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger)
         else {
             bail!("synchronized {identity} rollback must fail closed through validate_all");
         };
@@ -220,8 +249,7 @@ fn removing_either_lock_guard_row_from_cargo_fails_closed_through_validate_all()
             .remove(cargo_key)
             .ok_or_else(|| eyre!("workspace {cargo_tool} lints should carry {cargo_key}"))?;
 
-        let Err(error) =
-            super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger, test_date()?)
+        let Err(error) = super::validate::validate_all(root, &cargo, &lint_ledger, &debt_ledger)
         else {
             bail!("removing {identity} from Cargo.toml must fail closed through validate_all");
         };
