@@ -284,6 +284,85 @@ jobs:
             exit 1
           fi
 
+      # ------------------------------------------------------------------
+      # #11401 host-reopen lifecycle journey: buffer close/reopen, full Vim
+      # exit and replacement launch, workspace not-exposed disposition,
+      # identity-bound cancellation, late-result rejection, finite repeated
+      # sessions, normal terminal cleanup, and forced-failure cleanup over
+      # one shared governed fixture (#11387 cells only).
+      # ------------------------------------------------------------------
+      - name: Run the #11401 host-reopen lifecycle journey (canonical)
+        run: >-
+          cargo run --quiet --locked -p xtask --
+          editor-compat vim run
+          --subject pinned_vim_lsp_upstream
+          --journey host-reopen-lifecycle
+          --fixture-variant canonical
+          --vim "$(command -v vim)"
+          --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject"
+          --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp"
+          --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical"
+          --timeout-ms 420000
+
+      - name: Bind the eight lifecycle cells (fail closed on any non-pass)
+        run: |
+          set -euo pipefail
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          cleanup="$(jq -r '.process_cleanup' "${receipt}")"
+          echo "host-reopen-lifecycle result: ${result} (cleanup: ${cleanup})"
+          [ "${result}" = "pass" ]
+          [ "${cleanup}" = "pass" ]
+          # Seven actionable cells must pass; the workspace/session cell stays
+          # truthfully `unsupported` (`client_not_exposed`) for this subject
+          # and must never be relabeled into a pass.
+          for cell in \
+            vim.vim_lsp.lifecycle.buffer_reopen \
+            vim.vim_lsp.lifecycle.host_reopen \
+            vim.vim_lsp.lifecycle.cancellation \
+            vim.vim_lsp.lifecycle.late_result_rejected \
+            vim.vim_lsp.lifecycle.repeated_sessions \
+            vim.vim_lsp.lifecycle.normal_cleanup \
+            vim.vim_lsp.lifecycle.failure_cleanup; do
+            observed="$(jq -r --arg id "${cell}" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+            echo "cell ${cell}: ${observed}"
+            [ "${observed}" = "pass" ]
+          done
+          workspace_observed="$(jq -r --arg id "vim.vim_lsp.lifecycle.workspace_or_session_reopen" '.journey[] | select(.id == $id) | .result' "${receipt}")"
+          echo "cell vim.vim_lsp.lifecycle.workspace_or_session_reopen: ${workspace_observed}"
+          [ "${workspace_observed}" = "unsupported" ]
+          [ -s "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-canonical/host-1/hermetic/raw/vim-lsp-client.log" ]
+
+      - name: Lifecycle negative control — server restart must fail typed
+        run: |
+          set -euo pipefail
+          # The required false subject: satisfying host replacement through a
+          # server restart inside one host must fail with the typed reason
+          # `host_replacement_absent`. The xtask entry enforces the exact
+          # typed reason itself (a wrong-reason failure exits nonzero), so a
+          # successful cargo run plus receipt result=fail binds the law.
+          cargo run --quiet --locked -p xtask -- \
+            editor-compat vim run \
+            --subject pinned_vim_lsp_upstream \
+            --journey host-reopen-lifecycle \
+            --fixture-variant server_restart_relabel \
+            --vim "$(command -v vim)" \
+            --vim-lsp-dir "${GITHUB_WORKSPACE}/target/vim-lsp-subject" \
+            --candidate "${GITHUB_WORKSPACE}/target/debug/perllsp" \
+            --out "${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-server-restart-relabel" \
+            --timeout-ms 420000
+          receipt="${GITHUB_WORKSPACE}/${PERLLSP_VIM_HOST_RUN_OUT}/lifecycle-server-restart-relabel/receipt.json"
+          result="$(jq -r '.result' "${receipt}")"
+          echo "server_restart_relabel control result: ${result}"
+          [ "${result}" = "fail" ]
+
+      - name: Prove no candidate process survives the lifecycle journeys
+        run: |
+          if pgrep -f '[p]erllsp([[:space:]]|$)' >/dev/null; then
+            echo "a perllsp process survived the lifecycle host runs" >&2
+            pgrep -af '[p]erllsp([[:space:]]|$)' >&2 || true
+            exit 1
+          fi
       - name: Run the #11396 save-format journey (canonical)
         run: >-
           cargo run --quiet --locked -p xtask --
@@ -427,4 +506,11 @@ jobs:
             target/vim-host-runs/ci/save-duplicate-owner/hermetic/artifacts/
             target/vim-host-runs/ci/save-wrong-root/receipt.json
             target/vim-host-runs/ci/save-wrong-root/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/receipt.json
+            target/vim-host-runs/ci/lifecycle-canonical/host-1/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-2/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-3/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-canonical/host-4/hermetic/artifacts/
+            target/vim-host-runs/ci/lifecycle-server-restart-relabel/receipt.json
+            target/vim-host-runs/ci/lifecycle-server-restart-relabel/host-1/hermetic/artifacts/
           if-no-files-found: warn
