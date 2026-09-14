@@ -42,11 +42,11 @@ use crate::feature_catalog::has_feature as catalog_has_feature;
 use crate::inline_values::{collect_inline_values_with_runtime, extract_variable_names};
 use crate::protocol::{
     BreakpointLocation, BreakpointLocationsArguments, BreakpointLocationsResponseBody,
-    CompletionItem, CompletionsArguments, CompletionsResponseBody, ContinueResponseBody,
-    DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DisconnectArguments,
-    EvaluateArguments, EvaluateResponseBody, ExceptionDetails, ExceptionInfoArguments,
-    ExceptionInfoResponseBody, GotoArguments, GotoTarget, GotoTargetsArguments,
-    GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
+    CancelArguments, CompletionItem, CompletionsArguments, CompletionsResponseBody,
+    ContinueResponseBody, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody,
+    DisconnectArguments, EvaluateArguments, EvaluateResponseBody, ExceptionDetails,
+    ExceptionInfoArguments, ExceptionInfoResponseBody, GotoArguments, GotoTarget,
+    GotoTargetsArguments, GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
     LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, RestartArguments,
     Scope, ScopesArguments, ScopesResponseBody, SetDataBreakpointsArguments,
     SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments, SetExpressionArguments,
@@ -165,8 +165,6 @@ pub struct DebugAdapter {
     debugger_output_marker: Arc<AtomicU64>,
     /// Test-observable count of framed debugger query writes.
     debugger_query_count: Arc<AtomicU64>,
-    /// Cancellation flag for in-progress requests.
-    cancel_requested: Arc<AtomicBool>,
     /// Data breakpoints (watchpoints) stored with REPLACE semantics
     /// Legacy retained slot: the #9091 fail-closed request path neither reads
     /// nor writes it; lifecycle cleanup retires it at its own boundary.
@@ -249,7 +247,6 @@ impl Default for DebugAdapter {
 
 impl Drop for DebugAdapter {
     fn drop(&mut self) {
-        self.cancel_requested.store(true, Ordering::Release);
         // Adapter drop settles every pending broker operation (#8564): the
         // correlation surface is going away with the adapter.
         self.operation_broker.settle_all("adapter_dropped");
@@ -277,7 +274,6 @@ impl DebugAdapter {
             exception_break_on_warn: Arc::new(Mutex::new(false)),
             debugger_output_marker: Arc::new(AtomicU64::new(1)),
             debugger_query_count: Arc::new(AtomicU64::new(0)),
-            cancel_requested: Arc::new(AtomicBool::new(false)),
             data_breakpoints: Arc::new(Mutex::new(Vec::new())),
             last_exception_message: Arc::new(Mutex::new(None)),
             last_launch_args: Arc::new(Mutex::new(None)),
@@ -710,18 +706,38 @@ impl DebugAdapter {
         suspension_generation: Option<u64>,
         expected_session_generation: Option<operation_broker::SessionGeneration>,
     ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound_with_token(
+            stdin,
+            commands,
+            timeout_ms,
+            suspension_generation,
+            expected_session_generation,
+            None,
+        )
+    }
+
+    fn send_framed_debugger_query_bound_with_token(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        timeout_ms: u64,
+        suspension_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+        cancellation: Option<operation_broker::CancellationToken>,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
         self.debugger_query_count.fetch_add(1, Ordering::Relaxed);
         let marker_id = self.next_debugger_marker_id();
         let begin_marker = format!("DAP_BEGIN_{marker_id}");
         let end_marker = format!("DAP_END_{marker_id}");
         let spec = operation_broker::BrokerOperationSpec {
+            request_seq: None,
             class: operation_broker::OperationClass::Query,
             session_generation: expected_session_generation
                 .unwrap_or_else(|| self.operation_broker.current_session_generation()),
             suspension_generation: suspension_generation
                 .map(operation_broker::SuspensionGeneration::from_u64),
             timeout: Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms)),
-            cancellation: None,
+            cancellation,
         };
         let operation = self
             .operation_broker
@@ -775,6 +791,7 @@ impl DebugAdapter {
         timeout_ms: u64,
     ) -> Option<Vec<String>> {
         let spec = operation_broker::BrokerOperationSpec {
+            request_seq: None,
             class: operation_broker::OperationClass::Query,
             session_generation: self.operation_broker.current_session_generation(),
             suspension_generation: None,
@@ -810,7 +827,6 @@ impl DebugAdapter {
             begin_marker,
             end_marker,
             &self.recent_output,
-            &self.cancel_requested,
         );
         if matches!(terminal, operation_broker::BrokerTerminal::Completed(_))
             && (self.operation_broker.current_session_generation() != operation.session_generation
@@ -1291,20 +1307,6 @@ print "result: $final\n";
     // covered by the Perl-gated tests in `tests/dap_session_cleanup_e2e.rs`
     // instead (see `ripr-suppress-debug-adapter-drop-process-boundary` in
     // `policy/ripr-suppressions.toml`).
-
-    #[test]
-    fn test_drop_sets_cancel_requested_before_clearing_session_state() {
-        let adapter = DebugAdapter::new();
-        let cancel_flag = Arc::clone(&adapter.cancel_requested);
-        assert!(!cancel_flag.load(Ordering::Acquire), "cancel flag should start false");
-
-        drop(adapter);
-
-        assert!(
-            cancel_flag.load(Ordering::Acquire),
-            "Drop must set cancel_requested so any in-flight output-reader thread observes it"
-        );
-    }
 
     #[test]
     fn test_drop_clears_attached_pid_session_state() {
