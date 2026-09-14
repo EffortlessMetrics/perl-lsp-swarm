@@ -79,13 +79,33 @@ const MAX_RIPR_STDERR_BYTES: usize = 64 * 1024;
 /// killed the lane. It bounds this repository's own disk use; it cannot make an
 /// oversized diff produce a verdict, and is not a capacity grant. Override with
 /// [`RIPR_MAX_RAW_CHECK_BYTES_ENV`] where a lane's disk budget genuinely differs.
+///
+/// This is a **soft** threshold while the producer runs: it is enforced by
+/// measuring the staged file, so the payload may pass it by the overshoot budget
+/// documented on [`RIPR_STDOUT_POLL_INTERVAL`] before the producer is
+/// terminated. A lane must therefore keep headroom above the ceiling, not
+/// exactly the ceiling. Publication is a hard check, measured once on the
+/// completed payload.
 const MAX_RIPR_RAW_CHECK_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 /// Environment override for [`MAX_RIPR_RAW_CHECK_BYTES`], as a byte count.
 const RIPR_MAX_RAW_CHECK_BYTES_ENV: &str = "RIPR_MAX_RAW_CHECK_BYTES";
-/// Interval between staged-payload size checks while the producer runs. The
-/// producer writes its own stdout file, so the size is read from the filesystem
-/// rather than by intercepting bytes; this is the resolution of that guard.
-const RIPR_STDOUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Interval between staged-payload size checks while the producer runs.
+///
+/// The producer owns its stdout file descriptor (#12569), so the payload is
+/// measured through the filesystem rather than by intercepting bytes. That makes
+/// [`MAX_RIPR_RAW_CHECK_BYTES`] a **soft** threshold: the producer keeps writing
+/// during each interval, so the staged file can pass the ceiling by up to
+/// (this interval × the producer's write bandwidth) before it is terminated.
+///
+/// This is therefore the overshoot budget, and it is deliberately short. The
+/// observed producer emitted ~954MB in 26s (~37MB/s), which overshoots by well
+/// under 1MB here; a single large buffered write bursting at device bandwidth
+/// is the worst case and stays in the tens of MB. Both are immaterial against
+/// the multi-GB exhaustion this guard prevents, but neither is zero — a hard
+/// allocation ceiling would need a producer-side output limit or a bounded
+/// filesystem, and `ripr` exposes no output cap (#15017 owns that upstream ask).
+/// Raising this interval widens the overshoot budget proportionally.
+const RIPR_STDOUT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const REVIEW_COMMENTS_JSON: &str = "target/ripr/review/comments.json";
 const REVIEW_COMMENTS_MD: &str = "target/ripr/review/comments.md";
 const ANNOTATIONS_TXT: &str = "target/ripr/review/annotations.txt";
@@ -1177,9 +1197,22 @@ fn max_raw_check_bytes() -> Result<u64> {
         }
     }
 
-    match env::var(RIPR_MAX_RAW_CHECK_BYTES_ENV) {
+    resolve_max_raw_check_bytes(env::var(RIPR_MAX_RAW_CHECK_BYTES_ENV))
+}
+
+/// Classifies a [`RIPR_MAX_RAW_CHECK_BYTES_ENV`] lookup into this run's ceiling.
+///
+/// Only an *absent* variable selects the default. A variable that is present but
+/// unreadable — including one holding non-UTF-8 bytes — is refused, because a
+/// lane that believes it set a ceiling and silently got the default would be
+/// killed by the failure this guard exists to convert into a clean refusal.
+fn resolve_max_raw_check_bytes(lookup: std::result::Result<String, env::VarError>) -> Result<u64> {
+    match lookup {
         Ok(value) => parse_max_raw_check_bytes(&value),
-        Err(_) => Ok(MAX_RIPR_RAW_CHECK_BYTES),
+        Err(env::VarError::NotPresent) => Ok(MAX_RIPR_RAW_CHECK_BYTES),
+        Err(env::VarError::NotUnicode(_)) => {
+            bail!("{RIPR_MAX_RAW_CHECK_BYTES_ENV} is set to a non-UTF-8 value")
+        }
     }
 }
 
@@ -12153,6 +12186,62 @@ paths = ["archive/**"]
         assert!(
             MAX_RIPR_RAW_CHECK_BYTES < LANE_KILLING_PAYLOAD_BYTES,
             "the default cap must refuse the payload measured killing the lane"
+        );
+    }
+
+    /// Only an *absent* override selects the default. A present-but-unreadable
+    /// override is refused, including the non-UTF-8 case: silently substituting
+    /// the default there would run a ceiling the lane did not ask for, which is
+    /// the failure this guard exists to convert into a clean refusal.
+    #[test]
+    fn staged_payload_cap_resolution_defaults_only_when_the_override_is_absent() -> Result<()> {
+        assert_eq!(
+            resolve_max_raw_check_bytes(Err(env::VarError::NotPresent))?,
+            MAX_RIPR_RAW_CHECK_BYTES,
+            "an absent override must select the documented default"
+        );
+        assert_eq!(resolve_max_raw_check_bytes(Ok("1048576".to_string()))?, 1024 * 1024);
+
+        // Constructing a genuinely non-UTF-8 `OsString` needs platform-specific
+        // extension traits, and this transport is load-bearing on Windows
+        // (#12569). The refusal keys on the variant rather than its bytes, so
+        // the variant is what this drives.
+        let error = resolve_max_raw_check_bytes(Err(env::VarError::NotUnicode(
+            std::ffi::OsString::from("non-utf8 stand-in"),
+        )))
+        .err()
+        .ok_or_else(|| eyre!("a non-UTF-8 override must be refused, not silently defaulted"))?;
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains(RIPR_MAX_RAW_CHECK_BYTES_ENV) && message.contains("non-UTF-8"),
+            "refusal must name the variable and the reason: {message}"
+        );
+
+        let error = resolve_max_raw_check_bytes(Ok("nonsense".to_string()))
+            .err()
+            .ok_or_else(|| eyre!("an unparseable override must be refused"))?;
+        color_eyre::eyre::ensure!(
+            format!("{error:#}").contains(RIPR_MAX_RAW_CHECK_BYTES_ENV),
+            "refusal must name the variable it read"
+        );
+        Ok(())
+    }
+
+    /// The in-run ceiling is enforced by measuring the staged file, so it is a
+    /// soft threshold whose overshoot is bounded by
+    /// (poll interval × producer write bandwidth). This pins the poll interval as
+    /// a declared overshoot budget: raising it widens that window
+    /// proportionally, and a long interval would let a bursting producer pass
+    /// the ceiling by enough to exhaust the headroom the guard assumes.
+    #[test]
+    fn staged_payload_poll_interval_keeps_the_overshoot_budget_small() {
+        assert!(
+            RIPR_STDOUT_POLL_INTERVAL <= Duration::from_millis(50),
+            "a longer poll interval widens the overshoot budget the cap depends on"
+        );
+        assert!(
+            RIPR_STDOUT_POLL_INTERVAL >= Duration::from_millis(5),
+            "an interval this short spends measurable CPU on stat() for a run lasting minutes"
         );
     }
 
