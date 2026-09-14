@@ -105,11 +105,22 @@ struct Disposition {
     reason: String,
     owner_issue: String,
     basis: DispositionBasis,
-    /// ISO-8601 date after which the disposition must be re-decided.
+    /// ISO-8601 date through which the disposition stays current.
+    ///
+    /// The boundary is inclusive: the row is still current *on* this date and
+    /// expires the day after, matching `review_after` in
+    /// `xtask/src/tasks/generated_policy.rs`.
     review_after: String,
     /// The condition that ends the disposition, independent of the calendar.
     exit_condition: String,
     claim_effect: ClaimEffect,
+    /// Required when, and only when, `claim_effect` is `claims_limited`.
+    ///
+    /// Without it `claims_limited` would carry no more machine-checkable
+    /// information than `excluded_from_claims` while permitting claims to
+    /// proceed — the same hole `multi_role_claim_ceiling` closes for roles.
+    #[serde(default)]
+    claims_limited_ceiling: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -846,7 +857,10 @@ impl ProofPolicy {
                     proof_class.class_id,
                     admitted,
                     allowed,
-                    proof_class.multi_role_claim_ceiling.as_deref().unwrap_or("—")
+                    proof_class
+                        .multi_role_claim_ceiling
+                        .as_deref()
+                        .map_or_else(|| "—".to_string(), table_cell)
                 ),
             )?;
         }
@@ -867,7 +881,10 @@ impl ProofPolicy {
                 &mut output,
                 &format!(
                     "| `{}` | {} | {} | {} |",
-                    dimension.dimension_id, values, dimension.owner_issue, dimension.claim_boundary
+                    dimension.dimension_id,
+                    values,
+                    dimension.owner_issue,
+                    table_cell(&dimension.claim_boundary)
                 ),
             )?;
         }
@@ -953,23 +970,27 @@ impl ProofPolicy {
         } else {
             line(
                 &mut output,
-                "| Item | Kind | Status | Basis | Owner | Review after | Exit condition | Claim effect | Reason |",
+                "| Item | Kind | Status | Basis | Owner | Review after | Exit condition | Claim effect | Claim ceiling | Reason |",
             )?;
-            line(&mut output, "| --- | --- | --- | --- | --- | --- | --- | --- | --- |")?;
+            line(&mut output, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")?;
             for disposition in &normalized.dispositions {
                 line(
                     &mut output,
                     &format!(
-                        "| `{}` | `{}` | `{}` | `{}` | {} | `{}` | {} | `{}` | {} |",
+                        "| `{}` | `{}` | `{}` | `{}` | {} | `{}` | {} | `{}` | {} | {} |",
                         disposition.item_id,
                         disposition.item_kind.stable_name(),
                         disposition.status.stable_name(),
                         disposition.basis.stable_name(),
                         disposition.owner_issue,
                         disposition.review_after,
-                        disposition.exit_condition,
+                        table_cell(&disposition.exit_condition),
                         disposition.claim_effect.stable_name(),
-                        disposition.reason
+                        disposition
+                            .claims_limited_ceiling
+                            .as_deref()
+                            .map_or_else(|| "—".to_string(), table_cell),
+                        table_cell(&disposition.reason)
                     ),
                 )?;
             }
@@ -1243,8 +1264,46 @@ impl Disposition {
         if !declared.contains(self.item_id.as_str()) {
             bail!("disposition names unknown {} {:?}", self.item_kind.stable_name(), self.item_id);
         }
-        Ok(())
+        match (self.claim_effect, self.claims_limited_ceiling.as_deref()) {
+            (ClaimEffect::ClaimsLimited, None) => bail!(
+                "disposition for {} {:?} limits claims and must declare a claims_limited_ceiling",
+                self.item_kind.stable_name(),
+                self.item_id
+            ),
+            (ClaimEffect::ClaimsLimited, Some(ceiling)) if ceiling.trim().is_empty() => bail!(
+                "disposition for {} {:?} has an empty claims_limited_ceiling",
+                self.item_kind.stable_name(),
+                self.item_id
+            ),
+            (ClaimEffect::ExcludedFromClaims, Some(_)) => bail!(
+                "disposition for {} {:?} excludes every claim and must not declare a claims_limited_ceiling",
+                self.item_kind.stable_name(),
+                self.item_id
+            ),
+            _ => Ok(()),
+        }
     }
+}
+
+/// Make one free-text policy value safe to place in a Markdown table cell.
+///
+/// Policy prose is arbitrary text. An unescaped `|` opens an extra column and a
+/// newline ends the row early, and because `--check` compares the committed file
+/// against this same output, a corrupted table would still read as current.
+fn table_cell(value: &str) -> String {
+    let mut cell = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '|' => cell.push_str("\\|"),
+            '\n' | '\r' => {
+                if !cell.ends_with(' ') {
+                    cell.push(' ');
+                }
+            }
+            _ => cell.push(character),
+        }
+    }
+    cell.trim().to_string()
 }
 
 /// Collapse the spellings that would let one concept family appear twice.
@@ -1649,6 +1708,7 @@ mod tests {
             review_after: "2099-01-01".to_string(),
             exit_condition: "A campaign names retained_axis.".to_string(),
             claim_effect: ClaimEffect::ExcludedFromClaims,
+            claims_limited_ceiling: None,
         }
     }
 
@@ -1744,6 +1804,7 @@ mod tests {
             review_after: "2099-01-01".to_string(),
             exit_condition: "Never; the class is already exercised.".to_string(),
             claim_effect: ClaimEffect::ExcludedFromClaims,
+            claims_limited_ceiling: None,
         });
         let error = policy
             .validate(&concepts()?)
@@ -1915,6 +1976,110 @@ mod tests {
         let mut concept_index = concepts()?;
         concept_index.concepts.push(ConceptIndexRow { family: "calls".to_string() });
         assert_ne!(concept_projection_digest(&concept_index), baseline);
+        Ok(())
+    }
+
+    #[test]
+    fn limited_claims_require_a_declared_ceiling() -> Result<()> {
+        let concepts = concepts()?;
+
+        // `claims_limited` lets claims proceed, so it must say how far.
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.claim_effect = ClaimEffect::ClaimsLimited;
+        policy.dispositions.push(disposition.clone());
+        let error = policy
+            .validate(&concepts)
+            .expect_err("a limiting disposition without a ceiling must fail closed")
+            .to_string();
+        assert!(error.contains("claims_limited_ceiling"), "unexpected error: {error}");
+
+        // An empty ceiling is the same hole spelled differently.
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut empty = retained_dimension(&mut policy);
+        empty.claim_effect = ClaimEffect::ClaimsLimited;
+        empty.claims_limited_ceiling = Some("   ".to_string());
+        policy.dispositions.push(empty);
+        assert!(policy.validate(&concepts).is_err());
+
+        // Declared, it validates.
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut declared = retained_dimension(&mut policy);
+        declared.claim_effect = ClaimEffect::ClaimsLimited;
+        declared.claims_limited_ceiling =
+            Some("Structural claims only; no execution claim may cite this axis.".to_string());
+        policy.dispositions.push(declared);
+        policy.validate(&concepts)?;
+        Ok(())
+    }
+
+    #[test]
+    fn excluded_claims_reject_a_spurious_ceiling() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.claims_limited_ceiling = Some("Unreachable ceiling.".to_string());
+        policy.dispositions.push(disposition);
+        let error = policy
+            .validate(&concepts()?)
+            .expect_err("a ceiling on a total exclusion must fail closed")
+            .to_string();
+        assert!(error.contains("must not declare"), "unexpected error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn free_text_cannot_break_the_rendered_tables() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.claim_effect = ClaimEffect::ClaimsLimited;
+        disposition.reason = "Blocked by parser | owner pending".to_string();
+        disposition.exit_condition = "Parser lands\nThen rerun".to_string();
+        disposition.claims_limited_ceiling = Some("Structural | only".to_string());
+        policy.dispositions.push(disposition);
+
+        let rendered = policy.render_markdown(&concepts()?)?;
+        // `retained_axis` also names a dimension row, so select on the
+        // disposition table's own status column.
+        let row = rendered
+            .lines()
+            .find(|line| line.contains("retained_axis") && line.contains("sequencing_blocked"))
+            .ok_or_else(|| anyhow!("disposition row is missing from the rendered status"))?;
+
+        // The embedded newline must not have split the row.
+        assert!(row.contains("Then rerun"), "row lost its exit condition: {row}");
+        // Every literal pipe must be escaped, so the cell count matches the header.
+        let header = rendered
+            .lines()
+            .find(|line| line.starts_with("| Item | Kind |"))
+            .ok_or_else(|| anyhow!("disposition header is missing"))?;
+        assert_eq!(
+            unescaped_pipes(row),
+            unescaped_pipes(header),
+            "escaped row must keep the header's cell count:\n{header}\n{row}"
+        );
+        Ok(())
+    }
+
+    /// Count only the pipes that actually delimit cells.
+    fn unescaped_pipes(line: &str) -> usize {
+        let bytes = line.as_bytes();
+        line.char_indices()
+            .filter(|(index, character)| {
+                *character == '|' && (*index == 0 || bytes[index - 1] != b'\\')
+            })
+            .count()
+    }
+
+    #[test]
+    fn review_after_is_current_through_its_own_date() -> Result<()> {
+        let mut policy = ProofPolicy::from_str(POLICY)?;
+        let mut disposition = retained_dimension(&mut policy);
+        disposition.review_after = "2026-09-14".to_string();
+        policy.dispositions.push(disposition);
+
+        // Inclusive boundary: current on the date, expired the day after.
+        policy.check_currentness(as_of("2026-09-14")?)?;
+        assert!(policy.check_currentness(as_of("2026-09-15")?).is_err());
         Ok(())
     }
 

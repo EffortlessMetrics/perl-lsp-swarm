@@ -424,8 +424,50 @@
         },
         "claim_effect": {
           "$ref": "#/$defs/claim_effect"
+        },
+        "claims_limited_ceiling": {
+          "type": "string",
+          "minLength": 1
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "claim_effect": {
+                "const": "claims_limited"
+              }
+            },
+            "required": [
+              "claim_effect"
+            ]
+          },
+          "then": {
+            "required": [
+              "claims_limited_ceiling"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "claim_effect": {
+                "const": "excluded_from_claims"
+              }
+            },
+            "required": [
+              "claim_effect"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "claims_limited_ceiling"
+              ]
+            }
+          }
+        }
+      ]
     }
   }
 }
