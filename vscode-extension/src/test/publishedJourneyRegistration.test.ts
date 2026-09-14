@@ -68,12 +68,13 @@ function fakeVscode(
   generationStartDelayMs: number,
   initialGeneration: number,
 ): Record<string, unknown> {
-  let edited = false;
   let generation = initialGeneration;
+  let openedPath: string | undefined;
+  let documentText = '\n\n\nmy $value = 42;\nprint $value;\n';
   const document = {
     uri: { toString: () => 'file:///workspace/packaged_daily_driver.pl' },
-    lineCount: 1,
-    getText: () => (edited ? '# packaged edit' : 'my $value = 42;'),
+    lineCount: 5,
+    getText: () => documentText,
   };
   const configuration = {
     inspect: () => ({ globalValue: undefined }),
@@ -108,11 +109,39 @@ function fakeVscode(
     delete (extensionApi as { waitForActiveDocumentReady?: unknown }).waitForActiveDocumentReady;
   }
   class WorkspaceEdit {
-    insert(): void {
-      edited = true;
+    deletePath: string | undefined;
+    readonly inserted: string[] = [];
+    readonly textEdits: Array<{
+      range: {
+        start: { line: number; character: number };
+        end: { line: number; character: number };
+      };
+      newText: string;
+    }> = [];
+
+    insert(_uri: unknown, _position: unknown, newText: string): void {
+      this.inserted.push(newText);
     }
+
+    set(
+      _uri: unknown,
+      edits: Array<{
+        range: {
+          start: { line: number; character: number };
+          end: { line: number; character: number };
+        };
+        newText: string;
+      }>,
+    ): void {
+      this.textEdits.push(...edits);
+    }
+
+    deleteFile(uri: { fsPath: string }): void {
+      this.deletePath = uri.fsPath;
+    }
+
     entries(): Array<[unknown, unknown]> {
-      return [];
+      return this.textEdits.length > 0 ? [[document.uri, this.textEdits]] : [];
     }
   }
   class Position {
@@ -125,10 +154,14 @@ function fakeVscode(
     ConfigurationTarget: { Global: 1 },
     WorkspaceEdit,
     Position,
+    Uri: {
+      file: (fsPath: string) => ({ fsPath, toString: () => `file://${fsPath}` }),
+    },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
       getConfiguration: () => configuration,
-      openTextDocument: async () => {
+      openTextDocument: async (filePath: string) => {
+        openedPath = filePath;
         if (generation === 0) {
           setTimeout(() => {
             generation = 1;
@@ -136,8 +169,29 @@ function fakeVscode(
         }
         return document;
       },
-      applyEdit: async () => {
-        edited = true;
+      applyEdit: async (edit?: WorkspaceEdit) => {
+        if (edit?.deletePath) {
+          if (
+            edit.deletePath !== openedPath ||
+            !edit.deletePath.startsWith(`${workspacePath}${path.sep}`)
+          ) {
+            return false;
+          }
+          if (!fs.existsSync(edit.deletePath)) return false;
+          fs.rmSync(edit.deletePath, { force: true });
+        }
+        for (const textEdit of edit?.textEdits ?? []) {
+          const lines = documentText.split('\n');
+          const line = lines[textEdit.range.start.line];
+          if (line === undefined) return false;
+          const start = textEdit.range.start.character;
+          const end = textEdit.range.end.character;
+          if (start < 0 || end < start || end > line.length) return false;
+          lines[textEdit.range.start.line] =
+            line.slice(0, start) + textEdit.newText + line.slice(end);
+          documentText = lines.join('\n');
+        }
+        for (const inserted of edit?.inserted ?? []) documentText += inserted;
         return true;
       },
       isTrusted: true,
@@ -153,8 +207,28 @@ function fakeVscode(
     },
     commands: {
       executeCommand: async (command: string) => {
+        if (command === 'workbench.action.revertAndCloseActiveEditor') return undefined;
         calls.push(command);
         firstProviderCall();
+        if (command === 'vscode.executeDocumentRenameProvider') {
+          return {
+            entries: () => [
+              [
+                document.uri,
+                [
+                  {
+                    range: { start: { line: 3, character: 3 }, end: { line: 3, character: 9 } },
+                    newText: '$renamed_value',
+                  },
+                  {
+                    range: { start: { line: 4, character: 6 }, end: { line: 4, character: 12 } },
+                    newText: '$renamed_value',
+                  },
+                ],
+              ],
+            ],
+          };
+        }
         return [];
       },
     },
