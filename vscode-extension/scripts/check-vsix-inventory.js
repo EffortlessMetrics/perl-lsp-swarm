@@ -17,16 +17,32 @@ function summarizeInventory(entries) {
   };
 }
 
+/**
+ * VS Code package platform, as minted by the release projection in
+ * `src/vsixPackageProjection.ts`. This is deliberately not `process.platform`:
+ * a musl Linux topology row packages as `alpine`, which Node never reports.
+ * @typedef {'linux' | 'alpine' | 'darwin' | 'win32'} BundlePlatform
+ */
+
+// A classifier that omits `alpine` reads every `bin/alpine-*/` payload as
+// platform-neutral, and therefore as a member of every target's package.
+const BUNDLE_PLATFORM_GROUP = '(linux|alpine|darwin|win32)';
+const PACKAGED_PLATFORM_PATTERN = new RegExp(`^bin/${BUNDLE_PLATFORM_GROUP}(?:-[^/]+)?/`);
+const PACKAGED_TARGET_PATTERN = new RegExp(`^bin/${BUNDLE_PLATFORM_GROUP}-([^/]+)/`);
+
 function platformForPackagedFile(file) {
-  const match = /^bin\/(linux|darwin|win32)(?:-[^/]+)?\//.exec(file);
+  const match = PACKAGED_PLATFORM_PATTERN.exec(file);
   return match ? match[1] : null;
 }
 
 function bundleTargetForPackagedFile(file) {
-  const match = /^bin\/(linux|darwin|win32)-([^/]+)\//.exec(file);
+  const match = PACKAGED_TARGET_PATTERN.exec(file);
   return match ? `${match[1]}-${match[2]}` : null;
 }
 
+/**
+ * @param {BundlePlatform | NodeJS.Platform} platform
+ */
 function baselineForPlatform(baseline, platform, arch = 'x64') {
   const target = `${platform}-${arch}`;
   const files = Object.fromEntries(
@@ -38,6 +54,9 @@ function baselineForPlatform(baseline, platform, arch = 'x64') {
   return summarizeInventory(Object.entries(files).map(([file, bytes]) => ({ file, bytes })));
 }
 
+/**
+ * @param {BundlePlatform | NodeJS.Platform} [platform]
+ */
 function compareInventory(actual, baseline, platform = process.platform, options = {}) {
   const allowedFiles = new Set(options.allowedFiles ?? []);
   const arch = options.arch ?? process.arch;
@@ -119,6 +138,19 @@ function currentSourceBundleFile(platform = process.platform, arch = process.arc
   return `bin/${platform}-${arch}/${binaryName}`;
 }
 
+/** @returns {string[]} */
+function currentSourceBundleFiles(
+  platform = process.platform,
+  arch = process.arch,
+  includeDap = false,
+) {
+  const dapName = platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+  return [
+    currentSourceBundleFile(platform, arch),
+    ...(includeDap ? [`bin/${platform}-${arch}/${dapName}`] : []),
+  ];
+}
+
 function parseArgs(argv) {
   let updateBaseline = false;
   /** @type {string | null} */
@@ -165,7 +197,13 @@ async function main() {
   const manifestPath = (process.env.PERL_LSP_CANDIDATE_PAYLOAD_MANIFEST || '').trim();
   const allowedFiles = [];
   if (!manifestPath && process.env.PERL_LSP_CURRENT_SOURCE_SMOKE === '1') {
-    allowedFiles.push(currentSourceBundleFile());
+    allowedFiles.push(
+      ...currentSourceBundleFiles(
+        process.platform,
+        process.arch,
+        process.env.PERL_LSP_CURRENT_SOURCE_DAP_STAGED === '1',
+      ),
+    );
   }
   if (manifestPath) {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -226,6 +264,7 @@ module.exports = {
   classifyInventoryViolations,
   compareInventory,
   currentSourceBundleFile,
+  currentSourceBundleFiles,
   bundleTargetForPackagedFile,
   platformForPackagedFile,
   parseArgs,
