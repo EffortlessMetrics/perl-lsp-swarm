@@ -4271,6 +4271,45 @@ profile = "recommended"
     }
 
     #[test]
+    fn retired_alias_matching_is_exact_not_prefix_or_substring() {
+        // The RIPR+ gate named this seam's boundary (`alias == normalized`) as
+        // lacking a discriminator, and it was right: the tests above only
+        // supply exact hits and two far-away misses, which a `starts_with` or
+        // `contains` implementation would survive.
+        //
+        // Exactness is what keeps the deprecation window narrow. A token that
+        // merely resembles a retired alias must reach the unknown-value path —
+        // where the server keeps its current setting and warns — rather than
+        // being quietly accepted and projected onto the native formatter.
+        for near_miss in [
+            "compa",           // a prefix of `compat`
+            "compats",         // `compat` with a suffix
+            "xcompat",         // `compat` with a prefix
+            "compat-perltidy", // the retired pair, reversed
+            "perltidy",        // a current mode name, and a prefix of `perltidy-compat`
+            "compat native",   // the alias embedded in a longer phrase
+        ] {
+            assert_eq!(
+                retired_formatter_mode_alias(near_miss),
+                None,
+                "{near_miss:?} is not a retired alias: only an exact table entry may be \
+                 accepted and projected onto the native formatter"
+            );
+        }
+
+        // Positive control, so the assertions above cannot pass by the matcher
+        // simply rejecting everything.
+        assert_eq!(
+            retired_formatter_mode_alias("compat"),
+            Some(FormatterModeChoice {
+                mode: FormatterMode::Native,
+                retired_alias: Some("compat")
+            }),
+            "the exact table entry must still match"
+        );
+    }
+
+    #[test]
     fn current_formatter_mode_names_are_not_reported_as_retired() {
         // Negative control for the test above: if `retired_alias` were set
         // unconditionally, those assertions would pass vacuously.
