@@ -45,6 +45,78 @@ fn uri_tail(uri: &str) -> String {
 }
 
 impl LspServer {
+    /// Reject malformed batches before accepted document or parser state changes.
+    /// Obsolete editor-output streams still stop when the editor reports a change.
+    pub(super) fn prepare_did_change_admission(
+        &self,
+        params: Option<&Value>,
+    ) -> Result<(), JsonRpcError> {
+        let params = params.ok_or_else(|| invalid_params("Missing didChange parameters"))?;
+        perl_lsp_rs_core::protocol::schema::validate_did_change_content_changes(params).map_err(
+            |error| {
+                let change_index = error
+                    .path
+                    .split_once("contentChanges[")
+                    .and_then(|(_, suffix)| suffix.split_once(']'))
+                    .and_then(|(index, _)| index.parse::<usize>().ok());
+                let raw_uri = params.pointer("/textDocument/uri").and_then(Value::as_str);
+                let valid_uri = raw_uri
+                    .map(|uri| self.normalize_uri_key(uri))
+                    .filter(|uri| crate::security::validate_document_uri(uri).is_ok());
+
+                if valid_uri.is_some()
+                    && let Some(uri) = raw_uri
+                {
+                    self.cancel_document_streams_for_change(
+                        uri,
+                        params.pointer("/textDocument/version").and_then(Value::as_i64),
+                        false,
+                    );
+                }
+
+                match (change_index, valid_uri.as_deref()) {
+                    (Some(change_index), Some(uri)) => tracing::error!(
+                        change_index,
+                        error_category = "invalid_content_change",
+                        uri,
+                        "Rejected malformed didChange content change"
+                    ),
+                    (Some(change_index), None) => tracing::error!(
+                        change_index,
+                        error_category = "invalid_content_change",
+                        "Rejected malformed didChange content change"
+                    ),
+                    (None, Some(uri)) => tracing::error!(
+                        error_category = "invalid_content_change",
+                        uri,
+                        "Rejected malformed didChange content change batch"
+                    ),
+                    (None, None) => tracing::error!(
+                        error_category = "invalid_content_change",
+                        "Rejected malformed didChange content change batch"
+                    ),
+                }
+
+                invalid_params(&format!("Invalid didChange parameters: {error}"))
+            },
+        )
+    }
+
+    fn cancel_document_streams_for_change(
+        &self,
+        uri: &str,
+        version: Option<i64>,
+        allow_same_version: bool,
+    ) {
+        for key in Self::uri_key_variants(uri) {
+            if let Some(version) = version.filter(|_| !allow_same_version) {
+                self.stream_sessions().cancel_for_uri_version(&key, version);
+            } else {
+                self.stream_sessions().cancel_for_uri(&key);
+            }
+        }
+    }
+
     /// Whether the dormant eager-incremental-maintenance fast-path
     /// (`incremental_doc`/`incremental_state`) is opted into for this
     /// server. Always `false` when the `incremental` cargo feature is not
@@ -644,6 +716,9 @@ impl LspServer {
         allow_same_version: bool,
     ) -> Result<(), JsonRpcError> {
         if let Some(params) = params {
+            // Direct callers bypass the JSON-RPC dispatcher, so retain the
+            // same admission guard before accepted-state mutation.
+            self.prepare_did_change_admission(Some(&params))?;
             // Sink-owned admission (#8895): same URI policy as didOpen,
             // enforced where the change is applied and judged on the
             // normalized key. Typed InvalidParams belongs to this method, not
@@ -660,21 +735,9 @@ impl LspServer {
                 params.pointer("/textDocument/version").and_then(|v| v.as_i64());
             let incoming_version = incoming_version_i64.and_then(|v| i32::try_from(v).ok());
 
-            // A save replacement can preserve the client's document version while
-            // still replacing the buffer. In that case every stream for the URI
-            // captured stale text, including same-version sessions, and must be
-            // cancelled. Ordinary versioned changes retain the older-only policy.
-            for key in Self::uri_key_variants(uri) {
-                if let Some(version) = incoming_version_i64 {
-                    if allow_same_version {
-                        self.stream_sessions().cancel_for_uri(&key);
-                    } else {
-                        self.stream_sessions().cancel_for_uri_version(&key, version);
-                    }
-                } else {
-                    self.stream_sessions().cancel_for_uri(&key);
-                }
-            }
+            // Stop output based on the editor's predecessor even if the later
+            // line bound rejects this buffer. Saves also cancel same-version work.
+            self.cancel_document_streams_for_change(uri, incoming_version_i64, allow_same_version);
 
             let missing_changes: [Value; 0] = [];
             let changes = match params.get("contentChanges") {
@@ -707,20 +770,6 @@ impl LspServer {
                 if existing_doc.is_none() && changes.iter().all(|c| c.get("range").is_some()) {
                     tracing::warn!("Ignoring ranged didChange for unopened document {}", uri);
                     return Ok(());
-                }
-
-                // Invalidate the perlcritic violation cache for this file so that
-                // the next diagnostic cycle re-runs perlcritic on the new content.
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let file_path = url::Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
-                    if let Some(path) = file_path {
-                        let path_str = path.to_string_lossy().to_string();
-                        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
-                            analyzer.invalidate_cache(&path_str);
-                        }
-                        self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
-                    }
                 }
 
                 let document_was_open = existing_doc.is_some();
@@ -908,6 +957,19 @@ impl LspServer {
                 let incremental_edits_opt: Option<
                     perl_parser::incremental::incremental_edit::IncrementalEditSet,
                 > = None;
+
+                // Invalidate cached diagnostics only for an accepted Full replacement.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let file_path = url::Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
+                    if let Some(path) = file_path {
+                        let path_str = path.to_string_lossy().to_string();
+                        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
+                            analyzer.invalidate_cache(&path_str);
+                        }
+                        self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
+                    }
+                }
 
                 // Keep template documents that were intentionally skipped on didOpen
                 // in no-parse mode across subsequent didChange notifications.

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -41,7 +42,11 @@ def build(args: argparse.Namespace) -> None:
     validated_identity = ReleaseBuildIdentity.from_mapping(identity)
     if validated_identity.artifact_role != "archive":
         raise ValueError("release build identity is not archive-shaped")
-    binaries = validate_receipt(receipt, identity)
+    binaries = validate_receipt(
+        receipt,
+        identity,
+        allowed_build_executions={"adapter", "external_release_workflow"},
+    )
     evidence = load_json_object(args.package_evidence, "release package evidence")
     archive = args.archive.resolve(strict=True)
     if evidence.get("archive", {}).get("sha256") != digest(archive):
@@ -116,7 +121,6 @@ def build(args: argparse.Namespace) -> None:
         raise ValueError("output must be a real directory")
     output.mkdir(parents=True, exist_ok=True)
     temp_root: Path | None = None
-    created: list[Path] = []
     try:
         for parent in (output / "bin", output / "bin" / vscode_target):
             if parent.exists() and (parent.is_symlink() or not parent.is_dir()):
@@ -138,12 +142,10 @@ def build(args: argparse.Namespace) -> None:
         (output / "bin" / vscode_target).mkdir(parents=True, exist_ok=True)
         for source, destination in final_files:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            source.replace(destination)
-            created.append(destination)
-    except Exception:
-        for path in reversed(created):
-            path.unlink(missing_ok=True)
-        raise
+            # The staging directory shares output.parent's filesystem, so a
+            # hard link publishes without replacing a competitor created
+            # after the destination precheck.
+            os.link(source, destination)
     finally:
         if temp_root is not None:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -164,6 +166,13 @@ def main() -> int:
         build(args)
     except (OSError, KeyError, ValueError, TypeError) as error:
         print(f"prebuilt VSIX payload: NOT_PROVEN: {error}", file=sys.stderr)
+        if args.output.exists():
+            print(
+                "prebuilt VSIX payload: output may contain incomplete files; do not "
+                "consume it. Discard only after verifying exclusive ownership: "
+                f"{args.output}",
+                file=sys.stderr,
+            )
         return 1
     print(f"prebuilt VSIX payload: PASS: {args.output}")
     return 0
