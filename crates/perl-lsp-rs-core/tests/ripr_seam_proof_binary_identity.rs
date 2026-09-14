@@ -255,6 +255,96 @@ fn response_schema_preserves_mismatch_and_redaction_semantics()
     Ok(())
 }
 
+/// Assert the wire schema's `reasons` array bounds admit the worst-case response.
+///
+/// The union return path (#10184) lets one response carry every collected reason
+/// at once, and the Rust type system does not bound the array. The schema's
+/// `minItems`/`maxItems`/`uniqueItems` are therefore the sole enforcer that a
+/// worst-case response stays admissible, so bind them to the real inventory.
+fn assert_reason_array_bounds_admit_the_union(
+    schema: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let reasons = &schema["properties"]["reasons"];
+    let inventory = BinaryCompatibilityReason::ALL.len();
+
+    let max_items =
+        reasons["maxItems"].as_u64().ok_or("schema reasons array declares no maxItems")? as usize;
+    if inventory > max_items {
+        return Err(format!(
+            "the union path can emit {inventory} reasons, exceeding schema maxItems {max_items}"
+        )
+        .into());
+    }
+
+    // Every terminal branch of `evaluate_compatibility` returns at least one
+    // reason (`ExactMatch` returns exactly one), so the schema must not demand
+    // more than production guarantees.
+    let min_items =
+        reasons["minItems"].as_u64().ok_or("schema reasons array declares no minItems")? as usize;
+    if min_items > 1 {
+        return Err(format!(
+            "schema minItems {min_items} exceeds the single reason ExactMatch emits"
+        )
+        .into());
+    }
+
+    if reasons["uniqueItems"] != Value::Bool(true) {
+        return Err("schema reasons array no longer declares uniqueItems".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn response_reason_array_bounds_admit_the_worst_case_union()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = repository_root()?;
+    let schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+    assert_reason_array_bounds_admit_the_union(&schema)
+}
+
+#[test]
+fn reason_array_bound_drift_is_reported() -> Result<(), Box<dyn std::error::Error>> {
+    // Observes each bound error variant so the oracle above is not vacuous: a
+    // schema that could not admit the union must be rejected, not passed over.
+    let root = repository_root()?;
+    let schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+
+    let mut narrowed = schema.clone();
+    narrowed["properties"]["reasons"]["maxItems"] = Value::from(1);
+    match assert_reason_array_bounds_admit_the_union(&narrowed) {
+        Err(error) => assert!(
+            error.to_string().contains("exceeding schema maxItems 1"),
+            "maxItems drift must name the offending bound, got {error}"
+        ),
+        Ok(()) => return Err("a maxItems below the inventory must be rejected".into()),
+    }
+
+    let mut demanding = schema.clone();
+    demanding["properties"]["reasons"]["minItems"] = Value::from(2);
+    match assert_reason_array_bounds_admit_the_union(&demanding) {
+        Err(error) => assert!(
+            error.to_string().contains("schema minItems 2"),
+            "minItems drift must name the offending bound, got {error}"
+        ),
+        Ok(()) => return Err("a minItems above the ExactMatch arity must be rejected".into()),
+    }
+
+    let mut duplicable = schema;
+    duplicable["properties"]["reasons"]["uniqueItems"] = Value::Bool(false);
+    match assert_reason_array_bounds_admit_the_union(&duplicable) {
+        Err(error) => assert!(
+            error.to_string().contains("uniqueItems"),
+            "uniqueItems drift must be reported, got {error}"
+        ),
+        Ok(()) => return Err("a schema dropping uniqueItems must be rejected".into()),
+    }
+    Ok(())
+}
+
 #[test]
 fn reason_token_grammar_drift_is_reported() -> Result<(), Box<dyn std::error::Error>> {
     // Observes the schema-drift error variant: a reasonToken pattern that no
