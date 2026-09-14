@@ -13,7 +13,7 @@ use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::{must, must_some};
 use serde_json::json;
 use std::io::Write;
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -130,14 +130,13 @@ fn test_session_lifecycle_disconnect_without_session() {
         _ => must(Err::<(), _>("Expected Response message".to_string())),
     }
 
-    // Should emit terminated event
-    let event = wait_for_event(&rx, 100);
-    assert!(event.is_some(), "Should emit terminated event");
-    match must_some(event) {
-        DapMessage::Event { event, .. } => {
-            assert_eq!(event, "terminated");
-        }
-        _ => must(Err::<(), _>("Expected Event message".to_string())),
+    // No debugging session ended, so disconnect must not invent a terminated event.
+    match rx.try_recv() {
+        Err(TryRecvError::Empty) => {}
+        Err(error) => must(Err::<(), _>(format!("unexpected receiver state: {error:?}"))),
+        Ok(message) => must(Err::<(), _>(format!(
+            "no-session disconnect emitted a terminal event: {message:?}"
+        ))),
     }
 }
 

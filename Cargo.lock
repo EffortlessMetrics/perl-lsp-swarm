@@ -1836,6 +1836,7 @@ dependencies = [
  "phf",
  "proptest",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
  "unicode-ident",
@@ -2322,6 +2323,7 @@ dependencies = [
  "perl-lsp-rs",
  "serde_json",
  "tempfile",
+ "url",
 ]
 
 [[package]]
