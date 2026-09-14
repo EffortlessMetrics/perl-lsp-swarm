@@ -415,6 +415,17 @@ fn validate_rows(rows: &[PropositionRow]) -> Result<()> {
                     "{}: a doctrine row must declare doctrine_only reachability",
                     row.id
                 );
+                // A doctrine row asserts what a concrete document currently says,
+                // so it is source-bound exactly like a live row. Without this, a
+                // row could discard the document path and status marker it is a
+                // claim about and still stay accepted authority: the marker
+                // validator only visits rows that cite a path, so blanking both
+                // fields severs the binding while every check stays green.
+                ensure!(
+                    !row.source_path.is_empty() && !row.source_marker.is_empty(),
+                    "{}: doctrine rows require the document path and status marker they claim",
+                    row.id
+                );
             }
             value => bail!("{}: unhandled current state {value}", row.id),
         }
@@ -550,14 +561,20 @@ fn marker_binds(source: &str, marker: &str) -> bool {
     }
 }
 
-fn validate_live_source_markers(rows: &[PropositionRow]) -> Result<()> {
+/// Bind every source-bound row to its exact current subject.
+///
+/// Both `live` and `doctrine_only` rows cite a path and a marker: a live row
+/// names a declaration, a doctrine row names the document status line it is a
+/// claim about. `validate_rows` is what guarantees those two states actually
+/// carry the fields; this walk would otherwise skip any row that blanked them.
+fn validate_source_markers(rows: &[PropositionRow]) -> Result<()> {
     let root = repo_root()?;
     for row in rows.iter().filter(|row| !row.source_path.is_empty()) {
         let source = fs::read_to_string(root.join(&row.source_path))
-            .with_context(|| format!("read live source {}", row.source_path))?;
+            .with_context(|| format!("read cited source {}", row.source_path))?;
         ensure!(
             marker_binds(&source, &row.source_marker),
-            "{}: live marker {:?} not found in {}",
+            "{}: marker {:?} not found in {}",
             row.id,
             row.source_marker,
             row.source_path
@@ -754,10 +771,18 @@ fn proposition_rows_are_unique_complete_and_well_formed() -> Result<()> {
 }
 
 #[test]
-fn live_rows_are_bound_to_current_source_markers() -> Result<()> {
+fn source_bound_rows_are_bound_to_current_markers() -> Result<()> {
     let rows = load_rows()?;
     validate_rows(&rows)?;
-    validate_live_source_markers(&rows)
+    // Non-vacuity: the walk must actually visit both source-bound states, or a
+    // doctrine row could stop citing its document without this test noticing.
+    for state in ["live", "doctrine_only"] {
+        ensure!(
+            rows.iter().any(|row| row.current_state == state && !row.source_path.is_empty()),
+            "{LEDGER_PATH}: no {state} row cites a source path, so this check is vacuous"
+        );
+    }
+    validate_source_markers(&rows)
 }
 
 #[test]
@@ -997,7 +1022,67 @@ fn missing_live_source_marker_is_rejected() -> Result<()> {
         .find(|row| row.current_state == "live")
         .context("expected at least one live row")?;
     victim.source_marker = "__index_lifecycle_marker_that_does_not_exist__".to_string();
-    assert_rejected_because(validate_live_source_markers(&rows), "not found in")?;
+    assert_rejected_because(validate_source_markers(&rows), "not found in")?;
+    Ok(())
+}
+
+/// A doctrine row claims what a concrete document currently says. Discarding
+/// the document path and its status marker must not leave that claim standing:
+/// the marker walk skips rows with an empty path, so `validate_rows` is the
+/// only thing between a blanked doctrine row and accepted authority.
+#[test]
+fn doctrine_row_cannot_discard_its_document_subject() -> Result<()> {
+    for (field, expected) in [("source_path", "**Status**"), ("source_marker", "docs/")] {
+        let mut rows = load_rows()?;
+        let victim = rows
+            .iter_mut()
+            .find(|row| row.current_state == "doctrine_only")
+            .context("expected at least one doctrine row")?;
+        // Clear one field per pass, and keep the other, so neither half of the
+        // binding can be the only thing the check depends on.
+        if field == "source_path" {
+            victim.source_path.clear();
+        } else {
+            victim.source_marker.clear();
+        }
+        let retained = if field == "source_path" {
+            victim.source_marker.clone()
+        } else {
+            victim.source_path.clone()
+        };
+        ensure!(
+            retained.starts_with(expected),
+            "fixture drift: the retained doctrine {field} counterpart was {retained:?}"
+        );
+        assert_rejected_because(
+            validate_rows(&rows),
+            "doctrine rows require the document path and status marker they claim",
+        )?;
+        // The marker walk alone cannot catch this: with the path gone it has
+        // nothing to visit, which is exactly why `validate_rows` must reject.
+        if field == "source_path" {
+            ensure!(
+                validate_source_markers(&rows).is_ok(),
+                "expected the marker walk to skip a path-less row; \
+                 if it now rejects, this control no longer discriminates"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A doctrine row that keeps a path but points it at a document whose status
+/// line no longer matches must fail, not silently re-bind.
+#[test]
+fn doctrine_row_with_a_stale_status_marker_is_rejected() -> Result<()> {
+    let mut rows = load_rows()?;
+    let victim = rows
+        .iter_mut()
+        .find(|row| row.current_state == "doctrine_only")
+        .context("expected at least one doctrine row")?;
+    victim.source_marker = "**Status**: Superseded".to_string();
+    validate_rows(&rows)?;
+    assert_rejected_because(validate_source_markers(&rows), "not found in")?;
     Ok(())
 }
 
@@ -1327,6 +1412,51 @@ fn validate_member_rows(rows: &[MemberRow], type_rows: &[PropositionRow]) -> Res
 /// carries exactly one disposition, and no row survives a member that source no
 /// longer declares. Changing `Ready`, adding a variant, or removing a field must
 /// fail even though the enum declaration itself is untouched.
+/// The member-scoped module a mapped type row belongs to, if any.
+fn member_scoped_module(source_path: &str) -> Option<&'static str> {
+    if source_path == MIXED_MODULE {
+        return Some("workspace_index");
+    }
+    ["monitoring", "state_machine"]
+        .into_iter()
+        .find(|module| module_dir(module).is_some_and(|dir| source_path.starts_with(dir)))
+}
+
+/// `OVERLAPPING_TYPES` is the member-level denominator, and it is hand-written.
+/// A type name newly declared in a second member-scoped module is exactly the
+/// duplication #10433 exists to catch, so it must not be able to enter the map
+/// at type granularity alone: derive the name-identical collisions from the
+/// ledger and require every side of each one to be inventoried at member level.
+///
+/// This derives name-identical collisions only. The differently named pairs in
+/// the constant (`IndexPhase`/`BuildPhase`, and the third `IndexingPhase`
+/// vocabulary) are semantic duplication that no name comparison can find; they
+/// stay a deliberate superset, which is why this check is one-directional.
+fn validate_overlap_denominator_is_complete(rows: &[PropositionRow]) -> Result<()> {
+    let mut by_name: BTreeMap<String, BTreeSet<&'static str>> = BTreeMap::new();
+    for row in rows {
+        let (Some(module), Some(name)) =
+            (member_scoped_module(&row.source_path), declared_type_name(&row.source_marker))
+        else {
+            continue;
+        };
+        by_name.entry(name).or_default().insert(module);
+    }
+
+    for (name, modules) in by_name.iter().filter(|(_, modules)| modules.len() > 1) {
+        for module in modules {
+            ensure!(
+                OVERLAPPING_TYPES.contains(&(module, name.as_str())),
+                "{name} is declared in {} member-scoped modules ({modules:?}) but \
+                 {module}::{name} carries no member-level denominator; a shared name \
+                 must be dispositioned at variant and field granularity",
+                modules.len()
+            );
+        }
+    }
+    Ok(())
+}
+
 fn validate_member_coverage(rows: &[MemberRow]) -> Result<()> {
     for (module, type_name) in OVERLAPPING_TYPES {
         let declared = declared_members(module, type_name)?;
@@ -1378,6 +1508,40 @@ fn member_rows_are_well_formed_and_joined_to_the_type_ledger() -> Result<()> {
 fn every_overlapping_member_is_dispositioned() -> Result<()> {
     let rows = load_member_rows()?;
     validate_member_coverage(&rows)
+}
+
+#[test]
+fn every_name_identical_collision_carries_a_member_denominator() -> Result<()> {
+    let rows = load_rows()?;
+    validate_overlap_denominator_is_complete(&rows)
+}
+
+/// A type name entering a second member-scoped module must not be able to stop
+/// at a type-level row. Without this, `OVERLAPPING_TYPES` silently narrows as
+/// the tree grows and the member ratchet stops tracking real duplication.
+#[test]
+fn a_new_cross_module_name_collision_without_member_rows_is_rejected() -> Result<()> {
+    let mut rows = load_rows()?;
+    let victim = rows
+        .iter_mut()
+        .find(|row| {
+            member_scoped_module(&row.source_path) == Some("monitoring")
+                && declared_type_name(&row.source_marker).is_some_and(|name| {
+                    !OVERLAPPING_TYPES.contains(&("state_machine", name.as_str()))
+                })
+        })
+        .context("expected a monitoring type row not already paired with state_machine")?;
+    // Same declaration name, now also claimed by the state_machine module, and
+    // absent from the member-level denominator.
+    let mut clone = victim.clone();
+    clone.id = "WSI-COLLIDE-999".to_string();
+    clone.source_path = "crates/perl-workspace/src/state_machine/mod.rs".to_string();
+    rows.push(clone);
+
+    assert_rejected_because(
+        validate_overlap_denominator_is_complete(&rows),
+        "carries no member-level denominator",
+    )
 }
 
 #[test]
