@@ -14,7 +14,7 @@ use super::super::{
     CodeLensProvider, INVALID_PARAMS, INVALID_REQUEST, JsonRpcError, LspServer, METHOD_NOT_FOUND,
     TestKind, TestRunner, Value, get_shebang_lens, json, position_to_offset, resolve_code_lens,
 };
-use crate::protocol::{invalid_params, req_position, req_uri};
+use crate::protocol::{JsonRpcId, invalid_params, req_position, req_uri};
 #[cfg(feature = "workspace")]
 use crate::runtime::readiness::IndexReadinessPolicy;
 #[cfg(feature = "workspace")]
@@ -479,7 +479,20 @@ impl LspServer {
         else {
             return;
         };
-        if let Some(trace) = self.provider_decision_trace(&provider) {
+        let Some(trace) = self.provider_decision_trace(&provider) else {
+            return;
+        };
+        let Some(request_id) = request.get("request_id") else {
+            request.insert("request_receipt".to_string(), trace);
+            return;
+        };
+        if let Some(typed_request_id) = JsonRpcId::try_from_value(request_id)
+            && trace.get("request_id") == Some(&typed_request_id.to_value())
+        {
+            // The selector has been consumed by the server-side attachment;
+            // keeping it in the provider arguments would look like a caller
+            // selector combined with an explicit request_receipt.
+            request.remove("request_id");
             request.insert("request_receipt".to_string(), trace);
         }
     }

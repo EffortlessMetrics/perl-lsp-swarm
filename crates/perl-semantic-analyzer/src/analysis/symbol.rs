@@ -369,23 +369,23 @@ impl SymbolTable {
         while let Some(scope_id) = current_scope_id {
             if let Some(scope) = self.scopes.get(&scope_id) {
                 // Check if symbol is defined in this scope
-                if scope.symbols.contains(name) {
-                    if let Some(symbols) = self.symbols.get(name) {
-                        for symbol in symbols {
-                            if symbol.scope_id == scope_id && symbol.kind == kind {
-                                results.push(symbol);
-                            }
+                if scope.symbols.contains(name)
+                    && let Some(symbols) = self.symbols.get(name)
+                {
+                    for symbol in symbols {
+                        if symbol.scope_id == scope_id && symbol.kind == kind {
+                            results.push(symbol);
                         }
                     }
                 }
 
                 // For 'our' variables, also check package scope
-                if scope.kind != ScopeKind::Package {
-                    if let Some(symbols) = self.symbols.get(name) {
-                        for symbol in symbols {
-                            if symbol.declaration.as_deref() == Some("our") && symbol.kind == kind {
-                                results.push(symbol);
-                            }
+                if scope.kind != ScopeKind::Package
+                    && let Some(symbols) = self.symbols.get(name)
+                {
+                    for symbol in symbols {
+                        if symbol.declaration.as_deref() == Some("our") && symbol.kind == kind {
+                            results.push(symbol);
                         }
                     }
                 }
@@ -878,29 +878,29 @@ impl SymbolExtractor {
                 // Cross-construct sub resolver (#3108): `*foo = sub { ... }` creates a
                 // callable named `foo`.  Synthesize a Subroutine symbol so workspace-index
                 // cross-file lookup can find it even without an explicit `sub foo {}`.
-                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind {
-                    if matches!(rhs.kind, NodeKind::Subroutine { .. }) {
-                        let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
-                        if !bare.is_empty() {
-                            // For `*Pkg::foo = sub {}` use the package from the glob name;
-                            // for unqualified `*foo = sub {}` (or `*::foo` where "::"
-                            // is shorthand for "main::") fall back to the current package.
-                            let pkg = match glob_name.rfind("::") {
-                                Some(pos) if pos > 0 => &glob_name[..pos],
-                                _ => self.table.current_package.as_str(),
-                            };
-                            let sym = Symbol {
-                                name: bare.to_string(),
-                                qualified_name: format!("{pkg}::{bare}"),
-                                kind: SymbolKind::Subroutine,
-                                location: node.location,
-                                scope_id: self.table.current_scope(),
-                                declaration: None,
-                                documentation: None,
-                                attributes: vec![],
-                            };
-                            self.table.add_symbol(sym);
-                        }
+                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind
+                    && matches!(rhs.kind, NodeKind::Subroutine { .. })
+                {
+                    let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
+                    if !bare.is_empty() {
+                        // For `*Pkg::foo = sub {}` use the package from the glob name;
+                        // for unqualified `*foo = sub {}` (or `*::foo` where "::"
+                        // is shorthand for "main::") fall back to the current package.
+                        let pkg = match glob_name.rfind("::") {
+                            Some(pos) if pos > 0 => &glob_name[..pos],
+                            _ => self.table.current_package.as_str(),
+                        };
+                        let sym = Symbol {
+                            name: bare.to_string(),
+                            qualified_name: format!("{pkg}::{bare}"),
+                            kind: SymbolKind::Subroutine,
+                            location: node.location,
+                            scope_id: self.table.current_scope(),
+                            declaration: None,
+                            documentation: None,
+                            attributes: vec![],
+                        };
+                        self.table.add_symbol(sym);
                     }
                 }
                 // Mark LHS as write reference
@@ -1383,10 +1383,10 @@ impl SymbolExtractor {
         let is_moo = flags.is_some_and(|f| f.moo);
         let is_class_tiny = flags.is_some_and(|f| f.kind == Some(FrameworkKind::ClassTiny));
 
-        if is_moo || is_class_tiny {
-            if let Some(consumed) = self.try_extract_moo_has_declaration(statements, idx) {
-                return Some(consumed);
-            }
+        if (is_moo || is_class_tiny)
+            && let Some(consumed) = self.try_extract_moo_has_declaration(statements, idx)
+        {
+            return Some(consumed);
         }
 
         if is_moo {
@@ -1409,10 +1409,10 @@ impl SymbolExtractor {
             return Some(1);
         }
 
-        if flags.is_some_and(|f| f.web_framework.is_some()) {
-            if let Some(consumed) = self.try_extract_web_route_declaration(statements, idx) {
-                return Some(consumed);
-            }
+        if flags.is_some_and(|f| f.web_framework.is_some())
+            && let Some(consumed) = self.try_extract_web_route_declaration(statements, idx)
+        {
+            return Some(consumed);
         }
 
         None
@@ -1442,39 +1442,37 @@ impl SymbolExtractor {
                     if matches!(&expression.kind, NodeKind::Identifier { name } if name == "has")
             );
 
-            if is_has_marker {
-                if let NodeKind::ExpressionStatement { expression } = &second.kind {
-                    let has_location =
-                        SourceLocation { start: first.location.start, end: second.location.end };
+            if is_has_marker && let NodeKind::ExpressionStatement { expression } = &second.kind {
+                let has_location =
+                    SourceLocation { start: first.location.start, end: second.location.end };
 
-                    match &expression.kind {
-                        NodeKind::HashLiteral { pairs } => {
-                            self.synthesize_moo_has_pairs(pairs, has_location, false);
-                            self.visit_node(second);
-                            return Some(2);
-                        }
-                        NodeKind::ArrayLiteral { elements } => {
-                            if let Some(Node { kind: NodeKind::HashLiteral { pairs }, .. }) =
-                                elements.last()
-                            {
-                                // Extract the names from the preceding elements
-                                let mut names = Vec::new();
-                                for el in elements.iter().take(elements.len() - 1) {
-                                    names.extend(Self::collect_symbol_names(el));
-                                }
-                                if !names.is_empty() {
-                                    self.synthesize_moo_has_attrs_with_options(
-                                        &names,
-                                        pairs,
-                                        has_location,
-                                    );
-                                    self.visit_node(second);
-                                    return Some(2);
-                                }
+                match &expression.kind {
+                    NodeKind::HashLiteral { pairs } => {
+                        self.synthesize_moo_has_pairs(pairs, has_location, false);
+                        self.visit_node(second);
+                        return Some(2);
+                    }
+                    NodeKind::ArrayLiteral { elements } => {
+                        if let Some(Node { kind: NodeKind::HashLiteral { pairs }, .. }) =
+                            elements.last()
+                        {
+                            // Extract the names from the preceding elements
+                            let mut names = Vec::new();
+                            for el in elements.iter().take(elements.len() - 1) {
+                                names.extend(Self::collect_symbol_names(el));
+                            }
+                            if !names.is_empty() {
+                                self.synthesize_moo_has_attrs_with_options(
+                                    &names,
+                                    pairs,
+                                    has_location,
+                                );
+                                self.visit_node(second);
+                                return Some(2);
                             }
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
             }
         }
@@ -1977,56 +1975,53 @@ impl SymbolExtractor {
         {
             let method_name = name.as_str();
             // args[0] is the route path (String), rest is the handler
-            if let Some(path_node) = args.first() {
-                if let NodeKind::String { value, .. } = &path_node.kind {
-                    if let Some(path) = Self::normalize_symbol_name(value) {
-                        let http_method = match method_name {
-                            "get" => "GET",
-                            "post" => "POST",
-                            "put" => "PUT",
-                            "del" | "delete" => "DELETE",
-                            "patch" => "PATCH",
-                            "any" => "ANY",
-                            _ => method_name,
-                        };
-                        let scope_id = self.table.current_scope();
-                        self.table.add_symbol(Symbol {
-                            name: path.clone(),
-                            qualified_name: path.clone(),
-                            kind: SymbolKind::Subroutine,
-                            location: first.location,
-                            scope_id,
-                            declaration: Some(method_name.to_string()),
-                            documentation: Some(format!("{http_method} {path}")),
-                            attributes: vec![format!("http_method={http_method}")],
-                        });
+            if let Some(path_node) = args.first()
+                && let NodeKind::String { value, .. } = &path_node.kind
+                && let Some(path) = Self::normalize_symbol_name(value)
+            {
+                let http_method = match method_name {
+                    "get" => "GET",
+                    "post" => "POST",
+                    "put" => "PUT",
+                    "del" | "delete" => "DELETE",
+                    "patch" => "PATCH",
+                    "any" => "ANY",
+                    _ => method_name,
+                };
+                let scope_id = self.table.current_scope();
+                self.table.add_symbol(Symbol {
+                    name: path.clone(),
+                    qualified_name: path.clone(),
+                    kind: SymbolKind::Subroutine,
+                    location: first.location,
+                    scope_id,
+                    declaration: Some(method_name.to_string()),
+                    documentation: Some(format!("{http_method} {path}")),
+                    attributes: vec![format!("http_method={http_method}")],
+                });
 
-                        // Legacy string-target -> Subroutine reference synthesis is
-                        // Dancer v1 only: upstream Dancer v1 allows an action to be
-                        // the name of a subroutine, while Dancer2 route construction
-                        // requires a CodeRef handler (#8910 containment). This whole
-                        // legacy route path is temporary pending the #8909 provider
-                        // cutover (retirement gated on #8928).
-                        if matches!(web_framework, Some(WebFrameworkKind::Dancer))
-                            && let Some(target_node) = args.get(1)
-                        {
-                            if let Some(target_name) =
-                                Self::collect_symbol_names(target_node).first().cloned()
-                            {
-                                self.table.add_reference(SymbolReference {
-                                    name: target_name,
-                                    kind: SymbolKind::Subroutine,
-                                    location: target_node.location,
-                                    scope_id: self.table.current_scope(),
-                                    is_write: false,
-                                });
-                            }
-                        }
-
-                        self.visit_node(first);
-                        return Some(1);
-                    }
+                // Legacy string-target -> Subroutine reference synthesis is
+                // Dancer v1 only: upstream Dancer v1 allows an action to be
+                // the name of a subroutine, while Dancer2 route construction
+                // requires a CodeRef handler (#8910 containment). This whole
+                // legacy route path is temporary pending the #8909 provider
+                // cutover (retirement gated on #8928).
+                if matches!(web_framework, Some(WebFrameworkKind::Dancer))
+                    && let Some(target_node) = args.get(1)
+                    && let Some(target_name) =
+                        Self::collect_symbol_names(target_node).first().cloned()
+                {
+                    self.table.add_reference(SymbolReference {
+                        name: target_name,
+                        kind: SymbolKind::Subroutine,
+                        location: target_node.location,
+                        scope_id: self.table.current_scope(),
+                        is_write: false,
+                    });
                 }
+
+                self.visit_node(first);
+                return Some(1);
             }
         }
 
