@@ -12,6 +12,7 @@
 
 #![allow(dead_code)]
 
+use anyhow::Result;
 use serde_json::Value;
 
 /// Native initialize rows still derived from `dap.core` and advertised true.
@@ -57,11 +58,11 @@ pub fn assert_capability_bool(body: &Value, name: &str, expected: bool, why: &st
 /// deleting rows would otherwise look like `None != Some(true)` only on the
 /// true-sibling side and could be missed on a floored pin that used
 /// `unwrap_or(false)`.
-pub fn assert_capability_is_json_boolean(body: &Value, name: &str) {
+pub fn require_capability_is_json_boolean(body: &Value, name: &str) -> Result<()> {
     match body.get(name) {
-        Some(Value::Bool(_)) => {}
-        other => panic!(
-            "{name} must be present as a JSON boolean (absent/null/string is not a floor or a sibling witness); present value was {other:?}"
-        ),
+        Some(Value::Bool(_)) => Ok(()),
+        other => Err(anyhow::anyhow!(
+            "{name} must be present as a JSON boolean (absent/null/string/number is not a floor or a sibling witness); present value was {other:?}"
+        )),
     }
 }

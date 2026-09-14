@@ -318,7 +318,7 @@ fn checkpoint_after_arrow_replays_the_exact_method_suffix() -> R {
     assert!(lexer.can_restore(&checkpoint));
     let first_suffix = collect_remaining(&mut lexer, input)?;
 
-    lexer.restore(&checkpoint);
+    assert!(lexer.restore(&checkpoint).is_ok());
     let restored_suffix = collect_remaining(&mut lexer, input)?;
 
     assert_eq!(first_suffix, restored_suffix);

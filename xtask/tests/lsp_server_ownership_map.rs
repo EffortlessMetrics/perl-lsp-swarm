@@ -446,7 +446,79 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8385"
     ),
     row!(
+        "workspace_identity_generation",
+        WorkspaceServices,
+        "Arc<AtomicU64>",
+        "server instance drop",
+        "workspace generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "dependency_facts_generation",
+        WorkspaceServices,
+        "Arc<AtomicU64>",
+        "server instance drop",
+        "dependency-facts generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "stale_dependency_facts",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "metadata refresh resolution / server drop",
+        "workspace folder URIs with retained facts",
+        false,
+        "#8385"
+    ),
+    row!(
+        "metadata_refresh_serialization",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "refresh terminal / server drop",
+        "metadata refresh operation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "workspace_identity_lock",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "invalidation terminal / server drop",
+        "workspace identity generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "single_file_project_config",
+        WorkspaceServices,
+        "Arc<Mutex>",
+        "document close / server drop",
+        "single-file document URI + config generation",
+        false,
+        "#8385"
+    ),
+    row!(
+        "single_file_project_config_generation",
+        WorkspaceServices,
+        "Arc<AtomicU64>",
+        "server instance drop",
+        "single-file project config generation",
+        false,
+        "#8385"
+    ),
+    row!(
         "workspace_indexing_start_gate",
+        RuntimeServices,
+        "Arc<std::sync::Mutex>",
+        "test gate release / server drop",
+        "test runtime",
+        true,
+        "#7394"
+    ),
+    row!(
+        "indexing_commit_gate",
         RuntimeServices,
         "Arc<std::sync::Mutex>",
         "test gate release / server drop",
@@ -552,6 +624,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "workspace generation",
         false,
         "#8388"
+    ),
+    row!(
+        "indexing_scan_observation",
+        RuntimeServices,
+        "Arc<Mutex>",
+        "observation consumption / server drop",
+        "admitted unit-test scan",
+        false,
+        "#7394"
     ),
     row!(
         "permission_denied_shown",
