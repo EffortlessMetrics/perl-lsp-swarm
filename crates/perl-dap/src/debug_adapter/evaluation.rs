@@ -848,36 +848,39 @@ impl DebugAdapter {
             }) {
                 return Err(());
             }
-            if expected_session_generation.is_some_and(|expected| {
-                self.operation_broker.current_session_generation() != expected
-            }) {
-                return Err(());
-            }
-            if !Self::result_type_is_expandable(result_type) {
-                return Ok(0);
-            }
-            let raw_counter = self.debugger_output_marker.fetch_add(1, Ordering::Relaxed);
-            let counter = Self::i64_to_i32_saturating(raw_counter as i64);
-            let eval_ref = crate::debug_adapter::var_ref::VariableReference::EvalResult { counter }
-                .encode()
-                .unwrap_or(0);
-            let placeholder = Variable {
-                name: expression.to_string(),
-                value: result.to_string(),
-                type_: Some(result_type.to_string()),
-                variables_reference: 0,
-                named_variables: None,
-                indexed_variables: None,
-                // The user-supplied expression is itself the canonical
-                // re-evaluable form per DAP §8.4 (#6050 review).
-                evaluate_name: Some(expression.to_string()),
+            let accept = || {
+                if !Self::result_type_is_expandable(result_type) {
+                    return 0;
+                }
+                let raw_counter = self.debugger_output_marker.fetch_add(1, Ordering::Relaxed);
+                let counter = Self::i64_to_i32_saturating(raw_counter as i64);
+                let eval_ref =
+                    crate::debug_adapter::var_ref::VariableReference::EvalResult { counter }
+                        .encode()
+                        .unwrap_or(0);
+                let placeholder = Variable {
+                    name: expression.to_string(),
+                    value: result.to_string(),
+                    type_: Some(result_type.to_string()),
+                    variables_reference: 0,
+                    named_variables: None,
+                    indexed_variables: None,
+                    // The user-supplied expression is itself the canonical
+                    // re-evaluable form per DAP §8.4 (#6050 review).
+                    evaluate_name: Some(expression.to_string()),
+                };
+                session.variable_cache.upsert(
+                    eval_ref,
+                    VariableCacheKind::EvaluateResult,
+                    vec![super::CachedVariable { row: placeholder, typed }],
+                );
+                i64::from(eval_ref)
             };
-            session.variable_cache.upsert(
-                eval_ref,
-                VariableCacheKind::EvaluateResult,
-                vec![super::CachedVariable { row: placeholder, typed }],
-            );
-            Ok(i64::from(eval_ref))
+            if let Some(expected) = expected_session_generation {
+                self.operation_broker.accept_if_current(expected, accept).map_err(|_| ())
+            } else {
+                Ok(accept())
+            }
         } else if expected_generation.is_some() || expected_session_generation.is_some() {
             Err(())
         } else {
