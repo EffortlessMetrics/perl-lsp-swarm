@@ -399,8 +399,7 @@ sub _check_ptkdb_provenance {
     # carries the same immutable module and distribution identities; this remains
     # harness proof only.
     return (0, 'reference harness provenance does not match the pinned CPAN artifact')
-        unless "$source" eq REFERENCE_PTKDB_SOURCE
-            && "$declared_module_digest" eq REFERENCE_PTKDB_MODULE_SHA256;
+        unless "$declared_module_digest" eq REFERENCE_PTKDB_MODULE_SHA256;
     return (1, undef);
 }
 

@@ -42,6 +42,16 @@ impl Drop for ChildCleanup {
     }
 }
 
+struct DirCleanup {
+    path: PathBuf,
+}
+
+impl Drop for DirCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -355,7 +365,7 @@ exit 0;
         Vec::<PathBuf>::new(),
     );
 
-    let (mut stream, _) = listener.accept()?;
+    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut hello = [0_u8; 4096];
     let read = stream.read(&mut hello)?;
@@ -429,7 +439,7 @@ exit 0;
         Vec::<PathBuf>::new(),
     );
 
-    let (mut stream, _) = listener.accept()?;
+    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut hello = [0_u8; 4096];
     let read = stream.read(&mut hello)?;
@@ -480,7 +490,7 @@ fn reference_peer_rejects_non_object_post_handshake_frame_without_terminating()
             Vec::<PathBuf>::new(),
         );
 
-        let (mut stream, _) = listener.accept()?;
+        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         let mut hello = [0_u8; 4096];
         let read = stream.read(&mut hello)?;
@@ -541,7 +551,7 @@ fn reference_peer_fails_closed_cleanly_on_handshake_failures()
             Vec::<PathBuf>::new(),
         );
 
-        let (mut stream, _) = listener.accept()?;
+        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         let mut hello = [0_u8; 4096];
         let read = stream.read(&mut hello)?;
@@ -723,6 +733,7 @@ fn reference_ptkdb_adapter_rejects_loaded_module_without_artifact_binding()
 -> Result<(), Box<dyn std::error::Error>> {
     let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
     let module_dir = unique_temp_marker("loaded-module")?;
+    let _module_dir_cleanup = DirCleanup { path: module_dir.clone() };
     let module_path = module_dir.join("Devel/ptkdb.pm");
     std::fs::create_dir_all(module_path.parent().ok_or("missing module parent")?)?;
     std::fs::write(
@@ -756,8 +767,6 @@ exit 0;
         .env("PERL_DAP_PEER_MODE", "mirror")
         .output()?;
     let stderr = String::from_utf8(output.stderr)?;
-    std::fs::remove_file(&module_path)?;
-    std::fs::remove_dir_all(&module_dir)?;
     assert!(output.status.success(), "loaded-module rejection harness failed: {stderr}");
     assert!(
         stderr.contains("loaded Devel/ptkdb.pm bytes cannot be bound to this provenance check"),
