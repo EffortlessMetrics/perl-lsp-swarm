@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Changed
+body: "DAP stdio intake remains responsive while debugger inspection is waiting, so unsupported control requests and broken output shut down through the transport cleanup path without promoting public token cancellation."
+time: 2026-09-14T00:00:00Z
+custom:
+  PR: "14527"
+  Slug: dap-stdio-bounded-intake
+  Breaking: "no"
