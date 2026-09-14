@@ -265,7 +265,7 @@ describe('VSIX packaging ships a single bundled artifact and no raw node_modules
   // release.
   //
   // Since the Rolldown production bundle inlines every runtime dependency
-  // (adm-zip, tar, vscode-languageclient — verified pure JS, no
+  // (yauzl, tar, vscode-languageclient — verified pure JS, no
   // __dirname-relative asset loading, no native .node bindings anywhere in
   // their transitive trees) into the single out/extension.js artifact,
   // node_modules/** is excluded from the VSIX entirely (see

@@ -142,19 +142,19 @@ impl ExtractorState {
             match name.as_str() {
                 // `push @ISA, 'Base1', 'Base2'`
                 "push" => {
-                    if let Some(first_arg) = args.first() {
-                        if Self::is_isa_variable(first_arg) {
-                            let anchor_id = Self::anchor_from_node(stmt_node);
-                            for arg in args.iter().skip(1) {
-                                let names = Self::collect_names_from_node(arg);
-                                for name in names {
-                                    self.emit_edge(
-                                        name,
-                                        PackageEdgeKind::Inherits,
-                                        anchor_id,
-                                        Confidence::High,
-                                    );
-                                }
+                    if let Some(first_arg) = args.first()
+                        && Self::is_isa_variable(first_arg)
+                    {
+                        let anchor_id = Self::anchor_from_node(stmt_node);
+                        for arg in args.iter().skip(1) {
+                            let names = Self::collect_names_from_node(arg);
+                            for name in names {
+                                self.emit_edge(
+                                    name,
+                                    PackageEdgeKind::Inherits,
+                                    anchor_id,
+                                    Confidence::High,
+                                );
                             }
                         }
                     }
@@ -249,19 +249,22 @@ impl ExtractorState {
     fn expand_arg_to_names(arg: &str) -> Vec<String> {
         let arg = arg.trim();
         // qw(...) form
-        if arg.starts_with("qw(") {
-            if let Some(content) = arg.strip_prefix("qw(").and_then(|s| s.strip_suffix(')')) {
-                return content
-                    .split_whitespace()
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
-            }
+        if arg.starts_with("qw(")
+            && let Some(content) = arg.strip_prefix("qw(").and_then(|s| s.strip_suffix(')'))
+        {
+            return content
+                .split_whitespace()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
         }
         // Other qw variants: qw{...}, qw[...], qw/.../ etc.
-        if arg.starts_with("qw") && arg.len() > 3 {
-            let bytes = arg.as_bytes();
-            let open = bytes[2] as char;
+        if arg.starts_with("qw")
+            && arg.len() > 3
+            && let Some(open) = arg.chars().nth(2)
+        {
+            // Character-based delimiter detection: qw delimiters may be
+            // multi-byte UTF-8 (byte indexing would misdetect and panic).
             let close = match open {
                 '(' => ')',
                 '{' => '}',
@@ -269,15 +272,16 @@ impl ExtractorState {
                 '<' => '>',
                 c => c,
             };
-            if let Some(end) = arg.rfind(close) {
-                if end > 3 {
-                    let content = &arg[3..end];
-                    return content
-                        .split_whitespace()
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string())
-                        .collect();
-                }
+            let content_start = 2 + open.len_utf8();
+            if let Some(end) = arg.rfind(close)
+                && end > content_start
+            {
+                let content = &arg[content_start..end];
+                return content
+                    .split_whitespace()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
             }
         }
         // Quoted string: strip quotes
@@ -323,6 +327,21 @@ impl ExtractorState {
 mod tests {
     use super::*;
     use crate::Parser;
+
+    #[test]
+    fn expand_arg_to_names_handles_multibyte_qw_delimiters_without_panic() {
+        // Byte-boundary safety only: a multi-byte delimiter must neither panic
+        // nor split mid-character. Whether Perl accepts this delimiter is not
+        // claimed here (#12731 review).
+        assert_eq!(
+            ExtractorState::expand_arg_to_names("qw•Base1 Base2•"),
+            ["Base1".to_string(), "Base2".to_string()]
+        );
+        assert_eq!(
+            ExtractorState::expand_arg_to_names("qw(Base1 Base2)"),
+            ["Base1".to_string(), "Base2".to_string()]
+        );
+    }
 
     /// Parse Perl source and extract package graph edges.
     fn parse_and_extract(code: &str) -> Vec<PackageEdge> {
