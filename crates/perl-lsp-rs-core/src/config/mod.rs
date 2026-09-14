@@ -4295,6 +4295,34 @@ profile = "recommended"
                 "{near_miss:?} is not a retired alias: only an exact table entry may be \
                  accepted and projected onto the native formatter"
             );
+
+            // Same boundary, reached the way production reaches it. The matcher
+            // rejecting a near-miss only matters if nothing upstream re-routes
+            // it, so assert through both configuration channels rather than
+            // through the private helper alone.
+            if near_miss == "perltidy" {
+                // The one near-miss that is a current mode name: project config
+                // resolves it to the external adapter via an earlier arm, and
+                // the client channel does not offer external selection at all.
+                assert_eq!(
+                    parse_formatter_mode(near_miss).map(|choice| choice.mode),
+                    Some(FormatterMode::ExternalLegacy),
+                    "`perltidy` is a current external-adapter token, not a retired alias"
+                );
+                assert_eq!(parse_client_formatter_mode(near_miss), None);
+                continue;
+            }
+
+            assert_eq!(
+                parse_formatter_mode(near_miss),
+                None,
+                "{near_miss:?} must reach the unknown-value path on project config"
+            );
+            assert_eq!(
+                parse_client_formatter_mode(near_miss),
+                None,
+                "{near_miss:?} must reach the unknown-value path on client settings"
+            );
         }
 
         // Positive control, so the assertions above cannot pass by the matcher
