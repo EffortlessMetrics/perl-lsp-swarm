@@ -364,13 +364,19 @@ impl ExecuteCommandProvider {
             .map_err(|error| format!("Invalid explain-provider-decision argument: {error}"))?;
 
         let mut explanation = default_provider_decision_explanation(request.provider);
+        // Capture only the defaults. Caller context and request details belong
+        // outside the policy heading, even though the shared formatter supports both.
+        let policy_summary = format_provider_decision_explanation(&explanation);
+        let mut request_context = String::new();
 
         if let Some(receipt_id) = request.receipt_id {
             validate_explanation_echo(&receipt_id, "receipt_id")?;
+            request_context.push_str(&format!("\nReceipt: {receipt_id}."));
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
             validate_explanation_echo(&scenario, "scenario")?;
+            request_context.push_str(&format!("\nScenario: {scenario}."));
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
@@ -384,7 +390,29 @@ impl ExecuteCommandProvider {
         }
 
         let request_position = request.request_position;
-        let user_message = format_provider_decision_explanation(&explanation);
+        // These top-level defaults describe provider policy, not a recorded
+        // request outcome. Keep attached evidence distinct in the editor message.
+        let request_evidence = if let Some(receipt) = &explanation.request_receipt {
+            let freshness = receipt.get("freshness").and_then(|value| {
+                serde_json::from_value::<ProviderDecisionFreshness>(value.clone()).ok()
+            });
+            let label = match freshness {
+                Some(ProviderDecisionFreshness::Fresh) => "fresh",
+                Some(ProviderDecisionFreshness::Stale) => "stale",
+                Some(ProviderDecisionFreshness::NotApplicable) => "not applicable",
+                _ => "unknown",
+            };
+            let mut evidence = format!("Attached request freshness: {label}.");
+            if let Some(detail) = receipt.get("user_message").and_then(Value::as_str) {
+                evidence.push_str(&format!("\nRequest detail: {detail}"));
+            }
+            evidence
+        } else {
+            "No request evidence is attached.".to_string()
+        };
+        let user_message = format!(
+            "{request_evidence}{request_context}\nProvider policy summary:\n{policy_summary}"
+        );
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,
@@ -1782,8 +1810,30 @@ pub(crate) fn select_test_runner(
 }
 
 /// Check whether a command exists in the current PATH.
+///
+/// Empty PATH entries are stripped before delegating to the `which` crate:
+/// `which` 8.x emulates the Unix `which` command, which interprets an empty
+/// entry as the current directory, so a binary planted in the CWD would
+/// otherwise satisfy an availability probe even with an effectively empty
+/// PATH (the CWD-first admission seam, cf. #3028). When nothing searchable
+/// remains, the lookup fails closed.
 pub fn command_exists(command: &str) -> bool {
-    which::which(command).is_ok()
+    match std::env::var_os("PATH") {
+        None => which::which(command).is_ok(),
+        Some(path) => {
+            let dirs: Vec<std::path::PathBuf> =
+                std::env::split_paths(&path).filter(|dir| !dir.as_os_str().is_empty()).collect();
+            if dirs.is_empty() {
+                return false;
+            }
+            match std::env::join_paths(dirs.iter()) {
+                Ok(filtered) => std::env::current_dir()
+                    .map(|cwd| which::which_in(command, Some(&filtered), cwd).is_ok())
+                    .unwrap_or(false),
+                Err(_) => which::which(command).is_ok(),
+            }
+        }
+    }
 }
 
 /// Return the supported executeCommand identifiers.
