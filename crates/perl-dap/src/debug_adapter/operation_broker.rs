@@ -602,11 +602,7 @@ mod tests {
         for text in lines {
             let id = buffer.next_line_id;
             buffer.next_line_id += 1;
-            buffer.lines.push_back(RecentOutputLine {
-                id,
-                raw: (*text).to_string(),
-                normalized: (*text).to_string(),
-            });
+            buffer.lines.push_back(RecentOutputLine { id, normalized: (*text).to_string() });
         }
         Arc::new(Mutex::new(buffer))
     }

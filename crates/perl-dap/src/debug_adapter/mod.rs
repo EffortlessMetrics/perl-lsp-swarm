@@ -657,12 +657,6 @@ impl DebugAdapter {
         }
     }
 
-    /// Snapshot debugger output history for parsing without holding locks.
-    fn snapshot_recent_output_lines(&self) -> Vec<String> {
-        let output = lock_or_recover(&self.recent_output, "debug_adapter.recent_output");
-        output.lines.iter().map(|line| line.raw.clone()).collect()
-    }
-
     fn append_recent_output_line_locked(output: &mut RecentOutputBuffer, line: &str) {
         if output.lines.len() >= RECENT_OUTPUT_MAX_LINES {
             let _ = output.lines.pop_front();
@@ -672,7 +666,6 @@ impl DebugAdapter {
         output.next_line_id = output.next_line_id.saturating_add(1);
         output.lines.push_back(RecentOutputLine {
             id,
-            raw: line.to_string(),
             normalized: Self::normalize_debugger_output_line(line),
         });
     }
