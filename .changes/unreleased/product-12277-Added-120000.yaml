@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Added
+body: Add the Emacs train E06 actor-packet adapter projecting stable train, checked spec, and exact-tree context joins into the shared agent implementation and review packet contracts with fail-closed typed refusals.
+time: 2026-08-24T12:00:00Z
+custom:
+  PR: "12277"
+  Slug: emacs-train-actor-packets
+  Breaking: "no"
