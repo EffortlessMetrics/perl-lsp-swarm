@@ -492,7 +492,12 @@ impl ServerConfig {
             }
             if let Some(engine) = formatting.get("engine").and_then(|v| v.as_str()) {
                 match parse_client_formatter_mode(engine) {
-                    Some(mode) => self.formatting_engine = mode,
+                    Some(choice) => {
+                        if let Some(alias) = choice.retired_alias {
+                            warn_retired_formatter_alias(alias, "LSP client settings");
+                        }
+                        self.formatting_engine = choice.mode;
+                    }
                     None => tracing::warn!(
                         target: "perl_lsp::config",
                         setting = "formatting.engine",
@@ -767,22 +772,68 @@ pub fn normalize_formatter_mode_value(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('_', "-")
 }
 
-fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
-    match normalize_formatter_mode_value(value).as_str() {
-        "native" => Some(FormatterMode::Native),
-        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
-        "external-legacy" | "external-perltidy" | "perltidy" => Some(FormatterMode::ExternalLegacy),
-        "off" | "disabled" | "none" => Some(FormatterMode::Off),
-        _ => None,
+/// The mode a `formatting.engine` token selected, plus whether the token
+/// itself is retired.
+///
+/// #7129 removed the bare `compat` mode: it selected the native formatter and
+/// produced byte-identical output, so it named no behavior. The tokens stay
+/// accepted for a bounded deprecation window and project onto
+/// [`FormatterMode::Native`], which is what they already did. Carrying the
+/// retirement as data rather than emitting it inside the parser keeps the
+/// mapping a pure function the tests can pin without a logging harness, and
+/// lets each channel decide how to surface it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FormatterModeChoice {
+    /// The mode the server will actually run.
+    pub(crate) mode: FormatterMode,
+    /// The retired token as written, when the supplied value is a retired
+    /// alias rather than a current mode name.
+    pub(crate) retired_alias: Option<&'static str>,
+}
+
+impl FormatterModeChoice {
+    /// A current, supported mode name.
+    const fn current(mode: FormatterMode) -> Self {
+        Self { mode, retired_alias: None }
     }
 }
 
-fn parse_client_formatter_mode(value: &str) -> Option<FormatterMode> {
-    match normalize_formatter_mode_value(value).as_str() {
-        "native" => Some(FormatterMode::Native),
-        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
-        "off" | "disabled" | "none" => Some(FormatterMode::Off),
-        _ => None,
+/// Tokens retired by #7129, and the mode they project onto.
+///
+/// Kept as one table so the parser, the warning text, and the recurrence
+/// tests cannot drift apart.
+pub(crate) const RETIRED_FORMATTER_MODE_ALIASES: &[(&str, FormatterMode)] =
+    &[("compat", FormatterMode::Native), ("perltidy-compat", FormatterMode::Native)];
+
+/// Canonical replacement named in the deprecation warning.
+pub(crate) const RETIRED_FORMATTER_ALIAS_REPLACEMENT: &str = "native";
+
+/// Match a normalized token against the retired-alias table.
+fn retired_formatter_mode_alias(normalized: &str) -> Option<FormatterModeChoice> {
+    RETIRED_FORMATTER_MODE_ALIASES.iter().find_map(|(alias, mode)| {
+        (*alias == normalized)
+            .then_some(FormatterModeChoice { mode: *mode, retired_alias: Some(alias) })
+    })
+}
+
+fn parse_formatter_mode(value: &str) -> Option<FormatterModeChoice> {
+    let normalized = normalize_formatter_mode_value(value);
+    match normalized.as_str() {
+        "native" => Some(FormatterModeChoice::current(FormatterMode::Native)),
+        "external-legacy" | "external-perltidy" | "perltidy" => {
+            Some(FormatterModeChoice::current(FormatterMode::ExternalLegacy))
+        }
+        "off" | "disabled" | "none" => Some(FormatterModeChoice::current(FormatterMode::Off)),
+        other => retired_formatter_mode_alias(other),
+    }
+}
+
+fn parse_client_formatter_mode(value: &str) -> Option<FormatterModeChoice> {
+    let normalized = normalize_formatter_mode_value(value);
+    match normalized.as_str() {
+        "native" => Some(FormatterModeChoice::current(FormatterMode::Native)),
+        "off" | "disabled" | "none" => Some(FormatterModeChoice::current(FormatterMode::Off)),
+        other => retired_formatter_mode_alias(other),
     }
 }
 
@@ -804,13 +855,35 @@ fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
 /// Human-readable list of accepted `formatting.engine` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_formatter_mode`].
-const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), external-legacy (external-perltidy, perltidy), \
-     off (disabled, none)";
+///
+/// Retired aliases are deliberately absent: they are still accepted during the
+/// #7129 deprecation window, but naming them here would advertise `compat` as
+/// a supported engine again.
+const FORMATTER_MODE_VALID_OPTIONS: &str =
+    "native, external-legacy (external-perltidy, perltidy), off (disabled, none)";
 
 /// Human-readable values accepted for `formatting.engine` on the LSP
 /// client-settings channel. External process selection remains project-owned.
-const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str =
-    "native, compat (perltidy-compat), off (disabled, none)";
+const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str = "native, off (disabled, none)";
+
+/// Report that a retired `formatting.engine` alias was accepted and projected
+/// onto its replacement.
+///
+/// Emitted from the configuration-apply path, so it fires once per accepted
+/// configuration transition rather than once per formatting request. The
+/// retired token is a fixed table entry, never user-supplied text, so nothing
+/// from the user's configuration is echoed into the log.
+fn warn_retired_formatter_alias(alias: &'static str, source: &str) {
+    tracing::warn!(
+        target: "perl_lsp::config",
+        setting = "formatting.engine",
+        alias = alias,
+        replacement = RETIRED_FORMATTER_ALIAS_REPLACEMENT,
+        source = source,
+        "`formatting.engine` value is a retired alias for the native formatter and will stop \
+         being accepted; set it to `native` (#7129)",
+    );
+}
 
 /// Human-readable values accepted for `critic.engine` on the LSP client-settings
 /// channel. Legacy subprocess aliases remain available only through trusted
@@ -2723,7 +2796,12 @@ impl ProjectConfig {
         }
         if let Some(ref engine) = self.formatting.engine {
             match parse_formatter_mode(engine) {
-                Some(mode) => config.formatting_engine = mode,
+                Some(choice) => {
+                    if let Some(alias) = choice.retired_alias {
+                        warn_retired_formatter_alias(alias, ".perl-lsp.toml");
+                    }
+                    config.formatting_engine = choice.mode;
+                }
                 None => tracing::warn!(
                     target: "perl_lsp::config",
                     setting = "formatting.engine",
@@ -4047,7 +4125,10 @@ profile = "recommended"
         }));
 
         assert!(!config.perltidy_enabled);
-        assert_eq!(config.formatting_engine, FormatterMode::Compat);
+        // `perltidy_compat` is a retired alias (#7129): underscore
+        // normalization still reaches the alias table, and the alias projects
+        // onto the native formatter it always ran.
+        assert_eq!(config.formatting_engine, FormatterMode::Native);
         assert!(config.perltidy_profile.is_none());
         assert_eq!(config.perltidy_maximum_line_length, Some(120));
         assert_eq!(config.perltidy_indent_columns, Some(2));
@@ -4140,14 +4221,95 @@ profile = "recommended"
     fn external_perltidy_is_selected_only_by_explicit_engine() {
         // `parse_formatter_mode` is a pure mapping with no environment/PATH
         // probe: the external engine is reachable only through explicit config.
-        assert_eq!(parse_formatter_mode("external-perltidy"), Some(FormatterMode::ExternalLegacy));
-        assert_eq!(parse_formatter_mode("external-legacy"), Some(FormatterMode::ExternalLegacy));
-        assert_eq!(parse_formatter_mode("perltidy"), Some(FormatterMode::ExternalLegacy));
-        assert_eq!(parse_formatter_mode("native"), Some(FormatterMode::Native));
+        let mode = |value| parse_formatter_mode(value).map(|choice| choice.mode);
+        assert_eq!(mode("external-perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(mode("external-legacy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(mode("perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(mode("native"), Some(FormatterMode::Native));
         // Unknown values do not silently select external; the caller keeps its
         // current value (native by default).
-        assert_eq!(parse_formatter_mode("definitely-not-an-engine"), None);
-        assert_eq!(parse_formatter_mode(""), None);
+        assert_eq!(mode("definitely-not-an-engine"), None);
+        assert_eq!(mode(""), None);
+    }
+
+    // ── #7129: the retired `compat` alias ───────────────────────────────────
+    //
+    // `compat` was a bare alias: it selected the native formatter and produced
+    // byte-identical output, so it named no behavior a user could observe. It
+    // is gone from every public surface, still accepted for a bounded
+    // deprecation window, and projects onto the mode it always ran.
+
+    #[test]
+    fn retired_compat_aliases_project_onto_native_on_both_channels() {
+        // Includes the underscore and mixed-case/padded spellings so the
+        // alias table is reached through `normalize_formatter_mode_value`
+        // rather than by exact-token luck.
+        for (value, expected_alias) in [
+            ("compat", "compat"),
+            ("perltidy-compat", "perltidy-compat"),
+            ("perltidy_compat", "perltidy-compat"),
+            ("  COMPAT  ", "compat"),
+        ] {
+            assert_eq!(
+                parse_formatter_mode(value).map(|choice| (choice.mode, choice.retired_alias)),
+                Some((FormatterMode::Native, Some(expected_alias))),
+                "{value:?} must stay accepted, project onto the native formatter it \
+                 always ran, and report {expected_alias:?} as retired"
+            );
+            assert_eq!(
+                parse_client_formatter_mode(value)
+                    .map(|choice| (choice.mode, choice.retired_alias)),
+                Some((FormatterMode::Native, Some(expected_alias))),
+                "{value:?} must behave identically on the client-settings channel"
+            );
+        }
+    }
+
+    #[test]
+    fn current_formatter_mode_names_are_not_reported_as_retired() {
+        // Negative control for the test above: if `retired_alias` were set
+        // unconditionally, those assertions would pass vacuously.
+        for value in ["native", "off", "disabled", "none", "external-legacy", "perltidy"] {
+            assert_eq!(
+                parse_formatter_mode(value).map(|choice| choice.retired_alias),
+                Some(None),
+                "{value:?} is a current mode name: it must stay accepted and must \
+                 not warn as retired"
+            );
+        }
+    }
+
+    #[test]
+    fn no_advertised_formatter_mode_option_names_a_retired_alias() {
+        // The valid-value lists are what a user is told to choose from. A
+        // retired alias staying accepted must not put it back on that list.
+        for (channel, options) in [
+            ("project config", FORMATTER_MODE_VALID_OPTIONS),
+            ("client settings", CLIENT_FORMATTER_MODE_VALID_OPTIONS),
+        ] {
+            for (alias, _) in RETIRED_FORMATTER_MODE_ALIASES {
+                assert!(
+                    !options.contains(alias),
+                    "{channel} still advertises the retired alias {alias:?}: {options}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_retired_alias_projects_onto_a_current_mode_name() {
+        // A retired alias must map to something the user can actually write
+        // instead, or the deprecation warning names a dead end.
+        for (alias, mode) in RETIRED_FORMATTER_MODE_ALIASES {
+            assert_eq!(
+                parse_formatter_mode(RETIRED_FORMATTER_ALIAS_REPLACEMENT)
+                    .map(|choice| (choice.mode, choice.retired_alias)),
+                Some((*mode, None)),
+                "{alias:?} projects onto {mode:?}, so the replacement named in the \
+                 warning ({RETIRED_FORMATTER_ALIAS_REPLACEMENT:?}) must be a current \
+                 mode name selecting that same mode"
+            );
+        }
     }
 
     #[test]

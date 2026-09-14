@@ -793,11 +793,10 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         },
         DefaultCheck {
             name: "native_formatter_branch_uses_native_provider",
-            passed: formatting_provider_source
-                .contains("FormatterMode::Native | FormatterMode::Compat")
+            passed: formatting_provider_source.contains("FormatterMode::Native =>")
                 && formatting_provider_source.contains("Ok(native_format_document")
                 && formatting_provider_source.contains("Ok(native_format_range"),
-            detail: "native/compat formatter branches render through native_format_*".to_string(),
+            detail: "the native formatter branch renders through native_format_*".to_string(),
         },
         DefaultCheck {
             name: "external_formatter_requires_external_legacy_mode",
@@ -2123,14 +2122,14 @@ color = 1
             formatting_path,
             r#"
 match self.mode {
-    FormatterMode::Native | FormatterMode::Compat => {
+    FormatterMode::Native => {
         Ok(native_format_document(content, options, self.perltidy_config.as_ref()))
     }
     FormatterMode::ExternalLegacy => self.format_document_with_perltidy(content, options),
     FormatterMode::Off => Ok(FormattedDocument { text: content.to_string(), edits: vec![] }),
 }
 match self.mode {
-    FormatterMode::Native | FormatterMode::Compat => {
+    FormatterMode::Native => {
         Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
     }
     FormatterMode::ExternalLegacy => {
