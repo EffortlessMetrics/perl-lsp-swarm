@@ -24,6 +24,11 @@ enum Disposition {
     /// Uses a successful merge base only to compute a range or boundary, and
     /// propagates failure as an error instead of a history verdict.
     RangeOnly,
+    /// Names `merge-base` as data only (for example a live-state token a
+    /// projection must not contain) and never invokes git. The scanner matches
+    /// the literal, so the row records the inspected proof that no invocation
+    /// exists rather than pretending the literal is absent.
+    LiteralOnly,
 }
 
 struct ConsumerRow {
@@ -42,6 +47,14 @@ const INVENTORY: &[ConsumerRow] = &[
     ConsumerRow { path: "src/tasks/ci_contract.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/tasks/ci_subject.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/tasks/file_policy.rs", disposition: Disposition::RangeOnly },
+    ConsumerRow {
+        path: "src/tasks/issue_controllers/tests.rs",
+        disposition: Disposition::LiteralOnly,
+    },
+    ConsumerRow {
+        path: "src/tasks/issue_controllers/validate.rs",
+        disposition: Disposition::LiteralOnly,
+    },
     ConsumerRow { path: "src/tasks/merge_integration.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/tasks/merge_ready.rs", disposition: Disposition::RangeOnly },
 ];
@@ -164,6 +177,13 @@ fn dispositions_match_observed_is_ancestor_use() -> std::io::Result<()> {
             ),
             // The authority owns the interpretation.
             Disposition::Authority => {}
+            // Data-only rows must also never acquire a history verdict; the
+            // literal's presence is covered by the observed/recorded set tests.
+            Disposition::LiteralOnly => assert!(
+                !uses_is_ancestor,
+                "{} is recorded as literal-only but now calls `merge-base --is-ancestor`; route it through xtask::git_ancestry instead (#14557)",
+                row.path
+            ),
         }
     }
     Ok(())
