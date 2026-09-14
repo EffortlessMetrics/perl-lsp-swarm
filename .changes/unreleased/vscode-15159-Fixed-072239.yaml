@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Fixed
+body: "Health Check now fails closed when the language-server process witness is unavailable or malformed, preventing replacement startup from assuming cleanup completed."
+time: 2026-09-08T00:00:00Z
+custom:
+  PR: "15159"
+  Slug: fail-closed-process-witness
+  Breaking: "no"

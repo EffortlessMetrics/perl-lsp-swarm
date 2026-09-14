@@ -23,9 +23,7 @@ use super::activation::Dancer2FileActivations;
 use super::facts::CanonicalDancer2FileFacts;
 use perl_parser_core::{Node, NodeKind};
 use perl_semantic_analyzer::declaration::current_package_at;
-use perl_semantic_facts::framework_adapters::dancer2::{
-    DANCER2_DSL_CONTRACT_VERSION, Dancer2KeywordState, DslKeywordScope,
-};
+use perl_semantic_facts::framework_adapters::dancer2::{Dancer2KeywordState, DslKeywordScope};
 
 /// One bounded Dancer2 diagnostic.
 #[non_exhaustive]
@@ -56,12 +54,14 @@ pub fn bounded_diagnostics(
     if !activations.has_exact() {
         return diagnostics;
     }
+    let declared = declared_sub_names(ast);
 
     for activation in &activations.packages {
         if !activation.facts.is_exact() {
             continue;
         }
         let package = activation.package.as_str();
+        let contract_version = activation.facts.dsl_contract_version;
 
         // (1) excluded route keyword used by a declaration.
         for declaration in &facts.extracted_routes {
@@ -82,7 +82,7 @@ pub fn bounded_diagnostics(
                     message: format!(
                         "`{}` was excluded by this activation's `!{}` import; the declaration \
                          is not a route of this application (DSL contract \
-                         {DANCER2_DSL_CONTRACT_VERSION})",
+                         {contract_version})",
                         declaration.route.keyword, declaration.route.keyword
                     ),
                     start: declaration.route.keyword_anchor.start_byte,
@@ -105,9 +105,8 @@ pub fn bounded_diagnostics(
         if !handler_only.is_empty() {
             let mut usages = Vec::new();
             collect_keyword_usages(ast, &handler_only, &mut usages);
-            let declared = declared_sub_names(ast);
             for (name, start, end) in usages {
-                if declared.contains(&name) {
+                if declared.contains(&(package.to_string(), name.clone())) {
                     // A local `sub <name>` declaration owns the name: using
                     // it is ordinary Perl, not a framework keyword use.
                     continue;
@@ -131,7 +130,7 @@ pub fn bounded_diagnostics(
                     message: format!(
                         "`{name}` is a request-scoped Dancer2 keyword; outside an exact route \
                          handler or hook handler it has no defined meaning (DSL contract \
-                         {DANCER2_DSL_CONTRACT_VERSION})"
+                         {contract_version})"
                     ),
                     start,
                     end,
@@ -166,19 +165,23 @@ fn collect_keyword_usages(node: &Node, names: &[&str], out: &mut Vec<(String, u3
     }
 }
 
-/// Names of subroutine declarations in the file (any package).
-fn declared_sub_names(node: &Node) -> std::collections::HashSet<String> {
+/// Names of subroutine declarations paired with their lexical package owners.
+fn declared_sub_names(ast: &Node) -> std::collections::HashSet<(String, String)> {
     let mut names = std::collections::HashSet::new();
-    collect_declared_sub_names(node, &mut names);
+    collect_declared_sub_names(ast, ast, &mut names);
     names
 }
 
-fn collect_declared_sub_names(node: &Node, names: &mut std::collections::HashSet<String>) {
+fn collect_declared_sub_names(
+    ast: &Node,
+    node: &Node,
+    names: &mut std::collections::HashSet<(String, String)>,
+) {
     if let NodeKind::Subroutine { name: Some(name), .. } = &node.kind {
-        names.insert(name.clone());
+        names.insert((current_package_at(ast, node.location.start).to_string(), name.clone()));
     }
     for child in node.children() {
-        collect_declared_sub_names(child, names);
+        collect_declared_sub_names(ast, child, names);
     }
 }
 
@@ -193,11 +196,23 @@ mod tests {
     use perl_test_must::{must_some_with, must_with};
 
     fn setup(source: &'static str) -> (Dancer2FileActivations, CanonicalDancer2FileFacts, Node) {
+        setup_with_version(source, "1.1.1")
+    }
+
+    fn setup_with_version(
+        source: &'static str,
+        framework_version: &str,
+    ) -> (Dancer2FileActivations, CanonicalDancer2FileFacts, Node) {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
-        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let module = RuntimeDancer2Module::new("lib/Dancer2.pm", framework_version);
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         (activations, facts, ast)
     }
@@ -268,8 +283,13 @@ mod tests {
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
         let module = RuntimeDancer2Module::new("lib/Dancer2.pm", "1.1.1");
-        let activations =
-            file_activations(&ast, FileId(1), Some(&module), &SourceGeneration::known("g1"));
+        let activations = file_activations(
+            &ast,
+            source,
+            FileId(1),
+            Some(&module),
+            &SourceGeneration::known("g1"),
+        );
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         let offset = must_some_with(source.find("params"), "params offset");
         assert!(
@@ -312,7 +332,8 @@ mod tests {
         let source = "my $x = params;";
         let mut parser = Parser::new(source);
         let ast = must_with(parser.parse(), "fixture must parse");
-        let activations = file_activations(&ast, FileId(1), None, &SourceGeneration::known("g1"));
+        let activations =
+            file_activations(&ast, source, FileId(1), None, &SourceGeneration::known("g1"));
         let facts = canonical_file_facts(&ast, FileId(1), &activations);
         assert!(bounded_diagnostics(&ast, &activations, &facts).is_empty());
     }
@@ -325,5 +346,64 @@ mod tests {
         // A local `sub params` declaration owns the name; using it is
         // ordinary Perl, not a framework keyword use.
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn unsupported_versions_produce_no_diagnostic_or_hover() -> Result<(), String> {
+        let source = "use Dancer2;\nmy $p = params;\nget '/x' => sub { request; };";
+        for version in ["", "1.1oops", "0.9.9", "3.0.0", "2.0.1"] {
+            let (activations, facts, ast) = setup_with_version(source, version);
+            let offset = source.find("params").ok_or("missing keyword offset")?;
+            if !bounded_diagnostics(&ast, &activations, &facts).is_empty()
+                || super::super::hover::hover_projection_at(
+                    &activations,
+                    &facts,
+                    &ast,
+                    "main",
+                    offset,
+                )
+                .is_some()
+            {
+                return Err(format!("{version}: unsupported 1.x version produced provider output"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sibling_subroutine_does_not_own_another_packages_keyword() -> Result<(), String> {
+        for source in [
+            "package Other; sub content { 1 }; package App; use Dancer2; content; get '/x' => sub { content; };",
+            "package App; use Dancer2; { package Other; sub content { 1 }; } content; get '/x' => sub { content; };",
+        ] {
+            let (activations, facts, ast) = setup(source);
+            let diagnostics = bounded_diagnostics(&ast, &activations, &facts);
+            let expected_offset = source.find("content;").ok_or("missing outside keyword")?;
+            let diagnostic = diagnostics.first().ok_or("sibling declaration suppressed misuse")?;
+            if diagnostics.len() != 1
+                || diagnostic.code != "dancer2.handler-only-keyword-outside-handler"
+                || usize::try_from(diagnostic.start).map_err(|error| error.to_string())?
+                    != expected_offset
+            {
+                return Err(format!("wrong package or handler diagnostic: {diagnostics:?}"));
+            }
+        }
+        let local = "package App; use Dancer2; sub content { 1 }; content;";
+        let (activations, facts, ast) = setup(local);
+        let diagnostics = bounded_diagnostics(&ast, &activations, &facts);
+        if !diagnostics.is_empty() {
+            return Err(format!("same-package declaration lost ownership: {diagnostics:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn versioned_diagnostic_uses_the_activation_contract() {
+        let source = "use Dancer2 '!get';\nget '/x' => sub { 1 };";
+        let (activations, facts, ast) = setup_with_version(source, "1.0.0");
+        let diagnostics = bounded_diagnostics(&ast, &activations, &facts);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("dancer2-dsl.1-0.v3"));
+        assert!(!diagnostics[0].message.contains("dancer2-dsl.1-1.v3"));
     }
 }

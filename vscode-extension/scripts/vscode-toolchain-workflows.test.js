@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
+const { constructCandidateArtifactManifest } = require('./run-local-vsix-smoke.js');
 
 const extensionRoot = path.resolve(__dirname, '..');
 const repositoryRoot = path.resolve(extensionRoot, '..');
@@ -11,6 +12,7 @@ const extensionWorkflows = [
   'vscode-current-source-linux-smoke.yml',
   'vscode-managed-binary-smoke.yml',
   'vscode-published-extension-smoke.yml',
+  'vscode-prebuilt-payload-adapter.yml',
   'ux-regression-gate.yml',
   'publish-extension.yml',
 ];
@@ -42,6 +44,32 @@ void test('the setup action verifies the authority before npm ci', () => {
   assert.ok(verifyIndex < installIndex);
   assert.match(source, /node-version: ['"]26\.5\.0['"]/);
   assert.match(source, /npm install --global npm@11\.18\.0/);
+  const installStepStart = source.lastIndexOf('- name:', installIndex);
+  const installStepEnd = source.indexOf('\n    - name:', installIndex + 1);
+  const installStep = source.slice(
+    installStepStart,
+    installStepEnd === -1 ? source.length : installStepEnd,
+  );
+  assert.match(installStep, /\n      if: inputs\.install-dependencies == ['"]true['"]/);
+  const doctorIndex = source.indexOf('run: npm run doctor');
+  assert.notEqual(doctorIndex, -1);
+  const doctorStepStart = source.lastIndexOf('- name:', doctorIndex);
+  const doctorStepEnd = source.indexOf('\n    - name:', doctorIndex + 1);
+  const doctorStep = source.slice(
+    doctorStepStart,
+    doctorStepEnd === -1 ? source.length : doctorStepEnd,
+  );
+  assert.doesNotMatch(doctorStep, /\n      if:/);
+  const inputs = source.slice(0, source.indexOf('\nruns:'));
+  assert.match(inputs, /install-dependencies:[\s\S]*default: ['"]true['"]/);
+});
+
+void test('the dependency-free adapter opts out only of npm ci', () => {
+  const source = readWorkflow('vscode-prebuilt-payload-adapter.yml');
+  assert.match(source, /uses: \.\/\.github\/actions\/setup-vscode-toolchain/);
+  assert.match(source, /install-dependencies: ['"]false['"]/);
+  assert.doesNotMatch(source, /actions\/setup-node@/);
+  assert.match(source, /python3 -m unittest scripts\.test_prepare_vsix_prebuilt_payload -v/);
 });
 
 void test('current-source smoke does not reinstall dependencies after setup', () => {
@@ -50,12 +78,178 @@ void test('current-source smoke does not reinstall dependencies after setup', ()
   assert.doesNotMatch(source, /\bnpm\s+(?:ci|install)\b/);
 });
 
+void test('current-source Linux smoke enables the candidate-bound Test Explorer leg', () => {
+  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  const smokeIndex = source.indexOf('- name: Run exact current-source smoke under Xvfb');
+  assert.notEqual(smokeIndex, -1);
+  const nextStepIndex = source.slice(smokeIndex + 1).search(/\r?\n\s+- name:/);
+  const smokeStep = source.slice(
+    smokeIndex,
+    nextStepIndex === -1 ? source.length : smokeIndex + 1 + nextStepIndex,
+  );
+  assert.match(smokeStep, /PERL_LSP_TEST_EXPLORER_JOURNEY: '1'/);
+  assert.match(smokeStep, /PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1'/);
+  assert.match(
+    smokeStep,
+    /PERL_LSP_CURRENT_SOURCE_SHA: \$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}/,
+  );
+  assert.match(
+    smokeStep,
+    /PERL_LSP_CANDIDATE_ID: current-source-\$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}/,
+  );
+  assert.match(
+    smokeStep,
+    /PERL_LSP_ARTIFACT_SET_ID: current-source-linux-\$\{\{ matrix\.vscode_version \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  const subjectSha = 'a'.repeat(40);
+  const workflowValue = (name) => {
+    const match = smokeStep.match(new RegExp(`^\\s+${name}: (.+)$`, 'm'));
+    const value = match?.[1];
+    assert.ok(value, `${name} must be present in the smoke environment`);
+    return value.trim().replace(/^['"]|['"]$/g, '');
+  };
+  const resolveWorkflowValue = (value, runAttempt) =>
+    value
+      .replaceAll('${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}', subjectSha)
+      .replaceAll('${{ matrix.vscode_version }}', '1.125.0')
+      .replaceAll('${{ github.run_id }}', '123')
+      .replaceAll('${{ github.run_attempt }}', runAttempt);
+  const manifestForAttempt = (runAttempt) => {
+    const smokeEnv = Object.fromEntries(
+      [
+        'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+        'PERL_LSP_CANDIDATE_ID',
+        'PERL_LSP_ARTIFACT_SET_ID',
+        'PERL_LSP_CURRENT_SOURCE_SHA',
+      ].map((name) => [name, resolveWorkflowValue(workflowValue(name), runAttempt)]),
+    );
+    return JSON.parse(
+      String(
+        constructCandidateArtifactManifest(
+          smokeEnv,
+          subjectSha,
+          'linux',
+          'b'.repeat(64),
+          'c'.repeat(64),
+        ),
+      ),
+    );
+  };
+  const manifest = manifestForAttempt('1');
+  const rerunManifest = manifestForAttempt('2');
+  assert.equal(manifest.candidate_id, `current-source-${subjectSha}`);
+  assert.equal(manifest.frozen_product_sha, subjectSha);
+  assert.equal(manifest.artifact_set_id, 'current-source-linux-1.125.0-123-1');
+  assert.equal(rerunManifest.artifact_set_id, 'current-source-linux-1.125.0-123-2');
+  assert.notEqual(manifest.artifact_set_id, rerunManifest.artifact_set_id);
+  const missingSourceEnv = Object.fromEntries(
+    [
+      'PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST',
+      'PERL_LSP_CANDIDATE_ID',
+      'PERL_LSP_ARTIFACT_SET_ID',
+      'PERL_LSP_CURRENT_SOURCE_SHA',
+    ].map((name) => [name, resolveWorkflowValue(workflowValue(name), '1')]),
+  );
+  delete missingSourceEnv.PERL_LSP_CURRENT_SOURCE_SHA;
+  assert.throws(
+    () =>
+      constructCandidateArtifactManifest(
+        missingSourceEnv,
+        subjectSha,
+        'linux',
+        'b'.repeat(64),
+        'c'.repeat(64),
+      ),
+    /missing frozenProductSha/,
+  );
+  assert.match(smokeStep, /run: xvfb-run -a npm run test:published:local/);
+  assert.match(
+    smokeStep,
+    /^[ \t]*PERL_LSP_FIRST_HOUR_SERVER_PATH:[ \t]*\$\{\{ runner\.temp \}\}\/perl-lsp-current-source-target\/release\/perllsp[ \t]*\r?$/m,
+  );
+  assert.match(
+    smokeStep,
+    /^[ \t]*PERL_LSP_SERVER_SOURCE_SHA:[ \t]*\$\{\{ env\.PERL_LSP_SMOKE_SUBJECT_SHA \}\}[ \t]*\r?$/m,
+  );
+  assert.match(source, /same staged VSIX\/server/);
+});
+
+void test('current-source inventory uses PR merge-base while manual runs keep accepted base', () => {
+  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  assert.match(
+    source,
+    /^          PERL_LSP_PACKAGE_BASE_MODE: \$\{\{ github\.event_name == 'pull_request' && 'pull_request' \|\| 'accepted' \}\}$/m,
+  );
+  assert.match(
+    source,
+    /^          PERL_LSP_PACKAGE_PR_BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha \|\| '' \}\}$/m,
+  );
+  assert.match(
+    source,
+    /^          PERL_LSP_PACKAGE_BASE_SHA: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.accepted_base_sha \|\| '' \}\}$/m,
+  );
+  assert.doesNotMatch(
+    source,
+    /PERL_LSP_PACKAGE_BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha/,
+  );
+});
+
 void test('publisher workflow invokes both CLIs offline through npm exec', () => {
   const source = readWorkflow('publish-extension.yml');
   assert.match(source, /npm exec --offline --no -- @vscode\/vsce publish/);
   assert.match(source, /npm exec --offline --no -- ovsx publish/);
   assert.doesNotMatch(source, /^\s+run: (?:vsce|ovsx) publish/m);
   assert.doesNotMatch(source, /^\s+run: ovsx --version/m);
+});
+
+void test('managed Windows smoke packages and runs the current Test Explorer VSIX', () => {
+  const source = readWorkflow('vscode-managed-binary-smoke.yml');
+  const packageIndex = source.indexOf(
+    '- name: Package current extension for Windows published smoke',
+  );
+  const explorerIndex = source.indexOf(
+    '- name: Run current extension Test Explorer smoke (Windows)',
+  );
+  assert.notEqual(packageIndex, -1);
+  assert.notEqual(explorerIndex, -1);
+  assert.ok(packageIndex < explorerIndex);
+  const nextStepIndex = (index) => {
+    const offset = source.slice(index + 1).search(/\r?\n\s+- name:/);
+    return offset === -1 ? -1 : index + 1 + offset;
+  };
+  const packageNextStepIndex = nextStepIndex(packageIndex);
+  const explorerNextStepIndex = nextStepIndex(explorerIndex);
+  const packageStep = source.slice(
+    packageIndex,
+    packageNextStepIndex === -1 ? source.length : packageNextStepIndex,
+  );
+  const explorerStep = source.slice(
+    explorerIndex,
+    explorerNextStepIndex === -1 ? source.length : explorerNextStepIndex,
+  );
+  assert.match(packageStep, /if: runner\.os == 'Windows'/);
+  assert.match(packageStep, /run: npm run package/);
+  assert.match(explorerStep, /if: runner\.os == 'Windows'/);
+  assert.match(explorerStep, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(explorerStep, /PERL_LSP_PUBLISHED_EXTENSION_SOURCE: vsix/);
+  assert.match(explorerStep, /PERL_LSP_TEST_EXPLORER_SMOKE: '1'/);
+  assert.match(explorerStep, /\$vsix\.Count -ne 1/);
+  assert.match(explorerStep, /\$env:PERL_LSP_PUBLISHED_VSIX_PATH = \$vsix\[0\]\.FullName/);
+  assert.match(explorerStep, /npm run test:published/);
+  const vsixSelection = explorerStep.indexOf('$vsix = @(');
+  const vsixAssignment = explorerStep.indexOf('$env:PERL_LSP_PUBLISHED_VSIX_PATH =');
+  const publishedTest = explorerStep.indexOf('npm run test:published');
+  assert.notEqual(vsixSelection, -1, 'the published VSIX must be enumerated');
+  assert.notEqual(vsixAssignment, -1, 'the selected VSIX path must be assigned');
+  assert.notEqual(publishedTest, -1, 'the published Test Explorer command must be present');
+  assert.ok(
+    vsixSelection < vsixAssignment,
+    'the published VSIX must be selected before binding its path',
+  );
+  assert.ok(
+    vsixAssignment < publishedTest,
+    'the selected VSIX path must be bound before the published test',
+  );
 });
 
 void test('managed-binary smoke proves TypeScript authority before compilation on every OS', () => {

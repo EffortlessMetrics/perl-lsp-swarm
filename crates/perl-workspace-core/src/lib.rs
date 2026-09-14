@@ -64,6 +64,7 @@ pub mod file;
 pub mod id;
 pub mod import;
 mod import_walk;
+pub mod meta_yml;
 pub mod model;
 pub mod package;
 pub mod pod;
@@ -118,6 +119,9 @@ pub use fact_classes::FactClasses;
 pub use file::{FileRecord, FileRole, ParseStatus};
 pub use id::{Digest, FileId, PackageId, SymbolId, fnv1a};
 pub use import::{ImportFact, ImportKind};
+pub use meta_yml::{
+    MetaYmlFinding, MetaYmlFindingKind, MetaYmlOutcome, MetaYmlParseState, parse_meta_yml,
+};
 pub use model::ProjectModel;
 pub use package::PackageRecord;
 pub use pod::{PodFact, PodSection, PodSectionKind};

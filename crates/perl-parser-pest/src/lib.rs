@@ -23,7 +23,7 @@
 //!     }
 //! "#;
 //!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # fn main() -> Result<(), perl_parser_pest::ParseError> {
 //! let ast = parser.parse(code)?;
 //! # Ok(())
 //! # }
@@ -46,7 +46,7 @@ pub mod pure_rust_parser;
 pub mod sexp_formatter;
 
 // Re-export the main types for convenience
-pub use error::{ParseError, ParseResult};
+pub use error::ParseError;
 pub use outcome::{
     OutcomeError, PARSE_OUTCOME_SCHEMA, PARSER_FAILURE_SCHEMA, ParseAttempt, ParseCompleteness,
     ParseDiagnostic, ParseDiagnosticKind, ParseOutcome, ParseOutcomeVocabulary, ParserFailure,

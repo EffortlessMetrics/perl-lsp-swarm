@@ -22,7 +22,7 @@ and `docs/reference/NATIVE_STACK_POLICY.md`.
 - A `FactClasses` selector so a request only pays for the fact classes it
   asks for.
 - Modules: `boundary`, `builder`, `dist`, `dist_authoring`, `effects`, `error`, `export`,
-  `fact_classes`, `file`, `id`, `import` (+ `import_walk`), `model`,
+  `fact_classes`, `file`, `id`, `import` (+ `import_walk`), `meta_yml`, `model`,
   `package`, `pod`, `provenance`, `range`, `relation`, `symbol`, `test`,
   `test_item`, `test_item_discovery`.
 - `SCHEMA_VERSION` -- the fact-schema version this crate emits; bump on any

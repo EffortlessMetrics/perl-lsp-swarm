@@ -4,16 +4,20 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const zlib = require('node:zlib');
+const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
-const AdmZip = require('adm-zip');
+const JSZip = require('jszip');
 const {
   collectArchiveInventory,
   ensureDistinctBase,
   evaluateTransition,
   notProvenReceipt,
+  parseArgs,
   parseDeclarationDocument,
   parseInventoryDocument,
   projectInventory,
+  resolveBaseRevision,
+  resolvePullRequestMergeBase,
   semanticInventorySha256,
 } = require('./check-vsix-inventory-transition');
 
@@ -27,9 +31,26 @@ function inventory(files, extra = {}) {
   };
 }
 
+async function writeJsZip(destination, files) {
+  const zip = new JSZip();
+  for (const [name, contents] of Object.entries(files)) {
+    zip.file(name, contents);
+  }
+  fs.writeFileSync(
+    destination,
+    await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }),
+  );
+}
+
 function document(files) {
   const value = inventory(files);
   return parseInventoryDocument(`${JSON.stringify(value, null, 2)}\n`, 'fixture baseline');
+}
+
+function git(cwd, args) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
+  assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+  return result.stdout.trim();
 }
 
 function declaration(baseDocument, candidateDocument) {
@@ -336,6 +357,119 @@ void test('rejects a requested base that resolves to the candidate', () => {
   );
 });
 
+void test('resolves pull request bases through the exact event base merge-base', () => {
+  const candidate = 'c'.repeat(40);
+  const eventBase = 'e'.repeat(40);
+  const mergeBase = 'm'.repeat(40);
+  const calls = [];
+  const resolved = resolvePullRequestMergeBase(candidate, eventBase, {
+    resolveRevision: (revision) => {
+      calls.push(['resolve', revision]);
+      return eventBase;
+    },
+    runGitOptional: (args) => {
+      calls.push(['git', args]);
+      return mergeBase;
+    },
+  });
+
+  assert.equal(resolved, mergeBase);
+  assert.deepEqual(calls, [
+    ['resolve', eventBase],
+    ['git', ['merge-base', candidate, eventBase]],
+  ]);
+});
+
+void test('uses a temporary git fork and rejects an unrelated event base', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-merge-base-'));
+  try {
+    git(directory, ['init', '-q', '-b', 'main']);
+    git(directory, ['config', 'user.email', 'test@example.invalid']);
+    git(directory, ['config', 'user.name', 'Inventory test']);
+    fs.writeFileSync(path.join(directory, 'package.txt'), 'base\n');
+    git(directory, ['add', 'package.txt']);
+    git(directory, ['commit', '-q', '-m', 'base']);
+    const mergeBase = git(directory, ['rev-parse', 'HEAD']);
+
+    git(directory, ['checkout', '-q', '-b', 'candidate']);
+    fs.writeFileSync(path.join(directory, 'test.rs'), 'candidate test\n');
+    git(directory, ['add', 'test.rs']);
+    git(directory, ['commit', '-q', '-m', 'candidate test']);
+    const candidate = git(directory, ['rev-parse', 'HEAD']);
+
+    git(directory, ['checkout', '-q', 'main']);
+    fs.writeFileSync(path.join(directory, 'package.txt'), 'base package update\n');
+    git(directory, ['add', 'package.txt']);
+    git(directory, ['commit', '-q', '-m', 'event package']);
+    const eventBase = git(directory, ['rev-parse', 'HEAD']);
+    const resolve = (revision) => git(directory, ['rev-parse', `${revision}^{commit}`]);
+    const runGitOptional = (args) => {
+      const result = spawnSync('git', args, {
+        cwd: directory,
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      return result.status === 0 ? result.stdout.trim() : null;
+    };
+
+    assert.equal(
+      resolvePullRequestMergeBase(candidate, eventBase, {
+        resolveRevision: resolve,
+        runGitOptional,
+      }),
+      mergeBase,
+    );
+    assert.equal(git(directory, ['diff', '--name-only', mergeBase, candidate]), 'test.rs');
+    assert.equal(git(directory, ['diff', '--name-only', mergeBase, eventBase]), 'package.txt');
+    const unchanged = document({ 'package.txt': 2 });
+    const result = evaluateTransition({
+      actual: unchanged.value,
+      baseDocument: unchanged,
+      candidateDocument: unchanged,
+      declaration: null,
+      platform: 'linux',
+      arch: 'x64',
+    });
+    assert.equal(result.state, 'no_change');
+    assert.equal(result.passed, true);
+
+    git(directory, ['checkout', '-q', '--orphan', 'unrelated']);
+    fs.writeFileSync(path.join(directory, 'unrelated.txt'), 'unrelated\n');
+    git(directory, ['add', 'unrelated.txt']);
+    git(directory, ['commit', '-q', '-m', 'unrelated']);
+    const unrelated = git(directory, ['rev-parse', 'HEAD']);
+    assert.throws(
+      () =>
+        resolvePullRequestMergeBase(candidate, unrelated, {
+          resolveRevision: resolve,
+          runGitOptional,
+        }),
+      /pull request merge base/,
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+void test('rejects missing or malformed pull request base bindings', () => {
+  assert.throws(() => parseArgs(['--merge-base-with']), /--merge-base-with requires a value/);
+  assert.throws(
+    () =>
+      resolvePullRequestMergeBase('c'.repeat(40), 'not-a-sha', {
+        resolveRevision: () => 'e'.repeat(40),
+        runGitOptional: () => 'm'.repeat(40),
+      }),
+    /pull request base revision must be a full lowercase commit SHA/,
+  );
+});
+
+void test('manual accepted bases remain distinct from pull request mode', () => {
+  assert.throws(
+    () => resolveBaseRevision('c'.repeat(40), 'a'.repeat(40), 'b'.repeat(40)),
+    /both an accepted base revision and a pull request base revision/,
+  );
+});
+
 void test('instrument failures produce a bounded not-proven receipt', () => {
   const receipt = notProvenReceipt({
     candidateSha: 'a'.repeat(40),
@@ -349,7 +483,7 @@ void test('instrument failures produce a bounded not-proven receipt', () => {
   assert.equal(receipt.reason, 'git show failed with details');
 });
 
-void test('package inventory is measured from the archive, not the worktree projection', () => {
+void test('package inventory is measured from the archive, not the worktree projection', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
     // The worktree file and the archived entry deliberately disagree: only the
@@ -357,15 +491,15 @@ void test('package inventory is measured from the archive, not the worktree proj
     const worktreeFile = path.join(directory, 'extension.js');
     fs.writeFileSync(worktreeFile, 'x'.repeat(4096));
 
-    const zip = new AdmZip();
-    zip.addFile('extension/out/extension.js', Buffer.from('a'.repeat(11)));
-    zip.addFile('extension/package.json', Buffer.from('b'.repeat(7)));
-    zip.addFile('[Content_Types].xml', Buffer.from('<Types/>'));
-    zip.addFile('extension.vsixmanifest', Buffer.from('<PackageManifest/>'));
     const vsixPath = path.join(directory, 'candidate.vsix');
-    zip.writeZip(vsixPath);
+    await writeJsZip(vsixPath, {
+      'extension/out/extension.js': 'a'.repeat(11),
+      'extension/package.json': 'b'.repeat(7),
+      '[Content_Types].xml': '<Types/>',
+      'extension.vsixmanifest': '<PackageManifest/>',
+    });
 
-    const result = collectArchiveInventory(vsixPath);
+    const result = await collectArchiveInventory(vsixPath);
 
     assert.deepEqual(result.inventory.files, {
       'out/extension.js': 11,
@@ -383,22 +517,52 @@ void test('package inventory is measured from the archive, not the worktree proj
   }
 });
 
-void test('an archive with no extension payload cannot authorize a transition', () => {
+void test('an archive with no extension payload cannot authorize a transition', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
-    const zip = new AdmZip();
-    zip.addFile('[Content_Types].xml', Buffer.from('<Types/>'));
     const vsixPath = path.join(directory, 'empty.vsix');
-    zip.writeZip(vsixPath);
+    await writeJsZip(vsixPath, { '[Content_Types].xml': '<Types/>' });
 
-    assert.throws(() => collectArchiveInventory(vsixPath), /no extension\/ payload entries/);
+    await assert.rejects(collectArchiveInventory(vsixPath), /no extension\/ payload entries/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
-// adm-zip normalizes traversal names when it writes, so a hostile archive has
-// to be assembled byte-wise to reach the canonical-path guard at all.
+void test('rejects a payload corrupted without damaging the central directory', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
+  try {
+    const entryName = 'extension/package.json';
+    const archive = storedZip([
+      [entryName, '{"name":"perl-lsp-rs"}'],
+      ['[Content_Types].xml', '<Types/>'],
+    ]);
+    const payloadOffset = 30 + Buffer.byteLength(entryName);
+    archive[payloadOffset] = (archive[payloadOffset] ?? 0) ^ 0xff;
+    const vsixPath = path.join(directory, 'payload-corrupt.vsix');
+    fs.writeFileSync(vsixPath, archive);
+
+    await assert.rejects(
+      collectArchiveInventory(vsixPath),
+      /CRC mismatch|unable to read VSIX archive entry/,
+    );
+    const checker = spawnSync(
+      process.execPath,
+      [path.join(__dirname, 'check-vsix-inventory.js'), '--vsix', vsixPath],
+      { cwd: path.resolve(__dirname, '..'), encoding: 'utf8', windowsHide: true },
+    );
+    assert.notEqual(checker.status, 0, `corrupt archive unexpectedly passed: ${checker.stdout}`);
+    assert.match(
+      `${checker.stdout}\n${checker.stderr}`,
+      /CRC mismatch|unable to read VSIX archive entry/,
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+// JSZip normalizes traversal names when it writes, so a hostile archive has to
+// be assembled byte-wise to reach the canonical-path guard at all.
 function storedZip(entries) {
   const locals = [];
   const central = [];
@@ -444,7 +608,7 @@ function storedZip(entries) {
   return Buffer.concat([...locals, centralBytes, end]);
 }
 
-void test('an archive entry escaping the package root is rejected', () => {
+void test('an archive entry escaping the package root is rejected', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
     const vsixPath = path.join(directory, 'escape.vsix');
@@ -456,13 +620,13 @@ void test('an archive entry escaping the package root is rejected', () => {
       ]),
     );
 
-    assert.throws(() => collectArchiveInventory(vsixPath), /canonical relative package path/);
+    await assert.rejects(collectArchiveInventory(vsixPath), /canonical relative package path/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
-void test('a duplicate archive entry name is rejected', () => {
+void test('a duplicate archive entry name is rejected', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
     const vsixPath = path.join(directory, 'duplicate.vsix');
@@ -474,19 +638,19 @@ void test('a duplicate archive entry name is rejected', () => {
       ]),
     );
 
-    assert.throws(() => collectArchiveInventory(vsixPath), /duplicate entry name/);
+    await assert.rejects(collectArchiveInventory(vsixPath), /duplicate entry name/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
-void test('an unreadable archive is an instrument failure, not a package verdict', () => {
+void test('an unreadable archive is an instrument failure, not a package verdict', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-vsix-archive-'));
   try {
     const vsixPath = path.join(directory, 'corrupt.vsix');
     fs.writeFileSync(vsixPath, 'this is not a zip archive');
 
-    assert.throws(() => collectArchiveInventory(vsixPath), /unable to read VSIX archive/);
+    await assert.rejects(collectArchiveInventory(vsixPath), /unable to read VSIX archive/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

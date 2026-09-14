@@ -71,6 +71,14 @@ pub struct RealProcessClient {
 
 impl RealProcessClient {
     pub fn spawn_exact() -> Result<Self> {
+        Self::spawn_exact_with_env(&[])
+    }
+
+    /// Spawn the exact candidate with extra environment overrides, applied
+    /// after the harness defaults so tests can pin deterministic child
+    /// behavior (for example a fixed `RUST_LOG` filter) instead of inheriting
+    /// whatever the surrounding test environment happens to carry.
+    pub fn spawn_exact_with_env(env: &[(&str, &str)]) -> Result<Self> {
         let candidate = exact_candidate()?;
         let candidate_path = PathBuf::from(candidate.path);
         ensure!(
@@ -81,22 +89,23 @@ impl RealProcessClient {
         );
 
         let workspace = tempfile::tempdir().context("create isolated LSP process workspace")?;
-        let mut child = Command::new(&candidate_path)
+        let mut command = Command::new(&candidate_path);
+        command
             .arg("--stdio")
             .current_dir(workspace.path())
             .env("PERL_LSP_QUIET", "1")
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "spawn exact {} candidate from {} at {}",
-                    candidate.binary_name,
-                    candidate.environment_name,
-                    candidate_path.display()
-                )
-            })?;
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().with_context(|| {
+            format!(
+                "spawn exact {} candidate from {} at {}",
+                candidate.binary_name,
+                candidate.environment_name,
+                candidate_path.display()
+            )
+        })?;
 
         let stdin = take_pipe(&mut child, |child| child.stdin.take(), "stdin")?;
         let stdout = take_pipe(&mut child, |child| child.stdout.take(), "stdout")?;

@@ -109,9 +109,18 @@ jobs:
         env:
           PERL_LSP_E2E: '1'
           PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perllsp
-          PERL_LSP_PACKAGE_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.accepted_base_sha }}
+          PERL_LSP_PACKAGE_BASE_MODE: ${{ github.event_name == 'pull_request' && 'pull_request' || 'accepted' }}
+          PERL_LSP_PACKAGE_PR_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
+          PERL_LSP_PACKAGE_BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.accepted_base_sha || '' }}
           PERL_LSP_SERVER_SOURCE_SHA: ${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}
           PERL_LSP_SMOKE_SOURCE_LABEL: hosted-linux-current-source
+          PERL_LSP_CONSTRUCT_CANDIDATE_MANIFEST: '1'
+          PERL_LSP_CANDIDATE_ID: current-source-${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}
+          PERL_LSP_ARTIFACT_SET_ID: current-source-linux-${{ matrix.vscode_version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          PERL_LSP_CURRENT_SOURCE_SHA: ${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}
+          # The local runner keeps this installed Test Explorer leg separate
+          # from first-hour smoke while reusing the same staged VSIX/server.
+          PERL_LSP_TEST_EXPLORER_JOURNEY: '1'
         run: xvfb-run -a npm run test:published:local
 
       - name: Record exact-subject scheduling result
