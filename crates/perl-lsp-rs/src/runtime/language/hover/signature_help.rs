@@ -97,7 +97,7 @@ impl LspServer {
                         let declared =
                             crate::runtime::language::completion::dancer2_declared_sub_names(ast);
                         let Some(activation) = context.activations.for_package(&package) else {
-                            return Ok(None);
+                            return Ok(Some(Value::Null));
                         };
                         let keyword_imported = activation.facts.keywords.iter().any(|keyword| {
                             keyword.keyword == function_name
@@ -242,7 +242,9 @@ impl LspServer {
             return Err(invalid_signature_help_params());
         }
 
-        Ok(None)
+        // A signature-help request with no available signature still requires
+        // a terminal response. None is reserved for response-less notifications.
+        Ok(Some(Value::Null))
     }
 
     /// Find function context at position for signature help
