@@ -496,14 +496,17 @@ edits regardless of the selected engine.
 
 | Property | Value |
 |---|---|
-| Type | `"native"\|"compat"\|"off"` |
+| Type | `"native"\|"off"` |
 | Default | `"native"` |
 
 Formatter engine for LSP formatting requests:
 
 - `native` uses the Rust-native formatter.
-- `compat` uses the native formatter with compatibility-oriented defaults.
 - `off` disables formatting.
+
+The retired `"compat"` alias is still accepted here and runs the native
+formatter, with a deprecation warning; set the value to `"native"` instead. It
+never selected a different engine or produced different output (#7129).
 
 External formatter aliases are project-configuration values, not accepted
 through the generic LSP client-settings channel. Use the project `[formatting]`
