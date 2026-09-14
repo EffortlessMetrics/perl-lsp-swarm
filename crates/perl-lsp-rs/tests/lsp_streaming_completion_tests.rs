@@ -1365,6 +1365,29 @@ mod mock_streaming_completion_tests {
             final_items.is_empty(),
             "refused response text must not be finalized without fallback, got: {final_items:?}"
         );
+
+        // Pin the boundary of the claim rather than leaving it to prose. A
+        // breach is only discoverable when the offending bytes arrive, so the
+        // prefix accepted before it legitimately reached the client as live,
+        // explicitly non-final progress; requiring otherwise would mean never
+        // streaming at all. What the budget guarantees is that every such
+        // frame was within budget when shown, and that none of them is
+        // promoted: the terminal frame is the only final one, and it is empty.
+        for frame in progress.iter().take(progress.len().saturating_sub(1)) {
+            let is_final =
+                frame.pointer("/params/value/isFinal").and_then(Value::as_bool).unwrap_or(false);
+            assert!(!is_final, "only the terminal frame may be final: {frame:?}");
+        }
+        let finals = progress
+            .iter()
+            .filter(|frame| {
+                frame
+                    .pointer("/params/value/isFinal")
+                    .and_then(Value::as_bool)
+                    .is_some_and(|is_final| is_final)
+            })
+            .count();
+        assert_eq!(finals, 1, "a refused response must finalize exactly once");
     }
 
     #[test]
