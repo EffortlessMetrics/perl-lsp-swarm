@@ -1316,6 +1316,7 @@ pub perl_dap::mutation::MutationTargetBindingError::MissingReferentForContainerM
 pub perl_dap::mutation::MutationTargetBindingError::MissingSessionGeneration
 pub perl_dap::mutation::MutationTargetBindingError::MissingSuspensionGeneration
 pub perl_dap::mutation::MutationTargetBindingError::MissingValueAuthorityGeneration
+pub perl_dap::mutation::MutationTargetBindingError::NegativeArrayIndex
 pub perl_dap::mutation::MutationTargetBindingError::NotWritable(perl_dap::mutation::RefusedWritability)
 pub perl_dap::mutation::MutationTargetBindingError::StaleValueObservation
 pub perl_dap::mutation::MutationTargetBindingError::UnsupportedLocationKind(perl_dap::mutation::MutationLocationKind)
