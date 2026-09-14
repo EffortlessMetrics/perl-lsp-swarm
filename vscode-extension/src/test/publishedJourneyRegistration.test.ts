@@ -246,8 +246,13 @@ function loadRegisteredJourney(
   const previousTest = (globalThis as { test?: unknown }).test;
   (globalThis as { suite?: unknown }).suite = (_name: string, callback: () => void) =>
     callback.call({ timeout: () => undefined });
-  (globalThis as { test?: unknown }).test = (_name: string, callback: RegisteredJourney) => {
-    journey = callback;
+  (globalThis as { test?: unknown }).test = (name: string, callback: RegisteredJourney) => {
+    if (
+      name === 'records bundled identity, provider use, edit re-query, and safe mutation outcomes'
+    ) {
+      if (journey) throw new Error('packaged LSP journey registered more than once');
+      journey = callback;
+    }
   };
   try {
     jest.isolateModules(() => {
