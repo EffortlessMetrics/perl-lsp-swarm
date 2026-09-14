@@ -828,6 +828,7 @@ mod tests {
 
         recorder.mark_request_start("completion");
         // Small sleep to ensure non-zero elapsed time.
+        // ux-timing: deliberate-stimulus — non-zero elapsed time for the timing assertion under test
         std::thread::sleep(std::time::Duration::from_millis(5));
         recorder.mark_first_useful_result("completion");
 
@@ -877,6 +878,7 @@ mod tests {
             UxRunRecorder::new("wf_07", "ux_scenario_07.rs", "idempotent_test", UxCiTier::Pr, None);
 
         recorder.mark_request_start("completion");
+        // ux-timing: deliberate-stimulus — non-zero elapsed time for the timing assertion under test
         std::thread::sleep(std::time::Duration::from_millis(5));
         recorder.mark_first_useful_result("completion");
 
@@ -890,9 +892,11 @@ mod tests {
         let mut recorder2 =
             UxRunRecorder::new("wf_07", "ux_scenario_07.rs", "idempotent_test", UxCiTier::Pr, None);
         recorder2.mark_request_start("completion");
+        // ux-timing: deliberate-stimulus — non-zero elapsed time before the first mark
         std::thread::sleep(std::time::Duration::from_millis(5));
         recorder2.mark_first_useful_result("completion");
         // Wait longer, then call again.
+        // ux-timing: deliberate-stimulus — a longer gap, so a second mark would visibly change the recorded value if it were not ignored
         std::thread::sleep(std::time::Duration::from_millis(20));
         recorder2.mark_first_useful_result("completion");
 
@@ -1312,6 +1316,7 @@ mod tests {
 
         // Simulate: request start → receive expected-empty response → mark useful.
         recorder.mark_request_start("goto_definition");
+        // ux-timing: deliberate-stimulus — non-zero elapsed time for the timing assertion under test
         std::thread::sleep(std::time::Duration::from_millis(5));
         // The response was empty (expected-clean null), but it is still the
         // correct, useful result — so we mark it.
@@ -1358,6 +1363,7 @@ mod tests {
 
         // Simulate: request start → receive zero diagnostics (expected) → mark useful.
         recorder.mark_request_start("diagnostics");
+        // ux-timing: deliberate-stimulus — non-zero elapsed time for the timing assertion under test
         std::thread::sleep(std::time::Duration::from_millis(5));
         recorder.mark_first_useful_result("diagnostics");
 
@@ -1396,6 +1402,7 @@ mod tests {
         );
 
         recorder.mark_request_start("goto_definition");
+        // ux-timing: deliberate-stimulus — non-zero elapsed time for the timing assertion under test
         std::thread::sleep(std::time::Duration::from_millis(5));
         recorder.mark_first_useful_result("goto_definition");
 
