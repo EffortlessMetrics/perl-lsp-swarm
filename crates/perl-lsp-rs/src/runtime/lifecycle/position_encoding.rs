@@ -112,6 +112,19 @@ impl LspServer {
     /// Coordinate production is not valid until initialize has published the
     /// session context. Do not silently fall back to the legacy client record
     /// or to UTF-16: doing so would hide a lifecycle violation.
+    ///
+    /// One boundary is deliberate and worth stating, because it is a behavior
+    /// change rather than an oversight. Read-only requests run concurrently
+    /// with the exclusive lifecycle worker (see `scheduler::classify`:
+    /// `textDocument/diagnostic` is `ReadOnly`, `shutdown` is `Lifecycle`), so
+    /// a read admitted while the session was alive can observe the context
+    /// cleared underneath it and refuse. The refusal is correct for this
+    /// candidate's thesis - the session whose coordinates were requested no
+    /// longer exists - but it does mean an admitted request can end in
+    /// `INVALID_REQUEST` where it previously returned a report built from the
+    /// legacy client record. Binding the active identity at admission and
+    /// carrying it through the request is the alternative; it is a request-path
+    /// change owned by the #1690 cutover, not by this module.
     pub(crate) fn position_encoding_for_coordinates(
         &self,
     ) -> Result<PositionEncoding, crate::protocol::JsonRpcError> {
@@ -171,6 +184,32 @@ mod tests {
         let after = expect_refusal(&server)?;
         assert_eq!(after.code, crate::protocol::INVALID_REQUEST);
         assert_eq!(after.message, before.message);
+        Ok(())
+    }
+
+    #[test]
+    fn a_read_admitted_before_shutdown_refuses_once_shutdown_clears_the_context() -> TestResult {
+        // Devin flagged this as a race; it is real and it is this candidate's
+        // own behavior change, so pin it rather than leave it emergent.
+        // `textDocument/diagnostic` classifies as ReadOnly and runs concurrently
+        // with the exclusive lifecycle worker that handles `shutdown`, so a read
+        // admitted while the session was alive can find the authority gone.
+        // Before this candidate that read fell back to the legacy client record
+        // and returned a report; it now refuses. That is the intended fail-closed
+        // semantics, not an accident - the session it would produce coordinates
+        // for no longer exists.
+        let server = LspServer::new();
+        server.publish_position_encoding_session_context();
+
+        // The request is admitted here: authority is present and readable.
+        let admitted = server.position_encoding_for_coordinates()?;
+        assert_eq!(admitted, PositionEncoding::Utf16);
+
+        // Shutdown lands while that read is still in flight.
+        server.clear_position_encoding_session_context();
+
+        let refusal = expect_refusal(&server)?;
+        assert_eq!(refusal.code, crate::protocol::INVALID_REQUEST);
         Ok(())
     }
 
