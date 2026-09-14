@@ -9,15 +9,16 @@
 **Release track**: Public beta; this is not a stable/GA claim
 **Workspace version line**: `v0.17.0`
 **Published crate surface**: 34 crates
-**Release target**: `v0.18.0` is the next public-beta train. A product-inert `0.18.0-rc.1` preparation exists on `release/0.18` at [`f4e32500b639f858470499ae6104c04e92a3cd3d`](https://github.com/EffortlessMetrics/perl-lsp-swarm/commit/f4e32500b639f858470499ae6104c04e92a3cd3d) from [PR #12426](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/12426), but that prepared branch subject is not projected, qualified or publishable, tagged, or published
+**Release target**: `v0.18.0` is the next public-beta train. A product-inert `0.18.0-rc.1` preparation exists on `release/0.18` at [`f4e32500b639f858470499ae6104c04e92a3cd3d`](https://github.com/EffortlessMetrics/perl-lsp-swarm/commit/f4e32500b639f858470499ae6104c04e92a3cd3d) from [PR #12426](https://github.com/EffortlessMetrics/perl-lsp-swarm/pull/12426), but that prepared branch subject is historical and non-promotable under [#13768](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13768) (`old_preparation_disposition: invalidated_non_promotable`): it is not projected, qualified or publishable, tagged, or published, and it decides no public version
 **Authority**: development `perl-lsp-swarm/main`; release lineage and publication `perl-lsp/master`
 **Ship readiness**: GitHub Release `v0.17.0` was published on 2026-06-28 and observed on 2026-07-17 at `ffee2824938f415e54923112c7b79e3f22040699` with seven platform archives, VSIX, `SHA256SUMS`, and SPDX SBOM. Other channels remain independent facts and are not proven by that receipt.
 
 ## Active Blockers
 
+- v0.18 work is the bounded first-RC transaction governed by [#13768](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/13768): standing named-human authorization (recorded on [#4343](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4343#issuecomment-5462128627)) carries through terminal `rc_published_verified`; public RC version selection is an occupancy-checked Gate 4 decision; stable `0.18.0` is expressly excluded and remains unauthorized. #6230's proposed second human approval is not part of this policy. Stage authorities for the bounded RC (candidate, freeze, preparation, publication-sync, public verification) live in #13768's gates.
 - [#12876](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12876) is the current product-policy blocker: the prepared subject retains a selectable external Perl::Critic runtime path, so it cannot feed release actions. An accepted repair requires a new freeze and preparation identity.
-- Publication-context projection remains blocked and unproduced under [#12230](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/12230); preparation alone does not establish a qualified or publishable candidate.
-- The [release controller #4343](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4343) remains `NO-GO`. No `v0.18` tag, artifact, installed behavior, public-channel publication, or release approval is claimed here.
+- #12230, #12232, #12233, and #12234 are closed exact-subject history for the old `rc.1` projection/sync/candidate/publication transactions; they receive no new identities and own no current projection. Preparation alone does not establish a qualified or publishable candidate.
+- The [release controller #4343](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/4343) `NO-GO` required explicit human approval; that approval now stands recorded for the bounded first RC only (see above). No `v0.18` tag, artifact, installed behavior, public-channel publication, or release approval beyond the bounded RC is claimed here.
 - Remaining work is operational: verify the existing `v0.17.0` release receipt and close the remaining channel receipts; do not dispatch release orchestration for an already-shipped train.
 
 ## Shipped v0.17.0 Closeout

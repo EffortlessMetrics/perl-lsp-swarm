@@ -69,6 +69,7 @@ ALLOWED_ACTIONS = {
     "Swatinem/rust-cache",
     "actions/checkout",
     "actions/download-artifact",
+    "actions/setup-python",
     "actions/upload-artifact",
     "dtolnay/rust-toolchain",
     "shogo82148/actions-setup-perl",
