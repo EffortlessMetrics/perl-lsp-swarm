@@ -33,6 +33,7 @@ impl<'a> PerlLexer<'a> {
             scan_limit: None,
             logical_source: None,
             generation: perl_source_identity::SourceGeneration::Unknown,
+            content_digest: std::sync::OnceLock::new(),
         }
     }
 
