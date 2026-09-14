@@ -333,6 +333,19 @@ mod tests {
             "this guard strips line comments only; a block comment appeared in production code, so \
              re-derive the stripping rule rather than letting prose reach the needle scan"
         );
+        // `strip_line_comments` does not understand string literals, so a line
+        // holding both a literal `//` (a URL, say) and real code would be cut at
+        // the literal — the dangerous direction, since it removes code from the
+        // scan rather than prose. No such line exists today; fail closed if one
+        // appears rather than silently shrinking the scanned region.
+        for line in production.lines() {
+            assert!(
+                !(line.contains('"') && line.contains("//")),
+                "line mixes a string literal with `//`, which this guard cannot split correctly: \
+                 {line:?}. Re-derive the stripping rule rather than letting it cut code out of \
+                 the scanned region"
+            );
+        }
         strip_line_comments(production)
     }
 
@@ -385,6 +398,26 @@ mod tests {
         );
     }
 
+    /// Every forbidden construct a synthetic file's production half reaches,
+    /// routed through the same split-and-strip pipeline the real guard uses.
+    /// The controls below run this rather than matching needles against a bare
+    /// string, so a broken split or stripper fails them too.
+    fn offenders_in(source: &str) -> Vec<&'static str> {
+        let code = production_code(source);
+        FORBIDDEN_IN_PRODUCTION
+            .iter()
+            .filter(|(needle, _)| code.contains(needle))
+            .map(|(needle, _)| *needle)
+            .collect()
+    }
+
+    /// Wrap a synthetic production half in a test module so `production_code`
+    /// sees the same shape it sees in the real file. The marker is assembled at
+    /// runtime so this file still contains exactly one literal marker.
+    fn as_source_file(production: &str) -> String {
+        format!("{production}\n{TEST_MODULE_MARKER}\n    // test half, never scanned\n}}\n")
+    }
+
     #[test]
     fn facade_production_code_reaches_no_workspace_filesystem_or_parser_construct() {
         let code = production_code(FACADE_SOURCE);
@@ -399,21 +432,15 @@ mod tests {
 
     #[test]
     fn the_boundary_guard_rejects_a_reintroduced_workspace_dependency() {
-        // Negative control: the needle set must fail a facade that takes the
-        // workspace index back, rather than passing for any input at all.
-        let reintroduced = concat!(
+        // Negative control: a facade that takes the workspace index back must
+        // fail, rather than the guard passing for any input at all.
+        let reintroduced = as_source_file(concat!(
             "use crate::workspace_index::WorkspaceIndex;\n",
             "pub fn visible_imports(&self, workspace: &WorkspaceIndex) -> Vec<String> {}\n"
-        );
-
-        let offenders: Vec<&str> = FORBIDDEN_IN_PRODUCTION
-            .iter()
-            .filter(|(needle, _)| reintroduced.contains(needle))
-            .map(|(needle, _)| *needle)
-            .collect();
+        ));
 
         assert_eq!(
-            offenders,
+            offenders_in(&reintroduced),
             vec!["WorkspaceIndex", "workspace_index"],
             "the guard must name exactly the reintroduced workspace dependency"
         );
@@ -421,16 +448,21 @@ mod tests {
 
     #[test]
     fn the_boundary_guard_accepts_a_purely_per_file_facade() {
-        // Negative control's counterpart: the needle set must not fire on
-        // legitimate per-file code, or it would block the intended design.
-        let per_file = concat!(
+        // The opposite direction: legitimate per-file code must not fire, or
+        // the guard would block the intended design. The prose here names every
+        // forbidden construct, so this also pins that a comment cannot trip it.
+        let per_file = as_source_file(concat!(
+            "/// Resolves from the model alone; WorkspaceIndex, workspace_index,\n",
+            "/// std::fs and Parser::new all belong elsewhere.\n",
             "pub fn resolved_symbol_at(&self, position: usize) -> Option<ResolvedSymbol> {\n",
-            "    self.model.definition_at(position).map(ResolvedSymbol::from)\n",
+            "    self.model.definition_at(position).map(ResolvedSymbol::from) // not Parser::new\n",
             "}\n"
-        );
+        ));
 
-        for (needle, _) in FORBIDDEN_IN_PRODUCTION {
-            assert!(!per_file.contains(needle), "per-file code must not trip the `{needle}` guard");
-        }
+        assert_eq!(
+            offenders_in(&per_file),
+            Vec::<&str>::new(),
+            "per-file code must not trip the guard, and prose naming the constructs must not either"
+        );
     }
 }
