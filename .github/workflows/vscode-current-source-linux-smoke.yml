@@ -13,6 +13,7 @@ on:
       - 'vscode-extension/**'
       - 'crates/perl-lsp*/**'
       - 'crates/perllsp/**'
+      - 'crates/perl-dap/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/vscode-current-source-linux-smoke.yml'
@@ -102,13 +103,18 @@ jobs:
         working-directory: .
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/perl-lsp-current-source-target
-        run: cargo build -p perllsp --release --locked
+        run: cargo build -p perllsp --bin perllsp -p perl-dap --bin perl-dap --release --locked
+
+      - name: Bind built DAP identity
+        working-directory: .
+        run: echo "PERL_LSP_DAP_SHA256=$(sha256sum "${RUNNER_TEMP}/perl-lsp-current-source-target/release/perl-dap" | cut -d' ' -f1)" >> "$GITHUB_ENV"
 
       - name: Run exact current-source smoke under Xvfb
         id: smoke
         env:
           PERL_LSP_E2E: '1'
           PERL_LSP_FIRST_HOUR_SERVER_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perllsp
+          PERL_LSP_DAP_PATH: ${{ runner.temp }}/perl-lsp-current-source-target/release/perl-dap
           PERL_LSP_PACKAGE_BASE_MODE: ${{ github.event_name == 'pull_request' && 'pull_request' || 'accepted' }}
           PERL_LSP_PACKAGE_PR_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
           PERL_LSP_PACKAGE_BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.accepted_base_sha || '' }}

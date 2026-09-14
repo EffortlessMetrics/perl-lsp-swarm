@@ -78,6 +78,11 @@ void test('current-source smoke does not reinstall dependencies after setup', ()
   assert.doesNotMatch(source, /\bnpm\s+(?:ci|install)\b/);
 });
 
+void test('current-source Linux smoke runs when the DAP crate changes', () => {
+  const source = readWorkflow('vscode-current-source-linux-smoke.yml');
+  assert.match(source, /^      - 'crates\/perl-dap\/\*\*'$/m);
+});
+
 void test('current-source Linux smoke enables the candidate-bound Test Explorer leg', () => {
   const source = readWorkflow('vscode-current-source-linux-smoke.yml');
   const smokeIndex = source.indexOf('- name: Run exact current-source smoke under Xvfb');
