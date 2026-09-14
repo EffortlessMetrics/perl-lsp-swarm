@@ -1404,7 +1404,7 @@ impl LspServer {
                     // offset is inside a comment.
                     let text = &doc.text;
                     if is_in_comment_naive(offset, text) {
-                        return Ok(None);
+                        return Ok(Some(Value::Null));
                     }
 
                     let radius = 50;
@@ -1843,7 +1843,7 @@ impl LspServer {
                                     return Ok(Some(result));
                                 }
                             }
-                            FqnCursorComponent::Prefix => return Ok(None),
+                            FqnCursorComponent::Prefix => return Ok(Some(Value::Null)),
                         }
                     }
                 }
@@ -3056,7 +3056,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_fresh_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_fresh_index.is_none(),
+                || prefix_fresh_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must yield an empty answer; got {prefix_fresh_index:?}"
         );
         assert_eq!(prefix_fresh_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -3095,7 +3095,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_stale_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_stale_index.is_none(),
+                || prefix_stale_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must stay empty under a stale index; got {prefix_stale_index:?}"
         );
         assert_eq!(prefix_stale_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -3227,7 +3227,7 @@ mod tests {
     /// `symbol_at_cursor_with_source` both extract the LAST component (`bar`)
     /// regardless of cursor position, so falling through to them navigates to
     /// `sub bar` — a confidently wrong target. `handle_definition_inner`
-    /// therefore returns `Ok(None)` for a prefix cursor.
+    /// therefore returns an explicit null result for a prefix cursor.
     ///
     /// That guard used to live inside the workspace-index freshness gate, so an
     /// unrelated edited buffer with a stale index entry skipped the whole block

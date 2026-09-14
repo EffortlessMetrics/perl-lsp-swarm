@@ -6,6 +6,8 @@ import * as vscode from 'vscode';
 import { runBoundedProcess } from '../../testAdapter';
 import {
   assertProviderSucceeded,
+  assertDailyDriverRenameEdits,
+  debuggeeCreationTimeFromProbe,
   bundledBinaryPath,
   bundledDapPath,
   bundledServerVersion,
@@ -19,6 +21,8 @@ import {
   sha256,
   waitForStartupMetrics,
   scanBundledDapProcessIdentities,
+  parseLinuxProcessStat,
+  isLinuxProcessGoneError,
   withTimeout,
   type ReceiptValue,
 } from './journeySupport';
@@ -247,11 +251,29 @@ function recordPackagedDapEvidence(
 
 interface OwnedDebuggee {
   pid: number;
-  creationTimeFileTime: string;
+  creationTimeFileTime?: string;
+  creationIdentity?: string;
 }
 
 async function observeDebuggee(pid: number): Promise<OwnedDebuggee | null> {
   assert.ok(Number.isSafeInteger(pid) && pid > 0, 'invalid owned debuggee PID');
+  const windows = process.platform === 'win32';
+  if (!windows && process.platform !== 'linux') return null;
+  if (!windows) {
+    const bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    try {
+      const identity = parseLinuxProcessStat(
+        fs.readFileSync(`/proc/${pid}/stat`, 'utf8'),
+        pid,
+        bootId,
+      ).creationIdentity;
+      if (!identity) throw new Error('Linux debuggee identity is missing');
+      return { pid, creationIdentity: identity };
+    } catch (error: unknown) {
+      if (isLinuxProcessGoneError(error)) return null;
+      throw error;
+    }
+  }
   const result = await runBoundedProcess(
     'powershell.exe',
     [
@@ -269,12 +291,8 @@ async function observeDebuggee(pid: number): Promise<OwnedDebuggee | null> {
       terminationWatchdogMs: 5000,
     },
   );
-  if (result.outcome !== 'completed' || result.exitCode !== 0) {
-    throw new Error(`owned debuggee scan failed: ${result.outcome}, ${result.exitCode}`);
-  }
-  const creationTimeFileTime = result.stdout.trim();
-  if (!creationTimeFileTime) return null;
-  assert.match(creationTimeFileTime, /^\d+$/, 'invalid process creation time');
+  const creationTimeFileTime = debuggeeCreationTimeFromProbe(pid, result);
+  if (creationTimeFileTime === null) return null;
   return { pid, creationTimeFileTime };
 }
 
@@ -297,7 +315,13 @@ async function waitForDebuggeeExit(debuggee: OwnedDebuggee): Promise<void> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const observed = await observeDebuggee(debuggee.pid);
-    if (!observed || observed.creationTimeFileTime !== debuggee.creationTimeFileTime) return;
+    if (
+      !observed ||
+      (debuggee.creationIdentity
+        ? observed.creationIdentity !== debuggee.creationIdentity
+        : observed.creationTimeFileTime !== debuggee.creationTimeFileTime)
+    )
+      return;
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`owned debuggee survived Stop: ${debuggee.pid}`);
@@ -307,12 +331,17 @@ async function waitForNewPackagedDap(
   directory: string,
   baseline: Set<string>,
   expectedPath: string,
-): Promise<{ pid: number; path: string; creationTimeFileTime?: string }> {
+): Promise<{
+  pid: number;
+  path: string;
+  creationTimeFileTime?: string;
+  creationIdentity?: string;
+}> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const processes = await scanBundledDapProcessIdentities(directory);
     const matches = processes.filter((entry) => {
-      const key = `${entry.pid}:${entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`;
+      const key = `${entry.pid}:${entry.creationIdentity ?? entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`;
       return !baseline.has(key) && pathsEquivalent(entry.path, expectedPath);
     });
     if (matches.length > 1) {
@@ -339,11 +368,17 @@ suite('Packaged VSIX bundled-server journey', function () {
 
     const bundledServerPath = bundledBinaryPath(extension.extensionPath);
     const expectedVersion = extension.packageJSON?.version ?? null;
-    const workspaceFile = path.join(workspacePath, 'packaged_daily_driver.pl');
-    fs.writeFileSync(
-      workspaceFile,
-      ['use strict;', 'use warnings;', '', 'my $value = 42;', 'print $value;', ''].join('\n'),
-    );
+    const workspaceFile = path.join(workspacePath, `packaged_daily_driver_${randomUUID()}.pl`);
+    const fixtureText = [
+      'use strict;',
+      'use warnings;',
+      '',
+      'my $value = 42;',
+      'print $value;',
+      '',
+    ].join('\n');
+    fs.writeFileSync(workspaceFile, fixtureText, { flag: 'wx' });
+    let fixtureDocument: vscode.TextDocument | undefined;
 
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const configurationContributions = extension.packageJSON?.contributes?.configuration;
@@ -398,6 +433,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       const bundledVersion = await bundledServerVersion(bundledServerPath);
       const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
       const document = await vscode.workspace.openTextDocument(workspaceFile);
+      fixtureDocument = document;
       await vscode.window.showTextDocument(document);
       const position = providerPosition(document);
 
@@ -510,24 +546,46 @@ suite('Packaged VSIX bundled-server journey', function () {
             15_000,
           )) as vscode.WorkspaceEdit | undefined;
           const entries = result?.entries() ?? [];
-          const workspaceResolved = path.resolve(workspacePath);
-          const workspacePrefix = workspaceResolved + path.sep;
-          const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
-          const safe = entries.every(([uri]) => {
-            const resolved = path.resolve(uri.fsPath);
-            if (caseInsensitive) {
-              const normalized = resolved.toLowerCase();
-              const normalizedWorkspace = workspaceResolved.toLowerCase();
-              const normalizedPrefix = workspacePrefix.toLowerCase();
-              return normalized === normalizedWorkspace || normalized.startsWith(normalizedPrefix);
-            }
-            return resolved === workspaceResolved || resolved.startsWith(workspacePrefix);
-          });
+          const safe =
+            entries.length === 1 &&
+            entries.every(([uri]) => uri.toString() === document.uri.toString());
           rename = {
             status: result ? (safe ? 'offered_not_applied' : 'unsafe_refusal') : 'safe_refusal',
             edit_count: entries.length,
             duration_ms: Math.round(performance.now() - renameStarted),
           };
+          if (result && safe) {
+            const fixtureEntry = entries[0];
+            assert.ok(fixtureEntry, 'rename omitted fixture edits');
+            const textEdits = fixtureEntry[1];
+            const beforeRename = document.getText();
+            assertDailyDriverRenameEdits(beforeRename, textEdits);
+            // Apply only the independently checked text edits to this owned fixture.
+            // WorkspaceEdit.entries() cannot attest to opaque resource operations.
+            const checkedEdit = new vscode.WorkspaceEdit();
+            checkedEdit.set(document.uri, textEdits);
+            assert.ok(
+              await vscode.workspace.applyEdit(checkedEdit),
+              'rename text edits were rejected',
+            );
+            const expected = beforeRename
+              .replace('my $value = 42;', 'my $renamed_value = 42;')
+              .replace('print $value;', 'print $renamed_value;');
+            assert.equal(document.getText(), expected, 'applied rename changed unexpected text');
+            const requery = await providerResult(
+              'bundled hover after rename',
+              'vscode.executeHoverProvider',
+              document.uri,
+              providerPosition(document, '$renamed_value'),
+            );
+            assertProviderSucceeded('hover after rename', requery);
+            rename = {
+              status: 'applied_text_edits_verified',
+              edit_count: textEdits.length,
+              duration_ms: Math.round(performance.now() - renameStarted),
+              immediate_requery: requery,
+            };
+          }
         }
       } catch (error: unknown) {
         rename = {
@@ -612,7 +670,7 @@ suite('Packaged VSIX bundled-server journey', function () {
             : [
                 'Active-document readiness did not resolve before provider requests; provider claims are not proven.',
               ]),
-          'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
+          'Rename proof applies independently checked text edits only to the two-occurrence fixture; resource operations, cross-file rename, and compiler semantic exactness are not proven.',
           ...(criticSettingRegistered
             ? []
             : [
@@ -655,7 +713,10 @@ suite('Packaged VSIX bundled-server journey', function () {
       ] as const;
       const providerFailures = providerResults.filter(
         ([label, result]) =>
-          result.status === 'error' || (label === 'rename' && result.status === 'unsafe_refusal'),
+          result.status === 'error' ||
+          (label === 'rename' &&
+            (result.status === 'unsafe_refusal' ||
+              (readinessReady && result.status !== 'applied_text_edits_verified'))),
       );
       const lifecycleExpectations: Array<[string, string]> = [
         ['binary_resolution_source', 'bundled'],
@@ -757,17 +818,32 @@ suite('Packaged VSIX bundled-server journey', function () {
         assertProviderSucceeded(label, result);
       }
       assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
+      if (readinessReady) {
+        assert.equal(rename.status, 'applied_text_edits_verified', JSON.stringify(rename));
+      }
     } finally {
-      await Promise.all(
-        inspectedSettings.map(({ key, value }) =>
-          config.update(key, value, vscode.ConfigurationTarget.Global),
-        ),
-      );
+      try {
+        if (fixtureDocument && !fixtureDocument.isClosed) {
+          await vscode.window.showTextDocument(fixtureDocument);
+          await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+        }
+        assert.equal(fs.readFileSync(workspaceFile, 'utf8'), fixtureText);
+        const cleanup = new vscode.WorkspaceEdit();
+        cleanup.deleteFile(vscode.Uri.file(workspaceFile));
+        assert.ok(await vscode.workspace.applyEdit(cleanup), 'fixture deletion was rejected');
+        assert.ok(!fs.existsSync(workspaceFile), 'owned fixture remains after cleanup');
+      } finally {
+        await Promise.all(
+          inspectedSettings.map(({ key, value }) =>
+            config.update(key, value, vscode.ConfigurationTarget.Global),
+          ),
+        );
+      }
     }
   });
 
-  test('starts and cleanly stops the packaged DAP on Windows', async function () {
-    if (process.platform !== 'win32') {
+  test('starts and cleanly stops the packaged DAP on the host platform', async function () {
+    if (process.platform !== 'win32' && process.platform !== 'linux') {
       this.skip();
       return;
     }
@@ -779,11 +855,20 @@ suite('Packaged VSIX bundled-server journey', function () {
     const dapPath = bundledDapPath(extensionPath);
     assert.ok(fs.existsSync(dapPath), `packaged DAP is missing: ${dapPath}`);
     const expectedDapSha256 = sha256(dapPath);
+    const builtDapSha256 = process.env.PERL_LSP_DAP_SHA256?.trim();
+    if (process.platform === 'linux') {
+      assert.ok(builtDapSha256, 'Linux packaged DAP proof requires the built adapter SHA-256');
+    }
+    if (builtDapSha256) {
+      assert.match(builtDapSha256, /^[0-9a-f]{64}$/i, 'built DAP SHA-256 is invalid');
+      assert.equal(expectedDapSha256, builtDapSha256, 'installed DAP differs from built DAP input');
+    }
     const dapDirectory = path.dirname(dapPath);
     const beforeProcesses = await scanBundledDapProcessIdentities(dapDirectory);
     const beforeKeys = new Set(
       beforeProcesses.map(
-        (entry) => `${entry.pid}:${entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`,
+        (entry) =>
+          `${entry.pid}:${entry.creationIdentity ?? entry.creationTimeFileTime ?? ''}:${entry.path.toLowerCase()}`,
       ),
     );
     const workspacePath = workspaceFolder.uri.fsPath;
@@ -972,7 +1057,10 @@ suite('Packaged VSIX bundled-server journey', function () {
           name: 'Packaged DAP startup',
           program,
           args: [pidFile, releaseFile, environmentFile],
-          env: { PERL_RL: 'Perl', perldb_opts: 'CommandSet=580 ReadLine=1' },
+          env:
+            process.platform === 'win32'
+              ? { PERL_RL: 'Perl', perldb_opts: 'CommandSet=580 ReadLine=1' }
+              : { PERL_RL: 'Perl', PERLDB_OPTS: 'CommandSet=580 ReadLine=0' },
           cwd: workspacePath,
           stopOnEntry: false,
         }),
@@ -981,7 +1069,10 @@ suite('Packaged VSIX bundled-server journey', function () {
       assert.equal(startResult, true, 'VS Code did not start the packaged DAP session');
       const session = await withTimeout('packaged DAP session start', started, 30_000);
       const matchingProcess = await waitForNewPackagedDap(dapDirectory, beforeKeys, dapPath);
-      assert.ok(matchingProcess.creationTimeFileTime, 'packaged DAP creation time is required');
+      assert.ok(
+        matchingProcess.creationIdentity ?? matchingProcess.creationTimeFileTime,
+        'packaged DAP process identity is required',
+      );
       assert.equal(
         sha256(matchingProcess.path),
         expectedDapSha256,
@@ -997,7 +1088,11 @@ suite('Packaged VSIX bundled-server journey', function () {
       debuggee = await waitForDebuggee(pidFile);
       const childEnvironment = fs.readFileSync(environmentFile, 'utf8');
       assert.match(childEnvironment, /^PERL_RL=Perl$/m);
-      assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=1 ReadLine=0$/m);
+      if (process.platform === 'win32') {
+        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=1 ReadLine=0$/m);
+      } else {
+        assert.match(childEnvironment, /^PERLDB_OPTS=CommandSet=580 ReadLine=0$/m);
+      }
       stopRequested = true;
       await withTimeout('packaged DAP stopDebugging', vscode.debug.stopDebugging(session), 30_000);
       await withTimeout('packaged DAP termination event', termination, 30_000);
@@ -1044,7 +1139,7 @@ suite('Packaged VSIX bundled-server journey', function () {
         remainingProcesses.filter(
           (process) =>
             !beforeKeys.has(
-              `${process.pid}:${process.creationTimeFileTime ?? ''}:${process.path.toLowerCase()}`,
+              `${process.pid}:${process.creationIdentity ?? process.creationTimeFileTime ?? ''}:${process.path.toLowerCase()}`,
             ),
         ).length,
         0,
