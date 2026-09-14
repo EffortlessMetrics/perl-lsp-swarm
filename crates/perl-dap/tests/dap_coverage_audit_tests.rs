@@ -814,7 +814,7 @@ fn test_dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
     let config = DapConfig {
         log_level: "info".to_string(),
         mode: DapMode::Native,
-        workspace_root: Some(PathBuf::from("/workspace")),
+        workspace_authority: perl_dap::security::WorkspaceAuthority::unconfigured(),
     };
     let server = DapServer::new(config)?;
     assert_eq!(server.config.mode, DapMode::Native);
