@@ -6,6 +6,8 @@ import * as vscode from 'vscode';
 import { runBoundedProcess } from '../../testAdapter';
 import {
   assertProviderSucceeded,
+  assertDailyDriverRenameEdits,
+  debuggeeCreationTimeFromProbe,
   bundledBinaryPath,
   bundledDapPath,
   bundledServerVersion,
@@ -289,12 +291,8 @@ async function observeDebuggee(pid: number): Promise<OwnedDebuggee | null> {
       terminationWatchdogMs: 5000,
     },
   );
-  if (result.outcome !== 'completed' || result.exitCode !== 0) {
-    throw new Error(`owned debuggee scan failed: ${result.outcome}, ${result.exitCode}`);
-  }
-  const creationTimeFileTime = result.stdout.trim();
-  if (!creationTimeFileTime) return null;
-  assert.match(creationTimeFileTime, /^\d+$/, 'invalid process creation time');
+  const creationTimeFileTime = debuggeeCreationTimeFromProbe(pid, result);
+  if (creationTimeFileTime === null) return null;
   return { pid, creationTimeFileTime };
 }
 
@@ -370,11 +368,17 @@ suite('Packaged VSIX bundled-server journey', function () {
 
     const bundledServerPath = bundledBinaryPath(extension.extensionPath);
     const expectedVersion = extension.packageJSON?.version ?? null;
-    const workspaceFile = path.join(workspacePath, 'packaged_daily_driver.pl');
-    fs.writeFileSync(
-      workspaceFile,
-      ['use strict;', 'use warnings;', '', 'my $value = 42;', 'print $value;', ''].join('\n'),
-    );
+    const workspaceFile = path.join(workspacePath, `packaged_daily_driver_${randomUUID()}.pl`);
+    const fixtureText = [
+      'use strict;',
+      'use warnings;',
+      '',
+      'my $value = 42;',
+      'print $value;',
+      '',
+    ].join('\n');
+    fs.writeFileSync(workspaceFile, fixtureText, { flag: 'wx' });
+    let fixtureDocument: vscode.TextDocument | undefined;
 
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const configurationContributions = extension.packageJSON?.contributes?.configuration;
@@ -429,6 +433,7 @@ suite('Packaged VSIX bundled-server journey', function () {
       const bundledVersion = await bundledServerVersion(bundledServerPath);
       const readinessBefore = activation?.getActiveDocumentReadiness?.() ?? null;
       const document = await vscode.workspace.openTextDocument(workspaceFile);
+      fixtureDocument = document;
       await vscode.window.showTextDocument(document);
       const position = providerPosition(document);
 
@@ -541,24 +546,46 @@ suite('Packaged VSIX bundled-server journey', function () {
             15_000,
           )) as vscode.WorkspaceEdit | undefined;
           const entries = result?.entries() ?? [];
-          const workspaceResolved = path.resolve(workspacePath);
-          const workspacePrefix = workspaceResolved + path.sep;
-          const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin';
-          const safe = entries.every(([uri]) => {
-            const resolved = path.resolve(uri.fsPath);
-            if (caseInsensitive) {
-              const normalized = resolved.toLowerCase();
-              const normalizedWorkspace = workspaceResolved.toLowerCase();
-              const normalizedPrefix = workspacePrefix.toLowerCase();
-              return normalized === normalizedWorkspace || normalized.startsWith(normalizedPrefix);
-            }
-            return resolved === workspaceResolved || resolved.startsWith(workspacePrefix);
-          });
+          const safe =
+            entries.length === 1 &&
+            entries.every(([uri]) => uri.toString() === document.uri.toString());
           rename = {
             status: result ? (safe ? 'offered_not_applied' : 'unsafe_refusal') : 'safe_refusal',
             edit_count: entries.length,
             duration_ms: Math.round(performance.now() - renameStarted),
           };
+          if (result && safe) {
+            const fixtureEntry = entries[0];
+            assert.ok(fixtureEntry, 'rename omitted fixture edits');
+            const textEdits = fixtureEntry[1];
+            const beforeRename = document.getText();
+            assertDailyDriverRenameEdits(beforeRename, textEdits);
+            // Apply only the independently checked text edits to this owned fixture.
+            // WorkspaceEdit.entries() cannot attest to opaque resource operations.
+            const checkedEdit = new vscode.WorkspaceEdit();
+            checkedEdit.set(document.uri, textEdits);
+            assert.ok(
+              await vscode.workspace.applyEdit(checkedEdit),
+              'rename text edits were rejected',
+            );
+            const expected = beforeRename
+              .replace('my $value = 42;', 'my $renamed_value = 42;')
+              .replace('print $value;', 'print $renamed_value;');
+            assert.equal(document.getText(), expected, 'applied rename changed unexpected text');
+            const requery = await providerResult(
+              'bundled hover after rename',
+              'vscode.executeHoverProvider',
+              document.uri,
+              providerPosition(document, '$renamed_value'),
+            );
+            assertProviderSucceeded('hover after rename', requery);
+            rename = {
+              status: 'applied_text_edits_verified',
+              edit_count: textEdits.length,
+              duration_ms: Math.round(performance.now() - renameStarted),
+              immediate_requery: requery,
+            };
+          }
         }
       } catch (error: unknown) {
         rename = {
@@ -643,7 +670,7 @@ suite('Packaged VSIX bundled-server journey', function () {
             : [
                 'Active-document readiness did not resolve before provider requests; provider claims are not proven.',
               ]),
-          'A rename edit is never applied by this receipt; offered edits are checked for workspace containment first.',
+          'Rename proof applies independently checked text edits only to the two-occurrence fixture; resource operations, cross-file rename, and compiler semantic exactness are not proven.',
           ...(criticSettingRegistered
             ? []
             : [
@@ -686,7 +713,10 @@ suite('Packaged VSIX bundled-server journey', function () {
       ] as const;
       const providerFailures = providerResults.filter(
         ([label, result]) =>
-          result.status === 'error' || (label === 'rename' && result.status === 'unsafe_refusal'),
+          result.status === 'error' ||
+          (label === 'rename' &&
+            (result.status === 'unsafe_refusal' ||
+              (readinessReady && result.status !== 'applied_text_edits_verified'))),
       );
       const lifecycleExpectations: Array<[string, string]> = [
         ['binary_resolution_source', 'bundled'],
@@ -788,12 +818,27 @@ suite('Packaged VSIX bundled-server journey', function () {
         assertProviderSucceeded(label, result);
       }
       assert.notEqual(rename.status, 'unsafe_refusal', JSON.stringify(rename));
+      if (readinessReady) {
+        assert.equal(rename.status, 'applied_text_edits_verified', JSON.stringify(rename));
+      }
     } finally {
-      await Promise.all(
-        inspectedSettings.map(({ key, value }) =>
-          config.update(key, value, vscode.ConfigurationTarget.Global),
-        ),
-      );
+      try {
+        if (fixtureDocument && !fixtureDocument.isClosed) {
+          await vscode.window.showTextDocument(fixtureDocument);
+          await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+        }
+        assert.equal(fs.readFileSync(workspaceFile, 'utf8'), fixtureText);
+        const cleanup = new vscode.WorkspaceEdit();
+        cleanup.deleteFile(vscode.Uri.file(workspaceFile));
+        assert.ok(await vscode.workspace.applyEdit(cleanup), 'fixture deletion was rejected');
+        assert.ok(!fs.existsSync(workspaceFile), 'owned fixture remains after cleanup');
+      } finally {
+        await Promise.all(
+          inspectedSettings.map(({ key, value }) =>
+            config.update(key, value, vscode.ConfigurationTarget.Global),
+          ),
+        );
+      }
     }
   });
 
