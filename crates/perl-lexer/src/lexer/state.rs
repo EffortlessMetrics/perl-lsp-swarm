@@ -5,6 +5,7 @@ use crate::heredoc::HeredocSpec;
 use crate::mode::LexerMode;
 use crate::quote_handler;
 use perl_source_identity::{LogicalSourceId, SourceGeneration};
+use std::sync::OnceLock;
 
 /// Context-aware lexer for the Perl language.
 ///
@@ -40,4 +41,6 @@ pub struct PerlLexer<'a> {
     pub(crate) logical_source: Option<LogicalSourceId>,
     /// Optional source generation bound by a producer (#7747).
     pub(crate) generation: SourceGeneration,
+    /// Lazily computed identity for this immutable input.
+    pub(crate) content_digest: OnceLock<perl_source_identity::ContentDigest>,
 }
