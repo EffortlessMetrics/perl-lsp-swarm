@@ -1,7 +1,7 @@
 project: product
 component: Editor behavior
 kind: Fixed
-body: Discard stale debugger stack snapshots and captured arguments after execution resumes or the debug session changes.
+body: Reject stack-trace results from an earlier stop or debug session.
 time: 2026-09-14T02:49:44Z
 custom:
   PR: "15584"

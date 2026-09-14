@@ -235,6 +235,9 @@ struct PendingEntry {
 #[derive(Debug, Default)]
 struct PendingTable {
     fifo: VecDeque<PendingEntry>,
+    // Reader ownership outlives a timed-out waiter until the frame begins.
+    // Kept under the existing broker lock and bounded like pending operations.
+    reader_frames: VecDeque<(OperationId, String, String)>,
     /// Terminal outcomes retained until the corresponding waiter observes them.
     settled: HashMap<OperationId, BrokerTerminal>,
 }
@@ -250,6 +253,43 @@ pub(crate) struct OperationBroker {
 }
 
 impl OperationBroker {
+    pub(crate) fn register_reader_frame(
+        &self,
+        operation: &BrokerOperation,
+        begin: &str,
+        end: &str,
+    ) -> Result<(), String> {
+        let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
+        if operation.session_generation != self.current_session_generation()
+            || !table.fifo.iter().any(|entry| entry.operation.id == operation.id)
+        {
+            return Err("query retired before reader frame registration".to_string());
+        }
+        if table.reader_frames.len() >= MAX_PENDING_OPERATIONS {
+            return Err("unconsumed debugger frame bound exceeded".to_string());
+        }
+        table.reader_frames.push_back((operation.id, begin.to_string(), end.to_string()));
+        Ok(())
+    }
+
+    /// Transfer an exactly registered frame to its reader, including after timeout.
+    /// Serialized debugger output cannot begin an older frame after a newer one.
+    pub(crate) fn take_reader_frame(
+        &self,
+        line: &str,
+        generation: SessionGeneration,
+    ) -> Option<String> {
+        let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
+        if generation != self.current_session_generation() {
+            return None;
+        }
+        let index = table
+            .reader_frames
+            .iter()
+            .position(|(_, begin, _)| Self::line_contains_full_marker(line, begin))?;
+        table.reader_frames.drain(..=index).next_back().map(|(_, _, end)| end)
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             pending: Mutex::new(PendingTable::default()),
@@ -361,6 +401,9 @@ impl OperationBroker {
     /// Remove a query after transport write failure and consume any terminal
     /// outcome saved by a concurrent session settlement.
     pub(crate) fn retire_after_write_failure(&self, id: OperationId) {
+        // A partial write may already have delivered begin. Retain reader
+        // ownership until it is observed or the session is reset; evicting it
+        // here would let late protocol payload mutate ordinary stop context.
         let _ = self.retire_or_settled(id, BrokerTerminal::TimedOut);
     }
 
@@ -422,6 +465,7 @@ impl OperationBroker {
                 return false;
             }
             let pending = table.fifo.drain(..).collect::<Vec<_>>();
+            table.reader_frames.clear();
             for entry in pending {
                 table.settled.insert(entry.operation.id, BrokerTerminal::SessionGone(reason));
             }
@@ -615,6 +659,68 @@ mod tests {
             timeout,
             cancellation: None,
         }
+    }
+
+    #[test]
+    fn reader_frames_require_exact_registration_and_survive_retirement() -> Result<(), String> {
+        let broker = OperationBroker::new();
+        let generation = broker.current_session_generation();
+        let operation = broker
+            .submit(query_spec(&broker, Duration::from_millis(1)))
+            .map_err(|error| format!("submit failed: {error:?}"))?;
+        broker.register_reader_frame(&operation, "DAP_BEGIN_7", "DAP_END_7")?;
+        // A write error can happen after writing begin; do not surrender its
+        // output to context parsing merely because its waiter has retired.
+        broker.retire_after_write_failure(operation.id);
+        for ordinary in ["DAP_BEGIN_8", "xDAP_BEGIN_7", "DAP_BEGIN_7x", "DAP_END_7"] {
+            if broker.take_reader_frame(ordinary, generation).is_some() {
+                return Err(format!("unowned marker consumed: {ordinary}"));
+            }
+        }
+        if broker.take_reader_frame("DAP_BEGIN_7", generation).as_deref() != Some("DAP_END_7")
+            || broker.take_reader_frame("DAP_BEGIN_7", generation).is_some()
+        {
+            return Err("retired frame ownership was lost or replayed".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unread_reader_frames_are_bounded_and_restart_recovers() -> Result<(), String> {
+        let broker = OperationBroker::new();
+        let old_generation = broker.current_session_generation();
+        for index in 0..super::MAX_PENDING_OPERATIONS {
+            let operation = broker
+                .submit(query_spec(&broker, Duration::from_millis(1)))
+                .map_err(|error| format!("submit failed: {error:?}"))?;
+            broker.register_reader_frame(
+                &operation,
+                &format!("BEGIN_{index}"),
+                &format!("END_{index}"),
+            )?;
+            broker.retire_after_write_failure(operation.id);
+        }
+        let operation = broker
+            .submit(query_spec(&broker, Duration::from_millis(1)))
+            .map_err(|error| format!("submit failed: {error:?}"))?;
+        if broker.register_reader_frame(&operation, "BEGIN_extra", "END_extra").is_ok() {
+            return Err("unread framing bound was not enforced".to_string());
+        }
+        broker.retire_after_write_failure(operation.id);
+        broker.settle_all("restart");
+        broker.open_session();
+        let operation = broker
+            .submit(query_spec(&broker, Duration::from_millis(1)))
+            .map_err(|error| format!("recovery submit failed: {error:?}"))?;
+        broker.register_reader_frame(&operation, "BEGIN_fresh", "END_fresh")?;
+        if broker.take_reader_frame("BEGIN_fresh", old_generation).is_some()
+            || broker.take_reader_frame("BEGIN_0", operation.session_generation).is_some()
+            || broker.take_reader_frame("BEGIN_fresh", operation.session_generation).as_deref()
+                != Some("END_fresh")
+        {
+            return Err("restart did not isolate and recover reader ownership".to_string());
+        }
+        Ok(())
     }
 
     #[test]

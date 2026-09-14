@@ -729,6 +729,13 @@ impl DebugAdapter {
             .map_err(|terminal| format!("framed query not submitted: {}", terminal.as_str()))?;
 
         if let Err(error) =
+            self.operation_broker.register_reader_frame(&operation, &begin_marker, &end_marker)
+        {
+            self.operation_broker.retire_after_write_failure(operation.id);
+            return Err(error);
+        }
+
+        if let Err(error) =
             self.write_framed_debugger_commands(stdin, commands, &begin_marker, &end_marker)
         {
             self.operation_broker.retire_after_write_failure(operation.id);
