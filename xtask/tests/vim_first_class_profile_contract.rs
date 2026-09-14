@@ -15,6 +15,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use xtask::editor_client_compat::EditorClientCompatReceipt;
+use xtask::vim_lsp_cell_catalog::{registry, vim_vim_lsp_subject};
 
 const PROFILE_RELPATH: &str = ".ci/editor-clients/vim-vim-lsp-first-class-profile.v1.json";
 const SUBJECT_RELPATH: &str = ".ci/editor-clients/vim-vim-lsp-subject.v1.json";
@@ -127,6 +128,71 @@ fn registered_receipts_satisfy_the_canonical_dialect() -> Result<(), Box<dyn Err
             receipt.validate().map_err(|error| {
                 format!("{family}: {relpath} fails the receipt contract: {error:#}")
             })?;
+        }
+    }
+    Ok(())
+}
+
+/// The profile's `receipt_subject` is a projection of the compiled registry's
+/// one admitted subject; the Python seam rejects receipts from any other host,
+/// client, server, or integration mode against exactly these values.
+#[test]
+fn profile_receipt_subject_matches_compiled_registry() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let profile = load_profile(&root)?;
+    let expected = serde_json::to_value(vim_vim_lsp_subject())?;
+    assert_eq!(profile.get("receipt_subject"), Some(&expected));
+    Ok(())
+}
+
+/// Every family's `catalog_id`/`cell_ids` denominator must equal the compiled
+/// catalog it names, and that catalog must be one the first-class profile may
+/// consume (the baseline through its core profile, specialized families
+/// directly). The optional workspace family has no registered catalog yet.
+#[test]
+fn profile_family_denominators_match_compiled_catalogs() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let profile = load_profile(&root)?;
+    let catalogs = registry();
+    let inputs = profile
+        .get("inputs")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("profile inputs missing")?;
+    let mut seen = std::collections::BTreeSet::new();
+    for (family, spec) in inputs {
+        let cell_ids: Vec<&str> = spec
+            .get("cell_ids")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("{family}: cell_ids missing"))?
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        let Some(catalog_id) = spec.get("catalog_id").and_then(serde_json::Value::as_str) else {
+            assert_eq!(family, "workspace_folders", "{family} has no catalog");
+            assert!(cell_ids.is_empty(), "{family} lists cells without a catalog");
+            continue;
+        };
+        assert!(seen.insert(catalog_id), "catalog {catalog_id} bound twice");
+        let catalog = catalogs
+            .iter()
+            .find(|catalog| catalog.catalog_id == catalog_id)
+            .ok_or_else(|| format!("{family}: catalog {catalog_id} is not registered"))?;
+        let registered: Vec<&str> =
+            catalog.cells.iter().map(|cell| cell.cell_id.as_str()).collect();
+        assert_eq!(cell_ids, registered, "{family}: denominator drifted from {catalog_id}");
+        let consumer = if family == "baseline_core" {
+            assert_eq!(catalog.core_profile.as_deref(), Some("vim_actual_client_core"));
+            "vim_actual_client_core"
+        } else {
+            "vim_first_class_exact_source"
+        };
+        for cell in &catalog.cells {
+            assert!(
+                cell.allowed_profiles.iter().any(|profile| profile == consumer),
+                "{}: cell {} does not feed {consumer}",
+                family,
+                cell.cell_id
+            );
         }
     }
     Ok(())
@@ -339,7 +405,19 @@ fn dropped_required_cell_cannot_hide_a_not_proven_dimension() -> Result<(), Box<
 /// `editor_client_compat.v1` contract (the Rust validator is asserted on it),
 /// so the fan-in's positive path is exercised with dialect-valid evidence
 /// rather than a lookalike object.
-fn synthetic_receipt(cell_id: &str) -> serde_json::Value {
+fn synthetic_receipt(cell_ids: &[String]) -> serde_json::Value {
+    let journey: Vec<serde_json::Value> = cell_ids
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": id,
+                "capability_basis": "not_applicable",
+                "observed": true,
+                "result": "pass",
+                "evidence": [format!("freshness/{id}.log")]
+            })
+        })
+        .collect();
     serde_json::json!({
         "schema_version": "editor_client_compat.v1",
         "observed_at": "2026-08-23T12:00:00Z",
@@ -348,7 +426,7 @@ fn synthetic_receipt(cell_id: &str) -> serde_json::Value {
         "candidate_sha": "a".repeat(40),
         "platform": {"os": "linux", "os_version": "6.1", "arch": "x86_64"},
         "host": {
-            "client_id": "vim_vim_lsp",
+            "client_id": "vim-lsp",
             "product": "vim",
             "version": "9.1",
             "source_state": "released",
@@ -382,13 +460,7 @@ fn synthetic_receipt(cell_id: &str) -> serde_json::Value {
             "position_encoding_selected": "utf-16"
         },
         "diagnostics": {"advertised_mode": "push", "observed_messages": ["publish_diagnostics"]},
-        "journey": [{
-            "id": cell_id,
-            "capability_basis": "not_applicable",
-            "observed": true,
-            "result": "pass",
-            "evidence": ["freshness/route.log"]
-        }],
+        "journey": journey,
         "process_cleanup": "pass",
         "result": "pass",
         "limitations": [],
@@ -421,26 +493,60 @@ fn equality_for(commit: &str) -> serde_json::Value {
 }
 
 const PROBE_ARTIFACT: &str = ".ci/editor-clients/vim-fanin-probe.v1.json";
-const PROBE_CELL: &str = "freshness_route_observed";
 
-/// Write the synthetic receipt into the copy and return its content digest.
-fn write_probe_receipt(copy: &ValidatorCopy) -> Result<String, Box<dyn Error>> {
-    let receipt = synthetic_receipt(PROBE_CELL);
+/// The freshness family's registered denominator, read from the committed
+/// profile (which the registry test above pins to the compiled catalog).
+fn freshness_cell_ids(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let profile = load_profile(root)?;
+    Ok(profile
+        .pointer("/inputs/freshness/cell_ids")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("freshness cell_ids missing")?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Write a receipt into the copy and return its content digest. The receipt
+/// is asserted dialect-valid first so every probe exercises the fan-in with
+/// evidence the canonical contract accepts.
+fn write_receipt(
+    copy: &ValidatorCopy,
+    receipt: &serde_json::Value,
+) -> Result<String, Box<dyn Error>> {
     let typed: EditorClientCompatReceipt = serde_json::from_value(receipt.clone())?;
     typed.validate().map_err(|error| format!("probe receipt is not dialect-valid: {error:#}"))?;
     let path = copy.root.join(PROBE_ARTIFACT);
-    fs::write(&path, serde_json::to_vec_pretty(&receipt)?)?;
+    fs::write(&path, serde_json::to_vec_pretty(receipt)?)?;
     Ok(sha256_hex(&fs::read(&path)?))
 }
 
-fn reference(digest: &str, fills: &str, equality: serde_json::Value) -> serde_json::Value {
+/// Write the full-denominator freshness probe receipt; returns its digest and
+/// the cell ids it carries.
+fn write_probe_receipt(copy: &ValidatorCopy) -> Result<(String, Vec<String>), Box<dyn Error>> {
+    let cells = freshness_cell_ids(&copy.root)?;
+    let digest = write_receipt(copy, &synthetic_receipt(&cells))?;
+    Ok((digest, cells))
+}
+
+fn reference(
+    digest: &str,
+    fills: &str,
+    cells: &[String],
+    equality: serde_json::Value,
+) -> serde_json::Value {
     serde_json::json!({
         "artifact": PROBE_ARTIFACT,
         "artifact_sha256": digest,
         "fills": fills,
-        "journey_cell_ids": [PROBE_CELL],
+        "journey_cell_ids": cells,
         "subject_equality": equality
     })
+}
+
+fn pinned(digest: &str, cells: &[String]) -> serde_json::Value {
+    reference(digest, "freshness", cells, equality_for(PINNED_VIM_LSP_COMMIT))
 }
 
 /// Register a dialect-valid receipt for `freshness` and store the cell it
@@ -469,13 +575,92 @@ fn register_freshness(
 fn registered_exact_subject_receipt_composes_to_a_passing_cell() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let copy = ValidatorCopy::new(&root)?;
-    let digest = write_probe_receipt(&copy)?;
-    register_freshness(
-        &copy,
-        reference(&digest, "freshness", equality_for(PINNED_VIM_LSP_COMMIT)),
-    )?;
+    let (digest, cells) = write_probe_receipt(&copy)?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
     let (ok, output) = copy.validate()?;
     assert!(ok, "a dialect-valid exact-subject receipt must compose: {output}");
+    Ok(())
+}
+
+/// A receipt from another editor (host, client, integration mode) cannot fill
+/// a Vim family even when it is dialect-valid and declares the pinned subject.
+#[test]
+fn foreign_host_receipt_fails_closed() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    let cells = freshness_cell_ids(&copy.root)?;
+    let mut receipt = synthetic_receipt(&cells);
+    receipt["host"]["product"] = "emacs".into();
+    receipt["host"]["client_id"] = "eglot".into();
+    receipt["integration"]["mode"] = "native_editor_extension".into();
+    let digest = write_receipt(&copy, &receipt)?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "a foreign editor receipt must fail closed");
+    assert!(output.contains("foreign host/client/server subject"), "{output}");
+    assert!(
+        output.contains("host_product")
+            && output.contains("client_id")
+            && output.contains("integration_mode"),
+        "{output}"
+    );
+    Ok(())
+}
+
+/// Binding only part of a family's catalog denominator earns no disposition.
+#[test]
+fn incomplete_denominator_cannot_earn_a_pass() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    let (digest, cells) = write_probe_receipt(&copy)?;
+    register_freshness(&copy, pinned(&digest, &cells[..1]))?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "an incomplete family must fail closed");
+    assert!(output.contains("registered receipts cover 1 of 6 catalog cells"), "{output}");
+    assert!(output.contains("stored 'pass' but inputs compose 'not_proven'"), "{output}");
+    Ok(())
+}
+
+/// A journey cell outside the family's registered catalog cannot be bound,
+/// even when the receipt carries it.
+#[test]
+fn unregistered_cell_id_fails_closed() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    let mut cells = freshness_cell_ids(&copy.root)?;
+    cells.push("vim.vim_lsp.freshness.invented".to_string());
+    let digest = write_receipt(&copy, &synthetic_receipt(&cells))?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "an unregistered cell id must fail closed");
+    assert!(output.contains("outside the family's registered catalog denominator"), "{output}");
+    Ok(())
+}
+
+/// Family observation is a fact of the bound cells: a receipt whose cells are
+/// all `unsupported` (unobserved by contract) composes to an unobserved cell.
+#[test]
+fn unsupported_cells_compose_to_an_unobserved_family() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let copy = ValidatorCopy::new(&root)?;
+    let cells = freshness_cell_ids(&copy.root)?;
+    let mut receipt = synthetic_receipt(&cells);
+    for cell in receipt["journey"].as_array_mut().ok_or("journey")? {
+        cell["observed"] = false.into();
+        cell["result"] = "unsupported".into();
+        cell["limitation"] = "host exposes no route for this cell".into();
+    }
+    receipt["result"] = "partial".into();
+    receipt["limitations"] = serde_json::json!(["every freshness cell is unsupported"]);
+    let digest = write_receipt(&copy, &receipt)?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
+    let (ok, output) = copy.validate()?;
+    assert!(!ok, "the stored cell claims observed=true and result=pass");
+    assert!(
+        output.contains("cells.freshness.observed disagrees with composed reality"),
+        "{output}"
+    );
+    assert!(output.contains("inputs compose 'unsupported'"), "{output}");
     Ok(())
 }
 
@@ -489,13 +674,16 @@ fn synthetic_registered_receipt_fires_subject_and_cross_fill_controls() -> Resul
 {
     let root = repo_root()?;
     let copy = ValidatorCopy::new(&root)?;
-    let digest = write_probe_receipt(&copy)?;
+    let (digest, cells) = write_probe_receipt(&copy)?;
     let wrong_commit = "d".repeat(40);
-    register_freshness(&copy, reference(&digest, "freshness", equality_for(&wrong_commit)))?;
+    register_freshness(
+        &copy,
+        reference(&digest, "freshness", &cells, equality_for(&wrong_commit)),
+    )?;
+    let save_reference = reference(&digest, "save", &cells, equality_for(PINNED_VIM_LSP_COMMIT));
     copy.edit_profile(|profile| {
         profile["inputs"]["save"]["state"] = "receipt_registered".into();
-        profile["inputs"]["save"]["receipt_references"] =
-            serde_json::json!([reference(&digest, "save", equality_for(PINNED_VIM_LSP_COMMIT))]);
+        profile["inputs"]["save"]["receipt_references"] = serde_json::json!([save_reference]);
     })?;
 
     let (ok, output) = copy.validate()?;
@@ -517,11 +705,11 @@ fn synthetic_registered_receipt_fires_subject_and_cross_fill_controls() -> Resul
 fn foreign_receipt_cannot_satisfy_subject_equality_by_declaration() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let copy = ValidatorCopy::new(&root)?;
-    let digest = write_probe_receipt(&copy)?;
+    let (digest, cells) = write_probe_receipt(&copy)?;
     let mut equality = equality_for(PINNED_VIM_LSP_COMMIT);
     equality["candidate_sha"] = "c".repeat(40).into();
     equality["platform_arch"] = "aarch64".into();
-    register_freshness(&copy, reference(&digest, "freshness", equality))?;
+    register_freshness(&copy, reference(&digest, "freshness", &cells, equality))?;
     let (ok, output) = copy.validate()?;
     assert!(!ok, "a declaration disagreeing with the receipt must fail closed");
     assert!(output.contains("disagrees with the receipt's own identity"), "{output}");
@@ -535,11 +723,8 @@ fn foreign_receipt_cannot_satisfy_subject_equality_by_declaration() -> Result<()
 fn stored_provenance_must_match_validated_inputs() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let copy = ValidatorCopy::new(&root)?;
-    let digest = write_probe_receipt(&copy)?;
-    register_freshness(
-        &copy,
-        reference(&digest, "freshness", equality_for(PINNED_VIM_LSP_COMMIT)),
-    )?;
+    let (digest, cells) = write_probe_receipt(&copy)?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
     copy.edit_profile(|profile| {
         profile["cells"]["freshness"]["receipt_references"][0]["artifact_sha256"] =
             format!("sha256:{}", "f".repeat(64)).into();
@@ -556,15 +741,15 @@ fn stored_provenance_must_match_validated_inputs() -> Result<(), Box<dyn Error>>
 fn unobserved_pass_cell_fails_closed() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let copy = ValidatorCopy::new(&root)?;
-    let mut receipt = synthetic_receipt(PROBE_CELL);
+    let cells = freshness_cell_ids(&copy.root)?;
+    let mut receipt = synthetic_receipt(&cells);
     receipt["journey"][0]["observed"] = false.into();
+    // Deliberately dialect-invalid (pass without observation), so it bypasses
+    // the canonical check and must be caught at the fan-in seam itself.
     let path = copy.root.join(PROBE_ARTIFACT);
     fs::write(&path, serde_json::to_vec_pretty(&receipt)?)?;
     let digest = sha256_hex(&fs::read(&path)?);
-    register_freshness(
-        &copy,
-        reference(&digest, "freshness", equality_for(PINNED_VIM_LSP_COMMIT)),
-    )?;
+    register_freshness(&copy, pinned(&digest, &cells))?;
     let (ok, output) = copy.validate()?;
     assert!(!ok, "an unobserved pass must fail closed");
     assert!(output.contains("claims a pass without an observation"), "{output}");
@@ -577,10 +762,11 @@ fn unobserved_pass_cell_fails_closed() -> Result<(), Box<dyn Error>> {
 fn receipt_path_escaping_the_repository_fails_closed() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
     let copy = ValidatorCopy::new(&root)?;
+    let cells = freshness_cell_ids(&copy.root)?;
     let outside = tempfile::NamedTempFile::new()?;
-    fs::write(outside.path(), serde_json::to_vec_pretty(&synthetic_receipt(PROBE_CELL))?)?;
+    fs::write(outside.path(), serde_json::to_vec_pretty(&synthetic_receipt(&cells))?)?;
     let digest = sha256_hex(&fs::read(outside.path())?);
-    let mut escaping = reference(&digest, "freshness", equality_for(PINNED_VIM_LSP_COMMIT));
+    let mut escaping = pinned(&digest, &cells);
     escaping["artifact"] = outside.path().to_string_lossy().into_owned().into();
     register_freshness(&copy, escaping)?;
     let (ok, output) = copy.validate()?;

@@ -76,6 +76,17 @@ EQUALITY_FIELDS = (
     "workspace_fixture_id",
 )
 
+# The exact host/client/server subject every consumed receipt must come from.
+# The profile carries a projection of `xtask::vim_lsp_cell_catalog::vim_vim_lsp_subject`;
+# the Rust contract asserts that projection equals the compiled registry.
+SUBJECT_FIELDS = (
+    "host_product",
+    "client_id",
+    "server_executable",
+    "launch_command",
+    "integration_mode",
+)
+
 FORBIDDEN_KEY_SUBSTRINGS = (
     "support_tier",
     "supported_version_row",
@@ -205,6 +216,30 @@ def validate_structure(profile: dict, violations: Violations) -> bool:
             )
         if not isinstance(spec.get("authority_issue"), int):
             violations.add(f"inputs.{family}: authority_issue must cite its owning issue number")
+        cell_ids = spec.get("cell_ids")
+        if not isinstance(cell_ids, list) or any(not isinstance(item, str) for item in cell_ids):
+            violations.add_structural(f"inputs.{family}: cell_ids must list the catalog denominator")
+            return False
+        if len(set(cell_ids)) != len(cell_ids):
+            violations.add_structural(f"inputs.{family}: cell_ids contains duplicates")
+            return False
+        catalog = spec.get("catalog_id")
+        if catalog is None and cell_ids:
+            violations.add_structural(f"inputs.{family}: cell_ids without an owning catalog_id")
+            return False
+        if isinstance(catalog, str) and not cell_ids:
+            violations.add_structural(f"inputs.{family}: catalog {catalog} registers no cells")
+            return False
+        if family in REQUIRED_FAMILIES and not cell_ids:
+            violations.add_structural(f"inputs.{family}: a required family needs a catalog denominator")
+            return False
+
+    subject = profile.get("receipt_subject")
+    if not isinstance(subject, dict) or sorted(subject) != sorted(SUBJECT_FIELDS):
+        violations.add_structural(
+            "profile: receipt_subject must carry exactly the governed host/client/server fields"
+        )
+        return False
 
     cells = profile.get("cells")
     if not isinstance(cells, dict) or sorted(cells) != sorted(ALL_FAMILIES):
@@ -251,10 +286,15 @@ def validate_receipt_reference(
     violations: Violations,
     equality: dict[str, str],
     bound_cells: dict[str, str],
-) -> tuple[list[str], bool]:
-    """Validate one registered receipt reference; return its bound journey results."""
+    denominator: set[str],
+    subject: dict[str, object],
+) -> tuple[list[tuple[str, str, bool]], bool]:
+    """Validate one registered receipt reference.
+
+    Returns `(cells, usable)` where each cell is `(id, result, observed)`.
+    """
     label = f"cells.{family}"
-    empty: tuple[list[str], bool] = ([], False)
+    empty: tuple[list[tuple[str, str, bool]], bool] = ([], False)
     if not isinstance(reference, dict):
         violations.add(f"{label}: receipt reference must be an object")
         return empty
@@ -293,6 +333,17 @@ def validate_receipt_reference(
         return empty
     if receipt.get("stage") != "exact_source_local":
         violations.add(f"{label}: mixed evidence stage {receipt.get('stage')!r} (NC5)")
+        return empty
+    foreign_host = sorted(
+        field
+        for field, value in receipt_subject_identity(receipt).items()
+        if value != subject.get(field)
+    )
+    if foreign_host:
+        violations.add(
+            f"{label}: receipt comes from a foreign host/client/server subject on {foreign_host}; "
+            "only the governed Vim/vim-lsp/perllsp subject can fill a Vim family (NC4)"
+        )
         return empty
 
     declared = reference.get("subject_equality")
@@ -341,7 +392,7 @@ def validate_receipt_reference(
     if not isinstance(bound_ids, list) or not bound_ids:
         violations.add(f"{label}: reference binds no journey cell ids")
         return empty
-    results: list[str] = []
+    cells: list[tuple[str, str, bool]] = []
     usable = True
     for cell_id in bound_ids:
         cell = journey_index.get(cell_id)
@@ -354,6 +405,13 @@ def validate_receipt_reference(
             violations.add(
                 f"{label}: journey cell {cell_id!r} already bound to {owner}; families cannot "
                 "cross-fill each other's observations (NC7)"
+            )
+            usable = False
+            continue
+        if cell_id not in denominator:
+            violations.add(
+                f"{label}: journey cell {cell_id!r} is outside the family's registered catalog "
+                "denominator; unregistered cells cannot earn a disposition (NC8)"
             )
             usable = False
             continue
@@ -371,14 +429,30 @@ def validate_receipt_reference(
             )
             usable = False
             continue
-        results.append(result)
+        cells.append((cell_id, result, cell.get("observed") is True))
     if str(receipt.get("result")) not in CELL_RESULTS:
         violations.add(
             f"{label}: receipt overall result {receipt.get('result')!r} is outside the "
             "receipt dialect vocabulary"
         )
         usable = False
-    return results, usable
+    return cells, usable
+
+
+def receipt_subject_identity(receipt: dict) -> dict[str, object]:
+    """Project the host/client/server subject a receipt carries itself."""
+
+    def field(section: str, key: str) -> object:
+        block = receipt.get(section)
+        return block.get(key) if isinstance(block, dict) else None
+
+    return {
+        "host_product": field("host", "product"),
+        "client_id": field("host", "client_id"),
+        "server_executable": field("server", "executable"),
+        "launch_command": field("server", "launch_command"),
+        "integration_mode": field("integration", "mode"),
+    }
 
 
 def receipt_owned_identity(receipt: dict) -> dict[str, str]:
@@ -422,11 +496,13 @@ def recompose(
         "vim_lsp_tree_digest": pinned_subject[1],
     }
     bound_cells: dict[str, str] = {}
+    subject = profile["receipt_subject"]
 
     expected_cells: dict[str, dict] = {}
     for family in ALL_FAMILIES:
         spec = inputs[family]
         references = spec.get("receipt_references") or []
+        denominator = set(spec.get("cell_ids") or [])
         if spec.get("state") == "producer_open":
             if references:
                 violations.add(
@@ -443,22 +519,43 @@ def recompose(
                 f"inputs.{family}: receipt_registered state requires at least one receipt "
                 "reference"
             )
-        folded_results: list[str] = []
+        if not denominator:
+            violations.add(
+                f"inputs.{family}: no catalog denominator is registered, so no receipt can "
+                "fill this family yet (NC8)"
+            )
+        bound: list[tuple[str, str, bool]] = []
         kept_references: list[object] = []
         for reference in references:
-            results, usable = validate_receipt_reference(
-                repo_root, family, reference, violations, equality, bound_cells
+            cells, usable = validate_receipt_reference(
+                repo_root,
+                family,
+                reference,
+                violations,
+                equality,
+                bound_cells,
+                denominator,
+                subject,
             )
             if not usable:
                 continue
             kept_references.append(reference)
-            if results:
-                folded_results.append(worst(results))
-            else:
-                folded_results.append("not_proven")
+            bound.extend(cells)
+        missing = sorted(denominator - {cell_id for cell_id, _, _ in bound})
+        if kept_references and missing:
+            violations.add(
+                f"inputs.{family}: registered receipts cover {len(bound)} of "
+                f"{len(denominator)} catalog cells; missing {missing}. An incomplete family "
+                "cannot earn a disposition (NC8)"
+            )
+        complete = bool(kept_references) and not missing and not denominator.isdisjoint(
+            cell_id for cell_id, _, _ in bound
+        )
         expected_cells[family] = {
-            "result": worst(folded_results) if folded_results else "not_proven",
-            "observed": bool(kept_references),
+            "result": worst([result for _, result, _ in bound]) if complete else "not_proven",
+            # Observation is a fact of the bound cells, never of reference count:
+            # an `unsupported` or `not_proven` cell is unobserved by contract.
+            "observed": any(observed for _, _, observed in bound),
             "receipt_references": kept_references,
         }
 
