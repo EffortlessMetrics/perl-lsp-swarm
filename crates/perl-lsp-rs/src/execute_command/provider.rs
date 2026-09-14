@@ -153,7 +153,7 @@ struct ExplainProviderDecisionRequest {
     /// Optional exact JSON-RPC request ID used to select the latest matching
     /// provider trace. Numeric and string IDs remain distinct.
     #[serde(default)]
-    request_id: Option<Value>,
+    request_id: Option<crate::protocol::JsonRpcId>,
 }
 
 /// Maximum accepted length of one client-supplied identifier echo field
@@ -372,14 +372,6 @@ impl ExecuteCommandProvider {
         }
         let request: ExplainProviderDecisionRequest = serde_json::from_value(request_value.clone())
             .map_err(|error| format!("Invalid explain-provider-decision argument: {error}"))?;
-        if let Some(request_id) = &request.request_id
-            && !matches!(request_id, Value::String(_) | Value::Number(_))
-        {
-            return Err(
-                "Invalid explain-provider-decision argument: request_id must be a JSON-RPC string or number"
-                    .to_string(),
-            );
-        }
         if request.request_id.is_some() && request.request_receipt.is_some() {
             return Err(
                 "Invalid explain-provider-decision argument: request_id cannot be combined with request_receipt"

@@ -703,6 +703,18 @@ impl LspServer {
         self.record_provider_decision_trace("references", &receipt);
     }
 
+    fn invalidate_references_trace_for_request(&self, request_id: Option<&Value>) {
+        let Some(request_id) = request_id else {
+            return;
+        };
+        let mut traces = self.provider_decision_traces.lock();
+        let remove =
+            traces.get("references").and_then(|trace| trace.get("request_id")) == Some(request_id);
+        if remove {
+            traces.remove("references");
+        }
+    }
+
     /// Handle textDocument/references request with lifecycle-aware dispatch
     ///
     /// Uses `IndexCoordinator` for state-aware behavior:
@@ -725,7 +737,14 @@ impl LspServer {
         request_id: Option<&Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let _progress = RequestProgressGuard::new(self, "references", "Finding references");
-        let trace_context = Self::references_decision_trace_context(params.as_ref())?;
+        let trace_context = match Self::references_decision_trace_context(params.as_ref()) {
+            Ok(context) => context,
+            Err(error) => {
+                self.invalidate_references_trace_for_request(request_id);
+                return Err(error);
+            }
+        };
+        let outcome = self.handle_references_inner(params, request_id);
         let (
             result,
             tier,
@@ -735,7 +754,13 @@ impl LspServer {
             latency_us,
             source_backed_attempt,
             fallback_receipt,
-        ) = self.handle_references_inner(params, request_id)?;
+        ) = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.invalidate_references_trace_for_request(request_id);
+                return Err(error);
+            }
+        };
         self.record_references_provider_decision_trace(
             trace_context.as_ref(),
             request_id,

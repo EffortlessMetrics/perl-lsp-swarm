@@ -140,6 +140,23 @@ fn references_trace_selector_refuses_overwritten_request_and_keeps_latest_id() -
         "request 41 must expose its own receipt before overwrite: {first_explanation}"
     );
 
+    let failed_same_id =
+        client.request(json!(41), "textDocument/references", json!({}), timeout())?;
+    assert_response_id(&failed_same_id, &json!(41))?;
+    ensure!(
+        failed_same_id.pointer("/error/code") == Some(&json!(-32602)),
+        "reused request 41 must return invalid params: {failed_same_id}"
+    );
+    let failed_same_id_explanation = explain_trace_for_id(&mut client, "references", json!(41))?;
+    ensure!(
+        failed_same_id_explanation.get("request_receipt").is_none()
+            && failed_same_id_explanation
+                .get("user_message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("No request evidence is attached")),
+        "failed reused request 41 must not expose the earlier successful receipt: {failed_same_id_explanation}"
+    );
+
     let second = client.request(
         json!("41"),
         "textDocument/references",
@@ -197,6 +214,25 @@ fn references_trace_selector_refuses_overwritten_request_and_keeps_latest_id() -
                 .is_some_and(|message| message.contains("No request evidence is attached")),
         "failed request 99 must not invent trace evidence: {failed_explanation}"
     );
+    let too_large = Value::Number(
+        serde_json::Number::from_u128(9_223_372_036_854_775_808_u128)
+            .ok_or_else(|| anyhow::anyhow!("failed to construct out-of-range JSON-RPC ID"))?,
+    );
+    for selector in [json!(1.5), too_large] {
+        let invalid = client.request(
+            json!(format!("invalid-selector-{selector}")),
+            "workspace/executeCommand",
+            json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references", "request_id": selector}]
+            }),
+            timeout(),
+        )?;
+        ensure!(
+            invalid.pointer("/error/code") == Some(&json!(-32602)),
+            "invalid numeric selector must be rejected: {invalid}"
+        );
+    }
     shutdown_and_exit(&mut client, json!("shutdown-references-selector"))
 }
 
