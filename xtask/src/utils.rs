@@ -1,6 +1,6 @@
 //! Utility functions for xtask
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use color_eyre::eyre::{Result, bail, eyre};
@@ -24,15 +24,41 @@ pub fn project_root() -> Result<PathBuf> {
 ///
 /// Returns an error if `cargo metadata` exits non-zero.
 pub fn run_cargo_metadata(no_deps: bool) -> Result<Vec<u8>> {
-    let mut args = vec!["metadata", "--format-version", "1"];
+    run_cargo_metadata_with(None, no_deps)
+}
+
+/// Run `cargo metadata` against an explicit manifest, for fixture roots.
+pub fn run_cargo_metadata_at(manifest_path: &Path, no_deps: bool) -> Result<Vec<u8>> {
+    run_cargo_metadata_with(Some(manifest_path), no_deps)
+}
+
+fn run_cargo_metadata_with(manifest_path: Option<&Path>, no_deps: bool) -> Result<Vec<u8>> {
+    let mut cmd = Command::new("cargo");
+    cmd.args(["metadata", "--format-version", "1"]);
     if no_deps {
-        args.push("--no-deps");
+        cmd.arg("--no-deps");
     }
-    let output = Command::new("cargo").args(&args).output()?;
+    if let Some(path) = manifest_path {
+        cmd.arg("--manifest-path").arg(path);
+    }
+    let output = cmd.output()?;
     if !output.status.success() {
         bail!("cargo metadata failed:\n{}", String::from_utf8_lossy(&output.stderr));
     }
     Ok(output.stdout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_cargo_metadata_at_reads_an_explicit_manifest() -> Result<()> {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let raw = run_cargo_metadata_at(&manifest, true)?;
+        assert!(raw.starts_with(b"{"), "cargo metadata must return JSON");
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

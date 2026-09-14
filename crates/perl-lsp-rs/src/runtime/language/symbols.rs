@@ -630,7 +630,7 @@ impl LspServer {
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        let (compiler_receipt, source_backed_count) =
+        let (source_backed_receipt, source_backed_count) =
             self.document_symbols_source_backed_receipt(params.as_ref())?;
         let live_provider_result = self.handle_document_symbol(params)?;
         let live_provider_count = match live_provider_result.as_ref() {
@@ -644,12 +644,12 @@ impl LspServer {
             "live_provider_result": live_provider_result,
             "live_provider_count": live_provider_count,
             "shadow_state": "partial_live_source_backed",
-            "compiler_receipt": compiler_receipt,
+            "source_backed_receipt": source_backed_receipt,
             "no_live_behavior_change": no_live_behavior_change,
             "notes": [
                 format!(
                     "document-symbol runtime quality receipt: live_provider_count={}; \
-                     source_backed_compiler_symbols={}; \
+                     source_backed_candidates={}; \
                      source-backed parser syntax document symbols are live; \
                      astless, stale, dynamic, generated/no-source, and ambiguous cases keep fallback",
                     live_provider_count,
@@ -665,16 +665,16 @@ impl LspServer {
         params: Option<&Value>,
     ) -> Result<(Value, usize), JsonRpcError> {
         let Some(params) = params else {
-            return Ok((document_symbols_empty_compiler_receipt("missing_params"), 0));
+            return Ok((document_symbols_empty_source_backed_receipt("missing_params"), 0));
         };
         let uri = req_uri(params)?;
         let documents = self.documents_guard();
         let Some(doc) = self.get_document(&documents, uri) else {
-            return Ok((document_symbols_empty_compiler_receipt("unknown_uri"), 0));
+            return Ok((document_symbols_empty_source_backed_receipt("unknown_uri"), 0));
         };
         let parsed = doc.current_parsed();
         let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) else {
-            return Ok((document_symbols_empty_compiler_receipt("ast_unavailable"), 0));
+            return Ok((document_symbols_empty_source_backed_receipt("ast_unavailable"), 0));
         };
 
         let live_result =
@@ -698,7 +698,7 @@ impl LspServer {
 }
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
-fn document_symbols_empty_compiler_receipt(reason: &str) -> Value {
+fn document_symbols_empty_source_backed_receipt(reason: &str) -> Value {
     json!({
         "source_backed_count": 0,
         "fallback_state": "Fallback",

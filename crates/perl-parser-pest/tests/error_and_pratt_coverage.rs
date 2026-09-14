@@ -1,101 +1,412 @@
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
-use perl_parser_pest::error::{ParseErrorKind, ScannerError, UnicodeError};
+//! Discriminating tests for the canonical `ParseError` union (`src/error.rs`)
+//! and the Pratt operator table.
+//!
+//! `ParseError` is the error type returned by the crate's parsing APIs:
+//! `Rejected` (parser-domain rejection, wraps `StrictParseError`) and `Failed`
+//! (operational/instrument failure, wraps `ParserFailure`). Vocabulary
+//! construction keeps its own `OutcomeError` and is deliberately not folded in.
+//!
+//! These tests pin that the two arms are populated correctly by
+//! `PureRustPerlParser::parse`, are not interconvertible by type, round-trip
+//! through serde, reject stale schema payloads loudly, report rejection ranges
+//! as caller-source offsets even when `parse()` rewrote the source, and that
+//! every public fallible API returns `ParseError` rather than
+//! `Box<dyn std::error::Error>`.
+
+use std::error::Error;
+
 use perl_parser_pest::pratt_parser::Associativity;
-use perl_parser_pest::{ParseError, PrattParser};
-use perl_tdd_support::must_err;
+use perl_parser_pest::pure_rust_parser::{PerlParser, Rule};
+use perl_parser_pest::{
+    AstNode, ParseError, ParserFailure, PrattParser, PureRustPerlParser, SourceRange,
+    StrictParseError,
+};
+use pest::iterators::{Pair, Pairs};
 
-fn invalid_token_message(error: ParseError) -> Result<String, Box<dyn std::error::Error>> {
-    match error {
-        ParseError::InvalidToken(message) => Ok(message),
-        other => Err(format!("expected InvalidToken, got {other:?}").into()),
-    }
+// ---------------------------------------------------------------------------
+// Structural proof: every public fallible API returns `ParseError`, never
+// `Box<dyn std::error::Error>`. These wrapper functions only compile if the
+// callee's signature is exactly what it claims; a regression back to
+// `Box<dyn std::error::Error>` (or to any other error type) fails to build.
+// ---------------------------------------------------------------------------
+
+fn call_parse(parser: &mut PureRustPerlParser, source: &str) -> Result<AstNode, ParseError> {
+    parser.parse(source)
 }
 
-fn scanner_error_message(error: ParseError) -> Result<String, Box<dyn std::error::Error>> {
-    match error {
-        ParseError::ScannerError(message) => Ok(message),
-        other => Err(format!("expected ScannerError, got {other:?}").into()),
+fn call_build_ast(
+    parser: &mut PureRustPerlParser,
+    pairs: Pairs<Rule>,
+) -> Result<AstNode, ParseError> {
+    parser.build_ast(pairs)
+}
+
+fn call_build_node(
+    parser: &mut PureRustPerlParser,
+    pair: Pair<'_, Rule>,
+) -> Result<Option<AstNode>, ParseError> {
+    parser.build_node(pair)
+}
+
+fn call_pratt_expression_from_pairs<'a>(
+    pratt: &PrattParser,
+    pairs: Vec<Pair<'a, Rule>>,
+    parser: &mut PureRustPerlParser,
+) -> Result<AstNode, ParseError> {
+    pratt.parse_expression_from_pairs(pairs, parser)
+}
+
+/// Parse `source` and require a [`ParseError::Rejected`], returning its inner
+/// [`StrictParseError`]. Used by both the rejection-shape test and the
+/// normalization/range-caveat test below.
+fn expect_rejected(
+    parser: &mut PureRustPerlParser,
+    source: &str,
+) -> Result<StrictParseError, Box<dyn Error>> {
+    match parser.parse(source) {
+        Err(ParseError::Rejected(rejection)) => Ok(rejection),
+        other => Err(format!("expected Rejected for {source:?}, got {other:?}").into()),
     }
 }
 
 #[test]
-fn parse_error_new_formats_each_error_kind() -> Result<(), Box<dyn std::error::Error>> {
-    let cases = [
-        (ParseErrorKind::UnexpectedToken, "Unexpected token at position 7: detail"),
-        (ParseErrorKind::UnexpectedEndOfInput, "Unexpected end of input at position 7: detail"),
-        (ParseErrorKind::InvalidSyntax, "Invalid syntax at position 7: detail"),
-        (ParseErrorKind::InvalidNumber, "Invalid number at position 7: detail"),
-        (ParseErrorKind::InvalidString, "Invalid string at position 7: detail"),
-        (ParseErrorKind::InvalidRegex, "Invalid regex at position 7: detail"),
-        (ParseErrorKind::InvalidVariable, "Invalid variable at position 7: detail"),
-        (
-            ParseErrorKind::MissingToken("semicolon".to_string()),
-            "Missing semicolon at position 7: detail",
-        ),
-        (ParseErrorKind::InvalidOperator, "Invalid operator at position 7: detail"),
-        (ParseErrorKind::InvalidIdentifier, "Invalid identifier at position 7: detail"),
-    ];
+fn public_fallible_apis_return_typed_parse_error() -> Result<(), Box<dyn Error>> {
+    let mut parser = PureRustPerlParser::new();
 
-    for (kind, expected) in cases {
-        let message = invalid_token_message(ParseError::new(kind, 7, "detail".to_string()))?;
-        assert_eq!(message, expected);
-    }
-
-    Ok(())
-}
-
-#[test]
-fn parse_error_constructors_preserve_position_and_token_text()
--> Result<(), Box<dyn std::error::Error>> {
-    let unterminated = scanner_error_message(ParseError::unterminated_string((3, 14)))?;
-    assert_eq!(unterminated, "Unterminated string literal at line 3, column 14");
-
-    let invalid = invalid_token_message(ParseError::invalid_token("???".to_string(), (8, 2)))?;
-    assert_eq!(invalid, "Invalid token '???' at line 8, column 2");
-
-    assert_eq!(ParseError::unicode_error("bad codepoint"), ParseError::InvalidUnicode);
-
-    let scanner = scanner_error_message(ParseError::scanner_error_simple("state mismatch"))?;
-    assert_eq!(scanner, "state mismatch");
-
-    Ok(())
-}
-
-#[test]
-fn parse_error_from_conversions_keep_source_context() -> Result<(), Box<dyn std::error::Error>> {
-    let scanner =
-        scanner_error_message(ParseError::from(ScannerError::InvalidEscape("\\q".to_string())))?;
-    assert_eq!(scanner, "Invalid escape sequence: \\q");
-
-    let unicode =
-        scanner_error_message(ParseError::from(UnicodeError::InvalidCodePoint(0x11_0000)))?;
-    assert_eq!(unicode, "Invalid Unicode code point: 1114112");
-
-    let invalid_utf8_bytes = vec![u8::MAX];
-    let utf8_error = must_err(std::str::from_utf8(&invalid_utf8_bytes));
-    let ParseError::InvalidUtf8(message) = ParseError::from(utf8_error) else {
-        return Err("expected InvalidUtf8 from Utf8Error".into());
+    // `call_parse`/`call_build_ast`/`call_build_node`/`call_pratt_expression_from_pairs`
+    // above are the compile-time proof; exercising them here also gives a
+    // runtime check that the wrappers are not dead weight.
+    let ast = call_parse(&mut parser, "my $x = 1;\n")?;
+    let AstNode::Program(_) = &ast else {
+        return Err(format!("expected Program root, got {ast:?}").into());
     };
-    assert!(message.contains("invalid utf-8 sequence"));
 
-    let from_utf8_error = must_err(String::from_utf8(invalid_utf8_bytes));
-    let ParseError::InvalidUtf8(message) = ParseError::from(from_utf8_error) else {
-        return Err("expected InvalidUtf8 from FromUtf8Error".into());
-    };
-    assert!(message.contains("invalid utf-8 sequence"));
+    let pairs = <PerlParser as pest::Parser<Rule>>::parse(Rule::program, "my $y = 2;\n")?;
+    let _ast_from_build_ast = call_build_ast(&mut parser, pairs)?;
 
-    let io = scanner_error_message(ParseError::from(std::io::Error::new(
-        std::io::ErrorKind::PermissionDenied,
-        "fixture denied",
-    )))?;
-    assert_eq!(io, "I/O error: fixture denied");
+    let mut pairs = <PerlParser as pest::Parser<Rule>>::parse(Rule::program, "my $z = 3;\n")?;
+    let first_pair = pairs.next().ok_or("expected at least one pest pair")?;
+    let _node = call_build_node(&mut parser, first_pair)?;
+
+    let pratt = PrattParser::new();
+    let pairs: Vec<Pair<'_, Rule>> =
+        <PerlParser as pest::Parser<Rule>>::parse(Rule::program, "my $w = 4;\n")?.collect();
+    let _pratt_ast = call_pratt_expression_from_pairs(&pratt, pairs, &mut parser)?;
 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// `Rejected` from an actual `parse()` call.
+// ---------------------------------------------------------------------------
+
 #[test]
-fn pratt_operator_table_exposes_precedence_and_associativity()
--> Result<(), Box<dyn std::error::Error>> {
+fn pest_rejection_from_malformed_source_carries_context_and_valid_range()
+-> Result<(), Box<dyn Error>> {
+    let mut parser = PureRustPerlParser::new();
+    // No `$$name`/`= ~expr` normalization trigger in this source, so the
+    // normalized text pest parses is byte-identical to `source` and the
+    // range can be validated directly against it.
+    let source = "my = ; ???\n";
+
+    let rejection = expect_rejected(&mut parser, source)?;
+
+    if rejection.pest_context().trim().is_empty() {
+        return Err("pest_context must not be empty".into());
+    }
+    if !rejection.pest_context().contains("expected") {
+        return Err(format!(
+            "pest_context should retain Pest's own expectation text, got {:?}",
+            rejection.pest_context()
+        )
+        .into());
+    }
+    // Validates that `parse()` bound the range to the text it actually
+    // parsed rather than to some other buffer.
+    rejection.range().check_over_source(source)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Negative control: operational/instrument failure is never produced by
+// malformed-but-otherwise-well-formed-instrument Perl source on its own.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn malformed_perl_never_yields_operational_failure() -> Result<(), Box<dyn Error>> {
+    let malformed_sources =
+        ["<<", "my = ; ???\n", "$$name ???\n", "sub {", "my $x = ;", "1 + ", "if ( {"];
+
+    for source in malformed_sources {
+        let mut parser = PureRustPerlParser::new();
+        match parser.parse(source) {
+            Ok(_) | Err(ParseError::Rejected(_)) => {}
+            Err(ParseError::Failed(failure)) => {
+                return Err(format!(
+                    "malformed source {source:?} must not be classified as an operational \
+                     failure, got {failure:?}"
+                )
+                .into());
+            }
+            Err(other) => {
+                return Err(format!("unexpected ParseError arm for {source:?}: {other:?}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The converse of the control above: grammar-valid Perl that the AST builder
+// cannot lower reaches the caller as `Failed`, not `Rejected`. Pinning the
+// real behaviour rather than asserting a guarantee this parser cannot back.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn builder_gap_on_grammar_valid_perl_is_instrument_not_rejection() -> Result<(), Box<dyn Error>> {
+    // `if` / `elsif` conditions starting with a unary prefix operator are
+    // ordinary Perl that Pest accepts and the builder then fails to lower.
+    // This predates the typed-error work (the same inputs fail on the base
+    // commit with an untyped "Failed to build condition node"); the value
+    // added here is that the failure is now *classified*.
+    let grammar_valid_but_unlowered =
+        ["if (!1) { 1; }\n", "if (!defined $x) { 1; }\n", "if (-1) { 1; }\n"];
+
+    for source in grammar_valid_but_unlowered {
+        let mut parser = PureRustPerlParser::new();
+        match parser.parse(source) {
+            // `Ok` would mean the builder gap was fixed — a real improvement,
+            // and this test should then be revisited rather than kept green
+            // by accident. It is not a failure of the error contract.
+            Ok(_) => {}
+            // The load-bearing assertion: the caller's Perl is valid, so
+            // calling it a parser-domain rejection would be a false statement
+            // about their source.
+            Err(ParseError::Failed(_)) => {}
+            Err(ParseError::Rejected(rejection)) => {
+                return Err(format!(
+                    "grammar-valid source {source:?} must never be reported as a \
+                     parser-domain rejection; got Rejected({:?})",
+                    rejection.message()
+                )
+                .into());
+            }
+            Err(other) => {
+                return Err(format!("unexpected ParseError arm for {source:?}: {other:?}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The two arms are not interconvertible by type.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rejected_and_failed_are_not_interconvertible_by_type() -> Result<(), Box<dyn Error>> {
+    let range = SourceRange::try_new(0, 0)?;
+    let rejection = StrictParseError::new(range, "unexpected token", "pest-display");
+    let failure = ParserFailure::instrument("builder invariant violated");
+
+    let rejected: ParseError = rejection.clone().into();
+    let failed: ParseError = failure.clone().into();
+    let rejected_ctor = ParseError::rejected(rejection.clone());
+    let failed_ctor = ParseError::failed(failure.clone());
+    assert_eq!(rejected, rejected_ctor);
+    assert_eq!(failed, failed_ctor);
+
+    if rejected.as_failed().is_some() {
+        return Err("Rejected must never report as_failed".into());
+    }
+    if failed.as_rejected().is_some() {
+        return Err("Failed must never report as_rejected".into());
+    }
+    match rejected.as_rejected() {
+        Some(inner) if *inner == rejection => {}
+        other => return Err(format!("expected the original rejection back, got {other:?}").into()),
+    }
+    match failed.as_failed() {
+        Some(inner) if *inner == failure => {}
+        other => return Err(format!("expected the original failure back, got {other:?}").into()),
+    }
+    assert_ne!(rejected, failed);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Serde round-trip for both arms.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_error_serde_round_trips_both_arms() -> Result<(), Box<dyn Error>> {
+    let range = SourceRange::try_new(2, 5)?;
+    let rejected: ParseError =
+        StrictParseError::new(range, "unexpected token", "pest-display").into();
+    let failed: ParseError = ParserFailure::panic("boom").into();
+
+    for value in [rejected, failed] {
+        let json = serde_json::to_string(&value)?;
+        let decoded: ParseError = serde_json::from_str(&json)?;
+        assert_eq!(decoded, value, "round trip must be lossless for {json}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Stale/unknown-schema payloads fail loudly rather than being silently
+// misread as the wrong arm (or as any arm at all).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unknown_schema_and_legacy_shaped_payloads_fail_loudly() -> Result<(), Box<dyn Error>> {
+    let range = SourceRange::try_new(0, 3)?;
+    let rejected: ParseError = StrictParseError::new(range, "nope", "pest").into();
+    let json = serde_json::to_string(&rejected)?;
+    if !json.contains("perl-parser-pest.strict_parse_error.v1") {
+        return Err(format!("expected embedded schema marker in {json}").into());
+    }
+
+    // Corrupting the embedded schema string must fail deserialization, not
+    // silently accept a stale/unknown-schema `StrictParseError` payload.
+    let stale_schema = json.replace(
+        "perl-parser-pest.strict_parse_error.v1",
+        "perl-parser-pest.strict_parse_error.v0",
+    );
+    match serde_json::from_str::<ParseError>(&stale_schema) {
+        Err(_) => {}
+        Ok(value) => {
+            return Err(format!("stale schema payload must not deserialize, got {value:?}").into());
+        }
+    }
+
+    // A payload shaped like the deleted pre-#9250 `ParseError` (a bare
+    // stringly variant, no schema, no `Rejected`/`Failed` wrapper) must not
+    // silently deserialize as either arm of the new contract.
+    let legacy_shaped = r#"{"InvalidToken":"boom"}"#;
+    match serde_json::from_str::<ParseError>(legacy_shaped) {
+        Err(_) => {}
+        Ok(value) => {
+            return Err(format!("legacy-shaped payload must not deserialize, got {value:?}").into());
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Normalization and ranges: `parse()` rewrites `source` before Pest ever sees
+// it, so Pest's offsets index the rewritten buffer. They are translated back
+// before they reach `Rejected`, because `StrictParseError` documents its range
+// as an offset into the caller's own source.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rejected_range_from_parse_is_translated_back_to_the_caller_source() -> Result<(), Box<dyn Error>>
+{
+    let mut parser = PureRustPerlParser::new();
+    // `$$name` (6 bytes) is rewritten to `${$name}` (8 bytes) before Pest
+    // parses it, shifting everything after it by two. Pest reports the failure
+    // inside `???` of the normalized `${$name} ???\n`; untranslated, that
+    // offset would land on the trailing newline of the caller's 11-byte source
+    // and silently contradict `StrictParseError`'s caller-source contract.
+    let source = "$$name ???\n";
+    let question_marks = 7..10;
+    if source.len() != 11 || &source[question_marks.clone()] != "???" {
+        return Err(format!("fixture assumption broke: {source:?}").into());
+    }
+
+    let rejection = expect_rejected(&mut parser, source)?;
+    let (start, end) = (rejection.range().start(), rejection.range().end());
+
+    // The translated offset must land on the `???` the caller actually wrote.
+    // Untranslated it would be 10 — the trailing newline — so this assertion
+    // fails if the translation is removed.
+    if !question_marks.contains(&start) {
+        return Err(format!(
+            "expected the rejection range inside the caller's `???` at {question_marks:?}, \
+             got [{start}, {end}); byte 10 (the untranslated normalized offset) is the \
+             trailing newline"
+        )
+        .into());
+    }
+    if source.as_bytes()[start] != b'?' {
+        return Err(format!(
+            "caller-source byte {start} should be a `?`, got {:?}",
+            source.as_bytes()[start] as char
+        )
+        .into());
+    }
+    // Pest's own rendering still describes the normalized buffer it parsed;
+    // that is retained verbatim as context and is not the range authority.
+    if !rejection.pest_context().contains("???") {
+        return Err(format!(
+            "pest_context should retain pest's own rendering, got {:?}",
+            rejection.pest_context()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// When normalization changes nothing, translation must be the identity: the
+/// reported offset has to equal the offset Pest independently reports for the
+/// very same text. This is the control that keeps the mapping from drifting on
+/// the overwhelmingly common un-rewritten path.
+#[test]
+fn rejected_range_is_exact_when_normalization_is_a_no_op() -> Result<(), Box<dyn Error>> {
+    let mut parser = PureRustPerlParser::new();
+    // Contains no `$$name` or `= ~expr` trigger, so `parse()` hands Pest this
+    // exact text.
+    let source = "my = ; ???\n";
+
+    // Independently ask Pest where it fails, without going through `parse()`.
+    let pest_offset = match <PerlParser as pest::Parser<Rule>>::parse(Rule::program, source) {
+        Ok(_) => return Err("fixture must be rejected by pest".into()),
+        Err(error) => match error.location {
+            pest::error::InputLocation::Pos(pos) => pos,
+            pest::error::InputLocation::Span((start, _)) => start,
+        },
+    };
+
+    let rejection = expect_rejected(&mut parser, source)?;
+    let (start, end) = (rejection.range().start(), rejection.range().end());
+    if start != pest_offset {
+        return Err(format!(
+            "un-rewritten source must report pest's own offset {pest_offset}, got [{start}, {end})"
+        )
+        .into());
+    }
+    rejection.range().check_over_source(source)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Legacy behavior preserved: existing recovery/failure smoke tests.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn legacy_parse_behavior_is_unchanged_for_seed_recovery_cases() -> Result<(), Box<dyn Error>> {
+    let mut parser = PureRustPerlParser::new();
+    let simple = include_str!("fixtures/sources/declaration-control-flow/simple-scalar.pl");
+    if parser.parse(simple).is_err() {
+        return Err("legacy parse of simple-scalar.pl must still succeed".into());
+    }
+
+    let valid_invalid_valid = include_str!("fixtures/sources/recovery/valid-invalid-valid.pl");
+    if parser.parse(valid_invalid_valid).is_err() {
+        return Err("legacy parse of valid-invalid-valid.pl must still succeed via recovery".into());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Pratt operator table (unrelated to the error contract; preserved coverage).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pratt_operator_table_exposes_precedence_and_associativity() -> Result<(), Box<dyn Error>> {
     let parser = PrattParser::default();
 
     let assignment = parser.get_operator_info("=").ok_or("expected assignment operator info")?;
@@ -117,7 +428,7 @@ fn pratt_operator_table_exposes_precedence_and_associativity()
 
 #[test]
 fn pratt_prefix_and_postfix_operator_classifiers_cover_perl_specific_forms()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), Box<dyn Error>> {
     for op in ["!", "not", "~.", "\\", "defined", "state"] {
         assert!(PrattParser::is_prefix_operator(op), "expected {op} to be prefix");
     }

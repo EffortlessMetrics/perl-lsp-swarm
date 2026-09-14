@@ -3,15 +3,6 @@ use duct::cmd;
 
 use crate::tasks::fmt as fmt_task;
 
-const MAX_CHILD_STDERR_BYTES: usize = 4096;
-
-fn bounded_child_stderr(stderr: &[u8]) -> String {
-    let shown = stderr.get(..MAX_CHILD_STDERR_BYTES).unwrap_or(stderr);
-    let suffix =
-        if stderr.len() > MAX_CHILD_STDERR_BYTES { "\n[child stderr truncated]" } else { "" };
-    format!("{}{}", String::from_utf8_lossy(shown), suffix)
-}
-
 pub(super) fn run_fmt_check() -> Result<()> {
     run_fmt_check_with(|| fmt_task::run(true, None))?;
     Ok(())
@@ -55,6 +46,19 @@ mod tests {
     use super::{run_fmt_check, run_fmt_check_with};
     use color_eyre::eyre::{Result, eyre};
 
+    const MAX_CHILD_STDERR_BYTES: usize = 4096;
+
+    /// Bounds a failed child's stderr before it is quoted into a test
+    /// diagnostic. Only the test harness captures child stderr bytes: the
+    /// production runners inherit the child's streams and discard the `duct`
+    /// output, so this helper has no production consumer.
+    fn bounded_child_stderr(stderr: &[u8]) -> String {
+        let shown = stderr.get(..MAX_CHILD_STDERR_BYTES).unwrap_or(stderr);
+        let suffix =
+            if stderr.len() > MAX_CHILD_STDERR_BYTES { "\n[child stderr truncated]" } else { "" };
+        format!("{}{}", String::from_utf8_lossy(shown), suffix)
+    }
+
     #[test]
     fn ci_runner_fmt_check_uses_injected_package_formatter() -> Result<()> {
         let mut called = false;
@@ -82,14 +86,14 @@ mod tests {
 
     #[test]
     fn child_stderr_diagnostic_is_bounded() -> Result<()> {
-        let stderr = vec![b'x'; super::MAX_CHILD_STDERR_BYTES + 1];
-        let diagnostic = super::bounded_child_stderr(&stderr);
+        let stderr = vec![b'x'; MAX_CHILD_STDERR_BYTES + 1];
+        let diagnostic = bounded_child_stderr(&stderr);
         let suffix = "\n[child stderr truncated]";
 
         if !diagnostic.ends_with(suffix) {
             return Err(eyre!("bounded diagnostic did not report truncation"));
         }
-        if diagnostic.len() > super::MAX_CHILD_STDERR_BYTES + suffix.len() {
+        if diagnostic.len() > MAX_CHILD_STDERR_BYTES + suffix.len() {
             return Err(eyre!("child stderr diagnostic exceeded its bound"));
         }
         Ok(())
@@ -109,7 +113,7 @@ mod tests {
         if !fake_cargo.status().success() {
             return Err(color_eyre::eyre::eyre!(
                 "fake cargo child failed: {}",
-                super::bounded_child_stderr(fake_cargo.stderr()),
+                bounded_child_stderr(fake_cargo.stderr()),
             ));
         }
 

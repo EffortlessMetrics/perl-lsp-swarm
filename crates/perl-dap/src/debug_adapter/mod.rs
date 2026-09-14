@@ -9,6 +9,7 @@ mod evaluation;
 mod execution;
 mod frames;
 mod logpoint;
+mod operation_broker;
 mod output;
 mod patterns;
 mod process;
@@ -60,6 +61,7 @@ use crate::variables::{PerlVariableRenderer, RenderedVariable, VariableParser, V
 use perl_lexer::DAP_COMPLETION_KEYWORDS;
 use perl_lsp_rs_core::transport::framing::ContentLengthFramer;
 use perl_module::module_path_to_name;
+use perl_source_identity::ContentDigest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -72,7 +74,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::breakpoints::{BreakpointHitOutcome, BreakpointStore};
+use crate::breakpoints::{BreakpointStore, EngineBreakpointHitOutcome};
 use crate::debug_adapter::data_breakpoints::DataBreakpointRecord;
 use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
 use crate::debug_adapter::variable_cache::CachedVariable;
@@ -81,14 +83,14 @@ use crate::debug_adapter::variable_cache::VariableCache;
 use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
 use crate::security;
 use patterns::{
-    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_FRAME_POLL_MS, DEBUGGER_QUERY_WAIT_MS,
-    EVENT_QUEUE_CAPACITY, RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine,
-    ansi_escape_re, assignment_ops_re, context_re, dangerous_ops_re, deref_re, die_suffix_re,
-    error_re, exception_re, glob_re, inc_re, is_valid_function_breakpoint_name,
-    is_valid_set_variable_name, prompt_re, regex_mutation_re, stack_frame_re, warning_re,
+    DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY,
+    RECENT_OUTPUT_MAX_LINES, RecentOutputBuffer, RecentOutputLine, ansi_escape_re,
+    assignment_ops_re, context_re, dangerous_ops_re, deref_re, die_suffix_re, error_re,
+    exception_re, glob_re, inc_re, is_valid_function_breakpoint_name, is_valid_set_variable_name,
+    prompt_re, regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
-use sync_utils::{dispatch_event, emit_event_safe, lock_or_recover};
+use sync_utils::{EventSender, lock_or_recover};
 
 #[derive(Debug, Default)]
 struct TerminationState {
@@ -129,6 +131,9 @@ pub struct DebugAdapter {
     seq: Arc<Mutex<i64>>,
     /// Active debug session (process-based)
     session: Arc<Mutex<Option<DebugSession>>>,
+    /// A replacement child whose cleanup was not confirmed; retained so a
+    /// later terminal cleanup can retry it instead of losing ownership.
+    rejected_child: Arc<Mutex<Option<Child>>>,
     /// Attached process ID for PID-based attach mode
     attached_pid: Arc<Mutex<Option<u32>>>,
     /// TCP attach session (for connecting to running debugger)
@@ -143,7 +148,7 @@ pub struct DebugAdapter {
     /// no failure path that reuses an id.
     thread_counter: Arc<AtomicI32>,
     /// Bounded output channel for sending events to client
-    event_sender: Option<SyncSender<DapMessage>>,
+    event_sender: Option<EventSender>,
     /// Ensures competing session shutdown paths emit one terminal event per session.
     termination_state: Arc<Mutex<TerminationState>>,
     /// Bounded history of debugger output for stack/variable/evaluate parsing
@@ -171,6 +176,10 @@ pub struct DebugAdapter {
     last_exception_message: Arc<Mutex<Option<String>>>,
     /// Stored launch arguments for restart support
     last_launch_args: Arc<Mutex<Option<Value>>>,
+    /// Source identity captured at successful launch for breakpoint revision
+    /// checks. The debugger engine must never be credited with a later disk
+    /// revision merely because the path remained the same.
+    launch_source_identity: Arc<Mutex<Option<(PathBuf, String)>>>,
     /// Goto target ID → (file_path, line) mapping for cross-file goto
     goto_targets: Arc<Mutex<HashMap<i64, (String, i64)>>>,
     /// Monotonic goto target ID counter
@@ -181,6 +190,10 @@ pub struct DebugAdapter {
     transport_broken: Arc<AtomicBool>,
     /// Tracks whether initialize request has been received (state machine validation)
     initialized: Arc<AtomicBool>,
+    /// Typed, generation-aware broker for framed debugger operations (#8564).
+    /// Wraps the begin/end-marker query primitive; direct writes elsewhere
+    /// remain registered migration debt.
+    operation_broker: Arc<operation_broker::OperationBroker>,
 }
 
 /// Represents a DAP message, which can be a request, response, or event.
@@ -237,6 +250,9 @@ impl Default for DebugAdapter {
 impl Drop for DebugAdapter {
     fn drop(&mut self) {
         self.cancel_requested.store(true, Ordering::Release);
+        // Adapter drop settles every pending broker operation (#8564): the
+        // correlation surface is going away with the adapter.
+        self.operation_broker.settle_all("adapter_dropped");
         self.clear_active_session_state();
     }
 }
@@ -247,6 +263,7 @@ impl DebugAdapter {
         Self {
             seq: Arc::new(Mutex::new(0)),
             session: Arc::new(Mutex::new(None)),
+            rejected_child: Arc::new(Mutex::new(None)),
             attached_pid: Arc::new(Mutex::new(None)),
             tcp_session: Arc::new(Mutex::new(None)),
             breakpoints: BreakpointStore::new(),
@@ -264,11 +281,13 @@ impl DebugAdapter {
             data_breakpoints: Arc::new(Mutex::new(Vec::new())),
             last_exception_message: Arc::new(Mutex::new(None)),
             last_launch_args: Arc::new(Mutex::new(None)),
+            launch_source_identity: Arc::new(Mutex::new(None)),
             goto_targets: Arc::new(Mutex::new(HashMap::new())),
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
             initialized: Arc::new(AtomicBool::new(false)),
+            operation_broker: Arc::new(operation_broker::OperationBroker::new()),
         }
     }
 
@@ -279,7 +298,7 @@ impl DebugAdapter {
     /// types.  Use `sync_channel(EVENT_QUEUE_CAPACITY)` or any capacity large
     /// enough for the test's event volume.
     pub fn set_event_sender(&mut self, sender: SyncSender<DapMessage>) {
-        self.event_sender = Some(sender);
+        self.event_sender = Some(EventSender::new(sender));
     }
 
     /// Configure the workspace boundary used to validate launch/attach paths.
@@ -296,11 +315,49 @@ impl DebugAdapter {
     }
 
     /// Start a new session generation and reset its terminal-event gate.
+    ///
+    /// Advancing the session settles every pending broker operation as
+    /// `SessionGone` (#8564): operations belong to the session they were
+    /// submitted against and never leak into the next one.
     pub(super) fn begin_session_generation(&self) -> u64 {
+        self.begin_session_generation_with_reason("session_generation_advanced")
+    }
+
+    pub(super) fn begin_session_generation_with_reason(&self, reason: &'static str) -> u64 {
+        self.operation_broker.settle_all(reason);
         let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
         state.generation = state.generation.saturating_add(1);
         state.emitted = false;
         state.generation
+    }
+
+    /// Invalidate a session after an operation may have reached the debugger.
+    ///
+    /// The broker settlement and adapter generation check are conditional on
+    /// the same captured generation.  Teardown runs while the termination
+    /// state lock is held, so a replacement cannot be cleared by a late
+    /// acknowledgement timeout.
+    pub(super) fn invalidate_session_generation_if_current(
+        &self,
+        expected_adapter_generation: u64,
+        expected_broker_generation: operation_broker::SessionGeneration,
+        reason: &'static str,
+    ) -> bool {
+        if !self.operation_broker.settle_all_if_current(reason, expected_broker_generation) {
+            return false;
+        }
+
+        let mut state = lock_or_recover(&self.termination_state, "debug_adapter.termination_state");
+        if state.generation != expected_adapter_generation {
+            return false;
+        }
+        state.generation = state.generation.saturating_add(1);
+        state.emitted = false;
+        Self::clear_active_session_state_with_state(
+            &self.session,
+            &self.tcp_session,
+            &self.attached_pid,
+        )
     }
 
     /// Close the session generation at the end of a client-initiated terminal
@@ -323,8 +380,8 @@ impl DebugAdapter {
     /// Without this close, a second successful `terminate` could never emit:
     /// the first request left `emitted` latched with no live session left to
     /// reset it (`clear_active_session_state` does not touch the gate).
-    pub(super) fn close_terminal_session_generation(&self) {
-        self.begin_session_generation();
+    pub(super) fn close_terminal_session_generation(&self, reason: &'static str) {
+        self.begin_session_generation_with_reason(reason);
     }
 
     /// Return the current session generation for event-handler threads.
@@ -339,7 +396,16 @@ impl DebugAdapter {
     /// warning — defense-in-depth only blocks when a workspace boundary is known.
     fn validate_source_path(&self, path: &str) -> Result<PathBuf, String> {
         let ws = lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root");
-        match ws.as_ref() {
+        Self::validate_source_path_at(path, ws.as_deref())
+    }
+
+    /// Apply the source boundary to a client spelling or an observed debugger alias.
+    /// Callers snapshot authority before holding the session lock.
+    fn validate_source_path_at(
+        path: &str,
+        workspace_root: Option<&Path>,
+    ) -> Result<PathBuf, String> {
+        match workspace_root {
             Some(root) => security::validate_path(Path::new(path), root)
                 .map_err(|e| format!("Path validation failed: {e}")),
             None => {
@@ -351,10 +417,20 @@ impl DebugAdapter {
                 // are legitimate pre-launch use cases).
                 let p = Path::new(path);
 
-                // Best-effort canonicalize for logging; fall back to raw path.
+                // Resolve relative spellings once at admission so later launch
+                // replay uses the same file identity. Preserve absolute
+                // spellings because Windows canonicalize may add a device
+                // prefix that does not match the launch identity.
+                let stable_path = if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    std::fs::canonicalize(p).unwrap_or_else(|_| {
+                        std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
+                    })
+                };
                 let resolved = std::fs::canonicalize(p)
                     .map(|c| c.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| path.to_string());
+                    .unwrap_or_else(|_| stable_path.to_string_lossy().into_owned());
 
                 // Reject any path containing a ParentDir component — these can
                 // escape the (unknown) workspace boundary.
@@ -381,7 +457,7 @@ impl DebugAdapter {
                             "Pre-launch absolute path outside current working directory \
                              accepted without workspace boundary check"
                         );
-                        return Ok(PathBuf::from(path));
+                        return Ok(stable_path);
                     }
                 }
 
@@ -390,9 +466,178 @@ impl DebugAdapter {
                     path = %resolved,
                     "Pre-launch path accepted without workspace boundary check"
                 );
-                Ok(PathBuf::from(path))
+                Ok(stable_path)
             }
         }
+    }
+
+    #[cfg(test)]
+    fn register_observed_breakpoint_hit(
+        breakpoints: &crate::breakpoints::BreakpointStore,
+        source_path: &str,
+        line: i64,
+        workspace_root: Option<&Path>,
+        debuggee_cwd: &Path,
+    ) -> crate::breakpoints::BreakpointHitOutcome {
+        let observed = Path::new(source_path);
+        let resolved = if observed.is_absolute() {
+            observed.to_path_buf()
+        } else {
+            debuggee_cwd.join(observed)
+        };
+        let Some(resolved) = resolved.to_str() else {
+            return crate::breakpoints::BreakpointHitOutcome::default();
+        };
+        Self::validate_source_path_at(resolved, workspace_root)
+            .ok()
+            .as_deref()
+            .and_then(Path::to_str)
+            .map(|path| breakpoints.register_breakpoint_hit(path, line))
+            .unwrap_or_default()
+    }
+
+    /// Correlate a runtime stop only with a breakpoint that was acknowledged
+    /// by the current engine session.
+    pub(super) fn register_observed_engine_breakpoint_hit(
+        breakpoints: &crate::breakpoints::BreakpointStore,
+        source_path: &str,
+        line: i64,
+        workspace_root: Option<&Path>,
+        debuggee_cwd: &Path,
+        session_generation: u64,
+    ) -> EngineBreakpointHitOutcome {
+        Self::register_observed_engine_breakpoint_hit_with_digest_reader(
+            breakpoints,
+            source_path,
+            line,
+            workspace_root,
+            debuggee_cwd,
+            session_generation,
+            |path| {
+                std::fs::read(path)
+                    .map(|bytes| ContentDigest::of_bytes(&bytes).to_string())
+                    .unwrap_or_default()
+            },
+        )
+    }
+
+    fn register_observed_engine_breakpoint_hit_with_digest_reader(
+        breakpoints: &crate::breakpoints::BreakpointStore,
+        source_path: &str,
+        line: i64,
+        workspace_root: Option<&Path>,
+        debuggee_cwd: &Path,
+        session_generation: u64,
+        read_digest: impl FnOnce(&str) -> String,
+    ) -> EngineBreakpointHitOutcome {
+        let observed = Path::new(source_path);
+        let resolved = if observed.is_absolute() {
+            observed.to_path_buf()
+        } else {
+            debuggee_cwd.join(observed)
+        };
+        let Some(resolved) = resolved.to_str() else {
+            return EngineBreakpointHitOutcome::default();
+        };
+        Self::validate_source_path_at(resolved, workspace_root)
+            .ok()
+            .as_deref()
+            .and_then(Path::to_str)
+            .map(|path| {
+                if !breakpoints.has_engine_breakpoint_candidate(path, line, session_generation) {
+                    return EngineBreakpointHitOutcome::default();
+                }
+                let digest = read_digest(path);
+                breakpoints.register_engine_breakpoint_hit(path, line, session_generation, &digest)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Ask the live Perl debugger to install one source breakpoint and read
+    /// back the exact perl5db glob slot before accepting the installation.
+    pub(super) fn acknowledge_engine_breakpoint(
+        &self,
+        source_path: &str,
+        line: i64,
+        timeout: Duration,
+    ) -> Result<(), EngineBreakpointAcknowledgeError> {
+        let path_hex =
+            source_path.as_bytes().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let command = format!(
+            "p do {{ my $f = pack(\"H*\", \"{path_hex}\"); DB::break_on_filename_line($f, {line}, 1); my $g = $main::{{\"_<\" . $f}}; my $h = defined($g) ? *{{$g}}{{HASH}} : undef; \"DAP_BP:\" . (defined($h) && defined($h->{{{line}}}) ? unpack(\"H*\", $h->{{{line}}}) : \"absent\") }}"
+        );
+        let captured_generation = self.current_session_generation();
+        let (operation, begin, end, prior_state) = {
+            let mut guard = lock_or_recover(&self.session, "debug_adapter.session");
+            let session = guard.as_mut().ok_or_else(|| {
+                EngineBreakpointAcknowledgeError::Rejected("no active debugger session".to_string())
+            })?;
+            let stdin = session.process.stdin.as_mut().ok_or_else(|| {
+                EngineBreakpointAcknowledgeError::Rejected(
+                    "debugger stdin is unavailable".to_string(),
+                )
+            })?;
+            // The query is an adapter-internal inspection while perl5db is at a
+            // prompt. Mark that interval stopped so the reader does not expose
+            // the query's context echo as a user step stop. configurationDone
+            // will establish the real running mode afterward.
+            let prior_state = session.state.clone();
+            session.state = DebugState::Stopped;
+            let timeout_ms = timeout.as_millis().try_into().unwrap_or(u64::MAX);
+            let (operation, begin, end) =
+                match self.send_framed_debugger_query(stdin, &[command], timeout_ms) {
+                    Ok(query) => query,
+                    Err(error) => {
+                        session.state = prior_state;
+                        return Err(if error.starts_with("framed query not submitted") {
+                            EngineBreakpointAcknowledgeError::Rejected(error)
+                        } else {
+                            EngineBreakpointAcknowledgeError::Ambiguous(error)
+                        });
+                    }
+                };
+            (operation, begin, end, prior_state)
+        };
+        let result = match self.await_framed_debugger_output_for_operation(&operation, &begin, &end)
+        {
+            operation_broker::BrokerTerminal::Completed(lines) => {
+                if engine_breakpoint_acknowledged(&lines) {
+                    Ok(())
+                } else {
+                    Err(EngineBreakpointAcknowledgeError::Rejected(format!(
+                        "engine did not acknowledge breakpoint at {source_path}:{line}"
+                    )))
+                }
+            }
+            terminal @ (operation_broker::BrokerTerminal::Cancelled
+            | operation_broker::BrokerTerminal::TimedOut
+            | operation_broker::BrokerTerminal::TransportFailure(_)
+            | operation_broker::BrokerTerminal::ProtocolFailure(_)) => {
+                Err(EngineBreakpointAcknowledgeError::Ambiguous(format!(
+                    "engine breakpoint acknowledgement settled as {}",
+                    terminal.as_str()
+                )))
+            }
+            terminal => Err(EngineBreakpointAcknowledgeError::Rejected(format!(
+                "engine breakpoint acknowledgement settled as {}",
+                terminal.as_str()
+            ))),
+        };
+        if self.current_session_generation() == captured_generation {
+            let mut guard = lock_or_recover(&self.session, "acknowledge_engine_breakpoint.restore");
+            if let Some(session) = guard.as_mut() {
+                session.state = prior_state;
+            }
+        }
+        result
+    }
+
+    pub(super) fn launch_source_revision_matches(&self, source_path: &str, digest: &str) -> bool {
+        let Ok(identity) = self.launch_source_identity.lock() else { return false };
+        let Some((launch_path, launch_digest)) = identity.as_ref() else { return false };
+        let Ok(requested_path) = std::fs::canonicalize(source_path) else { return false };
+        let Ok(launched_path) = std::fs::canonicalize(launch_path) else { return false };
+        launched_path == requested_path && launch_digest == digest
     }
 
     /// Get next sequence number (monotonically increasing, poison-safe)
@@ -408,7 +653,7 @@ impl DebugAdapter {
     /// when the queue is full); all other events apply backpressure.
     fn send_event(&self, event: &str, body: Option<Value>) {
         if let Some(ref sender) = self.event_sender {
-            dispatch_event(sender, &self.seq, event, body);
+            let _ = sender.send_event(&self.seq, event, body);
         }
     }
 
@@ -450,19 +695,63 @@ impl DebugAdapter {
         Ok(())
     }
 
-    /// Send commands wrapped with unique begin/end markers.
+    /// Register a framed query before writing its markers and command.
     ///
-    /// Returns `(begin_marker, end_marker)` so callers can wait for framed output.
-    fn send_framed_debugger_commands(
+    /// Registration must precede transport I/O: an EOF or replacement between
+    /// the write and the old post-write registration point must settle this
+    /// operation rather than allowing it to bind to the replacement session.
+    fn send_framed_debugger_query(
         &self,
         stdin: &mut impl Write,
         commands: &[String],
-    ) -> Result<(String, String), String> {
+        timeout_ms: u64,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound(stdin, commands, timeout_ms, None, None)
+    }
+
+    fn send_framed_debugger_query_bound(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        timeout_ms: u64,
+        suspension_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
         self.debugger_query_count.fetch_add(1, Ordering::Relaxed);
         let marker_id = self.next_debugger_marker_id();
         let begin_marker = format!("DAP_BEGIN_{marker_id}");
         let end_marker = format!("DAP_END_{marker_id}");
+        let spec = operation_broker::BrokerOperationSpec {
+            class: operation_broker::OperationClass::Query,
+            session_generation: expected_session_generation
+                .unwrap_or_else(|| self.operation_broker.current_session_generation()),
+            suspension_generation: suspension_generation
+                .map(operation_broker::SuspensionGeneration::from_u64),
+            timeout: Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms)),
+            cancellation: None,
+        };
+        let operation = self
+            .operation_broker
+            .submit(spec)
+            .map_err(|terminal| format!("framed query not submitted: {}", terminal.as_str()))?;
 
+        if let Err(error) =
+            self.write_framed_debugger_commands(stdin, commands, &begin_marker, &end_marker)
+        {
+            self.operation_broker.retire_after_write_failure(operation.id);
+            return Err(error);
+        }
+
+        Ok((operation, begin_marker, end_marker))
+    }
+
+    fn write_framed_debugger_commands(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        begin_marker: &str,
+        end_marker: &str,
+    ) -> Result<(), String> {
         Self::write_debugger_command(stdin, &format!("p \"{begin_marker}\"\n"))?;
         for command in commands {
             if command.ends_with('\n') {
@@ -473,54 +762,93 @@ impl DebugAdapter {
         }
         Self::write_debugger_command(stdin, &format!("p \"{end_marker}\"\n"))?;
 
-        Ok((begin_marker, end_marker))
+        Ok(())
     }
 
     /// Capture debugger output lines between begin/end markers.
+    ///
+    /// This is now a thin wrapper over the typed operation broker (#8564):
+    /// the operation is submitted against the current session generation and
+    /// the broker's framed-query primitive produces the correlated payload or
+    /// a typed terminal outcome. The observable `Option<Vec<String>>>`
+    /// contract is unchanged for existing callers; `Cancelled`, `TimedOut`,
+    /// `SessionGone`, `Rejected`, and `StaleGeneration` all map to `None`
+    /// exactly as the previous untyped loop did.
+    #[cfg(test)]
     fn capture_framed_debugger_output(
         &self,
         begin_marker: &str,
         end_marker: &str,
         timeout_ms: u64,
     ) -> Option<Vec<String>> {
-        let deadline =
-            Instant::now() + Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms));
-        let mut next_scan_id = 0_u64;
-        let mut saw_begin_marker = false;
-        let mut framed_lines = Vec::new();
-
-        loop {
-            // Check for cancellation before each poll iteration
-            if self.cancel_requested.load(Ordering::Acquire) {
-                self.cancel_requested.store(false, Ordering::Release);
+        let spec = operation_broker::BrokerOperationSpec {
+            class: operation_broker::OperationClass::Query,
+            session_generation: self.operation_broker.current_session_generation(),
+            suspension_generation: None,
+            timeout: Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms)),
+            cancellation: None,
+        };
+        let operation = match self.operation_broker.submit(spec) {
+            Ok(operation) => operation,
+            Err(terminal) => {
+                tracing::warn!(terminal = terminal.as_str(), "framed query not submitted");
                 return None;
             }
+        };
 
-            {
-                let output = lock_or_recover(&self.recent_output, "debug_adapter.recent_output");
-                for line in output.lines.iter().filter(|line| line.id >= next_scan_id) {
-                    if !saw_begin_marker {
-                        if Self::line_contains_full_marker(&line.normalized, begin_marker) {
-                            saw_begin_marker = true;
-                            framed_lines.clear();
-                        }
-                    } else if Self::line_contains_full_marker(&line.normalized, end_marker) {
-                        return Some(framed_lines);
-                    } else if !line.normalized.trim().is_empty() {
-                        framed_lines.push(line.normalized.clone());
-                    }
-                }
-
-                if let Some(last) = output.lines.back() {
-                    next_scan_id = last.id.saturating_add(1);
-                }
+        match self.await_framed_debugger_output_for_operation(&operation, begin_marker, end_marker)
+        {
+            operation_broker::BrokerTerminal::Completed(lines) => Some(lines),
+            terminal => {
+                tracing::debug!(terminal = terminal.as_str(), "framed query settled uncompleted");
+                None
             }
+        }
+    }
 
-            if Instant::now() >= deadline {
-                return None;
+    fn await_framed_debugger_output_for_operation(
+        &self,
+        operation: &operation_broker::BrokerOperation,
+        begin_marker: &str,
+        end_marker: &str,
+    ) -> operation_broker::BrokerTerminal {
+        let terminal = self.operation_broker.await_framed_payload(
+            operation,
+            begin_marker,
+            end_marker,
+            &self.recent_output,
+            &self.cancel_requested,
+        );
+        if matches!(terminal, operation_broker::BrokerTerminal::Completed(_))
+            && (self.operation_broker.current_session_generation() != operation.session_generation
+                || operation.suspension_generation.is_some_and(|expected| {
+                    self.current_stopped_generation() != Some(expected.as_u64())
+                }))
+        {
+            return operation_broker::BrokerTerminal::StaleGeneration;
+        }
+        terminal
+    }
+
+    fn current_stopped_generation(&self) -> Option<u64> {
+        lock_or_recover(&self.session, "debug_adapter.session")
+            .as_ref()
+            .filter(|session| session.state == DebugState::Stopped)
+            .map(|session| session.stopped_generation)
+    }
+
+    fn capture_framed_debugger_output_for_operation(
+        &self,
+        operation: &operation_broker::BrokerOperation,
+        begin_marker: &str,
+        end_marker: &str,
+    ) -> Option<Vec<String>> {
+        match self.await_framed_debugger_output_for_operation(operation, begin_marker, end_marker) {
+            operation_broker::BrokerTerminal::Completed(lines) => Some(lines),
+            terminal => {
+                tracing::debug!(terminal = terminal.as_str(), "framed query settled uncompleted");
+                None
             }
-
-            thread::sleep(Duration::from_millis(DEBUGGER_FRAME_POLL_MS));
         }
     }
 
@@ -577,18 +905,6 @@ impl DebugAdapter {
         i32::try_from(value).unwrap_or(i32::MAX)
     }
 
-    fn line_contains_full_marker(line: &str, marker: &str) -> bool {
-        line.match_indices(marker).any(|(idx, _)| {
-            let before = line[..idx].chars().next_back();
-            let after = line[idx + marker.len()..].chars().next();
-            let before_ok =
-                before.is_none_or(|ch| !matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_'));
-            let after_ok =
-                after.is_none_or(|ch| !matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_'));
-            before_ok && after_ok
-        })
-    }
-
     /// Push a line into the recent-output buffer for testing parser paths.
     ///
     /// Only for use in tests; not part of the public API contract.
@@ -625,7 +941,9 @@ impl DebugAdapter {
                 stack_frame_arguments: HashMap::new(),
                 variable_cache: VariableCache::default(),
                 thread_id: 1,
+                debuggee_cwd: std::path::PathBuf::from("."),
                 last_resume_mode: ResumeMode::Continue,
+                initial_stop_pending: false,
                 stopped_generation: 0,
             });
         }
@@ -657,7 +975,9 @@ impl DebugAdapter {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            initial_stop_pending: false,
             stopped_generation: 0,
         });
         Ok(())
@@ -762,7 +1082,9 @@ impl DebugAdapter {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            initial_stop_pending: false,
             stopped_generation: 0,
         });
     }
@@ -776,9 +1098,150 @@ impl DebugAdapter {
         }
     }
 }
+
+#[derive(Debug)]
+pub(super) enum EngineBreakpointAcknowledgeError {
+    Rejected(String),
+    Ambiguous(String),
+}
+
+/// Accept only the exact scalar marker emitted by the acknowledgement query.
+/// Query echoes, absent slots, and unrelated debugger output must not credit an
+/// engine installation.
+fn engine_breakpoint_acknowledged(lines: &[String]) -> bool {
+    lines.iter().any(|line| line.trim().trim_matches('"') == "DAP_BP:31")
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn engine_ack_parser_requires_the_exact_scalar_marker() -> Result<(), Box<dyn Error>> {
+        if !engine_breakpoint_acknowledged(&["DAP_BP:31".to_string()])
+            || !engine_breakpoint_acknowledged(&["  \"DAP_BP:31\"  ".to_string()])
+            || engine_breakpoint_acknowledged(&["p do { ... DAP_BP:31 ... }".to_string()])
+            || engine_breakpoint_acknowledged(&["DAP_BP:absent".to_string()])
+            || engine_breakpoint_acknowledged(&["DAP_BP:32".to_string()])
+            || engine_breakpoint_acknowledged(&[])
+        {
+            return Err(
+                "ack parser accepted a non-exact marker or rejected the exact marker".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn launch_source_revision_requires_same_canonical_source_and_digest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let launched = dir.path().join("launched.pl");
+        let other = dir.path().join("other.pl");
+        std::fs::write(&launched, "print 1;\n")?;
+        std::fs::write(&other, "print 1;\n")?;
+        let digest = ContentDigest::of_bytes(&std::fs::read(&launched)?).to_string();
+        let adapter = DebugAdapter::new();
+        *adapter.launch_source_identity.lock().map_err(|_| "identity lock poisoned")? =
+            Some((launched.clone(), digest.clone()));
+
+        if !adapter.launch_source_revision_matches(
+            launched.to_str().ok_or("non-UTF-8 launched path")?,
+            &digest,
+        ) {
+            return Err("same canonical source and digest were rejected".into());
+        }
+        if adapter
+            .launch_source_revision_matches(other.to_str().ok_or("non-UTF-8 other path")?, &digest)
+            || adapter.launch_source_revision_matches(
+                launched.to_str().ok_or("non-UTF-8 launched path")?,
+                "changed-digest",
+            )
+        {
+            return Err("different source or digest was accepted".into());
+        }
+        drop(adapter);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_engine_hit_gates_source_digest_reads() -> Result<(), Box<dyn Error>> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("digest_gate.pl");
+        std::fs::write(&source, "my $x = 1;\n")?;
+        let source_path = source.canonicalize()?;
+        let source_text = source_path.to_str().ok_or("source path is not UTF-8")?;
+        let store = BreakpointStore::new();
+        let args = crate::protocol::SetBreakpointsArguments {
+            source: crate::protocol::Source { path: Some(source_text.to_string()), name: None },
+            breakpoints: Some(vec![crate::protocol::SourceBreakpoint {
+                line: 1,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        };
+        let response = store.set_breakpoints(&args);
+        let id = response.first().ok_or("missing breakpoint response")?.id;
+        let digest = ContentDigest::of_bytes(&std::fs::read(&source_path)?).to_string();
+        if !store.mark_engine_installed(id, source_text, 1, 7, digest) {
+            return Err("engine installation was not committed".into());
+        }
+
+        let mut reads = 0;
+        let wrong_line = DebugAdapter::register_observed_engine_breakpoint_hit_with_digest_reader(
+            &store,
+            source_text,
+            2,
+            Some(dir.path()),
+            dir.path(),
+            7,
+            |_| {
+                reads += 1;
+                "unused".to_string()
+            },
+        );
+        if wrong_line.matched || reads != 0 {
+            return Err("wrong-line engine stop performed attribution I/O".into());
+        }
+        let mut reads = 0;
+        let stale_generation =
+            DebugAdapter::register_observed_engine_breakpoint_hit_with_digest_reader(
+                &store,
+                source_text,
+                1,
+                Some(dir.path()),
+                dir.path(),
+                8,
+                |_| {
+                    reads += 1;
+                    "unused".to_string()
+                },
+            );
+        if stale_generation.matched || reads != 0 {
+            return Err("stale-generation engine stop performed attribution I/O".into());
+        }
+        let mut reads = 0;
+        let expected_digest = ContentDigest::of_bytes(&std::fs::read(&source_path)?).to_string();
+        let current = DebugAdapter::register_observed_engine_breakpoint_hit_with_digest_reader(
+            &store,
+            source_text,
+            1,
+            Some(dir.path()),
+            dir.path(),
+            7,
+            |_| {
+                reads += 1;
+                expected_digest.clone()
+            },
+        );
+        if !current.matched || reads != 1 {
+            return Err("current engine stop did not perform one fresh attribution read".into());
+        }
+        Ok(())
+    }
 
     fn create_breakpoint_test_perl_file()
     -> Result<(tempfile::NamedTempFile, String), Box<dyn std::error::Error>> {
@@ -1107,7 +1570,8 @@ print "result: $final\n";
                 let breakpoints =
                     body.get("breakpoints").and_then(Value::as_array).ok_or("missing array")?;
                 assert_eq!(breakpoints.len(), 3, "one response per input");
-                assert_eq!(breakpoints[0].get("verified").and_then(Value::as_bool), Some(true));
+                // Pre-launch AST validity is pending engine acknowledgement.
+                assert_eq!(breakpoints[0].get("verified").and_then(Value::as_bool), Some(false));
                 assert_eq!(breakpoints[1].get("verified").and_then(Value::as_bool), Some(false));
                 assert_eq!(breakpoints[2].get("verified").and_then(Value::as_bool), Some(false));
             }
@@ -1222,7 +1686,13 @@ print "result: $final\n";
             // setVariable is gated on an exact mutation proof, so the catalog
             // row cannot decide this one.
             ("supportsSetVariable", crate::backend::capabilities::advertises_set_variable()),
-            ("supportsValueFormattingOptions", crate::feature_catalog::has_feature("dap.core")),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row, not a catalog/core derivation. Re-enable gate:
+                // #9050 + #8364 + #9070 + #7342/#7345 + #9588 + #9590.
+                "supportsValueFormattingOptions",
+                false,
+            ),
             ("supportTerminateDebuggee", crate::feature_catalog::has_feature("dap.core")),
             ("supportsLogPoints", crate::backend::capabilities::advertises_log_points()),
             (
@@ -1244,8 +1714,19 @@ print "result: $final\n";
                 crate::backend::capabilities::advertises_inline_values_extension(),
             ),
             ("supportsTerminateRequest", crate::feature_catalog::has_feature("dap.core")),
-            ("supportsCompletionsRequest", crate::feature_catalog::has_feature("dap.completions")),
-            ("supportsModulesRequest", crate::feature_catalog::has_feature("dap.modules")),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #9021 + #9046 + #9050 + #8581 + #9582 +
+                // #9584.
+                "supportsCompletionsRequest",
+                false,
+            ),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #8581 + #7667/#8668 + #9585 + #9586.
+                "supportsModulesRequest",
+                false,
+            ),
             ("supportsDataBreakpoints", crate::feature_catalog::has_feature("dap.watchpoints")),
             (
                 "supportsTerminateThreadsRequest",
@@ -1271,10 +1752,30 @@ print "result: $final\n";
                 "supportsStepInTargetsRequest",
                 crate::feature_catalog::has_feature("dap.step_in_targets"),
             ),
-            ("supportsRestartRequest", crate::feature_catalog::has_feature("dap.restart")),
             (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #9051 + #8691/#8703 + #8974 + #9587 +
+                // #8726 + #7568.
+                "supportsRestartRequest",
+                false,
+            ),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #8581 + #7667/#8668 + #9585 + #9586.
                 "supportsLoadedSourcesRequest",
-                crate::feature_catalog::has_feature("dap.loaded_sources"),
+                false,
+            ),
+            (
+                // #9581 secondary-capability floor: independent literal `false`
+                // row. Re-enable gate: #10524 + #2300 + #9021 + #7566.
+                "supportsBreakpointLocationsRequest",
+                false,
+            ),
+            (
+                // #9581 secondary-capability floor: not `dap.core`.
+                // Re-enable gate: #9074 + #8712 + #7568.
+                "supportsCancelRequest",
+                false,
             ),
         ];
 
@@ -2199,6 +2700,9 @@ print "result: $final\n";
 
     #[test]
     fn test_breakpoint_locations_rejects_traversal() -> Result<(), Box<dyn std::error::Error>> {
+        // #9581: breakpointLocations is floored, so the request is rejected by
+        // the dispatch gate before any path validation or source read. The
+        // traversal input can never reach the filesystem.
         let mut adapter = DebugAdapter::new();
         adapter.handle_request(1, "initialize", None);
 
@@ -2216,12 +2720,14 @@ print "result: $final\n";
         );
         match response {
             DapMessage::Response { success, command, message, .. } => {
-                assert!(!success, "breakpointLocations with traversal path should fail");
+                assert!(!success, "breakpointLocations is floored and must fail");
                 assert_eq!(command, "breakpointLocations");
                 let msg = message.as_deref().unwrap_or("");
                 assert!(
-                    msg.contains("Path validation failed"),
-                    "should report path validation failure, got: {msg}"
+                    msg.contains("unsupported")
+                        && msg.contains("supportsBreakpointLocationsRequest")
+                        && msg.contains("#9581"),
+                    "should report the #9581 floor rejection before path work, got: {msg}"
                 );
             }
             _ => return Err("Expected response".into()),
