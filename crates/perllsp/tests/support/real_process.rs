@@ -172,6 +172,10 @@ impl RealProcessClient {
         self.candidate_environment
     }
 
+    pub fn workspace_path(&self) -> &Path {
+        self._workspace.path()
+    }
+
     pub fn encode_message(message: &Value) -> Vec<u8> {
         let body = message.to_string();
         let mut frame = format!("Content-Length: {}\r\n\r\n", body.len()).into_bytes();
