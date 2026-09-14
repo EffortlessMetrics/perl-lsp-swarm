@@ -216,7 +216,14 @@ fn walk_use_tree(tree: &UseTree, root_items_apply: bool, recorded: bool, hits: &
                 walk_use_tree(item, root_items_apply, false, hits);
             }
         }
-        UseTree::Glob(_) => {}
+        UseTree::Glob(_) => {
+            // `use perl_parser::*` imports every semantic root re-export, and
+            // `perl_parser::semantic::*` every item of a forbidden module.
+            // A glob below parser authority (`workspace_index::*`) is fine.
+            if !recorded && root_items_apply {
+                hits.push(format!("{FACADE_HEAD}::*"));
+            }
+        }
     }
 }
 
@@ -283,10 +290,66 @@ fn facade_heads(file: &syn::File) -> Vec<String> {
             self.scan(&item.tree);
             syn::visit::visit_item_use(self, item);
         }
+
+        // `extern crate perl_parser as pp;` binds the crate exactly as a
+        // `use` rename does.
+        fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+            if item.ident == FACADE_HEAD
+                && let Some((_, alias)) = &item.rename
+            {
+                self.push(alias.to_string());
+            }
+            syn::visit::visit_item_extern_crate(self, item);
+        }
     }
     let mut collector = Collector { heads: vec![FACADE_HEAD.to_string()] };
     collector.visit_file(file);
     collector.heads
+}
+
+/// Scan a macro's token stream for head-rooted paths.
+///
+/// `syn` keeps macro bodies as opaque tokens, so neither `visit_item_use` nor
+/// `visit_path` sees inside them. The previous lexical scanner did see this
+/// text, so leaving it unscanned would be a regression rather than a new
+/// boundary: `quote!(perl_parser::semantic::X)` and a `macro_rules!` body that
+/// expands to one are both real consumers.
+///
+/// Tokens, not text: a string literal inside the macro stays a single
+/// `Literal` token and can never be mistaken for a path.
+fn scan_tokens(tokens: proc_macro2::TokenStream, heads: &[String], hits: &mut Vec<String>) {
+    let flat: Vec<proc_macro2::TokenTree> = tokens.into_iter().collect();
+    let mut index = 0;
+    while index < flat.len() {
+        if let proc_macro2::TokenTree::Group(group) = &flat[index] {
+            scan_tokens(group.stream(), heads, hits);
+            index += 1;
+            continue;
+        }
+        let proc_macro2::TokenTree::Ident(ident) = &flat[index] else {
+            index += 1;
+            continue;
+        };
+        if !heads.iter().any(|head| *head == ident.to_string()) {
+            index += 1;
+            continue;
+        }
+        // Collect the `::`-separated segments that follow the head.
+        let mut segments = Vec::new();
+        let mut cursor = index + 1;
+        while cursor + 2 < flat.len() + 1 {
+            let Some(proc_macro2::TokenTree::Punct(first)) = flat.get(cursor) else { break };
+            let Some(proc_macro2::TokenTree::Punct(second)) = flat.get(cursor + 1) else { break };
+            if first.as_char() != ':' || second.as_char() != ':' {
+                break;
+            }
+            let Some(proc_macro2::TokenTree::Ident(segment)) = flat.get(cursor + 2) else { break };
+            segments.push(segment.to_string());
+            cursor += 3;
+        }
+        walk_path_segments(&segments, hits);
+        index = cursor.max(index + 1);
+    }
 }
 
 /// Every facade semantic reference in `source`, reported under the crate's
@@ -308,6 +371,11 @@ fn try_facade_references(source: &str) -> Result<Vec<String>, String> {
                 }
             }
             syn::visit::visit_item_use(self, item);
+        }
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            scan_tokens(mac.tokens.clone(), self.heads, &mut self.hits);
+            syn::visit::visit_macro(self, mac);
         }
 
         fn visit_path(&mut self, path: &'ast syn::Path) {
@@ -917,4 +985,72 @@ fn unparseable_entries_are_really_unparseable() {
             entry.path
         );
     }
+}
+
+/// Devin finding: `use perl_parser::*` imports every semantic root re-export,
+/// but `UseTree::Glob` recorded nothing.
+#[test]
+fn a_glob_over_semantic_authority_is_reported() {
+    assert_eq!(facade_references("use perl_parser::*;\n"), vec!["perl_parser::*".to_string()]);
+
+    // A glob of a forbidden module reports the module once, not twice.
+    assert_eq!(
+        facade_references("use perl_parser::semantic::*;\n"),
+        vec!["perl_parser::semantic".to_string()]
+    );
+
+    // A glob below parser authority is legitimate and must stay allowed.
+    assert!(facade_references("use perl_parser::workspace_index::*;\n").is_empty());
+    assert!(facade_references("use perl_parser::ast::*;\n").is_empty());
+}
+
+/// Devin finding: `extern crate perl_parser as pp;` binds the crate exactly as
+/// a `use` rename does, but only `use` items were collected.
+#[test]
+fn an_extern_crate_alias_registers_the_crate_head() {
+    assert_eq!(
+        facade_references("extern crate perl_parser as pp;\nuse pp::semantic::X;\n"),
+        vec!["perl_parser::semantic".to_string()]
+    );
+
+    // Unaliased, and an unrelated crate under the same short alias.
+    assert_eq!(
+        facade_references("extern crate perl_parser;\nuse perl_parser::symbol::T;\n"),
+        vec!["perl_parser::symbol".to_string()]
+    );
+    assert!(
+        facade_references("extern crate perl_semantic_analyzer as pp;\nuse pp::semantic::X;\n")
+            .is_empty()
+    );
+}
+
+/// Devin finding, and the one genuine regression the rewrite introduced: `syn`
+/// keeps macro bodies as opaque tokens, so a facade path passed to or emitted
+/// by a macro escaped both `visit_item_use` and `visit_path`. The previous
+/// lexical scanner did see that text.
+#[test]
+fn facade_paths_inside_macro_tokens_are_reported() {
+    assert_eq!(
+        facade_references("macro_rules! m { () => { perl_parser::semantic::SemanticAnalyzer } }\n"),
+        vec!["perl_parser::semantic".to_string()]
+    );
+    assert_eq!(
+        facade_references("fn f() { let _ = quote::quote!(perl_parser::symbol::Symbol); }\n"),
+        vec!["perl_parser::symbol".to_string()]
+    );
+    // Through an alias, and nested inside another group.
+    assert_eq!(
+        facade_references(
+            "use perl_parser as pp;\nfn f() { m!(vec![pp::type_inference::TypeEnvironment]); }\n"
+        ),
+        vec!["perl_parser::type_inference".to_string()]
+    );
+
+    // Tokens, not text: a facade path inside a string literal is one Literal
+    // token and must never be reported. The lexical scanner got this wrong.
+    assert!(
+        facade_references("fn f() { println!(\"use perl_parser::semantic::X;\"); }\n").is_empty()
+    );
+    // Parser authority inside a macro stays allowed.
+    assert!(facade_references("fn f() { m!(perl_parser::ast::Node); }\n").is_empty());
 }
