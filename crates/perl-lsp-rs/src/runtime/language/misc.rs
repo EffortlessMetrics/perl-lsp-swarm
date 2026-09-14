@@ -479,7 +479,20 @@ impl LspServer {
         else {
             return;
         };
-        if let Some(trace) = self.provider_decision_trace(&provider) {
+        let Some(trace) = self.provider_decision_trace(&provider) else {
+            return;
+        };
+        let Some(request_id) = request.get("request_id") else {
+            request.insert("request_receipt".to_string(), trace);
+            return;
+        };
+        if matches!(request_id, Value::String(_) | Value::Number(_))
+            && trace.get("request_id") == Some(request_id)
+        {
+            // The selector has been consumed by the server-side attachment;
+            // keeping it in the provider arguments would look like a caller
+            // selector combined with an explicit request_receipt.
+            request.remove("request_id");
             request.insert("request_receipt".to_string(), trace);
         }
     }

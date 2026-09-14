@@ -150,6 +150,10 @@ struct ExplainProviderDecisionRequest {
     request_receipt: Option<Value>,
     #[serde(default)]
     request_position: Option<ProviderDecisionRequestPosition>,
+    /// Optional exact JSON-RPC request ID used to select the latest matching
+    /// provider trace. Numeric and string IDs remain distinct.
+    #[serde(default)]
+    request_id: Option<Value>,
 }
 
 /// Maximum accepted length of one client-supplied identifier echo field
@@ -360,8 +364,28 @@ impl ExecuteCommandProvider {
         let request_value = arguments
             .first()
             .ok_or_else(|| "Missing explain-provider-decision argument".to_string())?;
+        if request_value.get("request_id").is_some_and(Value::is_null) {
+            return Err(
+                "Invalid explain-provider-decision argument: request_id must be a JSON-RPC string or number"
+                    .to_string(),
+            );
+        }
         let request: ExplainProviderDecisionRequest = serde_json::from_value(request_value.clone())
             .map_err(|error| format!("Invalid explain-provider-decision argument: {error}"))?;
+        if let Some(request_id) = &request.request_id
+            && !matches!(request_id, Value::String(_) | Value::Number(_))
+        {
+            return Err(
+                "Invalid explain-provider-decision argument: request_id must be a JSON-RPC string or number"
+                    .to_string(),
+            );
+        }
+        if request.request_id.is_some() && request.request_receipt.is_some() {
+            return Err(
+                "Invalid explain-provider-decision argument: request_id cannot be combined with request_receipt"
+                    .to_string(),
+            );
+        }
 
         let mut explanation = default_provider_decision_explanation(request.provider);
         // Capture only the defaults. Caller context and request details belong
