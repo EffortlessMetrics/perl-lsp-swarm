@@ -67,6 +67,16 @@ pub(crate) struct SessionGeneration(u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct SuspensionGeneration(u64);
 
+impl SuspensionGeneration {
+    pub(crate) fn from_u64(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 /// Cooperative cancellation flag for one pending operation.
 #[derive(Debug, Clone)]
 pub(crate) struct CancellationToken(Arc<AtomicBool>);
