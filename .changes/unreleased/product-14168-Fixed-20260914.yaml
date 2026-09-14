@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Fixed
+body: "Required LSP responses now settle outbound transport failures and close live ingress deterministically; accepted responses drain on normal EOF while cancelled queue admission leaves no pending request or sequence gap."
+time: 2026-09-14T00:00:00Z
+custom:
+  PR: "14168"
+  Slug: outbound-response-settlement-14168
+  Breaking: "no"
