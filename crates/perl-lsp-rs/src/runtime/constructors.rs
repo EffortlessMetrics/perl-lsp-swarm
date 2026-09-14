@@ -82,10 +82,8 @@ impl LspServer {
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
-            diagnostic_debouncer: Mutex::new(None),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
-            parse_worker_handle: Mutex::new(None),
-            file_watcher_debouncer: Mutex::new(None),
+            runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
@@ -120,6 +118,8 @@ impl LspServer {
             indexing_transition_lock: Arc::new(Mutex::new(())),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -278,10 +278,8 @@ impl LspServer {
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
-            diagnostic_debouncer: Mutex::new(None),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
-            parse_worker_handle: Mutex::new(None),
-            file_watcher_debouncer: Mutex::new(None),
+            runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
@@ -316,6 +314,8 @@ impl LspServer {
             indexing_transition_lock: Arc::new(Mutex::new(())),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
@@ -415,10 +415,8 @@ impl LspServer {
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
-            diagnostic_debouncer: Mutex::new(None),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
-            parse_worker_handle: Mutex::new(None),
-            file_watcher_debouncer: Mutex::new(None),
+            runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
@@ -453,6 +451,8 @@ impl LspServer {
             indexing_transition_lock: Arc::new(Mutex::new(())),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),

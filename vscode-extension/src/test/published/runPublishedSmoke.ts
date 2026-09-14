@@ -64,10 +64,19 @@ export function assertCandidateBoundInstallSource({
   }
 }
 
-export function assertCandidateBoundPlatform(platform: string, candidateBound: boolean): void {
-  if (candidateBound && platform !== 'linux') {
+export function assertCandidateBoundPlatform(
+  platform: string,
+  candidateBound: boolean,
+  completeCandidateIdentity = false,
+): void {
+  if (candidateBound && platform === 'win32' && !completeCandidateIdentity) {
     throw new CandidateBoundPlatformUnavailableError(
-      `Candidate-bound installed acceptance is restricted to Linux; refusing ${platform} bundled-server digest binding.`,
+      'Candidate-bound Windows installed acceptance requires candidate ID, artifact-set ID, frozen product SHA, and artifact manifest before bundled-server digest binding.',
+    );
+  }
+  if (candidateBound && platform !== 'linux' && platform !== 'win32') {
+    throw new CandidateBoundPlatformUnavailableError(
+      `Candidate-bound installed acceptance is supported only on Linux and Windows; refusing ${platform} bundled-server digest binding.`,
     );
   }
 }
@@ -236,6 +245,57 @@ async function downloadFileWithRetry(url: string, destination: string): Promise<
   throw new Error(`Failed to download published extension from ${url}\n${lastFailure}`);
 }
 
+export interface PublishedInstallAttemptResult {
+  status: number | null;
+  error?: NodeJS.ErrnoException | undefined;
+  stdout?: string | null | undefined;
+  stderr?: string | null | undefined;
+}
+
+export function isDeterministicPublishedInstallFailure(
+  result: PublishedInstallAttemptResult,
+): boolean {
+  if (result.status === 0) {
+    return false;
+  }
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  return (
+    result.status === 127 ||
+    result.error?.code === 'ENOENT' ||
+    /error while loading shared libraries:|cannot open shared object file/i.test(output) ||
+    /To use Visual Studio Code with the Windows Subsystem for Linux/i.test(output)
+  );
+}
+
+export async function retryPublishedInstall(
+  install: () => PublishedInstallAttemptResult,
+  wait: (milliseconds: number) => Promise<void> = sleep,
+): Promise<void> {
+  let lastFailure = '';
+  for (let attempt = 1; attempt <= 12; attempt += 1) {
+    const result = install();
+    if (result.status === 0) {
+      return;
+    }
+    lastFailure = [
+      `attempt ${attempt}`,
+      `exit ${result.status ?? 'unknown'}`,
+      result.error instanceof Error ? result.error.message : '',
+      result.stdout,
+      result.stderr,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    if (isDeterministicPublishedInstallFailure(result)) {
+      throw new Error(`Published extension install failed deterministically\n${lastFailure}`);
+    }
+    if (attempt < 12) {
+      await wait(20_000);
+    }
+  }
+  throw new Error(`Failed to install published extension after 12 attempts\n${lastFailure}`);
+}
+
 async function resolveInstallTarget(source: ExtensionSource, tempDir: string): Promise<string> {
   const version = envValue('PERL_LSP_PUBLISHED_EXTENSION_VERSION');
   const extensionId = envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID;
@@ -292,34 +352,23 @@ async function installExtension(
   ];
   const command = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : cliPath;
   const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', cliPath, ...args] : args;
-  let lastFailure = '';
-
-  for (let attempt = 1; attempt <= 12; attempt += 1) {
-    const result = spawnSync(command, commandArgs, {
-      encoding: 'utf8',
-      windowsHide: true,
+  try {
+    await retryPublishedInstall(() => {
+      const result = spawnSync(command, commandArgs, {
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      return {
+        status: result.status,
+        error: result.error,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      };
     });
-
-    if (result.status === 0) {
-      return;
-    }
-
-    lastFailure = [
-      `attempt ${attempt}`,
-      `exit ${result.status ?? 'unknown'}`,
-      result.error instanceof Error ? result.error.message : '',
-      result.stdout,
-      result.stderr,
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    if (attempt < 12) {
-      await sleep(20_000);
-    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to install published extension ${installTarget}\n${message}`);
   }
-
-  throw new Error(`Failed to install published extension ${installTarget}\n${lastFailure}`);
 }
 
 function configureCurrentSourceSmoke(
@@ -407,9 +456,16 @@ async function main(): Promise<void> {
     envValue('PERL_LSP_CURRENT_SOURCE_SHA') ||
     envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
   );
+  const completeCandidateIdentity = [
+    envValue('PERL_LSP_CANDIDATE_ID'),
+    envValue('PERL_LSP_ARTIFACT_SET_ID'),
+    envValue('PERL_LSP_CURRENT_SOURCE_SHA'),
+    envValue('PERL_LSP_CANDIDATE_ARTIFACT_MANIFEST'),
+  ].every(Boolean);
   assertCandidateBoundPlatform(
     process.platform === 'linux' ? 'linux' : process.platform,
     candidateBound,
+    completeCandidateIdentity,
   );
   assertCandidateBoundInstallSource({
     source,
@@ -480,7 +536,6 @@ async function main(): Promise<void> {
     const vsixSha256 = selectedVsixSha256(installTarget);
     const extensionTestsEnv: NodeJS.ProcessEnv = {
       ...process.env,
-      PERL_LSP_EXTENSION_TEST_SKIP_STARTUP: '1',
       PERL_LSP_PUBLISHED_EXTENSION_ID: envValue('PERL_LSP_PUBLISHED_EXTENSION_ID') || EXTENSION_ID,
       PERL_LSP_PUBLISHED_EXTENSION_SOURCE: source,
       PERL_LSP_SMOKE_RECEIPTS_DIR: receiptsRoot,
@@ -489,6 +544,11 @@ async function main(): Promise<void> {
       PERL_LSP_TOOLCHAIN_NPM_VERSION: toolchainNpmVersionValue,
       PERL_LSP_VSCODE_VERSION: vscodeVersion,
     };
+    if (process.env.PERL_LSP_TEST_EXPLORER_SMOKE !== '1') {
+      extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP = '1';
+    } else {
+      delete extensionTestsEnv.PERL_LSP_EXTENSION_TEST_SKIP_STARTUP;
+    }
     configureInstalledAcceptanceReceipt(extensionTestsEnv, receiptsRoot);
     if (vsixSha256 === undefined) {
       delete extensionTestsEnv.PERL_LSP_VSIX_SHA256;

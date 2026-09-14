@@ -12,6 +12,7 @@ import {
   PerlTestAdapter,
   runBoundedProcess,
   resolveProveCommand,
+  isNoTapSourceResolutionFailure,
 } from '../testAdapter';
 
 function fakeChildProcess(): ChildProcess {
@@ -97,70 +98,112 @@ describe('test adapter TAP parsing', () => {
       ['fails', { ok: false, diagnostic: "# Failed test 'assertion'", duration: 0 }],
     ]);
   });
+
+  test('recognizes only a no-TAP source admission failure', () => {
+    const stderr =
+      "Cannot detect source of 'selected café_日本語.t'! at TAP::Parser::IteratorFactory.pm line 256.";
+    expect(isNoTapSourceResolutionFailure('', stderr)).toBe(true);
+    expect(isNoTapSourceResolutionFailure('1..1\nnot ok 1 - assertion\n', stderr)).toBe(false);
+    expect(isNoTapSourceResolutionFailure('', 'Cannot detect source of selected.t')).toBe(false);
+  });
 });
 
 describe('bounded prove process execution', () => {
-  test('runs the registered Test Explorer profile with the selected file on stdin', async () => {
-    if (process.platform !== 'win32') {
-      return;
-    }
+  test.each([
+    ['ASCII and metacharacters', 'selected space & [1] {a,b}.t', false],
+    ['Unicode and metacharacters', 'selected café_日本語 [1] {a,b}.t', false],
+    ['ASCII file removed after discovery', 'selected-removed [1] {a,b}.t', true],
+  ])(
+    'runs the registered Test Explorer profile with the selected file on stdin (%s)',
+    async (label, fixtureName, removeBeforeRun) => {
+      if (process.platform !== 'win32') {
+        return;
+      }
 
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-profile-'));
-    const fixture = path.join(root, 'selected space & [1] {a,b}.t');
-    const marker = path.join(root, 'selected-marker.txt');
-    const uri = vscode.Uri.file(fixture);
-    fs.writeFileSync(
-      fixture,
-      [
-        'use strict;',
-        'open my $marker, ">", $ENV{PERL_LSP_SELECTED_MARKER} or die $!;',
-        'print {$marker} "$0\\n";',
-        'close $marker or die $!;',
-        'print "1..1\\n";',
-        'print "ok 1 - selected profile\\n";',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-
-    const adapter = new PerlTestAdapter();
-    const controller = (vscode.tests.createTestController as jest.Mock).mock.results.at(-1)
-      ?.value as {
-      createRunProfile: jest.Mock;
-      createTestRun: jest.Mock;
-    };
-    const profile = controller.createRunProfile.mock.calls[0]?.[2] as (
-      request: unknown,
-      token: unknown,
-    ) => Promise<void>;
-    const child = { id: `${uri}::selected`, label: 'selected', uri };
-    const fileItem = {
-      id: uri.toString(),
-      label: path.basename(fixture),
-      uri,
-      children: {
-        size: 1,
-        forEach: (callback: (item: typeof child) => void) => callback(child),
-      },
-    };
-    const previousMarker = process.env.PERL_LSP_SELECTED_MARKER;
-    process.env.PERL_LSP_SELECTED_MARKER = marker;
-    try {
-      await profile(
-        { include: [fileItem] },
-        { isCancellationRequested: false, onCancellationRequested: () => ({ dispose: jest.fn() }) },
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-profile-'));
+      const fixture = path.join(root, fixtureName);
+      const marker = path.join(root, 'selected-marker.txt');
+      const uri = vscode.Uri.file(fixture);
+      fs.writeFileSync(
+        fixture,
+        [
+          'use strict;',
+          'open my $marker, ">", $ENV{PERL_LSP_SELECTED_MARKER} or die $!;',
+          'print {$marker} "$0\\n";',
+          'close $marker or die $!;',
+          'print "1..1\\n";',
+          'print "ok 1 - selected profile\\n";',
+          '',
+        ].join('\n'),
+        'utf8',
       );
-      const run = controller.createTestRun.mock.results[0]?.value;
-      expect(fs.readFileSync(marker, 'utf8').trim()).toBe(path.normalize(fixture));
-      expect(run.passed).toHaveBeenCalledWith(fileItem, expect.any(Number));
-      expect(run.errored).not.toHaveBeenCalled();
-    } finally {
-      if (previousMarker === undefined) delete process.env.PERL_LSP_SELECTED_MARKER;
-      else process.env.PERL_LSP_SELECTED_MARKER = previousMarker;
-      adapter.dispose();
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  }, 30_000);
+
+      const adapter = new PerlTestAdapter();
+      const controller = (vscode.tests.createTestController as jest.Mock).mock.results.at(-1)
+        ?.value as {
+        createRunProfile: jest.Mock;
+        createTestRun: jest.Mock;
+      };
+      const profile = controller.createRunProfile.mock.calls[0]?.[2] as (
+        request: unknown,
+        token: unknown,
+      ) => Promise<void>;
+      const child = { id: `${uri}::selected`, label: 'selected', uri };
+      const fileItem = {
+        id: uri.toString(),
+        label: path.basename(fixture),
+        uri,
+        children: {
+          size: 1,
+          forEach: (callback: (item: typeof child) => void) => callback(child),
+        },
+      };
+      const previousMarker = process.env.PERL_LSP_SELECTED_MARKER;
+      process.env.PERL_LSP_SELECTED_MARKER = marker;
+      try {
+        if (removeBeforeRun) {
+          fs.rmSync(fixture);
+        }
+        await profile(
+          { include: [fileItem] },
+          {
+            isCancellationRequested: false,
+            onCancellationRequested: () => ({ dispose: jest.fn() }),
+          },
+        );
+        const run = controller.createTestRun.mock.results[0]?.value;
+        if (fs.existsSync(marker)) {
+          expect(fs.readFileSync(marker, 'utf8').trim()).toBe(path.normalize(fixture));
+          expect(run.passed).toHaveBeenCalledWith(fileItem, expect.any(Number));
+          expect(run.errored).not.toHaveBeenCalled();
+          expect(run.failed).not.toHaveBeenCalled();
+        } else {
+          expect(label).toMatch(/Unicode|removed/);
+          expect(run.passed).not.toHaveBeenCalled();
+          expect(run.failed).not.toHaveBeenCalled();
+          expect(run.errored).toHaveBeenCalledWith(
+            fileItem,
+            expect.objectContaining({
+              message: expect.stringContaining(path.normalize(fixture)),
+            }),
+            expect.any(Number),
+          );
+          expect(run.errored.mock.calls[0][1].message).toContain(
+            removeBeforeRun
+              ? `The Perl test harness could not open the selected file ${path.normalize(fixture)}`
+              : 'selected path contains non-ASCII characters',
+          );
+          expect(run.errored.mock.calls[0][1].message).toContain('Cannot detect source of');
+        }
+      } finally {
+        if (previousMarker === undefined) delete process.env.PERL_LSP_SELECTED_MARKER;
+        else process.env.PERL_LSP_SELECTED_MARKER = previousMarker;
+        adapter.dispose();
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 
   test('marks the selected file and subtest errored when the registered profile cannot resolve Perl', async () => {
     if (process.platform !== 'win32') {

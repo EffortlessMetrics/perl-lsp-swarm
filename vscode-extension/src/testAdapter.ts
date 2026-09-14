@@ -703,6 +703,24 @@ export class PerlTestAdapter implements vscode.Disposable {
       return;
     }
 
+    if (isNoTapSourceResolutionFailure(result.stdout, result.stderr)) {
+      const unicodeGuidance =
+        isWindows && /[^\x00-\x7f]/u.test(filePath)
+          ? ' The selected path contains non-ASCII characters; on Windows, use a Perl runtime with Unicode filename support or move the test to an ASCII path.'
+          : '';
+      const message = new vscode.TestMessage(
+        `The Perl test harness could not open the selected file ${filePath}.${unicodeGuidance}\n\n${result.stderr.trim()}`,
+      );
+      if (fileItem.uri) {
+        message.location = new vscode.Location(fileItem.uri, new vscode.Position(0, 0));
+      }
+      run.errored(fileItem, message, Date.now() - startTime);
+      for (const st of subtests) {
+        run.errored(st, new vscode.TestMessage(message.message));
+      }
+      return;
+    }
+
     const duration = Date.now() - startTime;
     const tapResults = parseTapOutput(result.stdout);
     const subtestResults = parseSubtestResults(result.stdout);
@@ -769,6 +787,15 @@ export class PerlTestAdapter implements vscode.Disposable {
       d.dispose();
     }
   }
+}
+
+/** Recognize a Perl prove source-admission failure before TAP exists. */
+export function isNoTapSourceResolutionFailure(stdout: string, stderr: string): boolean {
+  return (
+    stdout.trim().length === 0 &&
+    /Cannot detect source of\b/u.test(stderr) &&
+    /TAP::Parser::IteratorFactory/u.test(stderr)
+  );
 }
 
 /**

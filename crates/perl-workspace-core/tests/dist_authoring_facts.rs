@@ -780,17 +780,17 @@ if ($ENV{RELEASE}) {
 }
 
 #[test]
-fn meta_yml_is_left_for_issue_8458() {
+fn meta_yml_uses_metadata_owner_not_authoring_owner() {
     let model = build(
         "meta-yml-coexist",
         &[("META.yml", "---\nname: Foo-Bar\nversion: 1.0\n")],
         FactClasses::FILES | FactClasses::DIST,
     );
-    assert!(
-        model.dist_metadata.is_empty(),
-        "this PR must not absorb META.yml; #8458 / #14424 owns that source"
-    );
-    assert!(model.dist_authoring.is_empty());
+    assert_eq!(model.dist_metadata.len(), 1);
+    assert_eq!(model.dist_metadata[0].source, perl_workspace_core::DistMetadataSource::MetaYml);
+    assert_eq!(model.dist_metadata[0].name.as_deref(), Some("Foo-Bar"));
+    assert_eq!(model.dist_metadata[0].version.as_deref(), Some("1.0"));
+    assert!(model.dist_authoring.is_empty(), "META.yml is metadata, not authoring input");
 }
 
 #[test]

@@ -27,6 +27,93 @@ fn parse_manifest(value: &Value) -> Result<Manifest> {
     serde_json::from_value(value.clone()).with_context(|| "strict manifest deserialization failed")
 }
 
+/// The real repository tree, used wherever a test asserts current-tree truth.
+fn real_tree() -> Result<RepoTreeSource> {
+    RepoTreeSource::from_project_root()
+}
+
+/// An injectable tree whose files are exactly what a test declares.
+///
+/// Probes read the tree through this seam, so the negative direction — a tree
+/// whose implementation or whose production consumer is missing — is testable
+/// without mutating the repository.
+struct FakeTree {
+    files: std::collections::BTreeMap<String, String>,
+}
+
+impl FakeTree {
+    /// Start from the real tree's probe-relevant files, so a test changes one
+    /// fact at a time instead of reconstructing a whole repository.
+    fn from_real() -> Result<Self> {
+        let real = real_tree()?;
+        let mut files = std::collections::BTreeMap::new();
+        for path in [
+            "xtask/src/main.rs",
+            "xtask/src/tasks/module_train.rs",
+            "xtask/src/tasks/module_train_live.rs",
+        ] {
+            if let Some(text) = real.read_text(path)? {
+                files.insert(path.to_string(), text);
+            }
+        }
+        Ok(Self { files })
+    }
+
+    /// Remove an anchor wherever it appears, simulating a tree where that
+    /// exact semantic fact is absent.
+    fn without_anchor(mut self, path: &str, anchor: &str) -> Result<Self> {
+        let text = self
+            .files
+            .get(path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fake tree has no {path}"))?;
+        if !text.contains(anchor) {
+            bail!("anchor {anchor} is not present in {path}; the fixture cannot falsify anything");
+        }
+        let stripped = text.replace(anchor, "__REMOVED_BY_FIXTURE__");
+        self.files.insert(path.to_string(), stripped);
+        Ok(self)
+    }
+
+    fn replace_anchor(mut self, path: &str, from: &str, to: &str) -> Result<Self> {
+        let text = self
+            .files
+            .get(path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fake tree has no {path}"))?;
+        if !text.contains(from) {
+            bail!("anchor {from} is not present in {path}; the fixture cannot falsify anything");
+        }
+        self.files.insert(path.to_string(), text.replace(from, to));
+        Ok(self)
+    }
+
+    /// Add text to a file, simulating a tree where a residual component landed.
+    fn with_added(mut self, path: &str, addition: &str) -> Result<Self> {
+        let text = self
+            .files
+            .get(path)
+            .ok_or_else(|| color_eyre::eyre::eyre!("fake tree has no {path}"))?;
+        if text.contains(addition) {
+            bail!(
+                "addition is already present in {path}; the fixture cannot prove that landing it changes anything"
+            );
+        }
+        let extended = format!("{text}\n{addition}\n");
+        self.files.insert(path.to_string(), extended);
+        Ok(self)
+    }
+
+    fn without_file(mut self, path: &str) -> Self {
+        self.files.remove(path);
+        self
+    }
+}
+
+impl TreeSource for FakeTree {
+    fn read_text(&self, relative: &str) -> Result<Option<String>> {
+        Ok(self.files.get(relative).cloned())
+    }
+}
+
 fn find_node_mut<'a>(value: &'a mut Value, node_id: &str) -> Result<&'a mut Value> {
     let nodes = value
         .get_mut("nodes")
@@ -523,9 +610,12 @@ fn external_authorization_edge_requires_gate_role_and_class() -> Result<()> {
 #[test]
 fn frontier_known_answers_on_current_tree() -> Result<()> {
     let manifest = parse_manifest(&real_value()?)?;
-    let statuses = project_states(&manifest)?;
+    let statuses = project_states(&manifest, &real_tree()?)?;
     let ready = ready_ids(&statuses);
-    if ready != vec!["C02".to_string(), "E00A".to_string(), "M01".to_string(), "M07A".to_string()] {
+    // C02 is no longer a ready start: its own implementation is partly on this
+    // tree, so it reports `incomplete_current_tree` instead of inviting a
+    // fresh agent to begin work that already exists.
+    if ready != vec!["E00A".to_string(), "M01".to_string(), "M07A".to_string()] {
         bail!("unexpected ready frontier: {ready:?}");
     }
 
@@ -536,12 +626,26 @@ fn frontier_known_answers_on_current_tree() -> Result<()> {
         bail!("C01 must be landed via its manifest probe");
     }
 
-    let c03 = status_for(&statuses, "C03")?;
-    if c03.state != CurrentTreeState::BlockedHard {
-        bail!("C03 must be hard-blocked on C02, found {:?}", c03.state);
+    // The train can now see itself: C02 partially, C03 fully.
+    let c02 = status_for(&statuses, "C02")?;
+    if c02.state != CurrentTreeState::IncompleteCurrentTree
+        || c02.implementation_presence != ProbeOutcome::Partial
+    {
+        bail!("C02 must be incomplete on this tree, found {c02:?}");
     }
-    if !c03.reasons.iter().any(|reason| reason == "hard_dep_not_landed:C02") {
-        bail!("C03 reasons must name the exact unlanded hard dep: {:?}", c03.reasons);
+    if !c02
+        .reasons
+        .iter()
+        .any(|reason| reason == "implementation_component_absent:static_packet_projection")
+    {
+        bail!("C02 must name its exact missing component: {:?}", c02.reasons);
+    }
+
+    let c03 = status_for(&statuses, "C03")?;
+    if c03.state != CurrentTreeState::LandedCurrentTree
+        || c03.implementation_presence != ProbeOutcome::Pass
+    {
+        bail!("C03 must be landed via its semantic probe, found {c03:?}");
     }
 
     let ctrl = status_for(&statuses, "CTRL")?;
@@ -603,14 +707,488 @@ fn frontier_known_answers_on_current_tree() -> Result<()> {
 #[test]
 fn unprobed_nodes_stay_not_proven_never_guessed() -> Result<()> {
     let manifest = parse_manifest(&real_value()?)?;
-    let statuses = project_states(&manifest)?;
+    let statuses = project_states(&manifest, &real_tree()?)?;
+    // Exactly the nodes with a written semantic probe may report anything but
+    // `not_proven`. Every other node stays unguessed, so adding a probe is a
+    // deliberate act rather than a side effect of a merge or a filename.
     for status in &statuses {
-        if status.node_id == "C01" {
+        if matches!(status.node_id.as_str(), "C01" | "C02" | "C03") {
             continue;
         }
-        if status.implementation_presence != ProbeOutcome::Absent {
+        if status.implementation_presence != ProbeOutcome::Unprobed {
             bail!("node {} has a probe outcome this slice cannot have", status.node_id);
         }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Semantic implementation probes (#11626 residual 1): the probe must read the
+// tree, must require the production consumer, and must not be satisfiable by
+// a neighbouring node's surface.
+// ---------------------------------------------------------------------------
+
+fn probe_for(node_id: &str, tree: &dyn TreeSource) -> Result<(ProbeOutcome, Vec<String>)> {
+    let manifest = parse_manifest(&real_value()?)?;
+    let node = manifest
+        .nodes
+        .iter()
+        .find(|node| node.node_id == node_id)
+        .ok_or_else(|| color_eyre::eyre::eyre!("node {node_id} not found"))?;
+    probes::node_probe(node, tree)
+}
+
+/// Falsifier 2 of #11626: a module present on the tree while the production
+/// consumer never dispatches to it must not read as landed.
+#[test]
+fn an_implementation_without_its_production_consumer_is_not_landed() -> Result<()> {
+    // C03's modules stay exactly as they are; only the CLI dispatch to its
+    // live refresh disappears.
+    let tree = FakeTree::from_real()?
+        .without_anchor("xtask/src/main.rs", "module_train_live::run_refresh")?;
+    let (outcome, unmet) = probe_for("C03", &tree)?;
+    if outcome != ProbeOutcome::Partial || !unmet.iter().any(|c| c == "live_snapshot_normalization")
+    {
+        bail!("an unwired C03 must not be landed: {outcome:?} unmet={unmet:?}");
+    }
+    Ok(())
+}
+
+/// A comment or string literal that repeats a selector must not satisfy the
+/// production probe when the declaration and dispatch are absent.
+#[test]
+fn comments_and_literals_cannot_satisfy_dispatch_anchors() -> Result<()> {
+    let real_tree = FakeTree::from_real()?;
+    let (real_outcome, real_unmet) = probe_for("C02", &real_tree)?;
+    if real_outcome != ProbeOutcome::Partial
+        || real_unmet.iter().any(|component| component == "current_tree_probes")
+    {
+        bail!("real C02 dispatch probe is not positive: {real_outcome:?} unmet={real_unmet:?}");
+    }
+
+    let tree = real_tree
+        .without_anchor("xtask/src/main.rs", "ModuleTrainCommand::Status")?
+        .without_anchor("xtask/src/main.rs", "module_train::run_status")?
+        .with_added(
+            "xtask/src/main.rs",
+            r#"
+                // ModuleTrainCommand::Status
+                const DOCUMENTATION: &str = "module_train::run_status";
+                #[cfg(not(test))]
+                fn unrelated_dispatch(command: ModuleTrainCommand) {
+                    match command {
+                        ModuleTrainCommand::Status { tree } => {
+                            module_train::run_status(&tree);
+                        }
+                        _ => {}
+                    }
+                }
+            "#,
+        )?;
+    let (outcome, unmet) = probe_for("C02", &tree)?;
+    if outcome == ProbeOutcome::Pass
+        || !unmet.iter().any(|component| component == "current_tree_probes")
+    {
+        bail!("comment-only dispatch anchors satisfied C02: {outcome:?} unmet={unmet:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_selector_source_is_an_instrument_failure() -> Result<()> {
+    let tree = FakeTree::from_real()?.with_added("xtask/src/main.rs", "fn malformed(")?;
+    let error = probe_for("C02", &tree)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("malformed selector source must not look absent"))?;
+    if !error.to_string().contains("failed to inspect probe selector xtask/src/main.rs") {
+        bail!("malformed selector error lost its source context: {error}");
+    }
+    Ok(())
+}
+
+#[test]
+fn dispatch_variant_and_call_must_share_the_same_command_arm() -> Result<()> {
+    let tree = FakeTree::from_real()?
+        .without_anchor("xtask/src/main.rs", "ModuleTrainCommand::Status")?
+        .without_anchor("xtask/src/main.rs", "module_train::run_status")?
+        .with_added(
+            "xtask/src/main.rs",
+            r#"
+                fn run_cli(cli: Cli) {
+                    match cli.command {
+                        Commands::ModuleTrain { command } => match command {
+                            ModuleTrainCommand::Status { tree } => {
+                                module_train::run_next(&tree);
+                            }
+                            ModuleTrainCommand::Next { tree } => {
+                                module_train::run_status(&tree);
+                            }
+                            _ => {}
+                        },
+                        _ => {}
+                    }
+                }
+            "#,
+        )?;
+    let (outcome, unmet) = probe_for("C02", &tree)?;
+    if outcome == ProbeOutcome::Pass
+        || !unmet.iter().any(|component| component == "current_tree_probes")
+    {
+        bail!("crossed command arms satisfied C02: {outcome:?} unmet={unmet:?}");
+    }
+    Ok(())
+}
+
+/// The mirror control: an implementation module removed while the CLI still
+/// references it is equally not landed.
+#[test]
+fn a_consumer_without_its_implementation_is_not_landed() -> Result<()> {
+    let tree = FakeTree::from_real()?.without_file("xtask/src/tasks/module_train_live.rs");
+    let (outcome, unmet) = probe_for("C03", &tree)?;
+    let expected = ["action_classification", "live_snapshot_normalization"];
+    if outcome != ProbeOutcome::NotPresent || unmet != expected {
+        bail!("C03 without its module must be wholly absent: {outcome:?} unmet={unmet:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn adding_existing_fixture_content_is_rejected() -> Result<()> {
+    let tree = FakeTree::from_real()?;
+    if tree.with_added("xtask/src/main.rs", "ModuleTrainCommand::Status").is_ok() {
+        bail!("fixture additions already present in the seed tree must be rejected");
+    }
+    Ok(())
+}
+
+#[test]
+fn pinned_tree_source_ignores_worktree_edit_after_capture() -> Result<()> {
+    let repo = tempfile::tempdir()?;
+    let path = repo.path().join("probe.rs");
+    std::fs::write(&path, "fn captured() {}\n")?;
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "test@example.invalid"],
+        vec!["config", "user.name", "test"],
+        vec!["add", "probe.rs"],
+        vec!["commit", "-qm", "capture"],
+    ] {
+        let output =
+            std::process::Command::new("git").args(&args).current_dir(repo.path()).output()?;
+        if !output.status.success() {
+            bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
+        }
+    }
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo.path())
+        .output()?;
+    if !head.status.success() {
+        bail!("git rev-parse HEAD failed");
+    }
+    let head = String::from_utf8(head.stdout)?.trim().to_string();
+    let tree_spec = format!("{head}^{{tree}}");
+    let tree = std::process::Command::new("git")
+        .args(["rev-parse", tree_spec.as_str()])
+        .current_dir(repo.path())
+        .output()?;
+    if !tree.status.success() {
+        bail!("git rev-parse HEAD^{{tree}} failed");
+    }
+    let tree = String::from_utf8(tree.stdout)?.trim().to_string();
+    std::fs::write(&path, "fn edited() {}\n")?;
+    let source = RepoTreeSource::from_root_at_revision(repo.path().to_path_buf(), tree)?;
+    let captured = source
+        .read_text("probe.rs")?
+        .ok_or_else(|| color_eyre::eyre::eyre!("captured probe path must exist"))?;
+    if captured != "fn captured() {}\n" {
+        bail!("pinned source read the mutable worktree instead of the captured tree");
+    }
+    Ok(())
+}
+
+#[test]
+fn offline_status_and_next_use_the_shared_captured_tree_source() -> Result<()> {
+    let source_root = crate::utils::project_root()?;
+    let repo = tempfile::tempdir()?;
+    for relative in [
+        "xtask/src/main.rs",
+        "xtask/src/tasks/module_train.rs",
+        "xtask/src/tasks/module_train_live.rs",
+        "xtask/src/tasks/module_train_probes.rs",
+    ] {
+        let destination = repo.path().join(relative);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(source_root.join(relative), &destination)?;
+    }
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.email", "test@example.invalid"],
+        vec!["config", "user.name", "test"],
+        vec!["add", "."],
+        vec!["commit", "-qm", "capture"],
+    ] {
+        let output =
+            std::process::Command::new("git").args(&args).current_dir(repo.path()).output()?;
+        if !output.status.success() {
+            bail!("git {:?} failed: {}", args, String::from_utf8_lossy(&output.stderr));
+        }
+    }
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo.path())
+        .output()?;
+    if !head.status.success() {
+        bail!("git rev-parse HEAD failed");
+    }
+    let tree_head = String::from_utf8(head.stdout)?.trim().to_string();
+    let binding = TreeBinding { tree_head, dirty_paths: 0, manifest_dirty: false };
+    let loaded = load_manifest()?;
+
+    let module_train_path = repo.path().join("xtask/src/tasks/module_train.rs");
+    let module_train = std::fs::read_to_string(&module_train_path)?;
+    let edited = module_train.replacen("fn project_states", "fn removed_project_states", 1);
+    if edited == module_train {
+        bail!("offline fixture edit did not change the captured source");
+    }
+    std::fs::write(&module_train_path, &edited)?;
+    let source = captured_tree_source(repo.path(), &binding)?;
+    let mutable_source = RepoTreeSource::from_root(repo.path().to_path_buf(), None)?;
+    let status = render_status(&loaded, &binding, &source)?;
+    let next = render_next(&loaded, &binding, &source)?;
+    let mutable_status = render_status(&loaded, &binding, &mutable_source)?;
+    let (_, captured_unmet) = probe_for("C02", &source)?;
+    let (_, mutable_unmet) = probe_for("C02", &mutable_source)?;
+    if captured_unmet == mutable_unmet {
+        bail!("edited worktree did not change C02 probe inputs: {captured_unmet:?}");
+    }
+    if status == mutable_status {
+        bail!("offline status did not distinguish captured HEAD from edited worktree");
+    }
+    if !next.starts_with("module-train next (safe offline parallel frontier)") {
+        bail!("offline next did not render through the captured-source seam");
+    }
+
+    let malformed = format!("{edited}\nfn malformed(\n");
+    std::fs::write(&module_train_path, malformed)?;
+    let captured_after_edit = captured_tree_source(repo.path(), &binding)?;
+    let mutable_after_edit = RepoTreeSource::from_root(repo.path().to_path_buf(), None)?;
+    let captured_next = render_next(&loaded, &binding, &captured_after_edit)?;
+    if !captured_next.starts_with("module-train next (safe offline parallel frontier)") {
+        bail!("captured HEAD next projection did not survive a malformed worktree edit");
+    }
+    let error = render_next(&loaded, &binding, &mutable_after_edit)
+        .err()
+        .ok_or_else(|| color_eyre::eyre::eyre!("mutable malformed source must fail closed"))?;
+    if !error.to_string().contains("failed to inspect probe selector") {
+        bail!("mutable malformed source lost selector context: {error}");
+    }
+    Ok(())
+}
+
+/// Wrong-subject control: C03's live `explain` composes a live addendum and is
+/// a different subject from C02's offline static packet. It must not satisfy
+/// C02's residual component.
+#[test]
+fn the_live_explain_cannot_satisfy_the_offline_static_packet() -> Result<()> {
+    let tree = FakeTree::from_real()?;
+    // The real tree already ships `ModuleTrainLiveCommand::Explain` and
+    // `module_train_live::run_explain`; if those satisfied C02, C02 would be
+    // landed here rather than incomplete.
+    let (outcome, unmet) = probe_for("C02", &tree)?;
+    if outcome != ProbeOutcome::Partial || !unmet.iter().any(|c| c == "static_packet_projection") {
+        bail!("C03's live explain must not satisfy C02's offline packet: {outcome:?} {unmet:?}");
+    }
+    Ok(())
+}
+
+/// Recompute, do not hardcode: landing the residual component in the tree must
+/// flip C02 to landed without touching the probe registry.
+#[test]
+fn landing_the_residual_component_lands_c02() -> Result<()> {
+    let tree = FakeTree::from_real()?.with_added(
+        "xtask/src/main.rs",
+        r#"
+            fn run_cli(command: Commands) {
+                match command {
+                    Commands::ModuleTrain { command } => match command {
+                        ModuleTrainCommand::Explain { node, tree } => {
+                            module_train::run_explain(&node, &tree);
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+        "#,
+    )?;
+    let (outcome, unmet) = probe_for("C02", &tree)?;
+    if outcome != ProbeOutcome::Pass || !unmet.is_empty() {
+        bail!("completing C02's declared surface must land it: {outcome:?} unmet={unmet:?}");
+    }
+
+    // And a landed C02 satisfies its dependents' hard edge.
+    let manifest = parse_manifest(&real_value()?)?;
+    let statuses = project_states(&manifest, &tree)?;
+    let c02 = status_for(&statuses, "C02")?;
+    if c02.state != CurrentTreeState::LandedCurrentTree {
+        bail!("C02 must project as landed once complete: {:?}", c02.state);
+    }
+    Ok(())
+}
+
+/// A probed node whose surface is wholly absent stays a legitimate start:
+/// adding a probe must never turn an unbuilt node into a blocked one.
+#[test]
+fn a_wholly_absent_probed_node_still_reports_through_dependencies() -> Result<()> {
+    let tree = FakeTree::from_real()?
+        .without_file("xtask/src/tasks/module_train_live.rs")
+        .without_anchor("xtask/src/main.rs", "ModuleTrainLiveCommand::Refresh")?
+        .without_anchor("xtask/src/main.rs", "ModuleTrainLiveCommand::Next")?;
+    let manifest = parse_manifest(&real_value()?)?;
+    let statuses = project_states(&manifest, &tree)?;
+    let c03 = status_for(&statuses, "C03")?;
+    if c03.implementation_presence != ProbeOutcome::NotPresent {
+        bail!("C03 must probe as absent here: {:?}", c03.implementation_presence);
+    }
+    // C02 is incomplete on this tree, so C03's hard edge is genuinely unmet.
+    if c03.state != CurrentTreeState::BlockedHard
+        || !c03.reasons.iter().any(|reason| reason == "hard_dep_not_landed:C02")
+    {
+        bail!("an absent C03 must fall through to dependency typing: {c03:?}");
+    }
+    Ok(())
+}
+
+/// A partially implemented node is not landed for its dependents.
+#[test]
+fn a_partial_node_does_not_satisfy_a_hard_dependent() -> Result<()> {
+    let manifest = parse_manifest(&real_value()?)?;
+    // C02 is Partial on the real tree; C03 passes its own probe, so drop C03's
+    // probe surface to observe the edge itself.
+    let tree = FakeTree::from_real()?.without_file("xtask/src/tasks/module_train_live.rs");
+    let statuses = project_states(&manifest, &tree)?;
+    let c03 = status_for(&statuses, "C03")?;
+    if !c03.reasons.iter().any(|reason| reason == "hard_dep_not_landed:C02") {
+        bail!("a partial C02 must not satisfy C03's hard edge: {:?}", c03.reasons);
+    }
+    Ok(())
+}
+
+/// Anti-vacuity, structural: no selector may target the module that declares
+/// `PROBED_NODES`. If it did, the registry could become a self-targeting
+/// source instead of an independent selector declaration.
+#[test]
+fn no_selector_targets_the_registry_that_declares_it() -> Result<()> {
+    if real_tree()?.read_text(probes::REGISTRY_RELATIVE_PATH)?.is_none() {
+        bail!(
+            "recorded registry path {} does not exist; the anti-vacuity guard would compare against nothing",
+            probes::REGISTRY_RELATIVE_PATH
+        );
+    }
+    for path in probes::selector_paths() {
+        if path == probes::REGISTRY_RELATIVE_PATH {
+            bail!(
+                "selector targets {path}, the file holding the anchor literals; \
+                 it could be satisfied by its own declaration"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Negative direction for C02's `current_tree_probes` component. This is only
+/// falsifiable because the anchor literals live in the probe registry module
+/// while the anchors target `module_train.rs`: stripping the real code here
+/// does not also strip the selector that names it.
+#[test]
+fn c02_current_tree_probes_component_fails_without_its_projection() -> Result<()> {
+    let tree = FakeTree::from_real()?.replace_anchor(
+        "xtask/src/tasks/module_train.rs",
+        "fn project_states",
+        "fn removed_project_states",
+    )?;
+    let (_, unmet) = probe_for("C02", &tree)?;
+    if !unmet.iter().any(|component| component == "current_tree_probes") {
+        bail!("removing project_states must unmeet current_tree_probes: {unmet:?}");
+    }
+    Ok(())
+}
+
+/// Negative direction for C02's `offline_frontier` component.
+#[test]
+fn c02_offline_frontier_component_fails_without_its_renderer() -> Result<()> {
+    let tree = FakeTree::from_real()?.replace_anchor(
+        "xtask/src/tasks/module_train.rs",
+        "pub fn render_next",
+        "pub fn removed_render_next",
+    )?;
+    let (_, unmet) = probe_for("C02", &tree)?;
+    if !unmet.iter().any(|component| component == "offline_frontier") {
+        bail!("removing render_next must unmeet offline_frontier: {unmet:?}");
+    }
+    Ok(())
+}
+
+/// A partially implemented node still records what its edges would block on,
+/// rather than reporting only its missing component.
+#[test]
+fn a_partial_node_still_records_its_dependency_reasons() -> Result<()> {
+    let mut value = real_value()?;
+    // Give C02 an unmet hard edge on an unlanded node.
+    add_dep(&mut value, "C02", "E00A", "hard")?;
+    let manifest = parse_manifest(&value)?;
+    let statuses = project_states(&manifest, &real_tree()?)?;
+    let c02 = status_for(&statuses, "C02")?;
+    if c02.state != CurrentTreeState::IncompleteCurrentTree {
+        bail!("presence must still outrank the edge for the state: {:?}", c02.state);
+    }
+    if !c02.reasons.iter().any(|reason| reason == "hard_dep_not_landed:E00A") {
+        bail!("a partial node must still show its unmet edge: {:?}", c02.reasons);
+    }
+    Ok(())
+}
+
+/// Anchor currency: on the real tree, exactly the anchors of C02's recorded
+/// residual component may be missing. Any other missing anchor means a rename
+/// silently drifted the registry away from the code — which would quietly
+/// demote a landed node to `partial` rather than fail loudly.
+#[test]
+fn only_the_recorded_residual_anchors_are_missing_on_the_real_tree() -> Result<()> {
+    let tree = real_tree()?;
+    let residual = ["ModuleTrainCommand::Explain", "module_train::run_explain"];
+    let mut missing: Vec<&str> = Vec::new();
+    for (path, anchor) in probes::selector_anchors() {
+        let present = tree.read_text(path)?.is_some_and(|text| text.contains(anchor));
+        if !present {
+            missing.push(anchor);
+        }
+    }
+    missing.sort_unstable();
+    let mut expected = residual;
+    expected.sort_unstable();
+    if missing != expected {
+        bail!(
+            "registry anchors drifted from the code: missing={missing:?}, \
+             expected only the recorded residual {expected:?}"
+        );
+    }
+    Ok(())
+}
+
+/// Instrument honesty: an unreadable selector target is an error, never a
+/// silent absence that would render as a confident `not_proven`.
+#[test]
+fn a_fixture_that_cannot_falsify_is_rejected() -> Result<()> {
+    // The helper refuses to "remove" an anchor that was never there, so a
+    // negative control cannot silently degrade into a no-op.
+    if FakeTree::from_real()?
+        .without_anchor("xtask/src/main.rs", "ModuleTrainCommand::Explain")
+        .is_ok()
+    {
+        bail!("removing an absent anchor must be rejected as a vacuous fixture");
     }
     Ok(())
 }
@@ -633,7 +1211,7 @@ fn landing_a_node_by_data_unblocks_its_hard_dependents() -> Result<()> {
     }
     let manifest = parse_manifest(&value)?;
     validate_manifest(&manifest)?;
-    let statuses = project_states(&manifest)?;
+    let statuses = project_states(&manifest, &real_tree()?)?;
     let ready = ready_ids(&statuses);
     for node in ["E00B", "E00C"] {
         if !ready.contains(&node.to_string()) {
@@ -661,7 +1239,7 @@ fn class_collapse_reintroduces_the_hard_block() -> Result<()> {
         }
     }
     let manifest = parse_manifest(&value)?;
-    let statuses = project_states(&manifest)?;
+    let statuses = project_states(&manifest, &real_tree()?)?;
     let m01 = status_for(&statuses, "M01")?;
     if m01.state != CurrentTreeState::BlockedHard {
         bail!("hardening M01's E00A edge must hard-block M01, found {:?}", m01.state);
@@ -678,7 +1256,7 @@ fn controller_edges_never_gate_builders() -> Result<()> {
     // edge: E00A stays ready.
     add_dep(&mut value, "E00A", "CTRL", "hard")?;
     let manifest = parse_manifest(&value)?;
-    let statuses = project_states(&manifest)?;
+    let statuses = project_states(&manifest, &real_tree()?)?;
     let e00a = status_for(&statuses, "E00A")?;
     if e00a.state != CurrentTreeState::Ready {
         bail!("controller hard edge must not gate E00A: {:?}", e00a.state);
@@ -691,7 +1269,7 @@ fn populated_supersessions_fail_closed() -> Result<()> {
     let mut value = real_value()?;
     value["supersessions"] = serde_json::json!([{ "node": "C01", "by": "C99", "note": "fixture" }]);
     let manifest = parse_manifest(&value)?;
-    if project_states(&manifest).is_ok() {
+    if project_states(&manifest, &real_tree()?).is_ok() {
         bail!("populated supersessions must fail closed in this slice");
     }
     Ok(())
@@ -706,7 +1284,7 @@ fn binding_consumer_without_hard_blocks_is_blocked_evidence() -> Result<()> {
         remove_dep(&mut value, "M00S", target)?;
     }
     let manifest = parse_manifest(&value)?;
-    let statuses = project_states(&manifest)?;
+    let statuses = project_states(&manifest, &real_tree()?)?;
     let m00s = status_for(&statuses, "M00S")?;
     if m00s.state != CurrentTreeState::BlockedEvidence {
         bail!("M00S must be blocked_evidence once hard deps clear: {:?}", m00s.state);
@@ -722,17 +1300,19 @@ fn binding_consumer_without_hard_blocks_is_blocked_evidence() -> Result<()> {
 fn renders_are_byte_identical_across_runs() -> Result<()> {
     let loaded = load_manifest()?;
     let binding = synthetic_binding();
-    let first = render_status(&loaded, &binding)?;
-    let second = render_status(&loaded, &binding)?;
+    let first = render_status(&loaded, &binding, &real_tree()?)?;
+    let second = render_status(&loaded, &binding, &real_tree()?)?;
     if first != second {
         bail!("status render is not deterministic");
     }
-    let first_next = render_next(&loaded, &binding)?;
-    let second_next = render_next(&loaded, &binding)?;
+    let first_next = render_next(&loaded, &binding, &real_tree()?)?;
+    let second_next = render_next(&loaded, &binding, &real_tree()?)?;
     if first_next != second_next {
         bail!("next render is not deterministic");
     }
-    if !first_next.contains("ready_leaves: 4") {
+    // Three, not four: C02 left the frontier when its own semantic probe
+    // began reporting the implementation already on this tree.
+    if !first_next.contains("ready_leaves: 3") {
         bail!("next render lost the known frontier size:\n{first_next}");
     }
     Ok(())
@@ -766,8 +1346,8 @@ fn insertion_order_does_not_move_any_byte() -> Result<()> {
     if baseline_digest != shuffled_digest {
         bail!("canonical digest moved with insertion order");
     }
-    let baseline_statuses = project_states(&parse_manifest(&real_value()?)?)?;
-    let shuffled_statuses = project_states(&parse_manifest(&value)?)?;
+    let baseline_statuses = project_states(&parse_manifest(&real_value()?)?, &real_tree()?)?;
+    let shuffled_statuses = project_states(&parse_manifest(&value)?, &real_tree()?)?;
     let baseline_lines: Vec<String> = baseline_statuses
         .iter()
         .map(|status| format!("{}|{:?}|{:?}", status.node_id, status.state, status.reasons))

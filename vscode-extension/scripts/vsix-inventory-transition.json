@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14133,
-  "reason": "PR #14129 measures the actual combined Windows x64 VSIX from the history-preserving merge of 463819802c9eb81de457eaf30dc6d73d8301c562 and main dd30ebbaf5ce2ea591bb293fd10e490f2b73ebd6. Canonical npm run package passed toolchain validation, all TypeScript checks and bundle generation, produced the archive, and refused only inventory size growth. Archive SHA-256: 30b0d276a3effd4b0d76afbb6e605c83df7c05bedccbfac40b23918a4d977f2c. The 29 packaged paths remain unchanged; out/extension.js grows from 1691400 to 1694153 bytes (+2753), and total inventory grows from 1869643 to 1872396. The measured package preserves current main Test Explorer and process cleanup changes together with streaming completion; no size deltas were added arithmetically. This is local Windows package proof, not installed-editor, hosted Linux, Rust process, or transport-delivery proof. No validator, threshold, toolchain or admission rule changes.",
-  "base_baseline_file_sha256": "03b0339c3c4bfcfd8f9dc9aa74e8d0f578231ea4beddfefba20a303050bf5035",
-  "candidate_baseline_file_sha256": "a11e8e09491f138ae5b8843ed2b0a5a5ab5f06421d6ef8bd7ffa2eab6ce24537",
-  "base_inventory_sha256": "25bb3d522c7662251cbea5f1f42b8fa5ccbaeb7ce32bd918d7b1e45812b5dfd9",
-  "candidate_inventory_sha256": "fd27c24a3684066a869d8e5414ef180bc18e7f075ba725f063d94d8168b10d4f"
+  "owner_issue": 15451,
+  "reason": "Issue #15451 records the packaged DAP target-selection repair: compatible Windows ARM64 payloads prefer native ARM64, with Windows 11 x64 emulation only when supported; missing metadata follows the ordered host payload candidates. The exact candidate package measures out/extension.js at 1678528 bytes, a declared +114-byte size-only transition from the accepted base.",
+  "base_baseline_file_sha256": "b056bc5c2f0940e85f9d3710755f1a39805357f26502f0428a38edfa57e8100c",
+  "candidate_baseline_file_sha256": "97e252c780703cdac57817eb53c68e62fe8d8454364c4689569126f8dd7882f2",
+  "base_inventory_sha256": "efb6c015d76fa78802b07f0171e64bef7cd71651dbf78590112e68c22366d5f6",
+  "candidate_inventory_sha256": "4330c8d298776388ded382fe8ce8b3e810a47adf54cd214f25c5df4c0d033956"
 }
