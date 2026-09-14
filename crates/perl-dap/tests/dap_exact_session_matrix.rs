@@ -26,7 +26,7 @@ use perl_dap::DapMessage;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
@@ -344,7 +344,7 @@ struct TranscriptEntry {
 /// events retained independently of request completion, bounded everywhere.
 struct ExactSession {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     rx: Receiver<std::result::Result<DapMessage, String>>,
     seq: i64,
     transcript: Vec<TranscriptEntry>,
@@ -372,12 +372,13 @@ impl ExactSession {
         thread::spawn(move || {
             let mut reader = stdout;
             loop {
-                match read_framed_message(&mut reader) {
-                    Ok(message) => {
+                match read_framed_message_or_eof(&mut reader) {
+                    Ok(Some(message)) => {
                         if tx.send(Ok(message)).is_err() {
                             break;
                         }
                     }
+                    Ok(None) => break,
                     Err(error) => {
                         let _ = tx.send(Err(format!("{error:#}")));
                         break;
@@ -385,15 +386,23 @@ impl ExactSession {
                 }
             }
         });
-        Ok(Self { child, stdin, rx, seq: 0, transcript: Vec::new(), pending_events: Vec::new() })
+        Ok(Self {
+            child,
+            stdin: Some(stdin),
+            rx,
+            seq: 0,
+            transcript: Vec::new(),
+            pending_events: Vec::new(),
+        })
     }
 
     fn write_frame(&mut self, message: &DapMessage) -> Result<()> {
         let body = serde_json::to_vec(message).context("serializing the DAP request")?;
-        write!(self.stdin, "Content-Length: {}\r\n\r\n", body.len())
+        let stdin = self.stdin.as_mut().ok_or_else(|| anyhow!("DAP stdin is closed"))?;
+        write!(stdin, "Content-Length: {}\r\n\r\n", body.len())
             .context("writing the DAP frame header")?;
-        self.stdin.write_all(&body).context("writing the DAP frame body")?;
-        self.stdin.flush().context("flushing the DAP frame")
+        stdin.write_all(&body).context("writing the DAP frame body")?;
+        stdin.flush().context("flushing the DAP frame")
     }
 
     /// Send one request and wait for ITS response by seq correlation; events
@@ -560,6 +569,68 @@ impl ExactSession {
         }
     }
 
+    fn require_natural_exit(&mut self, bound: Duration) -> Result<()> {
+        self.stdin.take();
+        if self.pending_events.iter().any(|(event, _)| event == "terminated") {
+            return Err(anyhow!("natural-exit session emitted duplicate terminated event"));
+        }
+        let deadline = Instant::now() + bound;
+        let mut exit_status = None;
+        let mut stdout_closed = false;
+        loop {
+            if exit_status.is_none() {
+                exit_status = self.child.try_wait().context("polling natural adapter exit")?;
+                if let Some(status) = exit_status
+                    && !status.success()
+                {
+                    return Err(anyhow!("adapter exited unsuccessfully: {status}"));
+                }
+            }
+            if exit_status.is_some() && stdout_closed {
+                break;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(anyhow!("adapter did not exit naturally within {bound:?}"));
+            }
+            match self.rx.recv_timeout(remaining.min(Duration::from_millis(25))) {
+                Ok(Ok(DapMessage::Event { event, body, .. })) => {
+                    self.transcript.push(TranscriptEntry {
+                        direction: "adapter->client",
+                        summary: format!("event {event}"),
+                    });
+                    if event == "terminated" {
+                        return Err(anyhow!(
+                            "natural-exit session emitted duplicate terminated event"
+                        ));
+                    }
+                    self.pending_events.push((event, body));
+                }
+                Ok(Ok(DapMessage::Response { command, success, .. })) => {
+                    self.transcript.push(TranscriptEntry {
+                        direction: "adapter->client",
+                        summary: format!("response {command} success={success}"),
+                    });
+                }
+                Ok(Ok(other)) => {
+                    self.transcript.push(TranscriptEntry {
+                        direction: "adapter->client",
+                        summary: format!("message {}", message_kind(&other)),
+                    });
+                }
+                Ok(Err(error)) => {
+                    return Err(anyhow!("framing error after natural exit: {error}"));
+                }
+                Err(RecvTimeoutError::Disconnected) => stdout_closed = true,
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
+        if self.pending_events.iter().any(|(event, _)| event == "terminated") {
+            return Err(anyhow!("natural-exit session emitted duplicate terminated event"));
+        }
+        Ok(())
+    }
+
     fn evidence_digest(&self) -> String {
         let rendered: Vec<String> = self
             .transcript
@@ -578,8 +649,17 @@ fn message_kind(message: &DapMessage) -> &'static str {
     }
 }
 
-fn read_framed_message<R: Read>(reader: &mut R) -> Result<DapMessage> {
-    let mut header = Vec::new();
+/// Distinguish a clean stream EOF from a truncated DAP frame. A clean EOF is
+/// the only normal completion signal; every partially-read header or body is
+/// an explicit framing failure.
+fn read_framed_message_or_eof<R: Read>(reader: &mut R) -> Result<Option<DapMessage>> {
+    let mut first = [0_u8; 1];
+    match reader.read(&mut first).context("failed to read DAP frame header")? {
+        0 => return Ok(None),
+        1 => {}
+        _ => return Err(anyhow!("DAP reader returned an invalid one-byte read length")),
+    }
+    let mut header = vec![first[0]];
     let mut byte = [0_u8; 1];
     loop {
         reader.read_exact(&mut byte).context("failed to read DAP frame header")?;
@@ -603,7 +683,26 @@ fn read_framed_message<R: Read>(reader: &mut R) -> Result<DapMessage> {
     }
     let mut body = vec![0_u8; content_length];
     reader.read_exact(&mut body).context("failed to read DAP frame body")?;
-    serde_json::from_slice(&body).context("DAP frame body was not a DapMessage")
+    Ok(Some(serde_json::from_slice(&body).context("DAP frame body was not a DapMessage")?))
+}
+
+#[test]
+fn exact_reader_accepts_clean_eof_but_rejects_partial_frames() -> Result<()> {
+    let mut empty = Cursor::new(Vec::<u8>::new());
+    if read_framed_message_or_eof(&mut empty)?.is_some() {
+        return Err(anyhow!("empty stdout was mistaken for a DAP frame"));
+    }
+
+    let mut partial_header = Cursor::new(b"Content-Length: 4".to_vec());
+    if read_framed_message_or_eof(&mut partial_header).is_ok() {
+        return Err(anyhow!("partial DAP header was accepted as clean EOF"));
+    }
+
+    let mut partial_body = Cursor::new(b"Content-Length: 5\r\n\r\n{\"x".to_vec());
+    if read_framed_message_or_eof(&mut partial_body).is_ok() {
+        return Err(anyhow!("partial DAP body was accepted as clean EOF"));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -637,15 +736,21 @@ fn run_threads_shape(session: &mut ExactSession, budget: Duration) -> Result<()>
     Ok(())
 }
 
-fn run_disconnect_lifecycle(session: &mut ExactSession, budget: Duration) -> Result<()> {
+fn run_disconnect_without_session(session: &mut ExactSession, budget: Duration) -> Result<()> {
     let response =
         session.request("disconnect", Some(json!({ "terminateDebuggee": true })), budget)?;
     if !response.success {
         return Err(anyhow!("disconnect failed: {:?}", response.message));
     }
-    // Lifecycle honesty: the terminated event must arrive, not be skipped.
-    session.wait_for_event("terminated", LAUNCH_TIMEOUT)?;
-    Ok(())
+    if session.pending_events.iter().any(|(event, _)| event == "terminated") {
+        return Err(anyhow!("pre-launch disconnect fabricated a terminated event"));
+    }
+    // Close the client side of stdio and require the adapter to honor the
+    // successful no-session disconnect naturally before fallback teardown.
+    // `require_natural_exit` drains the complete stream while checking the
+    // child, so a late fabricated terminated event cannot pass unnoticed.
+    session.stdin.take();
+    session.require_natural_exit(budget)
 }
 
 /// Fold a row's protocol outcome AND its teardown into one verdict: failed
@@ -693,12 +798,13 @@ fn run_deterministic_rows(binary: &Path, rows: &mut [MatrixRow]) -> Result<()> {
         rows[1].verdict =
             classify_with_cleanup(outcome, teardown, FailureClass::ProtocolShapeFailure);
     }
-    // Row: disconnect lifecycle (terminated event + bounded cleanup).
+    // Row: successful pre-launch disconnect must not fabricate a terminated
+    // debuggee event; launched rows own that event contract.
     {
         let mut session = ExactSession::spawn(binary)?;
         let mut outcome = run_initialize_handshake(&mut session, rows[2].timeout);
         if outcome.is_ok() {
-            outcome = run_disconnect_lifecycle(&mut session, rows[2].timeout);
+            outcome = run_disconnect_without_session(&mut session, rows[2].timeout);
         }
         rows[2].evidence_digest = session.evidence_digest();
         let teardown = session.teardown();
@@ -711,17 +817,17 @@ fn run_deterministic_rows(binary: &Path, rows: &mut [MatrixRow]) -> Result<()> {
             Ok(session) => session,
             // A control that could not run proved nothing: never a pass.
             Err(error) => {
-                rows[4].verdict = RowVerdict::InstrumentFailure {
+                rows[5].verdict = RowVerdict::InstrumentFailure {
                     detail: format!("the negative control could not spawn its fake: {error:#}"),
                 };
-                rows[4].evidence_digest = sha256_text(&format!("spawn-refused: {error:#}"));
+                rows[5].evidence_digest = sha256_text(&format!("spawn-refused: {error:#}"));
                 return Ok(());
             }
         };
-        let outcome = run_initialize_handshake(&mut session, rows[4].timeout);
-        rows[4].evidence_digest = session.evidence_digest();
+        let outcome = run_initialize_handshake(&mut session, rows[5].timeout);
+        rows[5].evidence_digest = session.evidence_digest();
         let teardown = session.teardown();
-        rows[4].verdict = match outcome {
+        rows[5].verdict = match outcome {
             Err(error) if error.to_string().contains("timed out") => {
                 RowVerdict::InstrumentFailure {
                     detail: format!("the negative control could not observe the fake: {error:#}"),
@@ -796,7 +902,7 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
             "lifecycle",
             Disposition::Positive,
             LAUNCH_TIMEOUT,
-            "disconnect response plus terminated event; the session must terminate, not vanish",
+            "successful pre-launch disconnect response with no fabricated terminated event",
         ),
         MatrixRow::new(
             "dap.launch-perl-stop-on-entry.v1",
@@ -805,6 +911,14 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
             Disposition::Positive,
             LAUNCH_TIMEOUT,
             "real perl -d fixture launch reaching a stop; requires a resolvable debuggee runtime",
+        ),
+        MatrixRow::new(
+            "dap.breakpoint-later-source.v1",
+            7566,
+            "later-source-breakpoint",
+            Disposition::Positive,
+            LAUNCH_TIMEOUT,
+            "real perl -d later executable-line breakpoint with engine ID and exact stack source",
         ),
         MatrixRow::new(
             "dap.wrong-binary-subject.v1",
@@ -823,7 +937,7 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
     // The launch row executes only where a debuggee runtime resolved; it is
     // an honest not_proven environment boundary otherwise, never a silent
     // skip recorded as pass. The fixture path stays alive for the receipt.
-    let mut fixture: Option<(tempfile::TempDir, PathBuf)> = None;
+    let mut fixtures_owned: Vec<(String, tempfile::TempDir, PathBuf)> = Vec::new();
     match runtime {
         Some(perl) => {
             let (guard, fixture_file) = write_fixture()?;
@@ -833,7 +947,25 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
             let teardown = session.teardown();
             rows[3].verdict =
                 classify_with_cleanup(outcome, teardown, FailureClass::FixtureFailure);
-            fixture = Some((guard, fixture_file));
+            fixtures_owned.push(("matrix-fixture-plain".to_string(), guard, fixture_file));
+            let (later_guard, later_file) = write_later_breakpoint_fixture()?;
+            let mut later_session = ExactSession::spawn(&binary)?;
+            let later_outcome = run_later_source_breakpoint_row(
+                &mut later_session,
+                perl,
+                &later_file,
+                rows[4].timeout,
+                true,
+            );
+            rows[4].evidence_digest = later_session.evidence_digest();
+            let later_teardown = later_session.teardown();
+            rows[4].verdict =
+                classify_with_cleanup(later_outcome, later_teardown, FailureClass::FixtureFailure);
+            fixtures_owned.push((
+                "matrix-fixture-later-breakpoint".to_string(),
+                later_guard,
+                later_file,
+            ));
         }
         None => {
             rows[3].verdict = RowVerdict::NotProven {
@@ -841,16 +973,17 @@ fn exact_session_matrix_conforms_and_fails_closed() -> Result<()> {
                          environment boundary, not conformance evidence"
                     .to_string(),
             };
+            rows[4].verdict = RowVerdict::NotProven {
+                reason: "no debuggee perl runtime resolved on this runner; the later breakpoint row is an environment boundary, not conformance evidence".to_string(),
+            };
         }
     }
 
     // The typed receipt is written BEFORE the aggregation asserts, so a
     // failing row is still receipted with its typed verdict — the scorecard
     // must see failures too, not only successes (#7565 review).
-    let fixtures: Vec<(String, PathBuf)> = fixture
-        .as_ref()
-        .map(|(_, path)| vec![("matrix-fixture-plain".to_string(), path.clone())])
-        .unwrap_or_default();
+    let fixtures: Vec<(String, PathBuf)> =
+        fixtures_owned.iter().map(|(name, _, path)| (name.clone(), path.clone())).collect();
     write_receipt_if_configured(&binary, runtime, &rows, &fixtures)?;
 
     // Fail-closed aggregation: deterministic rows must pass, the negative
@@ -928,6 +1061,482 @@ fn run_launch_row(
     Ok(())
 }
 
+/// Prove a later executable source breakpoint through the public stdio
+/// protocol.  The launch deliberately starts with `stopOnEntry: false`; the
+/// breakpoint is installed before configurationDone, then the stopped event
+/// must identify the same breakpoint and the stack must identify this exact
+/// fixture and line (#7566).
+fn set_later_source_breakpoint(
+    session: &mut ExactSession,
+    fixture: &Path,
+    budget: Duration,
+    expected_verified: bool,
+) -> Result<i64> {
+    let set = session.request(
+        "setBreakpoints",
+        Some(json!({
+            "source": { "path": fixture.display().to_string() },
+            "breakpoints": [{ "line": 4 }],
+        })),
+        budget,
+    )?;
+    if !set.success {
+        return Err(anyhow!("setBreakpoints failed: {:?}", set.message));
+    }
+    let set_body = set.body.ok_or_else(|| anyhow!("setBreakpoints returned no body"))?;
+    let breakpoints = set_body
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("setBreakpoints body has no breakpoints array: {set_body}"))?;
+    let breakpoint =
+        breakpoints.first().ok_or_else(|| anyhow!("setBreakpoints returned no entries"))?;
+    if breakpoint.get("verified").and_then(Value::as_bool) != Some(expected_verified) {
+        return Err(anyhow!("breakpoint verification was unexpected: {breakpoint}"));
+    }
+    if breakpoint.get("line").and_then(Value::as_i64) != Some(4) {
+        return Err(anyhow!("later breakpoint resolved to unexpected line: {breakpoint}"));
+    }
+    breakpoint
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("breakpoint had no numeric id: {breakpoint}"))
+}
+
+fn run_later_source_breakpoint_row(
+    session: &mut ExactSession,
+    perl: &DebuggeePerl,
+    fixture: &Path,
+    budget: Duration,
+    prelaunch: bool,
+) -> Result<()> {
+    let initialized = session.request(
+        "initialize",
+        Some(
+            json!({ "adapterID": "perl-dap-later-breakpoint", "clientID": "exact-session-matrix" }),
+        ),
+        budget,
+    )?;
+    if !initialized.success {
+        return Err(anyhow!("initialize failed: {:?}", initialized.message));
+    }
+    session.wait_for_event("initialized", budget)?;
+
+    // Admit the source breakpoint before launch. It must remain pending until
+    // the launched debugger acknowledges the exact source and line.
+    let prelaunch_id = if prelaunch {
+        Some(set_later_source_breakpoint(session, fixture, budget, false)?)
+    } else {
+        None
+    };
+
+    let launch = session.request(
+        "launch",
+        Some(json!({
+            "program": fixture.display().to_string(),
+            "perlPath": perl.binary.display().to_string(),
+            "stopOnEntry": false,
+        })),
+        budget,
+    )?;
+    if !launch.success {
+        return Err(anyhow!("launch failed: {:?}", launch.message));
+    }
+
+    let breakpoint_id = if let Some(id) = prelaunch_id {
+        id
+    } else {
+        set_later_source_breakpoint(session, fixture, budget, true)?
+    };
+
+    if prelaunch_id.is_some() {
+        let changed = session.wait_for_event("breakpoint", budget)?;
+        let changed_body =
+            changed.body.ok_or_else(|| anyhow!("breakpoint changed event had no body"))?;
+        let changed_breakpoint = changed_body.get("breakpoint").ok_or_else(|| {
+            anyhow!("breakpoint changed event had no breakpoint body: {changed_body}")
+        })?;
+        if changed_body.get("reason").and_then(Value::as_str) != Some("changed")
+            || changed_breakpoint.get("id").and_then(Value::as_i64) != Some(breakpoint_id)
+            || changed_breakpoint.get("verified").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(anyhow!(
+                "pre-launch breakpoint was not verified with its original ID: {changed_body}"
+            ));
+        }
+    }
+
+    let configured = session.request("configurationDone", None, budget)?;
+    if !configured.success {
+        return Err(anyhow!("configurationDone failed: {:?}", configured.message));
+    }
+    let stopped = session.wait_for_event("stopped", budget)?;
+    let stopped_body = stopped.body.ok_or_else(|| anyhow!("stopped event had no body"))?;
+    if stopped_body.get("reason").and_then(Value::as_str) != Some("breakpoint") {
+        return Err(anyhow!("later breakpoint stop had wrong reason: {stopped_body}"));
+    }
+    let hit_ids = stopped_body
+        .get("hitBreakpointIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("breakpoint stop had no hitBreakpointIds: {stopped_body}"))?;
+    if hit_ids.len() != 1 || hit_ids.first().and_then(Value::as_i64) != Some(breakpoint_id) {
+        return Err(anyhow!(
+            "stop must identify exactly breakpoint {breakpoint_id}, got {hit_ids:?}"
+        ));
+    }
+    let thread_id = stopped_body
+        .get("threadId")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("breakpoint stop had no threadId: {stopped_body}"))?;
+
+    let stack = session.request("stackTrace", Some(json!({ "threadId": thread_id })), budget)?;
+    if !stack.success {
+        return Err(anyhow!("stackTrace failed: {:?}", stack.message));
+    }
+    let stack_body = stack.body.ok_or_else(|| anyhow!("stackTrace returned no body"))?;
+    let frame = stack_body
+        .get("stackFrames")
+        .and_then(Value::as_array)
+        .and_then(|frames| frames.first())
+        .ok_or_else(|| anyhow!("stackTrace returned no frames: {stack_body}"))?;
+    let frame_path = frame
+        .get("source")
+        .and_then(|source| source.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("top frame had no source path: {frame}"))?;
+    if Path::new(frame_path) != fixture {
+        return Err(anyhow!("top frame source {frame_path:?} did not match fixture {fixture:?}"));
+    }
+    let frame_line = frame
+        .get("line")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("top frame had no line: {frame}"))?;
+    if frame_line != 4 {
+        return Err(anyhow!("top frame stopped at line {frame_line}, expected 4"));
+    }
+
+    let disconnected =
+        session.request("disconnect", Some(json!({ "terminateDebuggee": true })), budget)?;
+    if !disconnected.success {
+        return Err(anyhow!("disconnect failed: {:?}", disconnected.message));
+    }
+    session.wait_for_event("terminated", budget)?;
+    if session.pending_events.iter().any(|(event, _)| event == "terminated") {
+        return Err(anyhow!("later breakpoint emitted duplicate terminated events"));
+    }
+    session.require_natural_exit(budget)
+}
+
+/// Prove that a plain breakpoint admitted before launch is installed by the
+/// engine at the fixture's first executable line.  The stop must carry the
+/// original adapter ID and the real top frame; requested line numbers alone
+/// are not accepted as evidence.
+fn run_initial_source_breakpoint_row(
+    session: &mut ExactSession,
+    perl: &DebuggeePerl,
+    fixture: &Path,
+    budget: Duration,
+) -> Result<()> {
+    run_initialize_handshake(session, budget)?;
+    let pending = session.request(
+        "setBreakpoints",
+        Some(json!({
+            "source": { "path": fixture.display().to_string() },
+            "breakpoints": [{ "line": 2 }],
+        })),
+        budget,
+    )?;
+    if !pending.success {
+        return Err(anyhow!("initial pre-launch setBreakpoints failed: {:?}", pending.message));
+    }
+    let pending_body = pending.body.ok_or_else(|| anyhow!("initial setBreakpoints had no body"))?;
+    let pending_breakpoint = pending_body
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .ok_or_else(|| anyhow!("initial setBreakpoints returned no breakpoint: {pending_body}"))?;
+    if pending_breakpoint.get("verified").and_then(Value::as_bool) != Some(false) {
+        return Err(anyhow!("initial breakpoint was verified before launch: {pending_breakpoint}"));
+    }
+    let breakpoint_id = pending_breakpoint
+        .get("id")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("initial breakpoint had no numeric ID: {pending_breakpoint}"))?;
+
+    let launch = session.request(
+        "launch",
+        Some(json!({
+            "program": fixture.display().to_string(),
+            "perlPath": perl.binary.display().to_string(),
+            "stopOnEntry": false,
+        })),
+        budget,
+    )?;
+    if !launch.success {
+        return Err(anyhow!("initial breakpoint launch failed: {:?}", launch.message));
+    }
+    let changed = session.wait_for_event("breakpoint", budget)?;
+    let changed_body =
+        changed.body.ok_or_else(|| anyhow!("initial breakpoint event had no body"))?;
+    let changed_bp = changed_body
+        .get("breakpoint")
+        .ok_or_else(|| anyhow!("initial breakpoint event had no breakpoint: {changed_body}"))?;
+    if changed_body.get("reason").and_then(Value::as_str) != Some("changed")
+        || changed_bp.get("id").and_then(Value::as_i64) != Some(breakpoint_id)
+        || changed_bp.get("verified").and_then(Value::as_bool) != Some(true)
+    {
+        return Err(anyhow!(
+            "initial breakpoint was not engine-verified with its original ID: {changed_body}"
+        ));
+    }
+
+    let configured = session.request("configurationDone", None, budget)?;
+    if !configured.success {
+        return Err(anyhow!("initial configurationDone failed: {:?}", configured.message));
+    }
+    let stopped = session.wait_for_event("stopped", budget)?;
+    let stopped_body =
+        stopped.body.ok_or_else(|| anyhow!("initial breakpoint stop had no body"))?;
+    if stopped_body.get("reason").and_then(Value::as_str) != Some("breakpoint") {
+        return Err(anyhow!("initial executable stop had wrong reason: {stopped_body}"));
+    }
+    let hit_ids =
+        stopped_body.get("hitBreakpointIds").and_then(Value::as_array).ok_or_else(|| {
+            anyhow!("initial breakpoint stop had no hitBreakpointIds: {stopped_body}")
+        })?;
+    if hit_ids.len() != 1 || hit_ids.first().and_then(Value::as_i64) != Some(breakpoint_id) {
+        return Err(anyhow!("initial stop identified unexpected breakpoint set: {hit_ids:?}"));
+    }
+    let thread_id = stopped_body
+        .get("threadId")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("initial breakpoint stop had no threadId: {stopped_body}"))?;
+    let stack = session.request("stackTrace", Some(json!({ "threadId": thread_id })), budget)?;
+    if !stack.success {
+        return Err(anyhow!("initial stackTrace failed: {:?}", stack.message));
+    }
+    let stack_body = stack.body.ok_or_else(|| anyhow!("initial stackTrace had no body"))?;
+    let frame = stack_body
+        .get("stackFrames")
+        .and_then(Value::as_array)
+        .and_then(|frames| frames.first())
+        .ok_or_else(|| anyhow!("initial stackTrace returned no frames: {stack_body}"))?;
+    let frame_path = frame
+        .get("source")
+        .and_then(|source| source.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("initial top frame had no source path: {frame}"))?;
+    if Path::new(frame_path) != fixture {
+        return Err(anyhow!("initial top frame source {frame_path:?} did not match {fixture:?}"));
+    }
+    if frame.get("line").and_then(Value::as_i64) != Some(2) {
+        return Err(anyhow!("initial top frame was not line 2: {frame}"));
+    }
+
+    let continued = session.request("continue", Some(json!({ "threadId": thread_id })), budget)?;
+    if !continued.success {
+        return Err(anyhow!("continuing initial breakpoint failed: {:?}", continued.message));
+    }
+    session.wait_for_event("terminated", budget)?;
+    session.require_natural_exit(budget)
+}
+
+/// With no breakpoint and stopOnEntry disabled, configurationDone must run
+/// the fixture to completion without inventing a stopped event.
+fn run_no_breakpoint_natural_exit_row(
+    session: &mut ExactSession,
+    perl: &DebuggeePerl,
+    fixture: &Path,
+    budget: Duration,
+) -> Result<()> {
+    run_initialize_handshake(session, budget)?;
+    let launch = session.request(
+        "launch",
+        Some(json!({
+            "program": fixture.display().to_string(),
+            "perlPath": perl.binary.display().to_string(),
+            "stopOnEntry": false,
+        })),
+        budget,
+    )?;
+    if !launch.success {
+        return Err(anyhow!("no-breakpoint launch failed: {:?}", launch.message));
+    }
+    let configured = session.request("configurationDone", None, budget)?;
+    if !configured.success {
+        return Err(anyhow!("no-breakpoint configurationDone failed: {:?}", configured.message));
+    }
+    session.wait_for_event("terminated", budget)?;
+    if session.pending_events.iter().any(|(event, _)| event == "stopped") {
+        return Err(anyhow!("stopOnEntry=false no-breakpoint row emitted a stopped event"));
+    }
+    session.require_natural_exit(budget)?;
+    if session.pending_events.iter().any(|(event, _)| event == "stopped") {
+        return Err(anyhow!(
+            "stopOnEntry=false no-breakpoint row emitted a stopped event while draining exit"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn exact_session_initial_source_breakpoint_before_launch_is_verified() -> Result<()> {
+    let binary = resolve_matrix_binary()?;
+    let Some(perl) = debuggee_perl_or_typed_skip(
+        "exact_session_initial_source_breakpoint_before_launch_is_verified",
+    ) else {
+        return Ok(());
+    };
+    let (guard, fixture) = write_fixture()?;
+    let mut session = ExactSession::spawn(&binary)?;
+    let outcome = run_initial_source_breakpoint_row(&mut session, perl, &fixture, LAUNCH_TIMEOUT);
+    let teardown = session.teardown();
+    drop(guard);
+    outcome.and(teardown)
+}
+
+#[test]
+fn exact_session_no_breakpoint_stop_on_entry_false_exits_naturally() -> Result<()> {
+    let binary = resolve_matrix_binary()?;
+    let Some(perl) = debuggee_perl_or_typed_skip(
+        "exact_session_no_breakpoint_stop_on_entry_false_exits_naturally",
+    ) else {
+        return Ok(());
+    };
+    let (guard, fixture) = write_fixture()?;
+    let mut session = ExactSession::spawn(&binary)?;
+    let outcome = run_no_breakpoint_natural_exit_row(&mut session, perl, &fixture, LAUNCH_TIMEOUT);
+    let teardown = session.teardown();
+    drop(guard);
+    outcome.and(teardown)
+}
+
+#[test]
+fn exact_session_later_source_breakpoint_is_verified() -> Result<()> {
+    let binary = resolve_matrix_binary()?;
+    let Some(perl) =
+        debuggee_perl_or_typed_skip("exact_session_later_source_breakpoint_is_verified")
+    else {
+        return Ok(());
+    };
+    let (guard, fixture) = write_later_breakpoint_fixture()?;
+    let mut session = ExactSession::spawn(&binary)?;
+    let outcome =
+        run_later_source_breakpoint_row(&mut session, perl, &fixture, LAUNCH_TIMEOUT, true);
+    let teardown = session.teardown();
+    drop(guard);
+    outcome.and(teardown)
+}
+
+#[test]
+fn exact_session_later_source_breakpoint_after_launch_remains_verified() -> Result<()> {
+    let binary = resolve_matrix_binary()?;
+    let Some(perl) = debuggee_perl_or_typed_skip(
+        "exact_session_later_source_breakpoint_after_launch_remains_verified",
+    ) else {
+        return Ok(());
+    };
+    let (guard, fixture) = write_later_breakpoint_fixture()?;
+    let mut session = ExactSession::spawn(&binary)?;
+    let outcome =
+        run_later_source_breakpoint_row(&mut session, perl, &fixture, LAUNCH_TIMEOUT, false);
+    let teardown = session.teardown();
+    drop(guard);
+    outcome.and(teardown)
+}
+
+#[test]
+fn exact_session_delayed_breakpoint_prompt_fails_closed() -> Result<()> {
+    let binary = resolve_matrix_binary()?;
+    let Some(perl) =
+        debuggee_perl_or_typed_skip("exact_session_delayed_breakpoint_prompt_fails_closed")
+    else {
+        return Ok(());
+    };
+    let (guard, fixture) = write_delayed_breakpoint_fixture()?;
+    let mut session = ExactSession::spawn(&binary)?;
+    let outcome = (|| -> Result<()> {
+        let initialized = session.request(
+            "initialize",
+            Some(json!({ "adapterID": "perl-dap-delayed-breakpoint", "clientID": "exact-session-matrix" })),
+            ROW_TIMEOUT,
+        )?;
+        if !initialized.success {
+            return Err(anyhow!("initialize failed: {:?}", initialized.message));
+        }
+        session.wait_for_event("initialized", ROW_TIMEOUT)?;
+        let pending = session.request(
+            "setBreakpoints",
+            Some(json!({
+                "source": { "path": fixture.display().to_string() },
+                "breakpoints": [{ "line": 3 }],
+            })),
+            ROW_TIMEOUT,
+        )?;
+        if !pending.success {
+            return Err(anyhow!("pre-launch setBreakpoints failed: {:?}", pending.message));
+        }
+        let pending_breakpoint = pending
+            .body
+            .as_ref()
+            .and_then(|body| body.get("breakpoints"))
+            .and_then(Value::as_array)
+            .and_then(|breakpoints| breakpoints.first())
+            .ok_or_else(|| anyhow!("pre-launch response omitted its breakpoint"))?;
+        if pending_breakpoint.get("verified").and_then(Value::as_bool) != Some(false) {
+            return Err(anyhow!(
+                "delayed breakpoint was not pending before launch: {pending_breakpoint}"
+            ));
+        }
+        let launch = session.request(
+            "launch",
+            Some(json!({
+                "program": fixture.display().to_string(),
+                "perlPath": perl.binary.display().to_string(),
+                "stopOnEntry": false,
+            })),
+            ROW_TIMEOUT,
+        )?;
+        if launch.success {
+            return Err(anyhow!("delayed debugger prompt unexpectedly launched successfully"));
+        }
+        let message = launch.message.unwrap_or_default();
+        if !message.contains("ambiguous") && !message.contains("invalidated") {
+            return Err(anyhow!("delayed launch failure omitted ambiguity reason: {message}"));
+        }
+        let pid_path = fixture.with_file_name("delayed_breakpoint.pid");
+        let pid_deadline = Instant::now() + Duration::from_secs(2);
+        while !pid_path.is_file() && Instant::now() < pid_deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        let pid_text = fs::read_to_string(&pid_path)
+            .with_context(|| format!("reading delayed debuggee PID file {pid_path:?}"))?;
+        let pid = pid_text.trim().parse::<u32>().context("parsing delayed debuggee PID")?;
+        let cleanup_deadline = Instant::now() + CLEANUP_TIMEOUT;
+        while process_is_alive(pid)? && Instant::now() < cleanup_deadline {
+            thread::sleep(Duration::from_millis(25));
+        }
+        if process_is_alive(pid)? {
+            return Err(anyhow!("ambiguous delayed launch left debuggee PID {pid} alive"));
+        }
+        let disconnected = session.request(
+            "disconnect",
+            Some(json!({ "terminateDebuggee": true })),
+            ROW_TIMEOUT,
+        )?;
+        if !disconnected.success {
+            return Err(anyhow!(
+                "adapter was not responsive after delayed launch failure: {:?}",
+                disconnected.message
+            ));
+        }
+        session.require_natural_exit(ROW_TIMEOUT)?;
+        Ok(())
+    })();
+    let teardown = session.teardown();
+    drop(guard);
+    outcome.and(teardown)
+}
+
 /// Deterministic fixture content with a fixed line anchor, written to a
 /// per-run tempdir; the digest lands in the subject identity.
 fn write_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
@@ -938,6 +1547,113 @@ fn write_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
     fs::write(&path, "# matrix fixture (fixed content)\nmy $anchor = 1;\nprint \"ok\\n\";\n")
         .context("writing the fixture")?;
     Ok((dir, path))
+}
+
+fn write_later_breakpoint_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
+    let dir = tempfile::tempdir().context("creating the later-breakpoint fixture tempdir")?;
+    let path = dir.path().join("later_breakpoint_fixture.pl");
+    fs::write(&path, "# later breakpoint fixture\nmy $before = 1;\nmy $also_before = 2;\nmy $target = 3;\nprint \"ok\\n\";\n")
+        .context("writing the later-breakpoint fixture")?;
+    Ok((dir, path))
+}
+
+fn write_delayed_breakpoint_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
+    let dir = tempfile::tempdir().context("creating delayed-breakpoint fixture tempdir")?;
+    let path = dir.path().join("delayed_breakpoint_fixture.pl");
+    let pid_path = dir.path().join("delayed_breakpoint.pid");
+    let pid_literal = pid_path.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+    fs::write(
+        &path,
+        format!(
+            "BEGIN {{ my $pid = $$; if ($^O eq 'msys' || $^O eq 'cygwin') {{ $pid = Cygwin::pid_to_winpid($$); }} open(my $fh, '>', '{}') or die $!; print $fh $pid; close $fh; sleep 7; }}\nmy $before = 1;\nmy $target = 2;\nprint \"ok\\n\";\n",
+            pid_literal
+        ),
+    )
+    .context("writing delayed-breakpoint fixture")?;
+    Ok((dir, path))
+}
+
+fn process_is_alive(pid: u32) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        use std::io;
+        use winapi::um::handleapi::CloseHandle;
+        use winapi::um::processthreadsapi::{GetExitCodeProcess, OpenProcess};
+        use winapi::um::winnt::{PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE};
+        const STILL_ACTIVE: u32 = 259;
+
+        // SAFETY: OpenProcess receives a scalar PID and read-only query rights.
+        let handle =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(87) {
+                return Ok(false);
+            }
+            return Err(anyhow!("opening delayed debuggee PID {pid}: {error}"));
+        }
+        let mut exit_code = 0;
+        // SAFETY: handle is valid and exit_code points to writable stack memory.
+        let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+        let query_error = if queried { None } else { Some(io::Error::last_os_error()) };
+        // SAFETY: handle was returned by OpenProcess above and is closed exactly once here.
+        let close_ok = unsafe { CloseHandle(handle) } != 0;
+        if !queried {
+            let error =
+                query_error.ok_or_else(|| anyhow!("GetExitCodeProcess failed without an error"))?;
+            return Err(anyhow!("querying delayed debuggee PID {pid}: {}", error));
+        }
+        if !close_ok {
+            return Err(anyhow!(
+                "closing delayed debuggee PID {pid}: {}",
+                io::Error::last_os_error()
+            ));
+        }
+        Ok(exit_code == STILL_ACTIVE)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("checking delayed debuggee process {pid}"));
+            }
+        };
+        let state = stat
+            .rsplit_once(") ")
+            .and_then(|(_, rest)| rest.chars().next())
+            .ok_or_else(|| anyhow!("malformed /proc/{pid}/stat process record"))?;
+        Ok(state != 'Z')
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let mut command = Command::new("ps");
+        command.args(["-p", &pid.to_string(), "-o", "stat="]);
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command.spawn().context("checking delayed debuggee process")?;
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let output = loop {
+            if child.try_wait()?.is_some() {
+                break child
+                    .wait_with_output()
+                    .context("reading delayed debuggee process state")?;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                return Err(anyhow!("timed out checking delayed debuggee process {pid}"));
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(output.status.success() && !state.is_empty() && !state.starts_with('Z'))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = pid;
+        Err(anyhow!("process liveness oracle is unavailable on this platform"))
+    }
 }
 
 fn write_receipt_if_configured(
