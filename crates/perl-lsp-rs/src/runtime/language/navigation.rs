@@ -1404,7 +1404,7 @@ impl LspServer {
                     // offset is inside a comment.
                     let text = &doc.text;
                     if is_in_comment_naive(offset, text) {
-                        return Ok(None);
+                        return Ok(Some(Value::Null));
                     }
 
                     let radius = 50;
@@ -1843,7 +1843,7 @@ impl LspServer {
                                     return Ok(Some(result));
                                 }
                             }
-                            FqnCursorComponent::Prefix => return Ok(None),
+                            FqnCursorComponent::Prefix => return Ok(Some(Value::Null)),
                         }
                     }
                 }
@@ -2248,7 +2248,7 @@ impl LspServer {
                 "provider": "definition",
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": null,
+                "source_backed_receipt": null,
                 "no_live_behavior_change": true,
                 "note": "definition runtime proof unavailable without workspace semantic queries"
             })))
@@ -2261,7 +2261,7 @@ impl LspServer {
                     "provider": "definition",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "definition runtime proof missing request params"
                 })));
@@ -2276,14 +2276,14 @@ impl LspServer {
                     "provider": "definition",
                     "live_provider_result": live_provider_result,
                     "live_provider_count": live_provider_count,
-                    "compiler_receipt": null,
+                    "source_backed_receipt": null,
                     "no_live_behavior_change": true,
                     "note": "definition runtime proof found no symbol at request position"
                 })));
             };
 
             let _ = self.check_index_readiness(IndexReadinessPolicy::WaitBriefly);
-            let compiler_receipt = if self.workspace_index_stale_for_any_open_document() {
+            let source_backed_receipt = if self.workspace_index_stale_for_any_open_document() {
                 None
             } else {
                 match route_index_access(self.coordinator()) {
@@ -2298,10 +2298,10 @@ impl LspServer {
                             &ctx,
                         )
                         .receipt;
-                        let compiler_result_count = receipt.new_result.match_count;
+                        let source_backed_result_count = receipt.new_result.match_count;
                         receipt.notes.push(format!(
-                            "definition runtime proof: live_provider_results={live_provider_count}; compiler_fact_candidates={}; compiler_result_count={}; partial live exact/imported cutover",
-                            compiler_result_count, compiler_result_count
+                            "definition runtime proof: live_provider_results={live_provider_count}; source_backed_candidates={}; source_backed_result_count={}; partial live exact/imported cutover",
+                            source_backed_result_count, source_backed_result_count
                         ));
                         receipt
                     })
@@ -2309,14 +2309,14 @@ impl LspServer {
                     IndexAccessMode::Partial(_) | IndexAccessMode::None => None,
                 }
             };
-            let live_cutover = compiler_receipt.is_some();
+            let live_cutover = source_backed_receipt.is_some();
 
             Ok(Some(json!({
                 "provider": "definition",
                 "symbol": symbol,
                 "live_provider_result": live_provider_result,
                 "live_provider_count": live_provider_count,
-                "compiler_receipt": compiler_receipt,
+                "source_backed_receipt": source_backed_receipt,
                 "no_live_behavior_change": !live_cutover,
                 "live_cutover": if live_cutover {
                     Some("partial_exact_imported")
@@ -2407,7 +2407,10 @@ impl LspServer {
             return None;
         };
         let def_location = workspace_index.semantic_anchor_wire_location(candidate.anchor_id)?;
-        let location: lsp_types::Location = def_location.into();
+        // An unconvertible URI yields no definition rather than a fabricated one:
+        // this exact path claims source-backed exactness, which a substituted
+        // resource cannot support.
+        let location = lsp_types::Location::try_from(def_location).ok()?;
         serde_json::to_value(location).ok()
     }
 
@@ -3053,7 +3056,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_fresh_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_fresh_index.is_none(),
+                || prefix_fresh_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must yield an empty answer; got {prefix_fresh_index:?}"
         );
         assert_eq!(prefix_fresh_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -3092,7 +3095,7 @@ mod tests {
             goto_definition_request_receipt(&server, main_uri, 3, 1)?;
         assert!(
             prefix_stale_index.as_ref().and_then(Value::as_array).is_some_and(Vec::is_empty)
-                || prefix_stale_index.is_none(),
+                || prefix_stale_index.as_ref().is_some_and(Value::is_null),
             "a package-prefix cursor must stay empty under a stale index; got {prefix_stale_index:?}"
         );
         assert_eq!(prefix_stale_receipt.get("result_count").and_then(Value::as_u64), Some(0));
@@ -3224,7 +3227,7 @@ mod tests {
     /// `symbol_at_cursor_with_source` both extract the LAST component (`bar`)
     /// regardless of cursor position, so falling through to them navigates to
     /// `sub bar` — a confidently wrong target. `handle_definition_inner`
-    /// therefore returns `Ok(None)` for a prefix cursor.
+    /// therefore returns an explicit null result for a prefix cursor.
     ///
     /// That guard used to live inside the workspace-index freshness gate, so an
     /// unrelated edited buffer with a stale index entry skipped the whole block

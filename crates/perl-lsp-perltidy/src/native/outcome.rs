@@ -332,6 +332,17 @@ fn classify_native_result(
     target: FormatRequestTarget,
     result: FormatResult,
 ) -> TypedFormatResult {
+    let mut result = result;
+    // The rendered bytes are the formatting authority. A result whose render
+    // reproduces the source carries no real change, so its edits are normalized
+    // away before classification; otherwise the typed outcome could report
+    // `Applied` beside the zero change summary that identical bytes produce
+    // (#7585). Refusals and failures already render the source unchanged with
+    // no edits, so this leaves their diagnostics-driven classification intact.
+    if result.formatted == source && !result.edits.is_empty() {
+        result.edits.clear();
+        result.changed = false;
+    }
     let classification = classify(source, config, target, &result);
     let actual_engine = if matches!(config.mode, FormatterMode::Off) {
         FormatEngine::Disabled
@@ -595,6 +606,17 @@ fn next_action(reason: FormatReasonCode) -> Option<&'static str> {
     }
 }
 
+/// Summarize the transformation between the source and the rendered output.
+///
+/// Contract: callers normalize before calling. A rendered no-op reaches this
+/// function with an already-empty edit set (`classify_native_result` clears it),
+/// so the `source == formatted` branch reports `edit_count: 0`. The branch does
+/// not itself enforce that — passing a non-empty edit set alongside identical
+/// bytes would report a non-zero `edit_count` beside zero byte deltas, which is
+/// exactly the envelope inconsistency #7585 forbids. The sibling implementation
+/// in `perl-lsp-rs-core` guards the same condition with `edits.is_empty() ||
+/// source == formatted`, so the two answer an unnormalized call differently;
+/// unifying them belongs to #7138, which owns this duplication.
 fn change_summary(source: &str, formatted: &str, edits: &[TextEdit]) -> FormatChangeSummary {
     if source == formatted {
         return FormatChangeSummary {
@@ -752,6 +774,96 @@ const fn keyword_spacing_name(value: KeywordSpacing) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Negative control for #7585: a rendered no-op can never classify as
+    /// `Applied`.
+    ///
+    /// The engine currently pushes a range edit only when the line text really
+    /// differs, so the inconsistency is unreachable through the public
+    /// formatter today. That makes the guard coincidental rather than enforced,
+    /// so this test drives `classify_native_result` directly with the one
+    /// result shape that would break the envelope. Deleting the normalization
+    /// in `classify_native_result` fails this test: `classify` reads
+    /// `result.changed` and would report `Applied` beside the zero change
+    /// summary that identical bytes always produce.
+    #[test]
+    fn a_rendered_no_op_edit_set_is_normalized_before_classification() {
+        let source = "my $value = 1;\n";
+        let result = FormatResult {
+            formatted: source.to_string(),
+            edits: vec![TextEdit::new(
+                TextRange::new(TextPosition::new(0, 0), TextPosition::new(0, 14)),
+                "my $value = 1;".to_string(),
+            )],
+            changed: true,
+            diagnostics: Vec::new(),
+        };
+
+        let typed = classify_native_result(
+            source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+            FormatRequestTarget::Document,
+            result,
+        );
+
+        assert_eq!(typed.outcome.disposition, FormatDisposition::NoChange);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::AlreadyFormatted);
+        assert!(
+            typed.result.edits.is_empty(),
+            "a no-op edit set must be normalized away, not returned to the caller"
+        );
+        assert_eq!(typed.outcome.change.edit_count, 0);
+        assert_eq!(typed.outcome.change.source_bytes_changed, 0);
+        assert_eq!(typed.outcome.change.rendered_bytes_changed, 0);
+        assert_eq!(typed.outcome.change.changed_lines, 0);
+        assert_eq!(typed.result.formatted, source, "normalization must not alter rendered bytes");
+    }
+
+    /// Normalization must not rescue a refusal into a legitimate no-change:
+    /// refusals already render the source unchanged with no edits, so their
+    /// diagnostic still decides the terminal outcome.
+    #[test]
+    fn normalization_leaves_diagnostic_driven_refusals_intact() {
+        let source = "my $value = 1;\n";
+        let result = FormatResult::unsafe_to_format(
+            source,
+            UNSAFE_RANGE_CODE,
+            "native range formatting refused because the requested UTF-16 range is invalid",
+        );
+
+        let typed = classify_native_result(
+            source,
+            &FormatConfig::default(),
+            &FormatContext::default(),
+            FormatRequestTarget::Document,
+            result,
+        );
+
+        assert_eq!(typed.outcome.disposition, FormatDisposition::Refused);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::UnsafeRange);
+        assert!(typed.result.edits.is_empty());
+        assert_eq!(typed.outcome.change.edit_count, 0);
+    }
+
+    /// A real change still classifies as `Applied` and still carries non-zero
+    /// change evidence, so the normalization cannot be satisfied by reporting
+    /// everything as a no-change.
+    #[test]
+    fn a_real_render_difference_still_applies_with_non_zero_evidence() {
+        let typed = NativeFormatter::new().format_document_typed(
+            "my$x=1;\n",
+            &FormatConfig::default(),
+            &FormatContext::default(),
+        );
+
+        assert_eq!(typed.outcome.disposition, FormatDisposition::Applied);
+        assert_eq!(typed.outcome.reason, FormatReasonCode::Applied);
+        assert!(!typed.result.edits.is_empty());
+        assert_eq!(typed.outcome.change.edit_count, typed.result.edits.len());
+        assert!(typed.outcome.change.source_bytes_changed > 0);
+        assert!(typed.outcome.change.rendered_bytes_changed > 0);
+    }
 
     #[test]
     fn unsupported_unchanged_source_is_refused() {

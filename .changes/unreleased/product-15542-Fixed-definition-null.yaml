@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "Go-to-definition requests inside comments or on a qualified-name package prefix now receive an empty result instead of leaving the editor waiting for a response."
+time: 2026-09-13T19:12:00Z
+custom:
+  PR: "15542"
+  Slug: definition-terminal-null
+  Breaking: "no"

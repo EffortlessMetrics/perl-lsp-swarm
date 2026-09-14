@@ -109,7 +109,15 @@ pub(crate) fn validate_clippy_config_value(config: &Value, ledger: &LintLedger) 
     validate_disallowed_fields_policy(config, ledger)
 }
 
-fn validate_disallowed_fields_policy(config: &Value, ledger: &LintLedger) -> Result<()> {
+/// Ledger-only `configuration_state` placement rules, shared by config
+/// integration validation and cadence source validation.
+///
+/// The marker may only sit on the config-backed lint row, and only while
+/// that row is active or debt. These need no `clippy.toml`, so cadence
+/// enforces them too: otherwise a policy the candidate gate rejects could
+/// still project review-dated obligations as current. Selector counts and
+/// `clippy.toml` interplay stay in [`validate_disallowed_fields_policy`].
+pub(super) fn validate_configuration_state_placement(ledger: &LintLedger) -> Result<()> {
     for lint in &ledger.lint {
         if lint.name != DISALLOWED_FIELDS_LINT && lint.configuration_state.is_some() {
             bail!(
@@ -120,19 +128,28 @@ fn validate_disallowed_fields_policy(config: &Value, ledger: &LintLedger) -> Res
     }
 
     let Some(lint) = ledger.lint.iter().find(|lint| lint.name == DISALLOWED_FIELDS_LINT) else {
+        return Ok(());
+    };
+    if !matches!(lint.status.as_str(), "active" | "debt") && lint.configuration_state.is_some() {
+        bail!(
+            "{LINT_LEDGER} row {} with status {} cannot set configuration_state; the marker is valid only for active or debt lints",
+            lint.name,
+            lint.status
+        );
+    }
+    Ok(())
+}
+
+fn validate_disallowed_fields_policy(config: &Value, ledger: &LintLedger) -> Result<()> {
+    validate_configuration_state_placement(ledger)?;
+
+    let Some(lint) = ledger.lint.iter().find(|lint| lint.name == DISALLOWED_FIELDS_LINT) else {
         bail!(
             "{LINT_LEDGER} must contain an active or debt {DISALLOWED_FIELDS_LINT} row; removing or demoting the policy identity together with its Cargo/config hooks is not a valid rollback"
         );
     };
 
     if !matches!(lint.status.as_str(), "active" | "debt") {
-        if lint.configuration_state.is_some() {
-            bail!(
-                "{LINT_LEDGER} row {} with status {} cannot set configuration_state; the marker is valid only for active or debt lints",
-                lint.name,
-                lint.status
-            );
-        }
         if config.get(DISALLOWED_FIELDS_CONFIG).is_some() {
             bail!(
                 "{CLIPPY_CONFIG} configures {DISALLOWED_FIELDS_CONFIG}, but {LINT_LEDGER} row {} is {}",

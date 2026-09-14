@@ -10,7 +10,7 @@ pub const PERL_PROFILE: &str = "perl5-quote-like-stable";
 
 /// One bounded compile/parse Perl profile row recorded by the oracle harness.
 pub const ORACLE_INVOCATION: &str =
-    "timeout --signal=KILL 2 env -i PATH=$PATH LC_ALL=C perl -c <tempfile>";
+    "direct perl -c child with a 2s deadline; isolated PATH + LC_ALL=C + Windows SystemRoot";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperatorFamily {
