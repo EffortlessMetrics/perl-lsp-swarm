@@ -57,7 +57,7 @@ use tasks::{
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check,
+    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
     release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
     release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
     semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
@@ -336,6 +336,17 @@ enum Commands {
         check: bool,
     },
 
+    /// Generate or check the DBIx::QuickORM API return matrix.
+    ///
+    /// The matrix is a projection of the reviewed registry in
+    /// `perl-semantic-facts`; edit the registry, not the generated document.
+    #[command(name = "generate-quickorm-api-matrix")]
+    GenerateQuickormApiMatrix {
+        /// Check that the checked-in matrix matches generated content.
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Generate or check the Perl command-line analysis capability matrix.
     ///
     /// Fails when a declared capability row claims support without fixture
@@ -518,8 +529,9 @@ enum Commands {
         #[arg(long)]
         expected_base_sha: Option<String>,
 
-        /// GitHub repo (owner/name) for the writer-collision PR-ownership
-        /// check.
+        /// GitHub repo (owner/name) for the advisory candidate-presence
+        /// lookup: an open PR is surfaced as continuation evidence, never
+        /// as proof of a live writer or a collision.
         #[arg(long)]
         repo: Option<String>,
 
@@ -2297,9 +2309,22 @@ enum Commands {
     /// job in `.github/workflows/em-ci-routed-rust.yml` invokes this single
     /// definition, so the aggregate required check means one proof on all
     /// routes; the yml keeps only runner instrumentation and the #12320
-    /// pinned `cargo fmt` literal. Typed step receipts remain issue #8408.
+    /// pinned `cargo fmt` literal. Emits one versioned receipt binding the
+    /// candidate SHA, toolchain, and scorecard profile/features to every
+    /// selected step's typed outcome (#8407); route adoption of that receipt
+    /// as status evidence is issue #8408.
     #[command(name = "rust-small-proof")]
-    RustSmallProof,
+    RustSmallProof {
+        /// Receipt destination (default: `target/receipts/rust-small-proof.json`).
+        #[arg(long, conflicts_with = "verify_receipt")]
+        receipt: Option<PathBuf>,
+
+        /// Validate an existing receipt against this checkout and exit without
+        /// running the proof. Fails closed on a malformed, stale, or
+        /// wrong-subject receipt, or one missing any canonical step.
+        #[arg(long)]
+        verify_receipt: Option<PathBuf>,
+    },
 
     /// Publish/check 0.13.2 semantic scorecard artifacts from deterministic fixtures.
     SemanticScorecard {
@@ -3128,6 +3153,23 @@ enum PolicyCommand {
         /// Deterministic Markdown summary path.
         #[arg(long, default_value = "target/receipts/policy-cadence.md")]
         markdown: PathBuf,
+    },
+
+    /// Check that registered time-bound records did not move a governing date
+    /// later without a supported disposition and refreshed subject-bound
+    /// evidence. Read-only; mutates no ledger.
+    Transition {
+        /// Accepted base revision the candidate is compared against.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-transition.json")]
+        json: PathBuf,
+
+        /// Optional deterministic Markdown summary path.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
     },
 }
 
@@ -4560,6 +4602,26 @@ enum EmacsIntegrationCommand {
         #[arg(long, default_value_t = 180_000)]
         timeout_ms: u64,
     },
+    /// Governed Emacs host-journey and fixture/cell manifest operations
+    /// (#11768). Offline, deterministic, and second-run clean; validating or
+    /// explaining cells proves no host behavior.
+    Journeys {
+        #[command(subcommand)]
+        command: EmacsJourneysCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsJourneysCommand {
+    /// Validate the compiled journey manifest against its fail-closed laws
+    /// and print a deterministic summary receipt.
+    Check,
+    /// Explain one governed identity: `summary`, a stable cell id
+    /// (`emacs.<class>.<name>`), or a registered journey-class token.
+    Explain {
+        /// Journey class, stable cell id, or `summary`.
+        subject: String,
+    },
 }
 
 /// Union of the Emacs train command families over the stable
@@ -5390,6 +5452,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
+        Commands::GenerateQuickormApiMatrix { check } => quickorm_api_matrix::run(check),
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
@@ -5557,6 +5620,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             receipt,
             summary,
             check,
+            quiet: false,
         }),
         Commands::RiprPr { root, base, head, pr_head, check } => {
             ripr_evidence::ripr_pr(&root, &base, &head, pr_head.as_deref(), check)
@@ -5946,6 +6010,51 @@ fn run_cli(cli: Cli) -> Result<()> {
                         Err(eyre!("host run did not pass: {:?}", outcome.result))
                     }
                 }
+                EmacsIntegrationCommand::Journeys { command } => match command {
+                    EmacsJourneysCommand::Check => {
+                        let summary = xtask::emacs_host_journeys::validate_compiled_registry()
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&summary)
+                                .map_err(|error| eyre!("{error:#}"))?
+                        );
+                        Ok(())
+                    }
+                    EmacsJourneysCommand::Explain { subject } => {
+                        // Explain validates registry laws only; on-disk subject authority remains
+                        // the responsibility of Check.
+                        let cells = xtask::emacs_host_journeys::registry()
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        xtask::emacs_host_journeys::validate_registry(&cells)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let (class, matched) = xtask::emacs_host_journeys::lookup(&cells, &subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let mut explained = serde_json::json!({
+                            "schema_version": xtask::emacs_host_journeys::MANIFEST_SCHEMA_VERSION,
+                            "subject": subject,
+                        });
+                        if let Some(class) = class {
+                            explained["journey_class"] = serde_json::Value::String(class);
+                        }
+                        let mut rows = Vec::new();
+                        for cell in matched {
+                            let digest = xtask::emacs_host_journeys::cell_digest(cell)
+                                .map_err(|error| eyre!("{error:#}"))?;
+                            rows.push(serde_json::json!({
+                                "cell": cell,
+                                "digest": digest,
+                            }));
+                        }
+                        explained["cells"] = serde_json::Value::Array(rows);
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&explained)
+                                .map_err(|error| eyre!("{error:#}"))?
+                        );
+                        Ok(())
+                    }
+                },
             },
         },
         Commands::RepoHygiene { base, head, receipt, summary } => {
@@ -6634,7 +6743,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::SemanticScorecard { manifest, output, status_md, check } => {
             semantic_scorecard::run(manifest, output, status_md, check)
         }
-        Commands::RustSmallProof => rust_small_proof::run(),
+        Commands::RustSmallProof { receipt, verify_receipt } => {
+            rust_small_proof::run(receipt, verify_receipt)
+        }
         Commands::SemanticShadowCompare { output, status_md, check } => {
             semantic_shadow_compare::run(output, status_md, check)
         }
@@ -7004,6 +7115,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tasks::policy_cadence::run(
                     &root,
                     tasks::policy_cadence::CadenceArgs { as_of, json, markdown },
+                )
+            }
+            PolicyCommand::Transition { base, json, markdown } => {
+                let root = utils::project_root()?;
+                tasks::policy_cadence::transition::run(
+                    &root,
+                    tasks::policy_cadence::transition::TransitionArgs { base, json, markdown },
                 )
             }
         },

@@ -1440,6 +1440,11 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(mut action) = params {
+            if action.get("title").and_then(Value::as_str).is_none() {
+                return Err(crate::protocol::invalid_params(
+                    "Missing or invalid code action title",
+                ));
+            }
             // The action should already have minimal information
             // We now need to compute the actual edits
 
@@ -1478,7 +1483,7 @@ impl LspServer {
             self.enforce_code_action_tag_capabilities(std::slice::from_mut(&mut action));
             Ok(Some(action))
         } else {
-            Ok(None)
+            Err(crate::protocol::invalid_params("Missing code action parameters"))
         }
     }
 }

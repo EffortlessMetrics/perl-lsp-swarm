@@ -1026,6 +1026,147 @@ pub enum SystemIncProbeOutcome {
     Paths(Vec<PathBuf>),
 }
 
+/// Path-free classification of a [`SystemIncProbeOutcome`], plus the
+/// `NotObserved` state that exists only before the first attempt of an epoch.
+///
+/// This is the redacted vocabulary that explanation surfaces project; it
+/// never carries the probed paths themselves (#13589).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemIncProbeOutcomeKind {
+    /// No probe attempt has completed in the current epoch.
+    NotObserved,
+    /// Startup `@INC` probing is disabled by configuration.
+    Disabled,
+    /// No Perl oracle could be constructed for the probe.
+    Unavailable,
+    /// The last attempt timed out.
+    TimedOut,
+    /// The last attempt failed at the process/I-O boundary.
+    IoFailed,
+    /// Perl ran but exited unsuccessfully.
+    NonZeroExit,
+    /// Perl succeeded but produced no usable `@INC` paths.
+    SuccessfulEmpty,
+    /// Perl succeeded and produced usable `@INC` paths.
+    Paths,
+}
+
+impl SystemIncProbeOutcomeKind {
+    /// Stable machine-readable code for this outcome kind.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NotObserved => "not_observed",
+            Self::Disabled => "disabled",
+            Self::Unavailable => "unavailable",
+            Self::TimedOut => "timed_out",
+            Self::IoFailed => "io_failed",
+            Self::NonZeroExit => "non_zero_exit",
+            Self::SuccessfulEmpty => "successful_empty",
+            Self::Paths => "paths",
+        }
+    }
+}
+
+/// How the stored startup-`@INC` state affected a module lookup that
+/// consumed it (#13589 outcome law).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemIncLookupImpact {
+    /// The probed root family (possibly empty) took part in the lookup.
+    Participated,
+    /// Startup roots were intentionally excluded by configuration.
+    Disabled,
+    /// No attempt has completed yet, so the lookup made no claim about
+    /// startup roots; a later live lookup will attempt the probe.
+    NotObserved,
+    /// Startup roots were omitted by a transient timeout with a retry
+    /// remaining; a later lookup may recover them.
+    OmittedTransient,
+    /// Startup roots were omitted by a settled failure or an exhausted retry
+    /// budget; they stay omitted until configuration invalidates the epoch.
+    OmittedTerminal,
+}
+
+impl SystemIncLookupImpact {
+    /// Stable machine-readable code for this lookup impact.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Participated => "participated",
+            Self::Disabled => "disabled",
+            Self::NotObserved => "not_observed",
+            Self::OmittedTransient => "omitted_transient",
+            Self::OmittedTerminal => "omitted_terminal",
+        }
+    }
+}
+
+/// Non-probing, typed view of one configuration's startup-`@INC` acquisition
+/// state (#13589).
+///
+/// Produced by [`WorkspaceConfig::peek_system_inc_probe`], which reads the
+/// shared probe epoch without launching or retrying Perl. The snapshot is the
+/// only path-free carrier of the epoch's outcome, attempt budget, and retry
+/// disposition; explanation surfaces project it instead of inferring failure
+/// from an empty root list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemIncProbeSnapshot {
+    /// `perl.workspace.useSystemInc` as stored on the owning configuration.
+    pub use_system_inc: bool,
+    /// `perl.workspace.usePerl5lib` as stored on the owning configuration.
+    pub use_perl5lib: bool,
+    /// Classification of the epoch's last outcome.
+    pub outcome: SystemIncProbeOutcomeKind,
+    /// Probe attempts completed in the current epoch.
+    pub attempts_consumed: u32,
+    /// Hard cap on attempts per epoch (`SYSTEM_INC_PROBE_MAX_ATTEMPTS`, currently 2).
+    pub max_attempts: u32,
+    /// Number of probed roots when the outcome is `Paths`; `Some(0)` for
+    /// `SuccessfulEmpty`; `None` when no root list was produced.
+    pub system_root_count: Option<usize>,
+}
+
+impl SystemIncProbeSnapshot {
+    /// Whether the next live lookup would perform another probe attempt.
+    ///
+    /// Only `NotObserved` and a `TimedOut` outcome with budget remaining are
+    /// eligible; every other outcome is settled for the epoch.
+    #[must_use]
+    pub fn retry_eligible(&self) -> bool {
+        match self.outcome {
+            SystemIncProbeOutcomeKind::NotObserved => true,
+            SystemIncProbeOutcomeKind::TimedOut => self.attempts_consumed < self.max_attempts,
+            _ => false,
+        }
+    }
+
+    /// Whether the outcome is terminal until a configuration change resets
+    /// the epoch. `Disabled` is terminal for the current configuration.
+    #[must_use]
+    pub fn terminal(&self) -> bool {
+        !self.retry_eligible()
+    }
+
+    /// The effect this stored state has on a lookup that consumes it.
+    #[must_use]
+    pub fn lookup_impact(&self) -> SystemIncLookupImpact {
+        match self.outcome {
+            SystemIncProbeOutcomeKind::Disabled => SystemIncLookupImpact::Disabled,
+            SystemIncProbeOutcomeKind::NotObserved => SystemIncLookupImpact::NotObserved,
+            SystemIncProbeOutcomeKind::Paths | SystemIncProbeOutcomeKind::SuccessfulEmpty => {
+                SystemIncLookupImpact::Participated
+            }
+            SystemIncProbeOutcomeKind::TimedOut if self.retry_eligible() => {
+                SystemIncLookupImpact::OmittedTransient
+            }
+            SystemIncProbeOutcomeKind::TimedOut
+            | SystemIncProbeOutcomeKind::Unavailable
+            | SystemIncProbeOutcomeKind::IoFailed
+            | SystemIncProbeOutcomeKind::NonZeroExit => SystemIncLookupImpact::OmittedTerminal,
+        }
+    }
+}
+
 /// Shared startup-`@INC` probe epoch: the cached outcome plus the attempt
 /// budget that bounds the transient `TimedOut` retry (#12945).
 ///
@@ -1855,6 +1996,74 @@ impl WorkspaceConfig {
             Some(outcome) => outcome,
             None => SystemIncProbeOutcome::Unavailable,
         }
+    }
+
+    /// Read the current startup-`@INC` acquisition state without probing.
+    ///
+    /// This never calls the probe and never consumes a retry attempt, so an
+    /// explanation surface can report the state the live resolver actually
+    /// used (#13589). Because the epoch is shared across clones, the snapshot
+    /// describes the same stored subject that [`Self::get_system_inc`]
+    /// advanced. `Disabled` is reported directly from `use_system_inc`.
+    ///
+    /// Use [`Self::peek_system_inc`] when the cached paths are needed too;
+    /// it reads both under one lock acquisition.
+    #[must_use]
+    pub fn peek_system_inc_probe(&self) -> SystemIncProbeSnapshot {
+        self.peek_system_inc().1
+    }
+
+    /// The startup-`@INC` paths already held by the shared epoch together
+    /// with the typed acquisition state, read under a single epoch lock so
+    /// the pair is mutually consistent (#13589).
+    ///
+    /// The paths are the cached `Paths` outcome when one exists and empty for
+    /// every other state, including the not-yet-observed one. Unlike
+    /// [`Self::get_system_inc`], this never launches or retries Perl, so a
+    /// caller that only needs to *describe* the last live lookup cannot
+    /// spend the retry budget on the user's behalf.
+    #[must_use]
+    pub fn peek_system_inc(&self) -> (Vec<PathBuf>, SystemIncProbeSnapshot) {
+        let (paths, outcome, attempts_consumed, system_root_count) = if !self.use_system_inc {
+            (Vec::new(), SystemIncProbeOutcomeKind::Disabled, 0, None)
+        } else {
+            let epoch = self.lock_system_inc_epoch();
+            let (paths, outcome, count) = match epoch.outcome.as_ref() {
+                None => (Vec::new(), SystemIncProbeOutcomeKind::NotObserved, None),
+                Some(SystemIncProbeOutcome::Disabled) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::Disabled, None)
+                }
+                Some(SystemIncProbeOutcome::Unavailable) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::Unavailable, None)
+                }
+                Some(SystemIncProbeOutcome::TimedOut) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::TimedOut, None)
+                }
+                Some(SystemIncProbeOutcome::IoFailed) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::IoFailed, None)
+                }
+                Some(SystemIncProbeOutcome::NonZeroExit) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::NonZeroExit, None)
+                }
+                Some(SystemIncProbeOutcome::SuccessfulEmpty) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::SuccessfulEmpty, Some(0))
+                }
+                Some(SystemIncProbeOutcome::Paths(paths)) => {
+                    (paths.clone(), SystemIncProbeOutcomeKind::Paths, Some(paths.len()))
+                }
+            };
+            (paths, outcome, epoch.attempts, count)
+        };
+
+        let snapshot = SystemIncProbeSnapshot {
+            use_system_inc: self.use_system_inc,
+            use_perl5lib: self.use_perl5lib,
+            outcome,
+            attempts_consumed,
+            max_attempts: SYSTEM_INC_PROBE_MAX_ATTEMPTS,
+            system_root_count,
+        };
+        (paths, snapshot)
     }
 
     /// Get system @INC paths (lazily populated).
@@ -5562,6 +5771,116 @@ profile = "recommended"
         })
     }
 
+    /// Real-process counterpart to the injected outcome-law tests (#13589).
+    /// Explicit invocation requires Perl; unavailable instruments fail rather
+    /// than making the required process proof silently pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "requires a real Perl interpreter; run explicitly for startup INC process proof (#13589)"]
+    #[serial_test::serial]
+    fn peek_system_inc_real_process_outcome_matrix() -> TestResult {
+        let perl = resolve_perl_path_with_toolchain()
+            .map_err(|error| format!("startup INC process proof requires Perl: {error}"))?;
+        let temp = tempfile::tempdir()?;
+        let rows = [
+            ("timeout", "sleep 10;", SystemIncProbeOutcome::TimedOut, 2u32),
+            ("failed", "exit 7;", SystemIncProbeOutcome::NonZeroExit, 1),
+            ("empty", "exit 0;", SystemIncProbeOutcome::SuccessfulEmpty, 1),
+            (
+                "paths",
+                "print(q(startup-matrix-root)); exit 0;",
+                SystemIncProbeOutcome::Paths(vec![PathBuf::from("startup-matrix-root")]),
+                1,
+            ),
+        ];
+        for (name, behavior, expected, attempts) in rows {
+            let script = temp.path().join(format!("{name}.pl"));
+            let marker = temp.path().join(format!("{name}.pl.calls"));
+            std::fs::write(
+                &script,
+                format!(
+                    "use strict; use warnings;\n\
+                     open(my $calls, '>>', __FILE__ . '.calls') or exit 90;\n\
+                     print {{$calls}} 'x'; close($calls) or exit 91;\n{behavior}\n"
+                ),
+            )?;
+            let run = || -> TestResult {
+                let mut config = WorkspaceConfig {
+                    use_system_inc: true,
+                    use_perl5lib: false,
+                    perl_path: Some(perl.to_string_lossy().into_owned()),
+                    // A script operand makes the probe's appended -e arguments
+                    // script arguments, so this real process controls stdout
+                    // without depending on the host's installed module roots.
+                    perl_args: vec![script.to_string_lossy().into_owned()],
+                    ..WorkspaceConfig::default()
+                };
+                for _ in 0..3 {
+                    let (paths, state) = config.peek_system_inc();
+                    if !paths.is_empty()
+                        || state.outcome != SystemIncProbeOutcomeKind::NotObserved
+                        || state.attempts_consumed != 0
+                        || marker.exists()
+                    {
+                        return Err(format!("{name}: an initial peek acquired Perl state").into());
+                    }
+                }
+                for attempt in 1..=attempts {
+                    let actual = config.get_system_inc_probe_outcome();
+                    if actual != expected {
+                        return Err(format!(
+                            "{name}/{attempt}: real process returned {actual:?}, expected {expected:?}"
+                        )
+                        .into());
+                    }
+                    let expected_paths = match &expected {
+                        SystemIncProbeOutcome::Paths(paths) => paths.clone(),
+                        _ => Vec::new(),
+                    };
+                    let transient = name == "timeout" && attempt == 1;
+                    let impact = if transient {
+                        SystemIncLookupImpact::OmittedTransient
+                    } else if name == "empty" || name == "paths" {
+                        SystemIncLookupImpact::Participated
+                    } else {
+                        SystemIncLookupImpact::OmittedTerminal
+                    };
+                    for _ in 0..3 {
+                        let (paths, state) = config.peek_system_inc();
+                        if paths != expected_paths
+                            || state.attempts_consumed != attempt
+                            || state.retry_eligible() != transient
+                            || state.terminal() == transient
+                            || state.lookup_impact() != impact
+                            || std::fs::read(&marker)?.len() != attempt as usize
+                        {
+                            return Err(format!(
+                                "{name}/{attempt}: peek changed process count or misreported {state:?}"
+                            )
+                            .into());
+                        }
+                    }
+                }
+                // Settled outcomes, including the second timeout, never spawn
+                // again even when a real lookup acquires the cached state.
+                if config.get_system_inc_probe_outcome() != expected
+                    || std::fs::read(&marker)?.len() != attempts as usize
+                {
+                    return Err(
+                        format!("{name}: settled acquisition launched another process").into()
+                    );
+                }
+                Ok(())
+            };
+            if name == "timeout" {
+                run()?; // The unchanged one-second production deadline, twice.
+            } else {
+                PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), run)?;
+            }
+        }
+        Ok(())
+    }
+
     /// A single cold-start `TimedOut` must not permanently suppress a later
     /// successful probe within the same session and the same settings (#12945).
     /// The injected sequence proves same-config recovery: the first lookup
@@ -5719,6 +6038,250 @@ profile = "recommended"
             );
         }
         Ok(())
+    }
+
+    /// Reading the explanation snapshot must never launch or retry Perl, and
+    /// it must expose the transient-versus-terminal timeout distinction that
+    /// `get_system_inc()` deliberately collapses (#13589 falsifiers 1-3).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn peek_system_inc_probe_never_probes_and_tracks_timeout_budget() -> TestResult {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let counter = calls.clone();
+        let probe: system_inc_probe_injection::InjectedProbe =
+            std::rc::Rc::new(move |_config: &WorkspaceConfig, _args: &[String]| {
+                counter.set(counter.get() + 1);
+                SystemIncProbeOutcome::TimedOut
+            });
+        let _guard = system_inc_probe_injection::install(probe);
+
+        let mut config = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+
+        // Before any live lookup: not observed, eligible, nothing spawned.
+        let before = config.peek_system_inc_probe();
+        assert_eq!(before.outcome, SystemIncProbeOutcomeKind::NotObserved);
+        assert_eq!(before.attempts_consumed, 0);
+        assert_eq!(before.max_attempts, SYSTEM_INC_PROBE_MAX_ATTEMPTS);
+        assert!(before.retry_eligible() && !before.terminal());
+        assert_eq!(before.lookup_impact(), SystemIncLookupImpact::NotObserved);
+        assert!(config.peek_system_inc().0.is_empty());
+        assert_eq!(calls.get(), 0, "peeking must not launch Perl");
+
+        // One live timeout: transient, one retry remains.
+        assert!(config.get_system_inc().is_empty());
+        let transient = config.peek_system_inc_probe();
+        assert_eq!(transient.outcome, SystemIncProbeOutcomeKind::TimedOut);
+        assert_eq!(transient.attempts_consumed, 1);
+        assert!(transient.retry_eligible(), "first timeout must keep its retry");
+        assert!(!transient.terminal(), "first timeout must not be reported terminal");
+        assert_eq!(transient.lookup_impact(), SystemIncLookupImpact::OmittedTransient);
+        for _ in 0..3 {
+            let _ = config.peek_system_inc_probe();
+            let _ = config.peek_system_inc();
+        }
+        assert_eq!(calls.get(), 1, "peeking must not consume the remaining retry");
+
+        // Second live timeout: terminal until invalidation.
+        assert!(config.get_system_inc().is_empty());
+        let terminal = config.peek_system_inc_probe();
+        assert_eq!(terminal.outcome, SystemIncProbeOutcomeKind::TimedOut);
+        assert_eq!(terminal.attempts_consumed, 2);
+        assert!(!terminal.retry_eligible(), "second timeout must not be reported retryable");
+        assert!(terminal.terminal());
+        assert_eq!(terminal.lookup_impact(), SystemIncLookupImpact::OmittedTerminal);
+        assert_eq!(calls.get(), 2);
+        Ok(())
+    }
+
+    /// Settled classes keep their distinct meaning: a legitimate empty probe
+    /// participated, while unavailable/failed/non-zero outcomes are terminal
+    /// omissions (#13589 falsifiers 4-5).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn peek_system_inc_probe_preserves_settled_classes() -> TestResult {
+        let cases = [
+            (
+                SystemIncProbeOutcome::Unavailable,
+                SystemIncProbeOutcomeKind::Unavailable,
+                SystemIncLookupImpact::OmittedTerminal,
+                None,
+            ),
+            (
+                SystemIncProbeOutcome::IoFailed,
+                SystemIncProbeOutcomeKind::IoFailed,
+                SystemIncLookupImpact::OmittedTerminal,
+                None,
+            ),
+            (
+                SystemIncProbeOutcome::NonZeroExit,
+                SystemIncProbeOutcomeKind::NonZeroExit,
+                SystemIncLookupImpact::OmittedTerminal,
+                None,
+            ),
+            (
+                SystemIncProbeOutcome::SuccessfulEmpty,
+                SystemIncProbeOutcomeKind::SuccessfulEmpty,
+                SystemIncLookupImpact::Participated,
+                Some(0),
+            ),
+            (
+                SystemIncProbeOutcome::Paths(vec![PathBuf::from("a"), PathBuf::from("b")]),
+                SystemIncProbeOutcomeKind::Paths,
+                SystemIncLookupImpact::Participated,
+                Some(2),
+            ),
+        ];
+        for (outcome, kind, impact, root_count) in cases {
+            let injected = outcome.clone();
+            let probe: system_inc_probe_injection::InjectedProbe =
+                std::rc::Rc::new(move |_config: &WorkspaceConfig, _args: &[String]| {
+                    injected.clone()
+                });
+            let _guard = system_inc_probe_injection::install(probe);
+            let mut config = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+            let live = config.get_system_inc().to_vec();
+
+            let snapshot = config.peek_system_inc_probe();
+            assert_eq!(snapshot.outcome, kind, "{outcome:?}");
+            assert_eq!(snapshot.attempts_consumed, 1, "{outcome:?}");
+            assert!(snapshot.terminal(), "{outcome:?} is settled");
+            assert!(!snapshot.retry_eligible(), "{outcome:?} must not retry");
+            assert_eq!(snapshot.lookup_impact(), impact, "{outcome:?}");
+            assert_eq!(snapshot.system_root_count, root_count, "{outcome:?}");
+            assert_eq!(
+                config.peek_system_inc().0,
+                live,
+                "peeked paths must equal what the live lookup used for {outcome:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// `Disabled` is a configuration choice, not a failure, and a settings
+    /// change must make the pre-invalidation outcome unavailable rather than
+    /// current (#13589 falsifiers 5 and 9).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn peek_system_inc_probe_reports_disabled_and_drops_stale_outcome() -> TestResult {
+        let disabled = WorkspaceConfig::default().peek_system_inc_probe();
+        assert!(!disabled.use_system_inc);
+        assert_eq!(disabled.outcome, SystemIncProbeOutcomeKind::Disabled);
+        assert_eq!(disabled.lookup_impact(), SystemIncLookupImpact::Disabled);
+        assert!(disabled.terminal() && !disabled.retry_eligible());
+        assert_eq!(disabled.attempts_consumed, 0);
+
+        let probe: system_inc_probe_injection::InjectedProbe =
+            std::rc::Rc::new(move |_config: &WorkspaceConfig, _args: &[String]| {
+                SystemIncProbeOutcome::TimedOut
+            });
+        let _guard = system_inc_probe_injection::install(probe);
+        let mut config = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+        config.get_system_inc();
+        config.get_system_inc();
+        assert_eq!(
+            config.peek_system_inc_probe().lookup_impact(),
+            SystemIncLookupImpact::OmittedTerminal
+        );
+
+        config.update_from_value(&serde_json::json!({ "workspace": { "useSystemInc": false } }));
+        let off = config.peek_system_inc_probe();
+        assert_eq!(off.outcome, SystemIncProbeOutcomeKind::Disabled);
+        assert_eq!(off.attempts_consumed, 0, "a disabled config carries no stale attempts");
+
+        config.update_from_value(&serde_json::json!({ "workspace": { "useSystemInc": true } }));
+        let fresh = config.peek_system_inc_probe();
+        assert_eq!(
+            fresh.outcome,
+            SystemIncProbeOutcomeKind::NotObserved,
+            "the exhausted pre-invalidation outcome must not be published as current"
+        );
+        assert_eq!(fresh.attempts_consumed, 0);
+        assert!(fresh.retry_eligible());
+        Ok(())
+    }
+
+    /// A clone shares the stored epoch, so a snapshot read through either
+    /// handle describes the same live subject (#13589 falsifier 7).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn peek_system_inc_probe_sees_the_shared_epoch_through_clones() -> TestResult {
+        let probe: system_inc_probe_injection::InjectedProbe =
+            std::rc::Rc::new(move |_config: &WorkspaceConfig, _args: &[String]| {
+                SystemIncProbeOutcome::TimedOut
+            });
+        let _guard = system_inc_probe_injection::install(probe);
+        let mut stored = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+        stored.get_system_inc();
+
+        let mut clone = stored.clone();
+        assert_eq!(clone.peek_system_inc_probe(), stored.peek_system_inc_probe());
+
+        clone.get_system_inc();
+        let through_stored = stored.peek_system_inc_probe();
+        assert_eq!(through_stored.attempts_consumed, 2);
+        assert_eq!(through_stored.lookup_impact(), SystemIncLookupImpact::OmittedTerminal);
+        Ok(())
+    }
+
+    /// The snapshot's retry, terminal, and lookup-impact law over every
+    /// outcome kind and attempt count, stated on literal snapshots so the law
+    /// is pinned independently of how `peek_system_inc` fills the fields
+    /// (#13589 falsifiers 2, 3, 4, 5). Only `TimedOut` below the cap and
+    /// `NotObserved` may retry; `Disabled` is terminal for the configuration
+    /// but never a failure class; `SuccessfulEmpty` participates like `Paths`.
+    #[test]
+    fn system_inc_probe_snapshot_law_holds_on_literal_snapshots() {
+        use SystemIncLookupImpact as I;
+        use SystemIncProbeOutcomeKind as K;
+
+        let literal = |outcome: K, attempts_consumed: u32, system_root_count: Option<usize>| {
+            SystemIncProbeSnapshot {
+                use_system_inc: outcome != K::Disabled,
+                use_perl5lib: false,
+                outcome,
+                attempts_consumed,
+                max_attempts: SYSTEM_INC_PROBE_MAX_ATTEMPTS,
+                system_root_count,
+            }
+        };
+
+        // (outcome, attempts, roots, retry_eligible, terminal, impact)
+        let rows: [(K, u32, Option<usize>, bool, bool, I); 9] = [
+            (K::Disabled, 0, None, false, true, I::Disabled),
+            (K::NotObserved, 0, None, true, false, I::NotObserved),
+            (K::TimedOut, 1, None, true, false, I::OmittedTransient),
+            (K::TimedOut, 2, None, false, true, I::OmittedTerminal),
+            (K::Unavailable, 1, None, false, true, I::OmittedTerminal),
+            (K::IoFailed, 1, None, false, true, I::OmittedTerminal),
+            (K::NonZeroExit, 1, None, false, true, I::OmittedTerminal),
+            (K::SuccessfulEmpty, 1, Some(0), false, true, I::Participated),
+            (K::Paths, 1, Some(3), false, true, I::Participated),
+        ];
+        for (outcome, attempts, roots, eligible, terminal, impact) in rows {
+            let snapshot = literal(outcome, attempts, roots);
+            let label = format!("{outcome:?}/{attempts}");
+            assert_eq!(snapshot.use_system_inc, outcome != K::Disabled, "{label}");
+            assert!(!snapshot.use_perl5lib, "{label}");
+            assert_eq!(snapshot.outcome, outcome, "{label}");
+            assert_eq!(snapshot.attempts_consumed, attempts, "{label}");
+            assert_eq!(snapshot.max_attempts, 2, "{label}: cap is the #12945 constant");
+            assert_eq!(snapshot.system_root_count, roots, "{label}");
+            assert_eq!(snapshot.retry_eligible(), eligible, "{label}");
+            assert_eq!(snapshot.terminal(), terminal, "{label}");
+            assert_eq!(snapshot.lookup_impact(), impact, "{label}");
+            assert_eq!(snapshot.outcome.code(), outcome.code(), "{label}");
+            assert_eq!(snapshot.lookup_impact().code(), impact.code(), "{label}");
+        }
+
+        // The cap is a field, not a constant baked into the law: a snapshot
+        // reporting a larger budget keeps a second timeout retryable, and one
+        // reporting a smaller budget makes the first timeout terminal.
+        let wider = SystemIncProbeSnapshot { max_attempts: 3, ..literal(K::TimedOut, 2, None) };
+        assert!(wider.retry_eligible() && !wider.terminal());
+        assert_eq!(wider.lookup_impact(), I::OmittedTransient);
+        let narrower = SystemIncProbeSnapshot { max_attempts: 1, ..literal(K::TimedOut, 1, None) };
+        assert!(!narrower.retry_eligible() && narrower.terminal());
+        assert_eq!(narrower.lookup_impact(), I::OmittedTerminal);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -4386,3 +4386,50 @@ glob = "docs/**/*.csv"
 # pre-existing count we are ratcheting down.
 # ===========================================================================
 
+# The unwind is the input under test, not assertion or setup debt (#15098).
+[[allow]]
+id = "allow-inventory-lock-poison-fixture"
+kind = "panic"
+family = "panic_macro"
+path = "xtask/tests/file_policy.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "Deliberately unwind the joined fixture thread while holding a unit-valued mutex to prove poison recovery preserves exclusion, release and the poison marker. No production or other test panic is authorized."
+evidence = ["issue:15098", "test:xtask/tests/file_policy.rs"]
+created = "2026-09-10"
+review_after = "2026-12-09"
+
+[allow.selector]
+ast_kind = "macro_call"
+macro_name = "panic"
+container = "lock_tests::poisoned_inventory_lock_is_recovered"
+normalized_snippet_hash = "fnv1a64:8411f22989602209"
+target_fingerprint = "panic"
+
+[allow.last_seen]
+line = 73
+column = 21
+
+[[allow]]
+id = "allow-inventory-lock-poison-lint"
+kind = "lint_exception"
+family = "expect_attribute"
+path = "xtask/tests/file_policy.rs"
+owner = "core/maintainers"
+classification = "reviewed_exception"
+reason = "Expect only clippy::panic on the fixture whose deliberate unwind is required to poison the unit-valued mutex; the panic occurrence is separately receipted. No assertion or production lint is suppressed."
+evidence = ["issue:15098", "test:xtask/tests/file_policy.rs"]
+created = "2026-09-10"
+review_after = "2026-12-09"
+
+[allow.selector]
+ast_kind = "attribute"
+container = "lock_tests::poisoned_inventory_lock_is_recovered"
+lint = "clippy::panic"
+symbol = "#[expect( clippy::panic, reason = \"policy:allow-inventory-lock-poison-lint: actual unwind is the test input\" )]"
+target_fingerprint = "policy:allow-inventory-lock-poison-lint"
+normalized_snippet_hash = "fnv1a64:dcfd9e6d8162989e"
+
+[allow.last_seen]
+line = 59
+column = 5

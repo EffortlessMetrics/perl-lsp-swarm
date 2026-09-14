@@ -52,3 +52,19 @@ binaries or publish an artifact. The caller owns the accepted inventory policy; 
 adapter checks inventory format and identity binding but does not approve a release
 baseline. Start downstream consumers only after the adapter exits successfully and
 has published all of its output files.
+
+Publication requires hard-link support between the staging directory and its output
+filesystem. A destination collision during publication fails without replacing the
+competing file; if hard-linking is unsupported, the adapter fails closed rather than
+falling back to overwrite-based publication. The caller must provide a fresh private
+output directory and discard that directory after a failed invocation; partial final
+files are intentionally retained so rollback never deletes a pathname that may have
+been replaced by another writer. Discard partial output only after verifying that
+the caller exclusively owns the output directory.
+
+During an adapter invocation, other processes must not share or replace the private
+output directory. Creation-collision refusal protects a competing file before
+publication; after publication, the adapter performs no final-path deletion during
+failure cleanup. This preserves competing files under replacement races at the cost
+of leaving partial output for the caller to discard. Parent-directory replacement
+and hostile concurrent filesystem mutation remain outside the supported contract.

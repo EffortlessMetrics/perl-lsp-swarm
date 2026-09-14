@@ -844,6 +844,7 @@ jobs:
       - name: Evaluate routed result
         shell: bash
         env:
+          IS_DRAFT_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == true }}
           ROUTE_RESULT: ${{ needs.route-rust-small.result }}
           ROUTER_TARGET: ${{ needs.route-rust-small.outputs.target }}
           ROUTER_REASON: ${{ needs.route-rust-small.outputs.reason }}
@@ -880,12 +881,17 @@ jobs:
             echo "- fallback_result: \`${FALLBACK_RESULT:-}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Draft PRs intentionally skip route-rust-small via the job-level
-          # guard above. A skipped router is not a gate failure: the Rust lane
-          # will run when the PR becomes ready for review.
+          # Draft routing saves work but produces no required-check proof.
+          # Preserve existing non-draft skipped routing.
           if [ "$ROUTE_RESULT" = "skipped" ]; then
-            echo "::notice::Rust Small router was skipped (draft PR or non-applicable event) — required check is neutral/pass."
-            echo "Perl LSP Rust Small Result: neutral (router skipped — draft PR or non-applicable event)"
+            if [ "${IS_DRAFT_PR:-false}" = "true" ]; then
+              echo "RUST_SMALL_GATE_VERDICT=draft-no-proof"
+              echo "::error::Rust Small draft route skipped: NOT_PROVEN; no analysis was executed."
+              echo "- verdict: draft-no-proof (NOT_PROVEN)" >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "::notice::Rust Small router was skipped (non-draft event) — required check is neutral/pass."
+            echo "Perl LSP Rust Small Result: neutral (router skipped — non-draft event)"
             exit 0
           fi
 
