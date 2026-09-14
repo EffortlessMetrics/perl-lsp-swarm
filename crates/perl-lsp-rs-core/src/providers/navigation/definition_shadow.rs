@@ -75,7 +75,8 @@ pub fn goto_definition_shadow<Q: SemanticQueries>(
 
     // ── New semantic path ──
     let new_candidates = semantic_queries.definitions(symbol, context);
-    let new_summary = semantic_candidates_to_summary(&new_candidates);
+    let new_summary =
+        semantic_candidates_to_summary(workspace_index, legacy_location.as_ref(), &new_candidates);
 
     // ── Build receipt ──
     let receipt = SemanticShadowCompareReceipt::from_summaries_with_fact_source_traces(
@@ -163,7 +164,6 @@ pub fn goto_definition_cutover<Q: SemanticQueries>(
 ) -> DefinitionCutoverOutcome {
     // ── Semantic path (primary) ──
     let all_candidates = semantic_queries.definitions(symbol, context);
-    let new_summary = semantic_candidates_to_summary(&all_candidates);
 
     // Filter to usable candidates: exclude dynamic-boundary provenance and
     // low-confidence results that cannot drive a reliable jump.
@@ -176,6 +176,8 @@ pub fn goto_definition_cutover<Q: SemanticQueries>(
     // ── Legacy path (for fallback and receipt) ──
     let legacy_location = workspace_index.find_definition(symbol);
     let old_summary = legacy_location_to_summary(legacy_location.as_ref());
+    let new_summary =
+        semantic_candidates_to_summary(workspace_index, legacy_location.as_ref(), &all_candidates);
 
     // ── Classify result ──
     let result = classify_cutover_result(usable, legacy_location);
@@ -218,9 +220,10 @@ pub fn goto_definition_live_exact<Q: SemanticQueries>(
     context: &QueryContext,
 ) -> DefinitionCutoverOutcome {
     let all_candidates = semantic_queries.definitions(symbol, context);
-    let new_summary = semantic_candidates_to_summary(&all_candidates);
     let legacy_location = workspace_index.find_definition(symbol);
     let old_summary = legacy_location_to_summary(legacy_location.as_ref());
+    let new_summary =
+        semantic_candidates_to_summary(workspace_index, legacy_location.as_ref(), &all_candidates);
 
     let exact_candidate = match all_candidates.as_slice() {
         [candidate] if is_live_exact_syntax_candidate(workspace_index, candidate) => {
@@ -271,9 +274,10 @@ pub fn goto_definition_live_exact_or_imported<Q: SemanticQueries>(
     context: &QueryContext,
 ) -> DefinitionCutoverOutcome {
     let all_candidates = semantic_queries.definitions(symbol, context);
-    let new_summary = semantic_candidates_to_summary(&all_candidates);
     let legacy_location = workspace_index.find_definition(symbol);
     let old_summary = legacy_location_to_summary(legacy_location.as_ref());
+    let new_summary =
+        semantic_candidates_to_summary(workspace_index, legacy_location.as_ref(), &all_candidates);
 
     let live_candidate = match all_candidates.as_slice() {
         [candidate] if is_live_exact_or_imported_candidate(workspace_index, candidate) => {
@@ -621,20 +625,94 @@ fn definition_trace_shape(
     }
 }
 
+/// Identity prefix for a semantic candidate that has no resolvable source
+/// anchor (for example a generated or virtual member).
+///
+/// It is deliberately not a URI, so such a candidate can never compare equal to
+/// a source-backed legacy identity and can never be counted as agreement.
+const NO_SOURCE_ANCHOR_IDENTITY_PREFIX: &str = "no-source-anchor";
+
+/// Render a legacy declaration location as a shadow-compare identity.
+fn location_identity(location: &Location) -> String {
+    format!("{}:{}:{}", location.uri, location.range.start.line, location.range.start.column)
+}
+
 /// Convert a legacy `Location` (if any) into a [`ShadowResultSummary`].
 fn legacy_location_to_summary(location: Option<&Location>) -> ShadowResultSummary {
     match location {
-        Some(loc) => {
-            let identity =
-                format!("{}:{}:{}", loc.uri, loc.range.start.line, loc.range.start.column);
-            summarize_identities(Some(vec![identity]))
-        }
+        Some(loc) => summarize_identities(Some(vec![location_identity(loc)])),
         None => summarize_identities(None),
+    }
+}
+
+/// True when `candidate`'s semantic anchor lies inside the legacy declaration
+/// span in the same file.
+///
+/// The two paths describe the same definition with different span conventions:
+/// the legacy index reports the whole declaration (`sub bar { 1 }`) while a
+/// semantic anchor reports the name token (`bar`). Containment is therefore the
+/// correct relation, and it is evaluated on byte offsets so the comparison does
+/// not depend on the two paths agreeing about column encoding.
+fn anchor_is_within_legacy_declaration(
+    workspace_index: &WorkspaceIndex,
+    legacy: &Location,
+    candidate: &perl_semantic_facts::DefinitionCandidate,
+) -> bool {
+    let Some(shard) = workspace_index.file_fact_shard(&legacy.uri) else {
+        return false;
+    };
+    let declaration_start = legacy.range.start.byte;
+    let declaration_end = legacy.range.end.byte;
+    if declaration_end <= declaration_start {
+        return false;
+    }
+
+    shard.anchors.iter().filter(|anchor| anchor.id == candidate.anchor_id).any(|anchor| {
+        if anchor.span_end_byte <= anchor.span_start_byte {
+            return false;
+        }
+        let (Ok(start), Ok(end)) =
+            (usize::try_from(anchor.span_start_byte), usize::try_from(anchor.span_end_byte))
+        else {
+            return false;
+        };
+        start >= declaration_start && end <= declaration_end
+    })
+}
+
+/// Build the shadow-compare identity for one semantic definition candidate.
+///
+/// Identities must live in the same space as the legacy path's, otherwise the
+/// two summaries can never compare equal and genuine agreement is unrepresentable.
+fn semantic_candidate_identity(
+    workspace_index: &WorkspaceIndex,
+    legacy_location: Option<&Location>,
+    candidate: &perl_semantic_facts::DefinitionCandidate,
+) -> String {
+    // Same declaration, different span convention: adopt the legacy identity.
+    if let Some(legacy) = legacy_location
+        && anchor_is_within_legacy_declaration(workspace_index, legacy, candidate)
+    {
+        return location_identity(legacy);
+    }
+
+    // A different (or additional) target still gets a real, comparable source
+    // location when its anchor resolves; otherwise it is explicitly non-source.
+    match workspace_index.semantic_anchor_wire_location(candidate.anchor_id) {
+        Some(wire) => {
+            format!("{}:{}:{}", wire.uri, wire.range.start.line, wire.range.start.character)
+        }
+        None => format!(
+            "{NO_SOURCE_ANCHOR_IDENTITY_PREFIX}:{}:{}",
+            candidate.canonical_name, candidate.anchor_id.0
+        ),
     }
 }
 
 /// Convert semantic `DefinitionCandidate` results into a [`ShadowResultSummary`].
 fn semantic_candidates_to_summary(
+    workspace_index: &WorkspaceIndex,
+    legacy_location: Option<&Location>,
     candidates: &[perl_semantic_facts::DefinitionCandidate],
 ) -> ShadowResultSummary {
     if candidates.is_empty() {
@@ -643,11 +721,7 @@ fn semantic_candidates_to_summary(
 
     let identities: Vec<String> = candidates
         .iter()
-        .map(|c| {
-            // Use canonical_name + anchor_id as a stable identity since we
-            // don't have the resolved URI/line from the semantic path yet.
-            format!("{}:anchor:{}", c.canonical_name, c.anchor_id.0)
-        })
+        .map(|candidate| semantic_candidate_identity(workspace_index, legacy_location, candidate))
         .collect();
 
     summarize_identities(Some(identities))
@@ -785,6 +859,125 @@ mod tests {
         Ok(())
     }
 
+    /// Index one file and return the real semantic definition candidates the
+    /// canonical port produces for `symbol`.
+    fn indexed_index_and_candidates(
+        uri: &str,
+        code: &str,
+        symbol: &str,
+    ) -> Result<(WorkspaceIndex, Vec<DefinitionCandidate>), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
+        index
+            .index_file(Url::parse(uri)?, code.to_string())
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        let candidates = index
+            .with_semantic_queries_for_uri(uri, |file_id, queries| {
+                let ctx = QueryContext::new(file_id, None, Some(0));
+                queries.definitions(symbol, &ctx)
+            })
+            .ok_or("missing semantic queries")?;
+        Ok((index, candidates))
+    }
+
+    #[test]
+    fn shadow_reports_same_when_both_paths_agree_on_one_definition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let uri = "file:///lib/Foo.pm";
+        let (index, candidates) =
+            indexed_index_and_candidates(uri, "package Foo;\n\nsub bar { 1 }\n\n1;\n", "Foo::bar")?;
+
+        assert!(index.find_definition("Foo::bar").is_some(), "legacy path must resolve Foo::bar");
+        assert_eq!(candidates.len(), 1, "fixture must yield exactly one semantic candidate");
+
+        let queries = StubSemanticQueries { definitions_result: candidates };
+        let ctx = QueryContext::new(FileId(1), None, None);
+
+        let result = goto_definition_shadow(&index, &queries, "Foo::bar", &ctx);
+
+        assert!(result.receipt.old_result.available);
+        assert!(result.receipt.new_result.available);
+        assert_eq!(result.receipt.old_result.match_count, 1);
+        assert_eq!(result.receipt.new_result.match_count, 1);
+        assert_eq!(
+            result.receipt.verdict,
+            ShadowCompareVerdict::Same,
+            "both paths resolved the same single definition, so the receipt must record \
+             agreement; old={:?} new={:?}",
+            result.receipt.old_result,
+            result.receipt.new_result
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_does_not_report_same_when_anchor_belongs_to_another_declaration()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // `other` is a real, source-backed declaration in the same file, but it
+        // is not the declaration the legacy path returned for `Foo::bar`.
+        // Containment must reject it rather than manufacture agreement.
+        let uri = "file:///lib/Foo.pm";
+        let code = "package Foo;\n\nsub bar { 1 }\n\nsub other { 2 }\n\n1;\n";
+        let (index, other_candidates) = indexed_index_and_candidates(uri, code, "Foo::other")?;
+        assert_eq!(other_candidates.len(), 1, "fixture must yield one candidate for Foo::other");
+
+        let queries = StubSemanticQueries { definitions_result: other_candidates };
+        let ctx = QueryContext::new(FileId(1), None, None);
+
+        // Legacy resolves Foo::bar; the semantic path hands back Foo::other.
+        let result = goto_definition_shadow(&index, &queries, "Foo::bar", &ctx);
+
+        assert!(result.receipt.old_result.available);
+        assert!(result.receipt.new_result.available);
+        assert_ne!(
+            result.receipt.verdict,
+            ShadowCompareVerdict::Same,
+            "a different declaration must not compare equal; old={:?} new={:?}",
+            result.receipt.old_result,
+            result.receipt.new_result
+        );
+        assert_ne!(
+            result.receipt.old_result.identities, result.receipt.new_result.identities,
+            "identities must distinguish the two declarations"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_marks_candidate_without_source_anchor_as_non_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A candidate whose anchor resolves to no source span (generated or
+        // virtual member) must never be counted as agreement with the legacy
+        // source-backed declaration.
+        let uri = "file:///lib/Foo.pm";
+        let (index, _real) =
+            indexed_index_and_candidates(uri, "package Foo;\n\nsub bar { 1 }\n\n1;\n", "Foo::bar")?;
+
+        let queries = StubSemanticQueries {
+            definitions_result: vec![make_candidate("Foo::bar", 987_654_321, 20)],
+        };
+        let ctx = QueryContext::new(FileId(1), None, None);
+
+        let result = goto_definition_shadow(&index, &queries, "Foo::bar", &ctx);
+
+        assert!(result.receipt.old_result.available);
+        assert_ne!(
+            result.receipt.verdict,
+            ShadowCompareVerdict::Same,
+            "an unresolvable anchor must not compare equal to a source-backed declaration"
+        );
+        assert!(
+            result
+                .receipt
+                .new_result
+                .identities
+                .iter()
+                .all(|identity| identity.starts_with(super::NO_SOURCE_ANCHOR_IDENTITY_PREFIX)),
+            "identities must be explicitly non-source; got {:?}",
+            result.receipt.new_result.identities
+        );
+        Ok(())
+    }
+
     #[test]
     fn legacy_location_to_summary_some() -> Result<(), Box<dyn std::error::Error>> {
         use perl_parser_core::position::{Position, Range};
@@ -810,7 +1003,8 @@ mod tests {
 
     #[test]
     fn semantic_candidates_to_summary_empty() -> Result<(), Box<dyn std::error::Error>> {
-        let summary = super::semantic_candidates_to_summary(&[]);
+        let index = WorkspaceIndex::new();
+        let summary = super::semantic_candidates_to_summary(&index, None, &[]);
         assert!(summary.available);
         assert_eq!(summary.match_count, 0);
         Ok(())
@@ -818,13 +1012,24 @@ mod tests {
 
     #[test]
     fn semantic_candidates_to_summary_multiple() -> Result<(), Box<dyn std::error::Error>> {
+        let index = WorkspaceIndex::new();
         let candidates =
             vec![make_candidate("Foo::bar", 10, 20), make_candidate("Baz::bar", 30, 40)];
-        let summary = super::semantic_candidates_to_summary(&candidates);
+        let summary = super::semantic_candidates_to_summary(&index, None, &candidates);
         assert!(summary.available);
         assert_eq!(summary.match_count, 2);
         // Identities should be sorted and deduplicated.
         assert_eq!(summary.identities.len(), 2);
+        // Neither anchor resolves against an empty index, so both identities
+        // must be explicitly non-source rather than look like real locations.
+        assert!(
+            summary
+                .identities
+                .iter()
+                .all(|identity| identity.starts_with(super::NO_SOURCE_ANCHOR_IDENTITY_PREFIX)),
+            "got {:?}",
+            summary.identities
+        );
         Ok(())
     }
 
