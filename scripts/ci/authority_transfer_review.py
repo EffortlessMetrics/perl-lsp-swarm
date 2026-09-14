@@ -268,16 +268,35 @@ def read_changed_files(inputs: dict[str, Any]) -> tuple[list[str], bool]:
     listed: Path | None = inputs["changed_list"]
     if listed is not None:
         try:
-            # Strict decode: a replacement character would let a path the
-            # evaluator could not actually read be scored as an ordinary
-            # non-governed file, publishing a definite verdict over an input
-            # whose identity was never established. Undecodable bytes are an
-            # input-identity failure (NOT_PROVEN_GITHUB), not a silent miss.
-            raw_paths.extend(listed.read_text(encoding="utf-8").splitlines())
+            payload = listed.read_bytes()
         except OSError as error:
             raise ValueError(f"changed_list_unreadable ({error})")
-        except UnicodeDecodeError as error:
-            raise ValueError(f"changed_list_undecodable ({error})")
+        # The workflow emits `git diff --name-only -z`: NUL-terminated raw
+        # path bytes with no quoting at all. Splitting on newlines instead
+        # would consume Git's C-quoted form, which wraps any path containing
+        # a tab, newline, double quote, backslash, or non-ASCII byte in an
+        # escaped string that matches no surface binding -- so a governed
+        # change would be scored as an ordinary file and pass silently.
+        # `core.quotePath=false` alone is not enough: it suppresses quoting
+        # for non-ASCII bytes only, and leaves tab, newline, quote, and
+        # backslash paths quoted. A file with no NUL is still accepted and
+        # split on newlines so a hand-run `--changed-list` keeps working;
+        # a path containing a newline can only arrive through the NUL form.
+        separator = b"\x00" if b"\x00" in payload else b"\n"
+        for entry in payload.split(separator):
+            entry = entry.strip(b"\r\n") if separator == b"\n" else entry
+            if not entry:
+                continue
+            try:
+                # Strict decode: a replacement character would let a path the
+                # evaluator could not actually read be scored as an ordinary
+                # non-governed file, publishing a definite verdict over an
+                # input whose identity was never established. Undecodable
+                # bytes are an input-identity failure (NOT_PROVEN_GITHUB),
+                # not a silent miss.
+                raw_paths.append(entry.decode("utf-8"))
+            except UnicodeDecodeError as error:
+                raise ValueError(f"changed_list_undecodable ({error})")
     raw_paths.extend(inputs["changed_files"])
     normalized: list[str] = []
     seen: set[str] = set()

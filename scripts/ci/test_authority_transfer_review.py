@@ -147,6 +147,51 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         }
         return atr.evaluate(inputs)
 
+    def test_nul_terminated_changed_list_reaches_the_governed_row(self) -> None:
+        # The workflow emits `git diff --name-only -z`. If the reader split
+        # on newlines the whole payload would arrive as one bogus path and
+        # the governed row would vanish into PASS_NOT_APPLICABLE.
+        listed = self.base / "changed-nul.bin"
+        listed.write_bytes(
+            b"\x00".join(
+                p.encode("utf-8") for p in GOVERNED_CHANGED + UNRELATED_CHANGED
+            )
+            + b"\x00"
+        )
+        receipt = self.evaluate([], [], changed_list=listed)
+        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+        self.assertEqual(GOVERNED_CHANGED, receipt["verdicts"][0]["matched_paths"])
+
+    def test_newline_changed_list_still_works_for_hand_runs(self) -> None:
+        # Control for the NUL split: a payload with no NUL keeps the
+        # newline form, so `--changed-list` stays usable outside CI.
+        listed = self.base / "changed-newline.txt"
+        listed.write_text("\n".join(GOVERNED_CHANGED) + "\n", encoding="utf-8")
+        receipt = self.evaluate([], [], changed_list=listed)
+        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+
+    def test_a_governed_path_holding_a_newline_survives_the_nul_form(self) -> None:
+        # The defect -z closes: under C-quoting such a path arrives as an
+        # escaped string that matches no binding, so the governed change it
+        # accompanies is scored as ordinary work. Here the awkward path is
+        # carried alongside a real governed path; the governed row must
+        # still resolve, and the awkward path must survive as one entry
+        # rather than splitting into two bogus ones.
+        awkward = "crates/other/src/we\nird.rs"
+        listed = self.base / "changed-newline-in-path.bin"
+        listed.write_bytes(
+            b"\x00".join(
+                p.encode("utf-8") for p in [awkward] + GOVERNED_CHANGED
+            )
+            + b"\x00"
+        )
+        receipt = self.evaluate([], [], changed_list=listed)
+        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+        self.assertEqual(GOVERNED_CHANGED, receipt["verdicts"][0]["matched_paths"])
+        self.assertEqual(
+            1 + len(GOVERNED_CHANGED), receipt["inputs"]["changed_file_count"]
+        )
+
     # ------------------------------------------------------------------
     # Applicability and exact-head binding
     # ------------------------------------------------------------------
@@ -657,10 +702,13 @@ class AuthorityTransferReviewTests(unittest.TestCase):
 class WorkflowShellContractTests(unittest.TestCase):
     """The evaluator is only as good as the input the workflow hands it.
 
-    Two shipped defects lived in the workflow shell rather than in Python, so
-    the suite above could not see them: an abort-on-symlink guard that fired on
-    every pull request because this repository tracks a symlink, and a
-    changed-file diff that hid governed renames. These pin the input contract.
+    Several shipped defects lived in the workflow shell rather than in Python,
+    so the suite above could not see them: an abort-on-symlink guard that fired
+    on every pull request because this repository tracks a symlink, a
+    changed-file diff that hid governed renames, a quoting mode that covered
+    only non-ASCII paths, an unsafe tree shape screened only after extraction,
+    and a receipt whose absence read as a clean pass. These pin the input
+    contract.
     """
 
     WORKFLOW = (
@@ -679,7 +727,41 @@ class WorkflowShellContractTests(unittest.TestCase):
         # appears and the run reports PASS_NOT_APPLICABLE for a change that
         # removed governed authority.
         self.assertIn("--no-renames", self.text)
-        self.assertIn("core.quotePath=false", self.text)
+
+    def test_changed_file_diff_emits_nul_terminated_raw_paths(self) -> None:
+        # core.quotePath=false suppresses quoting for non-ASCII bytes only:
+        # a governed path containing a tab, newline, double quote, or
+        # backslash still arrives C-quoted and matches no surface binding,
+        # so the run reports a clean verdict over a change it never saw.
+        # -z emits raw bytes with no quoting at all and supersedes it.
+        self.assertIn("--name-only -z", self.text)
+        # The prose above the command still names core.quotePath to explain
+        # why it is insufficient; what must be gone is the invocation.
+        self.assertNotIn("-c core.quotePath=false", self.text)
+
+    def test_unsafe_tree_entries_are_screened_before_extraction(self) -> None:
+        # `git archive | tar -x` writes to disk first, so a sweep that runs
+        # afterwards can only report what already landed. The screen must
+        # come first in the step, and must reject gitlinks, absolute paths,
+        # and `..` components.
+        self.assertIn("git ls-tree -r --full-tree -z", self.text)
+        self.assertIn("160000", self.text)
+        # Anchor on the invocation, not the header comment that also names
+        # `git archive` when describing the bounded-data route.
+        self.assertLess(
+            self.text.index("git ls-tree -r --full-tree -z"),
+            self.text.index('git archive "$HEAD_SHA"'),
+            "the tree screen must run before extraction, not after",
+        )
+
+    def test_an_absent_receipt_is_not_a_clean_advisory_pass(self) -> None:
+        # The upload step uses if-no-files-found: ignore, so an evaluator
+        # that exits 0 without writing a receipt would publish a green
+        # advisory context backed by nothing at all.
+        self.assertIn('test -s "$RECEIPT"', self.text)
+
+    def test_trusted_base_checkout_pulls_no_linked_repositories(self) -> None:
+        self.assertIn("submodules: false", self.text)
 
     def test_candidate_symlinks_are_removed_not_rejected(self) -> None:
         # This repository tracks crates/tree-sitter-perl/test/corpus as a

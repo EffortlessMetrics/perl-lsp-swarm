@@ -62,6 +62,9 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || github.ref }}
           fetch-depth: 0
           persist-credentials: false
+          # The trusted view the evaluator judges from never pulls linked
+          # repositories, even if a future base adds one.
+          submodules: false
 
       - name: Prove exact base execution
         if: github.event_name == 'pull_request_target'
@@ -113,6 +116,35 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$CANDIDATE_TREE"
+          # Fail closed BEFORE extracting, not after. `git archive | tar -x`
+          # writes to disk first, so a post-hoc sweep can only report what
+          # already landed. Ordinary Git plumbing cannot build an absolute
+          # path, a `..` component, or a blob-and-directory collision -- this
+          # was verified against `git update-index`, which rejects all three
+          # -- so this guards a malformed tree object pushed directly, not
+          # anything a normal candidate can commit. It is cheap, so it runs.
+          # -z keeps raw path bytes: `ls-tree` otherwise C-quotes unusual
+          # paths, and a whitespace-split scan would read only the first
+          # field of a quoted name and miss the very entry being screened.
+          # `read -d ''` consumes NUL-delimited records; Git paths cannot
+          # contain a NUL, so nothing is lost. Symlinks (120000) are
+          # deliberately NOT rejected here: this repository tracks one, so
+          # rejecting them failed every run; they are deleted after
+          # extraction, before anything reads the tree.
+          unsafe=""
+          while IFS= read -r -d '' entry; do
+            mode="${entry%% *}"
+            path="${entry#* }"
+            case "$mode" in 160000) unsafe="$entry" ;; esac
+            case "$path" in /*|..|../*|*/../*|*/..) unsafe="$entry" ;; esac
+            if [ -n "$unsafe" ]; then break; fi
+          done < <(git ls-tree -r --full-tree -z \
+                     --format='%(objectmode) %(path)' "$HEAD_SHA")
+          if [ -n "$unsafe" ]; then
+            printf '::error::Candidate tree declares an unsafe entry (%s); refusing to extract\n' \
+              "$unsafe"
+            exit 3
+          fi
           git archive "$HEAD_SHA" | tar -x -C "$CANDIDATE_TREE"
           # `git archive | tar` preserves symlink entries, and the trusted
           # validator's read calls would follow them out of the extracted
@@ -153,18 +185,21 @@ jobs:
           # head` attributes unrelated main movement to the PR and churns
           # governed-row verdicts.
           MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
-          # core.quotePath=false emits raw UTF-8 path bytes instead of
-          # C-quoted escapes. Under the default (true) a non-ASCII governed
-          # path would arrive as `"docs/\303\251.md"` and silently match no
-          # binding; the evaluator would then report a clean verdict over a
-          # governed change it never saw. Undecodable bytes still reach the
-          # evaluator as bytes, where strict decoding fails them closed.
-          # --no-renames is load-bearing. With rename detection on (git's
-          # default), moving a governed file out of its surface emits only
-          # the destination path, so the governed row never appears and the
-          # evaluator reports PASS_NOT_APPLICABLE for a change that removed
-          # governed authority. --no-renames emits both sides.
-          git -c core.quotePath=false diff --no-renames --name-only \
+          # -z is load-bearing, not cosmetic. Without it Git C-quotes any
+          # path containing a tab, newline, double quote, backslash, or
+          # non-ASCII byte, and that quoted string matches no surface
+          # binding -- the evaluator would report a clean verdict over a
+          # governed change it never saw. `core.quotePath=false` suppresses
+          # quoting for non-ASCII bytes only and leaves the rest quoted, so
+          # -z replaces it: raw NUL-terminated bytes, no quoting at all.
+          # Undecodable bytes still reach the evaluator as bytes, where
+          # strict decoding fails them closed.
+          # --no-renames is equally load-bearing. With rename detection on
+          # (Git's default), moving a governed file out of its surface emits
+          # only the destination path, so the governed row never appears and
+          # the evaluator reports PASS_NOT_APPLICABLE for a change that
+          # removed governed authority. --no-renames emits both sides.
+          git diff --no-renames --name-only -z \
             "$MERGE_BASE" "$HEAD_SHA" > "$CHANGED_LIST"
 
       - name: Publish advisory Authority Transfer Review context
@@ -190,6 +225,9 @@ jobs:
             --changed-list "$CHANGED_LIST" \
             --receipt "$RECEIPT" \
             --summary "$GITHUB_STEP_SUMMARY"
+          # Exit 0 with no receipt would publish a green advisory context
+          # backed by nothing, and the upload step ignores a missing file.
+          test -s "$RECEIPT"
 
       - name: Dispatch summary (no PR context to evaluate)
         if: github.event_name != 'pull_request_target'
