@@ -104,7 +104,14 @@ pub enum RecoveryConfidence {
 /// v4 adds the regex-family variants [`HirExpr::Regex`], [`HirExpr::Match`],
 /// [`HirExpr::Substitution`] and [`HirExpr::Transliteration`] (#7136), which
 /// replace the previous `Opaque`/`Call` fallback for those constructs.
-pub const HIR_BODY_MODEL_VERSION: u32 = 4;
+/// v5 adds [`HirExpr::Try`] and [`HirCatchHandler`] (#15567), which replace the
+/// previous `Call { args: [Opaque{Block}, …] }` fallback for
+/// `try`/`catch`/`finally` and, unlike that fallback, retain the statements
+/// inside each region.
+///
+/// [`HirExpr::Try`]: super::body::HirExpr::Try
+/// [`HirCatchHandler`]: super::body::HirCatchHandler
+pub const HIR_BODY_MODEL_VERSION: u32 = 5;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

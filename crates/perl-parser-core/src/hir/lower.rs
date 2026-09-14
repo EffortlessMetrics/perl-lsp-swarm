@@ -9,10 +9,11 @@ use crate::syntax::regex_analysis::RegexAnalysisFamily;
 
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
-    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirRegex,
-    HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution,
-    HirTransliteration, HirVariable, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
-    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirCatchHandler, HirExpr,
+    HirExprId, HirRegex, HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript,
+    HirSubstitution, HirTransliteration, HirVariable, RegexAnalysisAnchor, ReplacementEvaluation,
+    Sigil, SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr,
+    readline_expr,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -3965,6 +3966,42 @@ impl<'a> BodyBuilder2<'a> {
                 self.alloc_expr(HirExpr::Return { value: value_id }, range)
             }
 
+            NodeKind::Try { body, catch_blocks, finally_block } => {
+                // Each region is lowered as a real nested block (#15567).
+                //
+                // This replaces a call-shaped arm whose stated intent — "lower
+                // all blocks so variable reads in try/catch/finally are
+                // captured for effect analysis" — was right but unmet: it
+                // called `lower_expr` on each `NodeKind::Block`, and
+                // `lower_expr` has no `Block` arm, so every region collapsed to
+                // a childless `Opaque { ast_kind: "Block" }` argument. The
+                // construct reached PIR-A as `Call` over three empty blocks,
+                // dropping every statement inside the regions and reporting the
+                // construct as an unsupported call. `lower_nested_block` is the
+                // block-lowering entry point that arm needed.
+                let body_block = self.lower_nested_block(body);
+
+                let mut catch_handlers = Vec::with_capacity(catch_blocks.len());
+                for (binding, block) in catch_blocks {
+                    // The binding is established before the handler body runs,
+                    // so it is lowered first and the arena order matches source
+                    // evaluation order.
+                    let binding = binding.as_ref().map(|(spelling, binding_range)| {
+                        self.lower_catch_binding(spelling, *binding_range)
+                    });
+                    let block = self.lower_nested_block(block);
+                    catch_handlers.push(HirCatchHandler { binding, block });
+                }
+
+                let finally_block =
+                    finally_block.as_deref().map(|block| self.lower_nested_block(block));
+
+                self.alloc_expr(
+                    HirExpr::Try { body: body_block, catch_handlers, finally_block },
+                    range,
+                )
+            }
+
             NodeKind::VariableDeclaration { declarator, variable, initializer, .. }
                 if declarator == "local"
                     && named_variable_or_glob(declaration_target_node(variable)).is_none() =>
@@ -4191,22 +4228,6 @@ impl<'a> BodyBuilder2<'a> {
                         ast_kind: "Defer".to_string(),
                         callee_span: None,
                     },
-                    range,
-                )
-            }
-
-            NodeKind::Try { body, catch_blocks, finally_block } => {
-                // Lower all blocks so variable reads in try/catch/finally
-                // are captured for effect analysis.
-                let mut arg_ids = vec![self.lower_expr(body)];
-                for (_, handler) in catch_blocks {
-                    arg_ids.push(self.lower_expr(handler));
-                }
-                if let Some(fin) = finally_block {
-                    arg_ids.push(self.lower_expr(fin));
-                }
-                self.alloc_expr(
-                    HirExpr::Call { args: arg_ids, ast_kind: "Try".to_string(), callee_span: None },
                     range,
                 )
             }
@@ -4537,6 +4558,34 @@ impl<'a> BodyBuilder2<'a> {
     }
 
     /// Lower a foreach iterator as a write-place expression.
+    /// Lower a `catch ($e)` exception binding into a write place (#15567).
+    ///
+    /// `parse_try` records the catch variable as `format!("{sigil}{name}")`
+    /// together with the *variable token's* own range, so the spelling is split
+    /// back apart: every other [`HirVariable`] carries a bare `name` with the
+    /// sigil in its own field, and the place is anchored at the variable token
+    /// rather than the whole `catch (…)` header — the same anchoring rule as
+    /// [`lower_iterator_binding`](Self::lower_iterator_binding).
+    ///
+    /// The parser only admits a scalar catch variable, so a spelling without a
+    /// recognized sigil is treated as a bare name under the scalar sigil rather
+    /// than silently keeping a sigil character inside `name`.
+    fn lower_catch_binding(&mut self, spelling: &str, range: SourceLocation) -> HirExprId {
+        let (sigil, name) = match spelling.split_at_checked(1) {
+            Some((sigil, rest)) if matches!(sigil, "$" | "@" | "%" | "&" | "*") => (sigil, rest),
+            _ => ("$", spelling),
+        };
+        self.alloc_expr(
+            HirExpr::Variable(HirVariable {
+                sigil: sigil_from_str(sigil),
+                name: name.to_string(),
+                kind: VariableKind::Lexical,
+                access: AccessMode::Write,
+            }),
+            range,
+        )
+    }
+
     fn lower_iterator_binding(&mut self, node: &Node) -> HirExprId {
         match &node.kind {
             NodeKind::Variable { .. } => self.lower_expr_as_place(node, AccessMode::Write),
