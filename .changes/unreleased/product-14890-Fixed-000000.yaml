@@ -1,0 +1,14 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Reject invalid UTF-8 in incoming Content-Length JSON-RPC bodies instead of
+  rewriting them with U+FFFD, and surface malformed JSON and JSON-RPC shape
+  failures as typed one-frame outcomes. The reader reports; the runtime currently
+  logs payload-private metadata and continues. Exact respond/close/exit
+  disposition remains owned by the malformed-input programme.
+time: 2026-09-06T00:00:00Z
+custom:
+  PR: "14890"
+  Slug: transport-strict-utf8-json
+  Breaking: "no"

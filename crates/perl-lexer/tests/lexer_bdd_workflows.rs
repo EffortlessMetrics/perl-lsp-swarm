@@ -72,7 +72,7 @@ fn scenario_quote_operators_require_delimiters() {
         let first = &tokens[0];
         let is_expected = match kind_name {
             "QuoteSingle" => matches!(first.token_type, TokenType::QuoteSingle),
-            "QuoteDouble" => matches!(first.token_type, TokenType::QuoteDouble),
+            "QuoteDouble" => matches!(first.token_type, TokenType::QuoteDouble(_)),
             "QuoteWords" => matches!(first.token_type, TokenType::QuoteWords),
             "QuoteRegex" => matches!(first.token_type, TokenType::QuoteRegex),
             "QuoteCommand" => matches!(first.token_type, TokenType::QuoteCommand),
@@ -95,7 +95,9 @@ fn scenario_heredoc_is_emitted_as_start_then_body() {
 
     scenario.then("the stream contains HeredocStart and HeredocBody in order");
     let start_idx = tokens.iter().position(|t| matches!(t.token_type, TokenType::HeredocStart));
-    let body_idx = tokens.iter().position(|t| matches!(t.token_type, TokenType::HeredocBody(_)));
+    let body_idx = tokens.iter().position(|t| {
+        matches!(t.token_type, TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_))
+    });
 
     assert!(start_idx.is_some(), "expected HeredocStart token");
     assert!(body_idx.is_some(), "expected HeredocBody token");
@@ -117,7 +119,7 @@ fn scenario_hash_subscript_context_suppresses_quote_op_detection() {
             !matches!(
                 token.token_type,
                 TokenType::QuoteSingle
-                    | TokenType::QuoteDouble
+                    | TokenType::QuoteDouble(_)
                     | TokenType::QuoteWords
                     | TokenType::QuoteRegex
                     | TokenType::QuoteCommand

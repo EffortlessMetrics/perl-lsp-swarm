@@ -164,11 +164,11 @@ fn lsp_inlay_hint_resolve_no_op_when_complete() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-/// Test that inlayHint/resolve adds labelDetails.location for click-to-definition
+/// Test that inlayHint/resolve adds an InlayHintLabelPart.location for click-to-definition
 ///
 /// When a client advertises "label.location" in resolveSupport and the hint has
 /// a data.uri pointing to an open document with a matching subroutine, the resolved
-/// hint must include labelDetails.location with uri and range fields.
+/// hint must expose the location through its label part with uri and range fields.
 #[test]
 fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error::Error>> {
     let srv = LspServer::new();
@@ -221,7 +221,7 @@ fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error
     // Resolve a parameter hint referencing that subroutine
     let hint = json!({
         "position": {"line": 0, "character": 15},
-        "label": "x:",
+        "label": [{ "value": "x:" }],
         "kind": 2,
         "paddingLeft": false,
         "paddingRight": true,
@@ -242,16 +242,27 @@ fn lsp_inlay_hint_resolve_adds_label_location() -> Result<(), Box<dyn std::error
     let res = srv.handle_request(req).ok_or("Failed to handle inlayHint/resolve request")?;
     let result = res.result.ok_or("No result in inlayHint/resolve response")?;
 
-    // Must have labelDetails with a location field
-    let label_details = result.get("labelDetails").ok_or("labelDetails field missing")?;
-    let location = label_details.get("location").ok_or("labelDetails.location field missing")?;
+    let resolved: lsp_types::InlayHint = serde_json::from_value(result.clone())?;
+    let label_parts = match resolved.label {
+        lsp_types::InlayHintLabel::LabelParts(parts) => parts,
+        lsp_types::InlayHintLabel::String(label) => {
+            return Err(format!("resolved label remained a string: {label}").into());
+        }
+    };
+    let location = label_parts
+        .iter()
+        .find_map(|part| part.location.as_ref())
+        .ok_or("resolved label part location missing")?;
 
     // location must have uri and range
-    assert!(location.get("uri").is_some(), "labelDetails.location must have uri, got: {location}");
-    assert!(
-        location.get("range").is_some(),
-        "labelDetails.location must have range, got: {location}"
+    assert_eq!(
+        label_parts.iter().map(|part| part.value.as_str()).collect::<String>(),
+        "x:",
+        "resolve must preserve the displayed label text"
     );
+    assert_eq!(location.uri.as_str(), doc_uri);
+    assert!(location.range.start.line <= location.range.end.line);
+    assert!(result.get("labelDetails").is_none(), "legacy labelDetails must be absent");
 
     // Tooltip should still be present (no regression)
     assert!(result.get("tooltip").is_some(), "tooltip should still be populated");

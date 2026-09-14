@@ -26,7 +26,8 @@
 
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_tdd_support::{must, must_some};
-use serde_json::json;
+use serde_json::{Value, json};
+use std::error::Error;
 use std::io::Write;
 use std::sync::mpsc::sync_channel;
 use std::time::Duration;
@@ -146,14 +147,14 @@ fn successful_initialize_emits_initialized_event_with_no_body() {
 
 // --- setBreakpoints -----------------------------------------------------------
 
-/// Mirrors `dispatcher::tests::test_handle_set_breakpoints`: on a real
-/// Perl file, AST-valid lines must come back `verified: true`.
+/// On a real Perl file, AST-valid lines remain pending until the debugger
+/// acknowledges them after launch.
 ///
-/// Existing DebugAdapter coverage (e.g. `dap_comprehensive_test.rs`) only
-/// exercised the unverified path (non-existent source path). This pins the
-/// verified path through the same dispatch surface.
+/// This pins the prelaunch dispatch surface: static AST admission preserves
+/// both requested entries and their order, while publication remains
+/// explicitly unverified with the exact pending message.
 #[test]
-fn set_breakpoints_marks_executable_lines_verified() {
+fn set_breakpoints_marks_executable_lines_pending_before_launch() -> Result<(), Box<dyn Error>> {
     let (_keep, source_path) = create_test_perl_file();
     let mut adapter = DebugAdapter::new();
     let response = adapter.handle_request(
@@ -169,22 +170,47 @@ fn set_breakpoints_marks_executable_lines_verified() {
     );
 
     let body = match response {
-        DapMessage::Response { success, command, body, .. } => {
-            assert!(success, "setBreakpoints should succeed");
-            assert_eq!(command, "setBreakpoints");
-            must_some(body)
+        DapMessage::Response { success: true, command, body, .. }
+            if command == "setBreakpoints" =>
+        {
+            body.ok_or("setBreakpoints response is missing its body")?
         }
-        other => must(Err::<serde_json::Value, _>(format!("expected Response, got {other:?}"))),
+        DapMessage::Response { success, command, .. } => {
+            return Err(format!("expected successful setBreakpoints response, got success={success}, command={command}").into());
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
     };
 
-    let breakpoints = must_some(body.get("breakpoints").and_then(|b| b.as_array()));
-    assert_eq!(breakpoints.len(), 2);
-    let line_10_verified =
-        breakpoints[0].get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
-    let line_25_verified =
-        breakpoints[1].get("verified").and_then(|v| v.as_bool()).unwrap_or(false);
-    assert!(line_10_verified, "line 10 (executable) should be verified, got {breakpoints:?}");
-    assert!(line_25_verified, "line 25 (executable) should be verified, got {breakpoints:?}");
+    let breakpoints = body
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .ok_or("setBreakpoints response is missing its breakpoint array")?;
+    if breakpoints.len() != 2 {
+        return Err(format!("expected exactly two breakpoint results, got {breakpoints:?}").into());
+    }
+    for (breakpoint, expected_line) in breakpoints.iter().zip([10_i64, 25_i64]) {
+        let line = breakpoint.get("line").and_then(Value::as_i64);
+        if line != Some(expected_line) {
+            return Err(
+                format!("expected breakpoint line {expected_line}, got {breakpoint:?}").into()
+            );
+        }
+        if breakpoint.get("verified").and_then(Value::as_bool) != Some(false) {
+            return Err(format!(
+                "prelaunch breakpoint must be typed verified=false, got {breakpoint:?}"
+            )
+            .into());
+        }
+        if breakpoint.get("message").and_then(Value::as_str)
+            != Some("Breakpoint is pending debugger launch")
+        {
+            return Err(format!(
+                "prelaunch breakpoint must carry the exact pending message, got {breakpoint:?}"
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 /// Mirrors `dispatcher::tests::test_handle_set_breakpoints_preserves_order`:
@@ -240,14 +266,13 @@ fn set_breakpoints_with_missing_arguments_fails_structured() {
 
 // --- inlineValues -------------------------------------------------------------
 
-/// Mirrors `dispatcher::tests::test_handle_inline_values`: scanning a
-/// two-line script must surface both `$x` and `$y` in the response.
-///
-/// `dap_comprehensive_test.rs::test_dap_inline_values` already covers a
-/// similar shape; this test pins the minimal source/range that
-/// `DapDispatcher`'s unit test guarded.
+/// #9089: the routed inlineValues extension is fail-closed — scanning a
+/// two-line script is refused with the deterministic gate message, never
+/// served, until a versioned negotiation contract is proven. This pins the
+/// same minimal source/range `DapDispatcher`'s unit test once guarded, now on
+/// the refusal contract.
 #[test]
-fn inline_values_returns_scalars_for_two_line_script() {
+fn inline_values_is_refused_for_two_line_script() {
     let mut file = must(NamedTempFile::with_suffix(".pl"));
     must(file.write_all(b"my $x = 1;\nmy $y = $x + 2;\n"));
     must(file.flush());
@@ -264,20 +289,18 @@ fn inline_values_returns_scalars_for_two_line_script() {
         })),
     );
 
-    let body = match response {
-        DapMessage::Response { success: true, body, .. } => must_some(body),
-        other => must(Err::<serde_json::Value, _>(format!(
-            "expected successful Response, got {other:?}"
-        ))),
-    };
-
-    let values = must_some(body.get("inlineValues").and_then(|v| v.as_array()));
-    let saw_x =
-        values.iter().any(|v| v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$x"));
-    let saw_y =
-        values.iter().any(|v| v.get("text").and_then(|t| t.as_str()).unwrap_or("").contains("$y"));
-    assert!(saw_x, "inlineValues must surface $x, got {values:?}");
-    assert!(saw_y, "inlineValues must surface $y, got {values:?}");
+    match response {
+        DapMessage::Response { success: false, body, message, .. } => {
+            assert!(body.is_none(), "a refused inlineValues response carries no body");
+            let message =
+                message.unwrap_or_else(|| must(Err::<String, _>("refusal must carry a message")));
+            assert!(
+                message.contains("inlineValues"),
+                "refusal must carry the #9089 gate reason, got: {message}"
+            );
+        }
+        other => must(Err::<(), _>(format!("expected refused Response, got {other:?}"))),
+    }
 }
 
 // --- configurationDone --------------------------------------------------------

@@ -1158,7 +1158,7 @@ fn no_event_follows_terminal_settlement() -> TestResult {
 #[test]
 fn a_scripted_run_streams_in_order_and_then_settles_once() -> TestResult {
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0).with_stdout(b"hello".to_vec()));
+    supervisor.script_run(ScriptedRun::exiting(0).with_stdout(b"hello".to_vec()))?;
     let validated = valid_linux_one_shot().validate()?;
 
     let mut handle = match supervisor.start(validated) {
@@ -1186,7 +1186,7 @@ fn a_scripted_run_streams_in_order_and_then_settles_once() -> TestResult {
 #[test]
 fn cancelling_a_run_settles_as_cancelled_not_as_success() -> TestResult {
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
     let validated = valid_interactive_session().validate()?;
     let mut handle = match supervisor.start(validated) {
         Ok(handle) => handle,
@@ -1209,7 +1209,7 @@ fn cancelling_a_run_settles_as_cancelled_not_as_success() -> TestResult {
 #[test]
 fn a_non_cancellable_plan_refuses_cancellation_rather_than_pretending() -> TestResult {
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
     let validated = valid_linux_one_shot().validate()?;
     let mut handle = match supervisor.start(validated) {
         Ok(handle) => handle,
@@ -1227,7 +1227,7 @@ fn a_non_cancellable_plan_refuses_cancellation_rather_than_pretending() -> TestR
 #[test]
 fn a_dropped_handle_is_abandoned_work_not_proven_cleanup() -> TestResult {
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
     let validated = valid_linux_one_shot().validate()?;
     {
         let handle = match supervisor.start(validated) {
@@ -1246,7 +1246,7 @@ fn a_dropped_handle_is_abandoned_work_not_proven_cleanup() -> TestResult {
 #[test]
 fn a_handle_settled_through_wait_records_settlement_before_drop() -> TestResult {
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
     let validated = valid_linux_one_shot().validate()?;
     let handle = match supervisor.start(validated) {
         Ok(handle) => handle,
@@ -1279,7 +1279,7 @@ fn a_refused_start_still_settles_exactly_once() -> TestResult {
     let supervisor = FakeSupervisor::new();
     supervisor.script(ScriptedOutcome::RefuseStart(TerminalDisposition::SpawnFailed {
         detail: perl_subprocess_runtime::process::SpawnFailureDetail::ExecutableNotFound,
-    }));
+    }))?;
     let validated = valid_linux_one_shot().validate()?;
     match supervisor.start(validated) {
         Ok(_) => Err("a refused start produced a handle".into()),
@@ -1302,7 +1302,7 @@ fn a_refused_start_still_settles_exactly_once() -> TestResult {
 #[test]
 fn the_supervisor_records_the_exact_plan_it_was_given() -> TestResult {
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
     let plan = valid_linux_one_shot();
     let expected = plan.semantic_fingerprint();
     let validated = plan.validate()?;
@@ -1326,7 +1326,7 @@ fn the_supervisor_records_the_exact_plan_it_was_given() -> TestResult {
 #[test]
 fn fake_evidence_never_reads_as_executed_evidence() -> TestResult {
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
     let validated = valid_linux_one_shot().validate()?;
     let handle = match supervisor.start(validated) {
         Ok(handle) => handle,
@@ -1811,7 +1811,7 @@ fn a_streamed_stdin_plan_can_actually_be_driven_through_the_port() -> TestResult
     // A domain that validates "the caller drives stdin" while offering no
     // operation to drive it forces every backend to invent its own channel.
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
     let validated = valid_interactive_session().validate()?;
     let mut handle = match supervisor.start(validated) {
         Ok(handle) => handle,
@@ -1835,7 +1835,7 @@ fn a_plan_without_a_streamed_channel_refuses_stdin_rather_than_dropping_it() -> 
     // stdin is closed and silently discarding them, so a caller believes its
     // input reached the child.
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
     let validated = valid_linux_one_shot().validate()?;
     let mut handle = match supervisor.start(validated) {
         Ok(handle) => handle,
@@ -1852,7 +1852,7 @@ fn a_plan_without_a_streamed_channel_refuses_stdin_rather_than_dropping_it() -> 
 #[test]
 fn stdin_writes_after_settlement_are_refused() -> TestResult {
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
     let validated = valid_interactive_session().validate()?;
     let mut handle = match supervisor.start(validated) {
         Ok(handle) => handle,
@@ -2503,8 +2503,8 @@ fn stdin_is_attributed_to_the_run_that_received_it() -> TestResult {
     // The wrong implementation this kills: merging every handle's stdin into
     // one buffer, so a test driving two runs cannot tell which received what.
     let supervisor = FakeSupervisor::new();
-    supervisor.script_run(ScriptedRun::exiting(0));
-    supervisor.script_run(ScriptedRun::exiting(0));
+    supervisor.script_run(ScriptedRun::exiting(0))?;
+    supervisor.script_run(ScriptedRun::exiting(0))?;
 
     let mut first = match supervisor.start(valid_interactive_session().validate()?) {
         Ok(handle) => handle,
@@ -2540,7 +2540,7 @@ fn a_malformed_script_settles_as_a_supervisor_failure() -> TestResult {
         ProcessEventKind::Terminal(TerminalDisposition::CompletedExit { code: 0 }),
         ProcessEventKind::Started,
     ];
-    supervisor.script_run(malformed);
+    supervisor.script_run(malformed)?;
     let handle = match supervisor.start(valid_linux_one_shot().validate()?) {
         Ok(handle) => handle,
         Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
@@ -2620,7 +2620,7 @@ fn a_refused_start_cannot_describe_a_completed_run() -> TestResult {
         TerminalDisposition::Signaled { signal: 9 },
     ] {
         let supervisor = FakeSupervisor::new();
-        supervisor.script(ScriptedOutcome::RefuseStart(disposition.clone()));
+        supervisor.script(ScriptedOutcome::RefuseStart(disposition.clone()))?;
         match supervisor.start(valid_linux_one_shot().validate()?) {
             Ok(_) => return Err("a refusal produced a handle".into()),
             Err(result) => {
@@ -2646,7 +2646,7 @@ fn a_scripted_terminal_event_cannot_diverge_from_the_result() -> TestResult {
     let mut divergent = ScriptedRun::exiting(0);
     divergent.events =
         vec![ProcessEventKind::Started, ProcessEventKind::Terminal(TerminalDisposition::TimedOut)];
-    supervisor.script_run(divergent);
+    supervisor.script_run(divergent)?;
     let handle = match supervisor.start(valid_linux_one_shot().validate()?) {
         Ok(handle) => handle,
         Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
@@ -2691,7 +2691,7 @@ fn the_supervisor_failure_fallback_claims_nothing_it_cannot_support() -> TestRes
     let mut malformed = ScriptedRun::exiting(0);
     malformed.events =
         vec![ProcessEventKind::Started, ProcessEventKind::Terminal(TerminalDisposition::TimedOut)];
-    supervisor.script_run(malformed);
+    supervisor.script_run(malformed)?;
     let handle = match supervisor.start(valid_linux_one_shot().validate()?) {
         Ok(handle) => handle,
         Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
@@ -2802,7 +2802,7 @@ fn a_rejected_script_settles_the_event_stream_it_rejected() -> TestResult {
     let mut divergent = ScriptedRun::exiting(0);
     divergent.events =
         vec![ProcessEventKind::Started, ProcessEventKind::Terminal(TerminalDisposition::TimedOut)];
-    supervisor.script_run(divergent);
+    supervisor.script_run(divergent)?;
     let mut handle = match supervisor.start(valid_linux_one_shot().validate()?) {
         Ok(handle) => handle,
         Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
@@ -2923,7 +2923,7 @@ fn a_rejected_script_reports_the_events_it_actually_emitted() -> TestResult {
     let supervisor = FakeSupervisor::new();
     let mut terminal_first = ScriptedRun::exiting(0);
     terminal_first.events = vec![ProcessEventKind::Terminal(TerminalDisposition::TimedOut)];
-    supervisor.script_run(terminal_first);
+    supervisor.script_run(terminal_first)?;
     let mut handle = match supervisor.start(valid_linux_one_shot().validate()?) {
         Ok(handle) => handle,
         Err(result) => return Err(format!("start refused: {:?}", result.disposition()).into()),
@@ -3276,7 +3276,7 @@ fn a_script_describing_an_impossible_run_never_announces_success() -> TestResult
             b"mismatched".to_vec(),
             TruncationState::complete(),
         )),
-    )));
+    )))?;
 
     let mut handle = supervisor
         .start(valid_linux_one_shot().validate()?)
@@ -3631,7 +3631,7 @@ fn a_rejected_chunk_settles_the_stream_it_rejected() -> TestResult {
             retained: true,
         },
     ));
-    supervisor.script(ScriptedOutcome::Run(Box::new(run)));
+    supervisor.script(ScriptedOutcome::Run(Box::new(run)))?;
 
     let mut handle = supervisor
         .start(valid_linux_one_shot().validate()?)
@@ -3720,7 +3720,7 @@ fn cancelling_before_the_child_starts_is_a_pre_start_cancellation() -> TestResul
     // left an `Exited` settlement beside it — contradictory evidence that the
     // election then, correctly, refused to call a cancellation at all.
     let supervisor = FakeSupervisor::new();
-    supervisor.script(ScriptedOutcome::Run(Box::new(ScriptedRun::exiting(0))));
+    supervisor.script(ScriptedOutcome::Run(Box::new(ScriptedRun::exiting(0))))?;
     let mut handle = supervisor
         .start(valid_interactive_session().validate()?)
         .map_err(|_| "the fake refused to start a valid plan")?;
@@ -3748,7 +3748,11 @@ fn cancelling_before_the_child_starts_is_a_pre_start_cancellation() -> TestResul
         ),
         ProcessEventKind::Started,
     ];
-    supervisor.script(ScriptedOutcome::Run(Box::new(early_phase)));
+    // Pairing is checked at script time; the event still has to name the same
+    // reason `control` will elect, or this fixture is refused before the poll
+    // vs start distinction can be exercised.
+    early_phase.control.cancellation_requested = Some(CancellationReason::Shutdown);
+    supervisor.script(ScriptedOutcome::Run(Box::new(early_phase)))?;
     let mut handle = supervisor
         .start(valid_interactive_session().validate()?)
         .map_err(|_| "the fake refused to start a valid plan")?;
@@ -3766,7 +3770,7 @@ fn cancelling_before_the_child_starts_is_a_pre_start_cancellation() -> TestResul
     // Cancelling after the `Started` event is a running cancellation, and the
     // scripted settlement is left alone.
     let supervisor = FakeSupervisor::new();
-    supervisor.script(ScriptedOutcome::Run(Box::new(ScriptedRun::exiting(0))));
+    supervisor.script(ScriptedOutcome::Run(Box::new(ScriptedRun::exiting(0))))?;
     let mut handle = supervisor
         .start(valid_interactive_session().validate()?)
         .map_err(|_| "the fake refused to start a valid plan")?;
@@ -3874,7 +3878,7 @@ fn output_before_the_child_starts_is_refused_not_reconciled() -> TestResult {
         }),
         ProcessEventKind::Started,
     ];
-    supervisor.script(ScriptedOutcome::Run(Box::new(lying)));
+    supervisor.script(ScriptedOutcome::Run(Box::new(lying)))?;
     let mut handle = supervisor
         .start(valid_interactive_session().validate()?)
         .map_err(|_| "the fake refused to start a valid plan")?;
