@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: Discard stale debugger stack snapshots and captured arguments after execution resumes or the debug session changes.
+time: 2026-09-14T02:49:44Z
+custom:
+  PR: "15584"
+  Slug: stack-trace-lifetime
+  Breaking: "no"
