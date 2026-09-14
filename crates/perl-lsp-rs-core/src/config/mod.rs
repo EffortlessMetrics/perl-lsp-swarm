@@ -802,6 +802,12 @@ impl FormatterModeChoice {
 ///
 /// Kept as one table so the parser, the warning text, and the recurrence
 /// tests cannot drift apart.
+///
+/// The deprecation window these tokens occupy is closed by #15624, which owns
+/// choosing the compatibility boundary and deleting this table. Removing them
+/// is a user-visible compatibility decision — a configuration that works today
+/// stops being honored — so it is deliberately not bundled into the retirement
+/// that removed the mode.
 pub(crate) const RETIRED_FORMATTER_MODE_ALIASES: &[(&str, FormatterMode)] =
     &[("compat", FormatterMode::Native), ("perltidy-compat", FormatterMode::Native)];
 
@@ -810,9 +816,8 @@ pub(crate) const RETIRED_FORMATTER_ALIAS_REPLACEMENT: &str = "native";
 
 /// Match a normalized token against the retired-alias table.
 fn retired_formatter_mode_alias(normalized: &str) -> Option<FormatterModeChoice> {
-    RETIRED_FORMATTER_MODE_ALIASES.iter().find_map(|(alias, mode)| {
-        (*alias == normalized)
-            .then_some(FormatterModeChoice { mode: *mode, retired_alias: Some(alias) })
+    RETIRED_FORMATTER_MODE_ALIASES.iter().find_map(|&(alias, mode)| {
+        (alias == normalized).then_some(FormatterModeChoice { mode, retired_alias: Some(alias) })
     })
 }
 
@@ -4287,7 +4292,7 @@ profile = "recommended"
             ("project config", FORMATTER_MODE_VALID_OPTIONS),
             ("client settings", CLIENT_FORMATTER_MODE_VALID_OPTIONS),
         ] {
-            for (alias, _) in RETIRED_FORMATTER_MODE_ALIASES {
+            for &(alias, _) in RETIRED_FORMATTER_MODE_ALIASES {
                 assert!(
                     !options.contains(alias),
                     "{channel} still advertises the retired alias {alias:?}: {options}"
@@ -4300,11 +4305,11 @@ profile = "recommended"
     fn every_retired_alias_projects_onto_a_current_mode_name() {
         // A retired alias must map to something the user can actually write
         // instead, or the deprecation warning names a dead end.
-        for (alias, mode) in RETIRED_FORMATTER_MODE_ALIASES {
+        for &(alias, mode) in RETIRED_FORMATTER_MODE_ALIASES {
             assert_eq!(
                 parse_formatter_mode(RETIRED_FORMATTER_ALIAS_REPLACEMENT)
                     .map(|choice| (choice.mode, choice.retired_alias)),
-                Some((*mode, None)),
+                Some((mode, None)),
                 "{alias:?} projects onto {mode:?}, so the replacement named in the \
                  warning ({RETIRED_FORMATTER_ALIAS_REPLACEMENT:?}) must be a current \
                  mode name selecting that same mode"
