@@ -64,6 +64,12 @@ Usage:
 
 With --self-test the evaluator replays internal expected-verdict fixtures and
 exits non-zero on any drift, so a broken instrument never masquerades as a pass.
+
+Requires Python >= 3.11: the stdlib-only denominator reader depends on
+`tomllib` (added in 3.11); there is no fallback parser. The workflow pins
+`ubuntu-24.04`, which ships Python 3.11+, but a local or self-hosted runner
+on an older interpreter fails closed with a clear message below rather than
+an opaque `ModuleNotFoundError` on `import tomllib`.
 """
 from __future__ import annotations
 
@@ -72,6 +78,15 @@ import hashlib
 import json
 import sys
 import tempfile
+
+if sys.version_info < (3, 11):
+    print(
+        "authority_transfer_review.py requires Python >= 3.11 (stdlib "
+        f"tomllib); running {sys.version_info.major}.{sys.version_info.minor}",
+        file=sys.stderr,
+    )
+    raise SystemExit(3)
+
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -208,6 +223,55 @@ def aggregate(results: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Candidate-tree extraction safety (fail closed BEFORE any bytes hit disk)
+# ---------------------------------------------------------------------------
+
+# git tree entry modes that must never be extracted as bounded data: a
+# symlink can point outside the extraction directory, and a submodule
+# gitlink names another repository entirely.
+UNSAFE_TREE_MODES = ("120000", "160000")
+
+
+def parse_ls_tree_entries(raw: bytes) -> list[tuple[str, str]]:
+    """Parse NUL-terminated `git ls-tree -r -z --full-tree <head>` output into
+    (mode, path) pairs. Path bytes are decoded permissively so an unusual
+    byte sequence still reaches validation instead of raising and skipping
+    the entry outright."""
+    entries: list[tuple[str, str]] = []
+    for raw_entry in raw.split(b"\x00"):
+        if not raw_entry:
+            continue
+        meta, _, path_bytes = raw_entry.partition(b"\t")
+        mode = meta.split(b" ")[0].decode("ascii", "replace")
+        path = path_bytes.decode("utf-8", "surrogateescape")
+        entries.append((mode, path))
+    return entries
+
+
+def validate_tree_entries(entries: list[tuple[str, str]]) -> list[str]:
+    """Fail-closed validation of a candidate tree's entries BEFORE `git
+    archive | tar -x` writes a single byte to disk. A crafted candidate head
+    must never be able to escape the bounded extraction directory (absolute
+    path or `..` traversal component) or have the trusted validator follow a
+    symlink/submodule gitlink into content outside the extracted tree.
+    Checking only after extraction (as a post-hoc `find -type l`) leaves a
+    window where the escaping write already happened."""
+    violations: list[str] = []
+    for mode, path in entries:
+        normalized = path.replace("\\", "/")
+        if not path or normalized.startswith("/"):
+            violations.append(f"unsafe_path ({path!r})")
+            continue
+        parts = normalized.split("/")
+        if any(part in ("", "..") for part in parts):
+            violations.append(f"unsafe_path ({path!r})")
+            continue
+        if mode in UNSAFE_TREE_MODES:
+            violations.append(f"unsafe_mode ({mode}:{path})")
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # Denominator validation (re-derived from the #11793 checked contract)
 # ---------------------------------------------------------------------------
 
@@ -287,13 +351,25 @@ def read_changed_files(inputs: dict[str, Any]) -> tuple[list[str], bool]:
     listed: Path | None = inputs["changed_list"]
     if listed is not None:
         try:
-            raw_paths.extend(listed.read_bytes().decode("utf-8").splitlines())
+            payload = listed.read_bytes()
         except OSError as error:
             raise ValueError(f"changed_list_unreadable ({error})")
-        except UnicodeDecodeError as error:
-            # A governed path Git emits with non-UTF-8 bytes must not be
-            # silently reclassified as ungoverned; fail closed as NOT_PROVEN.
-            raise ValueError(f"changed_list_not_utf8 ({error.reason})")
+        # The workflow emits `git diff --name-only -z`: NUL-terminated raw
+        # bytes with no path quoting. A newline-split text read would
+        # instead consume Git's C-quoted form (core.quotepath), which wraps
+        # any path containing a tab, newline, double quote, backslash, or
+        # non-ASCII byte in a quoted/escaped string that never matches the
+        # real repository path against surface bindings — a governed change
+        # would silently bypass matching. Split on NUL, decode each entry
+        # independently, and fail closed on undecodable bytes rather than
+        # reclassifying a governed path as ungoverned.
+        for entry in payload.split(b"\x00"):
+            if not entry:
+                continue
+            try:
+                raw_paths.append(entry.decode("utf-8"))
+            except UnicodeDecodeError as error:
+                raise ValueError(f"changed_list_not_utf8 ({error.reason})")
     raw_paths.extend(inputs["changed_files"])
     normalized: list[str] = []
     seen: set[str] = set()
@@ -382,6 +458,7 @@ def _packet_fail(
         "reason": reason,
         "covered_surfaces": [],
         "covered_refs": [],
+        "ref_subjects": {},
         "profile": profile,
         "head_binding": "absent",
         "base_binding": "absent",
@@ -428,14 +505,27 @@ def validate_packet(
     contract (#10881). Canonical projections stay with the #10881 machinery; this
     checks the fields the advisory context depends on, failing closed."""
 
+    # Populated once the authorities section is parsed below; a `fail()`
+    # raised before that point (e.g. a missing packet section) legitimately
+    # has no claimed refs yet. Declared here, not inside `fail`, so every
+    # `fail()` call site — before or after the authorities section runs —
+    # reports whatever refs the packet did manage to claim, letting the
+    # caller distinguish "this packet claims no relation to any changed
+    # surface" from "this packet claims a surface and failed validating it".
+    covered_refs: list[str] = []
+    ref_subjects: dict[str, set[str]] = {}
+
     def fail(verdict: str, reason: str) -> dict[str, Any]:
-        return _packet_fail(
+        failure = _packet_fail(
             path_label,
             digest,
             verdict,
             reason,
             profile=str(packet_field(packet, "subject", "programme", "profile") or ""),
         )
+        failure["covered_refs"] = list(covered_refs)
+        failure["ref_subjects"] = {ref: sorted(subjects) for ref, subjects in ref_subjects.items()}
+        return failure
 
     if packet.get("schema") != "agent_review_packet.v1" or packet.get("schema_version") != 1:
         return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "unknown_packet_generation")
@@ -467,7 +557,11 @@ def validate_packet(
     authorities = packet_field(packet, "subject", "changed", "authorities")
     if not isinstance(authorities, list) or not authorities:
         return fail(NOT_PROVEN_SUBJECT, "changed_authorities_empty")
-    covered_refs: list[str] = []
+    # ref -> the exact changed-path identities (authority.subject) the packet
+    # claims it reviewed under that ref. classify_packets/resolve_covered_surfaces
+    # binds this against the row's actual matched changed files: a ref match
+    # alone says the packet claims some coverage, not that it named every
+    # file that changed inside that surface.
     for authority in authorities:
         if not isinstance(authority, dict):
             continue
@@ -480,6 +574,7 @@ def validate_packet(
             and subject_text.strip()
         ):
             covered_refs.append(ref)
+            ref_subjects.setdefault(ref, set()).add(subject_text)
 
     roles = packet.get("roles")
     if not isinstance(roles, list) or not roles:
@@ -509,11 +604,28 @@ def validate_packet(
         applicability = lens_row.get("applicability")
         if lens_name not in vrs.LENSES or applicability not in ("required", "not_applicable"):
             return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "invented_lens_or_applicability")
+        if lens_name in lens_state:
+            return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, f"duplicate_lens ({lens_name})")
+        if applicability == "not_applicable":
+            reason = lens_row.get("reason")
+            if not (isinstance(reason, str) and reason.strip()):
+                return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, f"lens_reason_missing ({lens_name})")
         lens_state[str(lens_name)] = str(applicability)
+    # The closed contract (#10881): every base lens appears exactly once. A
+    # packet that names only the lenses one row happens to require, and
+    # silently omits the rest, is not a structurally valid packet even
+    # though `_packet_matches_surface_profile` would still see its required
+    # lenses satisfied.
+    missing_lenses = sorted(set(vrs.LENSES) - set(lens_state))
+    if missing_lenses:
+        return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, f"lens_omitted ({missing_lenses[0]})")
 
     challenge = packet.get("challenge")
     if not isinstance(challenge, dict):
         return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "challenge_missing")
+    primary_proposition = challenge.get("primary_proposition")
+    if not (isinstance(primary_proposition, str) and primary_proposition.strip()):
+        return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "primary_proposition_missing")
     falsifiers = challenge.get("falsifiers")
     if not isinstance(falsifiers, list) or not falsifiers:
         return fail(FAIL_FIRST_FALSIFIER_MISSING, "falsifiers_absent")
@@ -548,6 +660,17 @@ def validate_packet(
         checks = control.get("checks")
         if not isinstance(checks, dict):
             return fail(FAIL_ARTIFACT_REVIEW_INCOMPLETE, "negative_control_checks_missing")
+        # The closed contract requires exactly the six criteria (schema:
+        # `minProperties: 6`, `additionalProperties: false`) — not merely a
+        # superset. An unknown key could otherwise carry a caller-invented
+        # "criterion" that never gets validated against
+        # NEGATIVE_CONTROL_CRITERIA at all.
+        unknown_criteria = sorted(set(checks) - set(NEGATIVE_CONTROL_CRITERIA))
+        if unknown_criteria:
+            return fail(
+                FAIL_ARTIFACT_REVIEW_INCOMPLETE,
+                f"unknown_negative_control_criterion ({unknown_criteria[0]})",
+            )
         missing_criteria = [name for name in NEGATIVE_CONTROL_CRITERIA if name not in checks]
         if missing_criteria:
             return fail(
@@ -641,6 +764,7 @@ def validate_packet(
         "verdict": PASS_CURRENT_REVIEW,
         "reason": "packet_structurally_current",
         "covered_refs": covered_refs,
+        "ref_subjects": {ref: sorted(subjects) for ref, subjects in ref_subjects.items()},
         "covered_surfaces": [],
         "profile": programme_profile,
         "repo_subject": str(identity_fields["name"]),
@@ -664,10 +788,25 @@ def validate_packet(
 def resolve_covered_surfaces(
     packet: dict[str, Any], governed: list[dict[str, Any]]
 ) -> list[str]:
+    """A ref match alone only says the packet claims coverage; the packet
+    must also name (in the matching authority's `subject`) every changed
+    path the row actually matched. A packet that names one of three changed
+    files inside a surface has not reviewed the other two, and must not be
+    able to pass that row (#11795 finding: coverage ignoring packet
+    subjects)."""
     refs = set(packet.get("covered_refs", []))
+    ref_subjects: dict[str, list[str]] = packet.get("ref_subjects", {})
     covered = []
     for row in governed:
-        if row["surface_id"] in refs or row["conflict_key"] in refs:
+        matching_refs = [
+            ref for ref in (row["surface_id"], row["conflict_key"]) if ref in refs
+        ]
+        if not matching_refs:
+            continue
+        named_subjects: set[str] = set()
+        for ref in matching_refs:
+            named_subjects.update(ref_subjects.get(ref, []))
+        if set(row["matched_paths"]).issubset(named_subjects):
             covered.append(row["surface_id"])
     return sorted(covered)
 
@@ -849,8 +988,20 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
         inputs.get("merge_base_sha") or None,
         inputs.get("head_tree_sha") or None,
     )
+    # A packet "relates" to this PR when it claims a ref that names one of
+    # its actual governed rows (surface_id or conflict_key) — regardless of
+    # whether that claim later turns out to be stale, mismatched, or
+    # otherwise invalid. A packet whose claimed refs never touch a governed
+    # row here is unrelated: e.g. a stray/malformed document left over from
+    # another review, or one authored against a different candidate's
+    # surfaces. Aggregating an unrelated packet's failure would let it
+    # invalidate an otherwise-current review even though no governed row
+    # depends on it; each governed row already folds in the correct
+    # covering packets' verdicts via evaluate_governed_row below.
+    governed_refs = {ref for row in governed for ref in (row["surface_id"], row["conflict_key"]) if ref}
     for packet in packets:
-        global_results.append(packet["verdict"])
+        if set(packet.get("covered_refs", [])) & governed_refs:
+            global_results.append(packet["verdict"])
 
     verdict_rows: list[dict[str, Any]] = []
     for row in governed:
@@ -1008,6 +1159,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--receipt", type=Path, default=None)
     parser.add_argument("--summary", type=Path, default=None)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--validate-tree-entries",
+        action="store_true",
+        help=(
+            "read NUL-terminated `git ls-tree -r -z --full-tree <head>` output "
+            "from stdin and fail closed (exit 3) if any entry is an unsafe "
+            "path or a symlink/submodule mode; extract nothing"
+        ),
+    )
     return parser
 
 
@@ -1537,13 +1697,19 @@ def self_test() -> int:
             FAIL_ARTIFACT_REVIEW_INCOMPLETE,
         )
 
-        # 10. Malformed packet is unusable evidence, never a pass.
+        # 10. Malformed packet is unusable evidence, never a pass. A JSON
+        # parse failure happens before any ref can be read from the packet,
+        # so the evaluator cannot know which surface (if any) it claimed to
+        # cover; it is treated as unrelated rather than aggregated onto the
+        # PR-wide result (an unrelated/unbound packet must never be able to
+        # invalidate a valid row elsewhere), and the uncovered governed row
+        # still reports its own typed non-pass.
         malformed = packets_dir / "malformed.json"
         malformed.write_text("{not json", encoding="utf-8")
         expect(
             "artifact_malformed",
             evaluate(make_inputs(["src/authority/catalog.rs"], [malformed]))["result"],
-            FAIL_ARTIFACT_REVIEW_INCOMPLETE,
+            FAIL_REVIEW_MISSING,
         )
 
         # 11. Predecessor exit without disposition fails; unexpected duplicate is controller relation.
@@ -1670,6 +1836,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.validate_tree_entries:
+        raw = sys.stdin.buffer.read()
+        violations = validate_tree_entries(parse_ls_tree_entries(raw))
+        if violations:
+            for violation in violations:
+                print(f"::error::Candidate tree entry rejected: {violation}", file=sys.stderr)
+            return EXIT_NOT_PROVEN
+        return EXIT_PASS
     if args.root is None:
         parser.error("--root is required unless --self-test is given")
         return EXIT_NOT_PROVEN

@@ -284,10 +284,19 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         )
 
     def test_malformed_packet_is_not_a_pass(self) -> None:
+        # A JSON parse failure happens before any ref can be read from the
+        # packet, so the evaluator cannot know which surface (if any) it
+        # claimed; it is treated as unrelated (see
+        # test_unrelated_malformed_packet_does_not_invalidate_a_valid_row)
+        # rather than aggregated onto the PR-wide result, and the uncovered
+        # governed row still reports its own typed non-pass.
         malformed = self.packets_dir / "malformed.json"
         malformed.write_text("{not json", encoding="utf-8")
         receipt = self.evaluate(GOVERNED_CHANGED, [malformed])
-        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+        self.assertEqual(
+            atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["packets"][0]["verdict"]
+        )
 
     def test_invented_role_rejected_against_closed_vocabulary(self) -> None:
         body = packet_body("semantic_close_authority", HEAD)
@@ -528,6 +537,153 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         written = json.loads(receipt_path.read_text(encoding="utf-8"))
         self.assertEqual(atr.NOT_PROVEN_GITHUB, written["result"])
 
+    def test_changed_list_nul_delimited_paths_with_special_characters_match(self) -> None:
+        # `git diff --name-only -z` emits raw NUL-terminated bytes with no
+        # C-quoting; a tab, newline, quote, or backslash inside a governed
+        # path must still match its surface binding after that split.
+        # vrs.normalize canonicalizes backslashes to forward slashes; assert
+        # against the normalized form so this test targets the NUL-split
+        # behavior under test, not normalization semantics.
+        weird = "src/authority/tab\tnewline\nquote\"back/slash.rs"
+        listed = self.base / "changed.nul"
+        listed.write_bytes(weird.encode("utf-8") + b"\x00")
+        inputs = {
+            "root": self.base,
+            "candidate_root": None,
+            "repository": REPOSITORY,
+            "pr_number": 1,
+            "base_sha": "c" * 40,
+            "head_sha": HEAD,
+            "merge_base_sha": "",
+            "head_tree_sha": "",
+            "changed_list": listed,
+            "changed_files": [],
+            "packets": [],
+            "max_changed_files": 100,
+        }
+        receipt = atr.evaluate(inputs)
+        self.assertEqual(["authority_catalog"], [row["surface_id"] for row in receipt["governed_rows"]])
+        self.assertEqual([weird], receipt["governed_rows"][0]["matched_paths"])
+
+    def test_changed_list_nul_separated_undecodable_entry_fails_closed(self) -> None:
+        listed = self.base / "changed.nul"
+        listed.write_bytes(b"src/authority/catalog.rs\x00src/authority/bad\xff.rs\x00")
+        inputs = {
+            "root": self.base,
+            "candidate_root": None,
+            "repository": REPOSITORY,
+            "pr_number": 1,
+            "base_sha": "c" * 40,
+            "head_sha": HEAD,
+            "merge_base_sha": "",
+            "head_tree_sha": "",
+            "changed_list": listed,
+            "changed_files": [],
+            "packets": [],
+            "max_changed_files": 100,
+        }
+        receipt = atr.evaluate(inputs)
+        self.assertEqual(atr.NOT_PROVEN_GITHUB, receipt["result"])
+        self.assertIn("changed_list_not_utf8", receipt["inputs"]["changed_list_error"])
+
+    # ------------------------------------------------------------------
+    # Candidate-tree extraction safety (fail closed before any bytes land)
+    # ------------------------------------------------------------------
+
+    def test_tree_entry_validator_accepts_ordinary_paths(self) -> None:
+        entries = atr.parse_ls_tree_entries(
+            b"100644 blob abc\tsrc/authority/catalog.rs\x00"
+            b"040000 tree def\tsrc/authority\x00"
+        )
+        self.assertEqual([], atr.validate_tree_entries(entries))
+
+    def test_tree_entry_validator_rejects_absolute_path(self) -> None:
+        entries = [("100644", "/etc/passwd")]
+        self.assertEqual(["unsafe_path ('/etc/passwd')"], atr.validate_tree_entries(entries))
+
+    def test_tree_entry_validator_rejects_parent_traversal(self) -> None:
+        entries = [("100644", "../../outside/evil.txt")]
+        violations = atr.validate_tree_entries(entries)
+        self.assertEqual(1, len(violations))
+        self.assertIn("unsafe_path", violations[0])
+
+    def test_tree_entry_validator_rejects_symlink_mode(self) -> None:
+        entries = [("120000", "src/authority/link")]
+        self.assertEqual(
+            ["unsafe_mode (120000:src/authority/link)"], atr.validate_tree_entries(entries)
+        )
+
+    def test_tree_entry_validator_rejects_submodule_gitlink_mode(self) -> None:
+        entries = [("160000", "vendor/evil")]
+        self.assertEqual(
+            ["unsafe_mode (160000:vendor/evil)"], atr.validate_tree_entries(entries)
+        )
+
+    def test_cli_validate_tree_entries_flag_exits_not_proven_on_unsafe_entry(self) -> None:
+        import io as _io
+        from unittest import mock
+
+        raw = b"120000 blob abc\tsrc/authority/link\x00"
+        with mock.patch.object(sys, "stdin") as stdin_mock:
+            stdin_mock.buffer = _io.BytesIO(raw)
+            status = atr.main(["--validate-tree-entries"])
+        self.assertEqual(atr.EXIT_NOT_PROVEN, status)
+
+    def test_cli_validate_tree_entries_flag_exits_pass_on_safe_tree(self) -> None:
+        import io as _io
+        from unittest import mock
+
+        raw = b"100644 blob abc\tsrc/authority/catalog.rs\x00"
+        with mock.patch.object(sys, "stdin") as stdin_mock:
+            stdin_mock.buffer = _io.BytesIO(raw)
+            status = atr.main(["--validate-tree-entries"])
+        self.assertEqual(atr.EXIT_PASS, status)
+
+    # ------------------------------------------------------------------
+    # Structural packet validation matches the closed contract, not a subset
+    # ------------------------------------------------------------------
+
+    def test_lens_omitted_from_the_closed_set_is_artifact_incomplete(self) -> None:
+        body = packet_body("semantic_close_authority", HEAD)
+        # Drop one of the nine closed base lenses: a row's own required-lens
+        # subset could still be satisfied, but the packet is no longer
+        # structurally valid against the closed contract.
+        body["lenses"] = [row for row in body["lenses"] if row["lens"] != atr.vrs.LENSES[-1]]
+        packet = self.write_packet("lens-omitted.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+
+    def test_duplicate_lens_entry_is_artifact_incomplete(self) -> None:
+        body = packet_body("semantic_close_authority", HEAD)
+        body["lenses"].append(dict(body["lenses"][0]))
+        packet = self.write_packet("lens-dup.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+
+    def test_not_applicable_lens_without_reason_is_artifact_incomplete(self) -> None:
+        body = packet_body("semantic_close_authority", HEAD)
+        body["lenses"][0]["applicability"] = "not_applicable"
+        packet = self.write_packet("lens-no-reason.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+
+    def test_missing_primary_proposition_is_artifact_incomplete(self) -> None:
+        body = packet_body("semantic_close_authority", HEAD)
+        del body["challenge"]["primary_proposition"]
+        packet = self.write_packet("no-proposition.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+
+    def test_unknown_negative_control_criterion_is_artifact_incomplete(self) -> None:
+        body = packet_body("semantic_close_authority", HEAD)
+        body["negative_controls"][0]["checks"]["invented_criterion"] = {
+            "status": "established",
+            "evidence": "e",
+        }
+        packet = self.write_packet("nc-unknown.json", body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [packet])
+        self.assertEqual(atr.FAIL_ARTIFACT_REVIEW_INCOMPLETE, receipt["result"])
+
     def test_exit_code_classes_partition_the_result_vocabulary(self) -> None:
         # Membership, not a string prefix, decides the exit code.
         every = set(atr.PASS_RESULTS) | set(atr.TYPED_FAILURE_RESULTS) | set(atr.NOT_PROVEN_RESULTS)
@@ -541,6 +697,74 @@ class AuthorityTransferReviewTests(unittest.TestCase):
             status = atr.main(["--self-test"])
         self.assertEqual(atr.EXIT_PASS, status)
         self.assertIn("self-test passed", buffer.getvalue())
+
+    # ------------------------------------------------------------------
+    # Unrelated-packet aggregation and subject/path coverage binding
+    # ------------------------------------------------------------------
+
+    def test_unrelated_malformed_packet_does_not_invalidate_a_valid_row(self) -> None:
+        # A genuinely valid packet covers the only governed row...
+        good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
+        # ...and an unrelated malformed document (e.g. a stray leftover from
+        # another review) is also supplied. Its parse failure happens before
+        # any ref is known, so it can never claim (and therefore can never
+        # be shown to cover) any governed row here; it must not drag the
+        # otherwise-current review down to a failure.
+        malformed = self.packets_dir / "unrelated-malformed.json"
+        malformed.write_text("{not json", encoding="utf-8")
+        receipt = self.evaluate(GOVERNED_CHANGED, [good, malformed])
+        self.assertEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+
+    def test_unrelated_wrong_surface_packet_does_not_invalidate_a_valid_row(self) -> None:
+        # A valid packet covers the changed governed row...
+        good = self.write_packet("good.json", packet_body("semantic_close_authority", HEAD))
+        # ...and a second packet is structurally broken (missing roles) but
+        # claims a ref for a surface nothing in this PR touched. It never
+        # matches a governed row and must not poison the aggregate.
+        unrelated_body = packet_body(
+            "semantic_close_authority",
+            HEAD,
+            authorities=[{"ref": "manifest_self", "subject": "policy/review-surfaces.toml"}],
+        )
+        del unrelated_body["roles"]
+        unrelated = self.write_packet("unrelated-broken.json", unrelated_body)
+        receipt = self.evaluate(GOVERNED_CHANGED, [good, unrelated])
+        self.assertEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+
+    def test_packet_covering_only_some_changed_paths_in_a_row_is_missing(self) -> None:
+        # Two files change inside the same governed surface (src/authority/**)
+        # but the packet's authority subject names only one of them. Binding
+        # coverage to the ref alone would let this pass despite the reviewer
+        # never having named the second file as reviewed.
+        changed = ["src/authority/catalog.rs", "src/authority/other.rs"]
+        partial = self.write_packet(
+            "partial.json",
+            packet_body(
+                "semantic_close_authority",
+                HEAD,
+                authorities=[
+                    {"ref": "config.authority_catalog", "subject": "src/authority/catalog.rs"}
+                ],
+            ),
+        )
+        receipt = self.evaluate(changed, [partial])
+        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+
+    def test_packet_covering_every_changed_path_in_a_row_passes(self) -> None:
+        changed = ["src/authority/catalog.rs", "src/authority/other.rs"]
+        full = self.write_packet(
+            "full.json",
+            packet_body(
+                "semantic_close_authority",
+                HEAD,
+                authorities=[
+                    {"ref": "config.authority_catalog", "subject": "src/authority/catalog.rs"},
+                    {"ref": "config.authority_catalog", "subject": "src/authority/other.rs"},
+                ],
+            ),
+        )
+        receipt = self.evaluate(changed, [full])
+        self.assertEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
 
 
 if __name__ == "__main__":

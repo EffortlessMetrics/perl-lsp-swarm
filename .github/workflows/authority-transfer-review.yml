@@ -116,11 +116,19 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$CANDIDATE_TREE"
+          # Fail closed BEFORE extracting a single byte: list every tree
+          # entry and reject an absolute path, a `..` traversal component,
+          # or a symlink/submodule gitlink mode. `git archive | tar -x`
+          # writes to disk first and a post-hoc `find -type l` only reports
+          # a symlink that already landed, so a crafted candidate head could
+          # otherwise write outside CANDIDATE_TREE on this trusted runner.
+          git ls-tree -r -z --full-tree "$HEAD_SHA" \
+            | python3 scripts/ci/authority_transfer_review.py --validate-tree-entries
           git archive "$HEAD_SHA" | tar -x -C "$CANDIDATE_TREE"
-          # `git archive | tar` preserves symlink entries, and the trusted
-          # validator's read calls would follow them into the predictable
-          # base checkout. Reject any linked input so the verdict can only
-          # reflect the candidate's own tree.
+          # Defense in depth: the pre-extraction check already refused every
+          # symlink/submodule entry in the tree, so this must always be
+          # empty; keep it as a second independent gate against a tar/tree
+          # discrepancy rather than trusting either check alone.
           if find "$CANDIDATE_TREE" -type l -print -quit | grep -q .; then
             echo "::error::Candidate tree contains symlink entries; refusing to follow linked content as bounded data"
             exit 3
@@ -145,7 +153,14 @@ jobs:
           # head` attributes unrelated main movement to the PR and churns
           # governed-row verdicts.
           MERGE_BASE="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
-          git diff --name-only "$MERGE_BASE" "$HEAD_SHA" > "$CHANGED_LIST"
+          # `-z` is load-bearing, not cosmetic: without it, git C-quotes any
+          # path containing a tab, newline, double quote, backslash, or
+          # non-ASCII byte (e.g. `a\tb` becomes the literal string
+          # `"a\tb"`), and that quoted string never matches the real path
+          # against policy/review-surfaces.toml bindings, silently letting a
+          # governed change bypass matching. `-z` emits raw NUL-terminated
+          # bytes with no quoting; the evaluator parses those directly.
+          git diff --name-only -z "$MERGE_BASE" "$HEAD_SHA" > "$CHANGED_LIST"
           # Trusted merge-subject identities the evaluator binds packets to
           # (#11795 exact base/head/tree): computed here from the verified
           # fetch, never read from candidate-controlled content.
