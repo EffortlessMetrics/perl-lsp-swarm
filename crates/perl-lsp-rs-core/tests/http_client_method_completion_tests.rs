@@ -63,6 +63,14 @@ fn lwp_user_agent_constructor_assignment_enables_instance_catalog() {
     assert!(has_label(&item_labels, "requests_redirectable"));
     assert!(!has_label(&item_labels, "get"), "typed API methods should respect the method prefix");
 
+    let commented_labels = labels(&completions_at_end(
+        "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new(\n    # don't set a proxy\n    timeout => 10,\n);\n$ua->re",
+    ));
+    assert!(
+        has_label(&commented_labels, "request"),
+        "an apostrophe in a constructor-argument comment must not eat the constructor evidence"
+    );
+
     let put_labels =
         labels(&completions_at_end("use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new;\n$ua->put"));
     assert!(has_label(&put_labels, "put"));

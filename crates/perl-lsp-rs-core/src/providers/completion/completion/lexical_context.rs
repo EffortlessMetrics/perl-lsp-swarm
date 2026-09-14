@@ -4,9 +4,9 @@ use std::cmp::Ordering;
 /// Bounded local POD boundary for completion (#13241, HTTP-client scope).
 ///
 /// Canonical broad boundary: any column-zero alphabetic `=command` directive
-/// enters POD, and only an exact column-zero `=cut` returns the source to Perl
-/// code. Like perl, `=cut` exits POD when followed by any non-word byte (or
-/// end of line), so `=cut;` resumes code while `=cutlery` stays POD. `=end`
+/// enters POD, and a column-zero `=cut` returns the source to Perl code
+/// unless the next byte is alphabetic. Like perl (isALPHA rule), `=cut;`
+/// and `=cut1` resume code while `=cutlery` stays POD. `=end`
 /// and the blank line ending a `=for` paragraph close an inner POD construct
 /// only; they never resume executable code, and unknown alphabetic commands
 /// stay opaque POD.
@@ -1458,13 +1458,13 @@ pub(super) fn is_in_pod(source: &str, position: usize) -> bool {
 }
 
 fn is_pod_end_marker(line: &str) -> bool {
-    // perl exits POD at a column-zero `=cut` followed by any non-word byte
-    // (including none): `=cut;` and `=cut-lt` resume code, while `=cutlery`,
-    // `=cut1`, and `=cut_lt` remain POD commands/paragraph text.
+    // perl exits POD at a column-zero `=cut` unless the next byte is
+    // alphabetic (isALPHA): `=cut;`, `=cut-lt`, `=cut1`, and `=cut_lt`
+    // resume code, while `=cutlery` stays a POD paragraph.
     let Some(after_cut) = line.strip_prefix("=cut") else {
         return false;
     };
-    after_cut.bytes().next().is_none_or(|byte| !byte.is_ascii_alphanumeric() && byte != b'_')
+    after_cut.bytes().next().is_none_or(|byte| !byte.is_ascii_alphabetic())
 }
 
 fn pod_directive(line: &str) -> Option<&str> {
@@ -2048,24 +2048,18 @@ my $after = "op"#;
     }
 
     #[test]
-    fn pod_exits_on_cut_followed_by_any_non_word_byte() {
-        // perl exits POD at column-zero `=cut` plus any non-word byte.
-        let semicolon = "=pod\ndocs\n=cut;\nmy $code = 1;";
-        assert!(!is_in_pod(semicolon, semicolon.len()));
-
-        let hyphenated = "=pod\ndocs\n=cut-lt\nmy $code = 1;";
-        assert!(!is_in_pod(hyphenated, hyphenated.len()));
-
-        let plain = "=pod\ndocs\n=cut\nmy $code = 1;";
-        assert!(!is_in_pod(plain, plain.len()));
-
-        let spaced = "=pod\ndocs\n=cut \nmy $code = 1;";
-        assert!(!is_in_pod(spaced, spaced.len()));
+    fn pod_exits_on_cut_followed_by_non_alphabetic_byte() {
+        // perl exits POD at column-zero `=cut` unless the next byte is
+        // alphabetic (isALPHA rule, measured on perl 5.34/5.38).
+        for line in ["=cut;", "=cut-lt", "=cut", "=cut ", "=cut1", "=cut_", "=cut_lt"] {
+            let source = format!("=pod\ndocs\n{line}\nmy $code = 1;");
+            assert!(!is_in_pod(&source, source.len()), "{line} must resume code");
+        }
     }
 
     #[test]
-    fn pod_word_continuations_after_cut_stay_pod() {
-        for line in ["=cutlery", "=cut1", "=cut_lt"] {
+    fn pod_alphabetic_continuations_after_cut_stay_pod() {
+        for line in ["=cutlery", "=cutZ", "=cutz"] {
             let source = format!("=pod\ndocs\n{line}\nmy $code = 1;");
             assert!(is_in_pod(&source, source.len()), "{line} must stay POD");
         }

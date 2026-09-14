@@ -655,17 +655,24 @@ fn occurrence_is_undef_operand(source: &str, receiver_pos: usize, after_receiver
 }
 
 /// Byte index of the first statement-terminating `;` that sits outside quoted
-/// strings and balanced delimiter groups, so constructor arguments containing
-/// semicolons survive assignment-evidence extraction.
+/// strings, `#` line comments, and balanced delimiter groups, so constructor
+/// arguments containing semicolons survive assignment-evidence extraction.
+///
+/// A `#` opens a comment only outside quotes and only when it is not the
+/// `$#` array-length sigil; quote-like `#` delimiters (`s#...#`) remain a
+/// known heuristic gap shared with the pre-existing quote/delimiter handling.
 fn statement_terminator_index(text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut depth = 0usize;
     let mut escaped = false;
     let mut quote: Option<u8> = None;
+    let mut index = 0usize;
 
-    for (index, byte) in bytes.iter().copied().enumerate() {
+    while index < bytes.len() {
+        let byte = bytes[index];
         if escaped {
             escaped = false;
+            index += 1;
             continue;
         }
         if let Some(active_quote) = quote {
@@ -674,15 +681,29 @@ fn statement_terminator_index(text: &str) -> usize {
             } else if byte == active_quote {
                 quote = None;
             }
+            index += 1;
             continue;
         }
         match byte {
             b'\'' | b'"' | b'`' => quote = Some(byte),
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'#' if index == 0 || bytes[index - 1] != b'$' => {
+                // Always advance at least one byte: a `#` as the last byte
+                // with no trailing newline must still terminate the scan.
+                while index < bytes.len() {
+                    if bytes[index] == b'\n' {
+                        index += 1;
+                        break;
+                    }
+                    index += 1;
+                }
+                continue;
+            }
             b';' if depth == 0 => return index,
             _ => {}
         }
+        index += 1;
     }
 
     bytes.len()
@@ -739,8 +760,8 @@ fn call_ends_at_indirect_arguments(after_name: &str) -> bool {
 }
 
 /// Whether a call's argument list both closes and ends the expression: after
-/// the balanced close parenthesis (quote/escape aware) only whitespace may
-/// follow. A method-call chain continuing past the call
+/// the balanced close parenthesis (quote/escape/`#`-comment aware) only
+/// whitespace may follow. A method-call chain continuing past the call
 /// (`path("x")->stringify`) produces a derived plain value, so it rejects and
 /// factory evidence never arms a catalog for the wrong receiver type.
 fn call_arguments_end_expression(after_name: &str) -> bool {
@@ -749,26 +770,48 @@ fn call_arguments_end_expression(after_name: &str) -> bool {
         return after_name.is_empty();
     }
 
+    let bytes = after_name.as_bytes();
     let mut depth = 0usize;
     let mut escaped = false;
     let mut quote = None;
-    for (index, byte) in after_name.bytes().enumerate() {
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
         if escaped {
             escaped = false;
+            index += 1;
             continue;
         }
         if byte == b'\\' {
             escaped = true;
+            index += 1;
             continue;
         }
         if let Some(active_quote) = quote {
             if byte == active_quote {
                 quote = None;
             }
+            index += 1;
             continue;
         }
         if matches!(byte, b'\'' | b'"') {
             quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        // A `#` outside quotes opens a line comment (unless it is the `$#`
+        // sigil), so an apostrophe inside constructor-argument comments must
+        // not open a phantom quote that swallows the close parenthesis.
+        if byte == b'#' && (index == 0 || bytes[index - 1] != b'$') {
+            // Always advance at least one byte: a `#` as the last byte
+            // with no trailing newline must still terminate the scan.
+            while index < bytes.len() {
+                if bytes[index] == b'\n' {
+                    index += 1;
+                    break;
+                }
+                index += 1;
+            }
             continue;
         }
         match byte {
@@ -781,6 +824,7 @@ fn call_arguments_end_expression(after_name: &str) -> bool {
             }
             _ => {}
         }
+        index += 1;
     }
     false
 }
@@ -1179,6 +1223,39 @@ pub fn add_method_completions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminator_ignores_apostrophe_inside_line_comment() {
+        // An apostrophe in a `#` comment must not open a phantom quote that
+        // swallows the statement terminator (measured: constructor evidence
+        // for `$ua->request` was lost with `# don't ...` in the arguments).
+        let with_comment = "my $ua = LWP::UserAgent->new(\n    # don't set a proxy\n    timeout => 10,\n);\n$ua->request;";
+        let without_comment =
+            "my $ua = LWP::UserAgent->new(\n    # no proxy\n    timeout => 10,\n);\n$ua->request;";
+        // The terminator must be the constructor statement's own `;`, not a
+        // text.len() runaway, in both spellings: the apostrophe must not
+        // change the outcome.
+        for text in [with_comment, without_comment] {
+            let end = statement_terminator_index(text);
+            assert_eq!(text.find(");").map(|pos| pos + 1), Some(end));
+        }
+    }
+
+    #[test]
+    fn terminator_keeps_array_length_sigil_out_of_comments() {
+        let sigil = "my $last = $#items;";
+        assert_eq!(statement_terminator_index(sigil), sigil.len() - 1);
+    }
+
+    #[test]
+    fn comment_scan_terminates_on_hash_at_end_of_input() {
+        // A trailing `#` with no newline must end the scan, not spin: the
+        // comment arm always consumes at least one byte.
+        for text in ["my $x = 1; #", "#", "LWP::UserAgent->new(#"] {
+            let _ = statement_terminator_index(text);
+            let _ = call_arguments_end_expression(text);
+        }
+    }
 
     #[test]
     fn pod_regions_stay_pod_until_exact_cut() {
