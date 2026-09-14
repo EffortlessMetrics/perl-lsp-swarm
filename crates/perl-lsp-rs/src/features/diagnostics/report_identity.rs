@@ -943,15 +943,19 @@ mod tests {
     /// Every refusal must render something a maintainer can act on, and the
     /// variants must be distinguishable from each other.
     ///
+    /// Covers every variant `not_reusable_label` names, including the wrapping
+    /// `PolicyIncomplete` case, so no refusal's message goes unrendered.
+    ///
     /// Deliberately does *not* assert the absence of `/`: these messages contain
     /// no input, and separators appear legitimately as prose and punctuation
-    /// ("workspace/root authority", "` `` /`` `"). Leak-freedom is a property of
-    /// refusals carrying real rejected material, and is proven against a canary by
+    /// ("workspace/root authority"). Leak-freedom is a property of refusals
+    /// carrying real rejected material, and is proven against a canary by
     /// `refusal_text_does_not_leak_document_or_root_paths`.
     #[test]
     fn every_not_reusable_variant_renders_a_distinct_message() {
         let all = [
             NotReusable::MissingRootAuthority,
+            NotReusable::PolicyIncomplete(CriticPolicyIdentityError::MissingLegacyPolicyDigest),
             NotReusable::SourcePathUnavailable,
             NotReusable::SourcePathHasNoFileName,
             NotReusable::SourcePathNotPlainDescent,
@@ -962,12 +966,11 @@ mod tests {
         let mut rendered = Vec::new();
         for outcome in &all {
             let text = format!("{outcome}");
-            assert!(!text.is_empty(), "{} must render", not_reusable_label(outcome));
-            assert!(
-                text.contains("document") || text.contains("authority"),
-                "{} must name its subject, got {text:?}",
-                not_reusable_label(outcome)
-            );
+            let label = not_reusable_label(outcome);
+            assert!(!text.is_empty(), "{label} must render");
+            // A phrase, not a bare token: the point of a typed refusal is that a
+            // maintainer can read it.
+            assert!(text.contains(' '), "{label} must render a phrase, got {text:?}");
             rendered.push(text);
         }
 
