@@ -201,6 +201,9 @@ supported_forms = [
 blocked_forms = [
   "plain_schema_import_inline_row_identity",
   "rename_skip_only_import_customization",
+  "repeated_quickorm_import_events_in_one_package",
+  "quickorm_unimport",
+  "bareword_or_call_type_value_import",
   "dynamic_or_interpolated_table_name",
   "dynamic_or_interpolated_column_name",
   "non_identifier_column_name",
@@ -220,7 +223,8 @@ blocks = [
   "low_confidence",
   "unsupported_fact_class",
 ]
-claim_boundary = "DBIx::QuickORM has a parser-backed, non-published EntityKind::Field candidate extractor for identifier-shaped columns in explicit table classes using the default DSL names. Explicit table classes install qorm_table and row inheritance but do not synthesize one method per column: ordinary rows use field($name), while named field accessors belong to autorow. Each import replaces the caller's builder; plain or symbol-customized imports therefore close this candidate contract. Canonical shards, live providers, runtime schema fill, generated row classes, naming hooks, links, generated-member inference, and edit authorization remain blocked pending separate admission proof."
+claim_boundary = "DBIx::QuickORM has a parser-backed, non-published EntityKind::Field candidate extractor for identifier-shaped columns in explicit table classes using the default DSL names. Explicit table classes install qorm_table and row inheritance but do not synthesize one method per column: ordinary rows use field($name), while named field accessors belong to autorow. Import state is contained, not modeled: upstream 0.000029 installs a set of local names per import and records them for unimport, so a second import can overwrite some installed names while leaving a distinct earlier renamed alias live. The extractor therefore admits only a package with exactly one parser-proven exact table import, no second import or unimport event, and one admitted direct table builder; the type value must be a proven literal, because a bareword cannot be distinguished from a constant or a table() call. Any other shape yields no candidate for the whole package, retroactively. This containment is temporary pending #13238/#13235 and is deliberately conservative: losing a non-published candidate is preferable to preserving false exactness. Canonical shards, live providers, runtime schema fill, generated row classes, naming hooks, links, generated-member inference, and edit authorization remain blocked pending separate admission proof."
+containment_removal_condition = "Replace whole-package suppression with the exact installed-name state from #13238 (see also #13235, #8199)."
 
 [[adapter]]
 framework = "Catalyst"
