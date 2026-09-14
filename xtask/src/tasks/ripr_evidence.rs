@@ -18,6 +18,9 @@ use std::fs;
 use std::io::{self, BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
 use syn::spanned::Spanned;
 use syn::visit::{self, Visit};
@@ -25,6 +28,14 @@ use xtask::git_ancestry::{AncestryDisposition, AncestryReceipt, classify_ancestr
 
 #[cfg(test)]
 static RIPR_BIN_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Test-only override for the staged-payload cap, so a refusal test can drive
+/// the guard with a small payload instead of gigabytes. Serialized by the same
+/// exclusive lock as [`RIPR_BIN_OVERRIDE`]: every test that sets this also
+/// installs a producer double, and both are cleared by one guard.
+#[cfg(test)]
+static RIPR_MAX_RAW_CHECK_BYTES_OVERRIDE: std::sync::Mutex<Option<u64>> =
+    std::sync::Mutex::new(None);
 
 const DEFAULT_ROOT: &str = ".";
 const DEFAULT_BASE: &str = "origin/main";
@@ -50,6 +61,31 @@ const RIPR_STDOUT_STAGING_DIR: &str = "target/ripr/stdout-staging";
 /// much is kept, so a noisy failure cannot reintroduce the unbounded buffer
 /// this change exists to remove (#12569 review).
 const MAX_RIPR_STDERR_BYTES: usize = 64 * 1024;
+/// Maximum bytes of producer stdout this transport stages on disk before it
+/// terminates the producer and refuses the run.
+///
+/// `ripr check` output is unbounded in the *repository* dimension, not only the
+/// diff: each finding embeds a repo-wide literal inventory, so the payload grows
+/// as (changed lines × repository literal density) rather than with the diff.
+/// #12569 and #12860 removed the *memory* ceiling by carrying the payload
+/// through a file instead of a String and a full DOM; nothing bounded the file.
+/// The staged payload has been measured at 10.4GB against a hosted runner with
+/// ~7GB of free disk, where the runner is killed mid-write, no classification
+/// artifact is produced, and the required gate reports no verdict at all
+/// (#12999).
+///
+/// The default sits between the two payload sizes measured on #12999: above the
+/// 4.61GB payload that completed ingestion, and below the 10.4GB payload that
+/// killed the lane. It bounds this repository's own disk use; it cannot make an
+/// oversized diff produce a verdict, and is not a capacity grant. Override with
+/// [`RIPR_MAX_RAW_CHECK_BYTES_ENV`] where a lane's disk budget genuinely differs.
+const MAX_RIPR_RAW_CHECK_BYTES: u64 = 6 * 1024 * 1024 * 1024;
+/// Environment override for [`MAX_RIPR_RAW_CHECK_BYTES`], as a byte count.
+const RIPR_MAX_RAW_CHECK_BYTES_ENV: &str = "RIPR_MAX_RAW_CHECK_BYTES";
+/// Interval between staged-payload size checks while the producer runs. The
+/// producer writes its own stdout file, so the size is read from the filesystem
+/// rather than by intercepting bytes; this is the resolution of that guard.
+const RIPR_STDOUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const REVIEW_COMMENTS_JSON: &str = "target/ripr/review/comments.json";
 const REVIEW_COMMENTS_MD: &str = "target/ripr/review/comments.md";
 const ANNOTATIONS_TXT: &str = "target/ripr/review/annotations.txt";
@@ -991,10 +1027,18 @@ fn run_ripr_check(repo: &Path, options: &PrEvidenceOptions) -> Result<()> {
 /// the final publication remains an atomic rename. Stderr is captured in full
 /// (diagnostics are small); the stdout excerpt in a failure message is bounded
 /// because the payload itself is unbounded. Only one complete copy of the
-/// unbounded payload exists on disk, and any failure before the rename drops
-/// the temporary file without exposing a partial artifact at `out_path`.
+/// payload exists on disk, and any failure before the rename drops the
+/// temporary file without exposing a partial artifact at `out_path`.
+///
+/// That single copy is bounded by [`MAX_RIPR_RAW_CHECK_BYTES`]: the producer is
+/// terminated and the run refused once its staged stdout passes the cap, so an
+/// unbounded payload fails closed with an actionable error instead of filling
+/// the runner's disk and having it killed mid-write (#12999).
 fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Path) -> Result<()> {
     let binary = ripr_binary()?;
+    // Resolved before the producer is spawned: a malformed ceiling must fail
+    // immediately rather than after minutes of analysis.
+    let max_bytes = max_raw_check_bytes()?;
     // A failed rerun must not leave an older raw artifact available to the
     // review-comments fallback. The artifact is published only after the child
     // succeeds and its complete stdout has been written.
@@ -1032,7 +1076,8 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Pa
         .spawn()
         .with_context(|| format!("failed to run {binary}"))?;
     let stderr = child.stderr.take();
-    let (status, stderr_bytes) = drain_stderr_and_wait(&mut child, stderr, &binary)?;
+    let cap = StagedPayloadCap { path: stdout_file.path(), max_bytes };
+    let (status, stderr_bytes) = drain_stderr_and_wait(&mut child, stderr, &binary, Some(&cap))?;
     if !status.success() {
         let mut stdout_excerpt = Vec::new();
         if let Ok(stdout_reader) = stdout_file.reopen() {
@@ -1045,6 +1090,11 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Pa
             String::from_utf8_lossy(&stderr_bytes).trim()
         );
     }
+    // The publication invariant, measured on the completed payload: an
+    // over-cap artifact is never published. A producer that passes the cap and
+    // exits inside one poll interval is settled by its own exit rather than by
+    // the waiter above, so this is the check that holds for it.
+    cap.check(&binary)?;
     stdout_file
         .persist(out_path)
         .map_err(|error| error.error)
@@ -1077,46 +1127,196 @@ fn settle_ripr_child(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// Drains the producer's stderr to EOF, retaining at most
-/// `MAX_RIPR_STDERR_BYTES`, then waits for it. Every failure arm settles the
-/// producer first: a returned error must not leave it writing an unbounded
-/// payload into a staged file nothing will publish.
-fn drain_stderr_and_wait(
-    child: &mut Child,
-    stderr: Option<impl Read>,
-    binary: &str,
-) -> Result<(ExitStatus, Vec<u8>)> {
-    let mut stderr_bytes = Vec::new();
-    if let Some(mut stderr) = stderr {
-        // Drain everything, retain at most MAX_RIPR_STDERR_BYTES. Truncating
-        // by stopping the read instead would leave the child blocked on a
-        // full pipe and `wait` below would never return.
-        let mut chunk = [0_u8; 8 * 1024];
-        loop {
-            let read = match stderr.read(&mut chunk) {
-                Ok(read) => read,
-                Err(error) => {
-                    settle_ripr_child(child);
-                    return Err(error).with_context(|| format!("failed to read {binary} stderr"));
-                }
-            };
-            if read == 0 {
-                break;
-            }
-            let spare = MAX_RIPR_STDERR_BYTES.saturating_sub(stderr_bytes.len());
-            if spare > 0 {
-                stderr_bytes.extend_from_slice(&chunk[..read.min(spare)]);
-            }
+/// The staged stdout file and the byte ceiling this run may not exceed.
+struct StagedPayloadCap<'a> {
+    path: &'a Path,
+    max_bytes: u64,
+}
+
+impl StagedPayloadCap<'_> {
+    /// Currently staged bytes, or `None` when the size cannot be read.
+    ///
+    /// An unreadable staged file must not refuse an otherwise good run, so an
+    /// absent measurement leaves the guard inactive for that poll rather than
+    /// failing closed. The file is created before the producer is spawned, so
+    /// the expected `None` window is empty; a persistent metadata failure
+    /// silently disables this guard, which is a limitation of measuring the
+    /// payload through the filesystem instead of intercepting bytes.
+    fn staged_bytes(&self) -> Option<u64> {
+        fs::metadata(self.path).ok().map(|metadata| metadata.len())
+    }
+
+    /// Fails when the staged payload has passed `max_bytes`. The caller settles
+    /// the producer; this only decides.
+    fn check(&self, binary: &str) -> Result<()> {
+        let Some(staged) = self.staged_bytes() else { return Ok(()) };
+        if staged <= self.max_bytes {
+            return Ok(());
+        }
+        bail!(
+            "{binary} staged {staged} bytes of output, over this lane's {} byte cap. \
+             The producer was terminated and no evidence artifact was published, so \
+             this run has no RIPR verdict rather than a runner killed mid-write \
+             (#12999). The diff scope is too large for the lane's disk budget: \
+             reduce it, route to a larger runner, or raise \
+             {RIPR_MAX_RAW_CHECK_BYTES_ENV} with capacity evidence.",
+            self.max_bytes,
+        )
+    }
+}
+
+/// Resolves this run's staged-payload ceiling.
+fn max_raw_check_bytes() -> Result<u64> {
+    #[cfg(test)]
+    {
+        let guard = RIPR_MAX_RAW_CHECK_BYTES_OVERRIDE
+            .lock()
+            .map_err(|_| eyre!("RIPR raw-check cap test override lock poisoned"))?;
+        if let Some(max_bytes) = *guard {
+            return Ok(max_bytes);
         }
     }
-    let status = match child.wait() {
-        Ok(status) => status,
-        Err(error) => {
+
+    match env::var(RIPR_MAX_RAW_CHECK_BYTES_ENV) {
+        Ok(value) => parse_max_raw_check_bytes(&value),
+        Err(_) => Ok(MAX_RIPR_RAW_CHECK_BYTES),
+    }
+}
+
+/// Parses a [`RIPR_MAX_RAW_CHECK_BYTES_ENV`] value.
+///
+/// An unusable ceiling is refused rather than silently replaced by the default:
+/// a lane that believes it raised the cap and did not would be killed by the
+/// very failure this guard exists to convert into a clean refusal.
+fn parse_max_raw_check_bytes(value: &str) -> Result<u64> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("{RIPR_MAX_RAW_CHECK_BYTES_ENV} is set but empty");
+    }
+    let max_bytes: u64 = value.parse().with_context(|| {
+        format!("{RIPR_MAX_RAW_CHECK_BYTES_ENV} must be a byte count, got {value:?}")
+    })?;
+    if max_bytes == 0 {
+        bail!("{RIPR_MAX_RAW_CHECK_BYTES_ENV} must be greater than zero");
+    }
+    Ok(max_bytes)
+}
+
+/// Drains the producer's stderr to EOF on a worker thread, retaining at most
+/// `MAX_RIPR_STDERR_BYTES`, while this thread waits for the producer and holds
+/// its staged payload under `cap`.
+///
+/// The drain runs on its own thread because both jobs must make progress at
+/// once: an undrained stderr pipe fills and blocks the producer forever, while
+/// a staged payload nobody measures grows until the runner dies (#12999).
+/// Stdout remains a regular file the producer writes directly (#12569) — this
+/// never returns it to a pipe — so the payload is measured through the
+/// filesystem rather than by buffering it here.
+///
+/// Every failure arm settles the producer first: a returned error must not
+/// leave it writing an unbounded payload into a staged file nothing will
+/// publish.
+fn drain_stderr_and_wait(
+    child: &mut Child,
+    stderr: Option<impl Read + Send + 'static>,
+    binary: &str,
+    cap: Option<&StagedPayloadCap<'_>>,
+) -> Result<(ExitStatus, Vec<u8>)> {
+    let read_failed = Arc::new(AtomicBool::new(false));
+    let drain = stderr.map(|stderr| {
+        let read_failed = Arc::clone(&read_failed);
+        thread::spawn(move || drain_bounded_stderr(stderr, &read_failed))
+    });
+
+    // Settles the producer on every failure arm, so the drain below always
+    // reaches EOF and the join cannot block on a live child.
+    let waited = wait_within_cap(child, binary, cap, &read_failed);
+
+    let stderr_bytes = match drain.map(thread::JoinHandle::join) {
+        Some(Ok(Ok(stderr_bytes))) => stderr_bytes,
+        // A stderr read failure is the precise diagnosis for the wait abort it
+        // causes, so it is surfaced ahead of that abort.
+        Some(Ok(Err(error))) => {
             settle_ripr_child(child);
-            return Err(error).with_context(|| format!("failed to wait for {binary}"));
+            return Err(error).with_context(|| format!("failed to read {binary} stderr"));
         }
+        Some(Err(_)) => {
+            settle_ripr_child(child);
+            bail!("the {binary} stderr drain thread panicked");
+        }
+        None => Vec::new(),
     };
-    Ok((status, stderr_bytes))
+
+    match waited? {
+        Some(status) => Ok((status, stderr_bytes)),
+        None => bail!("failed to read {binary} stderr"),
+    }
+}
+
+/// Reads `stderr` to EOF, retaining at most [`MAX_RIPR_STDERR_BYTES`].
+///
+/// Everything is drained even once the retention cap is reached: truncating by
+/// stopping the read would leave the producer blocked on a full pipe, and it
+/// would never exit.
+fn drain_bounded_stderr(mut stderr: impl Read, read_failed: &AtomicBool) -> io::Result<Vec<u8>> {
+    let mut stderr_bytes = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        let read = match stderr.read(&mut chunk) {
+            Ok(read) => read,
+            Err(error) => {
+                // Releases the waiter, which is otherwise polling a producer
+                // whose diagnostics can no longer be collected.
+                read_failed.store(true, Ordering::Release);
+                return Err(error);
+            }
+        };
+        if read == 0 {
+            return Ok(stderr_bytes);
+        }
+        let spare = MAX_RIPR_STDERR_BYTES.saturating_sub(stderr_bytes.len());
+        if spare > 0 {
+            stderr_bytes.extend_from_slice(&chunk[..read.min(spare)]);
+        }
+    }
+}
+
+/// Waits for the producer, terminating it once its staged payload passes `cap`.
+///
+/// This is the bound that keeps the payload off the lane's disk: it stops a
+/// producer that would otherwise keep writing, including one that never exits
+/// on its own. Whether a *completed* payload may be published is decided once
+/// more at the publication site, which owns that invariant.
+///
+/// Returns `Ok(None)` when the wait was abandoned because the stderr drain
+/// failed; the caller owns that diagnosis.
+fn wait_within_cap(
+    child: &mut Child,
+    binary: &str,
+    cap: Option<&StagedPayloadCap<'_>>,
+    read_failed: &AtomicBool,
+) -> Result<Option<ExitStatus>> {
+    loop {
+        if read_failed.load(Ordering::Acquire) {
+            settle_ripr_child(child);
+            return Ok(None);
+        }
+        if let Some(cap) = cap
+            && let Err(error) = cap.check(binary)
+        {
+            settle_ripr_child(child);
+            return Err(error);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(None) => {}
+            Err(error) => {
+                settle_ripr_child(child);
+                return Err(error).with_context(|| format!("failed to wait for {binary}"));
+            }
+        }
+        thread::sleep(RIPR_STDOUT_POLL_INTERVAL);
+    }
 }
 
 /// Streamed ingestion of one `ripr check --format json` payload (#12860): the
@@ -10138,16 +10338,34 @@ paths = ["archive/["]
             if let Ok(mut guard) = RIPR_BIN_OVERRIDE.lock() {
                 *guard = None;
             }
+            if let Ok(mut guard) = RIPR_MAX_RAW_CHECK_BYTES_OVERRIDE.lock() {
+                *guard = None;
+            }
         }
     }
 
     fn override_ripr_bin(binary: &Path) -> Result<RiprBinOverrideGuard> {
+        override_ripr_bin_with_cap(binary, None)
+    }
+
+    /// As `override_ripr_bin`, and also installs `max_bytes` as this run's
+    /// staged-payload ceiling. Both overrides live under the one exclusive lock
+    /// and are cleared by the one guard, so a cap can never leak into another
+    /// test's producer double.
+    fn override_ripr_bin_with_cap(
+        binary: &Path,
+        max_bytes: Option<u64>,
+    ) -> Result<RiprBinOverrideGuard> {
         // A panicking test poisons this lock; recover rather than cascading an
         // unrelated failure into every other override test.
         let exclusive = RIPR_BIN_TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut guard =
             RIPR_BIN_OVERRIDE.lock().map_err(|_| eyre!("RIPR_BIN test override lock poisoned"))?;
         *guard = Some(binary.display().to_string());
+        let mut cap = RIPR_MAX_RAW_CHECK_BYTES_OVERRIDE
+            .lock()
+            .map_err(|_| eyre!("RIPR raw-check cap test override lock poisoned"))?;
+        *cap = max_bytes;
         Ok(RiprBinOverrideGuard(exclusive))
     }
 
@@ -11292,7 +11510,7 @@ paths = ["archive/**"]
             .spawn()
             .context("failed to spawn long-lived test producer")?;
         let started = Instant::now();
-        let error = drain_stderr_and_wait(&mut child, Some(FailingStderrReader), "ripr")
+        let error = drain_stderr_and_wait(&mut child, Some(FailingStderrReader), "ripr", None)
             .err()
             .ok_or_else(|| eyre!("a failing stderr reader must return an error"))?;
         let message = format!("{error:#}");
@@ -11327,6 +11545,7 @@ paths = ["archive/**"]
             &mut child,
             Some(ChunkedStderrReader { remaining: MAX_RIPR_STDERR_BYTES * 2, chunk_size: 1024 }),
             "ripr",
+            None,
         )?;
         color_eyre::eyre::ensure!(
             status.success(),
@@ -11761,5 +11980,199 @@ paths = ["archive/**"]
             name,
             "    std::thread::sleep(std::time::Duration::from_secs(60));\n",
         )
+    }
+
+    /// A producer that writes stdout without ever stopping, standing in for the
+    /// unbounded payload of #12999 at a size a test can afford. It exits only if
+    /// it is killed, so a cap that never fires hangs the test rather than
+    /// passing it.
+    fn write_flooding_ripr_stub(dir: &Path, name: &str) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            "    use std::io::Write;\n    \
+             let chunk = vec![b'x'; 64 * 1024];\n    \
+             let mut stdout = std::io::stdout();\n    \
+             loop {\n        \
+             if stdout.write_all(&chunk).is_err() {\n            \
+             return;\n        \
+             }\n        \
+             let _ = stdout.flush();\n    \
+             }\n",
+        )
+    }
+
+    /// A producer that writes `bytes` of stdout and exits immediately, so the
+    /// cap must hold for a payload that can pass it inside one poll interval.
+    fn write_oversized_exiting_ripr_stub(dir: &Path, name: &str, bytes: usize) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            &format!(
+                "    use std::io::Write;\n    \
+                 let payload = vec![b'x'; {bytes}];\n    \
+                 let _ = std::io::stdout().write_all(&payload);\n    \
+                 std::process::exit(0);\n"
+            ),
+        )
+    }
+
+    fn pr_evidence_options() -> PrEvidenceOptions {
+        PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        }
+    }
+
+    /// #12999: an unbounded producer payload must fail closed with an
+    /// actionable refusal instead of filling the lane's disk until the runner is
+    /// killed mid-write. The producer never exits on its own, so a cap that does
+    /// not fire cannot pass this test.
+    #[test]
+    fn run_ripr_check_refuses_a_producer_that_passes_the_staged_payload_cap() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let binary = write_flooding_ripr_stub(&stubs, "ripr-flooding")?;
+        let _override = override_ripr_bin_with_cap(&binary, Some(1024 * 1024))?;
+
+        let started = Instant::now();
+        let error = run_ripr_check(&repo, &pr_evidence_options())
+            .err()
+            .ok_or_else(|| eyre!("an unbounded payload must be refused, not published"))?;
+
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("over this lane's 1048576 byte cap"),
+            "refusal must name the cap it enforced: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            message.contains(RIPR_MAX_RAW_CHECK_BYTES_ENV),
+            "refusal must name the override that raises the cap: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "the producer was waited out instead of terminated at the cap"
+        );
+
+        // A refused run publishes nothing: the gate must see an absent verdict,
+        // never a truncated payload that would ingest as a smaller gap.
+        let raw_path = repo.join(PR_RAW_CHECK_JSON);
+        color_eyre::eyre::ensure!(
+            !raw_path.exists(),
+            "a refused run must not publish {}",
+            raw_path.display()
+        );
+        let staging = repo.join(RIPR_STDOUT_STAGING_DIR);
+        let staged: Vec<_> = fs::read_dir(&staging)?
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        color_eyre::eyre::ensure!(
+            staged.is_empty(),
+            "the staged payload must be dropped when the run is refused: {staged:?}"
+        );
+        Ok(())
+    }
+
+    /// Negative control for the cap's timing: a producer that passes the cap and
+    /// exits on its own is never terminated by the waiter, so the refusal has to
+    /// come from the completed-payload check at the publication site. Measured:
+    /// with the waiter's in-loop check removed, this test still refuses; with
+    /// both removed, it publishes the oversized payload and fails.
+    #[test]
+    fn run_ripr_check_refuses_an_oversized_payload_from_a_producer_that_exits_at_once() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let binary = write_oversized_exiting_ripr_stub(&stubs, "ripr-oversized", 256 * 1024)?;
+        let _override = override_ripr_bin_with_cap(&binary, Some(64 * 1024))?;
+
+        let error = run_ripr_check(&repo, &pr_evidence_options())
+            .err()
+            .ok_or_else(|| eyre!("an oversized payload must be refused even if it exits first"))?;
+
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("over this lane's 65536 byte cap"),
+            "refusal must name the cap it enforced: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            !repo.join(PR_RAW_CHECK_JSON).exists(),
+            "a refused run must publish no artifact"
+        );
+        Ok(())
+    }
+
+    /// Negative control for the cap's threshold: the guard must not refuse a
+    /// payload the lane can hold. A payload exactly at the cap is accepted and
+    /// still published byte for byte, so the bound cannot regress the working
+    /// path it exists to protect.
+    #[test]
+    fn run_ripr_check_publishes_a_payload_that_exactly_fills_the_staged_payload_cap() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let payload = r#"{"summary":{"findings":0},"findings":[]}"#;
+        let binary = write_ripr_stub(&stubs, "ripr-at-cap", payload, 0)?;
+        let max_bytes = u64::try_from(payload.len())?;
+        let _override = override_ripr_bin_with_cap(&binary, Some(max_bytes))?;
+
+        run_ripr_check(&repo, &pr_evidence_options())?;
+
+        assert_eq!(
+            fs::read(repo.join(PR_RAW_CHECK_JSON))?,
+            payload.as_bytes(),
+            "a payload at the cap must still publish verbatim"
+        );
+        Ok(())
+    }
+
+    /// The default ceiling is a claim about this repository's measured payloads
+    /// (#12999), so it is pinned against them: above the 4.61GB payload that
+    /// completed ingestion, and below the 10.4GB payload that killed the lane.
+    /// Moving it outside that band is a capacity decision, not a refactor.
+    #[test]
+    fn staged_payload_cap_default_sits_between_the_payloads_measured_on_12999() {
+        const INGESTED_PAYLOAD_BYTES: u64 = 4_606_060_928;
+        const LANE_KILLING_PAYLOAD_BYTES: u64 = 10_385_110_266;
+        assert!(
+            MAX_RIPR_RAW_CHECK_BYTES > INGESTED_PAYLOAD_BYTES,
+            "the default cap must not refuse a payload measured completing ingestion"
+        );
+        assert!(
+            MAX_RIPR_RAW_CHECK_BYTES < LANE_KILLING_PAYLOAD_BYTES,
+            "the default cap must refuse the payload measured killing the lane"
+        );
+    }
+
+    /// An unusable override must be refused rather than silently replaced by the
+    /// default: a lane that believes it raised the cap and did not would be
+    /// killed by the failure this guard converts into a clean refusal.
+    #[test]
+    fn staged_payload_cap_override_refuses_unusable_values() -> Result<()> {
+        assert_eq!(parse_max_raw_check_bytes("1048576")?, 1024 * 1024);
+        assert_eq!(parse_max_raw_check_bytes("  1048576  ")?, 1024 * 1024);
+        for unusable in ["", "   ", "0", "-1", "6GiB", "1.5", "1_048_576"] {
+            let error = parse_max_raw_check_bytes(unusable).err().ok_or_else(|| {
+                eyre!("{unusable:?} is not a usable byte ceiling and must be refused")
+            })?;
+            let message = format!("{error:#}");
+            color_eyre::eyre::ensure!(
+                message.contains(RIPR_MAX_RAW_CHECK_BYTES_ENV),
+                "refusal must name the variable it read: {message}"
+            );
+        }
+        Ok(())
     }
 }
