@@ -232,9 +232,19 @@ impl OutboundSender {
 
     /// Send a JSON-RPC response.
     pub fn send_response(&self, response: JsonRpcResponse) -> io::Result<()> {
-        let result = self.try_send(OutboundMessage::Response(response));
+        // Keep admission closure in the same critical section as the failed
+        // required-response send. Otherwise another producer can observe the
+        // still-open gate between `try_send` and `gate.take()`.
+        let mut gate = self.gate.lock();
+        let result = gate
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "outbound channel closed"))
+            .and_then(|tx| {
+                tx.try_send(OutboundMessage::Response(response)).map_err(map_try_send_error)
+            });
         if result.is_err() {
-            self.gate.lock().take();
+            gate.take();
+            drop(gate);
             self.completion.signal_failure();
         }
         result
@@ -1201,6 +1211,13 @@ pub(crate) mod tests {
             .ok_or("required response must be rejected when the queue is full")?;
         if error.kind() != io::ErrorKind::WouldBlock {
             return Err(format!("expected WouldBlock, got {error}").into());
+        }
+        let closed_response = sender
+            .send_response(JsonRpcResponse::success(Some(JsonRpcId::Integer(3)), json!({})))
+            .err()
+            .ok_or("required response admission should close after queue failure")?;
+        if closed_response.kind() != io::ErrorKind::BrokenPipe {
+            return Err(format!("expected BrokenPipe after closure, got {closed_response}").into());
         }
 
         // The failure is sticky, so a waiter created after the failed send is

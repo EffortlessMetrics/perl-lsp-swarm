@@ -556,6 +556,16 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                         return;
                                     }
                                 };
+                                // Resolve every fallible socket clone before
+                                // constructing the server or starting readers,
+                                // so clone failure cannot leave a live worker.
+                                let failure_shutdown = match peer_shutdown.try_clone() {
+                                    Ok(shutdown) => shutdown,
+                                    Err(error) => {
+                                        tracing::error!(%error, "failed to clone failure shutdown handle");
+                                        return;
+                                    }
+                                };
                                 let reader = std_stream;
                                 let profile = feature_profile;
 
@@ -586,13 +596,6 @@ fn run_server(command_name: &str, launch_config: LaunchConfig) {
                                     );
                                 }
 
-                                let failure_shutdown = match peer_shutdown.try_clone() {
-                                    Ok(shutdown) => shutdown,
-                                    Err(error) => {
-                                        tracing::error!(%error, "failed to clone failure shutdown handle");
-                                        return;
-                                    }
-                                };
                                 let failure_server = Arc::clone(&server);
                                 let failure_task = tokio::spawn(async move {
                                     failure_server.response_delivery_failure_notified().await;
