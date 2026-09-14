@@ -560,6 +560,8 @@ pub fn build_routed_result(
     }
 
     check_timing(&observation.timing).map_err(|error| format!("timing: {error}"))?;
+    check_timing_against_start(&observation.timing, observation.command_started)
+        .map_err(|error| format!("timing: {error}"))?;
 
     // --- instrument plane -------------------------------------------------
     let (instrument_outcome, instrument_detail) = match prerequisites.state {
@@ -743,6 +745,36 @@ fn format_dependency_failures(prerequisites: &PrerequisiteEvidence) -> String {
     }
 }
 
+/// Reconcile the observation window with whether the command actually ran.
+/// `check_timing` alone only proves the window is internally coherent: an
+/// empty window on a started command, or a full window on one that never
+/// started, is coherent in isolation and contradictory in fact. Both shapes
+/// would otherwise re-seal and validate.
+fn check_timing_against_start(
+    timing: &ObservationTiming,
+    command_started: bool,
+) -> Result<(), String> {
+    let observed = timing.started_at_unix_ms.is_some() || timing.ended_at_unix_ms.is_some();
+    match (command_started, observed) {
+        (true, false) => {
+            Err("a started command carries no observation window; a command that ran has a \
+             start and an end"
+                .to_string())
+        }
+        (false, true) => {
+            Err("a never-started command carries an observation window; nothing ran to be \
+             observed"
+                .to_string())
+        }
+        _ => {
+            if !command_started && timing.duration_ms != 0 {
+                return Err("a never-started command claims a nonzero duration".to_string());
+            }
+            Ok(())
+        }
+    }
+}
+
 fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
     match (timing.started_at_unix_ms, timing.ended_at_unix_ms) {
         (Some(start), Some(end)) => {
@@ -868,6 +900,21 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
         return Err("route_plan_fingerprint disagrees with plan_authority identity".to_string());
     }
     validate_plan_authority(&result.plan_authority)?;
+    // The builder refuses a row outside the plan's denominator, but the
+    // validator also runs on bytes read back from disk, where a re-sealed
+    // record could name a gate or tier the embedded authority never governed.
+    if !result.plan_authority.denominator.contains(&result.row.gate_id) {
+        return Err(format!(
+            "row gate {:?} is outside the plan authority's denominator",
+            result.row.gate_id
+        ));
+    }
+    if !result.plan_authority.included_native_tiers.contains(&result.row.native_tier) {
+        return Err(format!(
+            "row native tier {:?} is not among the plan authority's included tiers",
+            result.row.native_tier
+        ));
+    }
     // The row's profile is copied from the same plan as the authority
     // block; a record claiming one profile in the row and another in its
     // authority is contradictory whatever its fingerprint reseals to.
@@ -908,6 +955,7 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
     }
     validate_hosted_identity(result.hosted.as_ref())?;
     check_timing(&result.timing)?;
+    check_timing_against_start(&result.timing, result.command_started)?;
     validate_plane_honesty(result)?;
     let recomputed = result.semantic_fingerprint_of()?;
     if recomputed != result.result_fingerprint {

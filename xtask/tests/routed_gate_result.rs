@@ -672,6 +672,55 @@ fn resealed_contradictory_plan_authority_still_fails_validation() {
 }
 
 #[test]
+fn timing_must_agree_with_whether_the_command_started() {
+    // `check_timing` only proves the window is internally coherent. An empty
+    // window on a started command, and a full window on one that never
+    // started, are each coherent in isolation and contradictory in fact.
+    let plan = compiled_plan();
+
+    let mut result = build_success(&plan);
+    result.timing =
+        ObservationTiming { started_at_unix_ms: None, ended_at_unix_ms: None, duration_ms: 0 };
+    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+    assert!(
+        result.validate().is_err(),
+        "a started command with no observation window must fail validation"
+    );
+
+    let mut result = build_success(&plan);
+    result.command_started = false;
+    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+    assert!(
+        result.validate().is_err(),
+        "a never-started command carrying an observation window must fail validation"
+    );
+}
+
+#[test]
+fn a_row_outside_the_embedded_plan_authority_fails_validation() {
+    // The builder refuses an out-of-denominator row, but the validator also
+    // runs on bytes read back from disk, where a re-sealed record could name
+    // a gate or tier the embedded authority never governed.
+    let plan = compiled_plan();
+
+    let mut result = build_success(&plan);
+    result.row.gate_id = "some_other_gate".to_string();
+    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+    assert!(
+        result.validate().is_err(),
+        "a gate outside the authority's denominator must fail validation"
+    );
+
+    let mut result = build_success(&plan);
+    result.row.native_tier = "nightly".to_string();
+    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+    assert!(
+        result.validate().is_err(),
+        "a tier outside the authority's included tiers must fail validation"
+    );
+}
+
+#[test]
 fn reproduce_command_refuses_shell_metacharacters_from_the_plan() {
     // The plan constrains gate ids, but a native tier and a selection base
     // are only checked non-empty upstream, and both are interpolated into a

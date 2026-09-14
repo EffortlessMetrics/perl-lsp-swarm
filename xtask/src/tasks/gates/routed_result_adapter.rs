@@ -243,10 +243,24 @@ pub(super) fn ensure_plan_subject_fields_match_receipt(
 /// profile or another selection base can select the same commands, and its
 /// published results would then claim a selection authority that did not
 /// govern this execution.
+///
+/// The base is always bound, never only when `--base` was passed: the runner
+/// resolves a selection base for every invocation (subject scope, `--base`,
+/// or the scope fallback), so making the check conditional on the flag let a
+/// plan compiled against a different base govern a flagless run.
+///
+/// Both sides are compared as commits. A plan may record a symbolic base
+/// (`origin/main`) while the runner holds the same base as a SHA; comparing
+/// the raw strings reported those as a mismatch. `resolve_commit` returns the
+/// commit a revision names, or `None` when it names nothing resolvable — two
+/// unresolvable revisions still compare by their literal text, so an offline
+/// or shallow tree degrades to the previous behavior rather than passing
+/// everything.
 pub(super) fn ensure_plan_authority_matches_invocation(
     plan: &CiRoutePlanV1,
     tier: &GateTier,
-    resolved_base_sha: Option<&str>,
+    runner_base: Option<&str>,
+    mut resolve_commit: impl FnMut(&str) -> Option<String>,
 ) -> Result<()> {
     let runner_profile = tier.to_string();
     if plan.requested_profile != runner_profile {
@@ -257,15 +271,23 @@ pub(super) fn ensure_plan_authority_matches_invocation(
             runner_profile
         );
     }
-    if let Some(base) = resolved_base_sha
-        && plan.selection.base != base
-    {
-        bail!(
-            "route plan selection base {} does not match this runner's resolved base {}; \
-             refusing a plan whose selection authority did not govern this invocation",
-            plan.selection.base,
-            base
-        );
+    if let Some(base) = runner_base {
+        let plan_commit = resolve_commit(&plan.selection.base);
+        let runner_commit = resolve_commit(base);
+        let same = match (plan_commit.as_deref(), runner_commit.as_deref()) {
+            (Some(planned), Some(actual)) => planned == actual,
+            // An unresolvable revision proves nothing about the other side;
+            // fall back to the literal identity the plan recorded.
+            _ => plan.selection.base == base,
+        };
+        if !same {
+            bail!(
+                "route plan selection base {} does not match this runner's resolved base {}; \
+                 refusing a plan whose selection authority did not govern this invocation",
+                plan.selection.base,
+                base
+            );
+        }
     }
     Ok(())
 }
@@ -529,6 +551,20 @@ fn project_log_artifact(
 /// is a named reporting shortfall, so consumers can inspect declared outputs
 /// through the normalized record instead of re-deriving them from policy.
 /// Never-started commands declare nothing.
+/// Project a gate's declared outputs as bounded artifact references.
+///
+/// The gate policy spells declarations as literal paths, glob patterns, or
+/// directories, so each is expanded to the concrete files it names; treating
+/// a pattern as one literal path reported every glob and directory as
+/// missing.
+///
+/// Support boundary, deliberately not widened here: a reference asserts the
+/// content identity observed *after* the gate ran, not that this run
+/// produced the file. The runner takes no pre-execution snapshot, so a file
+/// left by an earlier invocation is indistinguishable from a fresh one at
+/// this seam. Establishing per-run freshness needs that snapshot in the
+/// runner surface (#11618/#9548), the same boundary the child-observation
+/// mapping carries.
 fn project_declared_artifacts(
     result: &GateResult,
     root: &Path,
@@ -541,24 +577,65 @@ fn project_declared_artifacts(
         return Vec::new();
     }
     let mut projected = Vec::new();
-    for path in declared {
-        match std::fs::read(root.join(path)) {
-            Ok(bytes) => {
-                let mut hasher = Sha256::new();
-                hasher.update(&bytes);
-                projected.push(ArtifactRef {
-                    role: "artifact".to_string(),
-                    path: path.clone(),
-                    sha256: Some(hex(&hasher.finalize())),
-                });
-            }
-            Err(_) => receipt_shortfall.push(format!(
-                "declared artifact absent or unreadable for completed gate {}: {path}",
+    for declaration in declared {
+        let matched = expand_declaration(declaration, root);
+        if matched.is_empty() {
+            receipt_shortfall.push(format!(
+                "declared artifact absent or unreadable for completed gate {}: {declaration}",
                 result.gate_name
-            )),
+            ));
+            continue;
+        }
+        for path in matched {
+            match std::fs::read(root.join(&path)) {
+                Ok(bytes) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&bytes);
+                    projected.push(ArtifactRef {
+                        role: "artifact".to_string(),
+                        path,
+                        sha256: Some(hex(&hasher.finalize())),
+                    });
+                }
+                Err(_) => receipt_shortfall.push(format!(
+                    "declared artifact absent or unreadable for completed gate {}: {path}",
+                    result.gate_name
+                )),
+            }
         }
     }
     projected
+}
+
+/// Resolve one declaration to the repo-relative files it names. A literal
+/// file resolves to itself, a directory to the files beneath it, and a
+/// pattern to its matches. Ordering is deterministic so the published bytes
+/// are stable across runs.
+fn expand_declaration(declaration: &str, root: &Path) -> Vec<String> {
+    let absolute = root.join(declaration);
+    if absolute.is_file() {
+        return vec![declaration.to_string()];
+    }
+    let pattern = if absolute.is_dir() {
+        format!("{}/**/*", absolute.display())
+    } else {
+        absolute.display().to_string()
+    };
+    let Ok(entries) = glob::glob(&pattern) else {
+        // An unparseable pattern names nothing; the caller reports the
+        // declaration as a receipt shortfall rather than guessing.
+        return Vec::new();
+    };
+    let mut matched: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|path| path.is_file())
+        .filter_map(|path| {
+            path.strip_prefix(root).ok().map(|relative| relative.display().to_string())
+        })
+        .collect();
+    matched.sort();
+    matched.dedup();
+    matched
 }
 
 /// Build, validate, and durably publish the normalized result for one
@@ -887,6 +964,7 @@ mod fixtures {
             &plan,
             &GateTier::MergeGate,
             Some(plan.selection.base.as_str()),
+            |_| None,
         );
         assert!(accepted.is_ok(), "the plan's own identity must accept, got {accepted:?}");
 
@@ -894,6 +972,7 @@ mod fixtures {
             &plan,
             &GateTier::Nightly,
             Some(plan.selection.base.as_str()),
+            |_| None,
         );
         assert!(foreign_profile.is_err(), "a plan compiled for another profile must refuse");
         assert!(foreign_profile.err().unwrap().to_string().contains("profile"));
@@ -902,6 +981,7 @@ mod fixtures {
             &plan,
             &GateTier::MergeGate,
             Some("cccccccccccccccccccccccccccccccccccccccc"),
+            |_| None,
         );
         assert!(foreign_base.is_err(), "a plan compiled against another base must refuse");
         assert!(foreign_base.err().unwrap().to_string().contains("selection base"));
@@ -1142,23 +1222,68 @@ timeout_seconds: 60
     fn plan_selection_authority_binds_runner_profile_and_base() {
         let plan = compiled_fixture();
         assert!(
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, Some(SHA_B))
-                .is_ok()
+            ensure_plan_authority_matches_invocation(
+                &plan,
+                &GateTier::MergeGate,
+                Some(SHA_B),
+                |_| None
+            )
+            .is_ok()
         );
         assert!(
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, None).is_ok(),
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, None, |_| None)
+                .is_ok(),
             "a runner without a base ref binds the profile only"
         );
 
         let foreign_profile =
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::PrFast, Some(SHA_B));
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::PrFast, Some(SHA_B), |_| {
+                None
+            });
         assert!(foreign_profile.is_err(), "profile mismatch must refuse: {foreign_profile:?}");
         assert!(foreign_profile.unwrap_err().to_string().contains("profile"));
 
-        let foreign_base =
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, Some(SHA_A));
+        let foreign_base = ensure_plan_authority_matches_invocation(
+            &plan,
+            &GateTier::MergeGate,
+            Some(SHA_A),
+            |_| None,
+        );
         assert!(foreign_base.is_err(), "base mismatch must refuse: {foreign_base:?}");
         assert!(foreign_base.unwrap_err().to_string().contains("selection base"));
+    }
+
+    #[test]
+    fn a_symbolic_plan_base_binds_through_the_commit_it_names() {
+        // The plan may record `origin/main` while the runner holds the same
+        // base as a SHA. Comparing the raw strings called that a mismatch and
+        // refused a plan that did govern the invocation.
+        let mut plan = compiled_fixture();
+        plan.selection.base = "origin/main".to_string();
+
+        let resolve = |revision: &str| match revision {
+            "origin/main" | SHA_B => Some(SHA_B.to_string()),
+            _ => None,
+        };
+
+        assert!(
+            ensure_plan_authority_matches_invocation(
+                &plan,
+                &GateTier::MergeGate,
+                Some(SHA_B),
+                resolve
+            )
+            .is_ok(),
+            "a symbolic plan base naming the runner's commit must bind"
+        );
+
+        let foreign = ensure_plan_authority_matches_invocation(
+            &plan,
+            &GateTier::MergeGate,
+            Some(SHA_A),
+            resolve,
+        );
+        assert!(foreign.is_err(), "a symbolic base naming another commit must refuse: {foreign:?}");
     }
 
     #[test]

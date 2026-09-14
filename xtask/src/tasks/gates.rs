@@ -1579,23 +1579,21 @@ fn run_gate_plan(
                 &selected_gates,
                 config.verbose,
             )?;
-            let resolved_base = config
-                .base_ref
-                .as_deref()
-                .map(|base_ref| {
-                    cmd!("git", "rev-parse", "--verify", format!("{base_ref}^{{commit}}"))
-                        .dir(&root)
-                        .read()
-                        .map(|sha| sha.trim().to_string())
-                        .map_err(|error| {
-                            eyre!("resolving --base {base_ref} to bind the route plan: {error}")
-                        })
-                })
-                .transpose()?;
+            // The runner always has a selection base (subject scope, --base,
+            // or the scope fallback), so bind that one rather than only the
+            // base the --base flag supplied.
             routed_result_adapter::ensure_plan_authority_matches_invocation(
                 &compiled,
                 &config.tier,
-                resolved_base.as_deref(),
+                Some(plan.base.as_str()),
+                |revision| {
+                    cmd!("git", "rev-parse", "--verify", format!("{revision}^{{commit}}"))
+                        .dir(&root)
+                        .stderr_null()
+                        .read()
+                        .ok()
+                        .map(|sha| sha.trim().to_string())
+                },
             )?;
             let output_dir = root.join(routed_result_adapter::ROUTED_RESULTS_DIR);
             fs::create_dir_all(&output_dir).context("Failed to create routed-results directory")?;
