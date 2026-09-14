@@ -541,28 +541,25 @@ pub(super) fn handle(
             }),
         )?;
         formatter_started = true;
-        let decision = match {
-            #[cfg(test)]
-            if let Some(decision) = next_test_decision() {
-                Ok(decision)
-            } else {
-                formatter.format_range_decision(
-                    &snapshot.text,
-                    &admitted.wire(),
-                    &snapshot.options,
-                    &context,
-                )
-            }
-            #[cfg(not(test))]
-            {
-                formatter.format_range_decision(
-                    &snapshot.text,
-                    &admitted.wire(),
-                    &snapshot.options,
-                    &context,
-                )
-            }
-        } {
+        #[cfg(test)]
+        let format_outcome = if let Some(decision) = next_test_decision() {
+            Ok(decision)
+        } else {
+            formatter.format_range_decision(
+                &snapshot.text,
+                &admitted.wire(),
+                &snapshot.options,
+                &context,
+            )
+        };
+        #[cfg(not(test))]
+        let format_outcome = formatter.format_range_decision(
+            &snapshot.text,
+            &admitted.wire(),
+            &snapshot.options,
+            &context,
+        );
+        let decision = match format_outcome {
             Ok(decision) => decision,
             Err(error) => {
                 server.ensure_not_cancelled(

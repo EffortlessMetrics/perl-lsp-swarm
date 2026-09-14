@@ -752,15 +752,24 @@ mod tests {
             None,
         );
         let changed_server = Arc::clone(&server);
+        let hook_error = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let hook_error_sink = std::rc::Rc::clone(&hook_error);
         BEFORE_FORMATTING_NOTIFICATION_HOOK.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || {
-                changed_server
-                    .test_replace_document_without_index(uri, "my $x = 1;\n", 2)
-                    .expect("test interleaving should commit the document replacement");
+                if let Err(error) =
+                    changed_server.test_replace_document_without_index(uri, "my $x = 1;\n", 2)
+                {
+                    *hook_error_sink.borrow_mut() = Some(format!(
+                        "test interleaving should commit the document replacement: {error:?}"
+                    ));
+                }
             }));
         });
         server.ensure_current_with_engine(&snapshot, Some("native"))?;
         server.run_before_formatting_notification_hook();
+        if let Some(message) = hook_error.borrow().clone() {
+            return Err(io::Error::other(message).into());
+        }
         let result = server.notify_unsupported_syntax_if_current(&snapshot, true, Some("native"));
         BEFORE_FORMATTING_NOTIFICATION_HOOK.with(|hook| *hook.borrow_mut() = None);
         let error = result.err().ok_or_else(|| {
