@@ -376,6 +376,80 @@ fn handler_and_finally_entry_are_not_fallthrough() {
     );
 }
 
+/// A statement after a `try` inherits no predecessor — exactly as a statement
+/// after an `if`/`else` does not.
+///
+/// Raised in review: after `HirExpr::Try`, `last_in_scope` is cleared, so the
+/// next statement becomes a new graph root even though the non-throwing path
+/// and a completed handler can both reach it.
+///
+/// The mechanism is real, but it is not this construct's invention and not a
+/// wrong claim — it is the conservative convention `Branch` already established
+/// (`lower.rs`: "The branch has no unconditional successor ... matches pre-#4795
+/// behavior"). A missing edge understates reachability; a `Fallthrough` here
+/// would overstate it, asserting an unconditional successor that is wrong
+/// whenever the try body throws. PIR v0 has no join node to express "whichever
+/// region completed", and inventing one is the exceptional-edge taxonomy of
+/// #6661, not this slice.
+///
+/// So this test does not assert the continuation is orphaned as if that were
+/// desirable. It pins `try` to the `if` precedent: whatever PIR v0 gives the
+/// statement after a branch, it must give the statement after a try. If #6661
+/// later teaches `Branch` to join its arms, this test fails and `Try` must be
+/// taught the same thing in the same change — which is the real risk worth
+/// guarding, since a silently weaker `try` is what a consumer could not see.
+#[test]
+fn post_try_continuation_matches_the_branch_precedent() {
+    // Same shell, same four writes, same trailing statement: the only
+    // difference is the construct in the middle.
+    const AFTER_IF: &str = r#"
+sub f {
+    my $x = 0;
+    if (c()) { $x = 1; } else { $x = 2; }
+    $x = 3;
+}
+"#;
+    const AFTER_TRY: &str = r#"
+sub f {
+    my $x = 0;
+    try { $x = 1; } catch ($e) { $x = 2; }
+    $x = 3;
+}
+"#;
+
+    /// Incoming edge count of the last `LexicalWrite($x)` — the trailing
+    /// `$x = 3`, i.e. the continuation after the construct.
+    fn continuation_predecessors(source: &str) -> usize {
+        let graph = lower_pir(source);
+        let continuation = graph
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                matches!(&n.operation, PirOperation::LexicalWrite { name } if name.name == "x")
+            })
+            .map(|(i, _)| i)
+            .next_back()
+            .expect("the trailing $x = 3 must reach PIR");
+        graph
+            .edges
+            .iter()
+            .filter(|e| e.to.is_some_and(|t| t.index() as usize == continuation))
+            .count()
+    }
+
+    let after_if = continuation_predecessors(AFTER_IF);
+    let after_try = continuation_predecessors(AFTER_TRY);
+
+    assert_eq!(
+        after_try, after_if,
+        "the statement after a try must have the same number of PIR predecessors as the \
+         statement after an if/else ({after_if}); got {after_try}. A try that is treated \
+         differently from the established Branch convention is the regression this guards: \
+         either both join their regions or neither does."
+    );
+}
+
 /// A try body that models no PIR node of its own must still leave its handler
 /// reachable.
 ///
