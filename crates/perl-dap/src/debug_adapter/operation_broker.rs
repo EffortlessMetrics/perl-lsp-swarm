@@ -43,6 +43,9 @@ pub(crate) const MAX_PENDING_OPERATIONS: usize = 16;
 pub(crate) enum OperationClass {
     /// Framed read-back query (the extracted begin/end-marker primitive).
     Query,
+    /// A request-scoped inspection that performs its own bounded scan rather
+    /// than using framed transport (for example AST-backed target lookup).
+    Inspection,
     /// Write acknowledged by the debugger without payload correlation.
     /// Constructed by the mutation-family migration (#8591), not this PR.
     #[allow(dead_code)]
@@ -88,15 +91,13 @@ impl CancellationToken {
 
     /// Retire only the operation holding this token.
     ///
-    /// The adapter-side request paths still retire through the shared
-    /// `cancel_requested` flag; per-operation cancellation callers arrive
-    /// with the caller migrations (#8581 and siblings).
-    #[allow(dead_code)]
+    /// Retire only this operation; request cancellation resolves its token
+    /// through the broker-owned request map.
     pub(crate) fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
 }
@@ -110,6 +111,9 @@ impl Default for CancellationToken {
 /// Submission request for one brokered operation.
 #[derive(Debug)]
 pub(crate) struct BrokerOperationSpec {
+    /// DAP request sequence, when this operation is cancellable from the
+    /// protocol. The broker owns this correlation, not the adapter.
+    pub(crate) request_seq: Option<i64>,
     pub(crate) class: OperationClass,
     /// Session epoch the caller observed for this operation. Submission
     /// against a superseded epoch is refused (`StaleGeneration`), so late
@@ -128,6 +132,7 @@ pub(crate) struct BrokerOperationSpec {
 #[derive(Debug, Clone)]
 pub(crate) struct BrokerOperation {
     pub(crate) id: OperationId,
+    pub(crate) request_seq: Option<i64>,
     /// Operation class is stamped at submission and consumed by the
     /// family-specific migrations (#8591/#8602); the query path does not
     /// branch on it yet.
@@ -179,6 +184,13 @@ pub(crate) enum BrokerTerminal {
     /// strict framing migration; the query path still times out instead.
     #[allow(dead_code)]
     ProtocolFailure(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CancelRequestDisposition {
+    Accepted(OperationId),
+    AlreadyTerminal(OperationId),
+    Unknown,
 }
 
 impl BrokerTerminal {
@@ -237,6 +249,9 @@ struct PendingTable {
     fifo: VecDeque<PendingEntry>,
     /// Terminal outcomes retained until the corresponding waiter observes them.
     settled: HashMap<OperationId, BrokerTerminal>,
+    requests: HashMap<i64, OperationId>,
+    terminal_requests: HashMap<i64, OperationId>,
+    terminal_order: VecDeque<(i64, OperationId)>,
 }
 
 /// The typed operation broker. All submission goes through one serialized
@@ -250,6 +265,18 @@ pub(crate) struct OperationBroker {
 }
 
 impl OperationBroker {
+    fn prune_terminal_requests(table: &mut PendingTable) {
+        table.terminal_order.retain(|(request_seq, operation)| {
+            table.terminal_requests.get(request_seq) == Some(operation)
+        });
+        while table.terminal_requests.len() > MAX_PENDING_OPERATIONS * 4 {
+            let Some((request_seq, operation)) = table.terminal_order.pop_front() else { break };
+            if table.terminal_requests.get(&request_seq) == Some(&operation) {
+                table.terminal_requests.remove(&request_seq);
+            }
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             pending: Mutex::new(PendingTable::default()),
@@ -287,6 +314,7 @@ impl OperationBroker {
         let id = OperationId(self.next_operation_id.fetch_add(1, Ordering::AcqRel));
         let operation = BrokerOperation {
             id,
+            request_seq: spec.request_seq,
             class: spec.class,
             session_generation: spec.session_generation,
             suspension_generation: spec.suspension_generation,
@@ -307,7 +335,92 @@ impl OperationBroker {
             )));
         }
         table.fifo.push_back(PendingEntry { operation: operation.clone() });
+        if let Some(request_seq) = operation.request_seq {
+            table.terminal_requests.remove(&request_seq);
+            if let Some(previous) = table.requests.insert(request_seq, operation.id) {
+                let previous_token = table
+                    .fifo
+                    .iter()
+                    .find(|entry| entry.operation.id == previous)
+                    .and_then(|entry| entry.operation.cancellation.clone());
+                if let Some(token) = previous_token {
+                    token.cancel();
+                }
+                table.fifo.retain(|entry| entry.operation.id != previous);
+                table.settled.insert(previous, BrokerTerminal::Cancelled);
+            }
+        }
         Ok(operation)
+    }
+
+    /// Register a request-scoped operation whose caller performs work outside
+    /// the framed transport primitive. The broker still creates the token and
+    /// owns its identity/settlement.
+    pub(crate) fn register_request(
+        self: &Arc<Self>,
+        request_seq: i64,
+        class: OperationClass,
+        timeout: Duration,
+    ) -> Result<RegisteredOperation, BrokerTerminal> {
+        let operation = self.submit(BrokerOperationSpec {
+            request_seq: Some(request_seq),
+            class,
+            session_generation: self.current_session_generation(),
+            suspension_generation: None,
+            timeout,
+            cancellation: Some(CancellationToken::new()),
+        })?;
+        Ok(RegisteredOperation { broker: Arc::clone(self), operation })
+    }
+
+    /// Cancel the live operation currently named by a DAP request sequence.
+    /// Bounded terminal request identities distinguish a late cancel from an
+    /// unknown request. Waiter outcomes have a separate operation-keyed lifetime.
+    pub(crate) fn cancel_request(&self, request_seq: i64) -> CancelRequestDisposition {
+        let table = lock_or_recover(&self.pending, "operation_broker.pending");
+        if let Some(id) = table.requests.get(&request_seq).copied()
+            && let Some(entry) = table.fifo.iter().find(|entry| entry.operation.id == id)
+            && let Some(token) = &entry.operation.cancellation
+        {
+            token.cancel();
+            return CancelRequestDisposition::Accepted(id);
+        }
+        if let Some(id) = table.terminal_requests.get(&request_seq).copied() {
+            return CancelRequestDisposition::AlreadyTerminal(id);
+        }
+        CancelRequestDisposition::Unknown
+    }
+
+    /// Settle a non-framed request operation and return its terminal result,
+    /// consuming an earlier supersession or session-settlement outcome if needed.
+    /// The terminal request identity remains available for late cancel lookup.
+    pub(crate) fn settle_operation(
+        &self,
+        id: OperationId,
+        terminal: BrokerTerminal,
+    ) -> BrokerTerminal {
+        let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
+        let before = table.fifo.len();
+        let mut request_seq = None;
+        table.fifo.retain(|entry| {
+            if entry.operation.id == id {
+                request_seq = entry.operation.request_seq;
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(request_seq) = request_seq {
+            table.requests.remove(&request_seq);
+            table.terminal_requests.insert(request_seq, id);
+            table.terminal_order.push_back((request_seq, id));
+            Self::prune_terminal_requests(&mut table);
+        }
+        if before != table.fifo.len() {
+            terminal
+        } else {
+            table.settled.remove(&id).unwrap_or(BrokerTerminal::SessionGone("settled"))
+        }
     }
 
     /// Run one final acceptance step while arbitrating against session
@@ -346,7 +459,23 @@ impl OperationBroker {
     fn retire_for_completion(&self, id: OperationId) -> bool {
         let mut table = lock_or_recover(&self.pending, "operation_broker.pending");
         let before = table.fifo.len();
-        table.fifo.retain(|entry| entry.operation.id != id);
+        let mut request_seq = None;
+        table.fifo.retain(|entry| {
+            if entry.operation.id == id {
+                request_seq = entry.operation.request_seq;
+                false
+            } else {
+                true
+            }
+        });
+        if let Some(request_seq) = request_seq {
+            table.requests.remove(&request_seq);
+        }
+        if let Some(request_seq) = request_seq {
+            table.terminal_requests.insert(request_seq, id);
+            table.terminal_order.push_back((request_seq, id));
+            Self::prune_terminal_requests(&mut table);
+        }
         table.fifo.len() != before
     }
 
@@ -423,8 +552,16 @@ impl OperationBroker {
             }
             let pending = table.fifo.drain(..).collect::<Vec<_>>();
             for entry in pending {
+                if let Some(token) = &entry.operation.cancellation {
+                    token.cancel();
+                }
                 table.settled.insert(entry.operation.id, BrokerTerminal::SessionGone(reason));
             }
+            // Session-scoped request identities must never be visible after
+            // teardown; waiter outcomes remain keyed by operation identity.
+            table.requests.clear();
+            table.terminal_requests.clear();
+            table.terminal_order.clear();
             self.accepting.store(false, Ordering::Release);
             self.session_generation.fetch_add(1, Ordering::AcqRel);
         }
@@ -445,7 +582,6 @@ impl OperationBroker {
         begin_marker: &str,
         end_marker: &str,
         recent_output: &Arc<Mutex<RecentOutputBuffer>>,
-        shared_cancel: &AtomicBool,
     ) -> BrokerTerminal {
         let deadline = Instant::now() + operation.timeout;
         let mut next_scan_id = 0_u64;
@@ -453,16 +589,11 @@ impl OperationBroker {
         let mut framed_lines: Vec<String> = Vec::new();
 
         loop {
-            // Retire checks run before each poll pass: per-operation
-            // cancellation touches only this operation; the shared flag is
-            // the outer request's cancellation and is consumed as before.
+            // Retire checks run before each poll pass. Nested queries share
+            // only their owning request's cancellation token.
             if let Some(token) = &operation.cancellation
                 && token.is_cancelled()
             {
-                return self.retire_or_settled(operation.id, BrokerTerminal::Cancelled);
-            }
-            if shared_cancel.load(Ordering::Acquire) {
-                shared_cancel.store(false, Ordering::Release);
                 return self.retire_or_settled(operation.id, BrokerTerminal::Cancelled);
             }
             // A session-end settle removed this operation from the table.
@@ -571,6 +702,38 @@ impl OperationBroker {
     }
 }
 
+/// RAII lease for a request-scoped broker operation. Dropping an unsettled
+/// lease records an abandoned terminal outcome and removes its request map.
+#[derive(Debug)]
+pub(crate) struct RegisteredOperation {
+    broker: Arc<OperationBroker>,
+    operation: BrokerOperation,
+}
+
+impl RegisteredOperation {
+    #[allow(dead_code)]
+    pub(crate) fn id(&self) -> OperationId {
+        self.operation.id
+    }
+    pub(crate) fn token(&self) -> Option<&CancellationToken> {
+        self.operation.cancellation.as_ref()
+    }
+    pub(crate) fn session_generation(&self) -> SessionGeneration {
+        self.operation.session_generation
+    }
+    pub(crate) fn settle(self, terminal: BrokerTerminal) -> BrokerTerminal {
+        self.broker.settle_operation(self.operation.id, terminal)
+    }
+}
+
+impl Drop for RegisteredOperation {
+    fn drop(&mut self) {
+        let _ = self
+            .broker
+            .settle_operation(self.operation.id, BrokerTerminal::SessionGone("request_dropped"));
+    }
+}
+
 impl Default for OperationBroker {
     fn default() -> Self {
         Self::new()
@@ -586,8 +749,9 @@ mod tests {
     use super::super::patterns::{RecentOutputBuffer, RecentOutputLine};
     use super::lock_or_recover;
     use super::{
-        BrokerFacingLine, BrokerOperation, BrokerOperationSpec, BrokerTerminal, CancellationToken,
-        OperationBroker, OperationClass,
+        BrokerFacingLine, BrokerOperation, BrokerOperationSpec, BrokerTerminal,
+        CancelRequestDisposition, CancellationToken, MAX_PENDING_OPERATIONS, OperationBroker,
+        OperationClass, RegisteredOperation,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
@@ -613,12 +777,176 @@ mod tests {
 
     fn query_spec(broker: &OperationBroker, timeout: Duration) -> BrokerOperationSpec {
         BrokerOperationSpec {
+            request_seq: None,
             class: OperationClass::Query,
             session_generation: broker.current_session_generation(),
             suspension_generation: None,
             timeout,
             cancellation: None,
         }
+    }
+
+    #[test]
+    fn request_cancel_targets_only_the_current_registered_operation() -> Result<(), String> {
+        let broker = Arc::new(OperationBroker::new());
+        let first = broker
+            .register_request(41, OperationClass::Inspection, Duration::from_secs(1))
+            .map_err(|error| format!("register first: {error:?}"))?;
+        let second = broker
+            .register_request(41, OperationClass::Inspection, Duration::from_secs(1))
+            .map_err(|error| format!("register replacement: {error:?}"))?;
+        if !first.token().ok_or("first token missing")?.is_cancelled() {
+            return Err("reusing request sequence did not retire the prior token".to_string());
+        }
+        let targeted = broker.cancel_request(41);
+        if targeted != CancelRequestDisposition::Accepted(second.id())
+            || !second.token().ok_or("second token missing")?.is_cancelled()
+        {
+            return Err("cancel reached the wrong request operation".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn settling_request_removes_mapping_and_raii_cleans_pending_entry() -> Result<(), String> {
+        let broker = Arc::new(OperationBroker::new());
+        let operation = broker
+            .register_request(42, OperationClass::Inspection, Duration::from_secs(1))
+            .map_err(|error| format!("register: {error:?}"))?;
+        let id = operation.id();
+        let terminal = operation.settle(BrokerTerminal::Completed(Vec::new()));
+        if terminal != BrokerTerminal::Completed(Vec::new()) {
+            return Err(format!("unexpected terminal outcome: {terminal:?}"));
+        }
+        if broker.cancel_request(42) != CancelRequestDisposition::AlreadyTerminal(id) {
+            return Err("settled request remained cancellable".to_string());
+        }
+        if broker.settle_operation(id, BrokerTerminal::TimedOut)
+            != BrokerTerminal::SessionGone("settled")
+        {
+            return Err("settling an already removed request changed its outcome".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn session_cleanup_preserves_unread_waiter_outcomes() -> Result<(), String> {
+        let broker = Arc::new(OperationBroker::new());
+        let mut operations = Vec::new();
+        for request in 0..70_i64 {
+            operations.push(
+                broker
+                    .register_request(request, OperationClass::Inspection, NEGATIVE_WAIT)
+                    .map_err(|error| format!("register: {error:?}"))?,
+            );
+            broker.settle_all("terminated");
+            broker.open_session();
+        }
+        let ids = operations.iter().map(RegisteredOperation::id).collect::<Vec<_>>();
+        for id in ids {
+            if broker.take_settled(id) != Some(BrokerTerminal::SessionGone("terminated")) {
+                return Err(format!("unread terminal for {id:?} was discarded"));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_window_keeps_newest_results_and_live_requests() -> Result<(), String> {
+        let broker = Arc::new(OperationBroker::new());
+        let live = broker
+            .register_request(1000, OperationClass::Inspection, NEGATIVE_WAIT)
+            .map_err(|error| format!("live registration: {error:?}"))?;
+        let mut completed = Vec::new();
+        for seq in 0..70 {
+            let operation = broker
+                .register_request(seq, OperationClass::Inspection, NEGATIVE_WAIT)
+                .map_err(|error| format!("registration {seq}: {error:?}"))?;
+            completed.push((seq, operation.id()));
+            if operation.settle(BrokerTerminal::Completed(Vec::new()))
+                != BrokerTerminal::Completed(Vec::new())
+            {
+                return Err(format!("request {seq} did not complete"));
+            }
+            if live.token().ok_or("live token missing")?.is_cancelled() {
+                return Err("terminal pruning cancelled a live request".into());
+            }
+        }
+        for (seq, id) in completed {
+            let expected = if seq < 6 {
+                CancelRequestDisposition::Unknown
+            } else {
+                CancelRequestDisposition::AlreadyTerminal(id)
+            };
+            if broker.cancel_request(seq) != expected {
+                return Err(format!("incorrect terminal window at request {seq}"));
+            }
+        }
+        if broker.cancel_request(1000) != CancelRequestDisposition::Accepted(live.id()) {
+            return Err("terminal pruning removed a live request".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_request_reuse_bounds_terminal_order() -> Result<(), String> {
+        let broker = Arc::new(OperationBroker::new());
+        for _ in 0..1000 {
+            let operation = broker
+                .register_request(77, OperationClass::Inspection, NEGATIVE_WAIT)
+                .map_err(|error| format!("register: {error:?}"))?;
+            let _ = operation.settle(BrokerTerminal::Completed(Vec::new()));
+        }
+        let table = lock_or_recover(&broker.pending, "test.pending");
+        if table.terminal_requests.len() > MAX_PENDING_OPERATIONS * 4
+            || table.terminal_order.len() > MAX_PENDING_OPERATIONS * 4 + 1
+        {
+            return Err(format!(
+                "terminal retention grew without bound: map={}, order={}",
+                table.terminal_requests.len(),
+                table.terminal_order.len()
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn teardown_cancels_and_forgets_old_request_mapping() -> Result<(), String> {
+        let broker = Arc::new(OperationBroker::new());
+        let operation = broker
+            .register_request(88, OperationClass::Inspection, NEGATIVE_WAIT)
+            .map_err(|error| format!("register: {error:?}"))?;
+        broker.settle_all("disconnect");
+        if !operation.token().ok_or("token missing")?.is_cancelled() {
+            return Err("teardown did not cancel the active token".to_string());
+        }
+        if broker.cancel_request(88) != CancelRequestDisposition::Unknown {
+            return Err("teardown retained the old request mapping".to_string());
+        }
+        broker.open_session();
+        let fresh = broker
+            .register_request(88, OperationClass::Inspection, NEGATIVE_WAIT)
+            .map_err(|error| format!("register fresh: {error:?}"))?;
+        if fresh.token().ok_or("fresh token missing")?.is_cancelled() {
+            return Err("fresh session inherited old cancellation".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_old_lease_cannot_remove_replacement_mapping() -> Result<(), String> {
+        let broker = Arc::new(OperationBroker::new());
+        let old = broker
+            .register_request(99, OperationClass::Inspection, NEGATIVE_WAIT)
+            .map_err(|error| format!("register old: {error:?}"))?;
+        let replacement = broker
+            .register_request(99, OperationClass::Inspection, NEGATIVE_WAIT)
+            .map_err(|error| format!("register replacement: {error:?}"))?;
+        drop(old);
+        if broker.cancel_request(99) != CancelRequestDisposition::Accepted(replacement.id()) {
+            return Err("old lease removed the replacement request mapping".to_string());
+        }
+        Ok(())
     }
 
     #[test]
@@ -746,8 +1074,7 @@ mod tests {
         let (begin, end) = markers(&first);
         let output = buffer_with(&[&begin, "$x = 42", &end]);
 
-        let terminal =
-            broker.await_framed_payload(&first, &begin, &end, &output, &Default::default());
+        let terminal = broker.await_framed_payload(&first, &begin, &end, &output);
         assert_eq!(
             terminal,
             BrokerTerminal::Completed(payload(&["$x = 42".to_string()])),
@@ -757,8 +1084,7 @@ mod tests {
         // The second operation's markers never arrive: it times out instead
         // of being satisfied by the first operation's frame.
         let (begin2, end2) = markers(&second);
-        let terminal =
-            broker.await_framed_payload(&second, &begin2, &end2, &output, &Default::default());
+        let terminal = broker.await_framed_payload(&second, &begin2, &end2, &output);
         assert_eq!(terminal, BrokerTerminal::TimedOut);
     }
 
@@ -773,8 +1099,7 @@ mod tests {
         // below it does.
         let output = buffer_with(&[&begin, "value DAP_END_1x stays inside", "x1DAP_END_1", &end]);
 
-        let terminal =
-            broker.await_framed_payload(&operation, &begin, &end, &output, &Default::default());
+        let terminal = broker.await_framed_payload(&operation, &begin, &end, &output);
         assert_eq!(
             terminal,
             BrokerTerminal::Completed(payload(&[
@@ -814,20 +1139,14 @@ mod tests {
 
         let (cancelled_begin, cancelled_end) = markers(&cancelled);
         let output = Arc::new(Mutex::new(RecentOutputBuffer::new()));
-        let terminal = broker.await_framed_payload(
-            &cancelled,
-            &cancelled_begin,
-            &cancelled_end,
-            &output,
-            &Default::default(),
-        );
+        let terminal =
+            broker.await_framed_payload(&cancelled, &cancelled_begin, &cancelled_end, &output);
         assert_eq!(terminal, BrokerTerminal::Cancelled);
 
         // The survivor still correlates normally after its neighbour retired.
         let (begin, end) = markers(&survivor);
         let filled = buffer_with(&[&begin, "ok", &end]);
-        let terminal =
-            broker.await_framed_payload(&survivor, &begin, &end, &filled, &Default::default());
+        let terminal = broker.await_framed_payload(&survivor, &begin, &end, &filled);
         assert_eq!(
             terminal,
             BrokerTerminal::Completed(payload(&["ok".to_string()])),
@@ -881,26 +1200,16 @@ mod tests {
 
         let (timed_out_begin, timed_out_end) = markers(&timed_out);
         let empty = Arc::new(Mutex::new(RecentOutputBuffer::new()));
-        let terminal = broker.await_framed_payload(
-            &timed_out,
-            &timed_out_begin,
-            &timed_out_end,
-            &empty,
-            &Default::default(),
-        );
+        let terminal =
+            broker.await_framed_payload(&timed_out, &timed_out_begin, &timed_out_end, &empty);
         assert_eq!(terminal, BrokerTerminal::TimedOut);
 
         // Retiring the expired operation must leave its sibling registered,
         // so a frame arriving afterwards still resolves the survivor.
         let (survivor_begin, survivor_end) = markers(&survivor);
         let output = buffer_with(&[&survivor_begin, "ok", &survivor_end]);
-        let terminal = broker.await_framed_payload(
-            &survivor,
-            &survivor_begin,
-            &survivor_end,
-            &output,
-            &Default::default(),
-        );
+        let terminal =
+            broker.await_framed_payload(&survivor, &survivor_begin, &survivor_end, &output);
         assert_eq!(
             terminal,
             BrokerTerminal::Completed(payload(&["ok".to_string()])),
@@ -915,6 +1224,7 @@ mod tests {
         broker.settle_all("restart");
 
         let spec = BrokerOperationSpec {
+            request_seq: None,
             class: OperationClass::Query,
             session_generation: stale_generation,
             suspension_generation: None,
@@ -954,8 +1264,7 @@ mod tests {
         broker.settle_all("restart");
         let output = buffer_with(&[&begin, "late", &end]);
 
-        let terminal =
-            broker.await_framed_payload(&operation, &begin, &end, &output, &Default::default());
+        let terminal = broker.await_framed_payload(&operation, &begin, &end, &output);
         assert_eq!(
             terminal,
             BrokerTerminal::SessionGone("restart"),
@@ -974,7 +1283,7 @@ mod tests {
             let broker = Arc::clone(&broker);
             let operation = operation.clone();
             std::thread::spawn(move || {
-                broker.await_framed_payload(&operation, &begin, &end, &output, &Default::default())
+                broker.await_framed_payload(&operation, &begin, &end, &output)
             })
         };
 
@@ -1010,6 +1319,7 @@ mod tests {
                 let broker = Arc::clone(&broker);
                 std::thread::spawn(move || {
                     broker.submit(BrokerOperationSpec {
+                        request_seq: None,
                         class: OperationClass::Query,
                         session_generation: racing_generation,
                         suspension_generation: None,
@@ -1116,8 +1426,7 @@ mod tests {
         let output =
             buffer_with(&["debuggee: starting", &begin, "$result", &end, "debuggee: exiting"]);
 
-        let terminal =
-            broker.await_framed_payload(&operation, &begin, &end, &output, &Default::default());
+        let terminal = broker.await_framed_payload(&operation, &begin, &end, &output);
         assert_eq!(
             terminal,
             BrokerTerminal::Completed(payload(&["$result".to_string()])),
@@ -1139,8 +1448,7 @@ mod tests {
         broker.settle_all("disconnect");
 
         let (begin, end) = markers(&operation);
-        let terminal =
-            broker.await_framed_payload(&operation, &begin, &end, &output, &Default::default());
+        let terminal = broker.await_framed_payload(&operation, &begin, &end, &output);
         assert!(
             matches!(terminal, BrokerTerminal::SessionGone(_)),
             "a settled operation reports session-gone even under a held output lock: {terminal:?}"

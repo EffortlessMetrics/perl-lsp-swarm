@@ -478,16 +478,6 @@ mod tests {
     }
 
     #[test]
-    pub(super) fn test_capture_framed_debugger_output_respects_cancellation() {
-        let adapter = DebugAdapter::new();
-        adapter.cancel_requested.store(true, Ordering::Release);
-
-        let capture = adapter.capture_framed_debugger_output("DAP_BEGIN_400", "DAP_END_400", 200);
-        assert!(capture.is_none(), "capture should stop when request is cancelled");
-        assert!(!adapter.cancel_requested.load(Ordering::Acquire));
-    }
-
-    #[test]
     pub(super) fn test_capture_framed_debugger_output_timeout_without_end_marker() {
         let adapter = DebugAdapter::new();
         adapter.push_recent_output_line_for_test(r#""DAP_BEGIN_500""#);

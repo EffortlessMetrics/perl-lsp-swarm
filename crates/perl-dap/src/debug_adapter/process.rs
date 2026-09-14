@@ -196,8 +196,9 @@ impl DebugAdapter {
             "supportsDataBreakpoints": supports_watchpoints,
             "supportsReadMemoryRequest": false,
             "supportsDisassembleRequest": false,
-            // cancel: the shared flag can affect another request; request-scoped
-            // correlation is unproven. Gate: #9074 + #8712 + #7568.
+            // Request-scoped cancellation is an internal primitive; concurrent
+            // wire intake and exact-binary acceptance remain unproven.
+            // Gate: #9074 + #8712 + #7568.
             "supportsCancelRequest": false,
             // breakpointLocations: canonical geometry/coordinate contract
             // unproven. Gate: #10524 + #2300 + #9021 + #7566.
@@ -3950,6 +3951,7 @@ mod tests {
         let operation = adapter
             .operation_broker
             .submit(BrokerOperationSpec {
+                request_seq: None,
                 class: OperationClass::Query,
                 session_generation: adapter.operation_broker.current_session_generation(),
                 suspension_generation: None,
@@ -3984,7 +3986,6 @@ mod tests {
             "never-begin",
             "never-end",
             &adapter.recent_output,
-            &adapter.cancel_requested,
         );
         if terminal
             != crate::debug_adapter::operation_broker::BrokerTerminal::SessionGone(
