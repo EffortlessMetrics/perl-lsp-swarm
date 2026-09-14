@@ -854,9 +854,13 @@ mod tests {
             &script,
             Some(&noncanonical),
         ));
-        let SessionBoundary::Bounded(resolved) = boundary else {
-            unreachable!("a launch root must confine the session")
-        };
+        let resolved = must_some_with(
+            match boundary {
+                SessionBoundary::Bounded(resolved) => Some(resolved),
+                SessionBoundary::Unbounded => None,
+            },
+            "a launch root must confine the session",
+        );
         assert!(resolved.is_absolute(), "the session boundary must be absolute, got {resolved:?}");
         assert_eq!(resolved, must(root.canonicalize()));
     }
@@ -1027,12 +1031,10 @@ mod tests {
             &script,
             Some(Path::new("definitely-not-a-real-relative-root")),
         );
-        match boundary {
-            Err(WorkspaceAuthorityError::UnusableLaunchRoot { .. }) => {}
-            other => {
-                unreachable!("a relative, non-existent launch root must be refused: {other:?}")
-            }
-        }
+        assert!(
+            matches!(boundary, Err(WorkspaceAuthorityError::UnusableLaunchRoot { .. })),
+            "a relative, non-existent launch root must be refused: {boundary:?}"
+        );
     }
 
     // --- negative controls: nothing in launch data creates authority ---

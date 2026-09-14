@@ -51,7 +51,7 @@ fn dap_server_creation_native() -> Result<(), Box<dyn std::error::Error>> {
 fn dap_server_creation_preserves_workspace_authority() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let root = temp.path().canonicalize()?;
-    let authority = WorkspaceAuthority::from_startup(&[root.clone()], false)?;
+    let authority = WorkspaceAuthority::from_startup(std::slice::from_ref(&root), false)?;
     let config = DapConfig {
         log_level: "debug".to_string(),
         mode: DapMode::Native,

@@ -1,7 +1,7 @@
 use perl_dap::DapMessage;
 use perl_dap::DebugAdapter;
 use perl_dap::security::WorkspaceAuthority;
-use perl_tdd_support::must_some;
+use perl_tdd_support::{must_some, must_some_with};
 use serde_json::json;
 use std::fs;
 
@@ -273,9 +273,13 @@ fn test_launch_workspace_root_field_cannot_widen_server_root()
 /// session-isolation tests reported `ok` while proving nothing. Asserting
 /// `success` is what gives them content.
 fn assert_launch_succeeded(response: &DapMessage, what: &str) {
-    let DapMessage::Response { success, message, .. } = response else {
-        unreachable!("handle_request always answers a request with a Response ({what})")
-    };
+    let (success, message) = must_some_with(
+        match response {
+            DapMessage::Response { success, message, .. } => Some((success, message)),
+            _ => None,
+        },
+        format!("handle_request always answers a request with a Response ({what})"),
+    );
     assert!(*success, "{what} must launch, got: {message:?}");
 }
 
