@@ -25,7 +25,7 @@ and `docs/reference/NATIVE_STACK_POLICY.md`.
   `fact_classes`, `file`, `id`, `import` (+ `import_walk`), `meta_yml`, `model`,
   `package`, `pod`, `provenance`, `range`, `relation`, `symbol`, `test`,
   `test_command`, `test_item`, `test_item_discovery`.
-- `test_command` -- non-executing test-command planning (#13638): turns one
+- `test_command` -- non-executing test-command planning: turns one
   accepted `ProjectEnvironmentSnapshot` plus caller-supplied
   `GeneratedStateEvidence` into typed `prove` / `make test` / `Build test`
   candidates. It plans only; selection, authorization, and execution belong to

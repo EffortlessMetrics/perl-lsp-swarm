@@ -19,6 +19,11 @@ const REQUIRED_DISPOSITIONS: &[(&str, Option<&str>, Option<&str>)] = &[
     ("clippy::manual_ilog2", Some("deny"), Some("active")),
     ("clippy::manual_take", None, None),
     ("clippy::manual_pop_if", None, None),
+    // Promoted by #9894 on a zero-finding denominator. A zero-finding promotion
+    // leaves no burn-down to redo, so a demotion would be invisible outside this
+    // pin: nothing in the source tree has to change for the lint to stop being
+    // enforced. Both level and status are pinned for that reason.
+    ("clippy::decimal_bitwise_operands", Some("deny"), Some("active")),
     // The lock-guard invariant is split across two tools with non-overlapping
     // coverage (#14444), so both rows are pinned. Pinning only one would let a
     // rollback silently uncover either the standard-library guards or the
