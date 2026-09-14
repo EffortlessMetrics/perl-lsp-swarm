@@ -2167,6 +2167,17 @@ impl DebugAdapter {
 
     /// Clear active process session, TCP session, and PID-attach mode state.
     pub(super) fn clear_active_session_state(&self) -> bool {
+        #[cfg(test)]
+        if self.cleanup_failure_for_test.swap(false, Ordering::AcqRel) {
+            let active_cleanup = Self::clear_active_session_state_with_terminator(
+                &self.session,
+                &self.tcp_session,
+                &self.attached_pid,
+                |_| false,
+            );
+            let rejected_cleanup = self.clear_rejected_child_with_terminator(|_| false);
+            return active_cleanup && rejected_cleanup;
+        }
         let active_cleanup = Self::clear_active_session_state_with_state(
             &self.session,
             &self.tcp_session,
@@ -2175,6 +2186,11 @@ impl DebugAdapter {
         let rejected_cleanup =
             self.clear_rejected_child_with_terminator(Self::terminate_child_process);
         active_cleanup && rejected_cleanup
+    }
+
+    #[cfg(test)]
+    pub(super) fn fail_next_cleanup_for_test(&self) {
+        self.cleanup_failure_for_test.store(true, Ordering::Release);
     }
 
     fn clear_rejected_child_with_terminator(

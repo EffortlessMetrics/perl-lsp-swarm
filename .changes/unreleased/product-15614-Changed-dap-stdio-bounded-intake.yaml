@@ -1,7 +1,7 @@
 project: product
 component: Editor behavior
 kind: Changed
-body: "DAP responds promptly to unsupported cancellation requests while debugger inspection is waiting, bounds queued work, and shuts down cleanly after output failure."
+body: "DAP responds promptly to unsupported cancellation requests while debugger inspection is waiting, bounds queued work, reports intake failures truthfully, allows retry after failed disconnect cleanup, and shuts down cleanly after output failure."
 time: 2026-09-14T00:00:00Z
 custom:
   PR: "15614"

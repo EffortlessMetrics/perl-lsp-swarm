@@ -135,8 +135,6 @@ where
 }
 
 const EVENT_WRITE_BATCH_MAX: usize = 64;
-const WRITE_FAILURE_THRESHOLD: usize = 3;
-
 fn next_transport_seq(seq: &Mutex<i64>) -> i64 {
     let mut value = lock_or_recover(seq, "transport.seq");
     *value += 1;
@@ -173,27 +171,9 @@ fn write_framed_payload<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<
     writer.write_all(payload)
 }
 
-fn record_event_write_failure(
-    consecutive_write_failures: &mut usize,
-    transport_broken: &AtomicBool,
-) -> bool {
-    *consecutive_write_failures += 1;
-    if *consecutive_write_failures >= WRITE_FAILURE_THRESHOLD {
-        transport_broken.store(true, Ordering::Release);
-        true
-    } else {
-        false
-    }
-}
-
-fn record_event_write_success(consecutive_write_failures: &mut usize) {
-    *consecutive_write_failures = 0;
-}
-
 fn write_event_payloads<W: Write>(
     writer: &mut W,
     payloads: &[Vec<u8>],
-    consecutive_write_failures: &mut usize,
     transport_broken: &AtomicBool,
     flushed: &mut bool,
 ) -> bool {
@@ -204,18 +184,17 @@ fn write_event_payloads<W: Write>(
         if let Err(e) = write_framed_payload(writer, payload) {
             tracing::error!(error = %e, "Failed to write DAP frame in event handler");
             write_failed = true;
-            transport_marked_broken =
-                record_event_write_failure(consecutive_write_failures, transport_broken);
+            transport_broken.store(true, Ordering::Release);
+            transport_marked_broken = true;
             break;
         }
     }
     if !write_failed {
         if let Err(e) = writer.flush() {
             tracing::error!(error = %e, "Failed to flush DAP frame in event handler");
-            transport_marked_broken =
-                record_event_write_failure(consecutive_write_failures, transport_broken);
+            transport_broken.store(true, Ordering::Release);
+            transport_marked_broken = true;
         } else {
-            record_event_write_success(consecutive_write_failures);
             *flushed = true;
         }
     }
@@ -253,7 +232,6 @@ impl DebugAdapter {
         // This handshake is local to this transport run.  It cannot be
         // satisfied by a terminal event from a previous session.
         thread::spawn(move || {
-            let mut consecutive_write_failures = 0;
             let mut event_delivery_failed = false;
 
             while let Ok(first_msg) = rx.recv() {
@@ -306,14 +284,12 @@ impl DebugAdapter {
                 if write_event_payloads(
                     &mut *writer,
                     &payloads,
-                    &mut consecutive_write_failures,
                     &event_transport_broken,
                     &mut event_flushed,
                 ) {
+                    event_delivery_failed = true;
                     tracing::error!(
-                        failure_count = consecutive_write_failures,
-                        threshold = WRITE_FAILURE_THRESHOLD,
-                        "Event handler detected persistent write failure; marking transport broken"
+                        "Event handler detected a write failure; marking transport broken"
                     );
                     break;
                 }
@@ -361,6 +337,9 @@ impl DebugAdapter {
         let operation_broker = Arc::clone(&self.operation_broker);
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let worker_shutdown_requested = Arc::clone(&shutdown_requested);
+        let shutdown_reason = Arc::new(Mutex::new(None::<&'static str>));
+        let worker_shutdown_reason = Arc::clone(&shutdown_reason);
+        let (disconnect_done_tx, disconnect_done_rx) = sync_channel::<bool>(1);
         let mut reader = input;
         let mut framer = ContentLengthFramer::new();
         let mut read_buf = [0u8; 8 * 1024];
@@ -376,26 +355,30 @@ impl DebugAdapter {
                     // requests that have not started; a request already claimed
                     // may finish or settle through the broker. Clean EOF does
                     // not set this flag and preserves accepted FIFO execution.
-                    let response =
-                        if worker_shutdown_requested.load(Ordering::Acquire) && !is_disconnect {
-                            DapMessage::Response {
-                                seq: self.next_seq(),
-                                request_seq: request.request_seq,
-                                success: false,
-                                command: request.command.clone(),
-                                body: None,
-                                message: Some(
-                                    "Request was accepted before disconnect and then cancelled"
-                                        .to_string(),
-                                ),
-                            }
-                        } else {
-                            self.dispatch_request(
-                                request.request_seq,
-                                &request.command,
-                                request.arguments,
-                            )
-                        };
+                    let response = if worker_shutdown_requested.load(Ordering::Acquire)
+                        && !is_disconnect
+                    {
+                        let reason =
+                            *lock_or_recover(&worker_shutdown_reason, "transport.shutdown_reason")
+                                .as_ref()
+                                .unwrap_or(&"shutdown");
+                        DapMessage::Response {
+                            seq: self.next_seq(),
+                            request_seq: request.request_seq,
+                            success: false,
+                            command: request.command.clone(),
+                            body: None,
+                            message: Some(format!(
+                                "Request was accepted before {reason} and then cancelled"
+                            )),
+                        }
+                    } else {
+                        self.dispatch_request(
+                            request.request_seq,
+                            &request.command,
+                            request.arguments,
+                        )
+                    };
                     let notify_initialized = request.command == "initialize"
                         && DebugAdapter::response_succeeded_for_command(&response, "initialize");
                     let disconnect_succeeded = is_disconnect
@@ -408,12 +391,19 @@ impl DebugAdapter {
                         &worker_seq,
                         &worker_wire_seq,
                     ) {
+                        if is_disconnect {
+                            let _ = disconnect_done_tx.send(false);
+                        }
                         worker_transport_broken.store(true, Ordering::Release);
                         return Err(error);
                     }
                     if disconnect_succeeded {
+                        let _ = disconnect_done_tx.send(true);
                         worker_event_sender.close();
                         break;
+                    }
+                    if is_disconnect {
+                        let _ = disconnect_done_tx.send(false);
                     }
                 }
                 Ok(())
@@ -435,7 +425,13 @@ impl DebugAdapter {
                 {
                     Ok(Some(bytes_read)) => bytes_read,
                     Ok(None) => continue,
-                    Err(error) => break 'transport Err(error),
+                    Err(error) => {
+                        *lock_or_recover(&shutdown_reason, "transport.shutdown_reason") =
+                            Some("transport intake failure");
+                        shutdown_requested.store(true, Ordering::Release);
+                        operation_broker.settle_all("transport intake failed");
+                        break 'transport Err(error);
+                    }
                 };
                 if bytes_read == 0 {
                     break 'transport Ok(());
@@ -532,6 +528,8 @@ impl DebugAdapter {
                             // Cancellation must wake an active worker before the
                             // disconnect barrier is queued. The extra queue slot
                             // is reserved for this control request.
+                            *lock_or_recover(&shutdown_reason, "transport.shutdown_reason") =
+                                Some("disconnect");
                             shutdown_requested.store(true, Ordering::Release);
                             operation_broker.settle_all("disconnect");
                         } else if queued_count.load(Ordering::Acquire) >= REQUEST_QUEUE_CAPACITY {
@@ -598,7 +596,31 @@ impl DebugAdapter {
                             }
                         }
                         if is_disconnect {
-                            break 'transport Ok(());
+                            loop {
+                                match disconnect_done_rx.recv_timeout(INTAKE_POLL_INTERVAL) {
+                                    Ok(true) => break 'transport Ok(()),
+                                    Ok(false) => {
+                                        // Cleanup failed, so keep intake alive for a
+                                        // client retry while the retained session remains
+                                        // owned by the adapter.
+                                        break;
+                                    }
+                                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                        if transport_broken.load(Ordering::Acquire) {
+                                            break 'transport Err(io::Error::new(
+                                                io::ErrorKind::BrokenPipe,
+                                                "DAP transport failed while disconnect was pending",
+                                            ));
+                                        }
+                                    }
+                                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                                        break 'transport Err(io::Error::new(
+                                            io::ErrorKind::BrokenPipe,
+                                            "DAP disconnect worker stopped",
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -608,6 +630,8 @@ impl DebugAdapter {
                 // Every intake failure must take the same shutdown path as an
                 // explicit disconnect. This wakes an in-flight request and
                 // prevents the scoped worker from outliving the failed input.
+                lock_or_recover(&shutdown_reason, "transport.shutdown_reason")
+                    .get_or_insert("transport intake failure");
                 shutdown_requested.store(true, Ordering::Release);
                 operation_broker.settle_all("transport intake failed");
             }
@@ -661,6 +685,7 @@ fn write_message_then_notify_initialized<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_adapter::DebugState;
     use crate::debug_adapter::sync_utils;
     use std::io::Cursor;
     use std::process::{Command, Stdio};
@@ -795,6 +820,8 @@ mod tests {
     struct ChannelReader {
         receiver: Receiver<Vec<u8>>,
         pending: Cursor<Vec<u8>>,
+        failure_trigger: Option<Arc<AtomicBool>>,
+        failed: bool,
     }
 
     impl Read for ChannelReader {
@@ -825,7 +852,21 @@ mod tests {
                 }
                 match self.receiver.recv_timeout(timeout) {
                     Ok(input) => self.pending = Cursor::new(input),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if !self.failed
+                            && self
+                                .failure_trigger
+                                .as_ref()
+                                .is_some_and(|trigger| trigger.load(Ordering::Acquire))
+                        {
+                            self.failed = true;
+                            return Err(io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "injected transport intake failure",
+                            ));
+                        }
+                        return Ok(None);
+                    }
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(Some(0)),
                 }
             }
@@ -835,7 +876,12 @@ mod tests {
     #[test]
     fn channel_reader_timeout_is_distinct_from_eof() -> Result<(), Box<dyn std::error::Error>> {
         let (_sender, receiver) = std::sync::mpsc::channel();
-        let mut reader = ChannelReader { receiver, pending: Cursor::new(Vec::new()) };
+        let mut reader = ChannelReader {
+            receiver,
+            pending: Cursor::new(Vec::new()),
+            failure_trigger: None,
+            failed: false,
+        };
         let mut buffer = [0u8; 1];
         let result = reader.read_with_timeout(&mut buffer, Duration::from_millis(20))?;
         if result.is_some() {
@@ -921,6 +967,12 @@ mod tests {
         exercise_blocked_evaluate_transport(TransportScenario::FullQueueDisconnect)
     }
 
+    #[test]
+    fn intake_failure_reports_truthful_reason_to_queued_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        exercise_blocked_evaluate_transport(TransportScenario::IntakeFailure)
+    }
+
     #[derive(Clone, Copy)]
     enum TransportScenario {
         Released,
@@ -928,6 +980,7 @@ mod tests {
         CancelWriteFailure,
         FullQueueCancel,
         FullQueueDisconnect,
+        IntakeFailure,
     }
 
     fn exercise_blocked_evaluate_transport(
@@ -940,11 +993,14 @@ mod tests {
         );
         let require_early_cancel = !matches!(scenario, TransportScenario::Released);
         let cancel_write_failure = matches!(scenario, TransportScenario::CancelWriteFailure);
+        let intake_failure = matches!(scenario, TransportScenario::IntakeFailure);
         let directory = tempfile::tempdir()?;
         let log = directory.path().join("peer.log");
         let seen = directory.path().join("evaluate-seen");
         let release = directory.path().join("release-evaluate");
         let (input_tx, input_rx) = std::sync::mpsc::channel();
+        let intake_failure_trigger = Arc::new(AtomicBool::new(false));
+        let reader_failure_trigger = Arc::clone(&intake_failure_trigger);
         let output = SharedWriter::default();
         let fail_writes = Arc::clone(&output.fail_writes);
         let output_view = output.clone();
@@ -1014,7 +1070,12 @@ while (my $line = <STDIN>) {
         }
         let server = thread::spawn(move || {
             let result = adapter.run_with_io(
-                ChannelReader { receiver: input_rx, pending: Cursor::new(Vec::new()) },
+                ChannelReader {
+                    receiver: input_rx,
+                    pending: Cursor::new(Vec::new()),
+                    failure_trigger: Some(reader_failure_trigger),
+                    failed: false,
+                },
                 output,
             );
             drop(adapter);
@@ -1036,6 +1097,17 @@ while (my $line = <STDIN>) {
                     return Err("fake debugger never observed evaluate".into());
                 }
                 thread::sleep(Duration::from_millis(5));
+            }
+            if intake_failure {
+                input_tx.send(framed_request_with_arguments(
+                    3,
+                    "threads",
+                    serde_json::json!({}),
+                )?)?;
+                // The evaluate request is still blocked in the peer. The next
+                // bounded reader poll now reports the injected intake error.
+                intake_failure_trigger.store(true, Ordering::Release);
+                return Ok(false);
             }
             if saturated {
                 for request in 10..=18 {
@@ -1109,10 +1181,10 @@ while (my $line = <STDIN>) {
                     thread::sleep(Duration::from_millis(5));
                 }
             }
-            if !cancel_write_failure {
+            if !cancel_write_failure && !intake_failure {
                 std::fs::write(&release, "release\n")?;
             }
-            if !disconnect && !cancel_write_failure {
+            if !disconnect && !cancel_write_failure && !intake_failure {
                 if saturated {
                     let deadline = Instant::now() + Duration::from_secs(2);
                     loop {
@@ -1146,7 +1218,7 @@ while (my $line = <STDIN>) {
         // The write-failure case must finish while the peer remains blocked;
         // releasing it here would let an implementation without the common
         // shutdown path pass by eventually completing the evaluate request.
-        let finished_before_release = if cancel_write_failure {
+        let finished_before_release = if cancel_write_failure || intake_failure {
             let deadline = Instant::now() + Duration::from_secs(1);
             while !server.is_finished() && Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(5));
@@ -1155,14 +1227,15 @@ while (my $line = <STDIN>) {
         } else {
             false
         };
-        let release_result = if cancel_write_failure && finished_before_release {
+        let release_result = if (cancel_write_failure || intake_failure) && finished_before_release
+        {
             Ok(())
         } else {
             std::fs::write(&release, "release\n")
         };
         drop(input_tx);
         let deadline = Instant::now()
-            + if cancel_write_failure && finished_before_release {
+            + if (cancel_write_failure || intake_failure) && finished_before_release {
                 Duration::from_secs(1)
             } else {
                 Duration::from_secs(7)
@@ -1175,6 +1248,28 @@ while (my $line = <STDIN>) {
         }
         let server_result = server.join().map_err(|_| "transport thread panicked")?;
         let early = exercise_result?;
+        if intake_failure {
+            if server_result.is_ok() {
+                return Err("transport intake failure unexpectedly returned Ok".into());
+            }
+            let messages = transport_messages(&output_view)?;
+            let queued = messages
+                .iter()
+                .find(|message| matches!(message, DapMessage::Response { request_seq: 3, .. }));
+            if !matches!(queued,
+                Some(DapMessage::Response {
+                    success: false,
+                    message: Some(message),
+                    ..
+                }) if message.contains("transport intake failure"))
+            {
+                return Err(format!(
+                    "queued request did not report the intake failure: {queued:?}; all={messages:?}"
+                )
+                .into());
+            }
+            return Ok(());
+        }
         if cancel_write_failure {
             if !finished_before_release {
                 return Err(
@@ -1356,7 +1451,12 @@ while (my $line = <STDIN>) {
         let server = thread::spawn(move || {
             let mut adapter = DebugAdapter::new();
             adapter.run_with_io(
-                ChannelReader { receiver: input_rx, pending: Cursor::new(Vec::new()) },
+                ChannelReader {
+                    receiver: input_rx,
+                    pending: Cursor::new(Vec::new()),
+                    failure_trigger: None,
+                    failed: false,
+                },
                 writer,
             )
         });
@@ -1397,6 +1497,179 @@ while (my $line = <STDIN>) {
             return Err(
                 "response write failed, but transport returned only after input was closed".into(),
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn one_event_write_failure_wakes_idle_intake() -> Result<(), Box<dyn std::error::Error>> {
+        let (input_tx, input_rx) = std::sync::mpsc::channel();
+        // Four writes and one flush complete the initialize response; the
+        // following initialized event must be the first failed write.
+        let writer = FailingWriter::fail_after(5);
+        let writes = Arc::clone(&writer.write_count);
+        let server = thread::spawn(move || {
+            let mut adapter = DebugAdapter::new();
+            adapter.run_with_io(
+                ChannelReader {
+                    receiver: input_rx,
+                    pending: Cursor::new(Vec::new()),
+                    failure_trigger: None,
+                    failed: false,
+                },
+                writer,
+            )
+        });
+        input_tx.send(framed_request_with_arguments(
+            1,
+            "initialize",
+            serde_json::json!({"adapterID": "perl"}),
+        )?)?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !server.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let finished = server.is_finished();
+        drop(input_tx);
+        let result = server.join().map_err(|_| "transport thread panicked")?;
+        if !finished {
+            return Err("one event write failure left idle intake blocked".into());
+        }
+        if writes.load(Ordering::Acquire) < 5 {
+            return Err("failure occurred before the initialized event write".into());
+        }
+        if result.is_ok() {
+            return Err("event write failure must terminate the transport".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_disconnect_retains_cleanup_owner_for_a_real_retry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut adapter = DebugAdapter::new();
+        adapter.seed_session_for_test()?;
+        let expected_pid = lock_or_recover(&adapter.session, "transport.test.session")
+            .as_ref()
+            .ok_or("test session was not installed")?
+            .process
+            .id();
+        adapter.fail_next_cleanup_for_test();
+        let session_state = Arc::clone(&adapter.session);
+        let (input_tx, input_rx) = std::sync::mpsc::channel();
+        let first_request = framed_request_with_arguments(1, "disconnect", serde_json::json!({}))
+            .map_err(|error| format!("first disconnect frame failed: {error}"))?;
+        let retry_request = framed_request_with_arguments(2, "disconnect", serde_json::json!({}))
+            .map_err(|error| format!("retry disconnect frame failed: {error}"))?;
+        let output = SharedWriter::default();
+        let output_view = output.clone();
+        let server = thread::spawn(move || {
+            adapter.run_with_io(
+                ChannelReader {
+                    receiver: input_rx,
+                    pending: Cursor::new(Vec::new()),
+                    failure_trigger: None,
+                    failed: false,
+                },
+                output,
+            )
+        });
+        if let Err(error) = input_tx.send(first_request) {
+            drop(input_tx);
+            let _ = server.join();
+            return Err(format!("first disconnect send failed: {error}").into());
+        }
+        let first_deadline = Instant::now() + Duration::from_secs(2);
+        let mut first_failed = false;
+        let mut observation_error = None;
+        while Instant::now() < first_deadline {
+            let messages = match transport_messages(&output_view) {
+                Ok(messages) => messages,
+                Err(error) => {
+                    observation_error =
+                        Some(format!("first disconnect observation failed: {error}"));
+                    break;
+                }
+            };
+            if messages.iter().any(|message| {
+                matches!(message,
+                    DapMessage::Response { request_seq: 1, command, success: false, .. }
+                    if command == "disconnect")
+            }) {
+                first_failed = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if let Some(error) = observation_error {
+            drop(input_tx);
+            let _ = server.join();
+            return Err(error.into());
+        }
+        let retained = lock_or_recover(&session_state, "transport.test.session");
+        let retained_owner = retained.as_ref().map(|session| session.process.id());
+        let retained_state = retained.as_ref().map(|session| session.state.clone());
+        drop(retained);
+        if let Err(error) = input_tx.send(retry_request) {
+            drop(input_tx);
+            let _ = server.join();
+            return Err(format!("retry disconnect send failed: {error}").into());
+        }
+        drop(input_tx);
+        let second_deadline = Instant::now() + Duration::from_secs(5);
+        while !server.is_finished() && Instant::now() < second_deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        if !server.is_finished() {
+            let cleanup_succeeded = {
+                let mut session = lock_or_recover(&session_state, "transport.test.session");
+                session
+                    .as_mut()
+                    .map(|session| DebugAdapter::terminate_child_process(&mut session.process))
+                    .unwrap_or(true)
+            };
+            let cleanup_deadline = Instant::now() + Duration::from_secs(2);
+            while !server.is_finished() && Instant::now() < cleanup_deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+            if server.is_finished() {
+                let _ = server.join();
+            }
+            return Err(format!(
+                "disconnect retry transport did not finish after cleanup (succeeded={cleanup_succeeded})"
+            )
+            .into());
+        }
+        let result = server.join().map_err(|_| "transport thread panicked")?;
+        result?;
+        let responses: Vec<_> = transport_messages(&output_view)?
+            .into_iter()
+            .filter_map(|message| match message {
+                DapMessage::Response { request_seq, success, command, .. }
+                    if command == "disconnect" =>
+                {
+                    Some((request_seq, success))
+                }
+                _ => None,
+            })
+            .collect();
+        if !first_failed
+            || retained_owner != Some(expected_pid)
+            || retained_state != Some(DebugState::Terminated)
+        {
+            return Err(format!(
+                "failed disconnect did not retain terminated owner: first_failed={first_failed}, owner={retained_owner:?}, state={retained_state:?}, responses={responses:?}"
+            )
+            .into());
+        }
+        if responses != [(1, false), (2, true)] {
+            return Err(format!(
+                "expected failed disconnect followed by retry success: {responses:?}"
+            )
+            .into());
+        }
+        if lock_or_recover(&session_state, "transport.test.session").is_some() {
+            return Err(format!("cleanup retry retained child owner (pid {expected_pid})").into());
         }
         Ok(())
     }
@@ -1654,64 +1927,16 @@ while (my $line = <STDIN>) {
     }
 
     #[test]
-    fn test_event_write_failure_waits_until_threshold() {
-        let transport_broken = AtomicBool::new(false);
-        let mut consecutive = 0usize;
-
-        for _ in 1..WRITE_FAILURE_THRESHOLD {
-            let threshold_hit = record_event_write_failure(&mut consecutive, &transport_broken);
-            assert!(!threshold_hit, "transport must not be marked broken before the threshold");
-            assert!(
-                !transport_broken.load(AOrdering::Acquire),
-                "transport_broken must stay false before the threshold"
-            );
-        }
-
-        assert_eq!(consecutive, WRITE_FAILURE_THRESHOLD - 1);
-    }
-
-    #[test]
-    fn test_event_write_failure_sets_transport_broken_at_threshold() {
-        let transport_broken = AtomicBool::new(false);
-        let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
-
-        let threshold_hit = record_event_write_failure(&mut consecutive, &transport_broken);
-
-        assert!(threshold_hit, "threshold failure must mark the transport broken");
-        assert_eq!(consecutive, WRITE_FAILURE_THRESHOLD);
-        assert!(
-            transport_broken.load(AOrdering::Acquire),
-            "transport_broken must be visible after the release store"
-        );
-    }
-
-    #[test]
-    fn test_event_write_success_resets_failure_counter() {
-        let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
-
-        record_event_write_success(&mut consecutive);
-
-        assert_eq!(consecutive, 0, "successful event writes must reset failures");
-    }
-
-    #[test]
-    fn test_write_event_payloads_successful_flush_resets_counter() {
+    fn test_write_event_payloads_successful_flush_keeps_transport_healthy() {
         let mut writer = Vec::<u8>::new();
         let transport_broken = AtomicBool::new(false);
-        let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
         let payloads = vec![b"{}".to_vec()];
         let mut flushed = false;
 
-        let threshold_hit = write_event_payloads(
-            &mut writer,
-            &payloads,
-            &mut consecutive,
-            &transport_broken,
-            &mut flushed,
-        );
+        let threshold_hit =
+            write_event_payloads(&mut writer, &payloads, &transport_broken, &mut flushed);
 
         assert!(!threshold_hit, "successful event write must not mark the transport broken");
-        assert_eq!(consecutive, 0, "successful flush must reset failure count");
         assert!(flushed, "successful flush must report delivery");
         assert!(
             !transport_broken.load(AOrdering::Acquire),
@@ -1762,23 +1987,16 @@ while (my $line = <STDIN>) {
     }
 
     #[test]
-    fn test_write_event_payloads_flush_failure_marks_transport_broken_at_threshold() {
+    fn test_write_event_payloads_flush_failure_marks_transport_broken_immediately() {
         let mut writer = FlushFailingWriter::default();
         let transport_broken = AtomicBool::new(false);
-        let mut consecutive = WRITE_FAILURE_THRESHOLD - 1;
         let payloads = vec![b"{}".to_vec()];
         let mut flushed = false;
 
-        let threshold_hit = write_event_payloads(
-            &mut writer,
-            &payloads,
-            &mut consecutive,
-            &transport_broken,
-            &mut flushed,
-        );
+        let threshold_hit =
+            write_event_payloads(&mut writer, &payloads, &transport_broken, &mut flushed);
 
-        assert!(threshold_hit, "flush failure at threshold must mark the transport broken");
-        assert_eq!(consecutive, WRITE_FAILURE_THRESHOLD);
+        assert!(threshold_hit, "flush failure must mark the transport broken");
         assert!(!flushed, "failed flush must not report delivery");
         assert!(
             transport_broken.load(AOrdering::Acquire),
