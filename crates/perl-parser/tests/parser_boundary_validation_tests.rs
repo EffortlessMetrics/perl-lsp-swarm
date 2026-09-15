@@ -41,14 +41,15 @@ fn test_recursion_depth_boundary() {
     // ~40 depth units before the first paren, and each paren costs 2 (the
     // primary.rs double-guard). Effective paren budget is therefore ~44;
     // 30 keeps a wide margin. Bisected: 40 parses, 45 fires.
-    let below_limit_code = generate_nested_code(30);
+    let below_limit_depth = 30;
+    let below_limit_code = generate_nested_code(below_limit_depth);
     let start_time = Instant::now();
     let mut parser = Parser::new(&below_limit_code);
     let result = parser.parse();
     let parse_time = start_time.elapsed();
 
     assert!(result.is_ok(), "Should parse successfully below recursion limit");
-    println!("  ✓ Below limit ({}): parsed in {:?}", MAX_RECURSION_DEPTH - 5, parse_time);
+    println!("  ✓ Below limit ({}): parsed in {:?}", below_limit_depth, parse_time);
 
     // Test exactly at the limit
     let at_limit_code = generate_nested_code(MAX_RECURSION_DEPTH);
