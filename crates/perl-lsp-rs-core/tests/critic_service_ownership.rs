@@ -63,8 +63,9 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String
     let entries = fs::read_dir(dir)
         .map_err(|error| format!("source directory {} must be readable: {error}", dir.display()))?;
     for entry in entries {
-        let entry =
-            entry.map_err(|error| format!("source entry in {} must be readable: {error}", dir.display()))?;
+        let entry = entry.map_err(|error| {
+            format!("source entry in {} must be readable: {error}", dir.display())
+        })?;
         let path = entry.path();
         if path.is_dir() {
             collect_rust_sources(&path, out)?;
@@ -109,9 +110,7 @@ fn is_test_gated_module(path: &Path) -> bool {
     let statement = format!("mod {stem};");
     let lines: Vec<&str> = content.lines().collect();
     lines.iter().enumerate().any(|(index, line)| {
-        line.split("//")
-            .next()
-            .is_some_and(|code| code.trim_end().ends_with(&statement))
+        line.split("//").next().is_some_and(|code| code.trim_end().ends_with(&statement))
             && (0..index)
                 .rev()
                 .map(|prior| lines[prior].trim())
@@ -435,21 +434,13 @@ fn module_gate_decides_by_declaration_not_filename() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let base = Path::new(manifest_dir);
     let gated = base.join("src/tooling/perl_critic/test_core_authority_policy.rs");
-    let production_more =
-        base.join("src/providers/completion/completion/test_more.rs");
+    let production_more = base.join("src/providers/completion/completion/test_more.rs");
     let production_frameworks =
         base.join("src/providers/completion/completion/request/test_frameworks.rs");
     for path in [&gated, &production_more, &production_frameworks] {
-        assert!(
-            path.is_file(),
-            "test fixture {} must exist",
-            path.display()
-        );
+        assert!(path.is_file(), "test fixture {} must exist", path.display());
     }
-    assert!(
-        is_test_gated_module(&gated),
-        "a cfg(test)-declared module is test-only as a whole"
-    );
+    assert!(is_test_gated_module(&gated), "a cfg(test)-declared module is test-only as a whole");
     assert!(
         !is_test_gated_module(&production_more),
         "an unconditionally declared test_more module stays scanned"
