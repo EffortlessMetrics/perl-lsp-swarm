@@ -31,11 +31,15 @@ pub struct CorpusPaths {
 /// down, either as the borrowed view [`Self::as_paths`] or the consuming
 /// [`Self::into_paths`].
 ///
-/// The examples below are illustrative, not enforcement. This repository runs
-/// no `cargo test --doc` gate (see issue #13774), so a doctest here cannot fail
-/// CI. The boundary is actually held by `assert_does_not_implement!` in
+/// The examples below are enforcement: the `doctest_contract_proof` merge
+/// gate selects this crate, so `cargo test --doc -p perl-corpus` runs them on
+/// every PR (#13774). They were illustrative only until that route existed.
+///
+/// The boundary is *also* held by `assert_does_not_implement!` in
 /// `tests/root_path_authority.rs`, which stops that test target from compiling
-/// if such an impl reappears.
+/// if such an impl reappears. The two are deliberately redundant: the
+/// integration test does not depend on this crate staying selected by the
+/// doctest route.
 ///
 /// A resolved value is not accepted where unchecked compatibility paths are
 /// expected:
