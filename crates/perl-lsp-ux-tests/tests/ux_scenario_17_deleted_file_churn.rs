@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::print_stderr,
+    reason = "Scenario 17 reports a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 //! Scenario 17 — deleting a watched file evicts stale symbols and definition targets.
 //!
@@ -37,10 +39,10 @@ fn symbol_names(symbols: &[Value]) -> Vec<&str> {
 }
 
 #[test]
-fn scenario_17_deleted_module_evicted_from_symbols_and_definition() {
+fn scenario_17_deleted_module_evicted_from_symbols_and_definition() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_17: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -49,9 +51,11 @@ fn scenario_17_deleted_module_evicted_from_symbols_and_definition() {
             .with_file("main.pl", SCRIPT_SOURCE)
             .with_file("lib/ModuleGone.pm", MODULE_SOURCE),
     )
-    .expect("Failed to create UX harness");
+    .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
-    harness.open_file("main.pl", SCRIPT_SOURCE).expect("didOpen should succeed");
+    harness
+        .open_file("main.pl", SCRIPT_SOURCE)
+        .map_err(|error| format!("didOpen should succeed: {error}"))?;
     assert!(
         harness.wait_for_index_ready(Duration::from_secs(20)),
         "Expected workspace index to become ready before querying ModuleGone"
@@ -64,9 +68,10 @@ fn scenario_17_deleted_module_evicted_from_symbols_and_definition() {
     while Instant::now() < before_deadline {
         symbols_before = harness
             .workspace_symbols("gone_value_4068")
-            .expect("workspace/symbol must not error before delete");
-        defs_before =
-            harness.definition_at(&cursor).expect("definition must not error before delete");
+            .map_err(|error| format!("workspace/symbol failed before delete: {error}"))?;
+        defs_before = harness
+            .definition_at(&cursor)
+            .map_err(|error| format!("definition failed before delete: {error}"))?;
 
         if !symbols_before.is_empty() && !defs_before.is_empty() {
             break;
@@ -92,10 +97,15 @@ fn scenario_17_deleted_module_evicted_from_symbols_and_definition() {
         }),
     );
 
-    harness.workspace.delete("lib/ModuleGone.pm").expect("module delete should succeed");
+    harness
+        .workspace
+        .delete("lib/ModuleGone.pm")
+        .map_err(|error| format!("module delete failed: {error}"))?;
     harness
         .notify_watched_files(&[("lib/ModuleGone.pm", 3)])
-        .expect("didChangeWatchedFiles Deleted notification must not fail");
+        .map_err(|error| {
+            format!("didChangeWatchedFiles Deleted notification failed: {error}")
+        })?;
 
     let after_deadline = Instant::now() + Duration::from_secs(10);
     let mut symbols_after = Vec::new();
@@ -103,9 +113,10 @@ fn scenario_17_deleted_module_evicted_from_symbols_and_definition() {
     while Instant::now() < after_deadline {
         symbols_after = harness
             .workspace_symbols("gone_value_4068")
-            .expect("workspace/symbol must not error after delete");
-        defs_after =
-            harness.definition_at(&cursor).expect("definition must not error after delete");
+            .map_err(|error| format!("workspace/symbol failed after delete: {error}"))?;
+        defs_after = harness
+            .definition_at(&cursor)
+            .map_err(|error| format!("definition failed after delete: {error}"))?;
 
         if symbols_after.is_empty() && defs_after.is_empty() {
             break;
@@ -125,4 +136,5 @@ fn scenario_17_deleted_module_evicted_from_symbols_and_definition() {
     );
 
     harness.assert_no_crash();
+    Ok(())
 }
