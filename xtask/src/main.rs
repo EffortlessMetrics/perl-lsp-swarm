@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 mod allocation_tracker;
 mod cli;
+mod host_work_status;
 mod tasks;
 #[cfg(test)]
 mod test_support;
