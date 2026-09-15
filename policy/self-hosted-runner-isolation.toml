@@ -52,7 +52,7 @@
 schema_version = 1
 policy = "self-hosted-runner-isolation"
 owner = "EffortlessMetrics"
-updated = "2026-09-07"
+updated = "2026-09-15"
 
 # =============================================================================
 # Rust small lanes on persistent CX53/CX43 capacity
@@ -183,15 +183,22 @@ workflow = ".github/workflows/droid.yml"
 job = "droid"
 runner = "self_hosted_droid_review"
 lifecycle = "persistent"
-# `$HOME/.factory/settings.local.json` is written after checkout and contains
-# MINIMAX_API_KEY in cleartext. It is outside the workspace, so no workspace
-# cleanup reaches it, and it persists on the host between candidates. #6098
-# already names "persistent state in user-scope directories" as the open
-# problem for this lane; recording the exact path is the point of this row.
+# The manual workflow overrides HOME/config/cache with a private mktemp root
+# before checkout/tool installation and cleans it with always(). The settings
+# file contains MINIMAX_API_KEY in cleartext only inside that mode-0700 root;
+# it is not written into the persistent runner account's HOME by this workflow.
+# The native prompt directory is cleanup-separated, not uniquely namespaced.
+# In-job cleanup does not prove host teardown after termination or prevent
+# same-job mutable tooling from accessing secrets; #6098 remains open.
+# Legacy files from older workflow runs are not removed or proven absent here.
 candidate_writable = [
   "runner work directory",
-  "$HOME/.factory/settings.local.json (contains MINIMAX_API_KEY)",
+  "legacy runner HOME state from prior Droid runs (not scrubbed by this workflow)",
 ]
-per_run_namespaced = ["$GITHUB_WORKSPACE"]
+per_run_namespaced = [
+  "$GITHUB_WORKSPACE",
+  "$RUNNER_TEMP/droid-home.*",
+  "$RUNNER_TEMP/droid-prompts (cleanup-separated)",
+]
 runtime_proof = "#6098"
 review_after = "2027-03-07"
