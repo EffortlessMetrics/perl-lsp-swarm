@@ -969,6 +969,30 @@ mod tests {
     }
 
     #[test]
+    fn normalize_parent_arg_entry_cancellation_is_type_hierarchy_cancelled() -> Result<()> {
+        let provider = TypeHierarchyProvider::new();
+        ensure!(matches!(
+            provider.normalize_parent_arg_with_cancellation("qw(Foo Bar)", &|| true),
+            Err(TypeHierarchyCancelled)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn word_character_classifier_observes_compiled_regex_and_delimiter_boundary() -> Result<()> {
+        ensure!(WORD_CHAR_RE.is_some(), "word-character regex must compile");
+        ensure!(is_word_character('x'));
+        ensure!(is_word_character('_'));
+        ensure!(is_word_character('é'));
+        ensure!(is_word_character('‿'));
+        ensure!(is_word_character('\u{0301}'));
+        ensure!(!is_word_character('!'));
+        ensure!(!is_word_character('§'));
+        ensure!(!is_word_character('('));
+        Ok(())
+    }
+
+    #[test]
     fn malformed_qw_delimiters_remain_fallible_with_unicode_input() -> Result<()> {
         let provider = TypeHierarchyProvider::new();
         let never_cancelled = || false;
