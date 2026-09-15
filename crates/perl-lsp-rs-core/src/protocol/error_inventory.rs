@@ -1,8 +1,8 @@
 //! Error classification inventory (#4982).
 //!
 //! Provides a read-only inventory of which error types implement `ErrorClass`
-//! and their canonical dispositions, so CI/lint tooling can detect gaps
-//! when new error types are added without classification.
+//! and their canonical dispositions, so CI/lint tooling can detect unreviewed
+//! classification changes.
 
 use crate::protocol::error_disposition::{Disposition, disposition_for};
 use perl_parser_core::ErrorCategory;
@@ -24,6 +24,12 @@ pub enum ClassificationRoute {
     /// The type has no canonical category yet. This is a real gap.
     Unclassified,
 }
+
+/// Application-owned adapter that projects a finalized `JsonRpcError` code onto
+/// an [`ErrorCategory`] (#7611). It lives in `perl-lsp-rs`, above this crate,
+/// so the inventory names it by path rather than by reference.
+pub const JSONRPC_ERROR_ADAPTER: &str =
+    "perl_lsp_rs::runtime::dispatch::response::classify_jsonrpc_error";
 
 /// A single entry in the error classification inventory.
 #[derive(Debug, Clone)]
@@ -50,7 +56,8 @@ pub struct ErrorInventoryEntry {
 ///
 /// This is maintained manually and serves as a checklist for CI enforcement.
 /// When a new error type is added, it should be registered here so the
-/// inventory test can detect missing ErrorClass implementations.
+/// inventory distinguishes classified types from intentionally neutral or
+/// origin-ambiguous types.
 pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
     vec![
         // ── perl-parser-core ──
@@ -117,22 +124,18 @@ pub fn error_type_inventory() -> Vec<ErrorInventoryEntry> {
             sample_category: Some(ErrorCategory::Infra),
             sample_disposition: Some(disposition_for(ErrorCategory::Infra)),
         },
-        // `JsonRpcError` implements `ErrorClass` in `protocol/jsonrpc.rs`, mapping
-        // JSON-RPC codes to categories. The row previously read `false` with a
-        // "needs type refinement (#4978)" note; #4978 has since closed and the
-        // impl is present, so the row was stale. Its category varies by code —
-        // `Protocol` for parse/invalid-request, `UserError` for
-        // method-not-found/invalid-params, `Bug` for internal and unknown codes,
-        // `Transient` for cancellation/content-modified, `Infra` for
-        // server-not-initialized — so the sample below is representative only,
-        // matching the first arm. #4978 notes that `RequestFailed` ideally
-        // carries its originating category rather than inferring one from the
-        // code; that refinement is not this row's to make.
         ErrorInventoryEntry {
             type_name: "JsonRpcError",
             crate_name: "perl-lsp-rs-core",
-            has_error_class: true,
-            classification_route: ClassificationRoute::TraitImpl,
+            // Wire-only (#7611): `JsonRpcError` owns transport facts and does
+            // not implement `ErrorClass`. The Perl adapter in
+            // `perl-lsp-rs::runtime::dispatch::response` projects finalized
+            // codes onto a category. The category varies by code, so the sample
+            // below is representative only (the adapter's parse-error arm).
+            // #7612 replaces the code-only mapping with originating
+            // classification and provenance.
+            has_error_class: false,
+            classification_route: ClassificationRoute::AppAdapter(JSONRPC_ERROR_ADAPTER),
             sample_category: Some(ErrorCategory::Protocol),
             sample_disposition: Some(disposition_for(ErrorCategory::Protocol)),
         },
@@ -288,20 +291,19 @@ mod tests {
         assert_eq!(
             unclassified,
             vec!["StackParseError", "VariableParseError"],
-            "stack/variable parse enums stay unclassified without origin; JsonRpcError is classified in protocol::jsonrpc"
+            "stack/variable parse enums stay unclassified without origin; JsonRpcError is wire-only and classified through the app adapter"
         );
     }
 
     #[test]
-    fn jsonrpc_error_is_inventoried_as_classified_because_it_implements_the_trait() {
-        // Regression guard for a row that had drifted: the inventory recorded
-        // `has_error_class: false` for `JsonRpcError` long after
-        // `impl ErrorClass for JsonRpcError` landed in `protocol/jsonrpc.rs`,
-        // which made both the gap list and the classified/unclassified counts
-        // wrong. Bind the row to the trait rather than to a hand-maintained bool.
+    fn jsonrpc_error_is_wire_only_and_classified_through_the_app_adapter() {
+        // #7611: the generic protocol type must not carry the Perl taxonomy.
+        // Bind the row to the absence of the trait impl rather than to a
+        // hand-maintained bool, so restoring `impl ErrorClass for JsonRpcError`
+        // fails this test at compile time.
         const _: () = assert!(
-            ErrorClassProbe::<crate::protocol::JsonRpcError>::IMPLEMENTS_ERROR_CLASS,
-            "JsonRpcError implements ErrorClass; the inventory row must say so"
+            !ErrorClassProbe::<crate::protocol::JsonRpcError>::IMPLEMENTS_ERROR_CLASS,
+            "JsonRpcError must not implement ErrorClass (#7611); the inventory row must say so"
         );
 
         let inv = error_type_inventory();
@@ -309,11 +311,14 @@ mod tests {
         assert_eq!(rows.len(), 1, "JsonRpcError must remain inventoried exactly once");
 
         for row in rows {
-            assert!(row.has_error_class, "JsonRpcError implements ErrorClass");
-            assert_eq!(row.classification_route, ClassificationRoute::TraitImpl);
+            assert!(!row.has_error_class, "JsonRpcError is wire-only");
+            assert_eq!(
+                row.classification_route,
+                ClassificationRoute::AppAdapter(JSONRPC_ERROR_ADAPTER)
+            );
             assert!(
                 row.sample_category.is_some(),
-                "a classified row must record a representative category"
+                "an adapter-classified row records a representative category"
             );
         }
         assert!(!unclassified_types().contains(&"JsonRpcError"));
