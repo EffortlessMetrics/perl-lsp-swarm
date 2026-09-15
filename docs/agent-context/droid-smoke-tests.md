@@ -1,111 +1,90 @@
-# Droid Smoke Test Expectations
+# Droid Manual Smoke-Test Contract
 
-## Automated Review Smoke Test
+The only active Droid lane in this repository is the explicitly requested PR command
+workflow in `.github/workflows/droid.yml`.
 
-When a PR is opened or updated in the same repository, Droid auto-review should:
+Automatic PR review in `.github/workflows/droid-review.yml` and automatic or scheduled
+security execution in `.github/workflows/droid-security-scan.yml` remain paused. A
+successful manual smoke test does not reactivate them or close the broader isolation work
+in #6098.
 
-1. **Trigger on same-repo PRs.** Only PRs where `head.repo.full_name == repository` run auto-review.
-2. **Skip drafts.** Auto-review does not run on draft PRs.
-3. **Post comments within 2–5 minutes.** Under normal load, Droid posts findings within this window.
-4. **Use MiniMax-M2.7 model.** Verify via `review_model: custom:MiniMax-M2.7-0` in job logs.
-5. **No raw debug artifacts.** The artifact named `droid-review-debug-<run_id>` should never appear.
+## Supported invocation boundary
 
-Expected artifacts:
-- Review comments on the PR
-- (Optional) Issue created for critical security findings
-- No `droid-review-debug-*` files
+A current repository writer may invoke Droid from an open, same-repository pull request
+using:
 
-## Manual @droid Review
+- `@droid review`
+- `@droid security`
+- `@droid security --full`
+- `@droid fill`
 
-When a trusted contributor (OWNER, MEMBER, or COLLABORATOR) comments `@droid review`:
+Bare `@droid` follows the action's native review default.
 
-1. **Only trusted actors can trigger.** Public comments are ignored.
-2. **Executes within 1–3 minutes.** Manual review is faster than auto-review.
-3. **Uses shallow depth.** Fast, focused review of PR surface.
-4. **Contents permission is read-only.** Manual Droid review reads but does not modify files.
+Issue-only requests, closed pull requests, and fork pull requests fail before provider
+secrets are supplied. The event guard requires an authorized human association, and the
+safe action performs its native live permission check before model execution. Arbitrary
+implementation requests such as `@droid fix the CI` are not a capability of this action.
 
-## Manual @droid Security
+## Expected runtime
 
-When `@droid security` is commented:
+A valid invocation must:
 
-1. **Requires trusted actor.** Same OWNER/MEMBER/COLLABORATOR gate as `@droid review`.
-2. **Focuses on security rules.** Checks for injection, secrets exposure, unsafe patterns.
-3. **May create issues.** Critical findings are filed as separate issues.
-4. **Blocks on critical if configured.** perl-lsp config: block on critical, do not block on high.
+1. Run on GitHub-hosted `ubuntu-24.04`; it must not wait for the retired
+   `droid-review` self-hosted label set.
+2. Resolve the pull request's current exact head and preserve the safe action's native
+   live actor-permission check.
+3. Check out that head with `persist-credentials: false`.
+4. Install Droid CLI `0.209.0` from Factory's versioned direct-binary path, verify the
+   published SHA-256 checksum before execution, and disable in-process auto-updates.
+5. Use `custom:MiniMax-M3-0` for review, security, and fill.
+6. Keep Factory and MiniMax credentials step-scoped, clear inherited Anthropic routing,
+   and keep Factory state under a private temporary home.
+7. Disable raw/full debug output and remove the temporary home and prompt directory with
+   an `always()` cleanup step.
+8. Preserve exact-head checking through `expected_head_sha`.
 
-## Scheduled Security Scan
+The pinned CLI removes the mutable `curl | sh` installer from this lane. The pinned safe
+action still installs its Bun dependencies at runtime and retains GitHub publication
+authority; those remaining trust-boundary questions stay owned by #6098.
 
-Every Monday at 08:00 UTC:
+## Live acceptance
 
-1. **Scans the repository.** Analyzes committed code for security issues.
-2. **Reports in issues.** Creates or updates a tracking issue with findings.
-3. **Uses medium severity threshold.** Balances coverage and false-positive rate.
-4. **Runs even with no PR activity.** Scheduled scans are independent of PR lifecycle.
+Because `issue_comment` runs from the default branch, a candidate change to
+`.github/workflows/droid.yml` cannot prove itself through a comment until it has merged.
+After merge, use a disposable same-repository pull request and submit `@droid review`.
 
-## Expected Clean Review Structure
+Acceptance requires all of the following:
 
-When Droid finds no actionable issues, it posts:
+- the `Droid Tag` job is assigned to `ubuntu-24.04` and starts without a custom runner;
+- the prerequisite, subject, checkout, pinned-CLI, and configuration steps pass;
+- the log reports Droid CLI `0.209.0`;
+- the action reaches MiniMax M3 inference;
+- Droid publishes a useful review or an explicit no-findings result;
+- no `droid-review-debug-*` artifact is produced;
+- cleanup completes;
+- the reviewed head still matches the pull request head.
 
-```text
-No actionable findings emitted.
+A successful process exit without inference or publication is not a successful smoke
+test. A stale-head rejection is a correct result, not a clean review.
 
-Inspected surfaces:
-- [files and subsystems checked]
+## Review-output expectations
 
-Checks performed:
-- [analysis steps taken]
+A clean review should state what was inspected, which checks were performed, why no
+inline comments were emitted, residual risk, and what was observed versus merely
+reported.
 
-Why no comments:
-- [brief explanation]
+A finding should include severity, the concrete failure mode, a bounded fix direction,
+a way to validate the fix, and the evidence supporting confidence.
 
-Residual risk:
-- [uncovered areas if any]
+## Failure diagnosis
 
-Validation signal:
-  Observed:
-    - [test signals]
-  Reported:
-    - [CI/tool output]
-  Not verified:
-    - [things Droid cannot check]
-```
-
-## Expected Finding Structure
-
-When Droid finds issues, it uses:
-
-```text
-[P0|P1|P2] Short title
-
-Failure mode:
-- What breaks
-
-Fix direction:
-- What to change
-
-Validation:
-- How to verify the fix works
-
-Confidence:
-- Why this is correct
-```
-
-## MiniMax Key Validation
-
-After review runs, the MiniMax dashboard should show:
-- API calls to `api.minimax.io/anthropic`
-- Model: `MiniMax-M2.7`
-- Timestamps matching the workflow run time
-
-If no MiniMax calls appear, the BYOK configuration is not loaded correctly.
-
-## Failure Modes and Recovery
-
-| Symptom | Diagnosis | Recovery |
-|---------|-----------|----------|
-| "Droid could not post comment" (continues-on-error) | Rate limit or network issue | Retry manual `@droid review` |
-| No artifact named `droid-review-debug-*` | Expected (this is correct) | N/A — working as designed |
-| `droid-review-debug-<run_id>` appears | Bug in safe action or override | Investigate and file issue |
-| Review uses wrong model (e.g., gpt-4) | BYOK not configured | Check `$HOME/.factory/settings.local.json` |
-| MiniMax calls don't appear in dashboard | Key not passed to action | Verify `MINIMAX_API_KEY` secret exists |
-| PR not reviewed despite being opened | Draft PR check or fork detection | Check job logs for `if:` condition |
+| Symptom | Meaning | Action |
+|---|---|---|
+| Job remains queued without a runner | Regression: the workflow returned to unavailable custom labels | Restore `runs-on: ubuntu-24.04` |
+| `gh: not found` | GitHub CLI bootstrap or PATH wiring failed | Check the pinned GitHub CLI install step |
+| Droid installer uses `curl ... | sh` | Regression: the safe action did not receive the pinned executable path | Check `path_to_droid_executable` |
+| Droid version differs from `0.209.0` | Pin or auto-update control failed | Check checksum verification and `FACTORY_DROID_AUTO_UPDATE_ENABLED=false` |
+| MiniMax dashboard shows no matching call | BYOK settings were not loaded or inference was never reached | Check the temporary settings file and action logs |
+| Review uses a model other than MiniMax M3 | Model selector regression | Check all three `custom:MiniMax-M3-0` inputs |
+| Debug artifact appears | Secret-bearing diagnostic output escaped the intended boundary | Stop the lane and investigate |
+| Permission or exact-head check fails | Invocation is unauthorized or stale | Reinvoke from the current open PR head with a current writer |
