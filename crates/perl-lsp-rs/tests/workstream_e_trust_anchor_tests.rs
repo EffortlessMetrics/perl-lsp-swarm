@@ -871,11 +871,14 @@ mod workspace_index_unit_tests {
         let coordinator = IndexCoordinator::with_limits(limits);
         coordinator.transition_to_ready(0, 0);
 
-        // Index 5 files (exceeds limit of 2)
+        // Index 5 files (exceeds limit of 2). Files beyond the limit are
+        // rejected with the rejection recorded; the degradation surfaces on
+        // the next state observation, so the rejection must not propagate
+        // (#15428/C5).
         for i in 0..5 {
             let uri = format!("file:///test{}.pl", i);
             let url = url::Url::parse(&uri)?;
-            coordinator.index().index_file(url, "sub test { }".into())?;
+            let _ = coordinator.index().index_file(url, "sub test { }".into());
         }
 
         coordinator.enforce_limits();
@@ -907,7 +910,11 @@ sub f { } sub g { } sub h { } sub i { } sub j { }
 1;
 "#;
         let url = url::Url::parse("file:///test.pm")?;
-        coordinator.index().index_file(url, content.into())?;
+        // The over-limit file is REJECTED by admission (recorded as a
+        // resource-limit rejection), not admitted with a partial index: the
+        // rejection must surface as typed degradation on the next state
+        // observation, not as a propagated error (#15428/C5).
+        let _ = coordinator.index().index_file(url, content.into());
 
         coordinator.enforce_limits();
 
