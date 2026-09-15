@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::print_stderr,
+    reason = "Scenario 08 reports a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 //! Scenario 08 — Shebang detection / non-standard extensions.
 //!
@@ -14,52 +16,71 @@ use perl_lsp_ux_tests::binary_available;
 use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
 
 #[test]
-fn scenario_08_shebang_file_without_pl_extension() {
+fn scenario_08_shebang_file_without_pl_extension() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_08: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let source = "#!/usr/bin/env perl\nuse strict;\nuse warnings;\n\n\
                   my $answer = 42;\nprint \"Answer: $answer\\n\";\n";
-    let harness = UxHarness::new(ScenarioConfig::default()).expect("Failed to create UX harness");
+    let harness = UxHarness::new(ScenarioConfig::default())
+        .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
-    harness.open_file("deploy_script", source).expect("didOpen should succeed for shebang file");
+    harness
+        .open_file("deploy_script", source)
+        .map_err(|error| format!("didOpen should succeed for shebang file: {error}"))?;
 
-    let hover = harness.hover("deploy_script", 4, 3);
-    assert!(hover.is_ok(), "hover crashed on non-.pl file — UX regression: {:?}", hover);
+    harness.hover("deploy_script", 4, 3).map_err(|error| {
+        format!("hover crashed on non-.pl file — UX regression: {error}")
+    })?;
 
     harness.assert_no_crash();
+    Ok(())
 }
 
 #[test]
-fn scenario_08_no_extension_file_completion_does_not_crash() {
+fn scenario_08_no_extension_file_completion_does_not_crash() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_08: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let source = "#!/usr/bin/perl\nmy $va\n";
-    let harness = UxHarness::new(ScenarioConfig::default()).expect("Failed to create UX harness");
+    let harness = UxHarness::new(ScenarioConfig::default())
+        .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
-    harness.open_file("run_tests", source).expect("didOpen should succeed");
+    harness
+        .open_file("run_tests", source)
+        .map_err(|error| format!("didOpen should succeed: {error}"))?;
 
-    let result = harness.completion("run_tests", 1, 7);
-    assert!(result.is_ok(), "completion crashed on non-.pl file — UX regression: {:?}", result);
+    harness.completion("run_tests", 1, 7).map_err(|error| {
+        format!("completion crashed on non-.pl file — UX regression: {error}")
+    })?;
+
+    harness.assert_no_crash();
+    Ok(())
 }
 
 #[test]
-fn scenario_08_test_file_t_extension() {
+fn scenario_08_test_file_t_extension() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_08: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let source = "use Test::More;\nuse strict;\n\nok(1, 'basic');\ndone_testing();\n";
-    let harness = UxHarness::new(ScenarioConfig::default()).expect("Failed to create UX harness");
+    let harness = UxHarness::new(ScenarioConfig::default())
+        .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
-    harness.open_file("basic.t", source).expect("didOpen should succeed for .t extension");
+    harness
+        .open_file("basic.t", source)
+        .map_err(|error| format!("didOpen should succeed for .t extension: {error}"))?;
 
-    let hover = harness.hover("basic.t", 3, 1);
-    assert!(hover.is_ok(), "hover crashed on .t test file — UX regression: {:?}", hover);
+    harness
+        .hover("basic.t", 3, 1)
+        .map_err(|error| format!("hover crashed on .t test file — UX regression: {error}"))?;
+
+    harness.assert_no_crash();
+    Ok(())
 }
