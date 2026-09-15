@@ -878,7 +878,12 @@ mod workspace_index_unit_tests {
         for i in 0..5 {
             let uri = format!("file:///test{}.pl", i);
             let url = url::Url::parse(&uri)?;
-            let _ = coordinator.index().index_file(url, "sub test { }".into());
+            let result = coordinator.index().index_file(url, "sub test { }".into());
+            if i < 2 {
+                assert!(result.is_ok(), "file {uri} should be admitted within the limit");
+            } else {
+                assert!(result.is_err(), "file {uri} should be rejected beyond the limit");
+            }
         }
 
         coordinator.enforce_limits();
@@ -914,7 +919,8 @@ sub f { } sub g { } sub h { } sub i { } sub j { }
         // resource-limit rejection), not admitted with a partial index: the
         // rejection must surface as typed degradation on the next state
         // observation, not as a propagated error (#15428/C5).
-        let _ = coordinator.index().index_file(url, content.into());
+        let result = coordinator.index().index_file(url.clone(), content.into());
+        assert!(result.is_err(), "the over-limit file must be rejected, not admitted: {url}");
 
         coordinator.enforce_limits();
 
