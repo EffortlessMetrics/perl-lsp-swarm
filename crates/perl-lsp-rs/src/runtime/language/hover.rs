@@ -894,34 +894,6 @@ impl LspServer {
         )
     }
 
-    /// Whether `[start, end)` contains the standalone word `needle`.
-    ///
-    /// Word-boundary aware, so `substr` and `sub_name` do not match. Used by
-    /// the method-modifier target island (#15425) to keep the claim scoped to
-    /// the declaration head: once the symbol's `sub` body keyword appears
-    /// before the cursor, the cursor is inside the body, not on the modifier's
-    /// quoted target. Boundary surprises (unterminated span) fail closed.
-    fn span_has_word(text: &str, start: usize, end: usize, needle: &str) -> bool {
-        let Some(span) = text.get(start..end) else {
-            return true;
-        };
-        let bytes = span.as_bytes();
-        let needle_bytes = needle.as_bytes();
-        let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-        let mut i = 0;
-        while i + needle_bytes.len() <= bytes.len() {
-            if bytes[i..i + needle_bytes.len()] == *needle_bytes
-                && (i == 0 || !is_word_byte(bytes[i - 1]))
-                && (i + needle_bytes.len() == bytes.len()
-                    || !is_word_byte(bytes[i + needle_bytes.len()]))
-            {
-                return true;
-            }
-            i += 1;
-        }
-        false
-    }
-
     /// Whether the token candidate at `offset` is an unescaped `$`/`@` variable
     /// interpolated inside a double-quoted string literal (#14860).
     ///
