@@ -1737,4 +1737,85 @@ mod tests {
         assert_eq!(cursor.node().grammar_kind(), "source_file");
         assert_eq!(depth, 0, "should have gone back up to root (depth 0)");
     }
+
+    // Focused discriminators for `ParseFailure::from_stop_cause` (the #12952
+    // RIPR seams). `tests/parse_failure_taxonomy.rs` activates only the
+    // recursion and nesting arms through `parse_detailed`; the cancellation
+    // and catch-all arms have no public-API activation because the facade
+    // exposes no cancellation token, so they are pinned here directly.
+    // Failures propagate rather than panic, per the repository lint policy.
+    type StopCauseResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    #[test]
+    fn cancellation_classifies_as_cancelled() -> StopCauseResult {
+        let failure = ParseFailure::from_stop_cause(ParseStopCause::Cancelled, &[]);
+
+        match failure {
+            Some(ParseFailure::Cancelled) => Ok(()),
+            other => Err(format!("cancellation must classify as Cancelled, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn recursion_budget_exhaustion_classifies_as_recursion_limit() -> StopCauseResult {
+        let cause = ParseStopCause::RecursionBudgetExhausted { limit: Some(128), usage: Some(129) };
+        let failure = ParseFailure::from_stop_cause(cause, &[]);
+
+        match failure {
+            Some(ParseFailure::RecursionLimit) => Ok(()),
+            other => Err(format!(
+                "recursion budget exhaustion must classify as RecursionLimit, not {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn nesting_budget_exhaustion_classifies_as_nesting_too_deep() -> StopCauseResult {
+        let cause = ParseStopCause::NestingOrDepthBudgetExhausted { limit: 64, usage: 65 };
+        let failure = ParseFailure::from_stop_cause(cause, &[]);
+
+        match failure {
+            Some(ParseFailure::NestingTooDeep { depth: 65, max_depth: 64 }) => Ok(()),
+            other => Err(format!(
+                "nesting budget exhaustion must classify as NestingTooDeep, got {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn uncategorized_cause_reports_the_terminal_diagnostic() -> StopCauseResult {
+        let diagnostic =
+            ParseDiagnostic::SyntaxError { message: "terminal".to_string(), location: 7 };
+        let failure = ParseFailure::from_stop_cause(
+            ParseStopCause::HeredocBudgetExhausted { limit: 512, usage: 600 },
+            std::slice::from_ref(&diagnostic),
+        );
+
+        match failure {
+            Some(ParseFailure::Other { diagnostic: reported }) => {
+                assert_eq!(reported.to_string(), diagnostic.to_string());
+                Ok(())
+            }
+            other => Err(format!(
+                "an uncategorized cause must report the terminal diagnostic, got {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
+    fn uncategorized_cause_without_diagnostics_withholds_the_failure() -> StopCauseResult {
+        let failure = ParseFailure::from_stop_cause(ParseStopCause::LexerBudgetExhausted, &[]);
+
+        match failure {
+            None => Ok(()),
+            other => Err(format!(
+                "an uncategorized cause with no recorded diagnostic must yield no failure; the \
+                 tree is withheld on the stop cause instead, got {other:?}"
+            )
+            .into()),
+        }
+    }
 }
