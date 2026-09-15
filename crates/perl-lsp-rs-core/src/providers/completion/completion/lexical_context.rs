@@ -1442,93 +1442,93 @@ mod tests {
     fn invalid_string_position_boundary_discriminator() {
         let source = "é";
 
-        assert_eq!(invalid_string_position(source, 0), false);
-        assert_eq!(invalid_string_position(source, source.len()), false);
-        assert_eq!(invalid_string_position(source, 1), true);
-        assert_eq!(invalid_string_position(source, source.len() + 1), true);
+        assert!(!invalid_string_position(source, 0));
+        assert!(!invalid_string_position(source, source.len()));
+        assert!(invalid_string_position(source, 1));
+        assert!(invalid_string_position(source, source.len() + 1));
     }
 
     #[test]
     fn position_within_line_boundary_discriminator() {
-        assert_eq!(position_within_line(9, 10, 15), false);
-        assert_eq!(position_within_line(10, 10, 15), true);
-        assert_eq!(position_within_line(12, 10, 15), true);
-        assert_eq!(position_within_line(15, 10, 15), true);
-        assert_eq!(position_within_line(16, 10, 15), false);
+        assert!(!position_within_line(9, 10, 15));
+        assert!(position_within_line(10, 10, 15));
+        assert!(position_within_line(12, 10, 15));
+        assert!(position_within_line(15, 10, 15));
+        assert!(!position_within_line(16, 10, 15));
     }
 
     #[test]
     fn is_in_string_rejects_out_of_range_and_non_boundary_positions() {
-        assert_eq!(is_in_string("abc", 3), false);
-        assert_eq!(is_in_string("abc", 4), false);
-        assert_eq!(is_in_string("\"é", 1), true);
-        assert_eq!(is_in_string("\"é", 2), false);
-        assert_eq!(is_in_string("\"é", 3), true);
-        assert_eq!(is_in_string("\"é", 4), false);
-        assert_eq!(is_in_string("\"a", 2), true);
+        assert!(!is_in_string("abc", 3));
+        assert!(!is_in_string("abc", 4));
+        assert!(is_in_string("\"é", 1));
+        assert!(!is_in_string("\"é", 2));
+        assert!(is_in_string("\"é", 3));
+        assert!(!is_in_string("\"é", 4));
+        assert!(is_in_string("\"a", 2));
     }
 
     #[test]
     fn is_in_string_respects_line_start_boundary() {
         let source = "my $x = 1;\n\"open\nstill_open";
 
-        assert_eq!(is_in_string(source, 10), false);
-        assert_eq!(is_in_string(source, 11), false);
-        assert_eq!(is_in_string(source, 12), true);
-        assert_eq!(is_in_string(source, 17), true);
-        assert_eq!(is_in_string(source, 27), true);
+        assert!(!is_in_string(source, 10));
+        assert!(!is_in_string(source, 11));
+        assert!(is_in_string(source, 12));
+        assert!(is_in_string(source, 17));
+        assert!(is_in_string(source, 27));
     }
 
     #[test]
     fn is_in_string_tracks_quote_parity_and_escapes() {
-        assert_eq!(is_in_string("\"", 1), true);
-        assert_eq!(is_in_string("\"\"", 2), false);
-        assert_eq!(is_in_string("'", 1), true);
-        assert_eq!(is_in_string("''", 2), false);
-        assert_eq!(is_in_string("my $x = 'open", 13), true);
-        assert_eq!(is_in_string("my $x = 'closed'", 16), false);
-        assert_eq!(is_in_string("my $x = \"open", 13), true);
-        assert_eq!(is_in_string("my $x = \"closed\"", 16), false);
-        assert_eq!(is_in_string("my $x = 'single' . \"double", 26), true);
-        assert_eq!(is_in_string("`", 1), true);
+        assert!(is_in_string("\"", 1));
+        assert!(!is_in_string("\"\"", 2));
+        assert!(is_in_string("'", 1));
+        assert!(!is_in_string("''", 2));
+        assert!(is_in_string("my $x = 'open", 13));
+        assert!(!is_in_string("my $x = 'closed'", 16));
+        assert!(is_in_string("my $x = \"open", 13));
+        assert!(!is_in_string("my $x = \"closed\"", 16));
+        assert!(is_in_string("my $x = 'single' . \"double", 26));
+        assert!(is_in_string("`", 1));
     }
 
     #[test]
     fn literal_scan_quote_parity_boundary_discriminator() {
         let mut no_quote = LiteralScanState::default();
         assert_eq!(no_quote.scan_segment(b"", 0, 0), None);
-        assert_eq!(no_quote.is_active(), false);
+        assert!(!no_quote.is_active());
 
         let mut one_single_quote = LiteralScanState::default();
         assert_eq!(one_single_quote.scan_segment(b"'", 0, 1), None);
-        assert_eq!(one_single_quote.in_single_quote, true);
-        assert_eq!(one_single_quote.in_double_quote, false);
-        assert_eq!(one_single_quote.is_active(), true);
+        assert!(one_single_quote.in_single_quote);
+        assert!(!one_single_quote.in_double_quote);
+        assert!(one_single_quote.is_active());
 
         let mut two_single_quotes = LiteralScanState::default();
         assert_eq!(two_single_quotes.scan_segment(b"''", 0, 2), None);
-        assert_eq!(two_single_quotes.in_single_quote, false);
-        assert_eq!(two_single_quotes.in_double_quote, false);
-        assert_eq!(two_single_quotes.is_active(), false);
+        assert!(!two_single_quotes.in_single_quote);
+        assert!(!two_single_quotes.in_double_quote);
+        assert!(!two_single_quotes.is_active());
 
         let mut one_double_quote = LiteralScanState::default();
         assert_eq!(one_double_quote.scan_segment(br#"""#, 0, 1), None);
-        assert_eq!(one_double_quote.in_single_quote, false);
-        assert_eq!(one_double_quote.in_double_quote, true);
-        assert_eq!(one_double_quote.is_active(), true);
+        assert!(!one_double_quote.in_single_quote);
+        assert!(one_double_quote.in_double_quote);
+        assert!(one_double_quote.is_active());
 
         let mut two_double_quotes = LiteralScanState::default();
         assert_eq!(two_double_quotes.scan_segment(br#""""#, 0, 2), None);
-        assert_eq!(two_double_quotes.in_single_quote, false);
-        assert_eq!(two_double_quotes.in_double_quote, false);
-        assert_eq!(two_double_quotes.is_active(), false);
+        assert!(!two_double_quotes.in_single_quote);
+        assert!(!two_double_quotes.in_double_quote);
+        assert!(!two_double_quotes.is_active());
     }
 
     #[test]
     fn is_in_string_tracks_quote_like_string_literals() {
-        assert_eq!(is_in_string("my $text = qq{Hello $me", 23), true);
-        assert_eq!(is_in_string("my $text = q($me", 16), true);
-        assert_eq!(is_in_string("my $rx = qr{$me", 15), false);
+        assert!(is_in_string("my $text = qq{Hello $me", 23));
+        assert!(is_in_string("my $text = q($me", 16));
+        assert!(!is_in_string("my $rx = qr{$me", 15));
     }
 
     #[test]
@@ -1544,24 +1544,24 @@ mod tests {
         let after_y_key = "$h{y}; my $name";
         let inside_string_after_m_key = "$h{m}; my $text = \"Hello $na";
 
-        assert_eq!(is_in_string(after_q_key, after_q_key.len()), false);
-        assert_eq!(is_in_string(after_qq_key, after_qq_key.len()), false);
-        assert_eq!(is_in_string(after_qw_key, after_qw_key.len()), false);
-        assert_eq!(is_in_string(after_qx_key, after_qx_key.len()), false);
-        assert_eq!(is_in_string(after_qr_key, after_qr_key.len()), false);
-        assert_eq!(is_in_string(after_arrow_q_key, after_arrow_q_key.len()), false);
-        assert_eq!(is_in_string(after_s_key, after_s_key.len()), false);
-        assert_eq!(is_in_string(after_tr_key, after_tr_key.len()), false);
-        assert_eq!(is_in_string(after_y_key, after_y_key.len()), false);
-        assert_eq!(is_in_string(inside_string_after_m_key, inside_string_after_m_key.len()), true);
+        assert!(!is_in_string(after_q_key, after_q_key.len()));
+        assert!(!is_in_string(after_qq_key, after_qq_key.len()));
+        assert!(!is_in_string(after_qw_key, after_qw_key.len()));
+        assert!(!is_in_string(after_qx_key, after_qx_key.len()));
+        assert!(!is_in_string(after_qr_key, after_qr_key.len()));
+        assert!(!is_in_string(after_arrow_q_key, after_arrow_q_key.len()));
+        assert!(!is_in_string(after_s_key, after_s_key.len()));
+        assert!(!is_in_string(after_tr_key, after_tr_key.len()));
+        assert!(!is_in_string(after_y_key, after_y_key.len()));
+        assert!(is_in_string(inside_string_after_m_key, inside_string_after_m_key.len()));
     }
 
     #[test]
     fn is_in_string_skips_pod_q_like_text() {
         let source = "=pod\nq($cursor\n=cut\nmy $after = ";
 
-        assert_eq!(is_in_string(source, 2), false);
-        assert_eq!(is_in_string(source, source.len()), false);
+        assert!(!is_in_string(source, 2));
+        assert!(!is_in_string(source, source.len()));
     }
 
     #[test]
@@ -1572,7 +1572,7 @@ mod tests {
         }
 
         let source = "=pod\ndocumentation\n  =cut\nstill documentation";
-        assert!(is_in_pod(&source, source.len()), "indented =cut must not close POD");
+        assert!(is_in_pod(source, source.len()), "indented =cut must not close POD");
     }
 
     #[test]
@@ -1644,14 +1644,14 @@ literal
 EOF
 my $after = "op"#;
 
-        assert_eq!(is_in_string(source, 17), false);
-        assert_eq!(is_in_string(source, 18), false);
-        assert_eq!(is_in_string(source, 25), false);
-        assert_eq!(is_in_string(source, 26), false);
-        assert_eq!(is_in_string(source, 27), false);
-        assert_eq!(is_in_string(source, 30), false);
-        assert_eq!(is_in_string(source, 31), false);
-        assert_eq!(is_in_string(source, 45), true);
+        assert!(!is_in_string(source, 17));
+        assert!(!is_in_string(source, 18));
+        assert!(!is_in_string(source, 25));
+        assert!(!is_in_string(source, 26));
+        assert!(!is_in_string(source, 27));
+        assert!(!is_in_string(source, 30));
+        assert!(!is_in_string(source, 31));
+        assert!(is_in_string(source, 45));
     }
 
     #[test]
@@ -1676,14 +1676,14 @@ my $after = "op"#;
 
     #[test]
     fn is_heredoc_operator_context_boundary_discriminator() {
-        assert_eq!(is_heredoc_operator_context("$obj->method <<EOF", 13), false);
+        assert!(!is_heredoc_operator_context("$obj->method <<EOF", 13));
     }
 
     #[test]
     fn before_word_has_method_arrow_boundary_discriminator() {
-        assert_eq!(before_word_has_method_arrow("$obj->"), true);
-        assert_eq!(before_word_has_method_arrow("$obj-> \t"), true);
-        assert_eq!(before_word_has_method_arrow("$obj -"), false);
+        assert!(before_word_has_method_arrow("$obj->"));
+        assert!(before_word_has_method_arrow("$obj-> \t"));
+        assert!(!before_word_has_method_arrow("$obj -"));
     }
 
     #[test]
@@ -1770,19 +1770,19 @@ my $after = "op"#;
 
     #[test]
     fn heredoc_operator_context_accepts_braced_filehandle() {
-        assert_eq!(is_heredoc_operator_context("print {$fh} <<EOF", 12), true);
-        assert_eq!(is_heredoc_operator_context("my $value = {$fh} <<EOF", 18), false);
+        assert!(is_heredoc_operator_context("print {$fh} <<EOF", 12));
+        assert!(!is_heredoc_operator_context("my $value = {$fh} <<EOF", 18));
     }
 
     #[test]
     fn heredoc_operator_context_accepts_underscore_filehandle_word() {
-        assert_eq!(is_heredoc_operator_context("print OUT_FH <<EOF", 13), true);
+        assert!(is_heredoc_operator_context("print OUT_FH <<EOF", 13));
     }
 
     #[test]
     fn heredoc_operator_context_rejects_sigiled_underscore_term_outside_print() {
-        assert_eq!(is_heredoc_operator_context("my $_ <<EOF", 6), false);
-        assert_eq!(is_heredoc_operator_context("my $out_fh <<EOF", 11), false);
+        assert!(!is_heredoc_operator_context("my $_ <<EOF", 6));
+        assert!(!is_heredoc_operator_context("my $out_fh <<EOF", 11));
     }
 
     #[test]
@@ -1955,17 +1955,17 @@ my $after = "op"#;
 
     #[test]
     fn slash_regex_before_eq_zero_starts_literal() {
-        assert_eq!(slash_starts_bare_regex_literal(b"/<<EOF/", 0), true);
+        assert!(slash_starts_bare_regex_literal(b"/<<EOF/", 0));
     }
 
     #[test]
     fn slash_regex_can_start_after_leading_spaces() {
-        assert_eq!(slash_starts_bare_regex_literal(b"   /<<EOF/", 3), true);
+        assert!(slash_starts_bare_regex_literal(b"   /<<EOF/", 3));
     }
 
     #[test]
     fn slash_regex_keyword_probe_keeps_underscore_inside_word() {
-        assert_eq!(slash_starts_bare_regex_literal(b"not_if /<<EOF/", 7), false);
+        assert!(!slash_starts_bare_regex_literal(b"not_if /<<EOF/", 7));
     }
 
     #[test]

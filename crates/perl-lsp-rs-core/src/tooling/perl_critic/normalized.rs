@@ -880,7 +880,7 @@ mod tests {
         let identity = CriticObservedIdentity::built_in_system_call();
         vec![
             CriticFindingCandidate::new(
-                identity.clone(),
+                identity,
                 source_identity,
                 Severity::Harsh,
                 range,
