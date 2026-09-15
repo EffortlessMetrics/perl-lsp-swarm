@@ -22,6 +22,18 @@ const MEMORY_PRESSURE_LEVELS: &[usize] = &[1_000, 10_000, 100_000, 1_000_000];
 /// Maximum acceptable memory usage ratio (memory_used / source_size)
 const MAX_MEMORY_RATIO: f64 = 100.0; // 100x source size is acceptable upper bound
 
+/// Coarse parse-time watchdog floors, not microbenchmark targets (#15432).
+///
+/// Native debug parsing on the reference Windows host completes the heaviest
+/// scenario here in well under a second; coverage-instrumented runs
+/// (`cargo llvm-cov` in the workspace gate), low-memory hosts, and contended
+/// machines run 10-50x slower. These floors only have to fail on hangs and
+/// pathological slowdowns, so they are set orders of magnitude above the
+/// native timings instead of a few multiples.
+const SINGLE_PARSE_WATCHDOG: Duration = Duration::from_secs(60);
+const EXTREME_PARSE_WATCHDOG: Duration = Duration::from_secs(120);
+const INCREMENTAL_ITERATION_WATCHDOG: Duration = Duration::from_secs(1);
+
 /// Test parser with simulated low-memory conditions
 #[test]
 fn test_low_memory_conditions() {
@@ -65,7 +77,7 @@ fn test_low_memory_conditions() {
 
         // Should complete within reasonable time even under memory pressure
         assert!(
-            parse_time < Duration::from_secs(10),
+            parse_time < SINGLE_PARSE_WATCHDOG,
             "Parsing took too long under memory pressure: {:?}",
             parse_time
         );
@@ -450,7 +462,7 @@ fn test_memory_pressure_incremental_parsing() {
 
             // Should complete quickly for incremental changes
             assert!(
-                parse_time < Duration::from_millis(100),
+                parse_time < INCREMENTAL_ITERATION_WATCHDOG,
                 "Incremental parsing took too long: {:?}",
                 parse_time
             );
@@ -601,7 +613,7 @@ fn test_extreme_memory_pressure() {
 
         // Should complete or fail within reasonable time
         assert!(
-            parse_time < Duration::from_secs(30),
+            parse_time < EXTREME_PARSE_WATCHDOG,
             "Extreme scenario {} took too long: {:?}",
             scenario_name,
             parse_time

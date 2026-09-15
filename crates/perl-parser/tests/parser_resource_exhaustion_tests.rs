@@ -18,6 +18,14 @@ use std::time::{Duration, Instant};
 /// Maximum recursion depth before stack overflow
 const MAX_RECURSION_DEPTH: usize = 128;
 
+/// Watchdog for the heaviest memory-exhaustion scenario, not a benchmark
+/// (#15432): the largest generated input (10k variable declarations) parses in
+/// ~0.45 s natively on the reference Windows host, but coverage-instrumented
+/// runs (`cargo llvm-cov` in the workspace gate) and low-memory hosts run
+/// 10-50x slower. The budget only has to fail on hangs and pathological
+/// slowdowns.
+const MEMORY_EXHAUSTION_CASE_WATCHDOG: Duration = Duration::from_secs(60);
+
 /// Maximum heredoc depth before resource exhaustion
 const MAX_HEREDOC_DEPTH: usize = 100;
 
@@ -263,7 +271,7 @@ fn test_memory_exhaustion_scenarios() {
 
         // Should complete within reasonable time
         assert!(
-            parse_time < Duration::from_secs(10),
+            parse_time < MEMORY_EXHAUSTION_CASE_WATCHDOG,
             "Memory exhaustion test took too long: {:?}",
             parse_time
         );

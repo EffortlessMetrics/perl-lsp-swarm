@@ -24,7 +24,17 @@ const _MAX_TEST_FILE_SIZE: usize = 10 * 1024 * 1024;
 /// instrumentation overhead can be materially higher than normal test runs.
 /// The point here is to catch pathological slowdowns and hangs, not to enforce
 /// sub-millisecond throughput targets.
-const MAX_PARSE_TIME_PER_KB: Duration = Duration::from_millis(5);
+///
+/// Calibrated against #15432: native debug parsing of the generated files
+/// measures ~0.3 ms/KB on the reference Windows host, so the original 5 ms/KB
+/// left only ~15x headroom — coverage instrumentation or a slower host tripped
+/// it. 50 ms/KB (plus the per-file floor applied at each call site) tolerates
+/// that spread while still failing on hangs and superlinear regressions.
+const MAX_PARSE_TIME_PER_KB: Duration = Duration::from_millis(50);
+
+/// Absolute watchdog floor for small inputs, where a per-KB budget is dominated
+/// by scheduling noise rather than parse work (#15432).
+const MIN_PARSE_TIME_WATCHDOG: Duration = Duration::from_secs(5);
 const MAX_MEMORY_USAGE_PER_KB: usize = 1024; // 1KB memory per 1KB of source
 
 /// Test parser with very large files
@@ -57,7 +67,8 @@ fn test_maximum_file_size_handling() {
 
         // Check performance is within reasonable bounds
         let size_kb = size as f64 / 1024.0;
-        let expected_max_time = MAX_PARSE_TIME_PER_KB * size_kb.ceil() as u32;
+        let per_kb_budget = MAX_PARSE_TIME_PER_KB * size_kb.ceil() as u32;
+        let expected_max_time = per_kb_budget.max(MIN_PARSE_TIME_WATCHDOG);
 
         assert!(
             parse_time < expected_max_time,
@@ -316,11 +327,17 @@ fn test_garbage_collection_pressure() {
         iterations, total_time, avg_time_per_parse
     );
 
+    // Watchdog, not a benchmark (#15432): the average native parse here is
+    // ~2 ms; coverage-instrumented or contended hosts run 10-50x slower. Only
+    // a hang or a pathological per-iteration regression should fail this.
+    let avg_iteration_watchdog = Duration::from_secs(1);
+
     // Verify average time remains reasonable
     assert!(
-        avg_time_per_parse < Duration::from_millis(100),
-        "Average parse time {:?} exceeds 100ms under GC pressure",
-        avg_time_per_parse
+        avg_time_per_parse < avg_iteration_watchdog,
+        "Average parse time {:?} exceeds {:?} under GC pressure",
+        avg_time_per_parse,
+        avg_iteration_watchdog
     );
 }
 
@@ -336,6 +353,12 @@ fn test_performance_edge_cases() {
         ("Massive string concatenation", generate_string_concat_code()),
         ("Huge hash structure", generate_huge_hash_code()),
     ];
+
+    // Watchdog, not a benchmark (#15432): the heaviest edge case (huge hash
+    // structure) parses in ~0.9 s natively on the reference Windows host;
+    // coverage instrumentation and low-memory hosts run far slower. The budget
+    // only has to fail on hangs and pathological slowdowns.
+    let edge_case_watchdog = Duration::from_secs(90);
 
     for (name, code) in edge_cases {
         println!("Testing: {}", name);
@@ -355,7 +378,7 @@ fn test_performance_edge_cases() {
 
         // Should complete within reasonable time
         assert!(
-            parse_time < Duration::from_secs(15),
+            parse_time < edge_case_watchdog,
             "Edge case '{}' took too long: {:?}",
             name,
             parse_time
