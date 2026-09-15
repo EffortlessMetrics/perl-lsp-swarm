@@ -34,19 +34,17 @@ fn scenario_06_medium_file_open_and_hover() -> Result<(), String> {
     }
 
     let source = generate_source(1_000);
-    let harness = UxHarness::new(ScenarioConfig {
-        timeout: Duration::from_secs(20),
-        ..Default::default()
-    })
-    .map_err(|error| format!("Failed to create UX harness: {error}"))?;
+    let harness =
+        UxHarness::new(ScenarioConfig { timeout: Duration::from_secs(20), ..Default::default() })
+            .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
     harness
         .open_file("medium.pl", &source)
         .map_err(|error| format!("didOpen should succeed for 1k-line file: {error}"))?;
 
-    harness
-        .hover("medium.pl", 5, 5)
-        .map_err(|error| format!("Server hung or crashed on 1k-line file — UX regression: {error}"))?;
+    harness.hover("medium.pl", 5, 5).map_err(|error| {
+        format!("Server hung or crashed on 1k-line file — UX regression: {error}")
+    })?;
 
     harness.assert_no_crash();
     Ok(())
@@ -61,11 +59,9 @@ fn scenario_06_large_file_open_does_not_hang() -> Result<(), String> {
     }
 
     let source = generate_source(10_000);
-    let harness = UxHarness::new(ScenarioConfig {
-        timeout: Duration::from_secs(30),
-        ..Default::default()
-    })
-    .map_err(|error| format!("Failed to create UX harness for large file: {error}"))?;
+    let harness =
+        UxHarness::new(ScenarioConfig { timeout: Duration::from_secs(30), ..Default::default() })
+            .map_err(|error| format!("Failed to create UX harness for large file: {error}"))?;
 
     harness
         .open_file("large.pl", &source)
