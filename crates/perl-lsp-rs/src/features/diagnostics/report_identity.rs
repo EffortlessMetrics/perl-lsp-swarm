@@ -294,11 +294,19 @@ impl PullReportSubject {
         push_str(&mut canonical, "substrate", inner.as_str());
         push_str(&mut canonical, "position_encoding", self.projection.position_encoding.as_token());
         push_u64(&mut canonical, "markup_messages", u64::from(self.projection.markup_messages));
-        push_u64(
-            &mut canonical,
-            "configuration_generation",
-            self.configuration_generation.unwrap_or(0),
-        );
+        // Presence-encode the generation: `None` (no config authority for this
+        // URI) must not collide with `Some(0)` (fresh folder/single-file state
+        // before any config change). Both would otherwise share token `0` and a
+        // config-less subject could reuse a generation-0 result via `Unchanged`.
+        match self.configuration_generation {
+            Some(generation) => {
+                push_str(&mut canonical, "configuration_generation_present", "1");
+                push_u64(&mut canonical, "configuration_generation", generation);
+            }
+            None => {
+                push_str(&mut canonical, "configuration_generation_present", "0");
+            }
+        }
         push_str(
             &mut canonical,
             "project_version",
@@ -570,6 +578,21 @@ mod tests {
             pull_report_subject(URI_A, CONTENT, Some(1), &context),
             Err(NotReusable::MissingRootAuthority)
         );
+    }
+
+    #[test]
+    fn absent_config_generation_is_distinct_from_generation_zero() {
+        let mut context = context_with(Some("/tmp/ws-a"));
+        context.configuration_generation = None;
+        let absent = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        context.configuration_generation = Some(0);
+        let zero = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        assert_ne!(
+            absent, zero,
+            "no config authority must not share a result ID with fresh generation-0 state"
+        );
+        let zero_again = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        assert_eq!(zero, zero_again);
     }
 
     #[test]
