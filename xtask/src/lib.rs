@@ -4,6 +4,7 @@
 // self-alias keeps one source of truth compilable in both contexts.
 extern crate self as xtask;
 
+pub mod activation;
 pub mod actual_host_receipt;
 pub mod ast_v2_lifecycle_audit;
 pub mod branch_deletion_admission;
