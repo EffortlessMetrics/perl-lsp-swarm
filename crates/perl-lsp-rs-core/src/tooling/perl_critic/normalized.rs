@@ -748,6 +748,11 @@ fn compare_contributors(
                 &right.remediation_related_information,
             )
         })
+        // Fix advertisement last: twins differing only in fix_available must
+        // order deterministically, with the actionable twin first so `dedup`
+        // (which keeps the first equal element) and first-declared suggestion
+        // selection both prefer it.
+        .then_with(|| right.fix_available.cmp(&left.fix_available))
 }
 
 /// Deterministic total order over one related-information entry: range
@@ -1045,6 +1050,48 @@ mod tests {
         assert_eq!(related.len(), 2);
         assert_eq!(related[0].message, "alpha related");
         assert_eq!(related[1].message, "zulu related");
+    }
+
+    #[test]
+    fn twins_differing_only_in_fix_availability_order_fix_first_independent_of_arrival() {
+        // The contributor order must be total over fix advertisement: without
+        // it as a comparator key, reversed arrival order changes the
+        // normalized bytes, and which twin `dedup`-adjacent selection prefers
+        // is accidental. Fix-first keeps the actionable twin.
+        fn pair(source_identity: CriticSourceIdentity) -> Vec<CriticFindingCandidate> {
+            let identity = CriticObservedIdentity::built_in_system_call();
+            let boundaries = range(10, 20);
+            vec![
+                CriticFindingCandidate::with_fix_availability(
+                    identity.clone(),
+                    source_identity,
+                    Severity::Harsh,
+                    boundaries,
+                    "system() executes a shell command",
+                    None,
+                    false,
+                ),
+                CriticFindingCandidate::with_fix_availability(
+                    identity,
+                    source_identity,
+                    Severity::Harsh,
+                    boundaries,
+                    "system() executes a shell command",
+                    None,
+                    true,
+                ),
+            ]
+        }
+        let forward = normalize_critic_findings(pair(source(1, 7)));
+        let mut reversed = pair(source(1, 7));
+        reversed.reverse();
+        let backward = normalize_critic_findings(reversed);
+
+        assert_eq!(forward, backward);
+        assert_eq!(forward.len(), 1);
+        assert_eq!(forward[0].contributors().len(), 2);
+        assert!(forward[0].has_available_fix());
+        assert_eq!(must(serde_json::to_string(&forward)), must(serde_json::to_string(&backward)));
     }
 
     #[test]
