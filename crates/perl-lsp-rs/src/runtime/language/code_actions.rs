@@ -646,7 +646,65 @@ impl LspServer {
             || to_json_array(&with_native),
         ) {
             Ok(response) => response,
-            Err(_) => to_json_array(&without_native),
+            Err(_) => self
+                .commit_if_diagnostic_subject_current(
+                    DiagnosticSubject {
+                        uri,
+                        document_instance: &staged.document_instance,
+                        generation: staged.generation,
+                        workspace_generation: None,
+                        accepted_folder_config_generation: None,
+                        accepted_critic_snapshot: None,
+                        accepted_topology_generation: Some(staged.topology_generation),
+                    },
+                    || to_json_array(&without_native),
+                )
+                .unwrap_or_else(|_| Value::Array(Vec::new())),
+        }
+    }
+
+    /// Finalize both provider candidates and validate the selected response.
+    fn finalize_staged_code_action_response(
+        &self,
+        base_subject: DiagnosticSubject<'_>,
+        staged_native_actions: Option<StagedNativeCriticActions>,
+        mut code_actions: Vec<Value>,
+        native_insert_at: usize,
+        doc_version: i32,
+        requested_kinds: &[&str],
+    ) -> Value {
+        if let Some(staged) = staged_native_actions {
+            let mut with_native = code_actions.clone();
+            let insertion = native_insert_at.min(with_native.len());
+            with_native.splice(insertion..insertion, staged.actions.iter().cloned());
+            self.finalize_code_action_candidate(
+                &mut with_native,
+                base_subject.uri,
+                doc_version,
+                requested_kinds,
+            );
+            self.finalize_code_action_candidate(
+                &mut code_actions,
+                base_subject.uri,
+                doc_version,
+                requested_kinds,
+            );
+            self.commit_staged_native_code_action_response(
+                base_subject.uri,
+                staged,
+                with_native,
+                code_actions,
+                || {},
+            )
+        } else {
+            self.finalize_code_action_candidate(
+                &mut code_actions,
+                base_subject.uri,
+                doc_version,
+                requested_kinds,
+            );
+            self.commit_if_diagnostic_subject_current(base_subject, || to_json_array(&code_actions))
+                .unwrap_or_else(|_| Value::Array(Vec::new()))
         }
     }
 
@@ -754,6 +812,16 @@ impl LspServer {
             // The last live-document read the rest of this branch needs, hoisted
             // so the guard can be released before the native critic run.
             let doc_version = doc.version;
+            let base_document_instance = std::sync::Arc::clone(&doc.generation);
+            let base_subject = DiagnosticSubject {
+                uri,
+                document_instance: &base_document_instance,
+                generation: doc.current_generation(),
+                workspace_generation: None,
+                accepted_folder_config_generation: None,
+                accepted_critic_snapshot: None,
+                accepted_topology_generation: Some(topology_generation),
+            };
 
             // #9062: the native run must observe an immutable accepted subject
             // with NO document lock held. Capture everything it needs here —
@@ -1016,41 +1084,14 @@ impl LspServer {
                 }));
             }
 
-            if let Some(staged) = staged_native_actions {
-                let mut with_native = code_actions.clone();
-                // Clamped: `Vec::splice` panics on an out-of-range range, and no
-                // production path may panic. Staging can add later provider
-                // actions, but never invalidates the captured insertion point.
-                let at = native_insert_at.min(with_native.len());
-                with_native.splice(at..at, staged.actions.iter().cloned());
-                self.finalize_code_action_candidate(
-                    &mut with_native,
-                    uri,
-                    doc_version,
-                    &requested_kinds,
-                );
-                self.finalize_code_action_candidate(
-                    &mut code_actions,
-                    uri,
-                    doc_version,
-                    &requested_kinds,
-                );
-                Ok(Some(self.commit_staged_native_code_action_response(
-                    uri,
-                    staged,
-                    with_native,
-                    code_actions,
-                    || {},
-                )))
-            } else {
-                self.finalize_code_action_candidate(
-                    &mut code_actions,
-                    uri,
-                    doc_version,
-                    &requested_kinds,
-                );
-                Ok(Some(to_json_array(&code_actions)))
-            }
+            Ok(Some(self.finalize_staged_code_action_response(
+                base_subject,
+                staged_native_actions,
+                code_actions,
+                native_insert_at,
+                doc_version,
+                &requested_kinds,
+            )))
         } else {
             // No AST (parse error), but we can still offer some actions
             let mut code_actions: Vec<Value> = Vec::new();
@@ -1861,9 +1902,9 @@ print $x;
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             },
         );
-        if result != to_json_array(&base) {
+        if result != Value::Array(Vec::new()) {
             return Err(format!(
-                "a topology move after action staging must expose only the base response; got: {result:?}"
+                "a topology move after action staging must withhold all actions; got: {result:?}"
             ));
         }
         Ok(())
@@ -1872,13 +1913,13 @@ print $x;
     /// Projection and aggregation happen before response authority is granted.
     /// If the document advances after that staging work, the entire
     /// native-bearing candidate (including an effect derived from its rows) is
-    /// withheld and the independently staged base response survives.
+    /// withheld together with base edits derived from the same old document.
     #[test]
     fn staged_native_response_is_withheld_when_document_moves_before_commit() -> Result<(), String>
     {
         let uri = "file:///action_generation_publication.pl";
         let server = server_with_document(uri);
-        let base = vec![json!({ "title": "base action", "kind": "refactor" })];
+        let base = edit_bearing_base_actions(uri);
 
         let current_staged = server
             .stage_native_critic_code_actions(uri, action_subject(&server, uri, false), None)
@@ -1916,10 +1957,166 @@ print $x;
             base.clone(),
             || live_generation.store(generation + 1, std::sync::atomic::Ordering::SeqCst),
         );
-        if stale != to_json_array(&base) {
+        if stale != Value::Array(Vec::new()) {
             return Err(format!(
-                "a document moved after projection must expose only the base response; got: {stale:?}"
+                "a document moved after projection must expose no stale edits; got: {stale:?}"
             ));
+        }
+        Ok(())
+    }
+
+    fn edit_bearing_base_actions(uri: &str) -> Vec<Value> {
+        vec![json!({
+            "title": "rename local variable",
+            "kind": "refactor.rename",
+            "edit": { "changes": { (uri): [{
+                "range": {
+                    "start": { "line": 0, "character": 3 },
+                    "end": { "line": 0, "character": 5 }
+                },
+                "newText": "$renamed"
+            }] } }
+        })]
+    }
+
+    #[test]
+    fn unstaged_native_response_revalidates_base_edits() -> Result<(), String> {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        for movement in ["unchanged", "advance", "close", "replace", "topology"] {
+            let uri = "file:///action_unstaged_publication.pl";
+            let server = server_with_document(uri);
+            let native_subject = action_subject(&server, uri, false);
+            let document_instance = std::sync::Arc::clone(&native_subject.document_instance);
+            let generation = native_subject.generation;
+            let topology_generation = native_subject.topology_generation;
+            let refuse = || false;
+            let staged = server.stage_native_critic_code_actions_with_gate(
+                uri,
+                native_subject,
+                RunGate::new(&refuse),
+            );
+            if staged.is_some() {
+                return Err("a refused service run must exercise the unstaged response".into());
+            }
+            if movement == "advance" {
+                document_instance.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            } else if movement == "topology" {
+                server
+                    .workspace_topology_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            } else if movement == "close" || movement == "replace" {
+                let normalized_uri = server.normalize_uri_key(uri);
+                let mut documents = server.documents.lock();
+                if movement == "close" {
+                    documents.remove(&normalized_uri);
+                } else {
+                    let document = documents
+                        .get_mut(&normalized_uri)
+                        .ok_or_else(|| "replacement fixture needs an open document".to_string())?;
+                    document.generation =
+                        std::sync::Arc::new(std::sync::atomic::AtomicU32::new(generation));
+                }
+            }
+            let base = edit_bearing_base_actions(uri);
+            let mut expected = base.clone();
+            server.finalize_code_action_candidate(&mut expected, uri, 1, &[]);
+            if !expected.iter().any(|action| action.get("edit").is_some()) {
+                return Err("current base control must retain an edit after finalization".into());
+            }
+            let response = server.finalize_staged_code_action_response(
+                DiagnosticSubject {
+                    uri,
+                    document_instance: &document_instance,
+                    generation,
+                    workspace_generation: None,
+                    accepted_folder_config_generation: None,
+                    accepted_critic_snapshot: None,
+                    accepted_topology_generation: Some(topology_generation),
+                },
+                staged,
+                base,
+                0,
+                1,
+                &[],
+            );
+            let expected_response = if movement != "unchanged" {
+                Value::Array(Vec::new())
+            } else {
+                to_json_array(&expected)
+            };
+            if response != expected_response {
+                return Err(format!(
+                    "unstaged native response violated base currency, movement={movement}: {response:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn staged_base_edits_require_current_document_even_when_critic_policy_moves()
+    -> Result<(), String> {
+        for move_policy in [false, true] {
+            for movement in ["unchanged", "advance", "close", "replace"] {
+                let uri = "file:///action_base_publication.pl";
+                let server = server_with_document(uri);
+                let staged = server
+                    .stage_native_critic_code_actions(
+                        uri,
+                        action_subject(&server, uri, false),
+                        None,
+                    )
+                    .ok_or_else(|| "current subject must stage native actions".to_string())?;
+                if staged.actions.is_empty() {
+                    return Err("fixture must stage a non-empty native effect".to_string());
+                }
+                let base = edit_bearing_base_actions(uri);
+                let mut candidate = base.clone();
+                candidate.extend(staged.actions.iter().cloned());
+                let expected = if movement != "unchanged" {
+                    Value::Array(Vec::new())
+                } else if move_policy {
+                    to_json_array(&base)
+                } else {
+                    to_json_array(&candidate)
+                };
+                let result = server.commit_staged_native_code_action_response(
+                    uri,
+                    staged,
+                    candidate,
+                    base,
+                    || {
+                        if move_policy {
+                            server.test_configure_native_critic_filters(
+                                Vec::new(),
+                                vec!["native.testing.require_use_strict".to_string()],
+                            );
+                        }
+                        let normalized_uri = server.normalize_uri_key(uri);
+                        let mut documents = server.documents.lock();
+                        if movement == "close" {
+                            documents.remove(&normalized_uri);
+                        } else if let Some(document) = documents.get_mut(&normalized_uri) {
+                            if movement == "advance" {
+                                document
+                                    .generation
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            } else if movement == "replace" {
+                                document.generation =
+                                    std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+                                        document.current_generation(),
+                                    ));
+                            }
+                        }
+                    },
+                );
+                if result != expected {
+                    return Err(format!(
+                        "base edit authority failed for {movement}, policy movement {move_policy}: {result:?}"
+                    ));
+                }
+            }
         }
         Ok(())
     }
