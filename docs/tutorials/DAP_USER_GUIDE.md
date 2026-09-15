@@ -90,6 +90,14 @@ interpreter or operating-system isolation. Timeout enforcement is a separate
 defense, and expressions that need side effects must opt in explicitly with
 the DAP `allowSideEffects` field.
 
+That opt-in is honored **only** in the debug console (the `repl` evaluation
+context). Watch expressions, hovers, and the variables view cannot run
+side-effectful Perl even with the field set — those requests are refused rather
+than downgraded, because the editor issues them on its own (a hover fires from
+mouse movement, watches re-evaluate on every stop) rather than at your
+deliberate request. Evaluating in the debug console still runs with the
+debuggee's full authority; it is confined to that one context, not sandboxed.
+
 ## Common Problems
 
 ### Perl Interpreter Not Found
