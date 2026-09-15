@@ -346,6 +346,15 @@ jobs:
       - name: Run semantic-currentness policy-surface tests
         run: python3 -m unittest tests.test_semantic_review_currentness
 
+      - name: Run ci-gate evaluation oracle tests (#15400/A2)
+        run: python3 -m unittest scripts.ci.test_evaluate_ci_gate
+
+      - name: Run PR smoke disk-guard oracle tests (#15400/A2)
+        run: python3 -m unittest scripts.ci.test_pr_smoke_disk_guard
+
+      - name: Run gate receipt freshness oracle tests (#15400/A2)
+        run: python3 -m unittest scripts.ci.test_verify_gate_receipt_freshness
+
       - name: Summary
         if: always()
         run: |
