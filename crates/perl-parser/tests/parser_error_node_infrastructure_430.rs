@@ -97,15 +97,21 @@ fn parser_430_ac4_error_nodes_have_context() {
     use perl_tdd_support::must;
     let ast = must(parser.parse());
 
-    // The recovery node inherits context from its parent chain (block ->
-    // statement -> declaration): assert the MissingExpression exists and is
-    // nested under the if block rather than at program top level.
-    let missing = find_missing_expression_nodes(&ast);
+    // The recovery node inherits context from its parent chain: collect the
+    // if block, then search its statements specifically so containment under
+    // the if is proven rather than assumed from a full-tree search.
+    let mut if_nodes = Vec::new();
+    collect_nodes(&ast, &|kind| matches!(kind, NodeKind::If { .. }), &mut if_nodes);
+    assert!(!if_nodes.is_empty(), "Should find an If node in the AST");
+    let missing_in_if = find_missing_expression_nodes(if_nodes[0]);
     assert!(
-        !missing.is_empty(),
+        !missing_in_if.is_empty(),
         "Should find a MissingExpression node with contextual information in if block"
     );
-    assert!(missing[0].location.start > 0, "The recovery node must carry its source location");
+    assert!(
+        missing_in_if[0].location.start > 0,
+        "The recovery node must carry its source location"
+    );
 }
 
 /// AC5: Error nodes can contain partial valid AST nodes when phrase-level recovery succeeds
@@ -120,16 +126,18 @@ fn parser_430_ac5_error_nodes_with_partial_ast() {
 
     let mut decls = Vec::new();
     collect_nodes(&ast, &|kind| matches!(kind, NodeKind::VariableDeclaration { .. }), &mut decls);
-    let has_variable_child = decls.iter().any(|decl| {
-        decl.children().iter().any(|child| matches!(&child.kind, NodeKind::Variable { .. }))
+    // Both conditions must hold within the SAME declaration: the valid
+    // variable child survives alongside the MissingExpression recovery node.
+    let has_partial_declaration = decls.iter().any(|decl| {
+        let has_variable =
+            decl.children().iter().any(|child| matches!(&child.kind, NodeKind::Variable { .. }));
+        let has_missing =
+            decl.children().iter().any(|child| matches!(&child.kind, NodeKind::MissingExpression));
+        has_variable && has_missing
     });
     assert!(
-        has_variable_child,
+        has_partial_declaration,
         "The declaration must retain its valid variable child beside the recovery node"
-    );
-    assert!(
-        !find_missing_expression_nodes(&ast).is_empty(),
-        "The MissingExpression recovery node must be present"
     );
 }
 
