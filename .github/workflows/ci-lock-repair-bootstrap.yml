@@ -1,0 +1,121 @@
+name: Disposable CI lockfile repair
+
+# Branch-only candidate generation. This workflow is not part of the output PR.
+on:
+  push:
+    branches: [repair/ci-lock-bootstrap-20260915]
+    paths: [.github/workflows/ci-lock-repair-bootstrap.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-lock-repair-bootstrap-20260915
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      BASE_SHA: 198c16ef2ec7f52c1e2d99a377b817e5afc8bbf1
+      BASE_TREE: 7dcd784faf93ef68935be834853701e35bbae6be
+      OUTPUT_BRANCH: fix/security-lockfile-20260915
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 198c16ef2ec7f52c1e2d99a377b817e5afc8bbf1
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: '1.95.0'
+      - uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8
+        with:
+          tool: cargo-audit,cargo-deny
+      - name: Generate the scoped lockfile with Cargo
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$BASE_TREE"
+          cargo update -p rustls@0.23.40 --precise 0.23.45
+          cargo update -p chacha20@0.10.0
+          git diff --check
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, tomllib
+          before = tomllib.loads(subprocess.check_output(['git', 'show', 'HEAD:Cargo.lock'], text=True))
+          after = tomllib.loads(pathlib.Path('Cargo.lock').read_text())
+          def packages(doc):
+              result = {}
+              for package in doc['package']:
+                  result.setdefault(package['name'], []).append(package)
+              return result
+          old, new = packages(before), packages(after)
+          changed = sorted(name for name in old.keys() | new.keys() if old.get(name) != new.get(name))
+          allowed = {'rustls', 'chacha20', 'rustls-webpki', 'rustls-pki-types'}
+          assert set(changed) <= allowed, f'Unreviewed dependency changes: {changed}'
+          assert [p['version'] for p in new['rustls']] == ['0.23.45']
+          assert all(p['version'] != '0.10.0' for p in new['chacha20'])
+          paths = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
+          assert paths == ['Cargo.lock'], f'Unexpected modified paths: {paths}'
+          receipt = {'base': os.environ['BASE_SHA'], 'changed_packages': {
+              name: {'before': old.get(name), 'after': new.get(name)} for name in changed}}
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'dependency-repair.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt, indent=2))
+          PY
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/dependency-metadata.json"
+          cargo tree --locked -i rustls
+          cargo tree --locked -i chacha20
+      - name: Validate security policy without exceptions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo audit --json > "$RUNNER_TEMP/dependency-audit.json"
+          cargo deny --locked check advisories licenses bans sources
+      - name: Publish only the generated lockfile on a new candidate branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request
+          root = 'https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm'
+          def post(path, body):
+              request = urllib.request.Request(root + path, data=json.dumps(body).encode(), method='POST', headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json',
+                  'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              })
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          blob = post('/git/blobs', {'content': pathlib.Path('Cargo.lock').read_text(), 'encoding': 'utf-8'})
+          tree = post('/git/trees', {'base_tree': os.environ['BASE_TREE'], 'tree': [
+              {'path': 'Cargo.lock', 'mode': '100644', 'type': 'blob', 'sha': blob['sha']}]})
+          identity = {'name': 'EffortlessSteven', 'email': 'git@effortlesssteven.com'}
+          commit = post('/git/commits', {
+              'message': 'fix(deps): patch rustls advisory and replace yanked chacha20\n\nCargo-generated scoped update for #15664. Locked metadata, cargo audit,\nand cargo deny passed before publication. No policy exceptions.',
+              'tree': tree['sha'], 'parents': [os.environ['BASE_SHA']],
+              'author': identity, 'committer': identity,
+          })
+          # Create, never overwrite: another writer owning this name must stop publication.
+          post('/git/refs', {'ref': 'refs/heads/' + os.environ['OUTPUT_BRANCH'], 'sha': commit['sha']})
+          result = {'branch': os.environ['OUTPUT_BRANCH'], 'commit': commit['sha'], 'lock_blob': blob['sha']}
+          print(json.dumps(result))
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'dependency-candidate.json').write_text(json.dumps(result, indent=2) + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('Generated candidate: `' + commit['sha'] + '` on `' + os.environ['OUTPUT_BRANCH'] + '`.\n\n')
+              summary.write('Passed: Cargo-scoped resolution, locked metadata, cargo audit, cargo deny, diff scope and whitespace. Build/test and normal PR CI are separate pending evidence.\n')
+          PY
+      - name: Preserve generator receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dependency-repair-receipts
+          path: ${{ runner.temp }}/dependency-*.json
+          retention-days: 7
+          if-no-files-found: ignore
