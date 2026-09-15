@@ -19,6 +19,7 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(windows)]
 use std::process::Command;
 use std::time::Duration;
 
@@ -116,7 +117,14 @@ fn copy_adjacent_dlls(source_perl: &Path, destination_dir: &Path) -> Result<(), 
     let source_dir = source_perl.parent().ok_or("Perl path has no parent directory")?;
     for entry in fs::read_dir(source_dir)? {
         let entry = entry?;
-        if entry.path().extension().and_then(|extension| extension.to_str()) == Some("dll") {
+        // Windows extension matching is case-insensitive (`perl528.dll` and
+        // `PERL528.DLL` are the same file), so the filter must be too.
+        if entry
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+        {
             fs::copy(entry.path(), destination_dir.join(entry.file_name()))?;
         }
     }
@@ -194,16 +202,13 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
 /// candidate: an interpreter whose `@INC` is mount-relative (a Git-Bash/MSYS
 /// perl) passes at its installation yet cannot load perl5db.pl once copied
 /// out of it. Such candidates are rejected later, per staged proof, so the
-/// caller can continue with the next candidate instead of failing.
+/// caller can continue with the next candidate instead of failing. That
+/// continuation only works when every PATH candidate was enumerated up front
+/// — Unix `which` resolves a bare name to only its first hit, so the shared
+/// search-path enumeration is used instead of a locator parse.
 fn path_pipe_perl_candidates() -> Result<Vec<PathBuf>, Box<dyn Error>> {
-    let locator = if cfg!(windows) { "where.exe" } else { "which" };
-    let output = Command::new(locator).arg("perl").output()?;
-    if !output.status.success() {
-        return Ok(Vec::new());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|line| PathBuf::from(line.trim()))
+    Ok(common::search_path_perl_candidates()
+        .into_iter()
         .filter(|candidate| {
             candidate.is_file()
                 && probe_debuggee_perl_for_test(candidate, Duration::from_secs(10), false).is_ok()
@@ -304,9 +309,9 @@ fn observe_pin_with_session(
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
     let explicit = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
     let candidates: Vec<PathBuf> = if explicit {
-        let configured = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV)
-            .map(PathBuf::from)
-            .expect("explicit checked above");
+        let Some(configured) = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).map(PathBuf::from) else {
+            return Err(format!("{DEBUGGEE_PERL_OVERRIDE_ENV} became unset between checks").into());
+        };
         if !configured.is_file() {
             return Err(format!(
                 "{DEBUGGEE_PERL_OVERRIDE_ENV} names a missing interpreter: {}",

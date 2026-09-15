@@ -3044,6 +3044,45 @@ fn candidate_is_executable(_path: &Path) -> bool {
     true
 }
 
+/// Every `perl` executable visible on the platform search path, in PATH
+/// order, deduplicated by first appearance and checked for existence.
+///
+/// Unix `which` resolves a bare program name to only its first PATH hit, so a
+/// proof that rejects one candidate (for example a staged copy whose
+/// mount-relative `@INC` cannot load perl5db.pl) could not continue with a
+/// later PATH interpreter — it would never even see one. Enumerate the search
+/// path directly instead. Windows keeps `where.exe`, which already reports
+/// every PATH match (including PATHEXT variants such as `perl.bat`) in PATH
+/// order.
+pub(crate) fn search_path_perl_candidates() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let raw: Vec<PathBuf> = {
+        let output = match Command::new("where.exe").arg("perl").output() {
+            Ok(output) if output.status.success() => output,
+            _ => return Vec::new(),
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| PathBuf::from(line.trim()))
+            .collect()
+    };
+    #[cfg(not(windows))]
+    let raw: Vec<PathBuf> = match std::env::var_os("PATH") {
+        Some(path) => std::env::split_paths(&path)
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .map(|directory| directory.join("perl"))
+            .collect(),
+        None => Vec::new(),
+    };
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for candidate in raw {
+        if candidate.is_file() && !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
+}
+
 /// Resolve one ambient candidate to the absolute interpreter path the probe
 /// will validate, so the launch-time pin canonicalization sees the same value
 /// the probe executed (#13553). A bare program name is looked up on the

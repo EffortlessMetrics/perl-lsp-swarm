@@ -43,6 +43,78 @@ fn emit_event_safe(
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
 
+/// Wall-clock budget for one perl5db capability probe. A cold interpreter
+/// start answers well inside this on every supported platform; reaching the
+/// deadline means the probe could not conclude, not that perl5db.pl failed
+/// to load.
+const DEBUGGER_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Poll interval while a capability-probe child is still running.
+const DEBUGGER_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Cached perl5db capability verdicts, keyed by
+/// [`DebugAdapter::capability_probe_cache_key`]. Both verdicts are cached —
+/// a pass skips the probe on every subsequent launch, and a fail avoids
+/// re-paying a doomed slow probe per retry. A poisoned lock only bypasses
+/// the cache (the probe is re-run); it never fails a launch.
+static DEBUGGER_PROBE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Result<(), String>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Read one probe pipe to EOF on a dedicated thread, returning its decoded
+/// contents. Used instead of blocking `Command::output()` so the probe can be
+/// bounded by a deadline rather than waiting indefinitely on the child.
+fn spawn_probe_pipe_drain<R: Read + Send + 'static>(
+    pipe: Option<R>,
+) -> Option<thread::JoinHandle<String>> {
+    pipe.map(|mut pipe| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    })
+}
+
+/// Apply the Windows debugger-console transport environment to a child
+/// command: `EMACS=1` plus a `ReadLine=0` tail on any inherited
+/// `PERLDB_OPTS`.
+///
+/// Strawberry Perl's Windows debugger selects its console transport when
+/// EMACS is absent, even when all three stdio handles are pipes. Marking an
+/// owned pipe launch explicitly keeps the debugger on its pipe transport;
+/// ReadLine must use its dummy interface because its console backend calls
+/// `GetConsoleMode` on a pipe and raises inside an otherwise valid debuggee.
+/// The variables are scoped to the child and do not change the adapter's
+/// process environment or the user's argv/launch configuration. perl5db
+/// parses options left-to-right: the final debugger-only ReadLine switch
+/// wins without changing the program's `PERL_RL`. The effective child
+/// environment is read — including Windows' case-insensitive variable names
+/// — rather than replacing user options.
+///
+/// Neither variable is consulted while `require "perl5db.pl"` resolves and
+/// compiles the module, so applying the same environment to the capability
+/// probe changes launch parity without changing what the probe measures.
+#[cfg(windows)]
+fn apply_windows_debugger_transport_env(cmd: &mut std::process::Command) {
+    cmd.env("EMACS", "1");
+    let mut perl_db_opts = cmd
+        .get_envs()
+        .find_map(|(key, value)| {
+            key.to_str()
+                .is_some_and(|key| key.eq_ignore_ascii_case("PERLDB_OPTS"))
+                .then_some(value)
+                .flatten()
+        })
+        .unwrap_or_default()
+        .to_os_string();
+    perl_db_opts.push(" ReadLine=0");
+    cmd.env("PERLDB_OPTS", perl_db_opts);
+}
+
+/// Non-Windows child commands need no debugger-console transport override.
+#[cfg(not(windows))]
+fn apply_windows_debugger_transport_env(_cmd: &mut std::process::Command) {}
+
 /// Return the authoritative frame id for the current suspension.
 ///
 /// The output reader may observe a context line followed by a prompt for the
@@ -580,32 +652,35 @@ impl DebugAdapter {
             ));
         }
 
+        // Effective debuggee working directory, shared by the capability
+        // probe, the pre-launch syntax check, and the launch itself so all
+        // three see identical `@INC` resolution. User-specified cwd wins;
+        // otherwise the script's parent directory (what `perl -d` would
+        // effectively run in), else the adapter cwd.
+        let prog_cwd = cwd_override.clone().unwrap_or_else(|| {
+            Path::new(program)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        });
+
         // Debugger capability precondition: the debugger itself is the core
         // `perl5db.pl` module, so an interpreter that cannot load it can spawn
-        // but never hosts a session. Probe it before spawning so such a launch
-        // fails with a typed, actionable error instead of a mid-session pipe
-        // failure.
-        Self::check_debugger_capability(perl_interpreter, &env_overrides)?;
+        // but never hosts a session. Probe it — from the same effective
+        // debuggee directory — before spawning so such a launch fails with a
+        // typed, actionable error instead of a mid-session pipe failure.
+        Self::check_debugger_capability(perl_interpreter, &env_overrides, &prog_cwd)?;
 
         // Pre-launch syntax check: run `perl -c <script>` before spawning the
         // debugger.  This catches syntax errors early and surfaces a clear,
         // actionable message to the user instead of a generic "Cannot start
         // Perl debugger" failure after `perl -d` exits immediately.
-        Self::check_syntax(perl_interpreter, program, &env_overrides, cwd_override.clone())?;
+        Self::check_syntax(perl_interpreter, program, &env_overrides, Some(prog_cwd.clone()))?;
 
         // Use PerlOracleEnv to deny ambient PERL5LIB/PERL5OPT so the debug
         // session env is controlled entirely by launch.json `env` (#8688).
         // `env_overrides` (explicit launch.json entries) are added via
         // extra_env so they reach the subprocess unconditionally.
-        // Use user-specified cwd if provided; otherwise default to script's parent directory
-        let prog_cwd = if let Some(user_cwd) = cwd_override {
-            user_cwd
-        } else {
-            Path::new(program)
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        };
         let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
             PathBuf::from(perl_interpreter),
             prog_cwd,
@@ -614,33 +689,10 @@ impl DebugAdapter {
         let mut cmd = oracle.into_command();
         cmd.arg("-d");
 
-        // Strawberry Perl's Windows debugger selects its console transport when
-        // EMACS is absent, even when all three stdio handles are pipes.  Mark
-        // this owned pipe launch explicitly; the variable is scoped to the
-        // child and does not change the adapter's process environment or the
-        // user's argv/launch configuration.  ReadLine must also use its dummy
-        // interface: its console backend otherwise calls GetConsoleMode on a
-        // pipe and raises an exception inside an otherwise valid debuggee.
-        #[cfg(windows)]
-        {
-            cmd.env("EMACS", "1");
-            // Read the effective child environment, including Windows' case-
-            // insensitive variable names, rather than replacing user options.
-            // perl5db parses options left-to-right: the final debugger-only
-            // ReadLine switch wins without changing the program's PERL_RL.
-            let mut perl_db_opts = cmd
-                .get_envs()
-                .find_map(|(key, value)| {
-                    key.to_str()
-                        .is_some_and(|key| key.eq_ignore_ascii_case("PERLDB_OPTS"))
-                        .then_some(value)
-                        .flatten()
-                })
-                .unwrap_or_default()
-                .to_os_string();
-            perl_db_opts.push(" ReadLine=0");
-            cmd.env("PERLDB_OPTS", perl_db_opts);
-        }
+        // Strawberry Perl's Windows debugger transport/ReadLine environment;
+        // see `apply_windows_debugger_transport_env` for the contract. Shared
+        // with the capability probe so both run under launch parity.
+        apply_windows_debugger_transport_env(&mut cmd);
 
         // Perl debugger stops on the first line by default
         let _ = stop_on_entry; // currently unused
@@ -813,28 +865,88 @@ impl DebugAdapter {
     /// picked interpreter can host the debugger. It runs under the same
     /// [`perl_lsp_rs_core::config::PerlOracleEnv`] environment the real
     /// debuggee will see (ambient `PERL5LIB`/`PERL5OPT` denied, #8688;
-    /// launch.json `env` honored). If the interpreter cannot be spawned at
-    /// all, the probe is skipped so the subsequent real launch surfaces the
-    /// canonical "perl not on PATH" spawn error.
+    /// launch.json `env` honored) **and from the same effective working
+    /// directory** (`probe_cwd`), so `@INC` entries that depend on where the
+    /// debuggee runs resolve identically in the probe and the launch.
+    ///
+    /// The probe is bounded: the child is polled against
+    /// [`DEBUGGER_PROBE_TIMEOUT`] and killed at the deadline. A probe that
+    /// cannot conclude (spawn failure, `try_wait` failure, or timeout) is an
+    /// instrument failure, not a capability verdict, so it is skipped and the
+    /// real `perl -d` launch surfaces its own canonical error.
+    ///
+    /// The verdict is cached per (interpreter, probe cwd, launch env) for the
+    /// life of the adapter process: a passing interpreter must not pay a
+    /// fresh perl spawn on every launch, and a failing one must not re-pay a
+    /// doomed multi-second probe each retry either.
     fn check_debugger_capability(
         perl_interpreter: &str,
         env_overrides: &HashMap<String, String>,
+        probe_cwd: &Path,
+    ) -> Result<(), String> {
+        let cache_key =
+            Self::capability_probe_cache_key(perl_interpreter, env_overrides, probe_cwd);
+        if let Ok(cache) = DEBUGGER_PROBE_CACHE.lock()
+            && let Some(cached) = cache.get(&cache_key)
+        {
+            return cached.clone();
+        }
+
+        let verdict =
+            Self::run_debugger_capability_probe(perl_interpreter, env_overrides, probe_cwd);
+        if let Ok(mut cache) = DEBUGGER_PROBE_CACHE.lock() {
+            cache.insert(cache_key, verdict.clone());
+        }
+        verdict
+    }
+
+    /// Cache key for one probe verdict: interpreter, effective probe cwd, and
+    /// the launch.json `env` entries that could steer `@INC`/module loading.
+    /// Byte-exact on env values — a conservative key can only cost a re-probe,
+    /// never serve a verdict measured under a different environment.
+    fn capability_probe_cache_key(
+        perl_interpreter: &str,
+        env_overrides: &HashMap<String, String>,
+        probe_cwd: &Path,
+    ) -> String {
+        let mut env_entries: Vec<String> =
+            env_overrides.iter().map(|(key, value)| format!("{key}={value}")).collect();
+        env_entries.sort();
+        format!(
+            "{perl_interpreter}@{cwd}@{env}",
+            cwd = probe_cwd.display(),
+            env = env_entries.join(";")
+        )
+    }
+
+    /// Run one bounded perl5db.pl loadability probe. See
+    /// [`Self::check_debugger_capability`] for the contract.
+    fn run_debugger_capability_probe(
+        perl_interpreter: &str,
+        env_overrides: &HashMap<String, String>,
+        probe_cwd: &Path,
     ) -> Result<(), String> {
         let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
             PathBuf::from(perl_interpreter),
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            probe_cwd.to_path_buf(),
         );
         oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let output = match oracle
-            .into_command()
-            .arg("-e")
+        let mut cmd = oracle.into_command();
+        cmd.arg("-e")
             .arg("require \"perl5db.pl\"; print \"OK\\n\";")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-        {
-            Ok(out) => out,
+            .stderr(Stdio::piped());
+        // Run under the same debugger-transport environment the real `perl -d`
+        // launch uses, so the probe measures perl5db.pl loading under launch
+        // parity. EMACS=1 and PERLDB_OPTS only select the debugger's runtime
+        // console/ReadLine backends; neither is consulted while `require`
+        // resolves and compiles perl5db.pl, so this cannot flip the verdict —
+        // and if that ever stopped being true, the probe would now observe it.
+        apply_windows_debugger_transport_env(&mut cmd);
+
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
             Err(e) => {
                 // The interpreter could not be spawned at all — skip the probe
                 // and let the real `perl -d` launch produce the canonical
@@ -847,19 +959,72 @@ impl DebugAdapter {
             }
         };
 
-        if output.status.success() {
+        // Drain both pipes on dedicated threads while polling, so a verbose
+        // interpreter (say, an @INC dump longer than the OS pipe buffer)
+        // cannot fill a pipe and deadlock before its own deadline.
+        let stdout_drain = spawn_probe_pipe_drain(child.stdout.take());
+        let stderr_drain = spawn_probe_pipe_drain(child.stderr.take());
+        let deadline = Instant::now() + DEBUGGER_PROBE_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        break None;
+                    }
+                    thread::sleep(DEBUGGER_PROBE_POLL_INTERVAL);
+                }
+                Err(e) => {
+                    // Instrument failure: kill what we spawned and skip.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    tracing::warn!(
+                        "perl5db capability probe of '{perl_interpreter}' could not be \
+                         observed (will attempt the launch anyway): {e}"
+                    );
+                    return Ok(());
+                }
+            }
+        };
+
+        let Some(status) = status else {
+            // Deadline reached with no exit: the probe is inconclusive, not a
+            // capability verdict. Kill the child so nothing outlives the
+            // probe, then keep the launch-continue disposition.
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::warn!(
+                "perl5db capability probe of '{perl_interpreter}' exceeded its \
+                 {} budget (will attempt the launch anyway)",
+                DEBUGGER_PROBE_TIMEOUT.as_secs()
+            );
+            return Ok(());
+        };
+
+        // The child has exited, so both drain threads reach EOF and join
+        // deterministically. A panicked drainer contributes empty text rather
+        // than blocking the verdict.
+        let raw_stdout =
+            stdout_drain.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
+        let raw_stderr =
+            stderr_drain.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
+
+        if status.success() {
             return Ok(());
         }
 
         // The "Can't locate perl5db.pl in @INC" report arrives on stderr, but
         // a non-perl binary selected as the interpreter may report on either
         // stream; merge for the diagnostic detail.
-        let raw_stderr = String::from_utf8_lossy(&output.stderr);
-        let raw_stdout = String::from_utf8_lossy(&output.stdout);
         let detail =
             if raw_stderr.trim().is_empty() { raw_stdout.trim() } else { raw_stderr.trim() };
         let detail = if detail.is_empty() {
-            format!("exit status {:?}", output.status.code())
+            // Report a bare exit code as a number; a child killed by a signal
+            // has no code and says so instead of rendering `Some(...)`/`None`.
+            match status.code() {
+                Some(code) => format!("exit status {code}"),
+                None => "process terminated by a signal (no exit status)".to_string(),
+            }
         } else {
             detail.to_string()
         };
@@ -958,10 +1123,22 @@ impl DebugAdapter {
     }
 
     fn missing_module_name(detail: &str) -> Option<String> {
+        // perl's own diagnostic is `Can't locate X in @INC ...`, but wrapper
+        // shims, fat binaries, and environment layers may re-case the line.
+        // Match the prefix case-insensitively so the typed module remediation
+        // still fires; `str::get` declines non-char boundaries, so slicing
+        // below cannot panic on non-ASCII output.
+        const MISSING_MODULE_PREFIX: &str = "Can't locate ";
         detail.lines().find_map(|line| {
             let trimmed = line.trim();
-            let rest = trimmed.strip_prefix("Can't locate ")?;
-            let module_path = rest.split(" in @INC").next()?.trim_end_matches('.');
+            let head = trimmed.get(..MISSING_MODULE_PREFIX.len())?;
+            if !head.eq_ignore_ascii_case(MISSING_MODULE_PREFIX) {
+                return None;
+            }
+            let module_path = trimmed[MISSING_MODULE_PREFIX.len()..]
+                .split(" in @INC")
+                .next()?
+                .trim_end_matches('.');
             let module_name = module_path_to_name(module_path);
             (!module_name.is_empty()).then_some(module_name)
         })
