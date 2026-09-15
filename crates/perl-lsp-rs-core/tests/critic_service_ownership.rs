@@ -62,7 +62,9 @@ const ALLOWED_SITES: [(&str, &str); 4] = [
 fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = fs::read_dir(dir)
         .map_err(|error| format!("source directory {} must be readable: {error}", dir.display()))?;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("source entry in {} must be readable: {error}", dir.display()))?;
         let path = entry.path();
         if path.is_dir() {
             collect_rust_sources(&path, out)?;
@@ -73,8 +75,50 @@ fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String
     Ok(())
 }
 
-/// Strip each `#[cfg(test)]`-gated item so inline test modules do not count
-/// as production call sites.
+/// Whether `path` is only reachable through a `#[cfg(test)]`-gated `mod`
+/// declaration, making the whole file test-only even though its own items
+/// carry no gate (e.g. `#[cfg(test)] mod test_core_authority_policy;`).
+///
+/// Filename alone cannot decide: production modules such as `test_more.rs`
+/// and `test_frameworks.rs` are unconditional `mod` declarations. The
+/// declaring file is the sibling `<dir>.rs` or `<dir>/mod.rs` holding
+/// `mod <stem>;`; the file counts as test-gated when the nearest preceding
+/// non-empty line of that statement is exactly `#[cfg(test)]`.
+fn is_test_gated_module(path: &Path) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let declaring = {
+        let sibling = parent.with_extension("rs");
+        if sibling.is_file() {
+            Some(sibling)
+        } else {
+            let nested = parent.join("mod.rs");
+            nested.is_file().then_some(nested)
+        }
+    };
+    let Some(declaring) = declaring else {
+        return false;
+    };
+    let Ok(content) = fs::read_to_string(&declaring) else {
+        return false;
+    };
+    let statement = format!("mod {stem};");
+    let lines: Vec<&str> = content.lines().collect();
+    lines.iter().enumerate().any(|(index, line)| {
+        line.split("//")
+            .next()
+            .is_some_and(|code| code.trim_end().ends_with(&statement))
+            && (0..index)
+                .rev()
+                .map(|prior| lines[prior].trim())
+                .find(|prior| !prior.is_empty())
+                .is_some_and(|prior| prior == "#[cfg(test)]")
+    })
+}
 ///
 /// Only the gated items themselves are removed, never the remainder of the
 /// file: Rust permits production items after a test module, and a production
@@ -383,6 +427,40 @@ fn raw_strings_comments_and_char_literals_do_not_skew_the_strip_span() {
 }
 
 #[test]
+fn module_gate_decides_by_declaration_not_filename() {
+    // Filename alone cannot decide: `test_more.rs` and `test_frameworks.rs`
+    // are unconditional production modules, while
+    // `test_core_authority_policy.rs` is only reachable through a
+    // `#[cfg(test)]`-gated declaration.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let base = Path::new(manifest_dir);
+    let gated = base.join("src/tooling/perl_critic/test_core_authority_policy.rs");
+    let production_more =
+        base.join("src/providers/completion/completion/test_more.rs");
+    let production_frameworks =
+        base.join("src/providers/completion/completion/request/test_frameworks.rs");
+    for path in [&gated, &production_more, &production_frameworks] {
+        assert!(
+            path.is_file(),
+            "test fixture {} must exist",
+            path.display()
+        );
+    }
+    assert!(
+        is_test_gated_module(&gated),
+        "a cfg(test)-declared module is test-only as a whole"
+    );
+    assert!(
+        !is_test_gated_module(&production_more),
+        "an unconditionally declared test_more module stays scanned"
+    );
+    assert!(
+        !is_test_gated_module(&production_frameworks),
+        "an unconditionally declared test_frameworks module stays scanned"
+    );
+}
+
+#[test]
 fn the_native_critic_pipeline_is_composed_only_by_its_service() -> Result<(), String> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let mut sources = Vec::new();
@@ -407,9 +485,12 @@ fn the_native_critic_pipeline_is_composed_only_by_its_service() -> Result<(), St
 
     let mut violations = Vec::new();
     for path in &sources {
-        let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-        // Test-only module files are not production call sites.
-        if file_name == "tests.rs" || file_name.starts_with("test_") {
+        // No filename filter: production modules such as `test_more.rs` and
+        // `test_frameworks.rs` (unconditional `mod` declarations providing
+        // Test::More/framework completion docs) must stay scanned. Files only
+        // reachable through a `#[cfg(test)]`-gated `mod` declaration are
+        // test-only as a whole and skip the gate.
+        if is_test_gated_module(path) {
             continue;
         }
 
