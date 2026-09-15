@@ -63,6 +63,15 @@ on:
       - 'scripts/tests/test-review-threads-inline.sh'
       - 'scripts/worktree-manager.py'
       - 'scripts/tests/test-worktree-manager.sh'
+      # Ci-gate evaluation, disk-guard, and receipt-freshness oracles
+      # (#15400/A2 of #15394): the tests gate the implementations, so changes
+      # to either half must re-run the self-test gate.
+      - 'scripts/ci/evaluate_ci_gate.py'
+      - 'scripts/ci/test_evaluate_ci_gate.py'
+      - 'scripts/ci/pr_smoke_disk_guard.py'
+      - 'scripts/ci/test_pr_smoke_disk_guard.py'
+      - 'scripts/ci/verify_gate_receipt_freshness.py'
+      - 'scripts/ci/test_verify_gate_receipt_freshness.py'
       - '.cargo/config.toml'
       - 'scripts/tests/test-target-isolation.sh'
       # ripr lane termination classification + bounded same-head retry
@@ -73,6 +82,7 @@ on:
       - '.github/workflows/ripr.yml'
       - '.github/workflows/ripr-infra-retry.yml'
       - 'scripts/ci/classify-ripr-lane-termination'
+      - 'scripts/ci/test_ripr_cache_authority_15055.py'
       - 'scripts/tests/test-classify-ripr-lane-termination.sh'
       # Toolchain guard for bash entrypoints (issue #12593): the coverage
       # consistency test scans every cargo-invoking scripts/*.sh, so any
@@ -345,6 +355,15 @@ jobs:
       - name: Run semantic-currentness policy-surface tests
         run: python3 -m unittest tests.test_semantic_review_currentness
 
+      - name: Run ci-gate evaluation oracle tests (#15400/A2)
+        run: python3 -m unittest scripts.ci.test_evaluate_ci_gate
+
+      - name: Run PR smoke disk-guard oracle tests (#15400/A2)
+        run: python3 -m unittest scripts.ci.test_pr_smoke_disk_guard
+
+      - name: Run gate receipt freshness oracle tests (#15400/A2)
+        run: python3 -m unittest scripts.ci.test_verify_gate_receipt_freshness
+
       - name: Summary
         if: always()
         run: |
@@ -541,6 +560,9 @@ jobs:
 
       - name: Run ripr termination classifier + bounded-retry self-test
         run: bash scripts/tests/test-classify-ripr-lane-termination.sh
+
+      - name: Run RIPR cache-writer authority self-test
+        run: python3 -m unittest scripts/ci/test_ripr_cache_authority_15055.py
 
       - name: Summary
         if: always()

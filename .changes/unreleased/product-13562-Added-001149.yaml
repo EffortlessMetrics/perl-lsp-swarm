@@ -1,0 +1,11 @@
+project: product
+component: Compatibility
+kind: Added
+body: The internal configuration observation model now represents finite ai.rate_limit_rps
+  values with positive-rate validation and schema generation 3. Runtime observation
+  callers remain separate work (#10386).
+time: '2026-09-10T00:11:49.729756Z'
+custom:
+  PR: '13562'
+  Slug: finite-float-observation
+  Breaking: 'no'

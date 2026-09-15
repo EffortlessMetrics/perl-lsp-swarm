@@ -9,7 +9,7 @@
 // calls keep fixture setup and JSON assertions readable.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use assert_cmd::Command;
 use serde_json::Value;
 use std::{
@@ -20,7 +20,7 @@ use tempfile::TempDir;
 
 mod git_test_support;
 
-use git_test_support::{add_and_commit, init_git_repo};
+use git_test_support::{HermeticGit, add_and_commit, init_git_repo};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,6 +82,16 @@ fn setup_test_repo(
 /// hidden `--root <root>` seam so that `git ls-files` runs in the temp repo
 /// rather than in the real workspace.
 fn run_check(root: &Path, extra_args: &[&str]) -> Result<std::process::Output> {
+    run_check_with_ambient(root, extra_args, &[])
+}
+
+fn run_check_with_ambient(
+    root: &Path,
+    extra_args: &[&str],
+    ambient: &[(&str, &Path)],
+) -> Result<std::process::Output> {
+    let env_scope = tempfile::tempdir()?;
+    let hermetic = HermeticGit::at(env_scope.path())?;
     let allowlist_path = root.join("policy/non-rust-allowlist.toml");
     let root_str = root.to_str().expect("root is UTF-8");
     let mut cmd = Command::cargo_bin("xtask")?;
@@ -90,12 +100,18 @@ fn run_check(root: &Path, extra_args: &[&str]) -> Result<std::process::Output> {
     cmd.arg(&allowlist_path);
     cmd.args(["--root", root_str]);
     cmd.args(extra_args);
+    for (key, value) in ambient {
+        cmd.env(key, value);
+    }
+    hermetic.apply_env_to_assert(&mut cmd);
     let output = cmd.output()?;
     Ok(output)
 }
 
 /// Run `cargo xtask non-rust check` scoped to a temp repo (same seams as run_check).
 fn run_non_rust_check(root: &Path, extra_args: &[&str]) -> Result<std::process::Output> {
+    let env_scope = tempfile::tempdir()?;
+    let hermetic = HermeticGit::at(env_scope.path())?;
     let allowlist_path = root.join("policy/non-rust-allowlist.toml");
     let root_str = root.to_str().expect("root is UTF-8");
     let mut cmd = Command::cargo_bin("xtask")?;
@@ -104,6 +120,7 @@ fn run_non_rust_check(root: &Path, extra_args: &[&str]) -> Result<std::process::
     cmd.arg(&allowlist_path);
     cmd.args(["--root", root_str]);
     cmd.args(extra_args);
+    hermetic.apply_env_to_assert(&mut cmd);
     let output = cmd.output()?;
     Ok(output)
 }
@@ -111,6 +128,38 @@ fn run_non_rust_check(root: &Path, extra_args: &[&str]) -> Result<std::process::
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[test]
+fn git_reading_child_scrubs_repo_and_index_redirects() -> Result<()> {
+    let allowlist = minimal_allowlist("");
+    let (_tmp, root) = setup_test_repo(&allowlist, &[("README.md", "# hi")])?;
+    let hostile_git_dir = root.join("hostile-git-dir");
+    let hostile_index = root.join("hostile-index");
+    for ambient in
+        [("GIT_DIR", hostile_git_dir.as_path()), ("GIT_INDEX_FILE", hostile_index.as_path())]
+    {
+        let receipt_path = root.join("target/policy/file-policy-report.json");
+        if receipt_path.exists() {
+            fs::remove_file(&receipt_path)?;
+        }
+        let output = run_check_with_ambient(&root, &["--mode", "advisory"], &[ambient])?;
+        ensure!(
+            output.status.success(),
+            "{} redirect caused failure: {}",
+            ambient.0,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let receipt: Value = serde_json::from_str(&fs::read_to_string(&receipt_path)?)?;
+        ensure!(
+            receipt.get("total_tracked").and_then(Value::as_u64) == Some(2)
+                && receipt.get("non_rust").and_then(Value::as_u64) == Some(1)
+                && receipt.get("unclassified").and_then(Value::as_u64) == Some(1),
+            "{} redirect hid the fixture inventory: {receipt}",
+            ambient.0
+        );
+    }
+    Ok(())
+}
 
 /// Advisory mode must never exit with code 1, even if there are unallowlisted files.
 #[test]

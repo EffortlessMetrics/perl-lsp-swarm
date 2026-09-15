@@ -17,6 +17,9 @@ export async function run(): Promise<void> {
   if (process.env.PERL_LSP_FIRST_HOUR_RECEIPT === '1' || firstHourOnly) {
     loadedFiles.push(path.resolve(__dirname, '../firstHourReceipt.test.js'));
   }
+  if (process.env.PERL_LSP_REAL_CLIENT_SETTLEMENT === '1') {
+    loadedFiles.push(path.resolve(__dirname, '../realClientSettlement.test.js'));
+  }
   for (const file of loadedFiles) {
     mocha.addFile(file);
   }
