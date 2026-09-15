@@ -2200,10 +2200,11 @@ if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
             .to_path_buf();
 
         let checks = native_tooling_default_checks(&repo_root)?;
+        let failed_checks: Vec<_> = checks.iter().filter(|check| !check.passed).collect();
 
         assert!(
-            checks.iter().all(|check| check.passed),
-            "default guard drifted from real repository source: {checks:#?}"
+            failed_checks.is_empty(),
+            "default guard drifted from real repository source. Failed checks: {failed_checks:#?}"
         );
         Ok(())
     }
