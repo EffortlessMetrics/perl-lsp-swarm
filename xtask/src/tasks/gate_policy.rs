@@ -87,11 +87,8 @@ fn validate_clippy_all_targets_partition(
     root: &Path,
     policy: &GatePolicy,
 ) -> Result<ClippyAllTargetsPartition> {
-    let matching: Vec<_> = policy
-        .gates
-        .iter()
-        .filter(|gate| gate.name == CLIPPY_TESTS_KERNEL_GATE)
-        .collect();
+    let matching: Vec<_> =
+        policy.gates.iter().filter(|gate| gate.name == CLIPPY_TESTS_KERNEL_GATE).collect();
     let gate = match matching.as_slice() {
         [gate] => *gate,
         [] => bail!("gate policy is missing '{CLIPPY_TESTS_KERNEL_GATE}'"),
@@ -492,10 +489,7 @@ mod tests {
         assert_eq!(partition.workspace.len(), 47);
         assert_eq!(partition.strict.len(), 36);
         assert_eq!(partition.residual.len(), 11);
-        assert_eq!(
-            partition.residual.get("perl-lsp-ux-tests").map(String::as_str),
-            Some("#15613")
-        );
+        assert_eq!(partition.residual.get("perl-lsp-ux-tests").map(String::as_str), Some("#15613"));
         Ok(())
     }
 
@@ -564,14 +558,11 @@ mod tests {
         };
         assert!(unknown.to_string().contains("unknown workspace packages"));
 
-        let missing = match validate_package_partition(
-            workspace,
-            package_set(&["alpha"]),
-            BTreeMap::new(),
-        ) {
-            Ok(_) => bail!("unclassified workspace package must fail"),
-            Err(error) => error,
-        };
+        let missing =
+            match validate_package_partition(workspace, package_set(&["alpha"]), BTreeMap::new()) {
+                Ok(_) => bail!("unclassified workspace package must fail"),
+                Err(error) => error,
+            };
         assert!(missing.to_string().contains("lack a clippy all-target disposition"));
         Ok(())
     }
