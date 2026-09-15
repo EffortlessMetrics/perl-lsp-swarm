@@ -1,0 +1,15 @@
+{
+  "duplicate_row_id.json": "duplicate row id",
+  "unstable_fixture_identity.json": "unstable fixture identity",
+  "promoted_positive_without_opposite.json": "promoted positive row lacks an opposite",
+  "escaped_fixture_root.json": "escapes owned fixture roots without disposition",
+  "collapsed_stage_field.json": "unknown field `collapsed_dead_live_bit`",
+  "implementation_derived_oracle_positive.json": "implementation-derived observed output cannot serve as the expected oracle",
+  "terminal_empty_success.json": "must not carry result identity",
+  "bounded_incomplete_collapse.json": "collapse in one row",
+  "profile_missing_work_dimensions.json": "omits required work dimensions",
+  "unsafe_partial_advertised.json": "advertises unsafe partial support",
+  "push_race_without_client_expectation.json": "lacks an exact client-visible/currentness expectation",
+  "missing_exit_owner.json": "requires a named exit owner issue",
+  "unowned_row.json": "not a declared proof-owner issue"
+}

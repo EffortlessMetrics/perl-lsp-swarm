@@ -401,6 +401,7 @@ use warnings;
 
 # For older Perl versions, try/catch can be simulated with eval
 sub simulate_try_catch {
+    # denom-target:c-flow
 #     # Simulated try block
 #     eval {
 #         die "Simulated exception";
