@@ -34,7 +34,7 @@ A valid invocation must:
 2. Resolve the pull request's current exact head and preserve the safe action's native
    live actor-permission check.
 3. Check out that head with `persist-credentials: false`.
-4. Install Droid CLI `0.209.0` from Factory's versioned direct-binary path, verify the
+4. Install Droid CLI `0.219.0` from Factory's versioned direct-binary path, verify the
    published SHA-256 checksum before execution, and disable in-process auto-updates.
 5. Use `custom:MiniMax-M3-0` for review, security, and fill.
 6. Keep Factory and MiniMax credentials step-scoped, clear inherited Anthropic routing,
@@ -49,15 +49,18 @@ authority; those remaining trust-boundary questions stay owned by #6098.
 
 ## Live acceptance
 
-Because `issue_comment` runs from the default branch, a candidate change to
-`.github/workflows/droid.yml` cannot prove itself through a comment until it has merged.
-After merge, use a disposable same-repository pull request and submit `@droid review`.
+An ordinary pull-request timeline comment is an `issue_comment` event and runs the
+workflow from the default branch, so it cannot prove a candidate workflow before merge.
+A submitted pull-request review or inline review comment is a pull-request event and can
+exercise this candidate at its PR head. Before merge, submit a fresh review containing
+`@droid review` at the exact current head. After merge, repeat the smoke on a disposable
+same-repository pull request to prove the default-branch installation.
 
 Acceptance requires all of the following:
 
 - the `Droid Tag` job is assigned to `ubuntu-24.04` and starts without a custom runner;
 - the prerequisite, subject, checkout, pinned-CLI, and configuration steps pass;
-- the log reports Droid CLI `0.209.0`;
+- the log reports Droid CLI `0.219.0`;
 - the action reaches MiniMax M3 inference;
 - Droid publishes a useful review or an explicit no-findings result;
 - no `droid-review-debug-*` artifact is produced;
@@ -83,7 +86,7 @@ a way to validate the fix, and the evidence supporting confidence.
 | Job remains queued without a runner | Regression: the workflow returned to unavailable custom labels | Restore `runs-on: ubuntu-24.04` |
 | `gh: not found` | GitHub CLI bootstrap or PATH wiring failed | Check the pinned GitHub CLI install step |
 | Droid installer uses `curl ... | sh` | Regression: the safe action did not receive the pinned executable path | Check `path_to_droid_executable` |
-| Droid version differs from `0.209.0` | Pin or auto-update control failed | Check checksum verification and `FACTORY_DROID_AUTO_UPDATE_ENABLED=false` |
+| Droid version differs from `0.219.0` | Pin or auto-update control failed | Check checksum verification and `FACTORY_DROID_AUTO_UPDATE_ENABLED=false` |
 | MiniMax dashboard shows no matching call | BYOK settings were not loaded or inference was never reached | Check the temporary settings file and action logs |
 | Review uses a model other than MiniMax M3 | Model selector regression | Check all three `custom:MiniMax-M3-0` inputs |
 | Debug artifact appears | Secret-bearing diagnostic output escaped the intended boundary | Stop the lane and investigate |
