@@ -491,19 +491,48 @@ impl LspServer {
         let token_candidate_is_proven =
             Self::token_fallback_is_proven_code(source_region, text, offset);
 
-        if token_candidate_is_proven
+        // Method-modifier target island (#15425). The synthetic modifier
+        // symbol spans the whole `before 'save' => sub { … };` statement, and
+        // its target name is a quoted string, so the proven-Code gate can
+        // never see a cursor on the target — the region index proves
+        // StringLiteral there (#4967). The declaration head is still precise
+        // evidence: allow the modifier card when the whole token range is
+        // proven StringLiteral and the hovered token text matches the
+        // symbol's target name (multi-target disambiguation). Body strings,
+        // comments, POD, and heredocs keep failing closed because their
+        // text won't match any modifier target name.
+        let modifier_target_island = !token_candidate_is_proven
+            && Self::token_range_is_proven_kind(
+                source_region,
+                text,
+                offset,
+                SourceRegionKind::StringLiteral,
+            );
+
+        if (token_candidate_is_proven || modifier_target_island)
             && let Some(symbol_info) =
                 analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
             && let Some(modifier_kind) =
                 symbol_info.attributes.iter().find_map(|a| a.strip_prefix("modifier="))
         {
-            let method_name = &symbol_info.name;
-            let doc = symbol_info.documentation.as_deref().unwrap_or("");
-            return HoverExtracted::Complete(hover_cards::method_modifier_hover(
-                modifier_kind,
-                method_name,
-                doc,
-            ));
+            // Multi-target disambiguation (#15425 review): when several
+            // modifier symbols share the same statement span, `symbol_at` may
+            // return any of them. Verify the hovered token text matches this
+            // symbol's name (the modifier target). Non-target tokens (body
+            // strings, comments) don't match any modifier name and fail
+            // closed naturally.
+            let token_text = Self::get_token_at_position_static(text, offset);
+            let target_matches = token_text == symbol_info.name;
+            let _ = modifier_target_island; // island gate already applied above
+            if target_matches || token_candidate_is_proven {
+                let method_name = &symbol_info.name;
+                let doc = symbol_info.documentation.as_deref().unwrap_or("");
+                return HoverExtracted::Complete(hover_cards::method_modifier_hover(
+                    modifier_kind,
+                    method_name,
+                    doc,
+                ));
+            }
         }
 
         // Detect early when the cursor is on a `->method` call: defer to the
@@ -839,6 +868,58 @@ impl LspServer {
             index.classify_range(start, end),
             RangeClassification::Proven { kind: SourceRegionKind::Code }
         )
+    }
+
+    /// Whether the whole token range at `offset` is proven to be exactly
+    /// `kind` by the generation-bound source-region index (#5003/#4967).
+    ///
+    /// Empty token ranges (cursor on punctuation) never qualify: there is no
+    /// identifier evidence to prove. Missing evidence fails closed.
+    fn token_range_is_proven_kind(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+        kind: SourceRegionKind,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        let (start, end) = Self::token_byte_bounds_of(text, offset);
+        if start >= end {
+            return false;
+        }
+        matches!(
+            index.classify_range(start, end),
+            RangeClassification::Proven { kind: proven } if proven == kind
+        )
+    }
+
+    /// Whether `[start, end)` contains the standalone word `needle`.
+    ///
+    /// Word-boundary aware, so `substr` and `sub_name` do not match. Used by
+    /// the method-modifier target island (#15425) to keep the claim scoped to
+    /// the declaration head: once the symbol's `sub` body keyword appears
+    /// before the cursor, the cursor is inside the body, not on the modifier's
+    /// quoted target. Boundary surprises (unterminated span) fail closed.
+    fn span_has_word(text: &str, start: usize, end: usize, needle: &str) -> bool {
+        let Some(span) = text.get(start..end) else {
+            return true;
+        };
+        let bytes = span.as_bytes();
+        let needle_bytes = needle.as_bytes();
+        let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut i = 0;
+        while i + needle_bytes.len() <= bytes.len() {
+            if bytes[i..i + needle_bytes.len()] == *needle_bytes
+                && (i == 0 || !is_word_byte(bytes[i - 1]))
+                && (i + needle_bytes.len() == bytes.len()
+                    || !is_word_byte(bytes[i + needle_bytes.len()]))
+            {
+                return true;
+            }
+            i += 1;
+        }
+        false
     }
 
     /// Whether the token candidate at `offset` is an unescaped `$`/`@` variable
