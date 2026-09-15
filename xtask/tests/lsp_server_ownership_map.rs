@@ -239,6 +239,15 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
+        "text_sync_session",
+        ClientSession,
+        "Mutex<Option<AcceptedTextSyncSession>>",
+        "connection replacement",
+        "accepted text-sync session contract (#9378): immutable FULL + UTF-16 authority written once at initialize acceptance",
+        false,
+        "#9378"
+    ),
+    row!(
         "client_supports_pull_diags",
         ClientSession,
         "Arc<AtomicBool>",
