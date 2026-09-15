@@ -249,8 +249,9 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
 ///
 /// The required `Compile All Targets (bit-rot guard)` job runs the guarded
 /// recipe `just check-all-targets`, which grew a third compile-only pass
-/// (`cargo test --workspace --examples --no-run --locked`, #12650). That
-/// changed the cost shape of the whole chain — justfile recipe →
+/// (`cargo test --workspace --examples --no-run --locked`, #12650) and later
+/// added two parser-profile checks. That changed the cost shape of the whole
+/// chain — justfile recipe →
 /// `.ci/gate-policy.yaml` `compile_all_targets` row → `ci.yml` job watchdog —
 /// while every prior contract in this file pinned only presence, name, and
 /// checkout shape. A budget move therefore lands silently, exactly when the
@@ -287,21 +288,21 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
          the timeout_seconds/max_duration_ms pins below describe exactly this \
          recipe chain. Extracted gate:\n{gate}"
     );
-    // The runner-enforced hard timeout (three full-workspace compile passes).
+    // The runner-enforced hard timeout for the complete five-command recipe.
     assert!(
-        gate.contains("\n    timeout_seconds: 600\n"),
-        "gate `compile_all_targets.timeout_seconds` drifted from 600: this is \
-         the only budget the gate runner enforces, sized to the two workspace \
-         checks plus the example-test pass. Raising it needs measured receipts \
-         on #12693's chain; lowering it below the third pass reopens the \
-         cancel-at-timeout family. Extracted gate:\n{gate}"
+        gate.contains("\n    timeout_seconds: 900\n"),
+        "gate `compile_all_targets.timeout_seconds` drifted from 900: this is \
+         the only budget the gate runner enforces, sized from hosted receipts \
+         for the two workspace checks, example-test compilation, and two \
+         parser-profile checks. Lowering it below the measured chain reopens \
+         the cancel-at-timeout family. Extracted gate:\n{gate}"
     );
     // The declared soft budget reviewers cite as the shared ceiling
     // (clippy_tests_kernel explicitly stays "below the compile_all_targets
     // ceiling").
     assert!(
-        gate.contains("\n      max_duration_ms: 540000\n"),
-        "gate `compile_all_targets.budgets.max_duration_ms` drifted from 540000: \
+        gate.contains("\n      max_duration_ms: 780000\n"),
+        "gate `compile_all_targets.budgets.max_duration_ms` drifted from 780000: \
          other lanes derive their ceilings from this constant. Extracted \
          gate:\n{gate}"
     );
