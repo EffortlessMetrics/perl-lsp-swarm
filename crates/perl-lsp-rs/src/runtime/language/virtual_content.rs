@@ -75,19 +75,40 @@ fn is_valid_virtual_content_uri(uri: &str) -> bool {
 impl LspServer {
     fn fetch_virtual_content(&self, uri: &str) -> Option<String> {
         if let Some(target) = PerlDocumentationTarget::from_perldoc_uri(uri) {
-            self.fetch_workspace_perldoc(&target)
-                .or_else(|| {
-                    let workspace_config = self.workspace_config.lock().clone();
-                    fetch_perldoc(target.name(), &workspace_config)
-                })
-                .map(|content| enrich_core_pragma_perldoc(target.name(), content))
+            let topology_generation =
+                self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+            if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
+                return None;
+            }
+            let workspace_content = self.fetch_workspace_perldoc(&target);
+            let content = workspace_content.or_else(|| {
+                let workspace_config = self.workspace_config.lock().clone();
+                fetch_perldoc(target.name(), &workspace_config)
+            })?;
+            if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+                != topology_generation
+                || !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return None;
+            }
+            Some(enrich_core_pragma_perldoc(target.name(), content))
         } else {
             None
         }
     }
 
     fn fetch_workspace_perldoc(&self, target: &PerlDocumentationTarget) -> Option<String> {
-        if self.root_path.lock().is_none() && self.workspace_folders.lock().is_empty() {
+        // Sample each authority independently; never hold `root_path` while
+        // acquiring `workspace_folders` (diagnostic publication uses the
+        // opposite order while validating an accepted subject).
+        let topology_generation =
+            self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+        if !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        let has_root = self.root_path.lock().is_some();
+        let workspace_folders_empty = self.workspace_folders.lock().is_empty();
+        if !has_root && workspace_folders_empty {
             return None;
         }
 
@@ -100,6 +121,16 @@ impl LspServer {
                 return None;
             }
         };
+        if self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst)
+            != topology_generation
+            || !self.workspace_topology_stable.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            tracing::debug!(
+                module = module_name,
+                "Discarding virtual content after workspace topology change"
+            );
+            return None;
+        }
         let pod = perl_pod::extract_pod(&source);
         let related_links = workspace_pod_related_perldoc_uris(module_name, &source);
 
@@ -305,6 +336,47 @@ mod tests {
         }
 
         Ok(perl_path)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_blocking_perldoc_fixture(
+        temp: &tempfile::TempDir,
+    ) -> Result<
+        (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf),
+        Box<dyn std::error::Error>,
+    > {
+        let perl_name = if cfg!(windows) { "perl.exe" } else { "perl" };
+        let perldoc_name = if cfg!(windows) { "perldoc.bat" } else { "perldoc" };
+        let perl_path = temp.path().join(perl_name);
+        let perldoc_path = temp.path().join(perldoc_name);
+        let started = temp.path().join("perldoc-started");
+        let release = temp.path().join("perldoc-release");
+
+        fs::write(&perl_path, b"")?;
+        let script = if cfg!(windows) {
+            format!(
+                "@echo off\r\n> \"{}\" echo started\r\n:wait\r\nif exist \"{}\" goto done\r\n>nul ping -n 2 127.0.0.1\r\ngoto wait\r\n:done\r\necho NAME\r\necho     Fake::Documented\r\n",
+                started.display(),
+                release.display(),
+            )
+        } else {
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' started > '{}'\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nprintf '%s\\n' NAME '    Fake::Documented'\n",
+                started.display(),
+                release.display(),
+            )
+        };
+        fs::write(&perldoc_path, script)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&perldoc_path)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&perldoc_path, permissions)?;
+        }
+
+        Ok((perl_path, started, release))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -531,6 +603,94 @@ mod tests {
         assert!(content.contains("Local::Doc - local docs"));
         assert!(content.contains("DESCRIPTION\nLocal POD."));
         assert!(content.contains("METHOD reset\nReset local state."));
+        Ok(())
+    }
+
+    #[test]
+    fn parser_virtual_content_rejects_unstable_workspace_before_system_fallback() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let perl_path = write_fake_perldoc_fixture(&temp)?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let workspace_uri =
+            url::Url::from_directory_path(&workspace).map_err(|_| "workspace URI")?;
+        let server = LspServer::new();
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+                .with_path(workspace),
+        ];
+        {
+            let mut config = server.workspace_config.lock();
+            config.perl_path = Some(perl_path.to_string_lossy().into_owned());
+        }
+        server.workspace_topology_stable.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let error = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Fake::Documented" })))
+            .err()
+            .ok_or("unstable workspace content must not fall back to system perldoc")?;
+        if !error.message.contains("content not found") {
+            return Err(format!("unexpected unstable workspace error: {}", error.message).into());
+        }
+        server.workspace_topology_stable.store(true, std::sync::atomic::Ordering::SeqCst);
+        let recovered = server
+            .handle_text_document_content(Some(json!({ "uri": "perldoc://Fake::Documented" })))?
+            .ok_or("stable workspace recovery must return fixture documentation")?;
+        let text = recovered
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or("recovered documentation must contain text")?;
+        if !text.contains("Fake::Documented") {
+            return Err("stable workspace recovery returned the wrong documentation".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parser_virtual_content_rechecks_topology_after_system_fallback() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let (perl_path, started, release) = write_blocking_perldoc_fixture(&temp)?;
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace)?;
+        let workspace_uri =
+            url::Url::from_directory_path(&workspace).map_err(|_| "workspace URI")?;
+        let server = std::sync::Arc::new(LspServer::new());
+        *server.workspace_folders.lock() = vec![
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(workspace_uri.to_string())
+                .with_path(workspace),
+        ];
+        server.workspace_config.lock().perl_path = Some(perl_path.to_string_lossy().into_owned());
+
+        let worker_server = std::sync::Arc::clone(&server);
+        let worker = std::thread::spawn(move || -> std::io::Result<bool> {
+            for _ in 0..500 {
+                if started.exists() {
+                    worker_server
+                        .workspace_topology_generation
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    worker_server
+                        .workspace_topology_stable
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    fs::write(&release, b"release")?;
+                    return Ok(true);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            fs::write(&release, b"release")?;
+            Ok(false)
+        });
+
+        let result = server.handle_text_document_content(Some(json!({
+            "uri": "perldoc://Fake::Documented"
+        })));
+        if !worker.join().map_err(|_| "topology barrier worker panicked")?? {
+            return Err("blocking perldoc fixture never started".into());
+        }
+        let error = result.err().ok_or("fallback content crossed a topology transition")?;
+        if !error.message.contains("content not found") {
+            return Err(format!("unexpected topology barrier error: {}", error.message).into());
+        }
         Ok(())
     }
 

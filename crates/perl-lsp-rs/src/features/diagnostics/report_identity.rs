@@ -24,11 +24,9 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
-use perl_lsp_rs_core::config::CriticEngine;
 use perl_lsp_rs_core::tooling::perl_critic::{
-    CRITIC_IDENTITY_SCHEMA_VERSION, CriticPolicyIdentity, CriticPolicyIdentityError,
-    DiagnosticFactIdentity, DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions,
-    DiagnosticSourceIdentity, NativeCriticProfile,
+    AcceptedCriticPolicyIdentity, CRITIC_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity,
+    DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
 };
 use perl_source_identity::{
     ContentDigest, LogicalPathError, LogicalSourceId, ProjectId, RootRelativeLogicalPath,
@@ -40,7 +38,7 @@ use super::PullDiagnosticsContext;
 /// Schema/domain version of this composer. Bump whenever the set of
 /// load-bearing fragments changes so prior client-held IDs stop parsing and
 /// every report degrades honestly to `full`.
-pub const PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16 = 1;
+pub const PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16 = 3;
 
 /// Wire prefix of a composed pull-report result ID.
 const PULL_REPORT_IDENTITY_PREFIX: &str = "diagnostic-pull-report.v";
@@ -58,11 +56,6 @@ const RULE_CATALOG_SCHEMA_VERSION: u32 = 1;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
 const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 1;
 const REMEDIATION_WIRE_SCHEMA_VERSION: u16 = 1;
-
-/// Domain tag binding the legacy built-in analyzer's effective policy. The
-/// built-in analyzer takes no user configuration beyond the encoded policy
-/// fields, so a stable domain digest is its complete policy identity.
-const LEGACY_BUILTIN_POLICY_DOMAIN: &str = "perl-lsp:pull-legacy-builtin-policy:v1";
 
 /// Behavior-bearing negotiated wire-projection state.
 ///
@@ -113,8 +106,8 @@ pub enum NotReusable {
     /// document, so the logical source identity cannot be formed. A root key the
     /// server never resolved is not substituted by the standalone fallback.
     MissingRootAuthority,
-    /// The accepted critic policy contradicts its engine's requirements.
-    PolicyIncomplete(CriticPolicyIdentityError),
+    /// The accepted Critic snapshot lacks its owning root authority.
+    MissingCriticRootAuthority,
     /// The document URI could not be decoded to a filesystem path, so it cannot
     /// be positioned relative to any root (#15555).
     SourcePathUnavailable,
@@ -147,8 +140,8 @@ impl std::fmt::Display for NotReusable {
             Self::MissingRootAuthority => {
                 f.write_str("no owning workspace/root authority for the document")
             }
-            Self::PolicyIncomplete(error) => {
-                write!(f, "critic policy identity incomplete: {error}")
+            Self::MissingCriticRootAuthority => {
+                f.write_str("accepted critic snapshot has no owning root authority")
             }
             Self::SourcePathUnavailable => {
                 f.write_str("document URI does not decode to a filesystem path")
@@ -217,12 +210,8 @@ pub struct PullReportSubject {
     logical_path: RootRelativeLogicalPath,
     content_digest: ContentDigest,
     document_generation: Option<u64>,
-    engine: CriticEngine,
-    profile: NativeCriticProfile,
-    severity: u8,
-    include: BTreeSet<String>,
-    exclude: BTreeSet<String>,
-    legacy_policy_digest: Option<ContentDigest>,
+    critic_root_id: WorkspaceRootId,
+    accepted_critic_fingerprint: String,
     facts_generation: Option<u64>,
     // Deliberately remains an opaque, normalized string fragment in this
     // bounded PR. Typed provenance for project configuration belongs to the
@@ -231,7 +220,6 @@ pub struct PullReportSubject {
     configuration_generation: Option<u64>,
     resolver_roots: BTreeSet<String>,
     projection: DiagnosticProjectionFragment,
-    critic_enabled: bool,
 }
 
 /// Assemble the complete subject for one document report.
@@ -248,33 +236,24 @@ pub fn pull_report_subject(
 ) -> Result<PullReportSubject, NotReusable> {
     let (root_id, logical_path) = root_and_logical_path(uri, context)?;
 
-    // Mirror `add_native_critic_diagnostics`: the effective native profile is
-    // the configured spelling parsed leniently with the same Strict fallback.
-    // Under the legacy engine the native profile is inert and pinned so
-    // unrelated profile settings cannot churn legacy-engine identities.
-    let (profile, legacy_policy_digest) = match context.critic_engine {
-        CriticEngine::Native => (
-            NativeCriticProfile::parse_legacy(&context.native_critic_profile)
-                .unwrap_or(NativeCriticProfile::Strict),
-            None,
-        ),
-        CriticEngine::Legacy => (
-            NativeCriticProfile::Recommended,
-            Some(ContentDigest::of_bytes(LEGACY_BUILTIN_POLICY_DOMAIN.as_bytes())),
-        ),
+    let Some(critic_root_key) = context.accepted_critic_snapshot.owning_root() else {
+        return Err(NotReusable::MissingCriticRootAuthority);
     };
+    let project = ProjectId::from_canonical_name(PULL_IDENTITY_PROJECT);
+    let critic_root_id = WorkspaceRootId::from_project_and_root_key(&project, critic_root_key);
 
     Ok(PullReportSubject {
         content_digest: ContentDigest::of_bytes(content.as_bytes()),
-        severity: context.perlcritic_severity.clamp(1, 5) as u8,
-        include: context.native_critic_include.iter().cloned().collect(),
-        exclude: context.native_critic_exclude.iter().cloned().collect(),
+        critic_root_id,
+        accepted_critic_fingerprint: context
+            .accepted_critic_snapshot
+            .result_identity_fingerprint()
+            .as_wire()
+            .to_string(),
         resolver_roots: context.include_paths.iter().cloned().collect(),
         root_id,
         logical_path,
         document_generation,
-        engine: context.critic_engine,
-        profile,
         facts_generation: context.facts_generation,
         project_version: context
             .project_version
@@ -284,8 +263,6 @@ pub fn pull_report_subject(
             .or_else(|| context.project_version.as_ref().map(|raw| format!("invalid:{raw}"))),
         configuration_generation: context.configuration_generation,
         projection: context.projection,
-        critic_enabled: context.perlcritic_enabled,
-        legacy_policy_digest,
     })
 }
 
@@ -327,21 +304,10 @@ impl PullReportSubject {
     /// through SHA-256 over a length-prefixed canonical encoding that embeds
     /// the core substrate identity (#7201) plus this layer's fragments.
     pub fn compose(&self) -> Result<PullReportResultId, NotReusable> {
-        // Folder-owned configuration generations distinguish accepted config
-        // reloads while the default preserves identities without that context.
-        let configuration_generation = self.configuration_generation.unwrap_or(0);
-
-        let policy = CriticPolicyIdentity::new(
-            self.root_id.clone(),
-            configuration_generation,
-            self.engine,
-            self.profile,
-            self.severity,
-            self.include.clone(),
-            self.exclude.clone(),
-            self.legacy_policy_digest.clone(),
-        )
-        .map_err(NotReusable::PolicyIncomplete)?;
+        let policy = AcceptedCriticPolicyIdentity::new(
+            self.critic_root_id.clone(),
+            self.accepted_critic_fingerprint.clone(),
+        );
 
         let facts = match self.facts_generation {
             Some(generation) => {
@@ -368,11 +334,23 @@ impl PullReportSubject {
         .compose();
 
         let mut canonical = String::new();
-        push_str(&mut canonical, "identity_schema", PULL_REPORT_IDENTITY_V1_TAG);
+        push_str(&mut canonical, "identity_schema", PULL_REPORT_IDENTITY_V3_TAG);
         push_str(&mut canonical, "substrate", inner.as_str());
         push_str(&mut canonical, "position_encoding", self.projection.position_encoding.as_token());
         push_u64(&mut canonical, "markup_messages", u64::from(self.projection.markup_messages));
-        push_u64(&mut canonical, "critic_enabled", u64::from(self.critic_enabled));
+        // Presence-encode the generation: `None` (no config authority for this
+        // URI) must not collide with `Some(0)` (fresh folder/single-file state
+        // before any config change). Both would otherwise share token `0` and a
+        // config-less subject could reuse a generation-0 result via `Unchanged`.
+        match self.configuration_generation {
+            Some(generation) => {
+                push_str(&mut canonical, "configuration_generation_present", "1");
+                push_u64(&mut canonical, "configuration_generation", generation);
+            }
+            None => {
+                push_str(&mut canonical, "configuration_generation_present", "0");
+            }
+        }
         push_str(
             &mut canonical,
             "project_version",
@@ -390,7 +368,7 @@ impl PullReportSubject {
 
 /// Domain tag for the outer composition, kept distinct from the substrate's
 /// own schema field so the two layers cannot be confused.
-const PULL_REPORT_IDENTITY_V1_TAG: &str = "perl-lsp:pull-report-identity:v1";
+const PULL_REPORT_IDENTITY_V3_TAG: &str = "perl-lsp:pull-report-identity:v3";
 
 /// Resolve the root authority and the document's path *relative to that root*.
 ///
@@ -552,7 +530,7 @@ mod tests {
 
     use super::{DiagnosticProjectionFragment, PullPositionEncoding, *};
     use crate::features::diagnostics::PullDiagnosticsContext;
-    use perl_lsp_rs_core::config::CriticEngine;
+    use perl_lsp_rs_core::config::{AcceptedCriticSnapshot, CriticEngine, ServerConfig};
 
     fn projection(encoding: PullPositionEncoding, markup: bool) -> DiagnosticProjectionFragment {
         DiagnosticProjectionFragment { position_encoding: encoding, markup_messages: markup }
@@ -563,6 +541,8 @@ mod tests {
     fn context_with(root: Option<&str>) -> PullDiagnosticsContext {
         let mut context = PullDiagnosticsContext::new();
         context.identity_root_key = root.map(str::to_string);
+        let config = ServerConfig::default();
+        context.accepted_critic_snapshot = AcceptedCriticSnapshot::capture(&config, root);
         context.identity_root_path = root.map(std::path::PathBuf::from);
         // Live fact-store state for the baseline subject.
         context.facts_generation = Some(13);
@@ -640,6 +620,36 @@ mod tests {
     }
 
     #[test]
+    fn old_result_ids_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+        for legacy in [
+            "diagnostic-pull-report.v1-sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "diagnostic-pull-report.v2-sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            if PullReportResultId::from_wire(legacy).is_some() {
+                return Err(format!("old result ID must fail closed to Full: {legacy}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_state_identity_uses_the_snapshot_sha256_fingerprint()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context_with(Some("/tmp/ws-a"));
+        let subject = subject_for(&context, URI_A, CONTENT);
+        let expected = context.accepted_critic_snapshot.result_identity_fingerprint();
+        if subject.accepted_critic_fingerprint != expected.as_wire() {
+            return Err("pull identity must consume the snapshot's SHA-256 fingerprint".into());
+        }
+        if subject.accepted_critic_fingerprint == context.accepted_critic_snapshot.fingerprint() {
+            return Err(
+                "the legacy 64-bit observation token must not authorize result reuse".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn every_load_bearing_fragment_moves_the_id() {
         let baseline_context = context_with(Some(ROOT_A));
         let baseline = subject_for(&baseline_context, URI_A, CONTENT).compose().ok().unwrap();
@@ -661,24 +671,26 @@ mod tests {
             pull_report_subject(URI_A, CONTENT, Some(4), &baseline_context).ok().unwrap();
         assert_ne!(baseline, later_instance.compose().ok().unwrap());
 
-        // Engine selection.
+        // Raw legacy observations are not accepted authority. Moving all of
+        // them alone must leave the identity unchanged.
         let mut context = baseline_context.clone();
         context.critic_engine = CriticEngine::Legacy;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // Severity.
-        let mut context = baseline_context.clone();
         context.perlcritic_severity = 4;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // Native profile spelling.
-        let mut context = baseline_context.clone();
         context.native_critic_profile = "strict".to_string();
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // Include/exclude rule sets.
-        let mut context = baseline_context.clone();
         context.native_critic_include = vec!["native.testing.require_use_strict".to_string()];
+        context.native_critic_exclude = vec!["native.security.string_eval".to_string()];
+        context.perlcritic_enabled = false;
+        assert_eq!(
+            baseline,
+            subject_for(&context, URI_A, CONTENT).compose().ok().unwrap(),
+            "raw legacy selector movement must not change accepted Critic identity"
+        );
+
+        // Accepted snapshot movement is load-bearing.
+        let mut context = baseline_context.clone();
+        let moved_config = ServerConfig { perlcritic_severity: 4, ..ServerConfig::default() };
+        context.accepted_critic_snapshot =
+            AcceptedCriticSnapshot::capture(&moved_config, Some("/tmp/ws-a"));
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
         // Fact-store availability and generation.
@@ -734,11 +746,6 @@ mod tests {
         context.projection = projection(PullPositionEncoding::Utf16, true);
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
-        // External-critic admission state.
-        let mut context = baseline_context.clone();
-        context.perlcritic_enabled = false;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
         // Logical document identity: equal bytes and counters, different path.
         let moved = subject_for(&baseline_context, "file:///tmp/ws-a/lib/Other.pm", CONTENT)
             .compose()
@@ -754,6 +761,21 @@ mod tests {
             pull_report_subject(URI_A, CONTENT, Some(1), &context),
             Err(NotReusable::MissingRootAuthority)
         );
+    }
+
+    #[test]
+    fn absent_config_generation_is_distinct_from_generation_zero() {
+        let mut context = context_with(Some(ROOT_A));
+        context.configuration_generation = None;
+        let absent = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        context.configuration_generation = Some(0);
+        let zero = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        assert_ne!(
+            absent, zero,
+            "no config authority must not share a result ID with fresh generation-0 state"
+        );
+        let zero_again = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        assert_eq!(zero, zero_again);
     }
 
     #[test]
@@ -929,7 +951,7 @@ mod tests {
     fn not_reusable_label(outcome: &NotReusable) -> &'static str {
         match outcome {
             NotReusable::MissingRootAuthority => "MissingRootAuthority",
-            NotReusable::PolicyIncomplete(_) => "PolicyIncomplete",
+            NotReusable::MissingCriticRootAuthority => "MissingCriticRootAuthority",
             NotReusable::SourcePathUnavailable => "SourcePathUnavailable",
             NotReusable::SourcePathHasNoFileName => "SourcePathHasNoFileName",
             NotReusable::SourcePathNotPlainDescent => "SourcePathNotPlainDescent",
@@ -944,7 +966,7 @@ mod tests {
     /// variants must be distinguishable from each other.
     ///
     /// Covers every variant `not_reusable_label` names, including the wrapping
-    /// `PolicyIncomplete` case, so no refusal's message goes unrendered.
+    /// `SourcePathNotCanonical` case, so no refusal's message goes unrendered.
     ///
     /// Deliberately does *not* assert the absence of `/`: these messages contain
     /// no input, and separators appear legitimately as prose and punctuation
@@ -955,7 +977,7 @@ mod tests {
     fn every_not_reusable_variant_renders_a_distinct_message() {
         let all = [
             NotReusable::MissingRootAuthority,
-            NotReusable::PolicyIncomplete(CriticPolicyIdentityError::MissingLegacyPolicyDigest),
+            NotReusable::MissingCriticRootAuthority,
             NotReusable::SourcePathUnavailable,
             NotReusable::SourcePathHasNoFileName,
             NotReusable::SourcePathNotPlainDescent,
