@@ -1532,30 +1532,18 @@ impl ExecuteCommandProvider {
         }
     }
 
+    /// Whether an external tool is available to this server.
+    ///
+    /// Delegates to the module's single availability authority
+    /// ([`command_exists`]) so the test-runner gate and the external-critic
+    /// gate cannot answer the same question under different admission rules.
+    ///
+    /// Previously this spawned `which` as a child process on non-Windows while
+    /// the free function used the `which` crate directly; the two disagreed
+    /// about whether a current-directory candidate counts, and neither matched
+    /// what `run_test_command` will actually launch.
     pub(crate) fn command_exists(&self, command: &str) -> bool {
-        // On Windows, spawning `Command::new("where")` is itself a bare-name call
-        // subject to the same CWD-first CreateProcess RCE (#3028).  Use the
-        // hardened PATH-only resolver instead — it already answers "is this tool
-        // findable on an absolute PATH directory" without touching the CWD.
-        //
-        // On non-Windows, the resolver is a pass-through (returns Ok unchanged),
-        // so we fall back to the `which` crate for the actual PATH search there.
-        #[cfg(all(windows, not(target_arch = "wasm32")))]
-        {
-            perl_subprocess_runtime::resolve_program(command).is_ok()
-        }
-        #[cfg(all(not(windows), not(target_arch = "wasm32")))]
-        {
-            let mut cmd = Command::new("which");
-            cmd.arg(command);
-            crate::util::run_command_with_timeout(cmd, 2)
-                .map(|output| output.status.success())
-                .unwrap_or(false)
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            false
-        }
+        command_exists(command)
     }
 }
 
@@ -1825,30 +1813,36 @@ pub(crate) fn select_test_runner(
     }
 }
 
-/// Check whether a command exists in the current PATH.
+/// Check whether an external tool is available to this server.
 ///
-/// Empty PATH entries are stripped before delegating to the `which` crate:
-/// `which` 8.x emulates the Unix `which` command, which interprets an empty
-/// entry as the current directory, so a binary planted in the CWD would
-/// otherwise satisfy an availability probe even with an effectively empty
-/// PATH (the CWD-first admission seam, cf. #3028). When nothing searchable
-/// remains, the lookup fails closed.
+/// This is the single bare-name availability authority for the live runtime:
+/// the external-critic gate in this module, `LspServer::detect_tool` (and the
+/// perltidy/perlcritic capability advertisement built on it), and the
+/// perlcritic diagnostics gates all answer through it.
+///
+/// Availability means "found in an absolute `PATH` directory, excluding the
+/// current directory". The current directory is routinely the opened
+/// workspace, so a file planted there must not be able to satisfy a capability
+/// or diagnostics gate (#2764 / #3028). `perl_subprocess_runtime` owns that
+/// probe policy and applies it at launch on Windows too. Unix launch retains
+/// its existing PATH search behavior; this probe does not harden that path.
+///
+/// This is deliberately stricter than `execvp`, which honors relative and
+/// empty `PATH` components: a tool reachable only through such a component is
+/// reported absent and callers take their tool-unavailable branch. It
+/// therefore subsumes the earlier empty-entry stripping that filtered only
+/// `""` before delegating to `which`: an empty component is not absolute, so
+/// it is refused by the same rule that refuses `.` and `tools`, and no
+/// `which` lookup remains to re-admit the current directory.
 pub fn command_exists(command: &str) -> bool {
-    match std::env::var_os("PATH") {
-        None => which::which(command).is_ok(),
-        Some(path) => {
-            let dirs: Vec<std::path::PathBuf> =
-                std::env::split_paths(&path).filter(|dir| !dir.as_os_str().is_empty()).collect();
-            if dirs.is_empty() {
-                return false;
-            }
-            match std::env::join_paths(dirs.iter()) {
-                Ok(filtered) => std::env::current_dir()
-                    .map(|cwd| which::which_in(command, Some(&filtered), cwd).is_ok())
-                    .unwrap_or(false),
-                Err(_) => which::which(command).is_ok(),
-            }
-        }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        perl_subprocess_runtime::command_exists(command)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = command;
+        false
     }
 }
 
