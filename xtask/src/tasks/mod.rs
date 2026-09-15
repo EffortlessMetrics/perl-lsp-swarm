@@ -53,6 +53,7 @@ pub mod compare_parsers;
 pub mod compat_inventory;
 pub mod compiler_lexical_cutline;
 pub mod compiler_oracle;
+pub mod compiler_performance_receipt;
 pub mod compiler_profile;
 #[cfg(feature = "legacy")]
 pub mod corpus;
