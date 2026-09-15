@@ -1507,10 +1507,12 @@ fn parse_max_raw_check_bytes(value: &str) -> Result<u64> {
 /// never returns it to a pipe — so the payload is measured through the
 /// filesystem rather than by buffering it here.
 ///
-/// Every failure arm settles the producer tree first: a returned error must
-/// not leave a descendant writing an unbounded payload into a staged file
-/// nothing will publish, and must not leave the stderr join blocked on a
-/// write-end the direct child no longer owns.
+/// Every exit path settles the producer tree before the join below: a
+/// returned error must not leave a descendant writing an unbounded payload
+/// into a staged file nothing will publish, and a producer that exits on its
+/// own while a descendant retains the stderr write-end must not block the
+/// join forever. Settling an exited tree is a no-op, so one settlement after
+/// the wait covers both.
 fn drain_stderr_and_wait(
     child: &mut Child,
     tree: Option<&RiprProducerTree>,
@@ -1524,20 +1526,25 @@ fn drain_stderr_and_wait(
         thread::spawn(move || drain_bounded_stderr(stderr, &read_failed))
     };
 
-    // Settles the whole producer tree on every failure arm, so a descendant
-    // that inherited stderr cannot keep the pipe open across this join.
     let waited = wait_within_cap(child, tree, binary, cap, &read_failed);
+
+    // The direct producer has exited or been terminated and reaped. Terminate
+    // the whole tree before joining the drain: on the failure arms the wait
+    // already settled it, and on the early-parent-exit arm — the producer
+    // returned a status while a descendant still holds the stderr write-end —
+    // this is the only settlement, and without it the join below blocks on a
+    // pipe the transport no longer owns. Settling twice is harmless.
+    settle_ripr_producer(child, tree);
 
     let stderr_bytes = match drain.join() {
         Ok(Ok(stderr_bytes)) => stderr_bytes,
         // A stderr read failure is the precise diagnosis for the wait abort it
-        // causes, so it is surfaced ahead of that abort.
+        // causes, so it is surfaced ahead of that abort. The tree is already
+        // settled above.
         Ok(Err(error)) => {
-            settle_ripr_producer(child, tree);
             return Err(error).with_context(|| format!("failed to read {binary} stderr"));
         }
         Err(_) => {
-            settle_ripr_producer(child, tree);
             bail!("the {binary} stderr drain thread panicked");
         }
     };
@@ -12394,6 +12401,31 @@ paths = ["archive/**"]
         )
     }
 
+    /// A producer that spawns a long-lived copy of itself holding the inherited
+    /// staged descriptors and then exits successfully with a small payload,
+    /// standing in for a producer that leaves a descendant behind on the
+    /// success path.
+    fn write_exiting_with_descendant_ripr_stub(dir: &Path, name: &str) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            "    use std::io::Write;\n    \
+             use std::process::Command;\n    \
+             let mut args = std::env::args();\n    \
+             let Some(exe) = args.next() else { return; };\n    \
+             if args.next().as_deref() == Some(\"--hold\") {\n        \
+             std::thread::sleep(std::time::Duration::from_secs(60));\n        \
+             return;\n    \
+             }\n    \
+             let Ok(_child) = Command::new(exe).arg(\"--hold\").spawn() else {\n        \
+             return;\n    \
+             };\n    \
+             let payload = \"{\\\"summary\\\":{\\\"findings\\\":0},\\\"findings\\\":[]}\";\n    \
+             let _ = std::io::stdout().write_all(payload.as_bytes());\n    \
+             std::process::exit(0);\n",
+        )
+    }
+
     /// A producer that writes stdout without ever stopping, standing in for the
     /// unbounded payload of #12999 at a size a test can afford. It exits only if
     /// it is killed, so a cap that never fires hangs the test rather than
@@ -12537,6 +12569,38 @@ paths = ["archive/**"]
         color_eyre::eyre::ensure!(
             second == first,
             "descendant kept writing after refusal: {first} then {second} bytes"
+        );
+        Ok(())
+    }
+
+    /// Early-parent-exit control for process-tree ownership: a producer that
+    /// exits successfully while a descendant still holds the inherited stderr
+    /// write-end must not block the drain's join. The flood refusal above keeps
+    /// the parent alive, so it exercises only the cap-failure settlement arm;
+    /// without the settlement before the join, this run hangs rather than
+    /// failing an assertion.
+    #[test]
+    fn run_ripr_check_settles_a_descendant_left_behind_by_a_producer_that_exits() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let payload = r#"{"summary":{"findings":0},"findings":[]}"#;
+        let binary = write_exiting_with_descendant_ripr_stub(&stubs, "ripr-exiting-descendant")?;
+        let _override = override_ripr_bin(&binary)?;
+        let started = Instant::now();
+
+        run_ripr_check(&repo, &pr_evidence_options())?;
+
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "the join hung on a descendant that outlived its producer"
+        );
+        assert_eq!(
+            fs::read(repo.join(PR_RAW_CHECK_JSON))?,
+            payload.as_bytes(),
+            "the published payload must stay verbatim once the tree is settled"
         );
         Ok(())
     }
