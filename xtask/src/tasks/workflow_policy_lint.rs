@@ -414,11 +414,46 @@ fn shell_commands(script: &str) -> Vec<Vec<String>> {
             }
         }
     }
-    joined
-        .split(['\n', ';'])
-        .flat_map(|segment| segment.split("&&"))
-        .flat_map(|segment| segment.split("||"))
-        .flat_map(|segment| segment.split('|'))
+    let mut segments = Vec::new();
+    let mut segment = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut characters = joined.chars().peekable();
+    while let Some(character) = characters.next() {
+        if escaped {
+            segment.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            segment.push(character);
+            escaped = true;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            segment.push(character);
+            if character == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if character == '\'' || character == '"' {
+            quote = Some(character);
+            segment.push(character);
+        } else if matches!(character, '\n' | ';' | '|')
+            || (character == '&' && characters.peek() == Some(&'&'))
+        {
+            if character == '&' {
+                characters.next();
+            }
+            segments.push(std::mem::take(&mut segment));
+        } else {
+            segment.push(character);
+        }
+    }
+    segments.push(segment);
+    segments
+        .iter()
         .map(|segment| segment.split_whitespace().map(str::to_string).collect::<Vec<String>>())
         .filter(|tokens| !tokens.is_empty())
         .collect()
@@ -589,14 +624,16 @@ fn paths_filter_covers(paths: &[String], target: &str) -> bool {
     };
     let mut covered = false;
     for entry in paths {
-        if entry.contains(GITHUB_SPECIFIC_PATTERN_SYNTAX) {
-            continue;
-        }
         let (negated, raw) = match entry.strip_prefix('!') {
             Some(rest) => (true, rest),
             None => (false, entry.as_str()),
         };
+        if raw.contains(GITHUB_SPECIFIC_PATTERN_SYNTAX) {
+            covered &= !negated;
+            continue;
+        }
         let Ok(pattern) = glob::Pattern::new(raw) else {
+            covered &= !negated;
             continue;
         };
         if pattern.matches_with(target, options) {
@@ -2164,6 +2201,34 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn quoted_separators_do_not_invent_cli_invocations() -> Result<()> {
+        for separator in [";", "&&", "||", "|"] {
+            for quote in ['\'', '"'] {
+                let advice = format!(
+                    "echo {quote}Run local checks{separator} cargo xtask workflows check before pushing{quote}"
+                );
+                if command_invokes_xtask_cli(&advice) {
+                    bail!("quoted advice was classified as an invocation: {advice}");
+                }
+                let invocation =
+                    format!("echo {quote}ready{quote}{separator} cargo xtask workflows check");
+                if !command_invokes_xtask_cli(&invocation) {
+                    bail!("an unquoted separator hid the invocation: {invocation}");
+                }
+            }
+        }
+        for advice in [
+            r#"echo "Say \"ready; cargo xtask workflows check\" locally""#,
+            r"echo ready\; cargo xtask workflows check",
+        ] {
+            if command_invokes_xtask_cli(advice) {
+                bail!("escaped advice was classified as an invocation: {advice}");
+            }
+        }
+        Ok(())
+    }
+
     /// `xtask/src/main.rs` is the `xtask` bin, `--package` is the long `-p`,
     /// and a command may span backslash continuations. Each still reaches the
     /// dispatch this rule guards.
@@ -2199,6 +2264,78 @@ mod tests {
             !message.contains("xtask/src/tasks/mod.rs"),
             "the plain literal beside it still covers: {message}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_exclusions_invalidate_coverage_in_order() -> Result<()> {
+        for target in XTASK_CLI_WIRING_FILES {
+            for exclusion in ["!xtask/**/[a-z]*.rs", "!xtask/**/m?*.rs", "!xtask/**/m+*.rs"] {
+                let mut paths = vec!["xtask/**".to_string(), exclusion.to_string()];
+                if paths_filter_covers(&paths, target) {
+                    bail!("unsupported exclusion {exclusion} retained coverage for {target}");
+                }
+                paths.push(target.to_string());
+                if !paths_filter_covers(&paths, target) {
+                    bail!("explicit later inclusion did not restore coverage for {target}");
+                }
+                paths.push(exclusion.to_string());
+                if paths_filter_covers(&paths, target) {
+                    bail!("repeated exclusion {exclusion} retained coverage for {target}");
+                }
+            }
+            let paths = vec![target.to_string(), "xtask/**/[a-z]*.rs".to_string()];
+            if !paths_filter_covers(&paths, target) {
+                bail!("unsupported positive erased proven coverage for {target}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_exclusion_is_reported_by_workflow_lint() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("unsupported-exclusion.yml");
+        for restore_main in [false, true] {
+            let mut paths = vec![
+                "xtask/**".to_string(),
+                "!xtask/src/[a-z]*.rs".to_string(),
+                "xtask/src/tasks/mod.rs".to_string(),
+            ];
+            if restore_main {
+                paths.push("xtask/src/main.rs".to_string());
+            }
+            let workflow = serde_json::json!({
+                "name": "unsupported-exclusion",
+                "on": {"pull_request": {"paths": paths}},
+                "permissions": {"contents": "read"},
+                "jobs": {"contract": {
+                    "runs-on": "ubuntu-latest",
+                    "steps": [{"run": "cargo xtask example-contract check"}]
+                }}
+            });
+            fs::write(&path, serde_yaml_ng::to_string(&workflow)?)?;
+            let mut issues = Vec::new();
+            lint_workflow_file(&path, true, &mut issues)?;
+            let wiring: Vec<_> =
+                issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+            if restore_main {
+                if !wiring.is_empty() {
+                    bail!("explicit re-inclusion still reported missing wiring: {wiring:?}");
+                }
+            } else {
+                let finding = wiring.first().ok_or_else(|| {
+                    color_eyre::eyre::eyre!("unsupported exclusion produced no wiring finding")
+                })?;
+                if wiring.len() != 1
+                    || finding.level != "error"
+                    || !finding.message.contains("xtask/src/main.rs")
+                    || finding.message.contains("xtask/src/tasks/mod.rs")
+                {
+                    bail!("expected only the excluded main.rs wiring finding: {wiring:?}");
+                }
+            }
+        }
         Ok(())
     }
 
