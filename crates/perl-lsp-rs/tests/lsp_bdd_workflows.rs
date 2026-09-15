@@ -891,7 +891,7 @@ sub transform {
     let module_uri = workspace.uri("lib/Toolkit.pm");
     harness.open(&module_uri, module)?;
 
-    harness.wait_for_symbol("transform", Some(&module_uri), Duration::from_secs(2)).ok();
+    harness.wait_for_symbol("transform", Some(&module_uri), Duration::from_secs(5))?;
 
     scenario.when("searching workspace symbols for the function name");
     let result = harness.request(
@@ -942,7 +942,7 @@ is(calculate_total(1, 2), 3, 'adds values');
     let uri = workspace.uri("t/calculator.t");
     harness.open(&uri, test_file)?;
 
-    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(2)).ok();
+    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(5))?;
 
     scenario.when("requesting completion at a partially typed function name");
     let (completion_line, completion_col) = find_position(test_file, "my $value = calc");
@@ -1871,7 +1871,7 @@ print $value;
     let (mut harness, workspace) = setup_workspace(&[("navigation.pl", code)])?;
     let uri = workspace.uri("navigation.pl");
     harness.open(&uri, code)?;
-    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(2)).ok();
+    harness.wait_for_symbol("calculate_total", Some(&uri), Duration::from_secs(5))?;
 
     scenario.when("requesting document highlights on the local variable inside the subroutine");
     let (highlight_line, highlight_col) = find_position(code, "$total =");
@@ -1933,7 +1933,7 @@ print $x;
     let (mut harness, workspace) = setup_workspace(&[("script.pl", script)])?;
     let uri = workspace.uri("script.pl");
     harness.open(&uri, script)?;
-    harness.wait_for_symbol("x", Some(&uri), std::time::Duration::from_secs(5)).ok();
+    harness.wait_for_symbol("x", Some(&uri), std::time::Duration::from_secs(5))?;
     harness.barrier();
 
     scenario.when("requesting definition on the inner variable usage");
@@ -2018,7 +2018,7 @@ Foo::do_foo();
 
     harness.open(&module_uri, module)?;
     harness.open(&main_uri, main)?;
-    harness.wait_for_symbol("do_foo", Some(&module_uri), std::time::Duration::from_secs(5)).ok();
+    harness.wait_for_symbol("do_foo", Some(&module_uri), std::time::Duration::from_secs(5))?;
     harness.barrier();
 
     scenario.when("requesting hover on the module name");
@@ -2666,7 +2666,7 @@ sub collect_metrics {
     let (mut harness, workspace) = setup_workspace(&[("lib/SymbolHub.pm", module)])?;
     let module_uri = workspace.uri("lib/SymbolHub.pm");
     harness.open(&module_uri, module)?;
-    harness.wait_for_symbol("collect_metrics", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("collect_metrics", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("searching workspace symbols using a package-oriented query");
@@ -2721,7 +2721,7 @@ sub collect_metrics {
     let (mut harness, workspace) = setup_workspace(&[("lib/SymbolHub.pm", before)])?;
     let module_uri = workspace.uri("lib/SymbolHub.pm");
     harness.open(&module_uri, before)?;
-    harness.wait_for_symbol("SymbolHub", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("SymbolHub", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("querying workspace symbols before and after a didChange rename");
@@ -2733,7 +2733,7 @@ sub collect_metrics {
     )?;
 
     harness.change_full(&module_uri, 2, &after)?;
-    harness.wait_for_symbol("MetricsHub", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("MetricsHub", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     let after_result = harness.request(
@@ -2956,7 +2956,7 @@ my $y = helper();
     let (mut harness, workspace) = setup_workspace(&[("refs.pl", script)])?;
     let uri = workspace.uri("refs.pl");
     harness.open(&uri, script)?;
-    harness.wait_for_symbol("helper", Some(&uri), Duration::from_secs(5)).ok();
+    harness.wait_for_symbol("helper", Some(&uri), Duration::from_secs(5))?;
 
     let (line, character) = find_position(script, "helper()");
 
@@ -3224,7 +3224,7 @@ sub list {
 
     harness.open(&controller_uri, controller)?;
     harness.open(&app_uri, app)?;
-    harness.wait_for_symbol("list", Some(&controller_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("list", Some(&controller_uri), Duration::from_secs(10))?;
 
     let (line, character) = find_position(app, "admin-user#list");
 
@@ -3326,7 +3326,7 @@ $dog->
 
     harness.open(&module_uri, dog_module)?;
     harness.open(&main_uri, main_script)?;
-    harness.wait_for_symbol("bark", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("bark", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("requesting completion at the position after the arrow operator");
@@ -3525,7 +3525,7 @@ sub helper { 1 }
     let (mut harness, workspace) = setup_workspace(&[("lib/Utils.pm", module)])?;
     let module_uri = workspace.uri("lib/Utils.pm");
     harness.open(&module_uri, module)?;
-    harness.wait_for_symbol("helper", Some(&module_uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("helper", Some(&module_uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("searching workspace symbols for 'helper'");
@@ -3561,7 +3561,7 @@ my $r = greet();
     let (mut harness, workspace) = setup_workspace(&[("main.pl", code)])?;
     let uri = workspace.uri("main.pl");
     harness.open(&uri, code)?;
-    harness.wait_for_symbol("greet", Some(&uri), Duration::from_secs(10)).ok();
+    harness.wait_for_symbol("greet", Some(&uri), Duration::from_secs(10))?;
     harness.barrier();
 
     scenario.when("requesting goto-definition at the greet() call site");
