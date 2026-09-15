@@ -149,8 +149,10 @@ pub trait SemanticQueries {
     /// non-reentrant, write-preferring lock and deadlocks against a queued
     /// reindex.
     ///
-    /// Returns `None` when the anchor has no resolvable source span, which
-    /// includes generated or virtual members.
+    /// Returns `None` when the anchor has no resolvable source span (generated
+    /// or virtual members), when the span is degenerate, or when more than one
+    /// shard claims the same `anchor_id`. Duplicate IDs must fail closed rather
+    /// than returning whichever shard `HashMap` iteration happens to hit first.
     fn anchor_source_span(&self, _anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
         None
     }
@@ -532,18 +534,27 @@ impl<'a> SemanticQueries for WorkspaceSemanticQueries<'a> {
     ///
     /// This never touches `WorkspaceIndex`, so it is safe to call from inside
     /// `with_semantic_queries_for_uri` while the `fact_shards` read lock is
-    /// held. A degenerate span is reported as unresolved rather than as a
-    /// zero-length location.
+    /// held. A degenerate span, or the same `anchor_id` appearing in more than
+    /// one shard, is reported as unresolved rather than as an arbitrary
+    /// first-hit location.
     fn anchor_source_span(&self, anchor_id: AnchorId) -> Option<AnchorSourceSpan> {
-        self.fact_shards.values().find_map(|shard| {
-            shard.anchors.iter().find(|anchor| anchor.id == anchor_id).and_then(|anchor| {
-                (anchor.span_end_byte > anchor.span_start_byte).then(|| AnchorSourceSpan {
+        let mut found = None;
+        for shard in self.fact_shards.values() {
+            for anchor in shard.anchors.iter().filter(|anchor| anchor.id == anchor_id) {
+                if anchor.span_end_byte <= anchor.span_start_byte {
+                    return None;
+                }
+                let next = AnchorSourceSpan {
                     source_uri: shard.source_uri.clone(),
                     start_byte: anchor.span_start_byte,
                     end_byte: anchor.span_end_byte,
-                })
-            })
-        })
+                };
+                if found.replace(next).is_some() {
+                    return None;
+                }
+            }
+        }
+        found
     }
 
     fn symbol_at(&self, file_id: FileId, byte_offset: u32) -> Option<(EntityFact, OccurrenceFact)> {
@@ -1766,6 +1777,65 @@ mod tests {
         assert_eq!(ctx.file_id, FileId(5));
         assert_eq!(ctx.scope_id, None);
         assert_eq!(ctx.byte_offset, None);
+        Ok(())
+    }
+
+    // ── anchor_source_span tests ──
+
+    fn colliding_anchor_shard(uri: &str, file_id: FileId, start: u32, end: u32) -> FileFactShard {
+        make_shard(
+            uri,
+            file_id,
+            vec![AnchorFact {
+                id: AnchorId(42),
+                file_id,
+                span_start_byte: start,
+                span_end_byte: end,
+                scope_id: None,
+                provenance: Provenance::ExactAst,
+                confidence: Confidence::High,
+            }],
+            vec![],
+            vec![],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn anchor_source_span_resolves_unique_id() -> Result<(), Box<dyn std::error::Error>> {
+        let (_file_id, shard) = simple_shard();
+        let mut shards = HashMap::new();
+        shards.insert(shard.source_uri.clone(), shard);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        let span = queries.anchor_source_span(AnchorId(10)).ok_or("unique anchor must resolve")?;
+        assert_eq!(span.source_uri, "file:///lib/Foo.pm");
+        assert_eq!(span.start_byte, 0);
+        assert_eq!(span.end_byte, 15);
+        Ok(())
+    }
+
+    #[test]
+    fn anchor_source_span_fails_closed_for_duplicate_ids_across_shards()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Distinct spans so a first-hit implementation would return whichever
+        // shard HashMap iteration happens to yield first. Fail-closed must not
+        // let iteration order manufacture a source-backed identity.
+        let shard_a = colliding_anchor_shard("file:///lib/A.pm", FileId(1), 0, 7);
+        let shard_b = colliding_anchor_shard("file:///lib/B.pm", FileId(2), 10, 17);
+        let mut shards = HashMap::new();
+        shards.insert(shard_a.source_uri.clone(), shard_a);
+        shards.insert(shard_b.source_uri.clone(), shard_b);
+        let ref_index = ReferenceIndex::new();
+        let ie_index = ImportExportIndex::new();
+        let queries = build_queries(&ref_index, &ie_index, &shards);
+
+        assert!(
+            queries.anchor_source_span(AnchorId(42)).is_none(),
+            "duplicate AnchorId across shards must fail closed rather than pick a HashMap winner"
+        );
         Ok(())
     }
 

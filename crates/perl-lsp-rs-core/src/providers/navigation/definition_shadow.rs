@@ -649,9 +649,14 @@ fn legacy_location_to_summary(location: Option<&Location>) -> ShadowResultSummar
 ///
 /// The two paths describe the same definition with different span conventions:
 /// the legacy index reports the whole declaration (`sub bar { 1 }`) while a
-/// semantic anchor reports the name token (`bar`). Containment is therefore the
-/// correct relation, and it is evaluated on byte offsets so the comparison does
-/// not depend on the two paths agreeing about column encoding.
+/// semantic anchor reports the name token (`bar`). Containment is therefore a
+/// necessary relation, and it is evaluated on byte offsets so the comparison
+/// does not depend on the two paths agreeing about column encoding.
+///
+/// Containment alone is not sufficient for agreement: a nested same-named
+/// declaration's name token also lies inside the outer body's span. Callers
+/// that rewrite identities must pick the earliest contained name token as the
+/// declaration itself.
 fn anchor_is_within_legacy_declaration(legacy: &Location, span: &AnchorSourceSpan) -> bool {
     if span.source_uri != legacy.uri {
         return false;
@@ -669,6 +674,24 @@ fn anchor_is_within_legacy_declaration(legacy: &Location, span: &AnchorSourceSpa
     start >= declaration_start && end <= declaration_end
 }
 
+/// The name-token that belongs to the legacy declaration, if any candidate
+/// resolved a span inside that declaration body.
+///
+/// Nested same-named inner tokens are also contained; the declaration's own
+/// name is the earliest contained token (`sub NAME { ... }`).
+fn agreement_name_token<'a>(
+    legacy: Option<&Location>,
+    spans: impl IntoIterator<Item = Option<&'a AnchorSourceSpan>>,
+) -> Option<(String, u32)> {
+    let legacy = legacy?;
+    spans
+        .into_iter()
+        .flatten()
+        .filter(|span| anchor_is_within_legacy_declaration(legacy, span))
+        .min_by_key(|span| (span.start_byte, span.source_uri.as_str()))
+        .map(|span| (span.source_uri.clone(), span.start_byte))
+}
+
 /// Build the shadow-compare identity for one semantic definition candidate.
 ///
 /// Identities must live in the same space as the legacy path's, otherwise the
@@ -679,12 +702,13 @@ fn anchor_is_within_legacy_declaration(legacy: &Location, span: &AnchorSourceSpa
 /// `WorkspaceIndex` would re-acquire the `fact_shards` read lock that
 /// `with_semantic_queries_for_uri` still holds around these calls, and
 /// deadlock against a queued reindex.
-fn semantic_candidate_identity<Q: SemanticQueries>(
-    semantic_queries: &Q,
+fn semantic_candidate_identity(
     legacy_location: Option<&Location>,
+    agreement: Option<&(String, u32)>,
     candidate: &perl_semantic_facts::DefinitionCandidate,
+    span: Option<&AnchorSourceSpan>,
 ) -> String {
-    let Some(span) = semantic_queries.anchor_source_span(candidate.anchor_id) else {
+    let Some(span) = span else {
         // No resolvable source span: generated or virtual member.
         return format!(
             "{NO_SOURCE_ANCHOR_IDENTITY_PREFIX}:{}:{}",
@@ -692,9 +716,14 @@ fn semantic_candidate_identity<Q: SemanticQueries>(
         );
     };
 
-    // Same declaration, different span convention: adopt the legacy identity.
-    if let Some(legacy) = legacy_location
-        && anchor_is_within_legacy_declaration(legacy, &span)
+    // Same declaration, different span convention: only the declaration's own
+    // name token adopts the legacy identity. Nested same-named inner tokens
+    // stay on their own source-backed identity so they cannot collapse to a
+    // false one-result `Same` after `summarize_identities` dedup.
+    if let (Some(legacy), Some((uri, start))) = (legacy_location, agreement)
+        && span.source_uri == *uri
+        && span.start_byte == *start
+        && anchor_is_within_legacy_declaration(legacy, span)
     {
         return location_identity(legacy);
     }
@@ -714,9 +743,21 @@ fn semantic_candidates_to_summary<Q: SemanticQueries>(
         return summarize_identities(Some(Vec::new()));
     }
 
+    let spans: Vec<Option<AnchorSourceSpan>> =
+        candidates.iter().map(|c| semantic_queries.anchor_source_span(c.anchor_id)).collect();
+    let agreement = agreement_name_token(legacy_location, spans.iter().map(Option::as_ref));
+
     let identities: Vec<String> = candidates
         .iter()
-        .map(|candidate| semantic_candidate_identity(semantic_queries, legacy_location, candidate))
+        .zip(spans.iter())
+        .map(|(candidate, span)| {
+            semantic_candidate_identity(
+                legacy_location,
+                agreement.as_ref(),
+                candidate,
+                span.as_ref(),
+            )
+        })
         .collect();
 
     summarize_identities(Some(identities))
@@ -966,6 +1007,44 @@ mod tests {
         assert_ne!(
             result.receipt.old_result.identities, result.receipt.new_result.identities,
             "identities must distinguish the two declarations"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn shadow_does_not_report_same_for_nested_same_named_declarations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // An inner same-named sub's name token also lies inside the outer
+        // declaration's full-body span. Containment alone would rewrite both
+        // candidates to the outer legacy identity; after dedup that becomes a
+        // false one-result `Same`.
+        let uri = "file:///lib/Nested.pm";
+        let code = "package Nested;\nsub same { sub same { 1 } 2 }\n1;\n";
+        let (index, candidates) = indexed_index_and_candidates(uri, code, "Nested::same")?;
+        assert_eq!(candidates.len(), 2, "fixture must yield both nested Nested::same declarations");
+        assert!(
+            index.find_definition("Nested::same").is_some(),
+            "legacy path must resolve Nested::same"
+        );
+
+        let queries = StubSemanticQueries::new(candidates).with_spans_from(&index, uri);
+        let ctx = QueryContext::new(FileId(1), None, None);
+        let result = goto_definition_shadow(&index, &queries, "Nested::same", &ctx);
+
+        assert!(result.receipt.old_result.available);
+        assert!(result.receipt.new_result.available);
+        assert_eq!(result.receipt.old_result.match_count, 1);
+        assert_eq!(
+            result.receipt.new_result.match_count, 2,
+            "inner and outer declarations must remain distinct identities; new={:?}",
+            result.receipt.new_result
+        );
+        assert_ne!(
+            result.receipt.verdict,
+            ShadowCompareVerdict::Same,
+            "nested same-named declarations must not collapse to a one-result Same receipt; old={:?} new={:?}",
+            result.receipt.old_result,
+            result.receipt.new_result
         );
         Ok(())
     }
