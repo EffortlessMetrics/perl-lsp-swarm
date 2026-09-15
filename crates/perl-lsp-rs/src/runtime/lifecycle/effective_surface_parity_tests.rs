@@ -15,7 +15,10 @@
 use super::super::{LspServer, json};
 use super::capabilities::{apply_disabled_feature_id, disabled_feature_ids_from_init_options};
 use perl_lsp_rs_core::features::policy::FeatureProfile;
-use perl_lsp_rs_core::protocol::capabilities::{BuildFlags, get_supported_commands};
+use perl_lsp_rs_core::protocol::capabilities::{
+    BuildFlags, SERVER_WORKSPACE_FOLDER_SUPPORT, WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE,
+    get_supported_commands,
+};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
@@ -202,6 +205,41 @@ fn suppression_table_matches_the_canonical_model_table() {
 // ---------------------------------------------------------------------------
 // Full-subject parity against handle_initialize
 // ---------------------------------------------------------------------------
+
+/// #8161 negative control 8 — competing builders must not emit different
+/// workspace-folder capability shapes.
+///
+/// `assert_initialize_matches_model` already fails on any runtime/model
+/// divergence, and both builders now read one constant, so a one-sided flip is
+/// unrepresentable. What this adds is the other half: the emitted wire bits
+/// must equal the constants, so re-introducing a hard-coded literal in either
+/// builder is caught even when both happen to agree with each other.
+///
+/// The client's own workspace-folder bit is varied across every normalized
+/// class (supported / declared-false / malformed / absent) to prove it never
+/// feeds the server bit.
+#[test]
+fn workspace_folder_capability_is_pinned_to_the_shared_constants() -> Result<(), String> {
+    for client_bit in [json!(true), json!(false), json!("yes"), json!(null)] {
+        let surface = assert_initialize_matches_model(json!({
+            "capabilities": { "workspace": { "workspaceFolders": client_bit.clone() } }
+        }))?;
+
+        assert_eq!(
+            surface.server_capabilities.pointer("/workspace/workspaceFolders/supported"),
+            Some(&json!(SERVER_WORKSPACE_FOLDER_SUPPORT)),
+            "server support must come from the shared constant, not a literal or the \
+             client bit {client_bit}"
+        );
+        assert_eq!(
+            surface.server_capabilities.pointer("/workspace/workspaceFolders/changeNotifications"),
+            Some(&json!(WORKSPACE_FOLDER_CHANGE_ROUTE_AVAILABLE)),
+            "changeNotifications must agree with the compiled-in dispatch route, not the \
+             client bit {client_bit}"
+        );
+    }
+    Ok(())
+}
 
 #[test]
 fn minimal_client_surface_matches() -> Result<(), String> {
