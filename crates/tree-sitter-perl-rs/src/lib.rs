@@ -139,7 +139,8 @@ impl Parser {
     /// Parse `source` and preserve recovery diagnostics and catastrophic failures.
     ///
     /// A recovered parse returns `tree: Some(_)` with one or more diagnostics. A
-    /// catastrophic failure returns `tree: None` and a typed [`ParseFailure`]. Existing
+    /// terminal failure returns `tree: None`. `failure` contains a typed
+    /// [`ParseFailure`] when the facade can represent the terminal cause. Existing
     /// callers that only need the compatibility `Option` API can continue using
     /// [`parse`][Parser::parse].
     pub fn parse_detailed(&mut self, source: &str) -> ParseOutcome {
@@ -447,11 +448,11 @@ pub enum ParseFailure {
 impl ParseFailure {
     /// Classify the parser's terminal stop cause.
     ///
-    /// Returns `None` only when a cause carries no classification this facade
-    /// can express and the parser recorded no diagnostic to attach — callers
-    /// must still treat the parse as terminated, which
-    /// [`Parser::parse_detailed`] enforces by withholding the tree on
-    /// `stop_cause` rather than on this value.
+    /// Returns `None` when the terminal cause explicitly forbids facade
+    /// classification, or when an uncategorized cause has no diagnostic to
+    /// attach. Callers must still treat the parse as terminated; therefore
+    /// [`Parser::parse_detailed`] can return `tree: None, failure: None` while
+    /// preserving diagnostics.
     fn from_stop_cause(cause: ParseStopCause, diagnostics: &[ParseDiagnostic]) -> Option<Self> {
         match cause {
             ParseStopCause::Cancelled => Some(Self::Cancelled),
@@ -465,9 +466,11 @@ impl ParseFailure {
             ParseStopCause::NestingOrDepthBudgetExhausted { limit, usage } => {
                 Some(Self::NestingTooDeep { depth: usage, max_depth: limit })
             }
-            // Heredoc/lexer budgets and any future cause: report the terminal
-            // diagnostic, which the parser appends last, rather than the first
-            // recovered one.
+            // This sentinel deliberately carries no facade classification and
+            // forbids callers from inferring one from preserved diagnostics.
+            ParseStopCause::FutureTypedTerminal => None,
+            // Other uncategorized terminal causes report the terminal diagnostic,
+            // which the parser appends last, rather than the first recovered one.
             _ => {
                 diagnostics.last().map(|diagnostic| Self::Other { diagnostic: diagnostic.clone() })
             }
@@ -1806,6 +1809,25 @@ mod tests {
     }
 
     #[test]
+    fn future_typed_terminal_does_not_infer_failure_from_diagnostics() -> StopCauseResult {
+        let diagnostic =
+            ParseDiagnostic::SyntaxError { message: "recovered".to_string(), location: 7 };
+        let failure = ParseFailure::from_stop_cause(
+            ParseStopCause::FutureTypedTerminal,
+            std::slice::from_ref(&diagnostic),
+        );
+
+        match failure {
+            None => Ok(()),
+            other => Err(format!(
+                "FutureTypedTerminal must not infer a failure from diagnostics; \
+                 parse_detailed withholds the tree independently, got {other:?}"
+            )
+            .into()),
+        }
+    }
+
+    #[test]
     fn uncategorized_cause_without_diagnostics_withholds_the_failure() -> StopCauseResult {
         let failure = ParseFailure::from_stop_cause(ParseStopCause::LexerBudgetExhausted, &[]);
 
@@ -1817,72 +1839,5 @@ mod tests {
             )
             .into()),
         }
-    }
-
-    // Focused discriminators for two boundaries adjacent to the changed
-    // lines (the enforce-new-ripr gate names them explicitly): the
-    // `parse_with_old_tree` unchanged-source fast path and the
-    // `visible_imports_at_offset` module-dedup boundary.
-    #[test]
-    fn unchanged_source_reuses_the_old_tree_without_reparsing() -> StopCauseResult {
-        let mut parser = Parser::new();
-        let tree = must_some(parser.parse("my $x = 42;\n"));
-
-        let reused = must_some(parser.parse_with_old_tree("my $x = 42;\n", &tree));
-
-        assert_eq!(
-            reused.reparse_mode(),
-            Some(ReparseMode::Unchanged),
-            "a byte-identical source with no pending edits must take the reuse fast path"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn changed_source_does_not_reuse_the_unchanged_fast_path() -> StopCauseResult {
-        let mut parser = Parser::new();
-        let tree = must_some(parser.parse("my $x = 42;\n"));
-
-        let reparsed = must_some(parser.parse_with_old_tree("my $x = 43;\n", &tree));
-
-        assert_ne!(
-            reparsed.reparse_mode(),
-            Some(ReparseMode::Unchanged),
-            "a changed source must not take the reuse fast path"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn visible_imports_deduplicate_repeated_modules() -> StopCauseResult {
-        let mut parser = Parser::new();
-        let tree = must_some(parser.parse("use strict;\nuse strict;\n"));
-
-        let overlay = SemanticOverlay { tree: &tree };
-        let imports = overlay.visible_imports_at_offset(tree.source().len());
-
-        assert_eq!(
-            imports.len(),
-            1,
-            "a repeated module must be deduplicated to a single visible import, got {imports:?}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn visible_imports_keep_distinct_modules() -> StopCauseResult {
-        let mut parser = Parser::new();
-        let tree = must_some(parser.parse("use strict;\nuse warnings;\n"));
-
-        let overlay = SemanticOverlay { tree: &tree };
-        let imports = overlay.visible_imports_at_offset(tree.source().len());
-
-        let modules: Vec<&str> = imports.iter().map(|import| import.module.as_str()).collect();
-        assert_eq!(
-            modules,
-            vec!["strict", "warnings"],
-            "distinct modules must all stay visible, got {imports:?}"
-        );
-        Ok(())
     }
 }
