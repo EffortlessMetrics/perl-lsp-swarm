@@ -271,6 +271,11 @@ impl PullDiagnosticsOrchestrator {
         let profile =
             perlcritic_profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
 
+        // Same resolution as the key, kept as a path so the document's logical
+        // path can be expressed relative to the root the key names (#15555).
+        // The critic root is the owning-root authority in this service: key and
+        // path must describe the same root.
+        let identity_root_path = workspace_root.clone();
         // Get include paths for the document
         let include_paths: Vec<String> = server
             .include_paths_for_doc(uri)
@@ -324,6 +329,7 @@ impl PullDiagnosticsOrchestrator {
             configuration_generation: project_config_generation_for_doc(server, uri),
             markup_message_support,
             identity_root_key: root_key,
+            identity_root_path,
             facts_generation,
             accepted_critic_snapshot,
             accepted_state_currentness,

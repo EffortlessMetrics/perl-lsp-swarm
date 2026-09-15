@@ -2377,6 +2377,8 @@ pub fn perl_lsp_rs_core::protocol::resolve_envelope::SessionResolveAuthenticator
 pub trait perl_lsp_rs_core::protocol::resolve_envelope::ResolveEnvelopeSubject: serde_core::ser::Serialize + serde_core::de::DeserializeOwned
 pub const perl_lsp_rs_core::protocol::resolve_envelope::ResolveEnvelopeSubject::FAMILY: perl_lsp_rs_core::protocol::resolve_envelope::ResolveFamily
 pub const perl_lsp_rs_core::protocol::resolve_envelope::ResolveEnvelopeSubject::VERSION: u16
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::FAMILY: perl_lsp_rs_core::protocol::resolve_envelope::ResolveFamily
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::VERSION: u16
 pub mod perl_lsp_rs_core::protocol::schema
 pub enum perl_lsp_rs_core::protocol::schema::Direction
 pub perl_lsp_rs_core::protocol::schema::Direction::ClientToServer
@@ -2629,6 +2631,54 @@ pub use perl_lsp_rs_core::providers::MIN_LOOSE_MATCH_QUERY_CHARS
 pub use perl_lsp_rs_core::providers::PerlTidyConfig
 pub use perl_lsp_rs_core::providers::tooling_export
 pub mod perl_lsp_rs_core::providers::ai
+pub mod perl_lsp_rs_core::providers::ai::budget
+pub enum perl_lsp_rs_core::providers::ai::budget::BudgetError
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::AboveHardMaximum
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::AboveHardMaximum::hard_maximum: u64
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::AboveHardMaximum::kind: perl_lsp_rs_core::providers::budget::BudgetKind
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::AboveHardMaximum::requested: u64
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::Incoherent
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::Incoherent::at_least: u64
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::Incoherent::kind: perl_lsp_rs_core::providers::budget::BudgetKind
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::Incoherent::requested: u64
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::NotPositive
+pub perl_lsp_rs_core::providers::ai::budget::BudgetError::NotPositive::kind: perl_lsp_rs_core::providers::budget::BudgetKind
+pub fn perl_lsp_rs_core::providers::budget::BudgetError::clone(&self) -> perl_lsp_rs_core::providers::budget::BudgetError
+pub fn perl_lsp_rs_core::providers::budget::BudgetError::eq(&self, other: &perl_lsp_rs_core::providers::budget::BudgetError) -> bool
+pub fn perl_lsp_rs_core::providers::budget::BudgetError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::budget::BudgetError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::providers::ai::budget::BudgetKind
+pub perl_lsp_rs_core::providers::ai::budget::BudgetKind::CompletionBytes
+pub perl_lsp_rs_core::providers::ai::budget::BudgetKind::CompletionChars
+pub perl_lsp_rs_core::providers::ai::budget::BudgetKind::CompletionLines
+pub perl_lsp_rs_core::providers::ai::budget::BudgetKind::DeltaBytes
+pub perl_lsp_rs_core::providers::ai::budget::BudgetKind::EventBytes
+pub perl_lsp_rs_core::providers::ai::budget::BudgetKind::EventCount
+pub perl_lsp_rs_core::providers::ai::budget::BudgetKind::LineBytes
+pub perl_lsp_rs_core::providers::ai::budget::BudgetKind::ResponseBytes
+pub const fn perl_lsp_rs_core::providers::budget::BudgetKind::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::clone(&self) -> perl_lsp_rs_core::providers::budget::BudgetKind
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::eq(&self, other: &perl_lsp_rs_core::providers::budget::BudgetKind) -> bool
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_lsp_rs_core::providers::ai::budget::AiResponseBudget
+pub const fn perl_lsp_rs_core::providers::budget::AiResponseBudget::compiled_default() -> Self
+pub const fn perl_lsp_rs_core::providers::budget::AiResponseBudget::hard_maximum(kind: perl_lsp_rs_core::providers::budget::BudgetKind) -> u64
+pub const fn perl_lsp_rs_core::providers::budget::AiResponseBudget::limit(&self, kind: perl_lsp_rs_core::providers::budget::BudgetKind) -> u64
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::with_limit(self, kind: perl_lsp_rs_core::providers::budget::BudgetKind, value: u64) -> core::result::Result<Self, perl_lsp_rs_core::providers::budget::BudgetError>
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::clone(&self) -> perl_lsp_rs_core::providers::budget::AiResponseBudget
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::eq(&self, other: &perl_lsp_rs_core::providers::budget::AiResponseBudget) -> bool
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::default() -> Self
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::ai::budget::BudgetViolation
+pub perl_lsp_rs_core::providers::ai::budget::BudgetViolation::kind: perl_lsp_rs_core::providers::budget::BudgetKind
+pub perl_lsp_rs_core::providers::ai::budget::BudgetViolation::limit: u64
+pub perl_lsp_rs_core::providers::ai::budget::BudgetViolation::observed_at_least: u64
+pub fn perl_lsp_rs_core::providers::budget::BudgetViolation::clone(&self) -> perl_lsp_rs_core::providers::budget::BudgetViolation
+pub fn perl_lsp_rs_core::providers::budget::BudgetViolation::eq(&self, other: &perl_lsp_rs_core::providers::budget::BudgetViolation) -> bool
+pub fn perl_lsp_rs_core::providers::budget::BudgetViolation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::budget::BudgetViolation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lsp_rs_core::providers::ai::destination
 pub enum perl_lsp_rs_core::providers::ai::destination::DestinationError
 pub perl_lsp_rs_core::providers::ai::destination::DestinationError::DisallowedAddress
@@ -2732,6 +2782,54 @@ pub fn perl_lsp_rs_core::providers::ai::validate_endpoint(url: &str, allow_local
 pub fn perl_lsp_rs_core::providers::ai::validate_endpoint_with_resolver(url: &str, allow_local_http: bool, resolve: &dyn core::ops::function::Fn(&str, u16) -> core::result::Result<alloc::vec::Vec<core::net::ip_addr::IpAddr>, perl_lsp_rs_core::providers::destination::DestinationError>) -> core::result::Result<perl_lsp_rs_core::providers::destination::ApprovedDestination, perl_lsp_rs_core::providers::destination::DestinationError>
 pub fn perl_lsp_rs_core::providers::ai::validate_tcp_attach_host(host: &str, port: u16) -> core::result::Result<alloc::vec::Vec<core::net::ip_addr::IpAddr>, perl_lsp_rs_core::providers::destination::DestinationError>
 pub fn perl_lsp_rs_core::providers::ai::validate_tcp_attach_host_with_resolver(host: &str, port: u16, resolve: &dyn core::ops::function::Fn(&str, u16) -> core::result::Result<alloc::vec::Vec<core::net::ip_addr::IpAddr>, perl_lsp_rs_core::providers::destination::DestinationError>) -> core::result::Result<alloc::vec::Vec<core::net::ip_addr::IpAddr>, perl_lsp_rs_core::providers::destination::DestinationError>
+pub mod perl_lsp_rs_core::providers::budget
+pub enum perl_lsp_rs_core::providers::budget::BudgetError
+pub perl_lsp_rs_core::providers::budget::BudgetError::AboveHardMaximum
+pub perl_lsp_rs_core::providers::budget::BudgetError::AboveHardMaximum::hard_maximum: u64
+pub perl_lsp_rs_core::providers::budget::BudgetError::AboveHardMaximum::kind: perl_lsp_rs_core::providers::budget::BudgetKind
+pub perl_lsp_rs_core::providers::budget::BudgetError::AboveHardMaximum::requested: u64
+pub perl_lsp_rs_core::providers::budget::BudgetError::Incoherent
+pub perl_lsp_rs_core::providers::budget::BudgetError::Incoherent::at_least: u64
+pub perl_lsp_rs_core::providers::budget::BudgetError::Incoherent::kind: perl_lsp_rs_core::providers::budget::BudgetKind
+pub perl_lsp_rs_core::providers::budget::BudgetError::Incoherent::requested: u64
+pub perl_lsp_rs_core::providers::budget::BudgetError::NotPositive
+pub perl_lsp_rs_core::providers::budget::BudgetError::NotPositive::kind: perl_lsp_rs_core::providers::budget::BudgetKind
+pub fn perl_lsp_rs_core::providers::budget::BudgetError::clone(&self) -> perl_lsp_rs_core::providers::budget::BudgetError
+pub fn perl_lsp_rs_core::providers::budget::BudgetError::eq(&self, other: &perl_lsp_rs_core::providers::budget::BudgetError) -> bool
+pub fn perl_lsp_rs_core::providers::budget::BudgetError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::budget::BudgetError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_lsp_rs_core::providers::budget::BudgetKind
+pub perl_lsp_rs_core::providers::budget::BudgetKind::CompletionBytes
+pub perl_lsp_rs_core::providers::budget::BudgetKind::CompletionChars
+pub perl_lsp_rs_core::providers::budget::BudgetKind::CompletionLines
+pub perl_lsp_rs_core::providers::budget::BudgetKind::DeltaBytes
+pub perl_lsp_rs_core::providers::budget::BudgetKind::EventBytes
+pub perl_lsp_rs_core::providers::budget::BudgetKind::EventCount
+pub perl_lsp_rs_core::providers::budget::BudgetKind::LineBytes
+pub perl_lsp_rs_core::providers::budget::BudgetKind::ResponseBytes
+pub const fn perl_lsp_rs_core::providers::budget::BudgetKind::as_str(self) -> &'static str
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::clone(&self) -> perl_lsp_rs_core::providers::budget::BudgetKind
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::eq(&self, other: &perl_lsp_rs_core::providers::budget::BudgetKind) -> bool
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::budget::BudgetKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_lsp_rs_core::providers::budget::AiResponseBudget
+pub const fn perl_lsp_rs_core::providers::budget::AiResponseBudget::compiled_default() -> Self
+pub const fn perl_lsp_rs_core::providers::budget::AiResponseBudget::hard_maximum(kind: perl_lsp_rs_core::providers::budget::BudgetKind) -> u64
+pub const fn perl_lsp_rs_core::providers::budget::AiResponseBudget::limit(&self, kind: perl_lsp_rs_core::providers::budget::BudgetKind) -> u64
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::with_limit(self, kind: perl_lsp_rs_core::providers::budget::BudgetKind, value: u64) -> core::result::Result<Self, perl_lsp_rs_core::providers::budget::BudgetError>
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::clone(&self) -> perl_lsp_rs_core::providers::budget::AiResponseBudget
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::eq(&self, other: &perl_lsp_rs_core::providers::budget::AiResponseBudget) -> bool
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::default() -> Self
+pub fn perl_lsp_rs_core::providers::budget::AiResponseBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::budget::BudgetViolation
+pub perl_lsp_rs_core::providers::budget::BudgetViolation::kind: perl_lsp_rs_core::providers::budget::BudgetKind
+pub perl_lsp_rs_core::providers::budget::BudgetViolation::limit: u64
+pub perl_lsp_rs_core::providers::budget::BudgetViolation::observed_at_least: u64
+pub fn perl_lsp_rs_core::providers::budget::BudgetViolation::clone(&self) -> perl_lsp_rs_core::providers::budget::BudgetViolation
+pub fn perl_lsp_rs_core::providers::budget::BudgetViolation::eq(&self, other: &perl_lsp_rs_core::providers::budget::BudgetViolation) -> bool
+pub fn perl_lsp_rs_core::providers::budget::BudgetViolation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_lsp_rs_core::providers::budget::BudgetViolation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod perl_lsp_rs_core::providers::code_actions
 pub enum perl_lsp_rs_core::providers::code_actions::CodeActionKind
 pub perl_lsp_rs_core::providers::code_actions::CodeActionKind::QuickFix
@@ -3942,6 +4040,21 @@ pub perl_lsp_rs_core::providers::inlay_hints::InlayHint::position: perl_position
 pub perl_lsp_rs_core::providers::inlay_hints::InlayHint::tooltip: core::option::Option<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::InlayHint::clone(&self) -> perl_lsp_rs_core::providers::InlayHint
 pub fn perl_lsp_rs_core::providers::InlayHint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::character: u32
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::content_hash: u64
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::function_name: alloc::string::String
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::generation: u32
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::incarnation: u64
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::line: u32
+pub perl_lsp_rs_core::providers::inlay_hints::InlayHintResolveSubjectV1::uri: alloc::string::String
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::clone(&self) -> perl_lsp_rs_core::providers::InlayHintResolveSubjectV1
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::eq(&self, other: &perl_lsp_rs_core::providers::InlayHintResolveSubjectV1) -> bool
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::FAMILY: perl_lsp_rs_core::protocol::resolve_envelope::ResolveFamily
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::VERSION: u16
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp_rs_core::providers::inlay_hints::InlayHintsProvider
 pub fn perl_lsp_rs_core::providers::InlayHintsProvider::generate_hints(&self, ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::InlayHint>
 pub fn perl_lsp_rs_core::providers::InlayHintsProvider::new() -> Self
@@ -4308,6 +4421,7 @@ pub fn perl_lsp_rs_core::providers::AutomaticEligibility::eq(&self, other: &perl
 pub fn perl_lsp_rs_core::providers::AutomaticEligibility::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::providers::inline_completion::BackendError
 pub perl_lsp_rs_core::providers::inline_completion::BackendError::Auth(alloc::string::String)
+pub perl_lsp_rs_core::providers::inline_completion::BackendError::BudgetExceeded(perl_lsp_rs_core::providers::budget::BudgetViolation)
 pub perl_lsp_rs_core::providers::inline_completion::BackendError::Cancelled
 pub perl_lsp_rs_core::providers::inline_completion::BackendError::Provider(alloc::string::String)
 pub perl_lsp_rs_core::providers::inline_completion::BackendError::RateLimited
@@ -6861,6 +6975,7 @@ pub fn perl_lsp_rs_core::providers::AutomaticEligibility::eq(&self, other: &perl
 pub fn perl_lsp_rs_core::providers::AutomaticEligibility::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_lsp_rs_core::providers::BackendError
 pub perl_lsp_rs_core::providers::BackendError::Auth(alloc::string::String)
+pub perl_lsp_rs_core::providers::BackendError::BudgetExceeded(perl_lsp_rs_core::providers::budget::BudgetViolation)
 pub perl_lsp_rs_core::providers::BackendError::Cancelled
 pub perl_lsp_rs_core::providers::BackendError::Provider(alloc::string::String)
 pub perl_lsp_rs_core::providers::BackendError::RateLimited
@@ -8129,6 +8244,21 @@ pub perl_lsp_rs_core::providers::InlayHint::position: perl_position_tracking::wi
 pub perl_lsp_rs_core::providers::InlayHint::tooltip: core::option::Option<alloc::string::String>
 pub fn perl_lsp_rs_core::providers::InlayHint::clone(&self) -> perl_lsp_rs_core::providers::InlayHint
 pub fn perl_lsp_rs_core::providers::InlayHint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_lsp_rs_core::providers::InlayHintResolveSubjectV1
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::character: u32
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::content_hash: u64
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::function_name: alloc::string::String
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::generation: u32
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::incarnation: u64
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::line: u32
+pub perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::uri: alloc::string::String
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::clone(&self) -> perl_lsp_rs_core::providers::InlayHintResolveSubjectV1
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::eq(&self, other: &perl_lsp_rs_core::providers::InlayHintResolveSubjectV1) -> bool
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::FAMILY: perl_lsp_rs_core::protocol::resolve_envelope::ResolveFamily
+pub const perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::VERSION: u16
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_lsp_rs_core::providers::InlayHintResolveSubjectV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_lsp_rs_core::providers::InlayHintsProvider
 pub fn perl_lsp_rs_core::providers::InlayHintsProvider::generate_hints(&self, ast: &perl_ast::ast::Node, to_pos16: &impl core::ops::function::Fn(usize) -> (u32, u32), range: core::option::Option<perl_position_tracking::wire::WireRange>) -> alloc::vec::Vec<perl_lsp_rs_core::providers::InlayHint>
 pub fn perl_lsp_rs_core::providers::InlayHintsProvider::new() -> Self
