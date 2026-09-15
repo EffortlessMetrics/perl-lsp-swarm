@@ -31,9 +31,9 @@ fn scenario_08_shebang_file_without_pl_extension() -> Result<(), String> {
         .open_file("deploy_script", source)
         .map_err(|error| format!("didOpen should succeed for shebang file: {error}"))?;
 
-    harness.hover("deploy_script", 4, 3).map_err(|error| {
-        format!("hover crashed on non-.pl file — UX regression: {error}")
-    })?;
+    harness
+        .hover("deploy_script", 4, 3)
+        .map_err(|error| format!("hover crashed on non-.pl file — UX regression: {error}"))?;
 
     harness.assert_no_crash();
     Ok(())
@@ -54,9 +54,9 @@ fn scenario_08_no_extension_file_completion_does_not_crash() -> Result<(), Strin
         .open_file("run_tests", source)
         .map_err(|error| format!("didOpen should succeed: {error}"))?;
 
-    harness.completion("run_tests", 1, 7).map_err(|error| {
-        format!("completion crashed on non-.pl file — UX regression: {error}")
-    })?;
+    harness
+        .completion("run_tests", 1, 7)
+        .map_err(|error| format!("completion crashed on non-.pl file — UX regression: {error}"))?;
 
     harness.assert_no_crash();
     Ok(())
