@@ -226,6 +226,9 @@ fn validate_source_backed_exact_class(
     if !class.live {
         violations.push(format!("{key} is ExplicitSource but live is false"));
     }
+    if !class.requires_high_confidence {
+        violations.push(format!("{key} is ExplicitSource but requires_high_confidence is false"));
+    }
     if class.requires_generated_label {
         violations.push(format!("{key} is ExplicitSource but requires_generated_label is true"));
     }
@@ -260,10 +263,8 @@ fn validate_source_backed_generated_class(
         violations
             .push(format!("{key} is SourceBackedGenerated but requires_ready_index is false"));
     }
-    if !class.requires_high_confidence {
-        violations
-            .push(format!("{key} is SourceBackedGenerated but requires_high_confidence is false"));
-    }
+    // The pilot admits bounded Medium confidence; the blocker below excludes
+    // Low-confidence and dynamic candidates. ExplicitSource keeps the High floor.
     if !class.requires_source_anchor {
         violations
             .push(format!("{key} is SourceBackedGenerated but requires_source_anchor is false"));
@@ -408,7 +409,7 @@ mod tests {
             live: true,
             requires_non_empty_query: true,
             requires_ready_index: true,
-            requires_high_confidence: true,
+            requires_high_confidence: false,
             requires_source_anchor: true,
             requires_generated_label: true,
             label: Some(REQUIRED_GENERATED_LABEL.to_string()),
@@ -419,6 +420,53 @@ mod tests {
             claim_boundary: "Source-backed generated/framework members are labeled and anchored."
                 .to_string(),
         }
+    }
+
+    fn live_exact_class() -> WorkspaceSymbolClass {
+        WorkspaceSymbolClass {
+            name: "source_backed_exact_symbol".to_string(),
+            state: "partial_live".to_string(),
+            surface: REQUIRED_SURFACE.to_string(),
+            fact_provenance: "ExplicitSource".to_string(),
+            live: true,
+            requires_non_empty_query: true,
+            requires_ready_index: true,
+            requires_high_confidence: true,
+            requires_source_anchor: true,
+            requires_generated_label: false,
+            label: None,
+            blocks: Vec::new(),
+            claim_boundary: "Exact source symbols remain high-confidence and anchored.".to_string(),
+        }
+    }
+
+    #[test]
+    fn rejects_exact_live_class_without_high_confidence_floor() -> TestResult {
+        let mut class = live_exact_class();
+        class.requires_high_confidence = false;
+        let mut violations = Vec::new();
+
+        validate_source_backed_exact_class(&class, "test", &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("requires_high_confidence")),
+            "ExplicitSource class without the High confidence floor should be rejected: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_compliant_exact_live_class() -> TestResult {
+        let class = live_exact_class();
+        let mut violations = Vec::new();
+
+        validate_source_backed_exact_class(&class, "test", &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "compliant ExplicitSource class should pass: {violations:?}"
+        );
+        Ok(())
     }
 
     #[test]
@@ -454,6 +502,37 @@ mod tests {
         assert!(
             violations.iter().any(|violation| violation.contains("requires_source_anchor")),
             "generated live class without source anchor should be rejected: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_bounded_medium_generated_confidence_band() -> TestResult {
+        let policy = policy();
+        let class = live_generated_class();
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations.is_empty(),
+            "Medium generated pilot with low_confidence blocked should pass: {violations:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn generated_medium_band_still_requires_low_confidence_blocker() -> TestResult {
+        let policy = policy();
+        let mut class = live_generated_class();
+        class.blocks.retain(|blocker| blocker != "low_confidence");
+        let mut violations = Vec::new();
+
+        validate_source_backed_generated_class(&class, "test", &policy, &mut violations);
+
+        assert!(
+            violations.iter().any(|violation| violation.contains("low_confidence")),
+            "Medium admission without the low_confidence blocker must fail: {violations:?}"
         );
         Ok(())
     }
