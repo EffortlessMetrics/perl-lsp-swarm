@@ -44,6 +44,9 @@ mod internal_types;
 pub(crate) mod lints;
 /// Parse error to diagnostic conversion
 mod parse_errors;
+
+/// Canonical regex-diagnostic projection from the parser-retained analysis (#7024).
+pub mod regex_canonical;
 /// Scoped package-graph builder for cross-file PL303 role-conflict diagnostics.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod role_graph_scope;

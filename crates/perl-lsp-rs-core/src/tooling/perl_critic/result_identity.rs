@@ -545,6 +545,42 @@ mod tests {
     }
 
     #[test]
+    fn every_schema_version_changes_the_id() {
+        // `every_load_bearing_field_changes_the_id` varies source, policy and facts
+        // but holds `schemas` fixed, so nothing pinned the schema versions as
+        // identity inputs. A version bump can only invalidate a client's cached
+        // report if it reaches the composed id: drop the `rule_catalog` push and a
+        // catalog change leaves the id equal, so a client is told `unchanged`
+        // while holding diagnostics that predate the change.
+        let baseline_id = baseline().compose();
+        let (source, baseline_policy, facts, schemas) = baseline_parts();
+
+        for (field, varied) in [
+            ("rule_catalog", DiagnosticResultSchemaVersions::new(29, 1, 1, 1, 1)),
+            ("alias_catalog", DiagnosticResultSchemaVersions::new(28, 2, 1, 1, 1)),
+            ("suppression_contract", DiagnosticResultSchemaVersions::new(28, 1, 2, 1, 1)),
+            ("projection", DiagnosticResultSchemaVersions::new(28, 1, 1, 2, 1)),
+            ("remediation", DiagnosticResultSchemaVersions::new(28, 1, 1, 1, 2)),
+        ] {
+            assert_ne!(
+                baseline_id,
+                baseline_with(source.clone(), baseline_policy.clone(), facts.clone(), varied)
+                    .compose(),
+                "{field} must move the result id"
+            );
+        }
+
+        // Control: holding every version at its baseline must reproduce the
+        // baseline id, so the assertions above cannot pass merely because each
+        // reconstruction differs.
+        assert_eq!(
+            baseline_id,
+            baseline_with(source, baseline_policy, facts, schemas).compose(),
+            "unchanged schema versions must reproduce the baseline id"
+        );
+    }
+
+    #[test]
     fn legacy_engine_requires_the_effective_legacy_policy_digest() {
         let root = folder("workspace-a");
         assert_eq!(
