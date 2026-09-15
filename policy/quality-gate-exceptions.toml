@@ -8,7 +8,9 @@ schema_version = 1
 policy = "quality-gate-exceptions"
 owner = "EffortlessMetrics"
 status = "active"
-updated = "2026-09-09"
+updated = "2026-09-10"
+# Review dates create owner work; they must not change an unrelated PR verdict.
+due_review = "warn"
 
 [requirements]
 required_active = [

@@ -40,6 +40,9 @@ mod refresh;
 mod resolve_session;
 /// Routing module for lifecycle-aware index access
 pub mod routing;
+/// Ownership boundary for application background-worker execution lifetime,
+/// cancellation, join, and settlement (#10024).
+pub(crate) mod runtime_services;
 #[cfg(all(test, feature = "workspace"))]
 mod scan_gate_observation;
 pub(crate) mod scheduler;
@@ -69,6 +72,8 @@ mod document_symbols_sink_tests;
 mod metadata_invalidation_tests;
 #[cfg(test)]
 mod open_buffer_authority_tests;
+#[cfg(test)]
+mod runtime_services_tests;
 #[cfg(test)]
 mod session_warning_dedup_tests;
 
@@ -293,23 +298,27 @@ pub struct LspServer {
     progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     /// Refresh controller for debounced client refresh requests
     refresh_controller: refresh::RefreshController,
-    /// Diagnostic publication debouncer (installed after Arc wrapping in Scheduler::new)
-    diagnostic_debouncer: Mutex<Option<diagnostic_debounce::DiagnosticDebouncer>>,
     /// Accepted-ticket push-diagnostics sink (#11673): per-URI record of the
     /// last committed `publishDiagnostics` ticket + monotonic sequence. The
     /// irreversible outbound enqueue for parser-triggered replacements/clears
     /// happens inside this sink's critical section -- see
     /// [`diagnostics_sink`].
     push_diagnostics_sink: diagnostics_sink::PushDiagnosticsSink,
-    /// Off-lock async parse worker (#3396 Phase 3), installed after Arc
-    /// wrapping in `Scheduler::new` (production) or explicitly by tests
-    /// that want to exercise the real async gap. `None` means the
-    /// synchronous fallback path is active -- see
-    /// `LspServer::install_default_parse_worker` and
-    /// `handle_did_change_with_cancellation`.
-    parse_worker_handle: Mutex<Option<Arc<parse_worker::ParseWorker>>>,
-    /// File watcher change debouncer (installed after Arc wrapping in Scheduler::new)
-    file_watcher_debouncer: Mutex<Option<file_watcher_debounce::FileWatcherDebouncer>>,
+    /// Ownership boundary for application background-worker execution
+    /// lifetime, cancellation, join, and settlement (#10024).
+    ///
+    /// Owns the diagnostic publication debouncer, the off-lock async parse
+    /// worker (#3396 Phase 3), and the file watcher change debouncer --
+    /// each installed after Arc wrapping in `Scheduler::new` (production) or
+    /// explicitly by tests that want to exercise the real async gap. A
+    /// `None` worker slot means the synchronous fallback path is active --
+    /// see `LspServer::install_default_parse_worker` and
+    /// `handle_did_change_with_cancellation`. This does NOT own semantic
+    /// readiness/currentness/publication state (`indexing_in_progress`,
+    /// `indexing_rescan_pending`, `indexing_transition_lock`,
+    /// `pending_index_task_count`, `parse_cancel_flags` stay below, per the
+    /// #10024 hard boundary).
+    runtime_services: runtime_services::RuntimeServices,
     /// Notebook document store (LSP 3.17)
     pub(crate) notebook_store: notebook::NotebookStore,
     /// Trace level set by client via $/setTrace (off, messages, verbose)
@@ -1111,19 +1120,20 @@ impl LspServer {
         }
     }
 
+    /// Whether a diagnostic debouncer is currently installed, forwarded to
+    /// the `RuntimeServices` owner that holds the slot (#10024). Replaces the
+    /// direct `self.diagnostic_debouncer` field read this refactor removed.
+    #[cfg(test)]
+    pub(crate) fn diagnostic_debouncer_is_installed(&self) -> bool {
+        self.runtime_services.diagnostic_debouncer_is_installed()
+    }
+
     /// Capture test/debug counters for async task and debounce pressure.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn runtime_pressure_snapshot(&self) -> RuntimePressureSnapshot {
-        let diagnostic_debounce_pending_uris = self
-            .diagnostic_debouncer
-            .lock()
-            .as_ref()
-            .map_or(0, diagnostic_debounce::DiagnosticDebouncer::pending_uris);
-        let watcher_pressure = self
-            .file_watcher_debouncer
-            .lock()
-            .as_ref()
-            .map(file_watcher_debounce::FileWatcherDebouncer::pressure);
+        let diagnostic_debounce_pending_uris =
+            self.runtime_services.diagnostic_debounce_pending_uris();
+        let watcher_pressure = self.runtime_services.file_watcher_pressure();
         let file_watcher_pending_uris = watcher_pressure.as_ref().map_or(0, |p| p.pending_subjects);
 
         RuntimePressureSnapshot {
@@ -1518,8 +1528,7 @@ impl LspServer {
         &self,
         debouncer: diagnostic_debounce::DiagnosticDebouncer,
     ) {
-        let previous = self.diagnostic_debouncer.lock().replace(debouncer);
-        drop(previous);
+        self.runtime_services.install_diagnostic_debouncer(debouncer);
     }
 
     /// Install the production diagnostic debouncer (called from
@@ -1577,18 +1586,9 @@ impl LspServer {
             self.publish_diagnostics(uri);
             return;
         }
-        // Evict outside the lock for the same reason as
-        // `install_diagnostic_debouncer`: releasing a debouncer joins its
-        // worker thread, which must not happen under this mutex.
-        let evicted = {
-            let mut guard = self.diagnostic_debouncer.lock();
-            if guard.as_ref().is_some_and(|debouncer| debouncer.schedule(uri)) {
-                return;
-            }
-            guard.take()
-        };
-        drop(evicted);
-        self.publish_diagnostics(uri);
+        if !self.runtime_services.schedule_diagnostic_debounce(uri) {
+            self.publish_diagnostics(uri);
+        }
     }
 
     /// Install the off-lock async parse worker (#3396 Phase 3).
@@ -1672,13 +1672,12 @@ impl LspServer {
         // `self.parse_worker().is_some()` to decide whether to enqueue
         // instead of parsing inline, and an installed-but-threadless worker
         // would silently accept jobs no thread will ever process -- a
-        // permanent stall instead of a crash. Leaving `parse_worker_handle`
-        // as `None` here keeps the existing synchronous fallback path (the
-        // one hundreds of unit tests and any editor session already
-        // exercise) as the effective behavior instead.
-        if worker.is_operational() {
-            *self.parse_worker_handle.lock() = Some(Arc::new(worker));
-        } else {
+        // permanent stall instead of a crash. `RuntimeServices` leaves the
+        // worker slot `None` here (keeping the existing synchronous fallback
+        // path -- the one hundreds of unit tests and any editor session
+        // already exercise) and retains the outcome as `InstrumentFailed`
+        // instead of only logging it (#10024).
+        if !self.runtime_services.install_parse_worker(worker) {
             tracing::error!(
                 "parse worker pool failed to spawn any threads; \
                  falling back to the synchronous parse path"
@@ -1691,7 +1690,7 @@ impl LspServer {
     /// exited is treated the same as no installed worker, so edits cannot be
     /// accepted into a queue that nobody can drain.
     pub(crate) fn parse_worker(&self) -> Option<Arc<parse_worker::ParseWorker>> {
-        self.parse_worker_handle.lock().clone().filter(|worker| worker.is_operational())
+        self.runtime_services.parse_worker()
     }
 
     /// Install the file watcher debouncer (called from Scheduler::new after Arc wrapping).
@@ -1699,7 +1698,7 @@ impl LspServer {
         &self,
         debouncer: file_watcher_debounce::FileWatcherDebouncer,
     ) {
-        *self.file_watcher_debouncer.lock() = Some(debouncer);
+        self.runtime_services.install_file_watcher_debouncer(debouncer);
     }
 
     /// Schedule a file watcher URI for debounced batch processing.
@@ -1712,15 +1711,7 @@ impl LspServer {
     /// synchronous processing instead of losing events behind false success
     /// (#8064).
     pub fn schedule_file_watcher_uri(&self, uri: &str) -> bool {
-        let guard = self.file_watcher_debouncer.lock();
-        match guard.as_ref() {
-            None => false,
-            Some(debouncer) => matches!(
-                debouncer.try_schedule(uri),
-                file_watcher_debounce::WatcherAdmission::Accepted
-                    | file_watcher_debounce::WatcherAdmission::Coalesced
-            ),
-        }
+        self.runtime_services.schedule_file_watcher_uri(uri)
     }
 }
 
@@ -1919,7 +1910,7 @@ mod tests {
         server.install_default_parse_worker();
         let worker = server.parse_worker().expect("default parse worker must install");
 
-        worker.test_request_shutdown();
+        worker.request_shutdown();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while worker.is_operational() {
             assert!(
@@ -2154,13 +2145,8 @@ mod tests {
         assert!(!server.schedule_file_watcher_uri("file:///degraded/overflow.pl"));
 
         // ShuttingDown: after teardown, late events are refused.
-        {
-            let guard = server.file_watcher_debouncer.lock();
-            assert!(guard.is_some(), "debouncer installed");
-            if let Some(debouncer) = guard.as_ref() {
-                debouncer.shutdown_now();
-            }
-        }
+        assert!(server.runtime_services.file_watcher_debouncer_installed(), "debouncer installed");
+        server.runtime_services.shutdown_file_watcher_debouncer_for_test();
         assert!(!server.schedule_file_watcher_uri("file:///degraded/late.pl"));
     }
 
