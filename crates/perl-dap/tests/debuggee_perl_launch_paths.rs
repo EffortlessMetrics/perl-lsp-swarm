@@ -17,7 +17,6 @@ use serial_test::serial;
 use std::env;
 use std::error::Error;
 use std::fs;
-#[cfg(windows)]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -62,13 +61,21 @@ fn stage_perl_library_layout(
     }
     let staged_install = destination.join("perl-install");
     let mut staged_roots = Vec::new();
+    // Config-reported roots may use an 8.3 short-name or different-casing
+    // spelling of the installation root (e.g. `C:\STRAWB~1\perl\lib` against a
+    // locator-provided `C:\Strawberry\perl`), so both sides are resolved to the
+    // same on-disk prefix spelling before the relative layout is derived.
+    let canonical_source_root = fs::canonicalize(source_root)
+        .map_err(|error| format!("cannot canonicalize Perl installation root: {error}"))?;
     for raw_root in config_lines.map(str::trim).filter(|root| !root.is_empty()) {
         let root = PathBuf::from(raw_root);
         if !root.is_dir() {
             continue;
         }
+        let root = fs::canonicalize(&root)
+            .map_err(|error| format!("cannot canonicalize Perl library root: {error}"))?;
         let relative = root
-            .strip_prefix(source_root)
+            .strip_prefix(&canonical_source_root)
             .map_err(|_| format!("Perl library root is outside installation root: {root:?}"))?;
         let staged = staged_install.join(relative);
         if staged_roots.iter().any(|existing: &PathBuf| staged.starts_with(existing)) {
@@ -161,6 +168,7 @@ impl Drop for EnvGuard {
     }
 }
 
+#[cfg(windows)]
 fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>> {
     if let Some(configured) = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) {
         let candidate = PathBuf::from(configured);
@@ -176,20 +184,58 @@ fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>
         return Ok(Some(candidate));
     }
 
+    Ok(path_pipe_perl_candidates()?.into_iter().next())
+}
+
+/// Every PATH `perl` candidate that passes the real pipe probe in place, in
+/// locator order so an earlier PATH entry keeps its precedence.
+///
+/// In-place capability is not sufficient for proofs that stage copies of the
+/// candidate: an interpreter whose `@INC` is mount-relative (a Git-Bash/MSYS
+/// perl) passes at its installation yet cannot load perl5db.pl once copied
+/// out of it. Such candidates are rejected later, per staged proof, so the
+/// caller can continue with the next candidate instead of failing.
+fn path_pipe_perl_candidates() -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let locator = if cfg!(windows) { "where.exe" } else { "which" };
     let output = Command::new(locator).arg("perl").output()?;
     if !output.status.success() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let candidate = PathBuf::from(line.trim());
-        if candidate.is_file()
-            && probe_debuggee_perl_for_test(&candidate, Duration::from_secs(10), false).is_ok()
-        {
-            return Ok(Some(candidate));
-        }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| PathBuf::from(line.trim()))
+        .filter(|candidate| {
+            candidate.is_file()
+                && probe_debuggee_perl_for_test(candidate, Duration::from_secs(10), false).is_ok()
+        })
+        .collect())
+}
+
+/// Sentinel for a candidate whose staged copy passes its in-place probe but
+/// cannot load perl5db.pl once relocated (a Git-Bash/MSYS perl with
+/// mount-relative `@INC`). The caller treats it as a per-candidate rejection
+/// and continues with the next candidate instead of failing the proof.
+#[derive(Debug)]
+struct StagedInterpreterNotHostable(String);
+
+impl std::fmt::Display for StagedInterpreterNotHostable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("staged interpreter cannot host the debugger (perl5db.pl not loadable from the staged copy)")
+            .and_then(|()| {
+                if self.0.trim().is_empty() {
+                    Ok(())
+                } else {
+                    write!(formatter, ": {}", self.0)
+                }
+            })
     }
-    Ok(None)
+}
+
+impl Error for StagedInterpreterNotHostable {}
+
+fn require_perl_strict() -> bool {
+    env::var_os("PERL_LSP_DAP_REQUIRE_PERL")
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
 #[test]
@@ -256,44 +302,103 @@ fn observe_pin_with_session(
 #[serial(dap_debuggee_environment)]
 #[allow(clippy::print_stderr)]
 fn all_convenience_launch_paths_reach_the_pinned_interpreter() -> Result<(), Box<dyn Error>> {
-    let Some(source_perl) = find_configured_or_path_pipe_perl()? else {
-        let strict = env::var_os("PERL_LSP_DAP_REQUIRE_PERL")
-            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
-        if strict {
+    let explicit = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV).is_some();
+    let candidates: Vec<PathBuf> = if explicit {
+        let configured = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV)
+            .map(PathBuf::from)
+            .expect("explicit checked above");
+        if !configured.is_file() {
+            return Err(format!(
+                "{DEBUGGEE_PERL_OVERRIDE_ENV} names a missing interpreter: {}",
+                configured.display()
+            )
+            .into());
+        }
+        probe_debuggee_perl_for_test(&configured, Duration::from_secs(10), false)
+            .map_err(|reason| format!("configured interpreter is not pipe-usable: {reason}"))?;
+        vec![configured]
+    } else {
+        path_pipe_perl_candidates()?
+    };
+    if candidates.is_empty() {
+        if require_perl_strict() {
             return Err("strict launch-path proof found no pipe-capable Perl candidate".into());
         }
         eprintln!(
             "SKIP all_convenience_launch_paths_reach_the_pinned_interpreter: Perl unavailable"
         );
         return Ok(());
-    };
+    }
+
+    // A candidate that pipes in place can still lose perl5db.pl when staged
+    // out of its installation (mount-relative `@INC`). That rejects the
+    // candidate, not the proof: continue with the next PATH candidate and
+    // only report a typed skip when none survives staging.
+    let mut stage_rejections: Vec<String> = Vec::new();
+    for source_perl in &candidates {
+        match run_pinned_launch_paths_proof(source_perl) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let staged_rejection =
+                    error.downcast_ref::<StagedInterpreterNotHostable>().is_some();
+                if staged_rejection && !explicit {
+                    stage_rejections.push(format!("{}: {error}", source_perl.display()));
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
+    if require_perl_strict() {
+        return Err(format!(
+            "strict launch-path proof rejected every staged interpreter: {}",
+            stage_rejections.join("; ")
+        )
+        .into());
+    }
+    eprintln!(
+        "SKIP all_convenience_launch_paths_reach_the_pinned_interpreter: no PATH candidate \
+         survives staging as a pipe-capable debugger host ({})",
+        stage_rejections.join("; ")
+    );
+    Ok(())
+}
+
+/// Stage the ambient/pinned controls from `source_perl` and drive every
+/// convenience launch path through the real adapter, asserting each session
+/// observes the pinned interpreter identity.
+fn run_pinned_launch_paths_proof(source_perl: &Path) -> Result<(), Box<dyn Error>> {
     let controls = tempfile::tempdir()?;
     #[cfg(windows)]
     let (ambient, pinned) = if let Some((ambient, pinned, _)) =
-        prepare_native_perl_fixture(&source_perl, controls.path())?
+        prepare_native_perl_fixture(source_perl, controls.path())?
     {
         (ambient, pinned)
     } else {
         let ambient = controls.path().join("perl.exe");
         let pinned = controls.path().join("perl5.exe");
-        fs::copy(&source_perl, &ambient)?;
-        fs::copy(&source_perl, &pinned)?;
-        copy_adjacent_dlls(&source_perl, controls.path())?;
+        fs::copy(source_perl, &ambient)?;
+        fs::copy(source_perl, &pinned)?;
+        copy_adjacent_dlls(source_perl, controls.path())?;
         (ambient, pinned)
     };
     #[cfg(not(windows))]
     let (ambient, pinned) = {
         let ambient = controls.path().join("perl");
         let pinned = controls.path().join("perl5");
-        fs::copy(&source_perl, &ambient)?;
-        fs::copy(&source_perl, &pinned)?;
+        fs::copy(source_perl, &ambient)?;
+        fs::copy(source_perl, &pinned)?;
         (ambient, pinned)
     };
     // Keep the copied pin's basename within the adapter's strict Perl-name
     // contract while still making it distinct from the ambient copy.
     for binary in [&ambient, &pinned] {
-        probe_debuggee_perl_for_test(binary, Duration::from_secs(10), false)
-            .map_err(|reason| format!("{} is not pipe-usable: {reason}", binary.display()))?;
+        if let Err(reason) = probe_debuggee_perl_for_test(binary, Duration::from_secs(10), false) {
+            if common::staged_copy_cannot_load_perl5db(&reason) {
+                return Err(Box::new(StagedInterpreterNotHostable(reason)));
+            }
+            return Err(format!("{} is not pipe-usable: {reason}", binary.display()).into());
+        }
     }
 
     let path_directory = ambient.parent().ok_or("ambient Perl has no parent directory")?;

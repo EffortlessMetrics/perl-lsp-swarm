@@ -20,6 +20,7 @@ use serial_test::serial;
 use std::env;
 use std::error::Error;
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -110,11 +111,42 @@ fn find_pipe_usable_path_perl() -> Result<Option<PathBuf>, Box<dyn Error>> {
     }
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let candidate = PathBuf::from(line.trim());
-        if candidate.is_file()
-            && probe_debuggee_perl_for_test(&candidate, Duration::from_secs(10), false).is_ok()
+        if !candidate.is_file()
+            || probe_debuggee_perl_for_test(&candidate, Duration::from_secs(10), false).is_err()
         {
+            continue;
+        }
+        // An in-place probe is not sufficient: an interpreter whose `@INC` is
+        // mount-relative (a Git-Bash/MSYS perl) passes at its installation yet
+        // cannot load perl5db.pl once copied out of it. This proof stages bare
+        // copies before launching, so only a relocation-surviving candidate
+        // can host it.
+        if staged_copy_pipe_probe(&candidate).is_ok() {
             return Ok(Some(candidate));
         }
     }
     Ok(None)
+}
+
+/// Copy `source` into a throwaway directory (with its adjacent DLLs on
+/// Windows) and pipe-probe the copy, mirroring the staging this proof applies
+/// to the ambient and pinned controls before launch.
+fn staged_copy_pipe_probe(source: &Path) -> Result<(), String> {
+    let staging = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let file_name = source.file_name().ok_or("candidate has no file name")?;
+    fs::copy(source, staging.path().join(file_name)).map_err(|error| error.to_string())?;
+    #[cfg(windows)]
+    if let Some(source_dir) = source.parent() {
+        for entry in fs::read_dir(source_dir)
+            .map_err(|error| format!("candidate DLL scan failed: {error}"))?
+        {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if entry.path().extension().and_then(|extension| extension.to_str()) == Some("dll") {
+                fs::copy(entry.path(), staging.path().join(entry.file_name()))
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    probe_debuggee_perl_for_test(&staging.path().join(file_name), Duration::from_secs(10), false)
+        .map(|_| ())
 }

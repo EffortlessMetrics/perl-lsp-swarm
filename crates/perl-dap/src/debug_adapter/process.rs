@@ -489,9 +489,10 @@ impl DebugAdapter {
 
     /// Launch the Perl debugger for the given script.
     ///
-    /// Validates the program path and interpreter, runs a pre-launch `perl -c`
-    /// syntax check, then spawns `perl -d` with the supplied arguments and
-    /// environment overrides. Returns the thread ID on success.
+    /// Validates the program path and interpreter, probes that the interpreter
+    /// can load the core `perl5db.pl` debugger module, runs a pre-launch
+    /// `perl -c` syntax check, then spawns `perl -d` with the supplied
+    /// arguments and environment overrides. Returns the thread ID on success.
     pub(super) fn launch_debugger(
         &mut self,
         program: &str,
@@ -578,6 +579,13 @@ impl DebugAdapter {
                 perl_interpreter
             ));
         }
+
+        // Debugger capability precondition: the debugger itself is the core
+        // `perl5db.pl` module, so an interpreter that cannot load it can spawn
+        // but never hosts a session. Probe it before spawning so such a launch
+        // fails with a typed, actionable error instead of a mid-session pipe
+        // failure.
+        Self::check_debugger_capability(perl_interpreter, &env_overrides)?;
 
         // Pre-launch syntax check: run `perl -c <script>` before spawning the
         // debugger.  This catches syntax errors early and surfaces a clear,
@@ -787,6 +795,80 @@ impl DebugAdapter {
             }
             Err(e) => Err(format_perl_spawn_error(perl_interpreter, &e)),
         }
+    }
+
+    /// Verify the selected interpreter can load the core `perl5db.pl` debugger
+    /// module, returning a typed, actionable error when it cannot.
+    ///
+    /// `perl -d` bootstraps through `perl5db.pl`; an interpreter without it
+    /// spawns but can never host a debugger session — for example a minimal
+    /// Git-for-Windows/MSYS perl whose mount-relative `@INC` entries stop
+    /// resolving once the binary runs outside its installation, or any
+    /// stripped distribution. Without this precondition the launch "succeeded"
+    /// (the child spawned) and only the mid-session control pipe then failed
+    /// with `Can't locate perl5db.pl in @INC`.
+    ///
+    /// The probe belongs to the debuggee launch path, not the resolver:
+    /// resolution picks an interpreter path, the launcher validates that the
+    /// picked interpreter can host the debugger. It runs under the same
+    /// [`perl_lsp_rs_core::config::PerlOracleEnv`] environment the real
+    /// debuggee will see (ambient `PERL5LIB`/`PERL5OPT` denied, #8688;
+    /// launch.json `env` honored). If the interpreter cannot be spawned at
+    /// all, the probe is skipped so the subsequent real launch surfaces the
+    /// canonical "perl not on PATH" spawn error.
+    fn check_debugger_capability(
+        perl_interpreter: &str,
+        env_overrides: &HashMap<String, String>,
+    ) -> Result<(), String> {
+        let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
+            PathBuf::from(perl_interpreter),
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        );
+        oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let output = match oracle
+            .into_command()
+            .arg("-e")
+            .arg("require \"perl5db.pl\"; print \"OK\\n\";")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+        {
+            Ok(out) => out,
+            Err(e) => {
+                // The interpreter could not be spawned at all — skip the probe
+                // and let the real `perl -d` launch produce the canonical
+                // "perl not on PATH" error.
+                tracing::warn!(
+                    "perl5db capability probe could not run '{perl_interpreter}' \
+                     (will attempt the launch anyway): {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        // The "Can't locate perl5db.pl in @INC" report arrives on stderr, but
+        // a non-perl binary selected as the interpreter may report on either
+        // stream; merge for the diagnostic detail.
+        let raw_stderr = String::from_utf8_lossy(&output.stderr);
+        let raw_stdout = String::from_utf8_lossy(&output.stdout);
+        let detail =
+            if raw_stderr.trim().is_empty() { raw_stdout.trim() } else { raw_stderr.trim() };
+        let detail = if detail.is_empty() {
+            format!("exit status {:?}", output.status.code())
+        } else {
+            detail.to_string()
+        };
+        Err(format!(
+            "Selected interpreter cannot host the debugger (perl5db.pl not loadable): \
+             {perl_interpreter}. Install a full Perl distribution that ships the core \
+             debugger module, or point launch.json `perlPath` at one (e.g. \
+             {{\"perlPath\": \"/path/to/full/perl\"}}). Detail: {detail}"
+        ))
     }
 
     /// Run `perl -c <script>` and return `Ok(())` if the syntax is valid,

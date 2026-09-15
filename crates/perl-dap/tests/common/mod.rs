@@ -302,7 +302,7 @@ impl DapWorkflowSession {
         Ok(resolved)
     }
 
-    /// Block until a `stopped` event arrives, then immediately issue a `stackTrace`
+    /// Block until a `stopped` event arrives, then issue a `stackTrace`
     /// request to obtain the current source location.
     ///
     /// Returns a [`StoppedFrameInfo`] combining the stopped reason/thread with
@@ -310,16 +310,40 @@ impl DapWorkflowSession {
     ///
     /// Use this helper when the test must assert BOTH the stop reason AND the
     /// current source line, without the latency of a separate `stack_trace()` call.
+    ///
+    /// The entry stop is announced by the adapter the moment the debuggee
+    /// spawns, so an immediate `stackTrace` can race the perl5db bootstrap —
+    /// a freshly staged interpreter pays first-touch library-scan costs
+    /// before it answers the framed `T` query, and the ambient-output
+    /// fallback has no context lines yet. A real DAP client re-requests the
+    /// snapshot in that window, so the helper retries an empty-frame answer
+    /// on the same stop until the debugger responds or the bounded budget
+    /// expires. A persistent empty answer still fails with the same error.
     pub fn wait_stopped_with_frame(&mut self) -> Result<StoppedFrameInfo, String> {
         let stopped = self.wait_stopped()?;
-        let (frame_id, source_path, line) = self.stack_trace(stopped.thread_id)?;
-        Ok(StoppedFrameInfo {
-            reason: stopped.reason,
-            thread_id: stopped.thread_id,
-            frame_id,
-            source_path,
-            line,
-        })
+        const EMPTY_FRAME_RACE_BUDGET: Duration = Duration::from_secs(5);
+        const EMPTY_FRAME_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+        let deadline = Instant::now() + EMPTY_FRAME_RACE_BUDGET;
+        loop {
+            match self.stack_trace(stopped.thread_id) {
+                Ok((frame_id, source_path, line)) => {
+                    return Ok(StoppedFrameInfo {
+                        reason: stopped.reason,
+                        thread_id: stopped.thread_id,
+                        frame_id,
+                        source_path,
+                        line,
+                    });
+                }
+                Err(error) => {
+                    if error == "stackTrace returned empty frames" && Instant::now() < deadline {
+                        std::thread::sleep(EMPTY_FRAME_RETRY_INTERVAL);
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+        }
     }
 
     /// Send `configurationDone`.
@@ -2946,6 +2970,21 @@ fn identity_from_probe_output(stderr: &str, stdout: &str) -> String {
         .or_else(|| lines.find(|line| !line.trim().is_empty()))
         .unwrap_or("unknown perl");
     identity_line.chars().take(120).collect()
+}
+
+/// Whether a probe failure is the "interpreter cannot load perl5db.pl" class.
+///
+/// A copied or staged interpreter can pass its in-place probe and still be
+/// unusable: relocation breaks mount-relative `@INC` resolution, so a
+/// Git-Bash/MSYS perl copy reports `Can't locate perl5db.pl in @INC`. That is
+/// a property of the environment (no candidate survives staging), not a
+/// candidate bug, so live proofs use this to distinguish a typed skip from a
+/// hard failure.
+// Shared helper: each integration-test binary compiles `common` separately, so
+// binaries that do not call it would otherwise trip per-target dead_code.
+#[allow(dead_code)]
+pub(crate) fn staged_copy_cannot_load_perl5db(reason: &str) -> bool {
+    reason.to_ascii_lowercase().contains("perl5db")
 }
 
 /// Resolve and cache a pipe-capable debuggee interpreter for live sessions.
