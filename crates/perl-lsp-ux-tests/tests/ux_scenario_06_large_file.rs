@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::print_stderr,
+    reason = "Scenario 06 reports a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 //! Scenario 06 — Large file.
 //!
@@ -24,47 +26,55 @@ fn generate_source(line_count: usize) -> String {
 }
 
 #[test]
-fn scenario_06_medium_file_open_and_hover() {
+fn scenario_06_medium_file_open_and_hover() -> Result<(), String> {
     // Always runs — 1k lines is fast enough for PR gate.
     if !binary_available() {
         eprintln!("SKIP scenario_06: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let source = generate_source(1_000);
-    let harness =
-        UxHarness::new(ScenarioConfig { timeout: Duration::from_secs(20), ..Default::default() })
-            .expect("Failed to create UX harness");
+    let harness = UxHarness::new(ScenarioConfig {
+        timeout: Duration::from_secs(20),
+        ..Default::default()
+    })
+    .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
-    harness.open_file("medium.pl", &source).expect("didOpen should succeed for 1k-line file");
+    harness
+        .open_file("medium.pl", &source)
+        .map_err(|error| format!("didOpen should succeed for 1k-line file: {error}"))?;
 
-    let hover = harness.hover("medium.pl", 5, 5);
-    assert!(hover.is_ok(), "Server hung or crashed on 1k-line file — UX regression: {:?}", hover);
+    harness
+        .hover("medium.pl", 5, 5)
+        .map_err(|error| format!("Server hung or crashed on 1k-line file — UX regression: {error}"))?;
 
     harness.assert_no_crash();
+    Ok(())
 }
 
 #[cfg(feature = "integration-test")]
 #[test]
-fn scenario_06_large_file_open_does_not_hang() {
+fn scenario_06_large_file_open_does_not_hang() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_06 (large): perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let source = generate_source(10_000);
-    let harness =
-        UxHarness::new(ScenarioConfig { timeout: Duration::from_secs(30), ..Default::default() })
-            .expect("Failed to create UX harness for large file");
+    let harness = UxHarness::new(ScenarioConfig {
+        timeout: Duration::from_secs(30),
+        ..Default::default()
+    })
+    .map_err(|error| format!("Failed to create UX harness for large file: {error}"))?;
 
-    harness.open_file("large.pl", &source).expect("didOpen should accept a 10k-line file");
+    harness
+        .open_file("large.pl", &source)
+        .map_err(|error| format!("didOpen should accept a 10k-line file: {error}"))?;
 
-    let hover = harness.hover("large.pl", 5, 5);
-    assert!(
-        hover.is_ok(),
-        "Server hung or crashed after opening large file — UX regression: {:?}",
-        hover
-    );
+    harness.hover("large.pl", 5, 5).map_err(|error| {
+        format!("Server hung or crashed after opening large file — UX regression: {error}")
+    })?;
 
     harness.assert_no_crash();
+    Ok(())
 }
