@@ -497,6 +497,7 @@ evidence = ["mutants.out/mutants.json"]
 allowed_triggers = ["schedule", "workflow_dispatch", "pull_request:labeled"]
 labels = ["ci:mutation", "mutation", "full-ci"]
 expensive = true
+expensive_reason = "Runs concrete mutants and executes tests repeatedly."
 duplicate_of = ["ripr_advisory"]
 review_after = "2026-06-07"
 expires = "2026-11-07"
