@@ -1818,4 +1818,71 @@ mod tests {
             .into()),
         }
     }
+
+    // Focused discriminators for two boundaries adjacent to the changed
+    // lines (the enforce-new-ripr gate names them explicitly): the
+    // `parse_with_old_tree` unchanged-source fast path and the
+    // `visible_imports_at_offset` module-dedup boundary.
+    #[test]
+    fn unchanged_source_reuses_the_old_tree_without_reparsing() -> StopCauseResult {
+        let mut parser = Parser::new();
+        let tree = must_some(parser.parse("my $x = 42;\n"));
+
+        let reused = must_some(parser.parse_with_old_tree("my $x = 42;\n", &tree));
+
+        assert_eq!(
+            reused.reparse_mode(),
+            Some(ReparseMode::Unchanged),
+            "a byte-identical source with no pending edits must take the reuse fast path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn changed_source_does_not_reuse_the_unchanged_fast_path() -> StopCauseResult {
+        let mut parser = Parser::new();
+        let tree = must_some(parser.parse("my $x = 42;\n"));
+
+        let reparsed = must_some(parser.parse_with_old_tree("my $x = 43;\n", &tree));
+
+        assert_ne!(
+            reparsed.reparse_mode(),
+            Some(ReparseMode::Unchanged),
+            "a changed source must not take the reuse fast path"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn visible_imports_deduplicate_repeated_modules() -> StopCauseResult {
+        let mut parser = Parser::new();
+        let tree = must_some(parser.parse("use strict;\nuse strict;\n"));
+
+        let overlay = SemanticOverlay { tree: &tree };
+        let imports = overlay.visible_imports_at_offset(tree.source().len());
+
+        assert_eq!(
+            imports.len(),
+            1,
+            "a repeated module must be deduplicated to a single visible import, got {imports:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn visible_imports_keep_distinct_modules() -> StopCauseResult {
+        let mut parser = Parser::new();
+        let tree = must_some(parser.parse("use strict;\nuse warnings;\n"));
+
+        let overlay = SemanticOverlay { tree: &tree };
+        let imports = overlay.visible_imports_at_offset(tree.source().len());
+
+        let modules: Vec<&str> = imports.iter().map(|import| import.module.as_str()).collect();
+        assert_eq!(
+            modules,
+            vec!["strict", "warnings"],
+            "distinct modules must all stay visible, got {imports:?}"
+        );
+        Ok(())
+    }
 }
