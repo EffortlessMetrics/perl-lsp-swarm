@@ -1089,23 +1089,24 @@ fn run_ripr_streaming_to_file(args: &[String], out_path: &Path, staging_dir: &Pa
         .prefix(RIPR_STDOUT_TEMP_PREFIX)
         .tempfile_in(staging_dir)
         .context("failed to create RIPR stdout file")?;
-    let mut child = Command::new(&binary)
+    let mut command = Command::new(&binary);
+    command
         .args(args)
         .stdout(Stdio::from(stdout_file.reopen().context("failed to reopen RIPR stdout file")?))
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to run {binary}"))?;
+        .stderr(Stdio::piped());
+    let (mut child, tree) = spawn_isolated_ripr_producer(command, &binary)?;
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
             // `Stdio::piped()` above always yields a handle; an absent one means
             // the child is not the process this transport configured.
-            settle_ripr_child(&mut child);
+            settle_ripr_producer(&mut child, Some(&tree));
             bail!("{binary} was spawned without the piped stderr this transport requires");
         }
     };
     let cap = StagedPayloadCap { path: stdout_file.path(), max_bytes };
-    let (status, stderr_bytes) = drain_stderr_and_wait(&mut child, stderr, &binary, Some(&cap))?;
+    let (status, stderr_bytes) =
+        drain_stderr_and_wait(&mut child, Some(&tree), stderr, &binary, Some(&cap))?;
     if !status.success() {
         let mut stdout_excerpt = Vec::new();
         if let Ok(stdout_reader) = stdout_file.reopen() {
@@ -1148,12 +1149,263 @@ fn remove_orphaned_stdout_temps(staging_dir: &Path) {
     }
 }
 
-/// Terminates and reaps `child` on a failure path, ignoring errors: the caller
-/// is already returning a failure, and an unsettled producer keeps writing its
-/// unbounded payload to a temporary file no caller will ever publish.
-fn settle_ripr_child(child: &mut Child) {
+/// Isolation for the `ripr check` producer so a failure path can terminate every
+/// process that inherited the staged stdout file or the stderr pipe.
+///
+/// Unix uses a fresh process group set before exec. Windows assigns a job
+/// object while the child is still suspended, so a descendant spawned in
+/// `main` cannot race the assignment, then resumes via `ResumeThread`. Spawn
+/// does not use `CREATE_BREAKAWAY_FROM_JOB`: a parent already inside a job
+/// (typical on hosted runners) would then fail to spawn rather than fall
+/// back. If the job cannot be assigned, settle falls back to `taskkill /T`.
+struct RiprProducerTree {
+    #[cfg(not(unix))]
+    pid: u32,
+    #[cfg(unix)]
+    pgid: libc::pid_t,
+    #[cfg(windows)]
+    job: Option<winapi::shared::ntdef::HANDLE>,
+}
+
+impl RiprProducerTree {
+    fn prepare(command: &mut Command) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            use winapi::um::winbase::CREATE_SUSPENDED;
+            command.creation_flags(CREATE_SUSPENDED);
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = command;
+            bail!("RIPR producer process-tree isolation is unavailable on this platform");
+        }
+        #[cfg(any(unix, windows))]
+        {
+            Ok(())
+        }
+    }
+
+    fn attach(child: &Child) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            let pid = child.id();
+            let pgid = libc::pid_t::try_from(pid)
+                .map_err(|_| eyre!("producer pid {pid} does not fit in a process-group id"))?;
+            Ok(Self { pgid })
+        }
+        #[cfg(windows)]
+        {
+            Ok(Self { pid: child.id(), job: attach_windows_job(child) })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            bail!("RIPR producer process-tree isolation is unavailable on this platform");
+        }
+    }
+
+    fn terminate(&self) {
+        #[cfg(unix)]
+        {
+            // SAFETY: `pgid` is the process group created by `process_group(0)`
+            // on this child before exec. The negative id targets only that
+            // group; ESRCH is harmless if the group is already gone.
+            unsafe {
+                let _ = libc::kill(-self.pgid, libc::SIGKILL);
+            }
+        }
+        #[cfg(windows)]
+        {
+            if let Some(job) = self.job {
+                // SAFETY: `job` is a job handle we created and still own.
+                unsafe {
+                    let _ = winapi::um::jobapi2::TerminateJobObject(job, 1);
+                }
+            } else {
+                let pid = self.pid.to_string();
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid, "/T", "/F"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = self;
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for RiprProducerTree {
+    fn drop(&mut self) {
+        if let Some(job) = self.job.take() {
+            // SAFETY: we own this handle; KILL_ON_JOB_CLOSE reaps leftovers
+            // that survived a successful wait.
+            unsafe {
+                let _ = winapi::um::handleapi::CloseHandle(job);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn attach_windows_job(child: &Child) -> Option<winapi::shared::ntdef::HANDLE> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use std::ptr::null_mut;
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::jobapi2::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+    };
+    use winapi::um::winnt::{
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation,
+    };
+
+    // SAFETY: a nameless job object; the handle is owned by this function until
+    // it is either returned or closed on the failure paths below.
+    let handle = unsafe { CreateJobObjectW(null_mut(), null_mut()) };
+    if handle.is_null() {
+        return None;
+    }
+    // SAFETY: `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` is a C struct we fully
+    // overwrite in `LimitFlags` before passing it to the API.
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    // SAFETY: `handle` is a job we just created; `limits` is a well-typed
+    // extended-limit block of the size the API expects.
+    let configured = unsafe {
+        SetInformationJobObject(
+            handle,
+            JobObjectExtendedLimitInformation,
+            &mut limits as *mut _ as *mut _,
+            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        // SAFETY: we still own `handle` and have not returned it.
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        return None;
+    }
+    // SAFETY: `handle` is our job; the process handle is the child's and is
+    // valid for the child's lifetime.
+    let assigned = unsafe {
+        AssignProcessToJobObject(handle, child.as_raw_handle() as winapi::shared::ntdef::HANDLE)
+    };
+    if assigned == 0 {
+        // SAFETY: we still own `handle` and have not returned it.
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        return None;
+    }
+    Some(handle)
+}
+
+/// Resume the primary thread of a process spawned with `CREATE_SUSPENDED`.
+///
+/// `std::process::Child` does not expose the thread handle, so this walks a
+/// toolhelp snapshot the same way the DAP probe does. A failed resume is an
+/// error: the child would otherwise stay suspended and the waiter would hang.
+#[cfg(windows)]
+fn resume_windows_process(child: &Child) -> io::Result<()> {
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::processthreadsapi::{OpenThread, ResumeThread};
+    use winapi::um::tlhelp32::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use winapi::um::winnt::THREAD_SUSPEND_RESUME;
+
+    // SAFETY: the snapshot is a kernel handle we close on every path below;
+    // the walked THREADENTRY32 records are populated by the snapshot APIs.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let result = (|| {
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut has_thread = unsafe { Thread32First(snapshot, &mut entry) } != 0;
+        while has_thread {
+            if entry.th32OwnerProcessID == child.id() {
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if thread.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                let previous_count = unsafe { ResumeThread(thread) };
+                let resume_error = if previous_count == u32::MAX {
+                    Some(io::Error::last_os_error())
+                } else {
+                    None
+                };
+                let close_result = unsafe { CloseHandle(thread) };
+                if let Some(error) = resume_error {
+                    return Err(error);
+                }
+                if close_result == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(());
+            }
+            has_thread = unsafe { Thread32Next(snapshot, &mut entry) } != 0;
+        }
+        Err(io::Error::other("suspended RIPR producer has no discoverable thread"))
+    })();
+    // SAFETY: `snapshot` is the handle created above and is still owned here.
+    unsafe {
+        let _ = CloseHandle(snapshot);
+    }
+    result
+}
+
+fn spawn_isolated_ripr_producer(
+    mut command: Command,
+    binary: &str,
+) -> Result<(Child, RiprProducerTree)> {
+    RiprProducerTree::prepare(&mut command)?;
+    let mut child = command.spawn().with_context(|| format!("failed to run {binary}"))?;
+    let tree = match RiprProducerTree::attach(&child) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    #[cfg(windows)]
+    if let Err(error) = resume_windows_process(&child) {
+        settle_ripr_producer(&mut child, Some(&tree));
+        return Err(error).with_context(|| format!("failed to resume suspended {binary} producer"));
+    }
+    Ok((child, tree))
+}
+
+/// Terminates the producer process tree and reaps the direct child on a failure
+/// path, ignoring errors: the caller is already returning a failure, and an
+/// unsettled descendant that inherited stdout or stderr can keep the pipe open
+/// and keep appending to a staged file nothing will publish (#12999).
+fn settle_ripr_producer(child: &mut Child, tree: Option<&RiprProducerTree>) {
+    if let Some(tree) = tree {
+        tree.terminate();
+    }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Direct-child settle for tests that spawn without isolation.
+#[cfg(test)]
+fn settle_ripr_child(child: &mut Child) {
+    settle_ripr_producer(child, None);
 }
 
 /// The staged stdout file and the byte ceiling this run may not exceed.
@@ -1255,11 +1507,13 @@ fn parse_max_raw_check_bytes(value: &str) -> Result<u64> {
 /// never returns it to a pipe — so the payload is measured through the
 /// filesystem rather than by buffering it here.
 ///
-/// Every failure arm settles the producer first: a returned error must not
-/// leave it writing an unbounded payload into a staged file nothing will
-/// publish.
+/// Every failure arm settles the producer tree first: a returned error must
+/// not leave a descendant writing an unbounded payload into a staged file
+/// nothing will publish, and must not leave the stderr join blocked on a
+/// write-end the direct child no longer owns.
 fn drain_stderr_and_wait(
     child: &mut Child,
+    tree: Option<&RiprProducerTree>,
     stderr: impl Read + Send + 'static,
     binary: &str,
     cap: Option<&StagedPayloadCap<'_>>,
@@ -1270,20 +1524,20 @@ fn drain_stderr_and_wait(
         thread::spawn(move || drain_bounded_stderr(stderr, &read_failed))
     };
 
-    // Settles the producer on every failure arm, so the drain below always
-    // reaches EOF and the join cannot block on a live child.
-    let waited = wait_within_cap(child, binary, cap, &read_failed);
+    // Settles the whole producer tree on every failure arm, so a descendant
+    // that inherited stderr cannot keep the pipe open across this join.
+    let waited = wait_within_cap(child, tree, binary, cap, &read_failed);
 
     let stderr_bytes = match drain.join() {
         Ok(Ok(stderr_bytes)) => stderr_bytes,
         // A stderr read failure is the precise diagnosis for the wait abort it
         // causes, so it is surfaced ahead of that abort.
         Ok(Err(error)) => {
-            settle_ripr_child(child);
+            settle_ripr_producer(child, tree);
             return Err(error).with_context(|| format!("failed to read {binary} stderr"));
         }
         Err(_) => {
-            settle_ripr_child(child);
+            settle_ripr_producer(child, tree);
             bail!("the {binary} stderr drain thread panicked");
         }
     };
@@ -1356,26 +1610,27 @@ fn drain_bounded_stderr(mut stderr: impl Read, read_failed: &AtomicBool) -> io::
 /// failed; the caller owns that diagnosis.
 fn wait_within_cap(
     child: &mut Child,
+    tree: Option<&RiprProducerTree>,
     binary: &str,
     cap: Option<&StagedPayloadCap<'_>>,
     read_failed: &AtomicBool,
 ) -> Result<Option<ExitStatus>> {
     loop {
         if read_failed.load(Ordering::Acquire) {
-            settle_ripr_child(child);
+            settle_ripr_producer(child, tree);
             return Ok(None);
         }
         if let Some(cap) = cap
             && let Err(error) = cap.check(binary)
         {
-            settle_ripr_child(child);
+            settle_ripr_producer(child, tree);
             return Err(error);
         }
         match child.try_wait() {
             Ok(Some(status)) => return Ok(Some(status)),
             Ok(None) => {}
             Err(error) => {
-                settle_ripr_child(child);
+                settle_ripr_producer(child, tree);
                 return Err(error).with_context(|| format!("failed to wait for {binary}"));
             }
         }
@@ -11570,7 +11825,7 @@ paths = ["archive/**"]
             .context("failed to spawn long-lived test producer")?;
         let started = Instant::now();
 
-        let error = drain_stderr_and_wait(&mut child, PanickingStderrReader, "ripr", None)
+        let error = drain_stderr_and_wait(&mut child, None, PanickingStderrReader, "ripr", None)
             .err()
             .ok_or_else(|| eyre!("a panicking stderr drain must return an error"))?;
 
@@ -11620,7 +11875,7 @@ paths = ["archive/**"]
             .spawn()
             .context("failed to spawn long-lived test producer")?;
         let started = Instant::now();
-        let error = drain_stderr_and_wait(&mut child, FailingStderrReader, "ripr", None)
+        let error = drain_stderr_and_wait(&mut child, None, FailingStderrReader, "ripr", None)
             .err()
             .ok_or_else(|| eyre!("a failing stderr reader must return an error"))?;
         let message = format!("{error:#}");
@@ -11653,6 +11908,7 @@ paths = ["archive/**"]
             .context("failed to spawn short-lived test producer")?;
         let (status, stderr_bytes) = drain_stderr_and_wait(
             &mut child,
+            None,
             ChunkedStderrReader { remaining: MAX_RIPR_STDERR_BYTES * 2, chunk_size: 1024 },
             "ripr",
             None,
@@ -12092,6 +12348,52 @@ paths = ["archive/**"]
         )
     }
 
+    /// A producer that stays alive while a descendant inherits stdout *and*
+    /// stderr and floods both. Killing only the direct child would leave the
+    /// descendant holding the pipe (hanging `drain.join`) and the staged file
+    /// (disk still growing after the cap fired). The parent never floods, so a
+    /// settle that does not walk the tree cannot pass the refusal test.
+    fn write_descendant_flooding_ripr_stub(
+        dir: &Path,
+        name: &str,
+        sidecar: &Path,
+    ) -> Result<PathBuf> {
+        compile_test_stub(
+            dir,
+            name,
+            &format!(
+                "    use std::io::Write;\n    \
+                 use std::process::Command;\n    \
+                 let mut args = std::env::args();\n    \
+                 let Some(exe) = args.next() else {{ return; }};\n    \
+                 let chunk = vec![b'x'; 64 * 1024];\n    \
+                 if args.next().as_deref() == Some(\"--flood\") {{\n        \
+                 let mut stdout = std::io::stdout();\n        \
+                 let mut side = std::fs::File::create({sidecar:?}).ok();\n        \
+                 loop {{\n            \
+                 if stdout.write_all(&chunk).is_err() {{\n                \
+                 return;\n            \
+                 }}\n            \
+                 let _ = stdout.flush();\n            \
+                 let _ = std::io::stderr().write_all(b\"e\");\n            \
+                 if let Some(file) = side.as_mut() {{\n                \
+                 if file.write_all(&chunk).is_err() {{\n                    \
+                 return;\n                \
+                 }}\n                \
+                 let _ = file.flush();\n            \
+                 }}\n        \
+                 }}\n    \
+                 }}\n    \
+                 let Ok(_child) = Command::new(exe).arg(\"--flood\").spawn() else {{\n        \
+                 return;\n    \
+                 }};\n    \
+                 loop {{\n        \
+                 std::thread::sleep(std::time::Duration::from_secs(60));\n    \
+                 }}\n"
+            ),
+        )
+    }
+
     /// A producer that writes stdout without ever stopping, standing in for the
     /// unbounded payload of #12999 at a size a test can afford. It exits only if
     /// it is killed, so a cap that never fires hangs the test rather than
@@ -12185,6 +12487,56 @@ paths = ["archive/**"]
         color_eyre::eyre::ensure!(
             staged.is_empty(),
             "the staged payload must be dropped when the run is refused: {staged:?}"
+        );
+        Ok(())
+    }
+
+    /// Class-level falsifier for process-tree ownership: a descendant that
+    /// inherited both stdout and stderr must be terminated with the producer.
+    /// Killing only the direct child hangs `drain.join` on the inherited stderr
+    /// write-end and lets the staged file keep growing after the cap fired.
+    #[test]
+    fn run_ripr_check_refuses_a_descendant_that_inherits_stdout_and_stderr() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let repo = temp.path().join("repo");
+        let stubs = temp.path().join("stubs");
+        fs::create_dir_all(&repo)?;
+        fs::create_dir_all(&stubs)?;
+        let sidecar = stubs.join("descendant-side.bin");
+        let binary = write_descendant_flooding_ripr_stub(&stubs, "ripr-descendant", &sidecar)?;
+        let _override = override_ripr_bin_with_cap(&binary, Some(1024 * 1024))?;
+        let started = Instant::now();
+
+        let error = run_ripr_check(&repo, &pr_evidence_options())
+            .err()
+            .ok_or_else(|| eyre!("a descendant flooding past the cap must be refused"))?;
+
+        let message = format!("{error:#}");
+        color_eyre::eyre::ensure!(
+            message.contains("over this lane's 1048576 byte cap"),
+            "refusal must name the cap it enforced: {message}"
+        );
+        color_eyre::eyre::ensure!(
+            started.elapsed() < Duration::from_secs(60),
+            "drain.join blocked on a descendant that still held stderr"
+        );
+        color_eyre::eyre::ensure!(
+            !repo.join(PR_RAW_CHECK_JSON).exists(),
+            "a refused run must not publish an artifact"
+        );
+
+        // The sidecar is not unlinked with the staged file, so its size is the
+        // oracle that the descendant actually stopped writing.
+        let first = sidecar.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+        color_eyre::eyre::ensure!(
+            first > 0,
+            "the descendant must have started writing the sidecar before the cap fired"
+        );
+        thread::sleep(Duration::from_millis(300));
+        let second = sidecar.metadata().map(|metadata| metadata.len()).unwrap_or(first);
+        color_eyre::eyre::ensure!(
+            second == first,
+            "descendant kept writing after refusal: {first} then {second} bytes"
         );
         Ok(())
     }
