@@ -1,4 +1,5 @@
 use crate::incremental::snapshot::ParseSnapshot;
+#[cfg(feature = "lsp-compat")]
 use lsp_types::Diagnostic;
 use perl_parser_core::error::ParseOutput;
 use std::ops::Range;
@@ -76,6 +77,11 @@ pub struct ReparseResult {
     /// consumers should use `snapshot.parse_output().diagnostics`; LSP
     /// projection is a transport concern and remains separate from the native
     /// parser output contract.
+    ///
+    /// The slot carries an `lsp_types` wire type, so it exists only under the
+    /// `lsp-compat` migration feature. `incremental` stays wire-free without
+    /// it; see #9147 for the retirement of parser-local LSP residue.
+    #[cfg(feature = "lsp-compat")]
     pub diagnostics: Vec<Diagnostic>,
     /// Lexer restart, fresh-work, and token-retention receipt.
     pub lex_restart: LexRestartReport,
@@ -119,6 +125,7 @@ mod tests {
         let result = ReparseResult {
             changed_ranges: Vec::new(),
             snapshot,
+            #[cfg(feature = "lsp-compat")]
             diagnostics: Vec::new(),
             lex_restart: LexRestartReport {
                 strategy: LexRestartStrategy::Unchanged,
@@ -135,6 +142,7 @@ mod tests {
         };
 
         assert!(!result.parse_output().diagnostics.is_empty());
+        #[cfg(feature = "lsp-compat")]
         assert!(result.diagnostics.is_empty());
     }
 }

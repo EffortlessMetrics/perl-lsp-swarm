@@ -381,15 +381,9 @@ fn add_extension_proof(
             ExtensionChangeClass::BundlePackage => {
                 push_step(
                     selected,
-                    "extension_checked_build",
-                    "cd vscode-extension && npm run build",
-                    "bundle/package changes require a checked production bundle",
-                );
-                push_step(
-                    selected,
                     "extension_package_inventory",
-                    "cd vscode-extension && npm run check:package-inventory",
-                    "bundle/package changes must preserve the VSIX inventory ratchet",
+                    "cd vscode-extension && npm run package",
+                    "bundle/package changes require a checked build and freshly packaged VSIX inventory",
                 );
                 push_step(
                     selected,
@@ -755,11 +749,16 @@ mod tests {
     }
 
     #[test]
-    fn bundle_change_selects_checked_build_and_package_contracts() {
+    fn bundle_change_selects_checked_build_and_package_contracts() -> anyhow::Result<()> {
         let plan = plan_for(vec!["vscode-extension/rolldown.config.mjs"], "code", Vec::new());
-        assert!(has_command(&plan, "cd vscode-extension && npm run build"));
-        assert!(has_command(&plan, "cd vscode-extension && npm run check:package-inventory"));
-        assert!(defers_command(&plan, "cd vscode-extension && npm run verify:marketplace"));
+        anyhow::ensure!(has_command(&plan, "cd vscode-extension && npm run package"));
+        anyhow::ensure!(!has_command(
+            &plan,
+            "cd vscode-extension && npm run check:package-inventory"
+        ));
+        anyhow::ensure!(!has_command(&plan, "cd vscode-extension && npm run build"));
+        anyhow::ensure!(defers_command(&plan, "cd vscode-extension && npm run verify:marketplace"));
+        Ok(())
     }
 
     #[test]

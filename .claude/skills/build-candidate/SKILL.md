@@ -93,3 +93,5 @@ post one update per edit, test, agent, or normal skill transition.
 - `NO_BUILD_SUBJECT` → return the no-build disposition for proportional publication/review
 - `WRITER_COLLISION` / `UNSAFE_WORKTREE` → resolve the same-candidate mechanical hazard
 - `BLOCKED` / `NOT_PROVEN` → preserve the exact boundary
+
+> Self-authored reversible corrections follow the canonical [correction and disclosure contract](../../../docs/agents/DEVELOPMENT_METHOD.md); this reference does not override higher-precedence instructions.

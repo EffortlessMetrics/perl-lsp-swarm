@@ -7,7 +7,7 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import * as child_process from 'child_process';
 import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
-import { downloadBoundedFile } from './boundedFileDownload';
+import { downloadBoundedFile, unlinkPartialDownloadDest } from './boundedFileDownload';
 import { extractManagedArchive } from './managedArchiveExtract';
 import {
   MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
@@ -1451,16 +1451,8 @@ export class BinaryDownloader {
     return fs.createWriteStream(dest);
   }
 
-  private removePartialFile(dest: string): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      fs.unlink(dest, (error: NodeJS.ErrnoException | null) => {
-        if (error && error.code !== 'ENOENT') {
-          reject(error);
-          return;
-        }
-        resolve();
-      });
-    });
+  private async removePartialFile(dest: string): Promise<void> {
+    unlinkPartialDownloadDest(dest);
   }
 
   private async calculateSHA256(filePath: string): Promise<string> {

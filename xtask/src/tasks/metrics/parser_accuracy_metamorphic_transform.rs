@@ -2,6 +2,12 @@
 //!
 //! This substrate proves transformed bytes and byte-coordinate relationships.
 //! It owns no Perl safe-region inference and consumes no parser output.
+//!
+//! The public mapping surface ([`PositionRelation`], [`RangeRelation`], and
+//! [`CoordinateMap`] map accessors) is proven by unit and integration tests
+//! and consumed by the parked registry (#13659). Xtask-bin reachability lands
+//! with the typed plane comparator (#13662). Until that consumer is live,
+//! rustc `dead_code` under `-D warnings` flags those items on the bin target.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -76,6 +82,10 @@ pub struct ContentAddressedSource {
 
 impl ContentAddressedSource {
     /// Construct a subject and derive its identity from exact bytes.
+    #[allow(
+        dead_code,
+        reason = "unit/integration tests construct subjects; bin reachability waits on #13662"
+    )]
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, TransformError> {
         let identity = sha256_hex(&bytes);
         Self::from_verified(identity, bytes)
@@ -199,6 +209,10 @@ pub enum CoordinateSegment {
 }
 
 /// Result of mapping one byte position.
+#[allow(
+    dead_code,
+    reason = "map accessors are test-proven; xtask bin reachability waits on #13662"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PositionRelation {
     /// Coordinate is unchanged.
@@ -237,6 +251,10 @@ pub enum PositionRelation {
 }
 
 /// Result of mapping one half-open byte range.
+#[allow(
+    dead_code,
+    reason = "map accessors are test-proven; xtask bin reachability waits on #13662"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RangeRelation {
     /// Range is unchanged.
@@ -278,6 +296,10 @@ pub struct CoordinateMap {
     identity: String,
 }
 
+#[allow(
+    dead_code,
+    reason = "map accessors are test-proven; xtask bin reachability waits on #13662"
+)]
 impl CoordinateMap {
     /// Canonical coordinate-map identity.
     #[must_use]
@@ -741,28 +763,28 @@ pub fn apply_exact_edits(
     }
 
     edits.sort_by(|left, right| {
-        (left.base_start, left.base_end, left.edit_id.as_str()).cmp(&(
+        (left.base_start, left.base_end, left.edit_id()).cmp(&(
             right.base_start,
             right.base_end,
-            right.edit_id.as_str(),
+            right.edit_id(),
         ))
     });
 
     let source_text = str::from_utf8(source.bytes()).map_err(TransformError::InvalidSourceUtf8)?;
     let mut edit_ids = BTreeSet::new();
     for edit in &edits {
-        if !stable_id_is_valid(&edit.edit_id) {
-            return Err(TransformError::InvalidEditId { edit_id: edit.edit_id.clone() });
+        if !stable_id_is_valid(edit.edit_id()) {
+            return Err(TransformError::InvalidEditId { edit_id: edit.edit_id().to_owned() });
         }
-        if !edit_ids.insert(edit.edit_id.clone()) {
-            return Err(TransformError::DuplicateEditId { edit_id: edit.edit_id.clone() });
+        if !edit_ids.insert(edit.edit_id().to_owned()) {
+            return Err(TransformError::DuplicateEditId { edit_id: edit.edit_id().to_owned() });
         }
         validate_edit(source_text, source.bytes(), edit)?;
     }
     validate_edit_relations(&edits)?;
 
     let final_capacity = edits.iter().try_fold(source.bytes().len(), |len, edit| {
-        len.checked_sub(edit.base_end.saturating_sub(edit.base_start))
+        len.checked_sub(edit.base_range().len())
             .and_then(|reduced| reduced.checked_add(edit.replacement.len()))
             .ok_or(TransformError::ArithmeticOverflow)
     })?;
@@ -792,12 +814,12 @@ pub fn apply_exact_edits(
         let removed_base = ByteRange::new(edit.base_start, edit.base_end);
         let inserted_transformed = ByteRange::new(transformed_start, transformed_end);
         segments.push(CoordinateSegment::Edit {
-            edit_id: edit.edit_id.clone(),
+            edit_id: edit.edit_id().to_owned(),
             removed_base,
             inserted_transformed,
         });
         applied.push(AppliedEdit {
-            edit_id: edit.edit_id.clone(),
+            edit_id: edit.edit_id().to_owned(),
             removed_base,
             inserted_transformed,
             expected_old: edit.expected_old.clone(),
@@ -882,15 +904,15 @@ fn validate_edit(
 ) -> Result<(), TransformError> {
     if edit.base_start > edit.base_end {
         return Err(TransformError::ReversedRange {
-            edit_id: edit.edit_id.clone(),
+            edit_id: edit.edit_id().to_owned(),
             start: edit.base_start,
             end: edit.base_end,
         });
     }
     let range = edit.base_range();
-    if edit.base_end > source_bytes.len() {
+    if !ByteRange::new(0, source_bytes.len()).contains_range_closed(range) {
         return Err(TransformError::OutOfBounds {
-            edit_id: edit.edit_id.clone(),
+            edit_id: edit.edit_id().to_owned(),
             range,
             source_len: source_bytes.len(),
         });
@@ -898,7 +920,7 @@ fn validate_edit(
     for offset in [edit.base_start, edit.base_end] {
         if !source_text.is_char_boundary(offset) {
             return Err(TransformError::InteriorUtf8Boundary {
-                edit_id: edit.edit_id.clone(),
+                edit_id: edit.edit_id().to_owned(),
                 offset,
             });
         }
@@ -909,17 +931,17 @@ fn validate_edit(
         .ok_or(TransformError::ArithmeticOverflow)?;
     if observed != edit.expected_old {
         return Err(TransformError::WrongExpectedBytes {
-            edit_id: edit.edit_id.clone(),
+            edit_id: edit.edit_id().to_owned(),
             expected_identity: sha256_hex(&edit.expected_old),
             observed_identity: sha256_hex(observed),
         });
     }
     str::from_utf8(&edit.replacement).map_err(|source| TransformError::InvalidReplacementUtf8 {
-        edit_id: edit.edit_id.clone(),
+        edit_id: edit.edit_id().to_owned(),
         source,
     })?;
     if observed == edit.replacement {
-        return Err(TransformError::NoOpEdit { edit_id: edit.edit_id.clone() });
+        return Err(TransformError::NoOpEdit { edit_id: edit.edit_id().to_owned() });
     }
 
     Ok(())
@@ -936,22 +958,22 @@ fn validate_edit_relations(edits: &[ExactEdit]) -> Result<(), TransformError> {
                 && second_range.start < first_range.end
             {
                 return Err(TransformError::OverlappingEdits {
-                    first_edit_id: first.edit_id.clone(),
-                    second_edit_id: second.edit_id.clone(),
+                    first_edit_id: first.edit_id().to_owned(),
+                    second_edit_id: second.edit_id().to_owned(),
                 });
             }
 
             if first_range.is_empty() && second_range.contains_closed(first_range.start) {
                 return Err(TransformError::AmbiguousEditBoundary {
-                    insertion_edit_id: first.edit_id.clone(),
-                    other_edit_id: second.edit_id.clone(),
+                    insertion_edit_id: first.edit_id().to_owned(),
+                    other_edit_id: second.edit_id().to_owned(),
                     offset: first_range.start,
                 });
             }
             if second_range.is_empty() && first_range.contains_closed(second_range.start) {
                 return Err(TransformError::AmbiguousEditBoundary {
-                    insertion_edit_id: second.edit_id.clone(),
-                    other_edit_id: first.edit_id.clone(),
+                    insertion_edit_id: second.edit_id().to_owned(),
+                    other_edit_id: first.edit_id().to_owned(),
                     offset: second_range.start,
                 });
             }
@@ -960,6 +982,7 @@ fn validate_edit_relations(edits: &[ExactEdit]) -> Result<(), TransformError> {
     Ok(())
 }
 
+#[allow(dead_code, reason = "map helpers are test-proven; xtask bin reachability waits on #13662")]
 fn point_relation(source_offset: usize, target_offset: usize) -> PositionRelation {
     if source_offset == target_offset {
         PositionRelation::Exact { offset: target_offset }
@@ -968,6 +991,7 @@ fn point_relation(source_offset: usize, target_offset: usize) -> PositionRelatio
     }
 }
 
+#[allow(dead_code, reason = "map helpers are test-proven; xtask bin reachability waits on #13662")]
 fn edit_boundary_relation(
     offset: usize,
     relations: impl Iterator<Item = (ByteRange, ByteRange)>,
@@ -998,6 +1022,7 @@ fn edit_boundary_relation(
     })
 }
 
+#[allow(dead_code, reason = "map helpers are test-proven; xtask bin reachability waits on #13662")]
 fn range_relation(source: ByteRange, target: ByteRange) -> RangeRelation {
     if source == target {
         RangeRelation::Exact { range: target }
@@ -1006,6 +1031,7 @@ fn range_relation(source: ByteRange, target: ByteRange) -> RangeRelation {
     }
 }
 
+#[allow(dead_code, reason = "map helpers are test-proven; xtask bin reachability waits on #13662")]
 fn zero_range_relation(relation: PositionRelation, queried: ByteRange) -> RangeRelation {
     match relation {
         PositionRelation::Exact { offset } => {
@@ -1029,6 +1055,8 @@ fn zero_range_relation(relation: PositionRelation, queried: ByteRange) -> RangeR
 mod tests {
     use super::*;
 
+    use perl_tdd_support::{must_err_with, must_some_with, must_with};
+
     type TestResult = Result<(), Box<dyn Error>>;
 
     fn subject(source: &str) -> Result<ContentAddressedSource, TransformError> {
@@ -1043,6 +1071,29 @@ mod tests {
             expected.as_bytes().to_vec(),
             replacement.as_bytes().to_vec(),
         )
+    }
+
+    #[track_caller]
+    fn first_applied_edit<'a>(
+        transformed: &'a ValidatedTransformation,
+        context: &'static str,
+    ) -> &'a AppliedEdit {
+        must_some_with(transformed.edits.first(), context)
+    }
+
+    #[track_caller]
+    fn apply_err(
+        source: &ContentAddressedSource,
+        profile_id: &str,
+        edits: Vec<ExactEdit>,
+        context: &'static str,
+    ) -> TransformError {
+        must_err_with(apply_exact_edits(source, profile_id, edits), context)
+    }
+
+    #[track_caller]
+    fn claimed_err(identity: String, bytes: Vec<u8>, context: &'static str) -> TransformError {
+        must_err_with(ContentAddressedSource::from_claimed(identity, bytes), context)
     }
 
     #[test]
@@ -1076,8 +1127,9 @@ mod tests {
         assert_ne!(upper_b.final_source_identity, upper_c.final_source_identity);
         assert_ne!(upper_b.coordinate_map.identity(), upper_c.coordinate_map.identity());
         assert_ne!(upper_b.transformation_identity, upper_c.transformation_identity);
-        assert_eq!(upper_b.edits[0].expected_old, b"b");
-        assert_eq!(upper_b.edits[0].replacement, b"B");
+        let first_edit = first_applied_edit(&upper_b, "successful replace-b must produce one edit");
+        assert_eq!(first_edit.expected_old, b"b");
+        assert_eq!(first_edit.replacement, b"B");
 
         Ok(())
     }
@@ -1327,18 +1379,19 @@ mod tests {
     #[test]
     fn interior_utf8_boundary_is_rejected_before_construction() -> TestResult {
         let source = subject("aβc")?;
-        let result = apply_exact_edits(
+        let error = apply_err(
             &source,
             "test.profile.v1",
             vec![ExactEdit::new("inside-beta".to_owned(), 2, 3, vec![0xb2], b"x".to_vec())],
+            "interior UTF-8 boundary must be rejected",
         );
 
         assert!(matches!(
-            result,
-            Err(TransformError::InteriorUtf8Boundary {
+            error,
+            TransformError::InteriorUtf8Boundary {
                 edit_id,
                 offset: 2,
-            }) if edit_id == "inside-beta"
+            } if edit_id == "inside-beta"
         ));
 
         Ok(())
@@ -1349,24 +1402,31 @@ mod tests {
         let source = subject("abcdef")?;
 
         assert!(matches!(
-            apply_exact_edits(&source, "test.profile.v1", vec![edit("wrong", 1, 2, "x", "B")]),
-            Err(TransformError::WrongExpectedBytes { .. })
-        ));
-        assert!(matches!(
-            apply_exact_edits(
+            apply_err(
                 &source,
                 "test.profile.v1",
-                vec![edit("first", 1, 4, "bcd", "B"), edit("second", 3, 5, "de", "D")]
+                vec![edit("wrong", 1, 2, "x", "B")],
+                "wrong expected bytes must fail",
             ),
-            Err(TransformError::OverlappingEdits { .. })
+            TransformError::WrongExpectedBytes { .. }
         ));
         assert!(matches!(
-            apply_exact_edits(
+            apply_err(
                 &source,
                 "test.profile.v1",
-                vec![edit("replace", 1, 3, "bc", "B"), edit("insert", 3, 3, "", "X")]
+                vec![edit("first", 1, 4, "bcd", "B"), edit("second", 3, 5, "de", "D")],
+                "overlapping edits must fail",
             ),
-            Err(TransformError::AmbiguousEditBoundary { .. })
+            TransformError::OverlappingEdits { .. }
+        ));
+        assert!(matches!(
+            apply_err(
+                &source,
+                "test.profile.v1",
+                vec![edit("replace", 1, 3, "bc", "B"), edit("insert", 3, 3, "", "X")],
+                "shared insertion boundary must fail",
+            ),
+            TransformError::AmbiguousEditBoundary { .. }
         ));
 
         Ok(())
@@ -1375,17 +1435,22 @@ mod tests {
     #[test]
     fn stale_source_identity_and_invalid_replacement_fail_closed() -> TestResult {
         assert!(matches!(
-            ContentAddressedSource::from_claimed("sha256:stale".to_owned(), b"abc".to_vec()),
-            Err(TransformError::StaleSourceIdentity { .. })
+            claimed_err(
+                "sha256:stale".to_owned(),
+                b"abc".to_vec(),
+                "stale claimed identity must fail"
+            ),
+            TransformError::StaleSourceIdentity { .. }
         ));
 
         let source = subject("abc")?;
-        let result = apply_exact_edits(
+        let error = apply_err(
             &source,
             "test.profile.v1",
             vec![ExactEdit::new("invalid-utf8".to_owned(), 1, 2, b"b".to_vec(), vec![0xff])],
+            "invalid replacement UTF-8 must fail",
         );
-        assert!(matches!(result, Err(TransformError::InvalidReplacementUtf8 { .. })));
+        assert!(matches!(error, TransformError::InvalidReplacementUtf8 { .. }));
 
         Ok(())
     }
@@ -1395,20 +1460,35 @@ mod tests {
         let source = subject("abc")?;
 
         assert!(matches!(
-            apply_exact_edits(&source, "test.profile.v1", vec![edit("reversed", 2, 1, "", "x")]),
-            Err(TransformError::ReversedRange { .. })
+            apply_err(
+                &source,
+                "test.profile.v1",
+                vec![edit("reversed", 2, 1, "", "x")],
+                "reversed range must fail",
+            ),
+            TransformError::ReversedRange { .. }
         ));
         assert!(matches!(
-            apply_exact_edits(&source, "test.profile.v1", vec![edit("outside", 3, 4, "", "x")]),
-            Err(TransformError::OutOfBounds { .. })
+            apply_err(
+                &source,
+                "test.profile.v1",
+                vec![edit("outside", 3, 4, "", "x")],
+                "out of bounds range must fail",
+            ),
+            TransformError::OutOfBounds { .. }
         ));
         assert!(matches!(
-            apply_exact_edits(&source, "test.profile.v1", vec![edit("noop", 1, 2, "b", "b")]),
-            Err(TransformError::NoOpEdit { .. })
+            apply_err(
+                &source,
+                "test.profile.v1",
+                vec![edit("noop", 1, 2, "b", "b")],
+                "no-op edit must fail"
+            ),
+            TransformError::NoOpEdit { .. }
         ));
         assert!(matches!(
-            apply_exact_edits(&source, "test.profile.v1", Vec::new()),
-            Err(TransformError::EmptyEditPlan)
+            apply_err(&source, "test.profile.v1", Vec::new(), "empty edit plan must fail"),
+            TransformError::EmptyEditPlan
         ));
 
         Ok(())
@@ -1419,26 +1499,107 @@ mod tests {
         let source = subject("abc")?;
 
         assert!(matches!(
-            apply_exact_edits(&source, "", vec![edit("edit", 0, 1, "a", "x")]),
-            Err(TransformError::InvalidProfileId { .. })
+            apply_err(
+                &source,
+                "",
+                vec![edit("edit", 0, 1, "a", "x")],
+                "empty profile id must fail"
+            ),
+            TransformError::InvalidProfileId { .. }
         ));
         assert!(matches!(
-            apply_exact_edits(&source, "ctrl-\u{7}profile", vec![edit("edit", 0, 1, "a", "x")]),
-            Err(TransformError::InvalidProfileId { .. })
+            apply_err(
+                &source,
+                "ctrl-\u{7}profile",
+                vec![edit("edit", 0, 1, "a", "x")],
+                "control-character profile id must fail",
+            ),
+            TransformError::InvalidProfileId { .. }
         ));
         assert!(matches!(
-            apply_exact_edits(&source, "test.profile.v1", vec![edit("", 0, 1, "a", "x")]),
-            Err(TransformError::InvalidEditId { .. })
-        ));
-        assert!(matches!(
-            apply_exact_edits(
+            apply_err(
                 &source,
                 "test.profile.v1",
-                vec![edit("duplicate", 0, 1, "a", "x"), edit("duplicate", 1, 2, "b", "y")]
+                vec![edit("", 0, 1, "a", "x")],
+                "empty edit id must fail",
             ),
-            Err(TransformError::DuplicateEditId { .. })
+            TransformError::InvalidEditId { .. }
+        ));
+        assert!(matches!(
+            apply_err(
+                &source,
+                "test.profile.v1",
+                vec![edit("duplicate", 0, 1, "a", "x"), edit("duplicate", 1, 2, "b", "y")],
+                "duplicate edit id must fail",
+            ),
+            TransformError::DuplicateEditId { .. }
         ));
 
         Ok(())
+    }
+
+    #[test]
+    fn converted_must_wrappers_carry_track_caller() {
+        let src = include_str!("parser_accuracy_metamorphic_transform.rs");
+        let mut failures = Vec::new();
+        for helper in ["fn first_applied_edit<", "fn apply_err(", "fn claimed_err("] {
+            let Some(idx) = src.find(helper) else {
+                failures.push(format!("missing wrapper {helper}"));
+                continue;
+            };
+            let preceding = src.get(..idx).unwrap_or("");
+            let last_attr_line =
+                preceding.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
+            if last_attr_line.trim() != "#[track_caller]" {
+                failures.push(format!(
+                    "{helper} is not immediately preceded by #[track_caller] (found {last_attr_line:?})"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    #[should_panic(expected = "must_some: applied edit must exist:")]
+    fn first_applied_edit_still_fails_when_edits_are_empty() {
+        let empty = ValidatedTransformation {
+            schema_version: TRANSFORMATION_SCHEMA_VERSION,
+            source_identity: String::new(),
+            profile_id: "test.profile.v1".to_owned(),
+            source_line_policy_id: SOURCE_LINE_POLICY_ID.to_owned(),
+            base_line_count: 0,
+            transformed_line_count: 0,
+            edits: Vec::new(),
+            final_bytes: Vec::new(),
+            final_source_identity: String::new(),
+            transformation_identity: String::new(),
+            coordinate_map: CoordinateMap {
+                base_len: 0,
+                transformed_len: 0,
+                segments: Vec::new(),
+                identity: String::new(),
+            },
+        };
+        let _ = first_applied_edit(&empty, "applied edit must exist");
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: valid replace-b plan must not succeed:")]
+    fn apply_err_still_fails_when_the_plan_is_valid() {
+        let source = must_with(subject("abc"), "should-panic subject");
+        let _ = apply_err(
+            &source,
+            "test.profile.v1",
+            vec![edit("replace-b", 1, 2, "b", "B")],
+            "valid replace-b plan must not succeed",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must_err: matching claimed identity must not succeed:")]
+    fn claimed_err_still_fails_when_identity_matches() {
+        let bytes = b"abc".to_vec();
+        let identity = sha256_hex(&bytes);
+        let _ = claimed_err(identity, bytes, "matching claimed identity must not succeed");
     }
 }
