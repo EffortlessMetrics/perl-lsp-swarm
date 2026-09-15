@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-13"
+updated = "2026-09-15"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -3676,3 +3676,40 @@ created = "2026-09-13"
 review_after = "2026-10-13"
 expires = "2026-12-31"
 removal_criteria = "Remove when #13238 lands the exact installed-name state that replaces this containment, or when the candidate gains its first production consumer (then re-scope the suppression to that consumer's seams and require activation evidence through it), or when ripr#1429 resolves activation tracing for modules with no production entry point. Narrow immediately if any seam unrelated to the containment predicates lands in this file."
+
+# -----------------------------------------------------------------------------
+# Signature-help prototype parameter numbering: side-effect push observation is
+# statically untraceable from loop-emitted struct literals (ripr#1429 class).
+#
+# #14998 changes the emitted ParameterInfo numbering in
+# build_signature_from_symbol from the raw prototype character index to a
+# running count of emitted parameters, because preserved attribute source text
+# now contains separators and trivia that must not consume a number. RIPR 0.10.0
+# reports one reachable_unrevealed side_effect seam on the `params.push(...)`
+# call (the `});` expression), because it cannot statically connect the
+# loop-emitted struct literal to the assertions that observe it.
+#
+# Discriminator evidence exists and is exact: prototype_parameter_numbers_
+# ignore_preserved_source_whitespace asserts every emitted parameter's label and
+# documentation per index with string literals across spaced, tab, and CRLF
+# prototypes, and prototype_separator_does_not_consume_a_parameter_number
+# asserts the semicolon and spaced-semicolon forms keep four contiguous labels.
+# Per the PR record, the separator test failed on the prior character-index
+# implementation ($arg1, $arg2, $arg4, $arg5) before the repair, so the oracle
+# discriminates the changed behavior. RIPR's own evidence path records the
+# observed assertion arguments ($arg1, $arg2, "Scalar parameter 1", ...) but
+# still classifies observation as no, because the assertion is not textually
+# attached to the multi-line push expression.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-signature-help-prototype-parameter-push"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-lsp-rs-core/src/providers/lsp_compat/signature_help.rs"]
+classification = ["reachable_unrevealed"]
+owner = "proof-lane"
+issue = "#14998"
+reason = "PR #15058 (#14998) numbers emitted prototype parameters by emission count instead of raw character index so preserved attribute source text (spaces, separators, trivia) no longer consumes a number. ripr 0.10.0 reports one reachable_unrevealed side_effect seam on the params.push(ParameterInfo{...}) call because it cannot statically link the loop-emitted struct literal to the assertions that observe it. The observation is exact and discriminating: prototype_parameter_numbers_ignore_preserved_source_whitespace asserts each emitted parameter's label and documentation per index with literals across spaced, tab, and CRLF prototypes, and prototype_separator_does_not_consume_a_parameter_number asserts semicolon and spaced-semicolon forms keep four contiguous labels; the separator test failed on the prior character-index implementation before the repair. Suppression is narrow: one production file, one classification class, one PR."
+created = "2026-09-15"
+review_after = "2026-10-15"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1429 traces loop-emitted struct literals to the assertions that observe their fields, or when targeted mutation (#1289) replaces this advisory path. Narrow immediately if any seam in this file outside the prototype parameter push lands or if the numbering oracle is weakened."

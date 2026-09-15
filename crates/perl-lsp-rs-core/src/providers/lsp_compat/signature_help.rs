@@ -499,27 +499,18 @@ mod tests {
             let provider = SignatureHelpProvider::new(&ast);
             let signatures = provider.get_signatures("foo");
             let signature = signatures.first().ok_or("missing prototype signature")?;
-            let expected_label = format!("sub foo{prototype}($arg1, $arg2)");
-            if signature.label != expected_label {
-                return Err(format!(
-                    "prototype {prototype:?} lost source text in label {:?}",
-                    signature.label
-                ));
-            }
-            let labels: Vec<_> =
-                signature.parameters.iter().map(|param| param.label.as_str()).collect();
-            if labels != ["$arg1", "$arg2"] {
-                return Err(format!(
-                    "prototype {prototype:?} produced parameter labels {labels:?}"
-                ));
-            }
-            let docs: Vec<_> =
-                signature.parameters.iter().map(|param| param.documentation.as_deref()).collect();
-            if docs != [Some("Scalar parameter 1"), Some("Scalar parameter 2")] {
-                return Err(format!(
-                    "prototype {prototype:?} produced parameter documentation {docs:?}"
-                ));
-            }
+            assert_eq!(signature.label, format!("sub foo{prototype}($arg1, $arg2)"));
+            assert_eq!(signature.parameters.len(), 2);
+            assert_eq!(signature.parameters[0].label, "$arg1");
+            assert_eq!(
+                signature.parameters[0].documentation.as_deref(),
+                Some("Scalar parameter 1")
+            );
+            assert_eq!(signature.parameters[1].label, "$arg2");
+            assert_eq!(
+                signature.parameters[1].documentation.as_deref(),
+                Some("Scalar parameter 2")
+            );
         }
         Ok(())
     }
@@ -532,21 +523,20 @@ mod tests {
             let provider = SignatureHelpProvider::new(&ast);
             let signatures = provider.get_signatures("foo");
             let signature = signatures.first().ok_or("missing prototype signature")?;
-            let labels: Vec<_> =
-                signature.parameters.iter().map(|param| param.label.as_str()).collect();
-            if labels != ["$arg1", "$arg2", "$arg3", "$arg4"] {
-                return Err(format!("prototype {prototype:?} produced labels {labels:?}"));
-            }
-            let expected_label = format!("sub foo{prototype}($arg1, $arg2, $arg3, $arg4)");
-            if signature.label != expected_label {
-                return Err(format!("prototype {prototype:?} lost source text in its label"));
-            }
-            for (index, parameter) in signature.parameters.iter().enumerate() {
-                let expected = format!("Scalar parameter {}", index + 1);
-                if parameter.documentation.as_deref() != Some(expected.as_str()) {
-                    return Err(format!("prototype {prototype:?} has incorrect documentation"));
-                }
-            }
+            assert_eq!(signature.label, format!("sub foo{prototype}($arg1, $arg2, $arg3, $arg4)"));
+            assert_eq!(signature.parameters.len(), 4);
+            assert_eq!(signature.parameters[0].label, "$arg1");
+            assert_eq!(signature.parameters[1].label, "$arg2");
+            assert_eq!(signature.parameters[2].label, "$arg3");
+            assert_eq!(signature.parameters[3].label, "$arg4");
+            assert_eq!(
+                signature.parameters[0].documentation.as_deref(),
+                Some("Scalar parameter 1")
+            );
+            assert_eq!(
+                signature.parameters[3].documentation.as_deref(),
+                Some("Scalar parameter 4")
+            );
         }
         Ok(())
     }
