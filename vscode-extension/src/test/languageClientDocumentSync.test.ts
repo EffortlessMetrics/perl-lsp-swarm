@@ -1,5 +1,6 @@
 import {
   StaleDocumentReplayError,
+  V0_18_TEXT_SYNC_ENVELOPE,
   replayOpenPerlDocuments,
   replayOpenPerlDocumentsWhenReady,
 } from '../languageClientDocumentSync';
@@ -127,5 +128,15 @@ describe('replayOpenPerlDocuments', () => {
     await expect(
       replayOpenPerlDocumentsWhenReady(client, [PERL_DOCUMENT], 2, () => true, 1000),
     ).rejects.toBe(failure);
+  });
+});
+
+describe('V0_18_TEXT_SYNC_ENVELOPE', () => {
+  test('v0.18 envelope is full-document UTF-16', () => {
+    expect(V0_18_TEXT_SYNC_ENVELOPE).toEqual({
+      decision: 'full_document_utf16',
+      textSyncKind: 'Full',
+      positionEncoding: 'utf-16',
+    });
   });
 });
