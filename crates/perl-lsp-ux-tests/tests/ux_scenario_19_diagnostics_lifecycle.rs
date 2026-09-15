@@ -76,26 +76,38 @@ fn latest_for_version(
     })
 }
 
+/// Latest exact-version observation that already represents the terminal
+/// replacement state: a transient publication must still be replaced, so the
+/// waiter keeps polling until the latest frame for `version` is empty when
+/// `require_empty` is set (repaired generation) or non-empty when it is not
+/// (broken generation).
+fn terminal_for_version(
+    observations: &[DiagnosticObservation],
+    version: i64,
+    require_empty: bool,
+) -> Option<&DiagnosticObservation> {
+    latest_for_version(observations, version)
+        .filter(|observation| observation.diagnostics.is_empty() == require_empty)
+}
+
 fn wait_for_versioned_diagnostics_after(
     harness: &UxHarness,
     uri: &str,
     already_seen: usize,
     minimum_version: i64,
+    require_empty: bool,
     timeout: Duration,
 ) -> Result<Vec<DiagnosticObservation>> {
     let deadline = Instant::now() + timeout;
     loop {
-        let observations = diagnostic_observations_after(
-            &harness.peek_notifications(),
-            uri,
-            already_seen,
-        );
-        if latest_for_version(&observations, minimum_version).is_some() {
+        let observations =
+            diagnostic_observations_after(&harness.peek_notifications(), uri, already_seen);
+        if terminal_for_version(&observations, minimum_version, require_empty).is_some() {
             return Ok(observations);
         }
         if Instant::now() >= deadline {
             bail!(
-                "timed out after {}ms waiting for diagnostics for {uri} with version {minimum_version} after {already_seen} prior URI-matched publications; observed: \
+                "timed out after {}ms waiting for terminal diagnostics for {uri} with version {minimum_version} (require_empty={require_empty}) after {already_seen} prior URI-matched publications; observed: \
                  {observations:?}",
                 timeout.as_millis()
             );
@@ -107,7 +119,7 @@ fn wait_for_versioned_diagnostics_after(
 /// Verifies the diagnostics edit lifecycle:
 ///   1. Broken version 1 publishes non-empty diagnostics.
 ///   2. Fixed version 2 reaches parser-core readiness.
-///   3. An explicit post-cursor version-2-or-newer publication is empty.
+///   3. An explicit post-cursor version-2 publication is empty.
 #[test]
 fn scenario_19_diagnostics_clear_after_fix() -> Result<()> {
     if !binary_available() {
@@ -131,6 +143,7 @@ fn scenario_19_diagnostics_clear_after_fix() -> Result<()> {
         &uri,
         0,
         BROKEN_VERSION,
+        false,
         DIAGNOSTICS_TIMEOUT,
     )?;
     let broken = latest_for_version(&broken_observations, BROKEN_VERSION)
@@ -165,6 +178,7 @@ fn scenario_19_diagnostics_clear_after_fix() -> Result<()> {
         &uri,
         diagnostics_seen_before_fix,
         FIXED_VERSION,
+        true,
         DIAGNOSTICS_TIMEOUT,
     )?;
     let repaired = latest_for_version(&repaired_observations, FIXED_VERSION)
@@ -189,7 +203,7 @@ fn scenario_19_diagnostics_clear_after_fix() -> Result<()> {
 
 #[cfg(test)]
 mod oracle_unit_tests {
-    use super::{DiagnosticObservation, latest_for_version};
+    use super::{DiagnosticObservation, latest_for_version, terminal_for_version};
     use serde_json::json;
 
     #[test]
@@ -257,5 +271,52 @@ mod oracle_unit_tests {
             .expect("a current empty publication should be selected");
         assert_eq!(latest.version, Some(2));
         assert!(latest.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn transient_repaired_publication_is_not_terminal() {
+        let observations = vec![DiagnosticObservation {
+            version: Some(2),
+            diagnostics: vec![json!({"message": "transient"})],
+        }];
+        assert_eq!(terminal_for_version(&observations, 2, true), None);
+    }
+
+    #[test]
+    fn empty_replacement_after_transient_is_terminal() {
+        let observations = vec![
+            DiagnosticObservation {
+                version: Some(2),
+                diagnostics: vec![json!({"message": "transient"})],
+            },
+            DiagnosticObservation { version: Some(2), diagnostics: Vec::new() },
+        ];
+        let terminal = terminal_for_version(&observations, 2, true)
+            .expect("the empty replacement should satisfy the waiter");
+        assert!(terminal.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn late_regression_after_empty_is_not_terminal() {
+        let observations = vec![
+            DiagnosticObservation { version: Some(2), diagnostics: Vec::new() },
+            DiagnosticObservation {
+                version: Some(2),
+                diagnostics: vec![json!({"message": "late regression"})],
+            },
+        ];
+        assert_eq!(terminal_for_version(&observations, 2, true), None);
+    }
+
+    #[test]
+    fn broken_generation_waits_for_non_empty_terminal() {
+        let pending = vec![DiagnosticObservation { version: Some(1), diagnostics: Vec::new() }];
+        assert_eq!(terminal_for_version(&pending, 1, false), None);
+        let broken = vec![DiagnosticObservation {
+            version: Some(1),
+            diagnostics: vec![json!({"message": "parse error"})],
+        }];
+        terminal_for_version(&broken, 1, false)
+            .expect("a non-empty broken publication should satisfy the waiter");
     }
 }
