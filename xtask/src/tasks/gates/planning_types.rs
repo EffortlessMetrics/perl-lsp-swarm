@@ -410,6 +410,7 @@ mod route_plan_seam_tests {
             artifacts: Vec::new(),
             matrix: None,
             planning: None,
+            short_circuit: false,
         }
     }
 
