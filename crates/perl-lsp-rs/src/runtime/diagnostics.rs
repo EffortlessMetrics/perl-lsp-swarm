@@ -271,6 +271,8 @@ impl PullDiagnosticsOrchestrator {
         let profile =
             perlcritic_profile.and_then(|p| if p.trim().is_empty() { None } else { Some(p) });
 
+        let identity_root_path = workspace_root.clone();
+
         // Get include paths for the document
         let include_paths: Vec<String> = server
             .include_paths_for_doc(uri)
@@ -324,6 +326,7 @@ impl PullDiagnosticsOrchestrator {
             configuration_generation: project_config_generation_for_doc(server, uri),
             markup_message_support,
             identity_root_key: root_key,
+            identity_root_path,
             facts_generation,
             accepted_critic_snapshot,
             accepted_state_currentness,
@@ -4699,6 +4702,15 @@ system($path);
             Some(folder_b.as_path()),
             "workspace_root must be the folder containing the document, not root_path"
         );
+        if context.identity_root_path.as_deref() != Some(folder_b.as_path())
+            || context.identity_root_key.as_deref() != Some(folder_b.to_string_lossy().as_ref())
+            || context.accepted_critic_snapshot.owning_root()
+                != context.identity_root_key.as_deref()
+        {
+            return Err(
+                "source path, root key and accepted Critic must share the document owner".into()
+            );
+        }
         Ok(())
     }
 

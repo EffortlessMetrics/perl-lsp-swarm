@@ -137,6 +137,20 @@ pub struct PullDiagnosticsContext {
     /// `None` means no root authority could be established: the report stays
     /// valid but can never carry a reusable result ID (#7480).
     pub identity_root_key: Option<String>,
+    /// Filesystem path of the same owning root that produced
+    /// [`Self::identity_root_key`], used only to express the document's logical
+    /// path *relative to that root* (#15555).
+    ///
+    /// Kept separate from the root key on purpose. The key is the root's durable
+    /// authority material; this is local evidence for relativization and must
+    /// never itself become identity input.
+    ///
+    /// `None` does **not** mean "no root authority" — that is
+    /// [`Self::identity_root_key`]'s job. With a key but no path the document
+    /// cannot be positioned inside the root, so it falls back to a standalone
+    /// identity relative to its own directory and still carries a reusable result
+    /// ID. Only a missing *key* yields no ID at all.
+    pub identity_root_path: Option<PathBuf>,
     /// Current project-fact (workspace index) generation, when the fact tier
     /// is live and fresh for this document. `None` encodes the explicit
     /// not-ready/unavailable fact state.
@@ -191,6 +205,7 @@ impl PullDiagnosticsContext {
             configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            identity_root_path: None,
             facts_generation: None,
             accepted_critic_snapshot: Self::accepted_snapshot_from_defaults(
                 true,
@@ -226,6 +241,7 @@ impl PullDiagnosticsContext {
             configuration_generation: None,
             markup_message_support: false,
             identity_root_key: Some(PROVIDER_DEFAULT_ROOT_AUTHORITY.to_string()),
+            identity_root_path: None,
             facts_generation: None,
             accepted_critic_snapshot: Self::accepted_snapshot_from_defaults(
                 true,
@@ -258,6 +274,7 @@ impl std::fmt::Debug for PullDiagnosticsContext {
             .field("configuration_generation", &self.configuration_generation)
             .field("markup_message_support", &self.markup_message_support)
             .field("identity_root_key", &self.identity_root_key)
+            .field("identity_root_path", &self.identity_root_path)
             .field("facts_generation", &self.facts_generation)
             .field("accepted_critic_snapshot", &self.accepted_critic_snapshot)
             .field("accepted_state_currentness", &self.accepted_state_currentness)
@@ -2749,7 +2766,7 @@ mod tests {
     fn disabled_critic_state_retains_core_overlap_carrier_rows()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///disabled_carrier.pl".parse()?;
+        let uri: Uri = native_document_uri("disabled_carrier.pl").parse()?;
         let source = "my $path = 'f.txt';
 system($path);
 ";
@@ -2790,6 +2807,11 @@ system($path);
 
     // ── accepted-state currentness at the pull result boundary (#13304) ────
 
+    fn native_document_uri(filename: &str) -> String {
+        let root = if cfg!(windows) { "file:///C:/" } else { "file:///" };
+        format!("{root}{filename}")
+    }
+
     /// Build the strict native context the currentness proofs share.
     fn strict_native_context() -> PullDiagnosticsContext {
         let mut context = PullDiagnosticsContext::new();
@@ -2816,7 +2838,7 @@ system($path);
     fn moved_policy_withholds_native_rows_and_reusable_result_id()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///pull_currentness.pl".parse()?;
+        let uri: Uri = native_document_uri("pull_currentness.pl").parse()?;
         let source = "my $x = 1;
 ";
 
@@ -2860,7 +2882,7 @@ system($path);
     fn policy_moving_during_collection_withholds_the_reusable_result_id()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///pull_currentness_race.pl".parse()?;
+        let uri: Uri = native_document_uri("pull_currentness_race.pl").parse()?;
 
         // Current for identity composition and service settlement, dead only
         // at the report boundary. This is the exact early-append falsifier.
@@ -2914,7 +2936,7 @@ system($path);
     fn pull_document_unchanged_for_identical_complete_subject()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_stable.pl".parse()?;
+        let uri: Uri = native_document_uri("identity_stable.pl").parse()?;
         let context = PullDiagnosticsContext::new();
 
         let first = provider.get_document_diagnostics_with_context(
@@ -2950,7 +2972,7 @@ system($path);
     fn matching_previous_id_with_moved_subject_never_returns_unchanged()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_moved_before_unchanged.pl".parse()?;
+        let uri: Uri = native_document_uri("identity_moved_before_unchanged.pl").parse()?;
         let source = "my $x = 1;\n";
         let baseline_context = strict_native_context();
         let first = provider.get_document_diagnostics_with_context(
@@ -2988,7 +3010,7 @@ system($path);
     fn pull_document_full_after_generation_advance_with_identical_bytes()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_generation.pl".parse()?;
+        let uri: Uri = native_document_uri("identity_generation.pl").parse()?;
         let context = PullDiagnosticsContext::new();
 
         let before = DocumentState::new("my $x = 1;\n", 1);
@@ -3024,7 +3046,7 @@ system($path);
     fn pull_document_supersedes_on_config_movement_over_unchanged_bytes()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_config.pl".parse()?;
+        let uri: Uri = native_document_uri("identity_config.pl").parse()?;
         let mut context = PullDiagnosticsContext::new();
 
         let first = provider.get_document_diagnostics_with_context(
@@ -3078,7 +3100,7 @@ system($path);
     fn raw_legacy_selector_movement_changes_neither_rows_nor_identity()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_raw_observation.pl".parse()?;
+        let uri: Uri = native_document_uri("identity_raw_observation.pl").parse()?;
         let source = "my $x = 1;\n";
         let baseline_context = strict_native_context();
         let baseline = provider.get_document_diagnostics_with_context(
@@ -3117,7 +3139,7 @@ system($path);
     fn pull_document_supersedes_on_resolver_environment_movement()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_resolver.pl".parse()?;
+        let uri: Uri = native_document_uri("identity_resolver.pl").parse()?;
         let mut context = PullDiagnosticsContext::new();
 
         let first = provider.get_document_diagnostics_with_context(
@@ -3157,7 +3179,7 @@ system($path);
     fn pull_document_treats_foreign_schema_prior_as_full() -> Result<(), Box<dyn std::error::Error>>
     {
         let provider = PullDiagnosticsProvider::new();
-        let uri: Uri = "file:///identity_foreign_prior.pl".parse()?;
+        let uri: Uri = native_document_uri("identity_foreign_prior.pl").parse()?;
         let context = PullDiagnosticsContext::new();
 
         let report = provider.get_document_diagnostics_with_context(
@@ -3182,7 +3204,7 @@ system($path);
     fn document_and_workspace_transports_share_per_document_identity()
     -> Result<(), Box<dyn std::error::Error>> {
         let provider = PullDiagnosticsProvider::new();
-        let uri_str = "file:///identity_shared.pl";
+        let uri_str = native_document_uri("identity_shared.pl");
         let uri: Uri = uri_str.parse()?;
         let content = "my $x = 1;\n";
         let context = PullDiagnosticsContext::new();
@@ -3223,18 +3245,20 @@ system($path);
     #[test]
     fn workspace_full_and_partial_capture_a_sealed_context_per_document()
     -> Result<(), Box<dyn std::error::Error>> {
-        const ROOT_A: &str = "file:///root-a";
-        const ROOT_B: &str = "file:///root-b";
-        const URI_A: &str = "file:///root-a/a.pl";
-        const URI_B: &str = "file:///root-b/b.pl";
+        const ROOT_A: &str = if cfg!(windows) { "C:/root-a" } else { "/root-a" };
+        const ROOT_B: &str = if cfg!(windows) { "C:/root-b" } else { "/root-b" };
+        const URI_A: &str =
+            if cfg!(windows) { "file:///C:/root-a/a.pl" } else { "file:///root-a/a.pl" };
+        const URI_B: &str =
+            if cfg!(windows) { "file:///C:/root-b/b.pl" } else { "file:///root-b/b.pl" };
         const SOURCE: &str = "my $x = 1;\nprint $x;\n";
 
         fn context_for(uri: &str) -> PullDiagnosticsContext {
-            let (root, enabled) =
-                if uri.starts_with(ROOT_A) { (ROOT_A, false) } else { (ROOT_B, true) };
+            let (root, enabled) = if uri == URI_A { (ROOT_A, false) } else { (ROOT_B, true) };
             let mut context = PullDiagnosticsContext::new();
             context.identity_root_key = Some(root.to_string());
             context.workspace_root = Some(PathBuf::from(root));
+            context.identity_root_path = Some(PathBuf::from(root));
             context.accepted_critic_snapshot = if enabled {
                 accepted_state_at_root("strict", 3, Vec::new(), Vec::new(), root)
             } else {
@@ -3328,7 +3352,11 @@ system($path);
     #[test]
     fn workspace_full_and_partial_withhold_the_same_stale_contribution()
     -> Result<(), Box<dyn std::error::Error>> {
-        const URI: &str = "file:///workspace_transaction_parity.pl";
+        const URI: &str = if cfg!(windows) {
+            "file:///C:/workspace_transaction_parity.pl"
+        } else {
+            "file:///workspace_transaction_parity.pl"
+        };
         const SOURCE: &str = "my $path = 'f.txt';\nsystem($path);\n";
 
         fn moving_context() -> PullDiagnosticsContext {
@@ -3412,5 +3440,70 @@ system($path);
             return Err("full and partial workspace transactions must withhold identically".into());
         }
         Ok(())
+    }
+
+    /// Both identity-root fields exist for different jobs, and the default
+    /// provider shape is deliberately *key without path*: a key establishes root
+    /// authority, while the path only positions a document inside that root.
+    /// Asserting the shape here keeps the standalone branch load-bearing rather
+    /// than incidental — with no path, a document cannot be positioned inside the
+    /// root and must fall back to its own directory, which is exactly the
+    /// configuration every provider default produces.
+    #[test]
+    fn provider_default_contexts_carry_root_authority_without_a_root_path() {
+        let contexts = [("new", PullDiagnosticsContext::new())];
+        for (label, context) in contexts {
+            assert_eq!(
+                context.identity_root_key.as_deref(),
+                Some(PROVIDER_DEFAULT_ROOT_AUTHORITY),
+                "{label} must establish provider-default root authority"
+            );
+            assert_eq!(
+                context.identity_root_path, None,
+                "{label} must not claim a filesystem root it never resolved"
+            );
+        }
+    }
+
+    /// A missing path is not a missing key. These two `None`s mean different
+    /// things — no key yields no reusable ID at all, while no path only forces a
+    /// standalone identity — so a caller must be able to tell them apart on the
+    /// same value.
+    #[test]
+    fn root_key_and_root_path_are_independently_observable() {
+        let mut context = PullDiagnosticsContext::new();
+        context.identity_root_path = Some(PathBuf::from("/ws"));
+        assert!(context.identity_root_key.is_some() && context.identity_root_path.is_some());
+
+        context.identity_root_path = None;
+        assert!(
+            context.identity_root_key.is_some(),
+            "clearing the root path must not clear root authority"
+        );
+
+        context.identity_root_key = None;
+        context.identity_root_path = Some(PathBuf::from("/ws"));
+        assert!(
+            context.identity_root_key.is_none() && context.identity_root_path.is_some(),
+            "a root path must not stand in for absent root authority"
+        );
+    }
+
+    /// The hand-written `Debug` impl enumerates fields explicitly, so a newly
+    /// added field is easy to omit. Render both states and discriminate between
+    /// them, so an omission fails here instead of silently degrading diagnostics.
+    #[test]
+    fn debug_renders_the_identity_root_path_in_both_states() {
+        let mut context = PullDiagnosticsContext::new();
+        let without = format!("{context:?}");
+        assert!(
+            without.contains("identity_root_path: None"),
+            "default Debug must render the absent root path: {without}"
+        );
+
+        context.identity_root_path = Some(PathBuf::from("/ws/root"));
+        let with = format!("{context:?}");
+        assert!(with.contains("/ws/root"), "Debug must render a present root path: {with}");
+        assert_ne!(without, with, "Debug must discriminate the two root-path states");
     }
 }
