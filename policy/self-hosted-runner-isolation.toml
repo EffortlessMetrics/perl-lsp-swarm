@@ -168,37 +168,3 @@ candidate_writable = [
 per_run_namespaced = ["$GITHUB_WORKSPACE"]
 runtime_proof = "#7414"
 review_after = "2027-03-07"
-
-# =============================================================================
-# Droid review lane
-#
-# Recorded, not endorsed. #7414 explicitly does not rehabilitate Droid automatic
-# execution; #6098 owns that lane's trust decision. This profile exists so the
-# lane cannot be altered or duplicated silently, and so its secret exposure on a
-# persistent host stays visible.
-# =============================================================================
-
-[[profile]]
-workflow = ".github/workflows/droid.yml"
-job = "droid"
-runner = "self_hosted_droid_review"
-lifecycle = "persistent"
-# The manual workflow overrides HOME/config/cache with a private mktemp root
-# before checkout/tool installation and cleans it with always(). The settings
-# file contains MINIMAX_API_KEY in cleartext only inside that mode-0700 root;
-# it is not written into the persistent runner account's HOME by this workflow.
-# The native prompt directory is cleanup-separated, not uniquely namespaced.
-# In-job cleanup does not prove host teardown after termination or prevent
-# same-job mutable tooling from accessing secrets; #6098 remains open.
-# Legacy files from older workflow runs are not removed or proven absent here.
-candidate_writable = [
-  "runner work directory",
-  "legacy runner HOME state from prior Droid runs (not scrubbed by this workflow)",
-]
-per_run_namespaced = [
-  "$GITHUB_WORKSPACE",
-  "$RUNNER_TEMP/droid-home.*",
-  "$RUNNER_TEMP/droid-prompts (cleanup-separated)",
-]
-runtime_proof = "#6098"
-review_after = "2027-03-07"
