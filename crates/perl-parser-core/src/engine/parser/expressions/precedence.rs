@@ -25,7 +25,13 @@ impl<'a> Parser<'a> {
                     // '\ or \ = 1, 0' parses as '\ or ((\ = 1), 0)'.
                     // After parsing the first assignment, collect trailing comma / fat-arrow
                     // elements before building the word-operator node.
-                    let mut right = self.parse_assignment()?;
+                    // `goto LABEL` is a control-flow expression in this position, not
+                    // a bare identifier followed by a separate statement.
+                    let mut right = if self.goto_starts_control_flow() {
+                        self.parse_goto()?
+                    } else {
+                        self.parse_assignment()?
+                    };
                     // Apply any 'and' operators to the right side
                     right = self.parse_word_and_expr_with(right)?;
                     right = self.collect_comma_fat_arrow_continuation(right)?;
@@ -63,7 +69,11 @@ impl<'a> Parser<'a> {
             // `$a and $x = 1, last` parses as `$a and ($x = 1, last)`.
             // After parsing the first assignment, collect trailing comma / fat-arrow
             // elements before building the word-operator node.
-            let mut right = self.parse_word_not_expr()?;
+            let mut right = if self.goto_starts_control_flow() {
+                self.parse_goto()?
+            } else {
+                self.parse_word_not_expr()?
+            };
             right = self.collect_comma_fat_arrow_continuation(right)?;
 
             let start = expr.location.start;
@@ -82,13 +92,39 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// `goto` is normally a control-flow keyword here, except when Perl uses
+    /// it as a bareword key in a fat-arrow pair such as `foo or goto => 1`.
+    fn goto_starts_control_flow(&mut self) -> bool {
+        self.peek_kind() == Some(TokenKind::Goto)
+            && self
+                .tokens
+                .peek_second()
+                .map(|token| {
+                    !matches!(
+                        token.kind(),
+                        TokenKind::FatArrow
+                            | TokenKind::Arrow
+                            | TokenKind::Comma
+                            | TokenKind::RightParen
+                            | TokenKind::RightBrace
+                            | TokenKind::RightBracket
+                            | TokenKind::Eof
+                    )
+                })
+                .unwrap_or(true)
+    }
+
     /// Parse word not expression - handles 'not' operator
     fn parse_word_not_expr(&mut self) -> ParseResult<Node> {
         self.with_recursion_guard(|s| {
             if s.peek_kind() == Some(TokenKind::WordNot) {
                 let op_token = s.tokens.next()?;
                 let start = op_token.start();
-                let operand = s.parse_word_not_expr()?;
+                let operand = if s.goto_starts_control_flow() {
+                    s.parse_goto()?
+                } else {
+                    s.parse_word_not_expr()?
+                };
                 let end = operand.location.end;
 
                 return Ok(Node::new(
