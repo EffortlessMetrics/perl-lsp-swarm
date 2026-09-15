@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-13"
+updated = "2026-09-15"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -3676,3 +3676,35 @@ created = "2026-09-13"
 review_after = "2026-10-13"
 expires = "2026-12-31"
 removal_criteria = "Remove when #13238 lands the exact installed-name state that replaces this containment, or when the candidate gains its first production consumer (then re-scope the suppression to that consumer's seams and require activation evidence through it), or when ripr#1429 resolves activation tracing for modules with no production entry point. Narrow immediately if any seam unrelated to the containment predicates lands in this file."
+
+# Activation inventory generator (#9204, PR #14633): hosted RIPR on head
+# 09cb09d623 (merge tree d5827469, run 35005794864) reported 188 new
+# actionable gaps — 106 no_static_path + 82 reachable_unrevealed — in the
+# new xtask activation module. The claim is already discriminated by
+# cargo test -p xtask --test activation --test activation_cwd_independence
+# (63+1) and --lib activation (including protocol-kind wiring controls).
+# RIPR's own fallback named related tests for the error_path/? seams
+# (derive_features, feature_row, derive_gates) and labelled const/struct
+# owners as no_static_path field_construction — ripr#1429, same class as
+# no_panic_debt and tautology declaration suppressions. Review guidance
+# timed out at 600s so the producer could not emit per-line comments;
+# adding constructor-only tests for FEATURES_TOML would be proof theatre.
+# weakly_exposed stays visible. Narrow immediately if a receipt reports
+# an executable seam in these files that the existing tests do not name.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-9204-activation-inventory-declaration-and-error-path-seams"
+kind = "declaration_line_no_static_path"
+paths = [
+  "xtask/src/activation/*",
+  "xtask/src/activation/**",
+  "xtask/src/tasks/activation.rs",
+]
+classification = ["no_static_path", "reachable_unrevealed"]
+owner = "architecture/activation"
+issue = "#9204"
+reason = "PR #14633 (#9204) adds the versioned activation inventory generator. Hosted RIPR on head 09cb09d623 (merge tree d5827469, run 35005794864) reported 188 new actionable gaps: 106 no_static_path (const/struct field_construction owners in derive.rs plus declaration residue) and 82 reachable_unrevealed (error_path/?/side_effect on derive_features, feature_row, derive_gates). Discriminating proof already exists: cargo test -p xtask --test activation --test activation_cwd_independence (63+1) and --lib activation, including protocol_kind_strings_do_not_establish_an_unowned_preview and exact_derivation_receipts. RIPR's fallback named those same tests as related_tests for the error_path seams and still classified them reachable_unrevealed; const FEATURES_TOML/GATE_POLICY_YAML owners have no call path (ripr#1429). Same class as ripr-suppress-13397-panic-debt-declaration-seams and ripr-suppress-14058-tautology-declaration-seams. Classification is no_static_path and reachable_unrevealed only; weakly_exposed stays active. HONEST SCOPE NOTE: path-scoped to the new activation module and its CLI wrapper, so a future seam in these files is masked for this window — the next consumer (#9205) must re-scope rather than inherit. Remove when ripr#1429 traces declaration owners and error_path ? through the existing tests."
+created = "2026-09-15"
+review_after = "2026-10-15"
+expires = "2026-12-15"
+removal_criteria = "ripr#1429 traces declaration-line field_construction and error_path ? owners in xtask/src/activation to the existing unit and integration tests; then delete this entry and expect those tests to clear the seams without it. Narrow immediately if a receipt reports an executable seam in these files that cargo test -p xtask --test activation does not name. Do not keep the entry if a later PR adds an activation check/report consumer (#9205) without re-scoping."
