@@ -1,0 +1,99 @@
+name: Finalize measured compile budget
+on:
+  push:
+    branches: [repair/ci-lock-bootstrap-20260915]
+    paths: [.github/workflows/ci-compile-budget-finalize.yml]
+permissions:
+  contents: read
+concurrency:
+  group: finalize-compile-budget-20260915
+  cancel-in-progress: false
+jobs:
+  finalize:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: aa0d9ab928cd768ffa72bd2fed32f74ec8f89216
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Validate the measured budget against original policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/final-budget-venv"
+          "$RUNNER_TEMP/final-budget-venv/bin/pip" install PyYAML==6.0.2
+          "$RUNNER_TEMP/final-budget-venv/bin/python" - <<'PY'
+          import copy, json, os, pathlib, subprocess, yaml
+          p = pathlib.Path('.ci/gate-policy.yaml')
+          text = p.read_text()
+          old = '# The recipe now runs five Cargo commands: default/all-feature workspace\n    # checks, example test compilation, and two wire-free parser checks. Main\n    # runs 34976694456 and 34992022773 exhausted 600s during the all-features\n    # pass, before the final three commands. Preserve every check and allow a\n    # bounded 20m cold-build window; hosted receipts must prove it sufficient.\n    # max_duration_ms is a declarative soft budget, not the enforced watchdog.\n    timeout_seconds: 1200\n    retry_count: 0\n    budgets:\n      max_duration_ms: 1080000'
+          new = '# The recipe now runs five Cargo commands: default/all-feature workspace\n    # checks, example test compilation, and two wire-free parser checks. Main\n    # receipts from runs 34976694456 and 34992022773 show the first three\n    # stages consuming about 580s; the 600s watchdog then kills a parser-profile\n    # check. Preserve all five commands and allow a bounded 15m cold-build\n    # window. Hosted receipts remain the runtime acceptance evidence.\n    # max_duration_ms is a declarative soft budget, not the enforced watchdog.\n    timeout_seconds: 900\n    retry_count: 0\n    budgets:\n      max_duration_ms: 780000'
+          assert text.count(old) == 1
+          text = text.replace(old, new, 1)
+          old_reference = '# ceiling (1200s / 1080000ms), which compiles strictly more work. The'
+          assert text.count(old_reference) == 1
+          text = text.replace(old_reference, '# ceiling (900s / 780000ms), which compiles strictly more work. The', 1)
+          base = '198c16ef2ec7f52c1e2d99a377b817e5afc8bbf1'
+          original = yaml.safe_load(subprocess.check_output(['git', 'show', base + ':' + str(p)], text=True))
+          expected = copy.deepcopy(original)
+          gate = next(g for g in expected['gates'] if g['name'] == 'compile_all_targets')
+          gate['description'] = 'Compile workspace targets, example test modules, and wire-free parser profiles without running tests'
+          gate['timeout_seconds'] = 900
+          gate['budgets']['max_duration_ms'] = 780000
+          actual = yaml.safe_load(text)
+          assert actual == expected, 'Unrelated gate or policy change'
+          assert gate['required'] and not gate['quarantine'] and gate['retry_count'] == 0
+          assert gate['command'] == 'just check-all-targets'
+          p.write_text(text)
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          assert subprocess.check_output(['git', 'diff', '--name-only', base], text=True).splitlines() == [str(p)]
+          proof = {'base': base, 'gate': 'compile_all_targets', 'old_watchdog_seconds': 600,
+              'new_watchdog_seconds': 900, 'new_soft_budget_ms': 780000,
+              'all_other_gate_policy_fields_unchanged': True,
+              'recipe_unchanged': True, 'runtime_acceptance': 'Pending hosted PR CI'}
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'final-budget-proof.json').write_text(json.dumps(proof, indent=2) + '\n')
+          print(json.dumps(proof, indent=2))
+          PY
+          git diff 198c16ef2ec7f52c1e2d99a377b817e5afc8bbf1 -- .ci/gate-policy.yaml
+      - name: Append correction without overwriting another writer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request
+          root = 'https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm'
+          parent = 'aa0d9ab928cd768ffa72bd2fed32f74ec8f89216'
+          branch = 'fix/compile-all-targets-budget-20260915'
+          def request(path, body=None, method='GET'):
+              req = urllib.request.Request(root + path, data=None if body is None else json.dumps(body).encode(), method=method, headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.urlopen(req, timeout=60) as response:
+                  return json.load(response)
+          assert request('/git/ref/heads/' + branch)['object']['sha'] == parent
+          path = '.ci/gate-policy.yaml'
+          blob = request('/git/blobs', {'content': pathlib.Path(path).read_text(), 'encoding': 'utf-8'}, 'POST')
+          tree = request('/git/trees', {'base_tree': 'f7f56cd3929e6e54be8e5c9d4b23ed2e72b20e9e', 'tree': [
+              {'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']}]}, 'POST')
+          identity = {'name': 'EffortlessSteven', 'email': 'git@effortlesssteven.com'}
+          commit = request('/git/commits', {'message': 'fix(ci): set measured 15-minute compile budget and correct stage diagnosis',
+              'tree': tree['sha'], 'parents': [parent], 'author': identity, 'committer': identity}, 'POST')
+          request('/git/refs/heads/' + branch, {'sha': commit['sha'], 'force': False}, 'PATCH')
+          result = {'branch': branch, 'commit': commit['sha'], 'policy_blob': blob['sha']}
+          print(json.dumps(result))
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'final-budget-candidate.json').write_text(json.dumps(result, indent=2) + '\n')
+          PY
+      - name: Preserve final proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: final-compile-budget-proof
+          path: ${{ runner.temp }}/final-budget-*.json
+          retention-days: 7
+          if-no-files-found: ignore
