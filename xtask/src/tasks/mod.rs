@@ -54,6 +54,7 @@ pub mod compat_inventory;
 pub mod compiler_lexical_cutline;
 pub mod compiler_oracle;
 pub mod compiler_profile;
+pub mod completion_candidates;
 #[cfg(feature = "legacy")]
 pub mod corpus;
 pub mod corpus_audit;
