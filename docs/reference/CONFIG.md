@@ -183,7 +183,7 @@ for every shipped rule (ID, category, severity, and which of the `recommended` /
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `enabled` | `boolean` | (unset) | Enable or disable LSP formatting. When unset, the server default (`true`) applies. |
-| `engine` | `"native"`, `"compat"`, `"perltidy-compat"`, `"external-legacy"`, `"external-perltidy"`, `"perltidy"`, `"off"`, `"disabled"`, or `"none"` | `"native"` | Selects the formatter engine. `native` runs the Rust-native formatter, `compat` / `perltidy-compat` run native formatting with compatibility defaults, `external-*` / `perltidy` use the external perltidy adapter, and `off` / `disabled` / `none` disable formatting. Unrecognized values are ignored and a warning is logged. |
+| `engine` | `"native"`, `"external-legacy"`, `"external-perltidy"`, `"perltidy"`, `"off"`, `"disabled"`, or `"none"` | `"native"` | Selects the formatter engine. `native` runs the Rust-native formatter, `external-*` / `perltidy` use the external perltidy adapter, and `off` / `disabled` / `none` disable formatting. Unrecognized values are ignored and a warning is logged. The retired `"compat"` / `"perltidy-compat"` aliases are still accepted and run the native formatter, with a deprecation warning; they never had behavior of their own (#7129). |
 | `perltidy_profile` | `string` | (unset) | Path to a `.perltidyrc` profile. Used by the external perltidy adapter and by compatibility reporting. |
 | `perltidy_maximum_line_length` | `integer` | (unset) | Maximum line length for formatting compatibility options. |
 | `perltidy_indent_columns` | `integer` | (unset) | Indent width in spaces. |
@@ -496,14 +496,17 @@ edits regardless of the selected engine.
 
 | Property | Value |
 |---|---|
-| Type | `"native"\|"compat"\|"off"` |
+| Type | `"native"\|"off"` |
 | Default | `"native"` |
 
 Formatter engine for LSP formatting requests:
 
 - `native` uses the Rust-native formatter.
-- `compat` uses the native formatter with compatibility-oriented defaults.
 - `off` disables formatting.
+
+The retired `"compat"` alias is still accepted here and runs the native
+formatter, with a deprecation warning; set the value to `"native"` instead. It
+never selected a different engine or produced different output (#7129).
 
 External formatter aliases are project-configuration values, not accepted
 through the generic LSP client-settings channel. Use the project `[formatting]`

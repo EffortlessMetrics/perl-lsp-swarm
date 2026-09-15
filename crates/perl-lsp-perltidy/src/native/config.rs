@@ -5,15 +5,16 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum FormatterMode {
     /// Run the Rust-native formatter.
+    ///
+    /// The retired `compat` / `perltidy-compat` configuration tokens project
+    /// onto this mode (#7129). `compat` was a bare alias: it selected the
+    /// native formatter and produced byte-identical output, so it named no
+    /// behavior a user could observe or rely on. A future compatibility
+    /// profile must arrive as its own behavior-backed contract with a profile
+    /// identity, a reviewed mapping table, and behavior fixtures — it does not
+    /// inherit authority from the removed alias.
     #[default]
     Native,
-    /// Run native formatting with compatibility defaults for common legacy profiles.
-    ///
-    /// **Note:** Currently produces identical output to [`Native`](Self::Native) —
-    /// no compatibility-specific defaults are implemented yet (#5054 item 6).
-    /// When implemented, this mode will apply less aggressive reformatting
-    /// (preserve existing whitespace, only fix syntax-level issues).
-    Compat,
     /// Explicitly use an external legacy formatter adapter.
     ExternalLegacy,
     /// Disable formatting.
@@ -117,12 +118,6 @@ impl Default for FormatConfig {
 }
 
 impl FormatConfig {
-    /// Build a compatibility-oriented native configuration.
-    #[must_use]
-    pub fn compat() -> Self {
-        Self { mode: FormatterMode::Compat, ..Self::default() }
-    }
-
     /// Build an explicit external legacy configuration.
     #[must_use]
     pub fn external_legacy() -> Self {

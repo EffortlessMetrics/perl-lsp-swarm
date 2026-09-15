@@ -793,11 +793,10 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         },
         DefaultCheck {
             name: "native_formatter_branch_uses_native_provider",
-            passed: formatting_provider_source
-                .contains("FormatterMode::Native | FormatterMode::Compat")
+            passed: formatting_provider_source.contains("FormatterMode::Native =>")
                 && formatting_provider_source.contains("Ok(native_format_document")
                 && formatting_provider_source.contains("Ok(native_format_range"),
-            detail: "native/compat formatter branches render through native_format_*".to_string(),
+            detail: "the native formatter branch renders through native_format_*".to_string(),
         },
         DefaultCheck {
             name: "external_formatter_requires_external_legacy_mode",
@@ -818,7 +817,7 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
             passed: configuration_docs
                 .contains("| `[formatting] engine = \"native\"` | `\"formatting\": {\"engine\": \"native\"}` |")
                 && configuration_docs
-                    .contains("Generic LSP settings accept native, compat, or off; external-perltidy is project-only"),
+                    .contains("Generic LSP settings accept native or off; external-perltidy is project-only"),
             detail:
                 "configuration docs distinguish generic client formatter modes from project-only external formatting"
                     .to_string(),
@@ -2123,14 +2122,14 @@ color = 1
             formatting_path,
             r#"
 match self.mode {
-    FormatterMode::Native | FormatterMode::Compat => {
+    FormatterMode::Native => {
         Ok(native_format_document(content, options, self.perltidy_config.as_ref()))
     }
     FormatterMode::ExternalLegacy => self.format_document_with_perltidy(content, options),
     FormatterMode::Off => Ok(FormattedDocument { text: content.to_string(), edits: vec![] }),
 }
 match self.mode {
-    FormatterMode::Native | FormatterMode::Compat => {
+    FormatterMode::Native => {
         Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
     }
     FormatterMode::ExternalLegacy => {
@@ -2156,7 +2155,7 @@ if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
             r#"
 | `[critic]` | `engine` | string | `"native"` | Critic engine |
 | `[formatting]` | `engine` | string | `"native"` | Formatter engine |
-| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native, compat, or off; external-perltidy is project-only |
+| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native or off; external-perltidy is project-only |
 | `[critic] engine = "native"` | `"critic": {"engine": "native"}` | Use `"legacy"` or `"external"` for Perl::Critic shell-out compatibility |
 "#,
         )?;
