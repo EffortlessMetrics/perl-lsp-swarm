@@ -795,15 +795,16 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
             name: "native_formatter_branch_uses_native_provider",
             passed: formatting_provider_source
                 .contains("FormatterMode::Native | FormatterMode::Compat")
-                && formatting_provider_source.contains("Ok(native_format_document")
-                && formatting_provider_source.contains("Ok(native_format_range"),
-            detail: "native/compat formatter branches render through native_format_*".to_string(),
+                && formatting_provider_source.contains("self.native_document_decision(")
+                && formatting_provider_source.contains("self.native_range_decision("),
+            detail: "native/compat formatter branches render through native_*_decision".to_string(),
         },
         DefaultCheck {
             name: "external_formatter_requires_external_legacy_mode",
             passed: formatting_provider_source
-                .contains("FormatterMode::ExternalLegacy => self.format_document_with_perltidy")
-                && formatting_provider_source.contains("self.format_range_with_perltidy"),
+                .contains("FormatterMode::ExternalLegacy => self.external_document_decision(")
+                && formatting_provider_source
+                    .contains("FormatterMode::ExternalLegacy if is_whole_document_range(content, range) =>"),
             detail: "perltidy formatter calls are isolated behind ExternalLegacy".to_string(),
         },
         DefaultCheck {
@@ -826,7 +827,7 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         DefaultCheck {
             name: "configuration_docs_mark_native_critic_default",
             passed: configuration_docs
-                .contains("| `[critic]` | `engine` | string | `\"native\"` |")
+                .contains("| `[critic] engine = \"native\"` | `\"critic\": {\"engine\": \"native\"}` |")
                 && configuration_docs.contains(
                     "Use `\"legacy\"` or `\"external\"` for Perl::Critic shell-out compatibility",
                 ),
@@ -2124,19 +2125,49 @@ color = 1
             r#"
 match self.mode {
     FormatterMode::Native | FormatterMode::Compat => {
-        Ok(native_format_document(content, options, self.perltidy_config.as_ref()))
+        self.native_document_decision(content, options, context)
     }
-    FormatterMode::ExternalLegacy => self.format_document_with_perltidy(content, options),
-    FormatterMode::Off => Ok(FormattedDocument { text: content.to_string(), edits: vec![] }),
+    FormatterMode::ExternalLegacy => self.external_document_decision(
+        content,
+        options,
+        context,
+        FormatRequestTarget::Document,
+    ),
+    FormatterMode::Off => Ok(refused_decision(
+        content,
+        self.mode,
+        FormatEngine::Disabled,
+        FormatRequestTarget::Document,
+        context,
+        FormatReasonCode::FormatterDisabled,
+        "enable formatting or select a supported formatter mode",
+    )),
 }
 match self.mode {
     FormatterMode::Native | FormatterMode::Compat => {
-        Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
+        self.native_range_decision(content, range, options, context)
     }
-    FormatterMode::ExternalLegacy => {
-                self.format_range_with_perltidy(content, options, &lines, start_line, end_line)
-            }
-    FormatterMode::Off => Ok(FormattedDocument { text: content.to_string(), edits: vec![] }),
+    FormatterMode::ExternalLegacy if is_whole_document_range(content, range) => {
+        self.external_document_decision(content, options, context, target)
+    }
+    FormatterMode::ExternalLegacy => Ok(refused_decision(
+        content,
+        self.mode,
+        FormatEngine::Unknown,
+        target,
+        context,
+        FormatReasonCode::UnsafeRange,
+        "external Perl::Tidy compatibility currently supports whole-document formatting only",
+    )),
+    FormatterMode::Off => Ok(refused_decision(
+        content,
+        self.mode,
+        FormatEngine::Disabled,
+        target,
+        context,
+        FormatReasonCode::FormatterDisabled,
+        "enable formatting or select a supported formatter mode",
+    )),
 }
 "#,
         )?;
@@ -2154,12 +2185,26 @@ if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
         fs::write(
             docs_path,
             r#"
-| `[critic]` | `engine` | string | `"native"` | Critic engine |
-| `[formatting]` | `engine` | string | `"native"` | Formatter engine |
-| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native, compat, or off; external-perltidy is project-only |
 | `[critic] engine = "native"` | `"critic": {"engine": "native"}` | Use `"legacy"` or `"external"` for Perl::Critic shell-out compatibility |
+| `[formatting] engine = "native"` | `"formatting": {"engine": "native"}` | Generic LSP settings accept native, compat, or off; external-perltidy is project-only |
 "#,
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_tooling_default_checks_pass_against_real_repository_source() -> Result<()> {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or_else(|| eyre!("xtask manifest directory should have a repository root parent"))?
+            .to_path_buf();
+
+        let checks = native_tooling_default_checks(&repo_root)?;
+
+        assert!(
+            checks.iter().all(|check| check.passed),
+            "default guard drifted from real repository source: {checks:#?}"
+        );
         Ok(())
     }
 }
