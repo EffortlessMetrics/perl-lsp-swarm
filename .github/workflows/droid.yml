@@ -21,7 +21,7 @@ jobs:
         (github.event_name == 'pull_request_review_comment' && github.event.comment.user.type == 'User' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && contains(github.event.comment.body, '@droid')) ||
         (github.event_name == 'pull_request_review' && github.event.review.user.type == 'User' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) && contains(github.event.review.body, '@droid'))
       )
-    runs-on: [self-hosted, linux, x64, em-ci, trusted-pr, review-nano, droid-review]
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
       group: droid-mention-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
@@ -48,6 +48,7 @@ jobs:
             echo "XDG_CONFIG_HOME=$droid_home/.config"
             echo "XDG_CACHE_HOME=$droid_home/.cache"
             echo "BUN_INSTALL=$droid_home/.bun"
+            echo "FACTORY_DROID_AUTO_UPDATE_ENABLED=false"
           } >> "$GITHUB_ENV"
           echo "$droid_home/.local/bin" >> "$GITHUB_PATH"
           # The native action uses this fixed runner-temp directory for both passes.
@@ -122,6 +123,43 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - id: droid_cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          version=0.209.0
+          base_url="https://downloads.factory.ai/factory-cli/releases/${version}/linux/x64"
+          binary="$HOME/.local/bin/droid"
+          checksum="$HOME/droid.sha256"
+
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 15 --max-time 180 \
+            "${base_url}/droid" --output "$binary"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 15 --max-time 60 \
+            "${base_url}/droid.sha256" --output "$checksum"
+
+          expected=$(awk 'NF {print $1; exit}' "$checksum")
+          if ! [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::Factory checksum is malformed"
+            exit 1
+          fi
+          printf '%s  %s\n' "$expected" "$binary" | sha256sum --check --status
+          chmod 0755 "$binary"
+          rm -f -- "$checksum"
+
+          reported=$("$binary" --version)
+          printf '%s\n' "$reported"
+          case "$reported" in
+            *"$version"*) ;;
+            *)
+              echo "::error::Expected Droid CLI ${version}, got: ${reported}"
+              exit 1
+              ;;
+          esac
+          echo "path=$binary" >> "$GITHUB_OUTPUT"
+
       - name: Configure MiniMax M3 BYOK
         shell: bash
         env:
@@ -159,9 +197,11 @@ jobs:
           ANTHROPIC_API_KEY: ""
           ANTHROPIC_AUTH_TOKEN: ""
           ANTHROPIC_BASE_URL: ""
+          FACTORY_DROID_AUTO_UPDATE_ENABLED: "false"
         with:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
           expected_head_sha: ${{ steps.subject.outputs.head }}
+          path_to_droid_executable: ${{ steps.droid_cli.outputs.path }}
           additional_permissions: "actions: read"
           automatic_review: false
           automatic_security_review: false
