@@ -1525,6 +1525,7 @@ pub const perl_lsp_rs_core::product_identity::PUBLIC_REPOSITORY: &str
 pub fn perl_lsp_rs_core::product_identity::requested_identity_output(args: &[alloc::string::String]) -> core::option::Option<perl_lsp_rs_core::product_identity::IdentityOutputFormat>
 pub mod perl_lsp_rs_core::protocol
 pub mod perl_lsp_rs_core::protocol::binary_identity
+pub enum perl_lsp_rs_core::protocol::binary_identity::BinaryCompatibilityReason
 pub perl_lsp_rs_core::protocol::binary_identity::BinaryCompatibilityReason::ArtifactDigestMismatch
 pub perl_lsp_rs_core::protocol::binary_identity::BinaryCompatibilityReason::ArtifactDigestNotProven
 pub perl_lsp_rs_core::protocol::binary_identity::BinaryCompatibilityReason::ArtifactRoleMismatch

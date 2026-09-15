@@ -62,13 +62,12 @@ macro_rules! binary_compatibility_reasons {
     ($($(#[$reason_doc:meta])* $reason:ident),+ $(,)?) => {
         /// Stable machine reasons contributing to a compatibility verdict.
         ///
-        /// `repr(u8)` is load-bearing: `deduplicate` orders reasons by
-        /// `*value as u8`, and the reason union is serialized in that order, so
-        /// the discriminants must be fixed by the declaration list below rather
-        /// than assigned by the compiler.
+        /// As a fieldless enum, discriminants are assigned in declaration order,
+        /// which is what `deduplicate`'s `*value as u8` ordering relies on — no
+        /// `repr` attribute is needed for that (adding one would surface in the
+        /// public-API baseline without delivering reorder stability, #15571).
         #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
         #[serde(rename_all = "snake_case")]
-        #[repr(u8)]
         pub enum BinaryCompatibilityReason {
             $($(#[$reason_doc])* $reason,)+
         }

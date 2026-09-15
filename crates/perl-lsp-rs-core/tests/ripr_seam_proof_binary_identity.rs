@@ -277,13 +277,15 @@ fn assert_reason_array_bounds_admit_the_union(
     }
 
     // Every terminal branch of `evaluate_compatibility` returns at least one
-    // reason (`ExactMatch` returns exactly one), so the schema must not demand
-    // more than production guarantees.
+    // reason (`ExactMatch` returns exactly one), so the schema must demand
+    // exactly that: `minItems: 1` in both directions. Accepting `0` would let
+    // the schema stop enforcing the production invariant that every response
+    // carries a reason (#15571 FC6).
     let min_items =
         reasons["minItems"].as_u64().ok_or("schema reasons array declares no minItems")? as usize;
-    if min_items > 1 {
+    if min_items != 1 {
         return Err(format!(
-            "schema minItems {min_items} exceeds the single reason ExactMatch emits"
+            "schema minItems must be exactly 1 (one reason per response, ExactMatch minimum); found {min_items}"
         )
         .into());
     }
@@ -291,6 +293,23 @@ fn assert_reason_array_bounds_admit_the_union(
     if reasons["uniqueItems"] != Value::Bool(true) {
         return Err("schema reasons array no longer declares uniqueItems".into());
     }
+    Ok(())
+}
+
+#[test]
+fn schema_bounds_reject_a_doctored_zero_minimum() -> Result<(), Box<dyn std::error::Error>> {
+    // Negative control for the minItems bind (#15571 FC6): if the schema
+    // stopped enforcing `minItems: 1`, the bound check must fail rather than
+    // let responses without reasons validate.
+    let root = repository_root()?;
+    let mut schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+    schema["properties"]["reasons"]["minItems"] = serde_json::json!(0);
+    assert!(
+        assert_reason_array_bounds_admit_the_union(&schema).is_err(),
+        "the minItems bind must reject a schema that stops requiring a reason"
+    );
     Ok(())
 }
 
@@ -327,7 +346,8 @@ fn reason_array_bound_drift_is_reported() -> Result<(), Box<dyn std::error::Erro
     demanding["properties"]["reasons"]["minItems"] = Value::from(2);
     match assert_reason_array_bounds_admit_the_union(&demanding) {
         Err(error) => assert!(
-            error.to_string().contains("schema minItems 2"),
+            error.to_string().contains("must be exactly 1")
+                && error.to_string().contains("found 2"),
             "minItems drift must name the offending bound, got {error}"
         ),
         Ok(()) => return Err("a minItems above the ExactMatch arity must be rejected".into()),
