@@ -1,0 +1,942 @@
+//! Tests for the reachability fixture manifest checker (#10998): schema
+//! acceptance, every fail-closed validation rule, self-fixture documents,
+//! determinism under row shuffling, and the real repository manifest.
+
+use super::model::{
+    CompletenessClaim, CurrentnessExpectation, CurrentnessTransition, DIGEST_ALGORITHM,
+    EnvelopeClass, FactClass, FixtureIdentity, FixtureRole, IndependenceClass, InstrumentStatus,
+    InstrumentStatusKind, Limitation, MANIFEST_NAME, MANIFEST_RELATIVE_PATH, Manifest,
+    OperationExpectation, OperationStage, Oracle, OracleType, ProfileExpectation, ProfileName,
+    ProofCeiling, RaceBarrier, RaceBarrierKind, ResultIdentity, Row, RowControls, RowExpectations,
+    SCHEMA_ID, SCHEMA_VERSION, SupportClass, TerminalOutcome, TrainIdentity, TransportExpectation,
+    TransportRoute, VIEW_RELATIVE_PATH,
+};
+use super::*;
+use sha2::Digest as ShaDigest;
+use sha2::Sha256;
+use std::path::PathBuf;
+
+type TestResult<T = ()> = Result<T>;
+
+const ALLOWED_ROOTS: &[&str] = &["crates", "test_corpus"];
+const SAMPLE_FIXTURE_RELATIVE: &str = "crates/reachability_fixtures/sample.pl";
+const SAMPLE_FIXTURE_BODY: &str = "sub demo { return 1; }\nprint demo();\n";
+
+fn digest_of(body: &str) -> String {
+    // Mirrors DIGEST_ALGORITHM = "sha256-lf-normalized": only CRLF sequences
+    // normalize to LF; a bare CR is semantic and must move the digest.
+    let mut hasher = Sha256::new();
+    let mut bytes_iter = body.bytes().peekable();
+    while let Some(byte) = bytes_iter.next() {
+        match byte {
+            b'\r' => {
+                if bytes_iter.peek() == Some(&b'\n') {
+                    bytes_iter.next();
+                    hasher.update([b'\n']);
+                } else {
+                    hasher.update([b'\r']);
+                }
+            }
+            other => hasher.update([other]),
+        }
+    }
+    hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+struct Workspace {
+    tempdir: tempfile::TempDir,
+}
+
+impl Workspace {
+    fn new() -> TestResult<Self> {
+        let tempdir = tempfile::tempdir()?;
+        let fixture_path = tempdir.path().join(SAMPLE_FIXTURE_RELATIVE);
+        fs::create_dir_all(
+            fixture_path
+                .parent()
+                .ok_or_else(|| color_eyre::eyre::eyre!("fixture path lacks a parent directory"))?,
+        )?;
+        fs::write(&fixture_path, SAMPLE_FIXTURE_BODY)?;
+        fs::create_dir_all(tempdir.path().join("schemas"))?;
+        fs::write(
+            tempdir.path().join("schemas/analysis_reachability_fixture_manifest.v1.schema.json"),
+            valid_schema_text(),
+        )?;
+        Ok(Self { tempdir })
+    }
+
+    fn root(&self) -> PathBuf {
+        self.tempdir.path().to_path_buf()
+    }
+
+    fn write_manifest(&self, manifest: &Manifest) -> TestResult<()> {
+        let path = self.root().join(MANIFEST_RELATIVE_PATH);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, serde_json::to_string_pretty(manifest)?)?;
+        Ok(())
+    }
+}
+
+fn train(family: &str) -> TrainIdentity {
+    TrainIdentity {
+        node: "N.denominator".to_string(),
+        component: family.to_string(),
+        family: family.to_string(),
+        claim_profile: "reachability-v1".to_string(),
+    }
+}
+
+fn oracle(oracle_type: OracleType) -> Oracle {
+    Oracle {
+        oracle_type,
+        independence_class: if oracle_type.is_implementation_derived() {
+            IndependenceClass::ObservedOnly
+        } else {
+            IndependenceClass::Independent
+        },
+        proof_ceiling: ProofCeiling::InternalSemantic,
+    }
+}
+
+fn supported_limitation() -> Limitation {
+    Limitation { support_class: SupportClass::Supported, exit_owner_issue: None }
+}
+
+fn default_currentness() -> CurrentnessExpectation {
+    CurrentnessExpectation {
+        proposition: "exact results carry generation-scoped identity".to_string(),
+        transition: CurrentnessTransition::IrrelevantEditCompleteEquivalent,
+        generation: Some("gen-1".to_string()),
+    }
+}
+
+fn positive_row(id: &str, opposite: Option<&str>) -> Row {
+    Row {
+        row_id: id.to_string(),
+        fixture: FixtureIdentity {
+            id: "sample".to_string(),
+            path: SAMPLE_FIXTURE_RELATIVE.to_string(),
+            digest_sha256_lf: digest_of(SAMPLE_FIXTURE_BODY),
+            role: FixtureRole::Positive,
+        },
+        subjects: vec!["subject://demo".to_string()],
+        source_roles: vec!["entry-script".to_string()],
+        train: train("A_local_flow"),
+        prerequisites: vec![],
+        controls: RowControls { opposite: opposite.map(str::to_string), near_neighbour: None },
+        expectations: RowExpectations::facts_with_currentness(
+            "return terminates the callable body",
+            FactClass::ExactValueOrEdge,
+            default_currentness(),
+        ),
+        terminal: TerminalOutcome::CompleteNonempty,
+        result_identity: Some(ResultIdentity {
+            identity: "result://demo".to_string(),
+            completeness: CompletenessClaim::SemanticComplete,
+        }),
+        authority_reference: None,
+        limitation: supported_limitation(),
+        oracle: oracle(OracleType::IndependentExpectedAuthority),
+        race_barrier: None,
+        instrument: None,
+        owner_issue: None,
+    }
+}
+
+fn control_row(id: &str) -> Row {
+    let mut row = positive_row(id, None);
+    row.fixture.role = FixtureRole::ControlOpposite;
+    row.terminal = TerminalOutcome::DynamicOrUnsupported;
+    row.result_identity = None;
+    row.expectations = RowExpectations::facts_only(
+        "same-spelling user subs never inherit exact flow",
+        FactClass::AbsentFactNonEdge,
+    );
+    row
+}
+
+/// Builds a manifest whose denominator declares, for every family, the exact
+/// stage/terminal slots its rows instantiate (or named deferrals covering
+/// every vocabulary slot the document leaves uninstantiated), mirroring how
+/// the canonical manifest keeps coverage mechanically cross-checked.
+fn minimal_manifest(rows: Vec<Row>) -> Manifest {
+    let mut covered_stages: Vec<&'static str> = Vec::new();
+    let mut covered_terminals: Vec<&'static str> = Vec::new();
+    for row in &rows {
+        let terminal_token = row.terminal.wire_name();
+        if !covered_terminals.contains(&terminal_token) {
+            covered_terminals.push(terminal_token);
+        }
+        if let Some(operation) = &row.expectations.operation
+            && !covered_stages.contains(&operation.stage.wire_name())
+        {
+            covered_stages.push(operation.stage.wire_name());
+        }
+    }
+
+    let unit_deferral = |coverage: String| model::DeferredCoverage {
+        coverage,
+        owner_issue: 11004,
+        reason: "unit-test deferral placeholder".to_string(),
+    };
+
+    let mut denominator = Vec::new();
+    for family in model::FAMILIES {
+        let family_rows: Vec<&Row> =
+            rows.iter().filter(|row| row.train.family == **family).collect();
+        let mut required_coverage = Vec::new();
+        for row in &family_rows {
+            let terminal_token = format!("terminal:{}", row.terminal.wire_name());
+            if !required_coverage.contains(&terminal_token) {
+                required_coverage.push(terminal_token);
+            }
+            if let Some(operation) = &row.expectations.operation {
+                let stage_token = format!("stage:{}", operation.stage.wire_name());
+                if !required_coverage.contains(&stage_token) {
+                    required_coverage.push(stage_token);
+                }
+            }
+        }
+        let deferred_coverage = if family_rows.is_empty() {
+            model::OperationStage::ALL
+                .iter()
+                .filter(|stage| !covered_stages.contains(&stage.wire_name()))
+                .map(|stage| unit_deferral(format!("stage:{}", stage.wire_name())))
+                .chain(
+                    model::TerminalOutcome::ALL
+                        .iter()
+                        .filter(|terminal| !covered_terminals.contains(&terminal.wire_name()))
+                        .map(|terminal| {
+                            unit_deferral(format!("terminal:{}", terminal.wire_name()))
+                        }),
+                )
+                .collect()
+        } else {
+            Vec::new()
+        };
+        denominator.push(model::FamilyDenominator {
+            family: (*family).to_string(),
+            required_coverage,
+            deferred_coverage,
+        });
+    }
+    Manifest {
+        schema: SCHEMA_ID.to_string(),
+        schema_version: SCHEMA_VERSION,
+        manifest: MANIFEST_NAME.to_string(),
+        owner_issue: 10998,
+        status: "declaration-only".to_string(),
+        claim_boundary: "Declaration only; no analysis execution, no semantic proof execution, \
+no exact-process proof execution, no product behavior selection, no claim promotion; \
+generated views derive from this manifest."
+            .to_string(),
+        digest_algorithm: DIGEST_ALGORITHM.to_string(),
+        allowed_fixture_roots: ALLOWED_ROOTS.iter().map(|root| (*root).to_string()).collect(),
+        authorities: vec!["#8062".to_string(), "#8149".to_string()],
+        contracts: Default::default(),
+        proof_owners: model::FAMILIES.iter().map(|family| ((*family).to_string(), 11004)).collect(),
+        declared_row_count: rows.len() as u64,
+        denominator,
+        rows,
+    }
+}
+
+#[test]
+fn accepts_minimal_valid_manifest() -> TestResult {
+    let workspace = Workspace::new()?;
+    let manifest = minimal_manifest(vec![
+        positive_row("a1-positive", Some("a2-opposite")),
+        control_row("a2-opposite"),
+    ]);
+    workspace.write_manifest(&manifest)?;
+
+    let violations = validate_document(&workspace.root(), &manifest);
+    assert!(violations.is_empty(), "unexpected violations: {violations:?}");
+    Ok(())
+}
+
+#[test]
+fn rejects_duplicate_row_ids() -> TestResult {
+    let manifest = minimal_manifest(vec![
+        positive_row("same-id", Some("other")),
+        control_row("other"),
+        control_row("same-id"),
+    ]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("duplicate row id")),
+        "missing duplicate violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_duplicate_denominator_family_entries() -> TestResult {
+    let mut manifest = minimal_manifest(vec![
+        positive_row("a1-positive", Some("a2-opposite")),
+        control_row("a2-opposite"),
+    ]);
+    // A second entry for the same family carries requirements and deferrals
+    // that first-entry lookups never read; it must fail closed instead of
+    // silently splitting one family's accounting across two entries.
+    let duplicated = manifest.denominator[0].clone();
+    manifest.denominator.push(duplicated);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.contains("denominator declares family") && v.contains("more than once")),
+        "missing duplicate-family violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn contains_word_rejects_empty_needle_and_resumes_on_char_boundaries() {
+    // An empty needle supplies no grounding evidence; the previous fallback
+    // advanced the cursor past the end of the haystack and panicked.
+    assert!(!contains_word("sub demo { }", ""));
+    // A multi-byte match rejected by the ASCII boundary checks must resume at
+    // the char boundary after the match; advancing one byte split the UTF-8
+    // character and panicked on the next slice.
+    assert!(!contains_word("aé", "é"));
+    assert!(contains_word("aé", "a"));
+    // Word-boundary discipline stays intact on both edges.
+    assert!(contains_word("sub entry_calls_live_scc { }", "entry_calls_live_scc"));
+    assert!(!contains_word("entry_calls_live_scc_extra", "entry_calls_live_scc"));
+}
+
+#[test]
+fn rejects_unstable_fixture_identity() -> TestResult {
+    let mut second = control_row("second");
+    second.fixture.id = "sample".to_string();
+    second.fixture.digest_sha256_lf = "0".repeat(64);
+    let manifest = minimal_manifest(vec![positive_row("first", Some("second")), second]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("unstable fixture identity")),
+        "missing instability violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_promoted_positive_without_opposite_control() -> TestResult {
+    let manifest = minimal_manifest(vec![positive_row("lone-positive", None)]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("promoted positive row lacks an opposite")),
+        "missing control violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_unknown_control_links() -> TestResult {
+    let manifest = minimal_manifest(vec![positive_row("dangling", Some("does-not-exist"))]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("links unknown row")),
+        "missing dangling-control violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_self_referential_control_links() -> TestResult {
+    // A promoted row satisfies has_control merely by naming itself; a
+    // self-referential control supplies no opposite-direction evidence.
+    let manifest = minimal_manifest(vec![positive_row("self-control", Some("self-control"))]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("cannot reference its own row id")),
+        "missing self-control violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_missing_instrument_without_not_proven_on_any_terminal() -> TestResult {
+    // Instrument receipt enforcement cannot be limited to terminals selected
+    // by requires_instrument_receipt(): a stale/not_ready/unsupported row with
+    // a missing instrument would validate clean while the view counts it as
+    // NOT_PROVEN.
+    let mut row = control_row("stale-missing-instrument");
+    row.terminal = TerminalOutcome::Stale;
+    row.instrument = Some(InstrumentStatus {
+        status: InstrumentStatusKind::Missing,
+        disposition: "assumed_zero".to_string(),
+    });
+    let manifest = minimal_manifest(vec![row]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.contains("missing instrumentation requires the explicit not_proven")),
+        "missing universal-instrument violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn digest_normalizes_only_crlf_sequences() -> TestResult {
+    // CRLF normalizes to LF so checkout settings cannot change identity, but a
+    // bare carriage return stays semantic payload and moves the digest.
+    let workspace = Workspace::new()?;
+    let path = workspace.root().join("crates/reachability_fixtures/cr_norm.pl");
+    fs::write(&path, b"a\r\nb\rc\n")?;
+    assert_eq!(digest_file(&path)?, digest_of("a\nb\rc\n"));
+    Ok(())
+}
+
+#[test]
+fn rejects_parent_component_escape_from_declared_root() -> TestResult {
+    // `crates/../escape.pl` starts with an allowed root lexically, but
+    // root.join() then reads outside the declared fixture tree; the component
+    // scan must fail closed before any byte leaves the owned roots.
+    let workspace = Workspace::new()?;
+    let escape_body = "sub escaped { return 'outside'; }\n";
+    fs::write(workspace.root().join("crates/pinned.pl"), SAMPLE_FIXTURE_BODY)?;
+    fs::write(workspace.root().join("escape.pl"), escape_body)?;
+
+    let mut row = positive_row("traversal", None);
+    row.fixture.path = "crates/../escape.pl".to_string();
+    row.fixture.digest_sha256_lf = digest_of(escape_body);
+    let manifest = minimal_manifest(vec![row]);
+    let violations = validate_document(&workspace.root(), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("parent component") || v.contains("traverses")),
+        "missing parent-component escape violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn required_coverage_is_never_a_deferral_for_missing_rows() -> TestResult {
+    // A family with no rows that declares only required_coverage strings has a
+    // coverage gap with no deferred owner or reason; it must stay a violation.
+    let mut row = control_row("w-only");
+    row.train = train("W_workspace_facts");
+    let mut manifest = minimal_manifest(vec![row]);
+    for entry in &mut manifest.denominator {
+        if entry.family == "A_local_flow" {
+            entry.deferred_coverage.clear();
+            entry.required_coverage = vec!["terminal:checked_near_overflow".to_string()];
+        }
+    }
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v
+                .contains("family \"A_local_flow\" claims denominator coverage without any row")),
+        "required_coverage must not excuse a missing row population: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_fixture_paths_outside_declared_roots() -> TestResult {
+    let mut row = positive_row("escaped", None);
+    row.controls.opposite = Some("escaped".to_string());
+    row.fixture.path = "docs/specs/escape.pl".to_string();
+    row.fixture.digest_sha256_lf = digest_of(SAMPLE_FIXTURE_BODY);
+    let manifest = minimal_manifest(vec![row]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("escapes owned fixture roots without disposition")),
+        "missing escape violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_digest_drift_against_referenced_bytes() -> TestResult {
+    let mut row = positive_row("drifted", Some("drifted"));
+    row.fixture.digest_sha256_lf = "0".repeat(64);
+    let manifest = minimal_manifest(vec![row]);
+    let workspace = Workspace::new()?;
+    workspace.write_manifest(&manifest)?;
+    let violations = validate_document(&workspace.root(), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("fixture digest drift")),
+        "missing drift violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_non_success_terminal_carrying_result_identity() -> TestResult {
+    let mut row = positive_row("stale-with-identity", Some("control"));
+    row.terminal = TerminalOutcome::Stale;
+    row.expectations = RowExpectations::currentness_only(CurrentnessExpectation {
+        proposition: "stale tier must not be served as current".to_string(),
+        transition: CurrentnessTransition::FailedRecomputationNeverUnchanged,
+        generation: Some("gen-7".to_string()),
+    });
+    let manifest = minimal_manifest(vec![row, control_row("control")]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("must not carry result identity")),
+        "missing identity violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_complete_terminal_without_result_identity() -> TestResult {
+    let mut row = positive_row("complete-no-identity", Some("control"));
+    row.result_identity = None;
+    let manifest = minimal_manifest(vec![row, control_row("control")]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("requires named result identity authority")),
+        "missing identity requirement: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_bounded_view_and_incomplete_semantic_collapse() -> TestResult {
+    let mut row = positive_row("collapsed", Some("control"));
+    row.terminal = TerminalOutcome::IncompleteSemanticNeverBoundedComplete;
+    row.limitation.support_class = SupportClass::Partial;
+    row.limitation.exit_owner_issue = Some(11006);
+    row.expectations = RowExpectations::operation_only(OperationExpectation {
+        proposition: "one row claims both bounded completeness and incompleteness".to_string(),
+        stage: OperationStage::SemanticProof,
+        work_dimensions: vec![],
+        checkpoints: vec![],
+        terminal_outcome: TerminalOutcome::BoundedViewComplete,
+    });
+    let manifest = minimal_manifest(vec![row, control_row("control")]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("collapse in one row")),
+        "missing collapse violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_profile_without_work_dimensions_or_unsafe_partial() -> TestResult {
+    let mut missing_dimensions = positive_row("profile-missing-dimensions", Some("unsafe-partial"));
+    missing_dimensions.expectations = RowExpectations::profile_only(ProfileExpectation {
+        proposition: "workspace-full profile must disposition dimensions".to_string(),
+        profile: ProfileName::WorkspaceFull,
+        required_work_dimensions: vec![],
+        partial_support_advertised: false,
+        envelope_class: EnvelopeClass::WithinAdmittedEnvelope,
+    });
+
+    let mut unsafe_partial = control_row("unsafe-partial");
+    unsafe_partial.fixture.id = "sample-partial".to_string();
+    unsafe_partial.expectations = RowExpectations::profile_only(ProfileExpectation {
+        proposition: "partial stream advertised before safe commit proof".to_string(),
+        profile: ProfileName::WorkspacePartial,
+        required_work_dimensions: vec!["visited-components".to_string()],
+        partial_support_advertised: true,
+        envelope_class: EnvelopeClass::WithinAdmittedEnvelope,
+    });
+
+    let manifest = minimal_manifest(vec![missing_dimensions, unsafe_partial]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("omits required work dimensions")),
+        "missing dimension violation: {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.contains("advertises unsafe partial support")),
+        "missing unsafe partial violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_push_race_without_client_visible_expectation() -> TestResult {
+    let mut row = positive_row("push-race-blind", Some("control"));
+    row.race_barrier = Some(RaceBarrier {
+        kind: RaceBarrierKind::MidPushBatch,
+        position: "after-second-contributor-push".to_string(),
+    });
+    row.expectations = RowExpectations::transport_only(TransportExpectation {
+        proposition: "mid-batch supersession without client expectation".to_string(),
+        route: TransportRoute::PublishDiagnostics,
+        client_visible_expectation: None,
+    });
+    let manifest = minimal_manifest(vec![row, control_row("control")]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.contains("lacks an exact client-visible/currentness expectation")),
+        "missing race violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_implementation_derived_oracle_on_promoted_rows() -> TestResult {
+    let mut row = positive_row("observed-positive", Some("control"));
+    row.oracle = oracle(OracleType::ObservedOutputRetainedOnly);
+    let manifest = minimal_manifest(vec![row, control_row("control")]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains(
+            "implementation-derived observed output cannot serve as the expected oracle"
+        )),
+        "missing observed-oracle violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_unowned_rows_and_missing_exit_owners() -> TestResult {
+    let mut unowned = positive_row("unowned", Some("exit-missing"));
+    unowned.owner_issue = Some(9999);
+
+    let mut exit_missing = control_row("exit-missing");
+    exit_missing.limitation.support_class = SupportClass::UnsupportedOpenWorld;
+
+    let manifest = minimal_manifest(vec![unowned, exit_missing]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("not a declared proof-owner issue")),
+        "missing owner violation: {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.contains("requires a named exit owner issue")),
+        "missing exit-owner violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_terminal_instrument_failure_without_not_proven_disposition() -> TestResult {
+    let mut row = positive_row("instrument-blank", Some("control"));
+    row.terminal = TerminalOutcome::InstrumentFailure;
+    row.instrument = Some(InstrumentStatus {
+        status: InstrumentStatusKind::Missing,
+        disposition: "assumed zero".to_string(),
+    });
+    let manifest = minimal_manifest(vec![row, control_row("control")]);
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.contains("requires present instrumentation or an explicit not_proven")),
+        "missing instrument violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_family_with_zero_rows_and_empty_deferral() -> TestResult {
+    // One W-family row; every other family — including A_local_flow — ends up
+    // with neither rows nor deferrals once placeholders are stripped.
+    let mut row = control_row("w-only");
+    row.train = train("W_workspace_facts");
+    let mut manifest = minimal_manifest(vec![row]);
+    for entry in &mut manifest.denominator {
+        entry.deferred_coverage.clear();
+        entry.required_coverage.clear();
+    }
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v
+                .contains("family \"A_local_flow\" claims denominator coverage without any row")),
+        "missing empty-family violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_required_coverage_declared_without_rows() -> TestResult {
+    let mut row = control_row("w-only");
+    row.train = train("W_workspace_facts");
+    let mut manifest = minimal_manifest(vec![row]);
+    for entry in &mut manifest.denominator {
+        if entry.family == "A_local_flow" {
+            // Strip the placeholder deferrals so the required slot resolves
+            // neither to a row nor to a named deferral.
+            entry.deferred_coverage.clear();
+            entry.required_coverage = vec!["terminal:checked_near_overflow".to_string()];
+        }
+    }
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| {
+            v.contains("declares required_coverage")
+                && v.contains("terminal:checked_near_overflow")
+                && v.contains("without any denominator row")
+        }),
+        "missing required-coverage violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn rejects_vocabulary_slot_without_row_or_named_deferral() -> TestResult {
+    // Remove the named deferrals for two uninstantiated slots; the
+    // completeness pass must fail closed on each of them.
+    let mut manifest = minimal_manifest(vec![
+        positive_row("a1-positive", Some("a2-opposite")),
+        control_row("a2-opposite"),
+    ]);
+    for entry in &mut manifest.denominator {
+        entry.deferred_coverage.retain(|slot| {
+            slot.coverage != "terminal:cancelled_before_start"
+                && slot.coverage != "terminal:checked_near_overflow"
+        });
+    }
+    let violations = validate_document(Path::new("/unused"), &manifest);
+    assert!(
+        violations.iter().any(|v| v.contains("CancelledBeforeStart (cancelled_before_start) has no denominator row and no named deferral")),
+        "missing stage/terminal completeness violation: {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.contains("CheckedNearOverflow (checked_near_overflow) has no denominator row and no named deferral")),
+        "missing terminal completeness violation: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_view_is_identical_under_row_shuffling() -> TestResult {
+    let mut rows = Vec::new();
+    for index in 0..12 {
+        let id = format!("row-{index:02}");
+        if index % 3 == 0 {
+            rows.push(positive_row(&id, None));
+        } else {
+            rows.push(control_row(&id));
+        }
+    }
+    for pair in rows.chunks_mut(2) {
+        if pair.len() == 2 && pair[0].fixture.role == FixtureRole::Positive {
+            pair[0].controls.opposite = Some(pair[1].row_id.clone());
+        }
+    }
+    let forward = minimal_manifest(rows.clone());
+    rows.reverse();
+    let shuffled = minimal_manifest(rows);
+
+    assert_eq!(super::view::render(&forward), super::view::render(&shuffled));
+    Ok(())
+}
+
+#[test]
+fn generated_view_drift_is_detected() -> TestResult {
+    let manifest = minimal_manifest(vec![
+        positive_row("a1-positive", Some("a2-opposite")),
+        control_row("a2-opposite"),
+    ]);
+    let workspace = Workspace::new()?;
+    workspace.write_manifest(&manifest)?;
+
+    // No view yet → missing-view violation.
+    let mut violations = validate_document(&workspace.root(), &manifest);
+    super::validate_generated_view(&workspace.root(), &manifest, &mut violations);
+    assert!(
+        violations.iter().any(|v| v.contains("missing generated view")),
+        "missing view detection: {violations:?}"
+    );
+
+    // Regenerated bytes pass.
+    fs::write(workspace.root().join(VIEW_RELATIVE_PATH), super::view::render(&manifest))?;
+    let mut violations = Vec::new();
+    super::validate_generated_view(&workspace.root(), &manifest, &mut violations);
+    assert!(violations.is_empty());
+
+    // Drifted bytes fail closed.
+    fs::write(workspace.root().join(VIEW_RELATIVE_PATH), "drifted\n")?;
+    let mut violations = Vec::new();
+    super::validate_generated_view(&workspace.root(), &manifest, &mut violations);
+    assert!(
+        violations.iter().any(|v| v.contains("generated view drifted")),
+        "missing drift detection: {violations:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn self_fixture_documents_fail_with_expected_codes() -> TestResult {
+    let root = crate::utils::project_root()?;
+    let invalid_dir = root.join("fixtures/analysis_reachability_denominator/self_fixtures/invalid");
+    let expected: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&fs::read_to_string(invalid_dir.join("expected_errors.json"))?)?;
+
+    let mut checked = 0;
+    for entry in fs::read_dir(&invalid_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".json") || name == "expected_errors.json" {
+            continue;
+        }
+        let text = fs::read_to_string(entry.path())?;
+        let marker = expected
+            .get(&name)
+            .ok_or_else(|| color_eyre::eyre::eyre!("{name} lacks an expectation"))?;
+        match parse_document(&text) {
+            Err(error) => {
+                assert!(
+                    error.to_string().contains(marker.as_str()),
+                    "{name}: parse error {:?} does not mention {marker:?}",
+                    error.to_string()
+                );
+            }
+            Ok(document) => {
+                let violations = validate_document(&root, &document);
+                assert!(
+                    violations.iter().any(|violation| violation.contains(marker.as_str())),
+                    "{name}: none of the violations mentions {marker:?}; got {violations:?}"
+                );
+            }
+        }
+        checked += 1;
+    }
+    // Exact ratchet: every invalid self-fixture stays exercised. A deletion
+    // of a rejection fixture must fail here, not silently shrink the corpus.
+    // Raise this number when a rejection fixture is added.
+    assert_eq!(checked, 13, "invalid self-fixture corpus changed size");
+    Ok(())
+}
+
+#[test]
+fn real_repository_manifest_passes_validation() -> TestResult {
+    let root = crate::utils::project_root()?;
+    let stats = validate(&root)?;
+    // Exact ratchet: the canonical denominator population is pinned, so a
+    // silent row deletion fails here as well as in the declared_row_count
+    // cross-check. Update this number when rows are added or removed.
+    assert_eq!(stats.rows, 81, "denominator population changed");
+    assert_eq!(stats.families_covered, model::FAMILIES.len());
+    Ok(())
+}
+
+/// Direct fail-closed schema-evaluator coverage: every implemented assertion
+/// keyword gets one accepted and one rejected instance, and the sibling
+/// keyword cases pin the defects from PR #12706 review (maxLength boundary,
+/// size-arm continuation past a wrong instance type).
+#[test]
+fn schema_evaluator_accepts_and_rejects_each_implemented_keyword() -> TestResult {
+    let cases: &[(&str, serde_json::Value, serde_json::Value, bool)] = &[
+        // (label, schema, instance, expect_violation)
+        ("type", serde_json::json!({"type": "array"}), serde_json::json!("crates"), true),
+        ("type-ok", serde_json::json!({"type": "array"}), serde_json::json!([1]), false),
+        ("const", serde_json::json!({"const": 11553}), serde_json::json!(1), true),
+        ("enum", serde_json::json!({"enum": ["a", "b"]}), serde_json::json!("c"), true),
+        ("enum-ok", serde_json::json!({"enum": ["a", "b"]}), serde_json::json!("a"), false),
+        ("required", serde_json::json!({"required": ["family"]}), serde_json::json!({}), true),
+        (
+            "required-ok",
+            serde_json::json!({"required": ["family"]}),
+            serde_json::json!({"family": "A_local_flow"}),
+            false,
+        ),
+        ("pattern", serde_json::json!({"pattern": "^[a-z]+$"}), serde_json::json!("Bad1"), true),
+        (
+            "pattern-ok",
+            serde_json::json!({"pattern": "^[a-z]+$"}),
+            serde_json::json!("good"),
+            false,
+        ),
+        // maxLength must accept shorter strings, not only exact-length ones.
+        ("maxLength", serde_json::json!({"maxLength": 5}), serde_json::json!("abcdef"), true),
+        (
+            "maxLength-accepts-shorter",
+            serde_json::json!({"maxLength": 5}),
+            serde_json::json!("ab"),
+            false,
+        ),
+        (
+            "maxLength-boundary",
+            serde_json::json!({"maxLength": 5}),
+            serde_json::json!("abcde"),
+            false,
+        ),
+        ("minLength", serde_json::json!({"minLength": 3}), serde_json::json!("ab"), true),
+        // A minLength+maxLength range that fits must produce no violation; the
+        // folded comparison rejected exactly this instance.
+        (
+            "length-range-ok",
+            serde_json::json!({"minLength": 2, "maxLength": 5}),
+            serde_json::json!("ab"),
+            false,
+        ),
+        // A wrong instance type must not abort sibling keywords in the same
+        // schema object: the `type` violation stays reported.
+        (
+            "size-arm-sibling-type-still-reported",
+            serde_json::json!({"type": "array", "minItems": 1}),
+            serde_json::json!("scalar"),
+            true,
+        ),
+        ("minItems", serde_json::json!({"minItems": 2}), serde_json::json!([1]), true),
+        ("minItems-ok", serde_json::json!({"minItems": 2}), serde_json::json!([1, 2]), false),
+        ("uniqueItems", serde_json::json!({"uniqueItems": true}), serde_json::json!([1, 1]), true),
+        (
+            "uniqueItems-ok",
+            serde_json::json!({"uniqueItems": true}),
+            serde_json::json!([1, 2]),
+            false,
+        ),
+        (
+            "additionalProperties",
+            serde_json::json!({"properties": {"a": {}}, "additionalProperties": false}),
+            serde_json::json!({"b": 1}),
+            true,
+        ),
+        (
+            "additionalProperties-ok",
+            serde_json::json!({"properties": {"a": {}}, "additionalProperties": false}),
+            serde_json::json!({"a": 1}),
+            false,
+        ),
+        (
+            "propertyNames",
+            serde_json::json!({"propertyNames": {"maxLength": 3}}),
+            serde_json::json!({"toolong": 1}),
+            true,
+        ),
+        (
+            "propertyNames-ok",
+            serde_json::json!({"propertyNames": {"maxLength": 3}}),
+            serde_json::json!({"ok": 1}),
+            false,
+        ),
+        (
+            "ref",
+            serde_json::json!({"$defs": {"positive": {"minimum": 1}}, "$ref": "#/$defs/positive"}),
+            serde_json::json!(0),
+            true,
+        ),
+        (
+            "ref-ok",
+            serde_json::json!({"$defs": {"positive": {"minimum": 1}}, "$ref": "#/$defs/positive"}),
+            serde_json::json!(2),
+            false,
+        ),
+    ];
+    for (label, schema, instance, expect_violation) in cases {
+        let violations = schema::evaluate(schema, instance);
+        assert_eq!(
+            violations.is_empty(),
+            !*expect_violation,
+            "{label}: unexpected outcome {violations:?}"
+        );
+    }
+    Ok(())
+}
+
+fn valid_schema_text() -> &'static str {
+    r#"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/analysis_reachability_fixture_manifest.v1.schema.json",
+  "properties": { "schema": { "const": "analysis_reachability_fixture_manifest.v1" } }
+}"#
+}
