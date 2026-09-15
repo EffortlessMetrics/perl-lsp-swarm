@@ -501,6 +501,36 @@ fn do_while_block_condition() {
 }
 
 #[test]
+fn do_while_rejects_trailing_block() {
+    // Real `perl -c` rejects a block after the do-while condition with
+    // `syntax error at ... near ") {"` (issue #15649). The `{` must not be
+    // accepted as a following bare-block statement.
+    let code = r#"do { $i++; } while ($i < 3) { print "continue\n"; }"#;
+    assert_parse_produces_error(code);
+
+    // `until` takes the same trailing-block rejection.
+    assert_parse_produces_error(r#"do { $i--; } until ($i == 0) { print "done\n"; }"#);
+
+    // A semicolon before the block still separates two valid statements.
+    assert_parses_without_recovery_errors(r#"do { $i++; } while ($i < 3); { print "once\n"; }"#);
+}
+
+/// Asserts `code` produces at least one parse diagnostic, whether the parse
+/// fails outright or records recovery errors (#15649).
+fn assert_parse_produces_error(code: &str) {
+    let mut parser = Parser::new(code);
+    let result = parser.parse();
+    let sexp = result.as_ref().ok().map(|ast| ast.to_sexp());
+    assert!(
+        result.is_err()
+            || !parser.errors().is_empty()
+            || sexp.as_deref().is_some_and(|sexp| sexp.contains("ERROR")),
+        "Expected parse to produce an error for `{code}`, got clean AST:\n{}",
+        sexp.unwrap_or_default()
+    );
+}
+
+#[test]
 fn state_variable_declaration() {
     assert_parses("use feature 'state'; sub counter { state $x = 0; return ++$x; }");
 }

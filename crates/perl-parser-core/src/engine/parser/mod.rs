@@ -131,6 +131,13 @@ pub struct Parser<'a> {
     last_end_position: usize,
     /// Context flag for disambiguating for-loop initialization syntax
     in_for_loop_init: bool,
+    /// Context flag for do-while condition parsing. While set, a `{` following
+    /// the parsed condition expression must not be absorbed as a hash
+    /// subscript: in `do { ... } while (cond) { ... }` the trailing block is a
+    /// syntax error real Perl reports near `") {"`, and absorbing it here
+    /// silently accepted the input (#15649). The flag lets the brace survive to
+    /// `parse_statement_modifier`, which records the rejection.
+    in_do_while_condition: bool,
     /// Scope-aware class grammar context governing context-sensitive
     /// class-member admission (currently `ADJUST` blocks). Grammar admission
     /// only — never semantic class ownership. See [`class_grammar`].
@@ -226,6 +233,7 @@ impl<'a> Parser<'a> {
             block_depth: 0,
             last_end_position: 0,
             in_for_loop_init: false,
+            in_do_while_condition: false,
             class_grammar: ClassGrammarContext::default(),
             at_stmt_start: true,
             pending_heredocs: VecDeque::new(),

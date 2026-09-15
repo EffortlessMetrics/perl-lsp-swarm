@@ -642,6 +642,23 @@ impl<'a> Parser<'a> {
                     }
 
                     // Hash element access
+                    //
+                    // #15649: a `{` following a do-while condition is the
+                    // trailing block that real Perl rejects near `") {"`. While
+                    // a `do BLOCK while/until COND` condition parses, leave the
+                    // brace unconsumed so `parse_statement_modifier` can report
+                    // it instead of absorbing it as a subscript. Variable
+                    // subscripts (`while $h{k}`) and bareword call/block forms
+                    // (`while Foo {k}`) are ordinary condition shapes and keep
+                    // consuming the brace.
+                    if self.in_do_while_condition
+                        && !matches!(
+                            &expr.kind,
+                            NodeKind::Variable { .. } | NodeKind::Identifier { .. }
+                        )
+                    {
+                        break;
+                    }
                     self.tokens.next()?; // consume {
                     let key = self.parse_hash_subscript_key()?;
                     self.expect_closing_delimiter(TokenKind::RightBrace)?;
