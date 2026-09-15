@@ -771,6 +771,7 @@ fn self_fixture_documents_fail_with_expected_codes() -> TestResult {
         serde_json::from_str(&fs::read_to_string(invalid_dir.join("expected_errors.json"))?)?;
 
     let mut checked = 0;
+    let mut checked_names = std::collections::BTreeSet::new();
     for entry in fs::read_dir(&invalid_dir)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
@@ -798,11 +799,39 @@ fn self_fixture_documents_fail_with_expected_codes() -> TestResult {
             }
         }
         checked += 1;
+        checked_names.insert(name);
     }
     // Exact ratchet: every invalid self-fixture stays exercised. A deletion
     // of a rejection fixture must fail here, not silently shrink the corpus.
-    // Raise this number when a rejection fixture is added.
+    // Raise this number when a rejection fixture is added. The set comparison
+    // below also fails when one fixture is swapped for another: the count
+    // alone would stay green while the exercised identities changed.
     assert_eq!(checked, 13, "invalid self-fixture corpus changed size");
+    let expected_names: std::collections::BTreeSet<String> = expected.keys().cloned().collect();
+    assert_eq!(
+        checked_names, expected_names,
+        "invalid self-fixture identities drifted from expected_errors.json"
+    );
+    Ok(())
+}
+
+#[test]
+fn generated_view_is_stable_under_denominator_reordering() -> TestResult {
+    let root = crate::utils::project_root()?;
+    let manifest = super::load_manifest(&root)?;
+    let canonical = super::view::render(&manifest);
+    // Reverse the denominator entry order and every deferred slot order:
+    // declaration order carries no meaning, so the bytes must not move.
+    let mut shuffled = manifest.clone();
+    shuffled.denominator.reverse();
+    for entry in &mut shuffled.denominator {
+        entry.deferred_coverage.reverse();
+    }
+    assert_eq!(
+        super::view::render(&shuffled),
+        canonical,
+        "denominator declaration order must not change the generated view"
+    );
     Ok(())
 }
 

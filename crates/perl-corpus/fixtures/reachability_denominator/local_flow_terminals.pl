@@ -3,9 +3,11 @@
 # Every denom-target label grounds a manifest subject fragment at real bytes.
 use strict;
 use warnings;
+use subs 'exit';
 
-# A user-defined exit must be compiled before any call site that resolves it,
-# or Perl binds the CORE builtin instead of this user sub (a02 control).
+# A user-defined exit overrides the CORE builtin only with a compile-time
+# import (`use subs`); a plain `sub exit` below the call sites would still
+# bind CORE::exit at `exit 0` / `exit($result_unknown)` (a02 control).
 sub exit {
     my ($code) = @_;
     return "user-exit:$code";

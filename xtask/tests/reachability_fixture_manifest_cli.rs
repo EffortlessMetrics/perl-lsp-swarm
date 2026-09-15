@@ -70,10 +70,24 @@ fn check_is_idempotent_across_second_run() -> Result<()> {
 
 #[test]
 fn update_view_is_explicit_and_deterministic() -> Result<()> {
-    let _repo_state = REPO_STATE_LOCK.lock().expect("repo state lock poisoned");
+    let _repo_state = REPO_STATE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let view_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../fixtures/analysis_reachability_denominator/denominator-coverage-view.md");
     let before = std::fs::read_to_string(&view_path)?;
+    // RAII restoration: the stale marker below must never survive this test,
+    // whether the child process fails, an assertion panics, or a later read
+    // errors. Drop runs during unwinding, so the checked-in view is restored
+    // on every exit path while the guard is alive.
+    struct ViewRestoreGuard {
+        path: std::path::PathBuf,
+        original: String,
+    }
+    impl Drop for ViewRestoreGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.path, &self.original);
+        }
+    }
+    let _restore = ViewRestoreGuard { path: view_path.clone(), original: before.clone() };
     // Falsify a no-op writer: corrupt the view first, so only a real
     // regeneration can restore the validated bytes. Comparing two reads of an
     // already-current view would pass a writer that never writes.

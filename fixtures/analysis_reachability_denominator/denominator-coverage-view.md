@@ -40,9 +40,9 @@ Total: 81 rows across 10 families (declared_row_count 81); 7 rows carry missing 
 
 ## Open deferrals (declared, not yet instantiated)
 
-- W_workspace_facts: overlay and re-add/move transition executions over live roots → #11006 (transitions are predeclared as currentness rows here; their execution belongs to the #11006 proof)
-- R_operation_terminal: limit-1 / limit / limit+1 numeric boundary instantiations per operation → #11006 (limits stay typed in this declaration-only manifest; selecting numeric values would select product behavior)
 - D_diagnostic_identity: provider-set/schema/catalog change rows against the live #8142 catalog → #11012 (the catalog change surface is owned by #8142 consumers; predeclared here, executed by #11012)
+- R_operation_terminal: limit-1 / limit / limit+1 numeric boundary instantiations per operation → #11006 (limits stay typed in this declaration-only manifest; selecting numeric values would select product behavior)
+- W_workspace_facts: overlay and re-add/move transition executions over live roots → #11006 (transitions are predeclared as currentness rows here; their execution belongs to the #11006 proof)
 
 ## Rows with unsupported or partial limitations
 

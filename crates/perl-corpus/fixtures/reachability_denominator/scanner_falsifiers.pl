@@ -31,11 +31,11 @@ sub phantom_pod_sub {
 
 =cut
 
+print "entry reachable\n";
+
 __END__
 # denom-target:end-data
 sub phantom_end_sub {
     exit 1;
     print 'after __END__ is data, not flow';
 }
-
-print "entry reachable\n";
