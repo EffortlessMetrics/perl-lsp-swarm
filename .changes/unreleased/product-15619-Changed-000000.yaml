@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Changed
+body: Provider decision explanations can select the latest references trace by its exact numeric or string request ID, refusing overwritten or unavailable request evidence instead of presenting another request's receipt.
+time: 2026-09-14T00:00:00Z
+custom:
+  PR: "15619"
+  Slug: references-request-trace-selector
+  Breaking: "no"
