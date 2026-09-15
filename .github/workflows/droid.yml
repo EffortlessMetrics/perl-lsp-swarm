@@ -123,12 +123,13 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - id: droid_cli
+      - name: Install verified Droid CLI
+        id: droid_cli
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-          version=0.209.0
+          version=0.219.0
           base_url="https://downloads.factory.ai/factory-cli/releases/${version}/linux/x64"
           binary="$HOME/.local/bin/droid"
           checksum="$HOME/droid.sha256"
@@ -151,13 +152,10 @@ jobs:
 
           reported=$("$binary" --version)
           printf '%s\n' "$reported"
-          case "$reported" in
-            *"$version"*) ;;
-            *)
-              echo "::error::Expected Droid CLI ${version}, got: ${reported}"
-              exit 1
-              ;;
-          esac
+          if [[ "$reported" != "$version" ]]; then
+            echo "::error::Expected Droid CLI ${version}, got: ${reported}"
+            exit 1
+          fi
           echo "path=$binary" >> "$GITHUB_OUTPUT"
 
       - name: Configure MiniMax M3 BYOK
@@ -192,7 +190,7 @@ jobs:
           PY
 
       - name: Run Droid with MiniMax M3 BYOK
-        uses: EffortlessMetrics/droid-action-safe@22d9c91d516983f637dfee20cb8035a8ba229d35 # main (2026-09-06)
+        uses: EffortlessMetrics/droid-action-safe@22d9c91d516983f637dfee20cb8035a8ba229d35 # dev (2026-09-06)
         env:
           ANTHROPIC_API_KEY: ""
           ANTHROPIC_AUTH_TOKEN: ""
