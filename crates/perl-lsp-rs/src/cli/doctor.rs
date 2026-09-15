@@ -779,10 +779,22 @@ fn build_dev_environment_report() -> DevEnvironmentReport {
 /// Dependency seam for tests: `temp_base` receives the temporary symlink.
 fn build_dev_environment_report_in(temp_base: &Path) -> DevEnvironmentReport {
     let windows_host = cfg!(windows);
-    let native_cargo = probe_native_cargo();
+    // Resolve the checkout root once so every Cargo probe runs under the
+    // repository the verdicts label: rustup selects toolchains by working
+    // directory, and probing from the caller's directory can report another
+    // project's toolchain against this repo's pin. `None` outside a checkout
+    // keeps the historical caller-directory behavior; the emitted cwd field
+    // always records where the probe actually ran.
+    let probe_root = std::env::current_dir().ok().and_then(|cwd| locate_repo_root(&cwd));
+    let native_cargo = probe_native_cargo(probe_root.as_deref());
     let git_bash_executable = if windows_host { resolve_git_bash_executable() } else { None };
-    let (git_bash_cargo, git_bash) =
-        build_git_bash_reports(windows_host, git_bash_executable, probe_git_bash_cargo_for_path);
+    let (git_bash_cargo, git_bash) = build_git_bash_reports(
+        windows_host,
+        git_bash_executable,
+        probe_root.as_deref(),
+        probe_git_bash_cargo_for_path,
+        git_bash_flavor_report_for_path,
+    );
     let wsl_bash = if windows_host {
         wsl_bash_flavor_report()
     } else {
@@ -794,7 +806,12 @@ fn build_dev_environment_report_in(temp_base: &Path) -> DevEnvironmentReport {
         workspace_rust_version: WORKSPACE_RUST_VERSION_LABEL,
         toolchain_channel_pin: TOOLCHAIN_CHANNEL_LABEL,
         symlink_privilege: probe_symlink_privilege_in(temp_base),
-        cargo_toolchains: build_cargo_toolchain_reports(windows_host, native_cargo, git_bash_cargo),
+        cargo_toolchains: build_cargo_toolchain_reports(
+            windows_host,
+            native_cargo,
+            git_bash_cargo,
+            probe_root.as_deref(),
+        ),
         bash_flavors: build_bash_flavor_reports(windows_host, git_bash, wsl_bash),
         repo_entrypoints: build_repo_entrypoints_report(),
         documented_prerequisite: BASH_PREREQUISITE_LINE,
@@ -805,11 +822,13 @@ fn build_dev_environment_report_in(temp_base: &Path) -> DevEnvironmentReport {
 fn build_git_bash_reports(
     windows_host: bool,
     git_bash_executable: Option<PathBuf>,
-    probe_cargo: impl FnOnce(Option<PathBuf>) -> CargoToolchainReport,
+    probe_root: Option<&Path>,
+    probe_cargo: impl FnOnce(Option<PathBuf>, Option<&Path>) -> CargoToolchainReport,
+    report_bash: impl FnOnce(Option<PathBuf>) -> BashFlavorReport,
 ) -> (CargoToolchainReport, BashFlavorReport) {
     if windows_host {
-        let git_bash_cargo = probe_cargo(git_bash_executable.clone());
-        let git_bash = git_bash_flavor_report_for_path(git_bash_executable);
+        let git_bash_cargo = probe_cargo(git_bash_executable.clone(), probe_root);
+        let git_bash = report_bash(git_bash_executable);
         (git_bash_cargo, git_bash)
     } else {
         (
@@ -823,11 +842,12 @@ fn build_cargo_toolchain_reports(
     windows_host: bool,
     native_cargo: CargoToolchainReport,
     git_bash_cargo: CargoToolchainReport,
+    probe_root: Option<&Path>,
 ) -> Vec<CargoToolchainReport> {
     let mut reports = vec![native_cargo];
     if windows_host {
         reports.push(git_bash_cargo);
-        reports.push(probe_wsl_cargo());
+        reports.push(probe_wsl_cargo_in(probe_root));
     } else {
         // The flavor table keeps its shape on every host so JSON consumers
         // can rely on one row per flavor; Git Bash and WSL simply do not
@@ -1181,16 +1201,22 @@ fn is_known_non_rustup_path(path: &str, style: CargoPathStyle) -> bool {
     }
 }
 
-fn probe_native_cargo() -> CargoToolchainReport {
+fn probe_native_cargo(probe_root: Option<&Path>) -> CargoToolchainReport {
     let Some(binary) = resolve_tool_on_path("cargo") else {
         return unreachable_cargo_report(FLAVOR_NATIVE_SHELL, "cargo not found on PATH");
     };
     let mut command = Command::new(&binary);
     command.arg("--version");
-    cargo_report_from_output(
-        FLAVOR_NATIVE_SHELL,
-        binary,
-        run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS),
+    if let Some(root) = probe_root {
+        command.current_dir(root);
+    }
+    apply_active_selection(
+        cargo_report_from_output(
+            FLAVOR_NATIVE_SHELL,
+            binary,
+            run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS),
+        ),
+        probe_root,
     )
 }
 
@@ -1230,7 +1256,10 @@ fn resolve_git_bash_executable_with(
     }
 }
 
-fn probe_git_bash_cargo_for_path(bash_exe: Option<PathBuf>) -> CargoToolchainReport {
+fn probe_git_bash_cargo_for_path(
+    bash_exe: Option<PathBuf>,
+    probe_root: Option<&Path>,
+) -> CargoToolchainReport {
     let Some(bash_exe) = bash_exe else {
         return unreachable_cargo_report(
             FLAVOR_GIT_BASH,
@@ -1253,25 +1282,77 @@ fn probe_git_bash_cargo_for_path(bash_exe: Option<PathBuf>) -> CargoToolchainRep
         WindowsBashKind::PosixProvider => {}
     }
     let mut command = Command::new(&bash_exe);
-    command.args(["-c", SHELL_CARGO_PROBE_SCRIPT]);
-    shell_cargo_report_from_output(
-        FLAVOR_GIT_BASH,
-        run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS),
+    // Run under the checkout root for the same rustup-selection reason as
+    // the native probe. Backslashes become forward slashes (MSYS accepts
+    // `C:/...`) and the whole path is single-quoted; without a located root
+    // the probe keeps its historical caller-directory behavior.
+    let script = match probe_root {
+        Some(root) => format!("cd {} && {SHELL_CARGO_PROBE_SCRIPT}", bash_quote_path(root)),
+        None => SHELL_CARGO_PROBE_SCRIPT.to_string(),
+    };
+    command.args(["-c", &script]);
+    // Same Windows environment as the native probe, so the active-selection
+    // observation applies here too. (WSL is a separate machine namespace and
+    // keeps its honest unknown.)
+    apply_active_selection(
+        shell_cargo_report_from_output(
+            FLAVOR_GIT_BASH,
+            run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS),
+        ),
+        probe_root,
     )
 }
 
+/// Quote a Windows path for MSYS/Git Bash consumption: forward slashes
+/// (accepted for `C:/...` roots) inside single quotes, with embedded quotes
+/// escaped the POSIX way.
+fn bash_quote_path(path: &Path) -> String {
+    let spelling = path.display().to_string().replace('\\', "/");
+    format!("'{}'", spelling.replace('\'', "'\\''"))
+}
+
 fn probe_wsl_cargo() -> CargoToolchainReport {
+    probe_wsl_cargo_in(None)
+}
+
+/// WSL flavor of the checkout-root rule: map the Windows checkout root into
+/// the distribution with `wslpath` and run the probe there. When no root is
+/// located, or the mapping itself fails, the probe keeps its historical
+/// distribution-default-directory behavior; the emitted cwd field always
+/// records where it actually ran.
+fn probe_wsl_cargo_in(probe_root: Option<&Path>) -> CargoToolchainReport {
     let Some(wsl_exe) = resolve_tool_on_path("wsl") else {
         return unreachable_cargo_report(FLAVOR_WSL, "wsl.exe not found on PATH");
+    };
+    let script = match probe_root.and_then(|root| map_windows_path_for_wsl(&wsl_exe, root)) {
+        Some(mapped) => {
+            format!("cd '{}' && {SHELL_CARGO_PROBE_SCRIPT}", mapped.replace('\'', "'\\''"))
+        }
+        None => SHELL_CARGO_PROBE_SCRIPT.to_string(),
     };
     let mut command = Command::new(&wsl_exe);
     // Bypass WSL's default shell: it must not expand this script before the
     // requested Bash process observes its own environment and emits the record.
-    command.args(["--exec", "bash", "-c", SHELL_CARGO_PROBE_SCRIPT]);
+    command.args(["--exec", "bash", "-c", &script]);
     shell_cargo_report_from_output(
         FLAVOR_WSL,
         run_command_with_timeout(command, DEV_ENV_WSL_TIMEOUT_SECS),
     )
+}
+
+/// Map a Windows checkout root into WSL path space for the cargo probe.
+/// `None` on any mapping failure; callers fall back to the distribution
+/// default directory and the emitted cwd keeps the verdict honest.
+fn map_windows_path_for_wsl(wsl_exe: &Path, windows_root: &Path) -> Option<String> {
+    let mut command = Command::new(wsl_exe);
+    command.args(["wslpath", "-a", "-u", &windows_root.display().to_string()]);
+    match run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS) {
+        Ok(output) if output.status.success() => {
+            let mapped = decode_shell_output(&output.stdout).trim().to_string();
+            (!mapped.is_empty()).then_some(mapped)
+        }
+        _ => None,
+    }
 }
 
 const SHELL_CARGO_PROBE_SCRIPT: &str = r#"
@@ -1596,10 +1677,24 @@ fn probe_perl_identity(windows_host: bool) -> PerlIdentityReport {
 
     let path_text = binary.display().to_string();
     let identity = classify_perl_identity(&path_text, windows_host);
-    let discovered: Vec<PerlIdentityKind> = common_perl_candidate_paths(windows_host)
+    // Additional identities come from two bounded sources: the fixed
+    // well-known locations plus every other `perl` match on PATH. Fixed
+    // locations alone hide portable installs that PATH order makes
+    // selectable, so PATH matches are enumerated with Windows PATH/PATHEXT
+    // semantics, deduplicated, and merged before classification.
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(path_text.to_lowercase());
+    let mut extra_paths: Vec<PathBuf> = common_perl_candidate_paths(windows_host)
         .into_iter()
-        .filter(|candidate| !same_install_location(candidate, &binary))
+        .chain(all_path_matches_in("perl", std::env::var_os("PATH"), std::env::var_os("PATHEXT")))
         .filter(|candidate| candidate.exists())
+        .filter(|candidate| seen.insert(candidate.display().to_string().to_lowercase()))
+        .collect();
+    // Bound the identity work: PATH can legally carry many entries.
+    extra_paths.truncate(16);
+    let discovered: Vec<PerlIdentityKind> = extra_paths
+        .iter()
+        .filter(|candidate| !same_install_location(candidate, &binary))
         .map(|candidate| classify_perl_identity(&candidate.display().to_string(), windows_host))
         .collect();
     // A resolved perl that could not execute is an indeterminate probe
@@ -1617,6 +1712,67 @@ fn probe_perl_identity(windows_host: bool) -> PerlIdentityReport {
         error,
         fix,
     }
+}
+
+/// Enumerate every `name` match on a `PATH`-shaped search list with Windows
+/// `PATHEXT` semantics, so selectable-but-unlisted installs cannot hide
+/// behind the first match. `path_var`/`pathext` are parameters (production
+/// passes the process environment) so tests can point at fixture trees.
+/// Results are capped and deduplicated case-insensitively on Windows, where
+/// the filesystem is.
+fn all_path_matches_in(
+    name: &str,
+    path_var: Option<std::ffi::OsString>,
+    pathext: Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
+    const MATCH_CAP: usize = 16;
+    let Some(path_var) = path_var else {
+        return Vec::new();
+    };
+    let extensions: Vec<String> = {
+        let has_extension = std::path::Path::new(name).extension().is_some();
+        if cfg!(windows) && !has_extension {
+            pathext
+                .as_deref()
+                .and_then(|value| value.to_str())
+                .map(|value| {
+                    value
+                        .split(';')
+                        .map(str::trim)
+                        .filter(|extension| extension.len() > 1 && extension.starts_with('.'))
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![".EXE".to_string()])
+        } else {
+            Vec::new()
+        }
+    };
+    let mut matches = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for directory in std::env::split_paths(&path_var) {
+        if directory.as_os_str().is_empty() {
+            continue;
+        }
+        let mut candidates = vec![directory.join(name)];
+        for extension in &extensions {
+            candidates.push(directory.join(format!("{name}{extension}")));
+        }
+        for candidate in candidates {
+            if !candidate.is_file() {
+                continue;
+            }
+            let key = candidate.display().to_string();
+            let key = if cfg!(windows) { key.to_lowercase() } else { key };
+            if seen.insert(key) {
+                matches.push(candidate);
+            }
+            if matches.len() >= MATCH_CAP {
+                return matches;
+            }
+        }
+    }
+    matches
 }
 
 fn same_install_location(left: &Path, right: &Path) -> bool {
@@ -1686,6 +1842,57 @@ fn cargo_report_from_output(
             &decode_shell_output(&process_output.stdout),
         ),
         Ok(_) | Err(_) => failed_probe_cargo_report(flavor, Some(binary), output),
+    }
+}
+
+/// Fill `honors_toolchain_file` for a rustup-shim row from a bounded
+/// `rustup show active-toolchain` probe run under the same checkout root.
+/// Path provenance alone stays unknown (a shim cannot prove selection); only
+/// a successful active-toolchain observation promotes the field. Non-shim
+/// rows and probe failures pass through untouched.
+fn apply_active_selection(
+    mut report: CargoToolchainReport,
+    probe_root: Option<&Path>,
+) -> CargoToolchainReport {
+    if report.provenance != PROVENANCE_RUSTUP_SHIM {
+        return report;
+    }
+    if let Some(honors) = probe_rustup_active_toolchain(probe_root) {
+        report.honors_toolchain_file = Some(honors);
+    }
+    report
+}
+
+/// Run `rustup show active-toolchain` and interpret whether the active
+/// toolchain comes from a toolchain file. `None` on any failure: an
+/// unobservable selection stays unknown, never assumed.
+fn probe_rustup_active_toolchain(probe_root: Option<&Path>) -> Option<bool> {
+    let rustup = resolve_tool_on_path("rustup")?;
+    let mut command = Command::new(&rustup);
+    command.args(["show", "active-toolchain"]);
+    if let Some(root) = probe_root {
+        command.current_dir(root);
+    }
+    match run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS) {
+        Ok(output) if output.status.success() => {
+            parse_rustup_active_toolchain(&decode_shell_output(&output.stdout))
+        }
+        _ => None,
+    }
+}
+
+/// Interpret `rustup show active-toolchain` first-line output:
+/// `stable-… (default)` selects the default toolchain (no file honored),
+/// `… (overridden by '…rust-toolchain.toml')` honors a toolchain file.
+/// Anything else stays unknown rather than guessed.
+fn parse_rustup_active_toolchain(output: &str) -> Option<bool> {
+    let first = output.lines().map(str::trim).find(|line| !line.is_empty())?;
+    if first.contains("rust-toolchain") {
+        Some(true)
+    } else if first.ends_with("(default)") {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -1890,6 +2097,16 @@ fn native_shell_bash_report_for_platform(
 }
 
 fn git_bash_flavor_report_for_path(bash_exe: Option<PathBuf>) -> BashFlavorReport {
+    git_bash_flavor_report_for_path_with(bash_exe, run_bash_exit_probe)
+}
+
+/// Dependency-injected core of [`git_bash_flavor_report_for_path`]: `run`
+/// proves the resolved executable starts, so tests can exercise the
+/// present/probe_error branches without a real Bash install.
+fn git_bash_flavor_report_for_path_with(
+    bash_exe: Option<PathBuf>,
+    run: impl FnOnce(&Path) -> Result<(), String>,
+) -> BashFlavorReport {
     match bash_exe {
         None => BashFlavorReport {
             flavor: FLAVOR_GIT_BASH,
@@ -1917,13 +2134,25 @@ fn git_bash_flavor_report_for_path(bash_exe: Option<PathBuf>) -> BashFlavorRepor
             if classify_windows_bash_path(&bash_exe.to_string_lossy())
                 == WindowsBashKind::PosixProvider =>
         {
-            BashFlavorReport {
-                flavor: FLAVOR_GIT_BASH,
-                status: STATUS_PRESENT,
-                bash_path: Some(bash_exe.display().to_string()),
-                runs_repo_entrypoints: None,
-                note: "native POSIX bash is available; repository .sh entrypoint execution is not proven by this probe".to_string(),
-                fix: None,
+            match run(&bash_exe) {
+                Ok(()) => BashFlavorReport {
+                    flavor: FLAVOR_GIT_BASH,
+                    status: STATUS_PRESENT,
+                    bash_path: Some(bash_exe.display().to_string()),
+                    runs_repo_entrypoints: None,
+                    note: "Git Bash starts; repository .sh entrypoint execution is not proven by this probe".to_string(),
+                    fix: None,
+                },
+                Err(detail) => BashFlavorReport {
+                    flavor: FLAVOR_GIT_BASH,
+                    status: STATUS_PROBE_ERROR,
+                    bash_path: Some(bash_exe.display().to_string()),
+                    runs_repo_entrypoints: None,
+                    note: format!(
+                        "bash.exe exists but cannot start a shell, so repository .sh entrypoints cannot run under it: {detail}"
+                    ),
+                    fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
+                },
             }
         }
         Some(bash_exe) => BashFlavorReport {
@@ -1934,6 +2163,22 @@ fn git_bash_flavor_report_for_path(bash_exe: Option<PathBuf>) -> BashFlavorRepor
             note: "PATH bash.exe resolves to an unrecognized POSIX provider; repository .sh entrypoints are not proven to run under it".to_string(),
             fix: Some(FIX_BASH_INSTALL_GIT_WINDOWS.to_string()),
         },
+    }
+}
+
+/// Prove a resolved Bash executable starts: discovery alone only shows the
+/// path exists, while a broken install (interrupted update, missing runtime)
+/// fails startup. Mirrors the WSL flavor's direct-execution proof.
+fn run_bash_exit_probe(bash_exe: &Path) -> Result<(), String> {
+    let mut command = Command::new(bash_exe);
+    command.args(["-c", "exit 0"]);
+    match run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS) {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => Err(truncate_for_detail(
+            &format!("bash -c 'exit 0' failed: {}", decode_shell_output(&output.stderr).trim()),
+            DETAIL_MAX_CHARS,
+        )),
+        Err(spawn_error) => Err(truncate_for_detail(&spawn_error, DETAIL_MAX_CHARS)),
     }
 }
 
@@ -3457,6 +3702,79 @@ mod tests {
     }
 
     #[test]
+    fn rustup_active_toolchain_parses_default_override_and_unknown() {
+        assert_eq!(
+            parse_rustup_active_toolchain("stable-x86_64-pc-windows-msvc (default)\n"),
+            Some(false),
+            "default toolchain honors no toolchain file"
+        );
+        assert_eq!(
+            parse_rustup_active_toolchain(
+                "stable-x86_64-pc-windows-msvc (overridden by 'C:\\proj\\rust-toolchain.toml')\n"
+            ),
+            Some(true),
+            "toolchain-file override honors the file"
+        );
+        assert_eq!(
+            parse_rustup_active_toolchain("nightly-2026-01-01-x86_64-unknown-linux-gnu\n"),
+            None,
+            "bare toolchain line without a reason stays unknown, never guessed"
+        );
+        assert_eq!(parse_rustup_active_toolchain(""), None, "empty output stays unknown");
+    }
+
+    #[test]
+    fn broken_git_bash_reports_probe_error_not_present() {
+        let present = git_bash_flavor_report_for_path_with(
+            Some(PathBuf::from(r"C:\Program Files\Git\bin\bash.exe")),
+            |_| Ok(()),
+        );
+        assert_eq!(present.status, STATUS_PRESENT);
+        assert_eq!(present.bash_path.as_deref(), Some(r"C:\Program Files\Git\bin\bash.exe"));
+
+        let broken = git_bash_flavor_report_for_path_with(
+            Some(PathBuf::from(r"C:\Program Files\Git\bin\bash.exe")),
+            |_| Err("spawn failed".to_string()),
+        );
+        assert_eq!(broken.status, STATUS_PROBE_ERROR);
+        assert!(broken.note.contains("cannot start a shell"), "unexpected note: {}", broken.note);
+        assert!(broken.fix.is_some(), "a broken bash needs repair guidance");
+    }
+
+    #[test]
+    fn path_match_enumeration_finds_every_selectable_perl() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        let first = workspace.path().join("first");
+        let second = workspace.path().join("second");
+        std::fs::create_dir_all(&first)?;
+        std::fs::create_dir_all(&second)?;
+        std::fs::write(first.join("perl"), "#!/bin/sh\nexit 0\n")?;
+        std::fs::write(second.join("perl"), "#!/bin/sh\nexit 0\n")?;
+        let path_var = std::env::join_paths([&first, &second])?;
+
+        let matches = all_path_matches_in("perl", Some(path_var), None);
+        assert_eq!(
+            matches,
+            vec![first.join("perl"), second.join("perl")],
+            "every PATH match is enumerated in PATH order"
+        );
+        assert!(
+            all_path_matches_in("perl", None, None).is_empty(),
+            "absent PATH yields no matches, never an error"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bash_quote_path_uses_forward_slashes_inside_single_quotes() {
+        assert_eq!(
+            bash_quote_path(Path::new(r"C:\proj\o'brien")),
+            "'C:/proj/o'\\''brien'",
+            "backslashes convert and embedded quotes escape POSIX-style"
+        );
+    }
+
+    #[test]
     fn classify_windows_bash_path_separates_wsl_shim_from_git_bash() {
         assert_eq!(
             classify_windows_bash_path(r"C:\Windows\System32\bash.exe"),
@@ -3538,19 +3856,25 @@ mod tests {
             resolve_git_bash_executable_with(|_| None, || Some(fallback.clone()))
                 .ok_or("fallback Git Bash path")?;
         let mut probed_path = None;
-        let (cargo, bash) = build_git_bash_reports(true, Some(resolved_fallback.clone()), |path| {
-            probed_path = path.clone();
-            finish_reachable_cargo_report_with_context(
-                FLAVOR_GIT_BASH,
-                Some(PathBuf::from("/home/dev/.cargo/bin/cargo")),
-                "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
-                &CargoProbeContext::shell(
-                    Some("/home/dev".to_string()),
-                    None,
-                    Some("/workspace".to_string()),
-                ),
-            )
-        });
+        let (cargo, bash) = build_git_bash_reports(
+            true,
+            Some(resolved_fallback.clone()),
+            None,
+            |path, _| {
+                probed_path = path.clone();
+                finish_reachable_cargo_report_with_context(
+                    FLAVOR_GIT_BASH,
+                    Some(PathBuf::from("/home/dev/.cargo/bin/cargo")),
+                    "cargo 1.95.0 (8f3d0b0ac 2026-01-30)",
+                    &CargoProbeContext::shell(
+                        Some("/home/dev".to_string()),
+                        None,
+                        Some("/workspace".to_string()),
+                    ),
+                )
+            },
+            |exe| git_bash_flavor_report_for_path_with(exe, |_| Ok(())),
+        );
 
         assert_eq!(probed_path, Some(resolved_fallback));
         assert_eq!(cargo.status, STATUS_PRESENT);
