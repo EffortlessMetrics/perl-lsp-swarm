@@ -80,22 +80,32 @@ fn an_earlier_recovered_diagnostic_does_not_mask_the_terminal_cause() -> TestRes
     Ok(())
 }
 
-/// A recovered parse still reports no catastrophic failure.
+/// Recovery remains nonterminal and still publishes the recovered tree.
 ///
 /// Opposite-direction control: without it, a change that classified *every*
-/// terminal cause as `RecursionLimit` — or that treated recovery as terminal —
-/// would pass the tests above.
+/// parser diagnostic as `RecursionLimit`, treated recovery as terminal, or
+/// withheld trees merely because diagnostics exist would pass the tests above.
 #[test]
-fn an_ordinary_parse_reports_no_failure() -> TestResult {
+fn a_recovered_parse_reports_no_terminal_failure() -> TestResult {
     let mut parser = Parser::new();
 
-    let outcome = parser.parse_detailed("my $x = 42;\n");
+    let outcome = parser.parse_detailed("my $x = ;\n");
 
+    if outcome.diagnostics.is_empty() {
+        return Err("fixture must produce a recovery diagnostic".into());
+    }
     if outcome.failure.is_some() {
-        return Err(format!("clean source must not report a failure: {:?}", outcome.failure).into());
+        return Err(format!(
+            "recovered source must not report a terminal failure: {:?}",
+            outcome.failure
+        )
+        .into());
     }
     if outcome.tree.is_none() {
-        return Err("clean source must publish a tree".into());
+        return Err("recovered source must publish a tree".into());
+    }
+    if !outcome.is_recovered() {
+        return Err("recovered source must be reported as recovered".into());
     }
     Ok(())
 }

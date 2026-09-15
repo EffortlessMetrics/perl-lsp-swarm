@@ -7,6 +7,6 @@ body: >-
   relabeling it as structural NestingTooDeep.
 time: 2026-09-14T03:45:00Z
 custom:
-  PR: "12952"
+  PR: "15593"
   Slug: tree-sitter-rs-recursion-failure-taxonomy
   Breaking: "no"
