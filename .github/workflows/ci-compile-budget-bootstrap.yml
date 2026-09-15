@@ -1,0 +1,179 @@
+name: Disposable compile-budget repair
+
+# Preparation only: neither this workflow nor its branch enters the output PR.
+on:
+  push:
+    branches: [repair/ci-lock-bootstrap-20260915]
+    paths: [.github/workflows/ci-compile-budget-bootstrap.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-compile-budget-bootstrap-20260915
+  cancel-in-progress: false
+
+jobs:
+  prepare-budget:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      BASE_SHA: 198c16ef2ec7f52c1e2d99a377b817e5afc8bbf1
+      BASE_TREE: 7dcd784faf93ef68935be834853701e35bbae6be
+      OUTPUT_BRANCH: fix/compile-all-targets-budget-20260915
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 198c16ef2ec7f52c1e2d99a377b817e5afc8bbf1
+          persist-credentials: false
+      - name: Install isolated YAML parser
+        run: |
+          python3 -m venv "$RUNNER_TEMP/budget-proof-venv"
+          "$RUNNER_TEMP/budget-proof-venv/bin/pip" install PyYAML==6.0.2
+      - name: Repair the one measured watchdog and verify scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$BASE_TREE"
+          "$RUNNER_TEMP/budget-proof-venv/bin/python" - <<'PY'
+          import copy, json, os, pathlib, subprocess, yaml
+          path = pathlib.Path('.ci/gate-policy.yaml')
+          before_text = path.read_text()
+          start = before_text.index('  - name: compile_all_targets\n')
+          end = before_text.index('\n  - name: clippy_full\n', start)
+          block = before_text[start:end]
+          replacements = {
+              'description: "Compile all workspace targets (lib/bin/tests/benches) to catch integration and bench bit-rot; also validates all-features paths"': 'description: "Compile workspace targets, example test modules, and wire-free parser profiles without running tests"',
+              '# Two full-workspace cargo check passes (default + all-features) require more time\n    # than the original 180s budget on a fresh CI runner. Aligned with unit_scoped budget.': '# The recipe now runs five Cargo commands: default/all-feature workspace\n    # checks, example test compilation, and two wire-free parser checks. Main\n    # runs 34976694456 and 34992022773 exhausted 600s during the all-features\n    # pass, before the final three commands. Preserve every check and allow a\n    # bounded 20m cold-build window; hosted receipts must prove it sufficient.\n    # max_duration_ms is a declarative soft budget, not the enforced watchdog.',
+              'timeout_seconds: 600': 'timeout_seconds: 1200',
+              'max_duration_ms: 540000': 'max_duration_ms: 1080000',
+          }
+          for old, new in replacements.items():
+              assert block.count(old) == 1, f'Unexpected compile gate content: {old}'
+              block = block.replace(old, new, 1)
+          after_text = before_text[:start] + block + before_text[end:]
+          old_reference = '# ceiling (600s / 540000ms), which compiles strictly more work. The'
+          new_reference = '# ceiling (1200s / 1080000ms), which compiles strictly more work. The'
+          assert after_text.count(old_reference) == 1
+          after_text = after_text.replace(old_reference, new_reference, 1)
+          before = yaml.safe_load(before_text)
+          after = yaml.safe_load(after_text)
+          expected = copy.deepcopy(before)
+          original = next(g for g in before['gates'] if g['name'] == 'compile_all_targets')
+          changed = next(g for g in expected['gates'] if g['name'] == 'compile_all_targets')
+          assert original['timeout_seconds'] == 600
+          assert original['command'] == 'just check-all-targets'
+          assert original['required'] and not original['quarantine']
+          assert original['retry_count'] == 0
+          changed['description'] = 'Compile workspace targets, example test modules, and wire-free parser profiles without running tests'
+          changed['timeout_seconds'] = 1200
+          changed['budgets']['max_duration_ms'] = 1080000
+          assert after == expected, 'Unrelated policy changes detected'
+          assert len(after['gates']) == len(before['gates'])
+          assert len({g['name'] for g in after['gates']}) == len(after['gates'])
+          recipe = pathlib.Path('justfile').read_text().split('check-all-targets:\n', 1)[1].split('\n\n', 1)[0]
+          cargo_commands = [line.strip() for line in recipe.splitlines() if line.strip().startswith('cargo ')]
+          assert cargo_commands == [
+              'cargo check --workspace --all-targets --locked',
+              'cargo check --workspace --all-targets --all-features --locked',
+              'cargo test --workspace --examples --locked --no-run',
+              'cargo check -p perl-parser --no-default-features --locked',
+              'cargo check -p perl-parser --no-default-features --features incremental --locked',
+          ], cargo_commands
+          workflow = yaml.safe_load(pathlib.Path('.github/workflows/ci.yml').read_text())
+          smoke = next(job for job in workflow['jobs'].values() if 'PR Smoke' in job.get('name', ''))
+          assert smoke['timeout-minutes'] >= 45
+          assert any('2700s' in step.get('run', '') for step in smoke['steps'])
+          path.write_text(after_text)
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          assert subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines() == [str(path)]
+          receipt = {'base': os.environ['BASE_SHA'], 'gate': 'compile_all_targets',
+              'old_watchdog_seconds': 600, 'new_watchdog_seconds': 1200,
+              'unchanged_cargo_commands': cargo_commands, 'all_other_policy_fields_unchanged': True,
+              'runtime_validation': 'Pending normal PR CI; structural checks do not prove elapsed time.'}
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'compile-budget-proof.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt, indent=2))
+          PY
+          git diff -- .ci/gate-policy.yaml
+      - name: Publish policy-only candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request
+          root = 'https://api.github.com/repos/EffortlessMetrics/perl-lsp-swarm'
+          def post(path, body):
+              request = urllib.request.Request(root + path, data=json.dumps(body).encode(), method='POST', headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          path = '.ci/gate-policy.yaml'
+          blob = post('/git/blobs', {'content': pathlib.Path(path).read_text(), 'encoding': 'utf-8'})
+          tree = post('/git/trees', {'base_tree': os.environ['BASE_TREE'], 'tree': [
+              {'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']}]})
+          identity = {'name': 'EffortlessSteven', 'email': 'git@effortlesssteven.com'}
+          commit = post('/git/commits', {
+              'message': 'fix(ci): allow the complete cold compile-all-targets recipe to finish\n\nMain receipts exhausted the 600s watchdog before all five Cargo\ncommands completed. Preserve the required recipe and use a bounded\n1200s watchdog. All other gate policy fields remain unchanged.',
+              'tree': tree['sha'], 'parents': [os.environ['BASE_SHA']],
+              'author': identity, 'committer': identity})
+          post('/git/refs', {'ref': 'refs/heads/' + os.environ['OUTPUT_BRANCH'], 'sha': commit['sha']})
+          result = {'branch': os.environ['OUTPUT_BRANCH'], 'commit': commit['sha'], 'policy_blob': blob['sha']}
+          print(json.dumps(result))
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'compile-budget-candidate.json').write_text(json.dumps(result, indent=2) + '\n')
+          PY
+      - name: Preserve budget proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: compile-budget-preparation
+          path: ${{ runner.temp }}/compile-budget-*.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  verify-security-consumer:
+    if: github.repository == 'EffortlessMetrics/perl-lsp-swarm'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 435c85f03c63a88e5d1202d825176ef1c6c5a8e0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: '1.95.0'
+      - name: Check the enabled TLS consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check -p perl-lsp-rs-core --features ai-provider --locked 2>&1 | tee "$RUNNER_TEMP/security-consumer-build.log"
+      - name: Test the RNG consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test -p perl-corpus --lib --locked 2>&1 | tee "$RUNNER_TEMP/security-corpus-tests.log"
+      - name: Confirm the candidate remained unchanged
+        run: |
+          test "$(git rev-parse HEAD)" = 435c85f03c63a88e5d1202d825176ef1c6c5a8e0
+          git diff --exit-code
+      - name: Preserve focused security proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: security-consumer-proof-435c85f03
+          path: ${{ runner.temp }}/security-*.log
+          retention-days: 7
+          if-no-files-found: ignore
