@@ -14,10 +14,10 @@ impl<'a> Parser<'a> {
 
         let lead_start = self.current_position();
         let lead_end = if self.peek_kind() == Some(TokenKind::DoubleColon) {
-            self.tokens.next()?.end() // consume '::'
+            self.advance_token()?.end() // consume '::'
         } else {
-            self.tokens.next()?; // consume first ':'
-            self.tokens.next()?.end() // consume second ':'
+            self.advance_token()?; // consume first ':'
+            self.advance_token()?.end() // consume second ':'
         };
 
         if self.peek_kind().is_some_and(Self::can_be_sub_name) {
@@ -57,11 +57,11 @@ impl<'a> Parser<'a> {
                 && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
-                let double_colon = self.tokens.next()?; // consume ::
+                let double_colon = self.advance_token()?; // consume ::
                 name_end = double_colon.end();
             } else {
-                self.tokens.next()?; // consume first :
-                let second_colon = self.tokens.next()?; // consume second :
+                self.advance_token()?; // consume first :
+                let second_colon = self.advance_token()?; // consume second :
                 name_end = second_colon.end();
             }
 
@@ -151,7 +151,7 @@ impl<'a> Parser<'a> {
         let mut attributes = Vec::new();
 
         while self.peek_kind() == Some(TokenKind::Colon) {
-            self.tokens.next()?; // consume colon
+            self.advance_token()?; // consume colon
             let mut parsed_any = false;
 
             loop {
@@ -164,7 +164,7 @@ impl<'a> Parser<'a> {
                 // is tokenized as `TokenKind::Default`.  `can_be_sub_name` covers
                 // the full set of keyword token kinds that are valid barewords.
                 let attr_token = match self.peek_kind() {
-                    Some(kind) if Self::can_be_sub_name(kind) => self.tokens.next()?,
+                    Some(kind) if Self::can_be_sub_name(kind) => self.advance_token()?,
                     _ if parsed_any => break,
                     _ => {
                         return Err(ParseError::syntax(
@@ -184,7 +184,7 @@ impl<'a> Parser<'a> {
 
                     let mut paren_depth = 1;
                     while paren_depth > 0 && !self.tokens.is_eof() {
-                        let token = self.tokens.next()?;
+                        let token = self.advance_token()?;
                         attr_name.push_str(&token.text);
 
                         if base_name == "prototype"
@@ -256,15 +256,15 @@ impl<'a> Parser<'a> {
     /// Parse subroutine definition
     fn parse_subroutine(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'sub'
+        self.advance_token()?; // consume 'sub'
 
         let (name, name_span) = if self.peek_kind() == Some(TokenKind::DoubleColon) {
             // Leading :: qualifier — subroutine in the main package (e.g., sub ::PCDATA { })
-            let dc_token = self.tokens.next()?; // consume '::'
+            let dc_token = self.advance_token()?; // consume '::'
             let name_start = dc_token.start();
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
                 // sub ::PCDATA or sub ::DB_File::splice
-                let ident_token = self.tokens.next()?;
+                let ident_token = self.advance_token()?;
                 let full_name = format!("::{}", ident_token.text);
                 (Some(full_name), Some(SourceLocation { start: name_start, end: ident_token.end() }))
             } else {
@@ -302,19 +302,19 @@ impl<'a> Parser<'a> {
                 // Parse as prototype
                 let proto_start = self.current_position();
                 let proto_content = self.parse_prototype()?;
-                let proto_node = Node::new(
+                let proto_node = self.charge_node(
                     NodeKind::Prototype { content: proto_content },
                     SourceLocation { start: proto_start, end: self.previous_position() },
-                );
+                )?;
                 (Some(Box::new(proto_node)), None)
             } else {
                 // Parse as signature
                 let sig_start = self.current_position();
                 let params = self.parse_signature()?;
-                let sig_node = Node::new(
+                let sig_node = self.charge_node(
                     NodeKind::Signature { parameters: params },
                     SourceLocation { start: sig_start, end: self.previous_position() },
-                );
+                )?;
                 (None, Some(Box::new(sig_node)))
             }
         } else {
@@ -331,16 +331,16 @@ impl<'a> Parser<'a> {
         let body = if self.peek_kind() == Some(TokenKind::Semicolon) {
             // Forward declaration — return an empty block as the body
             let pos = self.current_position();
-            Node::new(
+            self.charge_node(
                 NodeKind::Block { statements: vec![] },
                 SourceLocation { start: pos, end: pos },
-            )
+            )?
         } else {
             self.parse_block()?
         };
 
         let end = self.previous_position();
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Subroutine {
                 name,
                 name_span,
@@ -351,11 +351,11 @@ impl<'a> Parser<'a> {
                 body: Box::new(body),
             },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     fn parse_subroutine_name(&mut self) -> ParseResult<(String, SourceLocation)> {
-        let first = self.tokens.next()?;
+        let first = self.advance_token()?;
         let mut name = first.text.to_string();
         let start = first.start();
         let mut end = first.end();
@@ -365,17 +365,17 @@ impl<'a> Parser<'a> {
                 && self.tokens.peek_second().map(|t| t.kind()) == Ok(TokenKind::Colon))
         {
             if self.peek_kind() == Some(TokenKind::DoubleColon) {
-                let double_colon = self.tokens.next()?;
+                let double_colon = self.advance_token()?;
                 end = double_colon.end();
             } else {
-                self.tokens.next()?;
-                let second_colon = self.tokens.next()?;
+                self.advance_token()?;
+                let second_colon = self.advance_token()?;
                 end = second_colon.end();
             }
             name.push_str("::");
 
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
-                let next = self.tokens.next()?;
+                let next = self.advance_token()?;
                 end = next.end();
                 name.push_str(&next.text);
             } else if self.peek_kind() == Some(TokenKind::DoubleColon)
@@ -411,9 +411,9 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_legacy_tick_subroutine_name(&mut self) -> ParseResult<(String, SourceLocation)> {
-        let package = self.tokens.next()?;
+        let package = self.advance_token()?;
         let package_name = package.text.trim_matches('\'');
-        let sub_name = self.tokens.next()?;
+        let sub_name = self.advance_token()?;
         let name = format!("{package_name}::{}", sub_name.text);
         Ok((name, SourceLocation { start: package.start(), end: sub_name.end() }))
     }
@@ -434,7 +434,7 @@ impl<'a> Parser<'a> {
     /// Multiple `:isa(...)` attributes may appear; each contributes a parent class.
     fn parse_class(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'class'
+        self.advance_token()?; // consume 'class'
 
         let (name, name_span) = self.parse_qualified_name(false)?;
 
@@ -444,17 +444,17 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::Number)
             || self.peek_kind() == Some(TokenKind::VString)
         {
-            self.tokens.next()?; // consume and discard version token
+            self.advance_token()?; // consume and discard version token
         } else if let Some(TokenKind::Identifier) = self.peek_kind()
             && let Ok(token) = self.tokens.peek()
                 && token.text.starts_with('v') && token.text.len() > 1 {
                     // v-string identifier like `v5` — consume it and any trailing
                     // `.N` number tokens that the lexer emits as separate tokens.
-                    self.tokens.next()?;
+                    self.advance_token()?;
                     while let Some(TokenKind::Number) = self.peek_kind() {
                         if let Ok(num_token) = self.tokens.peek() {
                             if num_token.text.starts_with('.') {
-                                self.tokens.next()?;
+                                self.advance_token()?;
                             } else {
                                 break;
                             }
@@ -493,16 +493,16 @@ impl<'a> Parser<'a> {
         let body = self.within_class_grammar(ClassGrammarForm::Block, Self::parse_block)?;
 
         let end = self.previous_position();
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Class { name, name_span: Some(name_span), parents, body: Box::new(body) },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse method declaration (Perl 5.38+)
     fn parse_method(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'method'
+        self.advance_token()?; // consume 'method'
 
         let name_token = self.expect(TokenKind::Identifier)?;
         let name = name_token.text.to_string();
@@ -517,10 +517,13 @@ impl<'a> Parser<'a> {
         let signature = if self.peek_kind() == Some(TokenKind::LeftParen) {
             let sig_start = self.current_position();
             let params = self.parse_signature()?;
-            Some(Box::new(Node::new(
+            // Charged before the enclosing node so the charge order matches
+            // the original construction order.
+            let charged_operand = self.charge_node(
                 NodeKind::Signature { parameters: params },
                 SourceLocation { start: sig_start, end: self.previous_position() },
-            )))
+            )?;
+            Some(Box::new(charged_operand))
         } else {
             None
         };
@@ -535,21 +538,21 @@ impl<'a> Parser<'a> {
         let body = self.parse_block()?;
 
         let end = self.previous_position();
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Method { name, name_span, signature, attributes, body: Box::new(body) },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse an Object::Pad `ADJUST` block as a method-like class body node.
     fn parse_adjust_block(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'ADJUST'
+        self.advance_token()?; // consume 'ADJUST'
 
         let body = self.parse_block()?;
 
         let end = self.previous_position();
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Method {
                 name: "ADJUST".to_string(),
                 name_span: None,
@@ -558,20 +561,20 @@ impl<'a> Parser<'a> {
                 body: Box::new(body),
             },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse format declaration
     fn parse_format(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'format'
+        self.advance_token()?; // consume 'format'
 
         if self.tokens.peek().ok().is_some_and(|token| {
             matches!(token.kind(), TokenKind::String | TokenKind::Unknown)
                 && token.text.starts_with('\'')
                 && token.text.contains('=')
         }) {
-            let token = self.tokens.next()?;
+            let token = self.advance_token()?;
             let raw = token.text.as_ref();
             let Some(assign_index) = raw.find('=') else {
                 return Err(ParseError::UnexpectedToken {
@@ -587,7 +590,7 @@ impl<'a> Parser<'a> {
                 body.truncate(terminator_start + 1);
             } else {
                 while !self.tokens.is_eof() {
-                    let body_token = self.tokens.next()?;
+                    let body_token = self.advance_token()?;
                     end = body_token.end();
                     if body_token.text.as_ref() == "." {
                         break;
@@ -599,10 +602,10 @@ impl<'a> Parser<'a> {
                 start: token.start(),
                 end: token.start() + assign_index,
             });
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Format { name, name_span, body },
                 SourceLocation { start, end },
-            ));
+            );
         }
 
         if self.tokens.peek().ok().is_some_and(|token| {
@@ -610,12 +613,12 @@ impl<'a> Parser<'a> {
             text.starts_with('\'') && text.len() > 1
         }) && self.tokens.peek_second().ok().is_some_and(|token| token.kind() == TokenKind::Assign)
         {
-            let name_token = self.tokens.next()?;
-            let assign = self.tokens.next()?;
+            let name_token = self.advance_token()?;
+            let assign = self.advance_token()?;
             let mut body = String::new();
             let mut end = assign.end();
             while !self.tokens.is_eof() {
-                let body_token = self.tokens.next()?;
+                let body_token = self.advance_token()?;
                 end = body_token.end();
                 if body_token.text.as_ref() == "." {
                     break;
@@ -626,14 +629,14 @@ impl<'a> Parser<'a> {
                 start: name_token.start(),
                 end: name_token.end(),
             });
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Format {
                     name: name_token.text.trim_start_matches('\'').to_string(),
                     name_span,
                     body,
                 },
                 SourceLocation { start, end },
-            ));
+            );
         }
 
         // Parse format name (optional - can be anonymous)
@@ -641,7 +644,7 @@ impl<'a> Parser<'a> {
             // Anonymous format
             (String::new(), None)
         } else if self.peek_kind() == Some(TokenKind::DoubleColon) {
-            let double_colon = self.tokens.next()?;
+            let double_colon = self.advance_token()?;
             let name_token = self.expect(TokenKind::Identifier)?;
             let span = SourceLocation {
                 start: double_colon.start(),
@@ -659,8 +662,8 @@ impl<'a> Parser<'a> {
                 .ok()
                 .is_some_and(|token| Self::can_be_sub_name(token.kind()))
         {
-            let tick = self.tokens.next()?;
-            let name_token = self.tokens.next()?;
+            let tick = self.advance_token()?;
+            let name_token = self.advance_token()?;
             let span = SourceLocation {
                 start: tick.start(),
                 end: name_token.end(),
@@ -671,7 +674,7 @@ impl<'a> Parser<'a> {
                 token.text.starts_with('\'') && token.text.ends_with('\'')
             })
         {
-            let name_token = self.tokens.next()?;
+            let name_token = self.advance_token()?;
             let span = SourceLocation {
                 start: name_token.start(),
                 end: name_token.end(),
@@ -697,7 +700,7 @@ impl<'a> Parser<'a> {
         self.observe_contextual_operation(ContextualTokenOp::EnterFormatBody, start)?;
 
         // Get the format body
-        let body_token = self.tokens.next()?;
+        let body_token = self.advance_token()?;
         let body = if body_token.kind() == TokenKind::FormatBody {
             body_token.text.to_string()
         } else {
@@ -709,13 +712,13 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Format { name, name_span, body }, SourceLocation { start, end }))
+        self.charge_node(NodeKind::Format { name, name_span, body }, SourceLocation { start, end })
     }
 
     /// Parse package declaration
     fn parse_package(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'package'
+        self.advance_token()?; // consume 'package'
 
         let (name, name_span) = self.parse_package_qualified_name()?;
 
@@ -723,19 +726,19 @@ impl<'a> Parser<'a> {
         let version = if self.peek_kind() == Some(TokenKind::Number)
             || self.peek_kind() == Some(TokenKind::VString)
         {
-            Some(self.tokens.next()?.text.to_string())
+            Some(self.advance_token()?.text.to_string())
         } else if let Some(TokenKind::Identifier) = self.peek_kind() {
             // Check if it's a v-string version
             if let Ok(token) = self.tokens.peek() {
                 if token.text.starts_with('v') && token.text.len() > 1 {
                     // It's a v-string like v1 or v5
-                    let mut version_str = self.tokens.next()?.text.to_string();
+                    let mut version_str = self.advance_token()?.text.to_string();
 
                     // Collect the rest of the v-string (e.g., .2.3)
                     while let Some(TokenKind::Number) = self.peek_kind() {
                         if let Ok(num_token) = self.tokens.peek() {
                             if num_token.text.starts_with('.') {
-                                version_str.push_str(&self.tokens.next()?.text);
+                                version_str.push_str(&self.advance_token()?.text);
                             } else {
                                 break;
                             }
@@ -768,7 +771,7 @@ impl<'a> Parser<'a> {
         };
 
         let end = self.previous_position();
-        Ok(Node::new(NodeKind::Package { name, name_span, block }, SourceLocation { start, end }))
+        self.charge_node(NodeKind::Package { name, name_span, block }, SourceLocation { start, end })
     }
 
     /// Parse use statement
@@ -913,10 +916,10 @@ impl<'a> Parser<'a> {
             }
             let end = self.previous_position();
             let has_filter_risk = Self::is_filter_module(&module);
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::Use { module, args: cond_args, has_filter_risk },
                 SourceLocation { start, end },
-            ));
+            );
         }
 
         // Parse optional import list
@@ -935,18 +938,20 @@ impl<'a> Parser<'a> {
                 // fall back to simple token consumption
                 let list = match self.parse_qw_words() {
                     Ok(words) => words,
+                    // A core budget refusal is a terminal resource condition,
+                    // not malformed `qw` input: swallowing it here would build a
+                    // partial `Use` node instead of reporting the refusal
+                    // (#8786).
+                    Err(error @ ParseError::CoreBudgetExhausted { .. }) => return Err(error),
                     Err(_) => {
                         // Fallback: just consume tokens until semicolon
                         let mut words = Vec::new();
                         while !Self::is_statement_terminator(self.peek_kind())
                             && !self.tokens.is_eof()
                         {
-                            if let Ok(tok) = self.tokens.next() {
-                                if matches!(tok.kind(), TokenKind::Identifier | TokenKind::Number) {
-                                    words.push(tok.text.to_string());
-                                }
-                            } else {
-                                break;
+                            let tok = self.advance_token()?;
+                            if matches!(tok.kind(), TokenKind::Identifier | TokenKind::Number) {
+                                words.push(tok.text.to_string());
                             }
                         }
                         words
@@ -1326,10 +1331,10 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
         let has_filter_risk = Self::is_filter_module(&module);
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Use { module, args, has_filter_risk },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse special block (AUTOLOAD, DESTROY, etc.)
@@ -1345,7 +1350,7 @@ impl<'a> Parser<'a> {
         let end = block.location.end;
 
         // Treat as a special subroutine
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::Subroutine {
                 name: Some(name),
                 name_span,
@@ -1356,7 +1361,7 @@ impl<'a> Parser<'a> {
                 body: Box::new(block),
             },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse phase block (BEGIN, END, CHECK, INIT, UNITCHECK)
@@ -1380,10 +1385,10 @@ impl<'a> Parser<'a> {
         let end = block.location.end;
 
         // Create a special node for phase blocks
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::PhaseBlock { phase, phase_span, block: Box::new(block) },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse data section (__DATA__ or __END__)
@@ -1412,16 +1417,16 @@ impl<'a> Parser<'a> {
 
         // Create a data section node. The whole-node span stays exactly as
         // before so existing consumers of the node's own location do not shift.
-        Ok(Node::new(
+        self.charge_node(
             NodeKind::DataSection { marker, marker_span, body, body_span },
             SourceLocation { start, end },
-        ))
+        )
     }
 
     /// Parse no statement (similar to use but disables pragmas/modules)
     fn parse_no(&mut self) -> ParseResult<Node> {
         let start = self.current_position();
-        self.tokens.next()?; // consume 'no'
+        self.advance_token()?; // consume 'no'
 
         // Parse module name — accepts bare identifiers or keyword-named pragmas
         // (e.g. `no if COND, warnings`, `no feature`).
@@ -1500,10 +1505,10 @@ impl<'a> Parser<'a> {
             }
             let end = self.previous_position();
             let has_filter_risk = Self::is_filter_module(&module);
-            return Ok(Node::new(
+            return self.charge_node(
                 NodeKind::No { module, args: cond_args, has_filter_risk },
                 SourceLocation { start, end },
-            ));
+            );
         }
 
         // Parse optional arguments list
@@ -1650,7 +1655,7 @@ impl<'a> Parser<'a> {
 
         let end = self.previous_position();
         let has_filter_risk = Self::is_filter_module(&module);
-        Ok(Node::new(NodeKind::No { module, args, has_filter_risk }, SourceLocation { start, end }))
+        self.charge_node(NodeKind::No { module, args, has_filter_risk }, SourceLocation { start, end })
     }
 
     /// Consume a value expression on the right-hand side of `=>` inside a `use`
