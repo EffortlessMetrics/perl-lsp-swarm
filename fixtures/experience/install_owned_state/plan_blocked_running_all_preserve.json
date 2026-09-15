@@ -1,0 +1,114 @@
+{
+  "schema_version": "standalone_removal_plan.v1",
+  "plan_id": "plan-blocked-running",
+  "claim_boundary": "Binds one pure removal plan against one exact manifest identity (#11470). The plan never itself executes; execution belongs to #11471/#11472 and requires exact currentness at run time.",
+  "bound_subject": {
+    "install_root_absolute_path": "/home/alice/.local/share/perllsp",
+    "install_root_digest_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "manifest_sha256": "0c83d39c2505d63edd28c32b3e15be4712454f430a1781995c8c47e39df88e46"
+  },
+  "lifecycle_policy": "full_removal_selected",
+  "running_process_policy": "abort_on_running",
+  "path_cleanup": {
+    "mode": "skipped",
+    "entries": []
+  },
+  "actions": [
+    {
+      "relative_path": "candidates/v0.18.0-x86_64-unknown-linux-gnu",
+      "action": "revalidate",
+      "order_index": 0,
+      "reason": "row is running_or_active (pid 424242); revalidate after process exit before any removal"
+    },
+    {
+      "relative_path": "candidates/v0.18.0-x86_64-unknown-linux-gnu/manifest.json",
+      "action": "preserve",
+      "order_index": 1,
+      "reason": "not installer-owned under this claim: owned_required"
+    },
+    {
+      "relative_path": "candidates/v0.17.2-x86_64-unknown-linux-gnu",
+      "action": "preserve",
+      "order_index": 2,
+      "reason": "not installer-owned under this claim: owned_retained_for_rollback"
+    },
+    {
+      "relative_path": "current",
+      "action": "preserve",
+      "order_index": 3,
+      "reason": "not installer-owned under this claim: owned_required"
+    },
+    {
+      "relative_path": "receipts/current.json",
+      "action": "preserve",
+      "order_index": 4,
+      "reason": "not installer-owned under this claim: owned_required"
+    },
+    {
+      "relative_path": "receipts/previous-v0.17.2.json",
+      "action": "preserve",
+      "order_index": 5,
+      "reason": "not installer-owned under this claim: owned_retained_for_rollback"
+    },
+    {
+      "relative_path": "attempts/attempt-2026-08-20T10-00-00Z.json",
+      "action": "preserve",
+      "order_index": 6,
+      "reason": "not installer-owned under this claim: owned_removable"
+    },
+    {
+      "relative_path": "transactions/log.jsonl",
+      "action": "preserve",
+      "order_index": 7,
+      "reason": "not installer-owned under this claim: owned_required"
+    },
+    {
+      "relative_path": ".perllsp-path-marker",
+      "action": "preserve",
+      "order_index": 8,
+      "reason": "not installer-owned under this claim: owned_removable"
+    },
+    {
+      "relative_path": ".perllsp-profile-marker",
+      "action": "preserve",
+      "order_index": 9,
+      "reason": "not installer-owned under this claim: owned_removable"
+    },
+    {
+      "relative_path": "registry/perllsp-uninstall.marker",
+      "action": "preserve",
+      "order_index": 10,
+      "reason": "not installer-owned under this claim: owned_removable"
+    },
+    {
+      "relative_path": "notes.txt",
+      "action": "preserve",
+      "order_index": 11,
+      "reason": "not installer-owned under this claim: foreign_or_user_owned"
+    },
+    {
+      "relative_path": ".cargo-binstall/perllsp-meta.json",
+      "action": "preserve",
+      "order_index": 12,
+      "reason": "not installer-owned under this claim: package_manager_or_other_route"
+    }
+  ],
+  "postconditions": {
+    "fresh_process_proof_required": true,
+    "verify_entries_absent": [],
+    "verify_preserved": [
+      ".cargo-binstall/perllsp-meta.json",
+      ".perllsp-path-marker",
+      ".perllsp-profile-marker",
+      "attempts/attempt-2026-08-20T10-00-00Z.json",
+      "candidates/v0.17.2-x86_64-unknown-linux-gnu",
+      "candidates/v0.18.0-x86_64-unknown-linux-gnu/manifest.json",
+      "current",
+      "notes.txt",
+      "receipts/current.json",
+      "receipts/previous-v0.17.2.json",
+      "registry/perllsp-uninstall.marker",
+      "transactions/log.jsonl"
+    ]
+  }
+}
