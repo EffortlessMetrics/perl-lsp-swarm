@@ -1994,7 +1994,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 24] = [
+    const FIXTURES: [(&str, &str); 25] = [
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2056,6 +2056,13 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/invalid-proof-level-required-release.json"
+            )),
+        ),
+        (
+            "valid-proof-level-hyphenated-compound-source-release",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-hyphenated-compound-source-release.json"
             )),
         ),
         (
