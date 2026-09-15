@@ -286,6 +286,7 @@ pub perl_parser_core::engine::error::RecoveryKind::InferredSemicolon
 pub perl_parser_core::engine::error::RecoveryKind::InsertedCloser
 pub perl_parser_core::engine::error::RecoveryKind::MissingOperand
 pub perl_parser_core::engine::error::RecoveryKind::TruncatedChain
+pub perl_parser_core::engine::error::RecoveryKind::UnexpectedSameLineResidue
 pub fn perl_parser_core::syntax::error::RecoveryKind::clone(&self) -> perl_parser_core::syntax::error::RecoveryKind
 pub fn perl_parser_core::syntax::error::RecoveryKind::eq(&self, other: &perl_parser_core::syntax::error::RecoveryKind) -> bool
 pub fn perl_parser_core::syntax::error::RecoveryKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -761,6 +762,7 @@ pub perl_parser_core::error::RecoveryKind::InferredSemicolon
 pub perl_parser_core::error::RecoveryKind::InsertedCloser
 pub perl_parser_core::error::RecoveryKind::MissingOperand
 pub perl_parser_core::error::RecoveryKind::TruncatedChain
+pub perl_parser_core::error::RecoveryKind::UnexpectedSameLineResidue
 pub fn perl_parser_core::syntax::error::RecoveryKind::clone(&self) -> perl_parser_core::syntax::error::RecoveryKind
 pub fn perl_parser_core::syntax::error::RecoveryKind::eq(&self, other: &perl_parser_core::syntax::error::RecoveryKind) -> bool
 pub fn perl_parser_core::syntax::error::RecoveryKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3369,6 +3371,7 @@ pub perl_parser_core::syntax::error::RecoveryKind::InferredSemicolon
 pub perl_parser_core::syntax::error::RecoveryKind::InsertedCloser
 pub perl_parser_core::syntax::error::RecoveryKind::MissingOperand
 pub perl_parser_core::syntax::error::RecoveryKind::TruncatedChain
+pub perl_parser_core::syntax::error::RecoveryKind::UnexpectedSameLineResidue
 pub fn perl_parser_core::syntax::error::RecoveryKind::clone(&self) -> perl_parser_core::syntax::error::RecoveryKind
 pub fn perl_parser_core::syntax::error::RecoveryKind::eq(&self, other: &perl_parser_core::syntax::error::RecoveryKind) -> bool
 pub fn perl_parser_core::syntax::error::RecoveryKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
