@@ -1,0 +1,40 @@
+name: Issue Controller Train Contract
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '.spec/11764-controller-train-graph/**'
+      - 'xtask/src/tasks/issue_controllers/**'
+      - '.github/workflows/issue-controller-train-contract.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: issue-controller-train-contract-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate stable issue_controller_train.v1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable (master)
+        with:
+          toolchain: 1.95.0
+
+      - name: Falsifier suite
+        run: cargo test -p xtask --bin xtask issue_controllers --locked
+
+      - name: Static validation of the stable manifest
+        run: cargo run -p xtask --locked -- issue-controllers train check --static
+
+      - name: Checked projection currentness
+        run: cargo run -p xtask --locked -- issue-controllers train graph --check
