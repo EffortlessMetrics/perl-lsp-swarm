@@ -3459,7 +3459,7 @@ mod tests {
     };
     use crate::tasks::ci_scope::{
         ArchWidener, DirectCrate, HeavyLaneEntry, LaneDecisions, LaneEntry, PlatformOverrides,
-        RevDepCrate, ScopeOutput,
+        RevDepCrate, ScopeOutput, classify_files,
     };
     use crate::tasks::commit_checks::{CheckReport, CommitCheckOutcome, Posture};
 
@@ -4331,6 +4331,66 @@ gates:
         assert!(clippy.gate.command.contains("-p perl-parser"));
         assert!(clippy.gate.command.contains("-p perl-lsp-rs"));
         assert!(clippy.gate.command.contains("-p perl-dap"));
+        Ok(())
+    }
+
+    #[test]
+    fn vocabulary_scope_reaches_unit_routed_full_consumer() -> color_eyre::eyre::Result<()> {
+        let metadata = serde_json::json!({
+            "packages": [{
+                "id": "xtask 0.1.0",
+                "name": "xtask",
+                "manifest_path": "/workspace/xtask/Cargo.toml",
+                "dependencies": []
+            }],
+            "resolve": {"nodes": [{"id": "xtask 0.1.0", "deps": []}]},
+            "workspace_root": "/workspace"
+        });
+        let files = vec![".spec/11045-lsp-runtime-vocabulary/relations.v1.json".to_string()];
+        let scope = classify_files(&files, &metadata, "/workspace")?;
+        let gates = vec![
+            pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
+            pr_gate(
+                "unit_routed_full",
+                GatePlanningRole::RustScoped,
+                "cargo test --locked --tests {package_args}",
+            ),
+        ];
+        let plan = build_pr_fast_plan_from_scope(
+            GateTier::PrFast,
+            "origin/main".to_string(),
+            gates,
+            Some(scope),
+            true,
+            false,
+            None,
+        )?;
+        if selected_gate_names(&plan) != ["fmt", "unit_routed_full"] {
+            return Err(color_eyre::eyre::eyre!(
+                "vocabulary scope did not select fmt and unit_routed_full"
+            ));
+        }
+        if plan.package_args != ["-p", "xtask"] {
+            return Err(color_eyre::eyre::eyre!("vocabulary scope did not produce -p xtask"));
+        }
+        let ordinary = build_pr_fast_plan_from_scope(
+            GateTier::PrFast,
+            "origin/main".to_string(),
+            vec![pr_gate(
+                "unit_routed_full",
+                GatePlanningRole::RustScoped,
+                "cargo test {package_args}",
+            )],
+            Some(scope_output("prose_only", &[], &[], &[])),
+            true,
+            false,
+            None,
+        )?;
+        if !selected_gate_names(&ordinary).is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "ordinary prose scope selected a routed test gate"
+            ));
+        }
         Ok(())
     }
 
