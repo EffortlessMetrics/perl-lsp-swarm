@@ -261,7 +261,13 @@ endfunction
 " the wire push count is stable and the clean state holds. Function-scoped
 " (the #12589 boundary law: no `let l:` at script level).
 function! s:ObserveOldRejection() abort
-  let l:wire_before_reject = VimLspHostWireMarkerCount('textDocument/publishDiagnostics')
+  " Content signature, not a wire-push count (#15602 FC-OLD-REJECT-COUNT-EQ):
+  " an idempotent refresh may republish identical diagnostics, which bumps
+  " the wire count while the public state stays equal. The signature is the
+  " client's own diagnostics state, aligned with the Rust-side
+  " old-signature comparison.
+  let l:signature_before_reject =
+        \ string(VimLspHostBufferDiagnosticsCounts())
   let l:reject_expr = "VimLspHostBufferDiagnosticsCounts()['error'] == 0"
         \ . " && VimLspHostBufferDiagnosticsCounts()['warning'] == 0"
   let l:held = VimLspHostStableStateWindow(l:reject_expr, s:stale_window)
@@ -273,7 +279,7 @@ function! s:ObserveOldRejection() abort
     call s:Fail('clean_generation_state_unstable')
     return 0
   endif
-  if VimLspHostWireMarkerCount('textDocument/publishDiagnostics') != l:wire_before_reject
+  if string(VimLspHostBufferDiagnosticsCounts()) != l:signature_before_reject
     call s:Fail('old_generation_result_republished')
     return 0
   endif
