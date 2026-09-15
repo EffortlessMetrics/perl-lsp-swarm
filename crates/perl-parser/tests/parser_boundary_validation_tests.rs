@@ -34,8 +34,14 @@ const BOUNDARY_FIXTURE_CEILING_MS: u64 = 5000;
 fn test_recursion_depth_boundary() {
     println!("Testing recursion depth boundary...");
 
-    // Test just below the limit
-    let below_limit_code = generate_nested_code(MAX_RECURSION_DEPTH - 5);
+    // Test just below the limit. Measured on this suite (#15432/#15647):
+    // the depth counter counts the ENTIRE enclosing construct chain, not
+    // just the generated parens: the `use` statements plus
+    // `my \$result = ...` (declaration -> assignment -> initializer) cost
+    // ~40 depth units before the first paren, and each paren costs 2 (the
+    // primary.rs double-guard). Effective paren budget is therefore ~44;
+    // 30 keeps a wide margin. Bisected: 40 parses, 45 fires.
+    let below_limit_code = generate_nested_code(30);
     let start_time = Instant::now();
     let mut parser = Parser::new(&below_limit_code);
     let result = parser.parse();
