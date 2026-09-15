@@ -497,9 +497,10 @@ impl LspServer {
         // never see a cursor on the target — the region index proves
         // StringLiteral there (#4967). The declaration head is still precise
         // evidence: allow the modifier card when the whole token range is
-        // proven StringLiteral and lies before the symbol's `sub` body
-        // keyword. Body strings, comments, POD, and heredocs keep failing
-        // closed.
+        // proven StringLiteral and the hovered token text matches the
+        // symbol's target name (multi-target disambiguation). Body strings,
+        // comments, POD, and heredocs keep failing closed because their
+        // text won't match any modifier target name.
         let modifier_target_island = !token_candidate_is_proven
             && Self::token_range_is_proven_kind(
                 source_region,
@@ -513,16 +514,25 @@ impl LspServer {
                 analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
             && let Some(modifier_kind) =
                 symbol_info.attributes.iter().find_map(|a| a.strip_prefix("modifier="))
-            && (token_candidate_is_proven
-                || !Self::span_has_word(text, symbol_info.location.start, offset, "sub"))
         {
-            let method_name = &symbol_info.name;
-            let doc = symbol_info.documentation.as_deref().unwrap_or("");
-            return HoverExtracted::Complete(hover_cards::method_modifier_hover(
-                modifier_kind,
-                method_name,
-                doc,
-            ));
+            // Multi-target disambiguation (#15425 review): when several
+            // modifier symbols share the same statement span, `symbol_at` may
+            // return any of them. Verify the hovered token text matches this
+            // symbol's name (the modifier target). Non-target tokens (body
+            // strings, comments) don't match any modifier name and fail
+            // closed naturally.
+            let token_text = Self::get_token_at_position_static(text, offset);
+            let target_matches = token_text == symbol_info.name;
+            let _ = modifier_target_island; // island gate already applied above
+            if target_matches || token_candidate_is_proven {
+                let method_name = &symbol_info.name;
+                let doc = symbol_info.documentation.as_deref().unwrap_or("");
+                return HoverExtracted::Complete(hover_cards::method_modifier_hover(
+                    modifier_kind,
+                    method_name,
+                    doc,
+                ));
+            }
         }
 
         // Detect early when the cursor is on a `->method` call: defer to the
