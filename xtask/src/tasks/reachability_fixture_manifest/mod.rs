@@ -85,10 +85,12 @@ pub fn run(update_view: bool) -> Result<()> {
 }
 
 fn regenerate_view(root: &Path) -> Result<()> {
+    validate_json_parse(root, SCHEMA_PATH)?;
+    validate_schema_identity(root)?;
     let manifest = load_manifest(root)?;
     // Validate the document itself; the view is the output being regenerated
     // here, so its drift rule cannot gate this path.
-    let mut violations = evaluate_schema_constraints(root, &manifest)?;
+    let mut violations = evaluate_schema_constraints(root)?;
     violations.extend(validate_document(root, &manifest));
     if !violations.is_empty() {
         eprintln!("reachability fixture manifest violations:");
@@ -111,11 +113,16 @@ fn load_manifest(root: &Path) -> Result<model::Manifest> {
 /// Evaluates the parsed manifest document against the pinned JSON Schema
 /// artifact so wire-contract mutations (consts, minimums, patterns, enums)
 /// become validation violations instead of Serde-shaped accidents.
-fn evaluate_schema_constraints(root: &Path, manifest: &model::Manifest) -> Result<Vec<String>> {
+///
+/// The schema runs against the raw on-disk document, not the Serde-shaped
+/// reconstruction: serializing the parsed model would fill `#[serde(default)]`
+/// slots and hide omitted wire fields from `required` checks.
+fn evaluate_schema_constraints(root: &Path) -> Result<Vec<String>> {
     let text = read_text(root, SCHEMA_PATH)?;
     let schema_value: serde_json::Value = serde_json::from_str(&text)?;
-    let instance = serde_json::to_value(manifest)
-        .context("failed to serialize manifest for schema evaluation")?;
+    let raw_text = read_text(root, model::MANIFEST_RELATIVE_PATH)?;
+    let instance: serde_json::Value = serde_json::from_str(&raw_text)
+        .context("failed to parse manifest as JSON for schema evaluation")?;
     Ok(schema::evaluate(&schema_value, &instance))
 }
 
@@ -123,7 +130,7 @@ fn validate(root: &Path) -> Result<CoverageStats> {
     validate_json_parse(root, SCHEMA_PATH)?;
     validate_schema_identity(root)?;
     let manifest = load_manifest(root)?;
-    let mut violations = evaluate_schema_constraints(root, &manifest)?;
+    let mut violations = evaluate_schema_constraints(root)?;
     violations.extend(validate_document(root, &manifest));
     validate_generated_view(root, &manifest, &mut violations);
 

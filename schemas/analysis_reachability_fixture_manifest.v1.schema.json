@@ -22,7 +22,6 @@
     "rows"
   ],
   "properties": {
-    "$schema": { "type": "string" },
     "schema": { "const": "analysis_reachability_fixture_manifest.v1" },
     "schema_version": { "const": 1 },
     "manifest": { "const": "analysis-reachability-fixture-denominator" },

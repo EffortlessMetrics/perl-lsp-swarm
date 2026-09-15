@@ -81,9 +81,21 @@ pub fn render(manifest: &Manifest) -> String {
     let _ = writeln!(out);
     let _ = writeln!(out, "## Open deferrals (declared, not yet instantiated)");
     let _ = writeln!(out);
+    // Declaration order carries no meaning: sort families and their deferred
+    // slots by stable fields so order-only manifest edits render identical
+    // bytes under the deterministic-output contract.
+    let mut denominator = manifest.denominator.clone();
+    denominator.sort_by(|left, right| left.family.cmp(&right.family));
     let mut any_deferral = false;
-    for entry in &manifest.denominator {
-        for slot in &entry.deferred_coverage {
+    for entry in &denominator {
+        let mut slots = entry.deferred_coverage.clone();
+        slots.sort_by(|left, right| {
+            left.coverage
+                .cmp(&right.coverage)
+                .then(left.owner_issue.cmp(&right.owner_issue))
+                .then(left.reason.cmp(&right.reason))
+        });
+        for slot in &slots {
             any_deferral = true;
             let _ = writeln!(
                 out,
