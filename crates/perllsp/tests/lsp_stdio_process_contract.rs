@@ -33,6 +33,29 @@ fn explain_trace(client: &mut RealProcessClient, provider: &str) -> Result<Value
         .ok_or_else(|| anyhow::anyhow!("missing explanation: {response}"))
 }
 
+fn explain_trace_for_id(
+    client: &mut RealProcessClient,
+    provider: &str,
+    request_id: Value,
+) -> Result<Value> {
+    let explain_id = json!(format!("explain-trace-{request_id}"));
+    let response = client.request(
+        explain_id.clone(),
+        "workspace/executeCommand",
+        json!({
+            "command": "perl.explainProviderDecision",
+            "arguments": [{"provider": provider, "request_id": request_id}]
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&response, &explain_id)?;
+    ensure!(response.get("error").is_none(), "explanation request failed: {response}");
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("missing explanation: {response}"))
+}
+
 fn open_trace_fixture(client: &mut RealProcessClient) -> Result<&'static str> {
     let uri = "file:///workspace/provider-trace.pl";
     client.notify(
@@ -80,6 +103,143 @@ fn generic_trace_success_does_not_invent_freshness() -> Result<()> {
         "successful hover trace must still record the actual result: {explanation}"
     );
     shutdown_and_exit(&mut client, json!("shutdown-trace"))
+}
+
+#[test]
+fn references_trace_selector_refuses_overwritten_request_and_keeps_latest_id() -> Result<()> {
+    let mut client = RealProcessClient::spawn_exact()?;
+    assert_public_candidate(&client)?;
+    initialize_and_notify(&mut client, json!("initialize-references-selector"))?;
+    let uri = open_trace_fixture(&mut client)?;
+    let params = json!({
+        "textDocument": {"uri": uri},
+        "position": {"line": 0, "character": 4},
+        "context": {"includeDeclaration": false}
+    });
+
+    let first = client.request(json!(41), "textDocument/references", params.clone(), timeout())?;
+    assert_response_id(&first, &json!(41))?;
+    ensure!(first.get("error").is_none(), "first references request failed: {first}");
+    ensure!(
+        first.pointer("/result").and_then(Value::as_array).is_some_and(|locations| {
+            locations
+                == &[json!({"uri": uri, "range": {
+                    "start": {"line": 1, "character": 6},
+                    "end": {"line": 1, "character": 12}
+                }})]
+        }),
+        "first references response must contain the exact expected usage location: {first}"
+    );
+    let first_explanation = explain_trace_for_id(&mut client, "references", json!(41))?;
+    ensure!(
+        first_explanation.pointer("/request_receipt/request_id") == Some(&json!(41))
+            && first_explanation.pointer("/request_receipt/uri") == Some(&json!(uri))
+            && first_explanation.pointer("/request_receipt/line") == Some(&json!(0))
+            && first_explanation.pointer("/request_receipt/character") == Some(&json!(4))
+            && first_explanation.pointer("/request_receipt/result_count") == Some(&json!(1)),
+        "request 41 must expose its own receipt before overwrite: {first_explanation}"
+    );
+
+    let failed_same_id =
+        client.request(json!(41), "textDocument/references", json!({}), timeout())?;
+    assert_response_id(&failed_same_id, &json!(41))?;
+    ensure!(
+        failed_same_id.pointer("/error/code") == Some(&json!(-32602)),
+        "reused request 41 must return invalid params: {failed_same_id}"
+    );
+    let failed_same_id_explanation = explain_trace_for_id(&mut client, "references", json!(41))?;
+    ensure!(
+        failed_same_id_explanation.get("request_receipt").is_none()
+            && failed_same_id_explanation
+                .get("user_message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("No request evidence is attached")),
+        "failed reused request 41 must not expose the earlier successful receipt: {failed_same_id_explanation}"
+    );
+
+    let second = client.request(
+        json!("41"),
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 1, "character": 8},
+            "context": {"includeDeclaration": false}
+        }),
+        timeout(),
+    )?;
+    assert_response_id(&second, &json!("41"))?;
+    ensure!(second.get("error").is_none(), "second references request failed: {second}");
+    ensure!(
+        second.pointer("/result").and_then(Value::as_array).is_some_and(|locations| {
+            locations
+                == &[json!({"uri": uri, "range": {
+                    "start": {"line": 1, "character": 6},
+                    "end": {"line": 1, "character": 12}
+                }})]
+        }),
+        "second references response must contain the exact expected usage location: {second}"
+    );
+
+    let overwritten = explain_trace_for_id(&mut client, "references", json!(41))?;
+    ensure!(
+        overwritten.get("request_receipt").is_none()
+            && overwritten
+                .get("user_message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("No request evidence is attached")),
+        "numeric request 41 must refuse overwritten string request evidence: {overwritten}"
+    );
+    let latest = explain_trace_for_id(&mut client, "references", json!("41"))?;
+    ensure!(
+        latest.pointer("/request_receipt/request_id") == Some(&json!("41"))
+            && latest.pointer("/request_receipt/uri") == Some(&json!(uri))
+            && latest.pointer("/request_receipt/line") == Some(&json!(1))
+            && latest.pointer("/request_receipt/character") == Some(&json!(8))
+            && latest.pointer("/request_receipt/result_count") == Some(&json!(1)),
+        "latest string request must retain its exact ID: {latest}"
+    );
+
+    let failed = client.request(json!(99), "textDocument/references", json!({}), timeout())?;
+    assert_response_id(&failed, &json!(99))?;
+    ensure!(
+        failed.pointer("/error/code") == Some(&json!(-32602)),
+        "invalid references request must fail: {failed}"
+    );
+    let failed_explanation = explain_trace_for_id(&mut client, "references", json!(99))?;
+    ensure!(
+        failed_explanation.get("request_receipt").is_none()
+            && failed_explanation
+                .get("user_message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("No request evidence is attached")),
+        "failed request 99 must not invent trace evidence: {failed_explanation}"
+    );
+    let retained_latest = explain_trace_for_id(&mut client, "references", json!("41"))?;
+    ensure!(
+        retained_latest.pointer("/request_receipt/request_id") == Some(&json!("41"))
+            && retained_latest.pointer("/request_receipt/uri") == Some(&json!(uri)),
+        "an unrelated failed request must preserve the latest string-ID receipt: {retained_latest}"
+    );
+    let too_large = Value::Number(
+        serde_json::Number::from_u128(9_223_372_036_854_775_808_u128)
+            .ok_or_else(|| anyhow::anyhow!("failed to construct out-of-range JSON-RPC ID"))?,
+    );
+    for selector in [json!(1.5), too_large] {
+        let invalid = client.request(
+            json!(format!("invalid-selector-{selector}")),
+            "workspace/executeCommand",
+            json!({
+                "command": "perl.explainProviderDecision",
+                "arguments": [{"provider": "references", "request_id": selector}]
+            }),
+            timeout(),
+        )?;
+        ensure!(
+            invalid.pointer("/error/code") == Some(&json!(-32602)),
+            "invalid numeric selector must be rejected: {invalid}"
+        );
+    }
+    shutdown_and_exit(&mut client, json!("shutdown-references-selector"))
 }
 
 #[test]
