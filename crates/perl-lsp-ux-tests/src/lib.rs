@@ -47,6 +47,7 @@
     clippy::module_name_repetitions
 )]
 
+pub mod case_inventory;
 pub mod client;
 pub mod diagnostics;
 pub mod env;

@@ -3,6 +3,28 @@
 End-to-end UX scenarios that exercise multiple LSP consumers (completion,
 diagnostics, goto-definition, hover, code-actions) against the same fixture.
 
+## UX control-plane types live here, orchestration lives in `xtask`
+
+`src/case_inventory.rs` owns `ux_case_inventory.v1`: stable case identity
+(`UxCaseId`), Cargo/libtest output parsing, the discovery algorithm, and the
+`UxDiscoveryFailure` taxonomy. It is the single authority for those types —
+`xtask` consumes them and must not re-declare a second case-ID or schema
+implementation (#9879).
+
+Discovery has **no** filesystem or process access of its own: every impure step
+goes through the `UxDiscoveryCommands` trait, whose production implementation is
+`xtask/src/tasks/ux_cases.rs`. That is what makes "source scanning substituted
+for executable discovery" structurally impossible, and it is why every negative
+control is a plain unit test over injected command output.
+
+```bash
+cargo run -p xtask --locked -- ux cases discover --profile pr
+```
+
+Discovery answers *which cases exist*. It selects nothing, runs no case, and
+reaches no verdict — selection, role, quarantine, execution, and gate
+disposition belong to the later rows of the train.
+
 ## Test Threading
 
 ```bash
