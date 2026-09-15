@@ -1,11 +1,14 @@
 # Network-free reviewed projection ledger for immutable external action pins.
 # Update only after independently verifying the upstream tag or branch commit.
 
+# Verified on 2026-09-15 through the GitHub commits API:
+# droid-action-safe dev -> 22d9c91d516983f637dfee20cb8035a8ba229d35
+# Merge of #6 (secret-safe settings), committed 2026-09-06.
 [[pin]]
 action = 'EffortlessMetrics/droid-action-safe'
-sha = '7c1377ccbacddc95560d1570547a5baa51de01ec'
-kind = 'legacy_debt'
-value = 'based on Factory-AI/droid-action v5; raw debug artifact upload disabled'
+sha = '22d9c91d516983f637dfee20cb8035a8ba229d35'
+kind = 'branch_commit'
+value = 'dev (2026-09-06)'
 
 [[pin]]
 action = 'Swatinem/rust-cache'
