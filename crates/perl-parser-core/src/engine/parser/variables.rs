@@ -1,9 +1,20 @@
+/// Normalize the name of a dynamic typeglob (`*{...}`) in assignment position.
+///
+/// A braced bareword (`*{name}`, `*{ name }`) is a directly written symbol and
+/// normalizes to its bare name so the stash layer can resolve it. A braced
+/// runtime capture (`*{$name}`) keeps the literal braced spelling: its symbol
+/// is only known at runtime, and downstream consumers classify a leading `{`
+/// as a dynamic, non-static glob name (#15650).
 fn normalize_dynamic_typeglob_name(name: &str) -> String {
-    let inner = name
-        .strip_prefix('{')
-        .and_then(|inner| inner.strip_suffix('}'))
-        .unwrap_or(name);
-    inner.trim().trim_end_matches(';').trim().to_string()
+    let Some(inner) = name.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else {
+        return name.trim().trim_end_matches(';').trim().to_string();
+    };
+    let inner = inner.trim().trim_end_matches(';').trim();
+    if inner.starts_with(['$', '@', '%', '&', '*']) {
+        format!("{{{inner}}}")
+    } else {
+        inner.to_string()
+    }
 }
 
 impl<'a> Parser<'a> {
@@ -1093,8 +1104,10 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
             if self.peek_kind() == Some(TokenKind::Assign) {
+                // Slice the braced source text (including the braces) so the
+                // same normalization applies to the fused and split forms.
                 let name = normalize_dynamic_typeglob_name(&String::from_utf8_lossy(
-                    &self.src_bytes[body_start..end.saturating_sub(1)],
+                    &self.src_bytes[body_start.saturating_sub(1)..end],
                 ));
                 return Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }));
             }

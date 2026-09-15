@@ -104,8 +104,8 @@ fn split_token_glob_assignment_preserves_typeglob_lhs() -> Result<(), Box<dyn st
     let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
         return Err("find_assignment returned a non-assignment node".into());
     };
-    if typeglob_name(lhs) != Some("$name") {
-        return Err("expected Typeglob name $name on the dynamic assignment LHS".into());
+    if typeglob_name(lhs) != Some("{$name}") {
+        return Err("expected braced Typeglob name {{$name}} on the dynamic assignment LHS".into());
     }
     Ok(())
 }
@@ -119,8 +119,12 @@ fn fused_token_glob_assignment_preserves_typeglob_name() -> Result<(), Box<dyn s
     let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
         return Err("find_assignment returned a non-assignment node".into());
     };
-    if typeglob_name(lhs) != Some("$name") {
-        return Err(format!("expected Typeglob name $name on fused LHS, got {:?}", lhs.kind).into());
+    if typeglob_name(lhs) != Some("{$name}") {
+        return Err(format!(
+            "expected braced Typeglob name {{$name}} on fused LHS, got {:?}",
+            lhs.kind
+        )
+        .into());
     }
     Ok(())
 }
