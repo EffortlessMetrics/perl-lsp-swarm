@@ -72,6 +72,18 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("gate", 85),
 ];
 
+/// Pin derivation receipts independently of class counts so a rule that
+/// rewrites `considered = emitted` cannot hide an under-count.
+const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
+    ("features-product", 129, 16),
+    ("features-preview", 129, 2),
+    ("gate-policy-gates", 85, 85),
+    ("cargo-bench-targets", 15, 15),
+    ("cargo-test-features", 78, 26),
+    ("fuzz-targets", 21, 21),
+    ("override", 2, 2),
+];
+
 // ---------------------------------------------------------------------------
 // Positive proof
 // ---------------------------------------------------------------------------
@@ -105,6 +117,25 @@ fn exact_per_class_row_counts() -> TestResult {
             counts.get(class).copied().unwrap_or(0),
             *expected,
             "class `{class}` row count drifted; a silent derivation change must fail this test"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn exact_derivation_receipts() -> TestResult {
+    let inventory = activation::validate(&repo_root()).map_err(|error| error.to_string())?;
+    let receipts: BTreeMap<&str, (usize, usize)> = inventory
+        .derivation
+        .iter()
+        .map(|entry| (entry.rule.as_str(), (entry.considered, entry.emitted)))
+        .collect();
+    assert_eq!(receipts.len(), EXPECTED_DERIVATION.len(), "derivation rule set drifted");
+    for (rule, considered, emitted) in EXPECTED_DERIVATION {
+        assert_eq!(
+            receipts.get(rule).copied(),
+            Some((*considered, *emitted)),
+            "derivation `{rule}` considered/emitted drifted"
         );
     }
     Ok(())
@@ -401,6 +432,12 @@ fn unowned_preview_rows_say_so_instead_of_inventing_an_owner() -> TestResult {
     for row in inventory.rows.iter().filter(|row| row.owner == activation::UNOWNED) {
         let note = row.notes.as_deref().unwrap_or_default();
         assert!(note.contains("no implementation crate recorded"), "{note}");
+        assert_eq!(
+            row.registration.state,
+            activation::RegistrationState::NotEstablished,
+            "{} must not claim established wiring without an implementation crate",
+            row.surface_id
+        );
     }
     assert!(
         !inventory.rows.iter().any(|row| row.owner == "missing"),

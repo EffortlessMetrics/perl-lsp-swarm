@@ -14,7 +14,7 @@ mod validate;
 pub use derive::{UNOWNED, derived_class_index};
 pub use model::{
     ActivationClass, ActivationError, ActivationInventory, ActivationRow, INVENTORY_PATH,
-    OVERRIDES_PATH, SCHEMA_PATH,
+    OVERRIDES_PATH, RegistrationState, SCHEMA_PATH,
 };
 pub use overrides::{
     OverrideRecord, OverridesFile, load as load_overrides, validate as validate_overrides,

@@ -190,7 +190,7 @@ fn feature_row(
     // plausible-looking name that satisfies a non-blank owner check while
     // meaning the opposite, so the absence is recorded as the closed
     // `unowned` token instead. `validate` forbids `unowned` on a product row.
-    let owner = owning_crate.unwrap_or_else(|| UNOWNED.to_string());
+    let owner = owning_crate.clone().unwrap_or_else(|| UNOWNED.to_string());
     let unowned_note = (owner == UNOWNED).then(|| {
         format!(
             "no implementation crate recorded: {FEATURES_TOML} sets \
@@ -198,14 +198,12 @@ fn feature_row(
         )
     });
 
-    // `established` is the strongest claim a row carries, so it must rest on
-    // content, not merely on a value that is not the `missing` sentinel.
-    // `capability_gate = ""` is not a capability gate; treating it as one
-    // would let a row assert it is wired into its consuming mechanism on the
-    // strength of an empty string — the same blank-is-not-content hole the
-    // override ledger closes with `is_blank`.
-    let recorded = |value: &str| value != "missing" && !value.trim().is_empty();
-    let established = recorded(capability_gate) && recorded(registration_field);
+    // `established` asserts the surface is wired into a consuming mechanism.
+    // `capability_gate` / `registration` in features.toml are protocol-kind
+    // strings (`static_capabilities`, `dynamic_registration`, …) present on
+    // unimplemented rows too; they belong in `detail`, not in the wiring
+    // claim. Wiring evidence is a real implementation crate.
+    let established = owning_crate.is_some();
     let registration = Registration {
         state: if established {
             RegistrationState::Established
@@ -2305,16 +2303,16 @@ mod tests {
     }
 
     #[test]
-    fn blank_capability_gate_does_not_establish_registration() {
-        // `established` asserts the surface is wired into its consuming
-        // mechanism. An empty string is not a capability gate, so a row must
-        // not obtain the strongest claim it carries on the strength of one.
-        let root = scratch_root("feature-blank-gate");
+    fn protocol_kind_strings_do_not_establish_an_unowned_preview() {
+        // `capability_gate` / `registration` are protocol kinds, not wiring.
+        // An unimplemented preview that records both must stay not_established.
+        let root = scratch_root("feature-protocol-kind-unowned");
         assert!(write(
             &root,
             FEATURES_TOML,
             "[[feature]]\nid = \"lsp.example\"\nmaturity = \"preview\"\nadvertised = false\n\
-             capability_gate = \"\"\nregistration = \"registered\"\n"
+             capability_gate = \"notebookDocumentSync\"\nregistration = \"static_capabilities\"\n\
+             implementation_owner = \"missing\"\n"
         ));
         let states = derive_features(&root).map(|(_, preview)| {
             preview.rows.iter().map(|row| row.registration.state).collect::<Vec<_>>()
@@ -2324,31 +2322,14 @@ mod tests {
     }
 
     #[test]
-    fn whitespace_only_registration_does_not_establish_registration() {
-        let root = scratch_root("feature-blank-registration");
+    fn an_implementation_crate_establishes_registration() {
+        let root = scratch_root("feature-established-crate");
         assert!(write(
             &root,
             FEATURES_TOML,
             "[[feature]]\nid = \"lsp.example\"\nmaturity = \"preview\"\nadvertised = false\n\
-             capability_gate = \"gated\"\nregistration = \"   \"\n"
-        ));
-        let states = derive_features(&root).map(|(_, preview)| {
-            preview.rows.iter().map(|row| row.registration.state).collect::<Vec<_>>()
-        });
-        let _ = fs::remove_dir_all(&root);
-        assert_eq!(states, Ok(vec![RegistrationState::NotEstablished]));
-    }
-
-    #[test]
-    fn real_capability_gate_and_registration_still_establish() {
-        // The control that keeps the blankness rule from rejecting a row that
-        // genuinely records both.
-        let root = scratch_root("feature-established");
-        assert!(write(
-            &root,
-            FEATURES_TOML,
-            "[[feature]]\nid = \"lsp.example\"\nmaturity = \"preview\"\nadvertised = false\n\
-             capability_gate = \"gated\"\nregistration = \"registered\"\n"
+             capability_gate = \"notebookDocumentSync\"\nregistration = \"static_capabilities\"\n\
+             implementation_owner = \"crates/perl-lsp-rs/src/lib.rs\"\n"
         ));
         let states = derive_features(&root).map(|(_, preview)| {
             preview.rows.iter().map(|row| row.registration.state).collect::<Vec<_>>()

@@ -1743,7 +1743,7 @@
       "consumers": [],
       "compile_profiles": [],
       "registration": {
-        "state": "established",
+        "state": "not_established",
         "authority": "features.toml",
         "detail": "capability_gate = \"notebookDocumentSync\"; registration = \"static_capabilities\""
       },
@@ -1771,7 +1771,7 @@
       "consumers": [],
       "compile_profiles": [],
       "registration": {
-        "state": "established",
+        "state": "not_established",
         "authority": "features.toml",
         "detail": "capability_gate = \"notebookDocumentSync\"; registration = \"static_capabilities\""
       },
