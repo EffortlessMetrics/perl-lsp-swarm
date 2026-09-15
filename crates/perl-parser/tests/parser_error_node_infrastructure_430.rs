@@ -81,7 +81,10 @@ fn parser_430_ac3_error_nodes_preserve_location() {
     let missing = find_missing_expression_nodes(&ast);
     assert!(!missing.is_empty(), "Should find a MissingExpression node with location information");
     for node in &missing {
-        assert!(node.location.end >= node.location.start, "End should be >= start");
+        assert_eq!(
+            node.location.start, node.location.end,
+            "MissingExpression is zero-width at the failure point"
+        );
     }
 }
 
@@ -115,23 +118,11 @@ fn parser_430_ac5_error_nodes_with_partial_ast() {
     use perl_tdd_support::must;
     let ast = must(parser.parse());
 
-    let has_variable_child = {
-        let mut found = false;
-        fn walk(node: &Node, out: &mut bool) {
-            if let NodeKind::VariableDeclaration { .. } = &node.kind {
-                for child in node.children() {
-                    if matches!(&child.kind, NodeKind::Variable { .. }) {
-                        *out = true;
-                    }
-                }
-            }
-            for child in node.children() {
-                walk(child, out);
-            }
-        }
-        walk(&ast, &mut found);
-        found
-    };
+    let mut decls = Vec::new();
+    collect_nodes(&ast, &|kind| matches!(kind, NodeKind::VariableDeclaration { .. }), &mut decls);
+    let has_variable_child = decls.iter().any(|decl| {
+        decl.children().iter().any(|child| matches!(&child.kind, NodeKind::Variable { .. }))
+    });
     assert!(
         has_variable_child,
         "The declaration must retain its valid variable child beside the recovery node"
