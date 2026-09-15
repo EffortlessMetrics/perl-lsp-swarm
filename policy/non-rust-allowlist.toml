@@ -363,6 +363,26 @@ created = "2026-05-07"
 review_after = "2026-12-07"
 
 # =============================================================================
+# Active CI cache inventory + receipt (#9177)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-ci-cache-receipt-schema"
+path = "schemas/ci_cache_receipt.v1.schema.json"
+kind = "ci_policy_config"
+language = "json"
+surface = "ci"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned receipt schema for the derived active CI cache inventory (#9177): cache consumer/writer identity, reachability, and save-authority evidence. Grants no save authority and changes no cache behavior."
+covered_by = [
+  "cargo test -p xtask --bin xtask tasks::ci_cache_inventory --locked",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-14"
+review_after = "2026-12-13"
+
+# =============================================================================
 # Policy ledgers
 # =============================================================================
 

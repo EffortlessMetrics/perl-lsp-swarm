@@ -1,0 +1,337 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/ci_cache_receipt.v1.schema.json",
+  "title": "ci_cache_receipt.v1",
+  "description": "Active CI cache consumer/writer identity, reachability, and save-authority evidence for #9177. Grants no save authority and changes no cache behavior.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "claim_boundary",
+    "subject",
+    "instrument",
+    "denominator",
+    "families",
+    "observations",
+    "ok",
+    "errors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "ci_cache_receipt.v1"
+    },
+    "claim_boundary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workflow_tree_digest", "base_sha", "head_sha", "run_id", "run_attempt", "workflow_ref"],
+      "properties": {
+        "workflow_tree_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "base_sha": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ]
+        },
+        "head_sha": {
+          "oneOf": [
+            {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            {"type": "null"}
+          ]
+        },
+        "run_id": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ]
+        },
+        "run_attempt": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ]
+        },
+        "workflow_ref": {
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "null"}
+          ]
+        }
+      }
+    },
+    "instrument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "parser", "limitations"],
+      "properties": {
+        "status": {
+          "enum": ["ok", "unavailable", "failed"]
+        },
+        "parser": {
+          "type": "string",
+          "minLength": 1
+        },
+        "limitations": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "denominator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active_total",
+        "candidate_reachable",
+        "candidate_reachable_writers",
+        "direct_save_writers",
+        "restore_only",
+        "dormant"
+      ],
+      "properties": {
+        "active_total": {"type": "integer", "minimum": 0},
+        "candidate_reachable": {"type": "integer", "minimum": 0},
+        "candidate_reachable_writers": {"type": "integer", "minimum": 0},
+        "direct_save_writers": {"type": "integer", "minimum": 0},
+        "restore_only": {"type": "integer", "minimum": 0},
+        "dormant": {"type": "integer", "minimum": 0}
+      }
+    },
+    "families": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "workflow",
+          "job",
+          "step_name",
+          "action",
+          "action_ref",
+          "capability",
+          "trigger_event_set",
+          "candidate_event_reachability",
+          "executed_subject",
+          "job_condition",
+          "step_condition",
+          "save_condition",
+          "save_authority_source",
+          "payload_class",
+          "cached_paths",
+          "key_dimensions",
+          "key_authority",
+          "cached_byte_provenance",
+          "artifact_provenance",
+          "writer_disposition",
+          "repair_owner",
+          "notes"
+        ],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "workflow": {"type": "string", "minLength": 1},
+          "job": {"type": "string", "minLength": 1},
+          "step_name": {"type": "string", "minLength": 1},
+          "action": {
+            "enum": ["Swatinem/rust-cache", "actions/cache", "actions/cache/restore", "actions/cache/save"]
+          },
+          "action_ref": {"type": "string"},
+          "capability": {
+            "enum": ["restore_only", "save_only", "restore_and_save"]
+          },
+          "trigger_event_set": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          },
+          "candidate_event_reachability": {
+            "enum": ["reachable", "statically_excluded", "statically_dead", "not_candidate_event"]
+          },
+          "executed_subject": {
+            "enum": ["candidate", "merge_result", "default_branch", "fixed_trusted_ref", "other"]
+          },
+          "job_condition": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "null"}
+            ]
+          },
+          "step_condition": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "null"}
+            ]
+          },
+          "save_condition": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "null"}
+            ]
+          },
+          "save_authority_source": {
+            "enum": [
+              "event_guard",
+              "ref_guard",
+              "event_and_ref_guard",
+              "job_static_exclusion",
+              "content_success_only",
+              "absent",
+              "not_proven"
+            ]
+          },
+          "payload_class": {
+            "enum": [
+              "registry_git_dependency",
+              "cargo_target",
+              "compiler_object",
+              "corpus_setup",
+              "tool_download",
+              "other"
+            ]
+          },
+          "cached_paths": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          },
+          "key_dimensions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "shared_key", "restore_keys"],
+            "properties": {
+              "key": {
+                "oneOf": [
+                  {"type": "string", "minLength": 1},
+                  {"type": "null"}
+                ]
+              },
+              "shared_key": {
+                "oneOf": [
+                  {"type": "string", "minLength": 1},
+                  {"type": "null"}
+                ]
+              },
+              "restore_keys": {
+                "oneOf": [
+                  {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+                  {"type": "null"}
+                ]
+              }
+            }
+          },
+          "key_authority": {
+            "enum": ["trusted", "candidate", "mixed", "not_proven"]
+          },
+          "cached_byte_provenance": {
+            "enum": ["trusted_tree", "candidate_tree", "downloaded_artifact", "mixed", "not_proven"]
+          },
+          "artifact_provenance": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "null"}
+            ]
+          },
+          "writer_disposition": {
+            "enum": [
+              "trusted_guarded",
+              "candidate_writer_violation",
+              "statically_excluded",
+              "statically_dead",
+              "restore_only",
+              "reviewed_exception",
+              "not_candidate_reachable",
+              "not_proven"
+            ]
+          },
+          "repair_owner": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "null"}
+            ]
+          },
+          "notes": {
+            "oneOf": [
+              {"type": "string", "minLength": 1},
+              {"type": "null"}
+            ]
+          }
+        }
+      }
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "family_id",
+          "restore_class",
+          "save_eligible",
+          "save_result",
+          "save_authority_reason",
+          "bytes_restored",
+          "bytes_saved",
+          "restore_elapsed_ms",
+          "save_elapsed_ms",
+          "compiler_cache_stats",
+          "work_avoided",
+          "limitations"
+        ],
+        "properties": {
+          "family_id": {"type": "string", "minLength": 1},
+          "restore_class": {
+            "enum": ["exact", "prefix", "miss", "unknown"]
+          },
+          "save_eligible": {"type": "boolean"},
+          "save_result": {
+            "enum": ["saved", "skipped", "failed", "unknown"]
+          },
+          "save_authority_reason": {"type": "string", "minLength": 1},
+          "bytes_restored": {
+            "oneOf": [
+              {"type": "integer", "minimum": 0},
+              {"type": "null"}
+            ]
+          },
+          "bytes_saved": {
+            "oneOf": [
+              {"type": "integer", "minimum": 0},
+              {"type": "null"}
+            ]
+          },
+          "restore_elapsed_ms": {
+            "oneOf": [
+              {"type": "integer", "minimum": 0},
+              {"type": "null"}
+            ]
+          },
+          "save_elapsed_ms": {
+            "oneOf": [
+              {"type": "integer", "minimum": 0},
+              {"type": "null"}
+            ]
+          },
+          "compiler_cache_stats": {
+            "const": "unavailable"
+          },
+          "work_avoided": {
+            "enum": ["not_proven", "dependency_network", "compilation", "setup_corpus", "mixed"]
+          },
+          "limitations": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "ok": {"type": "boolean"},
+    "errors": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}
