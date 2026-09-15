@@ -25,7 +25,7 @@
       "rule": "features-preview",
       "authority": "features.toml",
       "emits": "preview",
-      "considered": 128,
+      "considered": 129,
       "emitted": 2,
       "not_seeded_reason": "rows with maturity != \"preview\" are not preview surfaces"
     },
@@ -33,7 +33,7 @@
       "rule": "features-product",
       "authority": "features.toml",
       "emits": "product",
-      "considered": 128,
+      "considered": 129,
       "emitted": 16,
       "not_seeded_reason": "rows with maturity != \"proven\" or advertised != true are not product surfaces; earned-claim maturity stays owned by features.toml"
     },
@@ -49,8 +49,8 @@
       "rule": "gate-policy-gates",
       "authority": ".ci/gate-policy.yaml",
       "emits": "gate",
-      "considered": 80,
-      "emitted": 80,
+      "considered": 85,
+      "emitted": 85,
       "not_seeded_reason": "every entry under gates: is emitted; nothing is filtered"
     },
     {
@@ -3252,6 +3252,33 @@
       "notes": "Verify test output is deterministic across runs"
     },
     {
+      "surface_id": "gate:docs_agents_contract_workflows",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#docs_agents_contract_workflows",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Assert each registered docs/agents contract workflow still exists (deletion cannot silently stop enforcement)"
+    },
+    {
       "surface_id": "gate:docs_build",
       "class": "gate",
       "class_authority": {
@@ -3870,7 +3897,7 @@
       "promotion": {
         "state": "not_evaluated"
       },
-      "notes": "Scan and classify tracked non-Rust files and require the normalized committed snapshot to match"
+      "notes": "Classify the current tracked tree, emit retained inventory evidence, and reject newly added unclassified paths"
     },
     {
       "surface_id": "gate:parser_audit_closeout",
@@ -3981,6 +4008,33 @@
       "notes": "Bounded parser integration proof with a non-shrinking target manifest (#6107)"
     },
     {
+      "surface_id": "gate:pending_parse_freshness",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#pending_parse_freshness",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Compiles and runs the pending-parse gap suites that would otherwise rot behind workspace+expose_lsp_test_api (#11933). pending_parse_provider covers hover, definition, references, semantic tokens, signature help, rename, safe-delete, symbols and completion during a forced gap; navigation TOCTOU covers type-definition and implementation; post_edit_index_staleness covers definition only. Coverage is per-suite, not five provider families across all three."
+    },
+    {
       "surface_id": "gate:perl_token_leaf_contract",
       "class": "gate",
       "class_authority": {
@@ -4033,6 +4087,33 @@
         "state": "not_evaluated"
       },
       "notes": "Enforce project policies (docs baseline, version sync, ExitStatus helper, features invariants) (advisory; no workflow route)"
+    },
+    {
+      "surface_id": "gate:postfix_capability_closure",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#postfix_capability_closure",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Reject HIR-only completion claims for control.postfix_modifier capability docs (#13281)"
     },
     {
       "surface_id": "gate:publish_closure",
@@ -4114,6 +4195,33 @@
         "state": "not_evaluated"
       },
       "notes": "Ratchet published crate count"
+    },
+    {
+      "surface_id": "gate:pull_diagnostics_freshness",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#pull_diagnostics_freshness",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Panic and compile regression coverage for the pull-diagnostic path behind expose_lsp_test_api (#11933). NOT a freshness proof: the three concurrent cells synchronise with a 2ms sleep and assert only that a well-formed result comes back, so deleting the generation guard would leave them green. Making this discriminating needs the toctou_hook_lock barrier pattern at the snapshot->publish seam; tracked under #13346."
     },
     {
       "surface_id": "gate:readme_heading_check",
@@ -4222,6 +4330,33 @@
         "state": "not_evaluated"
       },
       "notes": "Check release-history drift"
+    },
+    {
+      "surface_id": "gate:release_trust_invariants",
+      "class": "gate",
+      "class_authority": {
+        "kind": "derived",
+        "authority": ".ci/gate-policy.yaml",
+        "rule": "gate-policy-gates"
+      },
+      "semantic_authority": ".ci/gate-policy.yaml#release_trust_invariants",
+      "consumers": [],
+      "compile_profiles": [],
+      "registration": {
+        "state": "established",
+        "authority": ".ci/gate-policy.yaml",
+        "detail": "tier = \"merge_gate\"; required = true"
+      },
+      "proof_references": [],
+      "publication": {
+        "state": "not_applicable",
+        "authority": ".ci/gate-policy.yaml"
+      },
+      "owner": "release/ci",
+      "promotion": {
+        "state": "not_evaluated"
+      },
+      "notes": "Validate policy/release-trust-invariants.v1.json and its generated status projection"
     },
     {
       "surface_id": "gate:rustfmt_staged",
