@@ -1,11 +1,26 @@
 use color_eyre::eyre::{Context, Result, bail, eyre};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 
 use crate::tasks::gates::{GatePolicy, load_policy_for_inspection};
 use crate::utils::project_root;
+
+const CLIPPY_TESTS_KERNEL_GATE: &str = "clippy_tests_kernel";
+const CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES: &[(&str, &str)] = &[
+    ("perl-evidence-envelope", "#15677"),
+    ("perl-parser", "#15677"),
+    ("perl-core-harness", "#15677"),
+    ("perl-parser-core", "#15677"),
+    ("perl-lsp-rs-core", "#15677"),
+    ("perl-corpus", "#15677"),
+    ("perl-ripr-facts", "#15677"),
+    ("perl-lsp-rs", "#15677"),
+    ("perl-lsp-ux-tests", "#15613"),
+    ("perl-dap", "#15677"),
+    ("xtask", "#15677"),
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum GatePolicyProfile {
@@ -26,12 +41,20 @@ struct RegistryGate {
     blocking: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ClippyAllTargetsPartition {
+    workspace: BTreeSet<String>,
+    strict: BTreeSet<String>,
+    residual: BTreeMap<String, String>,
+}
+
 pub fn check() -> Result<()> {
     let root = project_root()?;
     let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
     let registry = load_registry(&root.join(".ci/GATE_REGISTRY.toml"))?;
 
     validate_msrv_authorities(&root, &policy)?;
+    let clippy_partition = validate_clippy_all_targets_partition(&root, &policy)?;
 
     // CI Gate runs `cargo xtask gates` using `.ci/gate-policy.yaml`.
     // Ensure PR profile cannot be blocked by CPAN/parser ratchet wiring.
@@ -47,8 +70,160 @@ pub fn check() -> Result<()> {
     println!("✅ Gate policy check passed.");
     println!("   Source of truth: .ci/gate-policy.yaml (used by `cargo xtask gates`).");
     println!("   PR required includes common_corpus_clean, excludes CPAN/parser ratchets.");
+    println!(
+        "   clippy_tests_kernel: {}/{} strict packages; {} residual packages.",
+        clippy_partition.strict.len(),
+        clippy_partition.workspace.len(),
+        clippy_partition.residual.len()
+    );
+    for (package, owner) in &clippy_partition.residual {
+        println!("     - {package}: {owner}");
+    }
 
     Ok(())
+}
+
+fn validate_clippy_all_targets_partition(
+    root: &Path,
+    policy: &GatePolicy,
+) -> Result<ClippyAllTargetsPartition> {
+    let matching: Vec<_> = policy
+        .gates
+        .iter()
+        .filter(|gate| gate.name == CLIPPY_TESTS_KERNEL_GATE)
+        .collect();
+    let gate = match matching.as_slice() {
+        [gate] => *gate,
+        [] => bail!("gate policy is missing '{CLIPPY_TESTS_KERNEL_GATE}'"),
+        _ => bail!("gate policy defines '{CLIPPY_TESTS_KERNEL_GATE}' more than once"),
+    };
+
+    validate_clippy_command_contract(&gate.command)?;
+    let strict = package_selectors(&gate.command)?;
+    let residual = residual_package_map()?;
+    let workspace = workspace_package_names(root)?;
+
+    validate_package_partition(workspace, strict, residual)
+}
+
+fn validate_clippy_command_contract(command: &str) -> Result<()> {
+    let words: Vec<_> = command.split_whitespace().collect();
+    if !words.contains(&"--all-targets") {
+        bail!("'{CLIPPY_TESTS_KERNEL_GATE}' must retain --all-targets");
+    }
+    if !words.contains(&"--locked") {
+        bail!("'{CLIPPY_TESTS_KERNEL_GATE}' must retain --locked");
+    }
+    if !words.windows(2).any(|window| window[0] == "-D" && window[1] == "warnings") {
+        bail!("'{CLIPPY_TESTS_KERNEL_GATE}' must retain '-D warnings'");
+    }
+    Ok(())
+}
+
+fn package_selectors(command: &str) -> Result<BTreeSet<String>> {
+    let mut words = command.split_whitespace();
+    let mut packages = BTreeSet::new();
+
+    while let Some(word) = words.next() {
+        let package = match word {
+            "-p" | "--package" => Some(words.next().ok_or_else(|| {
+                eyre!("'{CLIPPY_TESTS_KERNEL_GATE}' has a dangling {word} selector")
+            })?),
+            _ => word.strip_prefix("--package="),
+        };
+
+        let Some(package) = package else {
+            continue;
+        };
+        if package.is_empty() {
+            bail!("'{CLIPPY_TESTS_KERNEL_GATE}' contains an empty package selector");
+        }
+        if !packages.insert(package.to_owned()) {
+            bail!("'{CLIPPY_TESTS_KERNEL_GATE}' selects package '{package}' more than once");
+        }
+    }
+
+    if packages.is_empty() {
+        bail!("'{CLIPPY_TESTS_KERNEL_GATE}' must select at least one package");
+    }
+    Ok(packages)
+}
+
+fn residual_package_map() -> Result<BTreeMap<String, String>> {
+    let mut residual = BTreeMap::new();
+    for &(package, owner) in CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES {
+        if package.trim().is_empty() || owner.trim().is_empty() {
+            bail!("clippy all-target residual rows require non-empty package and owner values");
+        }
+        if residual.insert(package.to_owned(), owner.to_owned()).is_some() {
+            bail!("clippy all-target residual package '{package}' is listed more than once");
+        }
+    }
+    Ok(residual)
+}
+
+fn workspace_package_names(root: &Path) -> Result<BTreeSet<String>> {
+    let root_manifest = read_toml(&root.join("Cargo.toml"))?;
+    let members = root_manifest
+        .get("workspace")
+        .and_then(|value| value.get("members"))
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| eyre!("root Cargo.toml workspace.members must be an array"))?;
+
+    let mut packages = BTreeSet::new();
+    for member in members {
+        let member = member
+            .as_str()
+            .ok_or_else(|| eyre!("root Cargo.toml workspace.members entries must be strings"))?;
+        if member.contains('*') || member.contains('?') || member.contains('[') {
+            bail!(
+                "workspace member pattern '{member}' is not supported by the exact package partition"
+            );
+        }
+        let manifest_path = root.join(member).join("Cargo.toml");
+        let manifest = read_toml(&manifest_path)?;
+        let package = manifest
+            .get("package")
+            .and_then(|value| value.get("name"))
+            .and_then(toml::Value::as_str)
+            .ok_or_else(|| eyre!("{} package.name must be a string", manifest_path.display()))?;
+        if !packages.insert(package.to_owned()) {
+            bail!("workspace package name '{package}' is declared more than once");
+        }
+    }
+
+    Ok(packages)
+}
+
+fn validate_package_partition(
+    workspace: BTreeSet<String>,
+    strict: BTreeSet<String>,
+    residual: BTreeMap<String, String>,
+) -> Result<ClippyAllTargetsPartition> {
+    let residual_names: BTreeSet<_> = residual.keys().cloned().collect();
+    let overlap: Vec<_> = strict.intersection(&residual_names).cloned().collect();
+    if !overlap.is_empty() {
+        bail!("clippy all-target packages cannot be both strict and residual: {overlap:?}");
+    }
+
+    let unknown_strict: Vec<_> = strict.difference(&workspace).cloned().collect();
+    if !unknown_strict.is_empty() {
+        bail!("clippy_tests_kernel selects unknown workspace packages: {unknown_strict:?}");
+    }
+    let unknown_residual: Vec<_> = residual_names.difference(&workspace).cloned().collect();
+    if !unknown_residual.is_empty() {
+        bail!(
+            "clippy all-target residual rows name unknown workspace packages: {unknown_residual:?}"
+        );
+    }
+
+    let classified: BTreeSet<_> = strict.union(&residual_names).cloned().collect();
+    let missing: Vec<_> = workspace.difference(&classified).cloned().collect();
+    if !missing.is_empty() {
+        bail!("workspace packages lack a clippy all-target disposition: {missing:?}");
+    }
+
+    Ok(ClippyAllTargetsPartition { workspace, strict, residual })
 }
 
 #[derive(Debug, Deserialize)]
@@ -292,9 +467,113 @@ fn assert_registry_not_blocking(registry: &RegistryFile, gate_id: &str) -> Resul
 mod tests {
     use super::*;
 
+    fn package_set(packages: &[&str]) -> BTreeSet<String> {
+        packages.iter().map(|package| (*package).to_owned()).collect()
+    }
+
+    fn residual_map(packages: &[(&str, &str)]) -> BTreeMap<String, String> {
+        packages
+            .iter()
+            .map(|(package, owner)| ((*package).to_owned(), (*owner).to_owned()))
+            .collect()
+    }
+
     #[test]
     fn check_enforces_cpan_non_blocking_for_pr_profile() -> Result<()> {
         check()
+    }
+
+    #[test]
+    fn clippy_kernel_partition_matches_current_workspace() -> Result<()> {
+        let root = project_root()?;
+        let policy = load_policy_for_inspection(&root.join(".ci/gate-policy.yaml"))?;
+        let partition = validate_clippy_all_targets_partition(&root, &policy)?;
+
+        assert_eq!(partition.workspace.len(), 47);
+        assert_eq!(partition.strict.len(), 36);
+        assert_eq!(partition.residual.len(), 11);
+        assert_eq!(
+            partition.residual.get("perl-lsp-ux-tests").map(String::as_str),
+            Some("#15613")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn package_selector_parser_accepts_supported_forms() -> Result<()> {
+        let packages = package_selectors(
+            "cargo clippy -p alpha --package beta --package=gamma --all-targets --locked -- -D warnings",
+        )?;
+        assert_eq!(packages, package_set(&["alpha", "beta", "gamma"]));
+        Ok(())
+    }
+
+    #[test]
+    fn package_selector_parser_rejects_duplicate_and_dangling_selectors() -> Result<()> {
+        let duplicate = match package_selectors("cargo clippy -p alpha --package alpha") {
+            Ok(_) => bail!("duplicate package selector must fail"),
+            Err(error) => error,
+        };
+        assert!(duplicate.to_string().contains("more than once"));
+
+        let dangling = match package_selectors("cargo clippy --package") {
+            Ok(_) => bail!("dangling package selector must fail"),
+            Err(error) => error,
+        };
+        assert!(dangling.to_string().contains("dangling"));
+        Ok(())
+    }
+
+    #[test]
+    fn clippy_command_contract_rejects_missing_load_bearing_flags() -> Result<()> {
+        for (command, expected) in [
+            ("cargo clippy -p alpha --locked -- -D warnings", "--all-targets"),
+            ("cargo clippy -p alpha --all-targets -- -D warnings", "--locked"),
+            ("cargo clippy -p alpha --all-targets --locked", "-D warnings"),
+        ] {
+            let error = match validate_clippy_command_contract(command) {
+                Ok(()) => bail!("missing {expected} must fail"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains(expected));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn package_partition_rejects_overlap_unknown_and_missing_rows() -> Result<()> {
+        let workspace = package_set(&["alpha", "beta"]);
+
+        let overlap = match validate_package_partition(
+            workspace.clone(),
+            package_set(&["alpha"]),
+            residual_map(&[("alpha", "#1"), ("beta", "#2")]),
+        ) {
+            Ok(_) => bail!("overlapping package partition must fail"),
+            Err(error) => error,
+        };
+        assert!(overlap.to_string().contains("both strict and residual"));
+
+        let unknown = match validate_package_partition(
+            workspace.clone(),
+            package_set(&["alpha"]),
+            residual_map(&[("gamma", "#3")]),
+        ) {
+            Ok(_) => bail!("unknown residual package must fail"),
+            Err(error) => error,
+        };
+        assert!(unknown.to_string().contains("unknown workspace packages"));
+
+        let missing = match validate_package_partition(
+            workspace,
+            package_set(&["alpha"]),
+            BTreeMap::new(),
+        ) {
+            Ok(_) => bail!("unclassified workspace package must fail"),
+            Err(error) => error,
+        };
+        assert!(missing.to_string().contains("lack a clippy all-target disposition"));
+        Ok(())
     }
 
     #[test]
