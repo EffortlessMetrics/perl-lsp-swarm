@@ -243,7 +243,7 @@ class DroidMentionBoundaryTests(unittest.TestCase):
 
     def test_exact_subject_and_prerequisites_precede_provider_credentials(self) -> None:
         names = re.findall(r"(?m)^      - name: (.+)$", self.mention)
-        ordered = ["Create private Droid runtime", "Install verified GitHub CLI before Droid preparation", "Resolve authorized PR head", "Checkout authorized PR head", "Configure MiniMax M3 BYOK", "Run Droid with MiniMax M3 BYOK", "Remove private Droid runtime"]
+        ordered = ["Create private Droid runtime", "Install verified GitHub CLI before Droid preparation", "Resolve authorized PR head", "Checkout authorized PR head", "Install verified Droid CLI", "Configure MiniMax M3 BYOK", "Run Droid with MiniMax M3 BYOK", "Remove private Droid runtime"]
         self.assertEqual(names, ordered)
         self.assertIn("ref: ${{ steps.subject.outputs.head }}", self.mention)
         self.assertIn("expected_head_sha: ${{ steps.subject.outputs.head }}", self.mention)
@@ -366,6 +366,80 @@ class DroidMentionBoundaryTests(unittest.TestCase):
                 self.assertEqual(result.returncode == 0, valid, result.stderr)
                 self.assertEqual((root / ".local/bin/gh").exists(), valid)
                 self.assertEqual((root / "gh-executed").exists(), valid)
+
+    def test_droid_cli_install_verifies_checksum_version_and_action_wiring(self) -> None:
+        action = _mention_step(self.mention, "Run Droid with MiniMax M3 BYOK")
+        self.assertIn(
+            "path_to_droid_executable: ${{ steps.droid_cli.outputs.path }}",
+            action,
+        )
+        self.assertIn('FACTORY_DROID_AUTO_UPDATE_ENABLED: "false"', action)
+
+        install = _mention_script(self.mention, "Install verified Droid CLI")
+        self.assertIn("version=0.219.0", install)
+
+        cases = (
+            ("valid", "0.219.0", True, True),
+            ("invalid", "0.219.0", False, False),
+            ("malformed", "0.219.0", False, False),
+            ("valid", "0.218.2", False, True),
+        )
+        for checksum_case, reported_version, should_succeed, should_execute in cases:
+            with self.subTest(
+                checksum_case=checksum_case,
+                reported_version=reported_version,
+            ), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / ".local/bin").mkdir(parents=True)
+
+                binary = root / "fixture-droid"
+                binary.write_text(
+                    '#!/bin/sh\n'
+                    'touch "$HOME/droid-executed"\n'
+                    'printf \'%s\\n\' "$FAKE_DROID_VERSION"\n'
+                )
+                binary.chmod(0o755)
+                digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+                if checksum_case == "invalid":
+                    digest = "0" * 64
+                elif checksum_case == "malformed":
+                    digest = "not-a-sha"
+
+                curl = root / "curl"
+                curl.write_text(
+                    '#!/bin/sh\n'
+                    'set -eu\n'
+                    'url=""\n'
+                    'output=""\n'
+                    'while [ "$#" -gt 0 ]; do\n'
+                    '  case "$1" in\n'
+                    '    --output) output=$2; shift 2 ;;\n'
+                    '    http://*|https://*) url=$1; shift ;;\n'
+                    '    *) shift ;;\n'
+                    '  esac\n'
+                    'done\n'
+                    'case "$url" in\n'
+                    '  */droid.sha256) printf \'%s\\n\' "$FAKE_DROID_SHA" > "$output" ;;\n'
+                    '  */droid) cp "$FAKE_DROID_BINARY" "$output" ;;\n'
+                    '  *) exit 2 ;;\n'
+                    'esac\n'
+                )
+                curl.chmod(0o755)
+
+                result = self.run_script(
+                    "Install verified Droid CLI",
+                    root,
+                    {
+                        "PATH": f"{root}:{os.environ['PATH']}",
+                        "FAKE_DROID_BINARY": str(binary),
+                        "FAKE_DROID_SHA": digest,
+                        "FAKE_DROID_VERSION": reported_version,
+                    },
+                )
+                self.assertEqual(result.returncode == 0, should_succeed, result.stderr)
+                self.assertEqual((root / "droid-executed").exists(), should_execute)
+                expected_output = f"path={root}/.local/bin/droid\n" if should_succeed else ""
+                self.assertEqual((root / "GITHUB_OUTPUT").read_text(), expected_output)
 
     def test_private_runtime_and_cleanup_do_not_touch_runner_home(self) -> None:
 
