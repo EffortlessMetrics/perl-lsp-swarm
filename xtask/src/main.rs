@@ -57,14 +57,14 @@ use tasks::{
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
-    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
-    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    queue_health, queue_snapshot, quickorm_api_matrix, reachability_fixture_manifest, receipts,
+    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
+    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
     workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
     writer_admission,
@@ -148,6 +148,19 @@ enum Commands {
 
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
+
+    /// Validate the canonical reachability fixture manifest and claim
+    /// denominator (analysis_reachability_fixture_manifest.v1, #10998):
+    /// fixture identity, metadata schema, validation, coverage accounting,
+    /// and the generated coverage view. Declaration only; it never executes
+    /// semantic or exact-process proof. `--update-view` rewrites the
+    /// generated view (explicit writer action).
+    #[command(name = "check-reachability-fixture-manifest")]
+    CheckReachabilityFixtureManifest {
+        /// Regenerate the committed deterministic coverage view.
+        #[arg(long)]
+        update_view: bool,
+    },
 
     /// List, validate, and explain the compiler lexical cut-line cases
     /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
@@ -5148,6 +5161,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::CheckReachabilityFixtureManifest { update_view } => {
+            reachability_fixture_manifest::run(update_view)
+        }
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),

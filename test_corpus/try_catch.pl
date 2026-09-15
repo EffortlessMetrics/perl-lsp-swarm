@@ -401,17 +401,19 @@ use warnings;
 
 # For older Perl versions, try/catch can be simulated with eval
 sub simulate_try_catch {
-#     # Simulated try block
-#     eval {
-#         die "Simulated exception";
-#         1;  # Return true on success
-#     } or do {
-#         my $error = $@ || "Unknown error";
-#         print "Simulated catch: $error\n";
-#     };
-#     
-#     # Simulated finally block
-#     print "Simulated finally\n";
+    # denom-target:c-flow
+    # Simulated try block: die inside eval transfers to the catch branch
+    # locally and never escapes as outer-flow evidence.
+    eval {
+        die "Simulated exception";
+        1;  # Return true on success
+    } or do {
+        my $error = $@ || "Unknown error";
+        print "Simulated catch: $error\n";
+    };
+
+    # Simulated finally block
+    print "Simulated finally\n";
 }
 
 print "Try/Catch syntax structure tests completed\n";
