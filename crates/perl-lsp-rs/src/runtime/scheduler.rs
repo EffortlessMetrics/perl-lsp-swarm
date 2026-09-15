@@ -54,6 +54,7 @@ use std::sync::{
 use tokio::sync::{Notify, Semaphore};
 use tokio::task::JoinSet;
 
+use super::dispatch::RequestDispatchContext;
 use super::{LspServer, outbound::OutboundSender};
 
 // =========================================================================
@@ -363,6 +364,8 @@ struct QueuedRead {
     /// generation observed at ingress so the dispatcher can detect that
     /// the document moved on before this read had a chance to run.
     freshness: Option<ReadFreshness>,
+    /// Owned ingress authority; dropping queued work retires its reservation.
+    dispatch_context: RequestDispatchContext,
 }
 
 impl PartialEq for QueuedRead {
@@ -392,6 +395,22 @@ impl Ord for QueuedRead {
 
 /// Global read arrival counter; incremented at ingress for each read request.
 static READ_ARRIVAL_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Preserve the same ingress order for scheduled reads and direct stream callers.
+pub(crate) fn reserve_read_dispatch(
+    server: &LspServer,
+    request: &JsonRpcRequest,
+) -> Result<(u64, RequestDispatchContext), JsonRpcError> {
+    server
+        .stream_sessions()
+        .reserve_read(&READ_ARRIVAL_SEQ, LspServer::streaming_admission_uri(request))
+        .map(|(order, stream_admission)| (order, RequestDispatchContext { stream_admission }))
+        .map_err(|error| JsonRpcError {
+            code: INTERNAL_ERROR,
+            message: format!("Read request admission capacity exhausted: {error:?}"),
+            data: None,
+        })
+}
 
 /// Reason a stale read was cancelled before execution or delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -543,10 +562,36 @@ impl Scheduler {
         let dedup_key = extract_dedup_key(&request.method, request.params.as_ref(), priority);
         let freshness =
             extract_freshness(&self.server, &request.method, request.params.as_ref(), priority);
-        let arrival_seq = READ_ARRIVAL_SEQ.fetch_add(1, Ordering::Relaxed);
+        let (arrival_seq, dispatch_context) = match reserve_read_dispatch(&self.server, &request) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                if let Some(id) = pending_id {
+                    self.server.clear_request_pending(&id);
+                    Self::send_response(
+                        &self.server.outbound,
+                        JsonRpcResponse {
+                            jsonrpc: "2.0",
+                            id: Some(id),
+                            result: None,
+                            error: Some(error),
+                        },
+                    );
+                }
+                // The request was answered fail-closed; the worker queues remain usable.
+                return Ok(());
+            }
+        };
         let result = self
             .read_tx
-            .send(QueuedRead { request, wait_for_seq, priority, arrival_seq, dedup_key, freshness })
+            .send(QueuedRead {
+                request,
+                wait_for_seq,
+                priority,
+                arrival_seq,
+                dedup_key,
+                freshness,
+                dispatch_context,
+            })
             .await;
         if result.is_err()
             && let Some(id) = pending_id.as_ref()
@@ -1082,7 +1127,8 @@ impl Scheduler {
                     let handler_server = Arc::clone(&srv);
                     move || {
                         let _pending_guard = pending_guard;
-                        handler_server.handle_request(queued.request)
+                        handler_server
+                            .handle_request_with_context(queued.request, queued.dispatch_context)
                     }
                 },
                 id.clone(),
@@ -1454,6 +1500,7 @@ mod tests {
             arrival_seq,
             dedup_key: None,
             freshness: None,
+            dispatch_context: RequestDispatchContext::default(),
         }
     }
 
@@ -1564,6 +1611,7 @@ mod tests {
             arrival_seq,
             dedup_key,
             freshness,
+            dispatch_context: RequestDispatchContext::default(),
         }
     }
 
@@ -1590,6 +1638,7 @@ mod tests {
             arrival_seq,
             dedup_key,
             freshness,
+            dispatch_context: RequestDispatchContext::default(),
         }
     }
 
@@ -1681,6 +1730,462 @@ mod tests {
             }
             writes.recv_timeout(remaining)?;
         }
+    }
+
+    struct ReverseAdmissionBackend {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        ready: std::sync::mpsc::Sender<bool>,
+        release: parking_lot::Mutex<std::sync::mpsc::Receiver<()>>,
+        resumed: Arc<std::sync::atomic::AtomicU8>,
+        failure: Arc<parking_lot::Mutex<Option<String>>>,
+        fail_first: bool,
+    }
+
+    impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend
+        for ReverseAdmissionBackend
+    {
+        fn stream(
+            &self,
+            _req: &perl_lsp_rs_core::providers::inline_completion::BackendRequest,
+            sink: &mut dyn FnMut(
+                perl_lsp_rs_core::providers::inline_completion::StreamChunk,
+            )
+                -> perl_lsp_rs_core::providers::inline_completion::StreamControl,
+        ) -> Result<(), perl_lsp_rs_core::providers::inline_completion::BackendError> {
+            use perl_lsp_rs_core::providers::inline_completion::{
+                BackendError, StreamChunk, StreamControl,
+            };
+            let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+            for (index, text) in ["fi", "find_", "find_user($id)"].into_iter().enumerate() {
+                let stopped = matches!(
+                    sink(StreamChunk { text: text.to_string(), is_final: index == 2 }),
+                    StreamControl::Stop
+                );
+                if first && index == 1 {
+                    self.resumed.store(if stopped { 1 } else { 2 }, Ordering::SeqCst);
+                }
+                if first && index == 0 {
+                    let gate =
+                        self.ready.send(!stopped).map_err(|e| e.to_string()).and_then(|()| {
+                            self.release
+                                .lock()
+                                .recv_timeout(std::time::Duration::from_secs(10))
+                                .map_err(|e| e.to_string())
+                        });
+                    if let Err(error) = gate {
+                        let message = format!("backend gate failed: {error}");
+                        *self.failure.lock() = Some(message.clone());
+                        return Err(BackendError::Provider(message));
+                    }
+                }
+                if first && index == 0 && self.fail_first {
+                    return Err(BackendError::Provider(
+                        "intentional post-admission backend failure".into(),
+                    ));
+                }
+                if stopped {
+                    break;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum StreamAdmissionProbe {
+        Ordinary,
+        Reverse,
+        CompletedNewer,
+        FailedNewer,
+        InvalidNewer,
+        Forward,
+        OtherUri,
+        BufferedNewer,
+        AutomaticNewer,
+        DisabledNewer,
+    }
+
+    async fn streaming_admission_probe(
+        mode: StreamAdmissionProbe,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use StreamAdmissionProbe::*;
+        let (server, output, writes) = server_with_signalled_output();
+        initialize_scheduler_test_server(&server)?;
+        server.handle_request(JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: None,
+            method: "initialized".into(),
+            params: Some(serde_json::json!({})),
+        });
+        server.test_configure_ai_completion(true, false);
+        server.config.lock().ai_completion.streaming.enabled = true;
+        server.config.lock().ai_completion.streaming.update_debounce_ms = 0;
+        let uri = "file:///scheduler-reverse-stream-admission.pl";
+        let other_uri = "file:///scheduler-other-stream-admission.pl";
+        server.test_apply_did_open(uri, "my $obj = Package->", 1)?;
+        if mode == OtherUri {
+            server.test_apply_did_open(other_uri, "my $obj = Package->", 1)?;
+        }
+        let deferred = matches!(mode, Reverse | CompletedNewer | FailedNewer | OtherUri);
+        let (snapshot_tx, snapshot_rx) = std::sync::mpsc::channel();
+        let (release_a, release_a_rx) = std::sync::mpsc::channel();
+        let release_a_rx = parking_lot::Mutex::new(release_a_rx);
+        let hook_failure = Arc::new(parking_lot::Mutex::new(None));
+        let hook_errors = Arc::clone(&hook_failure);
+        server.stream_sessions().set_before_start_hook(Arc::new(move |key| {
+            if deferred && key.uri == uri && key.character == 19 {
+                let gate = snapshot_tx.send(()).map_err(|e| e.to_string()).and_then(|()| {
+                    release_a_rx
+                        .lock()
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .map_err(|e| e.to_string())
+                });
+                if let Err(error) = gate {
+                    *hook_errors.lock() = Some(format!("snapshot gate failed: {error}"));
+                }
+            }
+        }));
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_b, release_b_rx) = std::sync::mpsc::channel();
+        let resumed = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let backend_failure = Arc::new(parking_lot::Mutex::new(None));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        server.test_install_ai_backend(Some(Arc::new(ReverseAdmissionBackend {
+            calls: Arc::clone(&calls),
+            ready: ready_tx,
+            release: parking_lot::Mutex::new(release_b_rx),
+            resumed: Arc::clone(&resumed),
+            failure: Arc::clone(&backend_failure),
+            fail_first: mode == FailedNewer,
+        })));
+        let request = |id, character, token, request_uri| JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: Some(JsonRpcId::Integer(id)),
+            method: "textDocument/perlInlineCompletionStream".into(),
+            params: Some(serde_json::json!({
+                "textDocument": { "uri": request_uri },
+                "position": { "line": 0, "character": character },
+                "partialResultToken": token,
+            })),
+        };
+        let first_ready = || -> Result<(), Box<dyn std::error::Error>> {
+            let continued = ready_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|e| format!("first stream did not reach its backend callback: {e}"))?;
+            if !continued {
+                return Err("stream stopped before the controlled interleaving".into());
+            }
+            Ok(())
+        };
+        let response = |id| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+            let response = wait_for_response_id(&output, &writes, id)?;
+            if response.get("error").is_some() {
+                return Err(format!("request {id} failed: {response}").into());
+            }
+            Ok(response)
+        };
+        let scheduler = Scheduler::new(Arc::clone(&server));
+        let execution: Result<(), Box<dyn std::error::Error>> = async {
+            if mode != Ordinary {
+                scheduler
+                    .send_read(request(801, 19, "reverse-A", uri))
+                    .await
+                    .map_err(|()| "scheduler rejected A")?;
+                if deferred {
+                    snapshot_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .map_err(|e| format!("A did not reach post-snapshot gate: {e}"))?;
+                } else {
+                    first_ready()?;
+                }
+            }
+            let mut newer =
+                request(802, 11, "reverse-B", if mode == OtherUri { other_uri } else { uri });
+            let params = newer.params.as_mut().ok_or("fixture B must have params")?;
+            if mode == InvalidNewer {
+                params
+                    .get_mut("textDocument")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or("fixture B must have textDocument")?
+                    .insert("version".into(), serde_json::json!(0));
+            }
+            if mode == BufferedNewer {
+                params
+                    .as_object_mut()
+                    .ok_or("fixture B must be an object")?
+                    .remove("partialResultToken");
+            }
+            if mode == AutomaticNewer {
+                params
+                    .as_object_mut()
+                    .ok_or("fixture B must be an object")?
+                    .insert("context".into(), serde_json::json!({ "triggerKind": 2 }));
+            }
+            if mode == DisabledNewer {
+                server.config.lock().ai_completion.enabled = false;
+            }
+            scheduler.send_read(newer).await.map_err(|()| "scheduler rejected B")?;
+            if mode == Ordinary || deferred {
+                first_ready()?;
+            }
+            match mode {
+                Reverse | OtherUri => {
+                    release_a.send(())?;
+                    response(801)?;
+                    release_b.send(())?;
+                    response(802)?;
+                }
+                CompletedNewer | FailedNewer => {
+                    release_b.send(())?;
+                    response(802)?;
+                    release_a.send(())?;
+                    response(801)?;
+                }
+                Ordinary => {
+                    release_b.send(())?;
+                    response(802)?;
+                }
+                _ => {
+                    response(802)?;
+                    if mode == DisabledNewer {
+                        server.config.lock().ai_completion.enabled = true;
+                    }
+                    release_b.send(())?;
+                    response(801)?;
+                }
+            }
+            Ok(())
+        }
+        .await;
+        // Release both gates before joining, including failed handshakes.
+        let _ = release_a.send(());
+        let _ = release_b.send(());
+        scheduler.shutdown().await;
+        execution?;
+        if let Some(error) = hook_failure.lock().as_ref() {
+            return Err(error.clone().into());
+        }
+        if let Some(error) = backend_failure.lock().as_ref() {
+            return Err(error.clone().into());
+        }
+        let mut framer = perl_lsp_rs_core::transport::framing::ContentLengthFramer::new();
+        framer.push(&output.lock());
+        let mut messages = Vec::new();
+        while let Some(frame) = framer.try_next()? {
+            messages.push(serde_json::from_slice::<serde_json::Value>(&frame)?);
+        }
+        let older_survives =
+            matches!(mode, InvalidNewer | BufferedNewer | AutomaticNewer | DisabledNewer);
+        let (target_id, target_token) =
+            if older_survives { (801, "reverse-A") } else { (802, "reverse-B") };
+        let ack_index = messages
+            .iter()
+            .position(|message| {
+                message.get("id").and_then(serde_json::Value::as_i64) == Some(target_id)
+            })
+            .ok_or("target stream acknowledgement missing")?;
+        if messages.get(ack_index).and_then(|message| message.get("result"))
+            != Some(&serde_json::Value::Null)
+        {
+            return Err("stream must end with its normal null acknowledgement".into());
+        }
+        let progress_for = |message: &&serde_json::Value, token: &str| {
+            message.get("method").and_then(serde_json::Value::as_str) == Some("$/progress")
+                && message.pointer("/params/token").and_then(serde_json::Value::as_str)
+                    == Some(token)
+        };
+        let progress: Vec<_> = messages
+            .iter()
+            .take(ack_index)
+            .filter(|message| progress_for(message, target_token))
+            .collect();
+        let finals: Vec<_> = progress
+            .iter()
+            .filter(|message| {
+                message.pointer("/params/value/isFinal").and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            })
+            .collect();
+        let nonempty_final = finals.iter().any(|message| {
+            message
+                .pointer("/params/value/items")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item.get("insertText")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|text| !text.is_empty())
+                    })
+                })
+        });
+        let intermediate_count = progress.len().saturating_sub(finals.len());
+        let control = resumed.load(Ordering::SeqCst);
+        let expected_control = if mode == Forward {
+            1
+        } else if mode == FailedNewer {
+            0
+        } else {
+            2
+        };
+        let expected_intermediates = if mode == FailedNewer { 1 } else { 2 };
+        if control != expected_control
+            || finals.len() != 1
+            || nonempty_final != (mode != FailedNewer)
+            || intermediate_count < expected_intermediates
+        {
+            return Err(format!("stream admission violated: resumed={control} (1=Stop, 2=Continue), nonempty_final_before_ack={nonempty_final}, final_frames={}, intermediate_frames={intermediate_count}", finals.len()).into());
+        }
+        if matches!(mode, Reverse | CompletedNewer | FailedNewer)
+            && messages.iter().any(|message| progress_for(&message, "reverse-A"))
+        {
+            return Err("older A emitted progress after a newer valid admission".into());
+        }
+        let expected_calls = if matches!(mode, Forward | OtherUri | BufferedNewer) { 2 } else { 1 };
+        if calls.load(Ordering::SeqCst) != expected_calls {
+            return Err(format!(
+                "unexpected backend invocation count: expected {expected_calls}, got {}",
+                calls.load(Ordering::SeqCst)
+            )
+            .into());
+        }
+        if server.stream_sessions().admission_count() != 0 || server.stream_sessions().len() != 0 {
+            return Err("completed scheduler requests leaked sessions or admission cells".into());
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reverse_admission_keeps_later_stream_alive() -> Result<(), Box<dyn std::error::Error>>
+    {
+        streaming_admission_probe(StreamAdmissionProbe::Reverse).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ordinary_stream_admission_control() -> Result<(), Box<dyn std::error::Error>> {
+        streaming_admission_probe(StreamAdmissionProbe::Ordinary).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completed_newer_stream_admission_rejects_delayed_older()
+    -> Result<(), Box<dyn std::error::Error>> {
+        streaming_admission_probe(StreamAdmissionProbe::CompletedNewer).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_newer_stream_admission_rejects_delayed_older()
+    -> Result<(), Box<dyn std::error::Error>> {
+        streaming_admission_probe(StreamAdmissionProbe::FailedNewer).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalid_newer_stream_admission_preserves_active_older()
+    -> Result<(), Box<dyn std::error::Error>> {
+        streaming_admission_probe(StreamAdmissionProbe::InvalidNewer).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn forward_stream_admission_supersedes_active_older()
+    -> Result<(), Box<dyn std::error::Error>> {
+        streaming_admission_probe(StreamAdmissionProbe::Forward).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn other_uri_stream_admission_preserves_active_newer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        streaming_admission_probe(StreamAdmissionProbe::OtherUri).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn buffered_newer_request_does_not_reserve_stream_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        streaming_admission_probe(StreamAdmissionProbe::BufferedNewer).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn automatic_newer_request_does_not_reserve_stream_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        streaming_admission_probe(StreamAdmissionProbe::AutomaticNewer).await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disabled_newer_stream_admission_preserves_active_older()
+    -> Result<(), Box<dyn std::error::Error>> {
+        streaming_admission_probe(StreamAdmissionProbe::DisabledNewer).await
+    }
+
+    #[tokio::test]
+    async fn rejected_queue_send_retires_stream_admission_ticket() -> Result<(), String> {
+        let server = Arc::new(crate::LspServer::new());
+        let (mutation_tx, mutation_rx) = tokio::sync::mpsc::channel(1);
+        let (read_tx, read_rx) = tokio::sync::mpsc::channel(1);
+        drop(mutation_rx);
+        drop(read_rx);
+        let scheduler = Scheduler {
+            mutation_tx,
+            read_tx,
+            workers: Vec::new(),
+            mutation_seq_next: Arc::new(AtomicU64::new(0)),
+            mutation_seq_done: Arc::new(AtomicU64::new(0)),
+            mutation_notify: Arc::new(Notify::new()),
+            server: Arc::clone(&server),
+        };
+        let id = JsonRpcId::Integer(891);
+        let result = scheduler
+            .send_read(JsonRpcRequest {
+                _jsonrpc: "2.0".into(),
+                id: Some(id.clone()),
+                method: "textDocument/perlInlineCompletionStream".into(),
+                params: Some(serde_json::json!({
+                    "textDocument": { "uri": "file:///queue-rejected.pl" },
+                    "position": { "line": 0, "character": 0 },
+                    "partialResultToken": "queue-rejected",
+                })),
+            })
+            .await;
+        scheduler.shutdown().await;
+        if result.is_ok()
+            || server.pending_request_ids.lock().contains(&id)
+            || server.stream_sessions().admission_count() != 0
+        {
+            return Err("failed queue send must reject and retire its request and ticket".into());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropped_queued_read_retires_stream_admission_ticket() -> Result<(), String> {
+        let server = crate::LspServer::new();
+        let request = JsonRpcRequest {
+            _jsonrpc: "2.0".into(),
+            id: Some(JsonRpcId::Integer(892)),
+            method: "textDocument/perlInlineCompletionStream".into(),
+            params: Some(serde_json::json!({
+                "textDocument": { "uri": "file:///queue-dropped.pl" },
+                "position": { "line": 0, "character": 0 },
+                "partialResultToken": "queue-dropped",
+            })),
+        };
+        let (arrival_seq, dispatch_context) = reserve_read_dispatch(&server, &request)
+            .map_err(|error| format!("reservation failed: {error:?}"))?;
+        let queued = QueuedRead {
+            request,
+            wait_for_seq: 0,
+            priority: RequestPriority::Other,
+            arrival_seq,
+            dedup_key: None,
+            freshness: None,
+            dispatch_context,
+        };
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        sender.send(queued).await.map_err(|_| "queue send failed")?;
+        if server.stream_sessions().admission_count() != 1 {
+            return Err("queued read must retain exactly one URI cell".into());
+        }
+        drop(receiver);
+        if server.stream_sessions().admission_count() != 0 {
+            return Err("dropped queued read leaked its admission ticket".into());
+        }
+        Ok(())
     }
 
     fn rapid_typing_source(suffix_len: usize) -> String {

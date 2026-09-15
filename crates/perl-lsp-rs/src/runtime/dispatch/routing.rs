@@ -13,11 +13,33 @@ use super::response::RoutedResponse;
 use crate::cancellation::GLOBAL_CANCELLATION_REGISTRY;
 
 impl LspServer {
+    #[cfg(test)]
     pub(super) fn route_request(
         &self,
         request: JsonRpcRequest,
         id: Option<Value>,
         should_respond: bool,
+    ) -> RoutedResponse {
+        let dispatch = match self.direct_dispatch_context(&request) {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                return RoutedResponse::Handler {
+                    id,
+                    method: request.method,
+                    should_respond,
+                    result: Err(error),
+                };
+            }
+        };
+        self.route_request_with_context(request, id, should_respond, dispatch)
+    }
+
+    pub(super) fn route_request_with_context(
+        &self,
+        request: JsonRpcRequest,
+        id: Option<Value>,
+        should_respond: bool,
+        dispatch: super::RequestDispatchContext,
     ) -> RoutedResponse {
         let method = request.method.clone();
         let request_start = std::time::Instant::now();
@@ -211,9 +233,11 @@ impl LspServer {
             "textDocument/inlineCompletion" => {
                 self.handle_inline_completion_dispatch(request.params)
             }
-            "textDocument/perlInlineCompletionStream" => {
-                self.handle_streaming_inline_completion_dispatch(request.params)
-            }
+            "textDocument/perlInlineCompletionStream" => self
+                .handle_streaming_inline_completion_dispatch(
+                    request.params,
+                    dispatch.stream_admission,
+                ),
             "textDocument/inlineValue" => self.handle_inline_value_dispatch(request.params),
             "textDocument/moniker" => self.handle_moniker_dispatch(request.params),
             "textDocument/documentColor" => self.handle_document_color_dispatch(request.params),
