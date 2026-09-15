@@ -543,10 +543,9 @@ fn test_stacktrace_no_session_returns_empty() -> Result<(), Box<dyn std::error::
 // ─── Cleanup/teardown unit-level matrix (C1–C6) ──────────────────────────────
 //
 // These six tests exercise the lifecycle cleanup and teardown contracts at the
-// protocol level — no live Perl process required.  They complement the e2e
-// tests above by covering edge cells (terminate, attach→terminate, disconnect,
-// post-terminate requests, relaunch, restart) that cannot be exercised through
-// `DapWorkflowSession` without a real perl -d.
+// protocol level. C1, C2, C4, C5, and C6 need no live Perl process. C3 launches
+// a real stopOnEntry session so disconnect can observe genuine termination; it
+// uses `debuggee_perl_or_typed_skip` like the live-session tests above.
 //
 // Each test uses `make_adapter_with_rx` + `wait_cleanup_event` (defined below).
 
@@ -713,8 +712,15 @@ fn test_attach_then_terminate_cleanup() -> TestResult {
 /// C3 — active launch-owned session → disconnect → state cleared:
 /// "terminated" event emitted, subsequent stackTrace/modules return
 /// protocol-safe responses (no panic).
+///
+/// Requires a pipe-capable Perl interpreter. Hosts without one skip via
+/// `debuggee_perl_or_typed_skip`, matching the other live-session tests.
 #[test]
 fn test_disconnect_clears_active_session() -> TestResult {
+    let Some(_) = debuggee_perl_or_typed_skip("test_disconnect_clears_active_session") else {
+        return Ok(());
+    };
+
     let (mut adapter, rx) = make_adapter_with_rx();
     let workspace = tempdir()?;
     let script = workspace.path().join("lifecycle_c3.pl");
