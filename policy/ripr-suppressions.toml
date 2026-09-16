@@ -3790,3 +3790,51 @@ created = "2026-09-15"
 review_after = "2026-10-15"
 expires = "2026-12-15"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces field_construction probes on private struct field declarations through constructor-call paths, then delete this entry and rerun the enforce-new-ripr gate. Narrow immediately if a receipt reports an executable (non-declaration) no_static_path seam in package_graph_extractor.rs."
+
+# -----------------------------------------------------------------------------
+# tree-sitter-perl-rs facade: deletion probes on the retired from_diagnostic
+# body — ripr#1429-class fn-pointer tracing limitation.
+#
+# PR #15593 (fix #12952) replaces `ParseFailure::from_diagnostic` with
+# `ParseFailure::from_stop_cause`, which derives the terminal failure from
+# `ParseOutput::stop_cause()` (the authority perl-parser-core documents) instead
+# of scanning the diagnostic vector. The deleted body's only call site passed
+# the function as a VALUE — `diagnostics.iter().find_map(ParseFailure::from_diagnostic)`
+# — so diff-scoped RIPR 0.10.x statically traces no test path to the deleted
+# lines and reports 7 no_static_path call_deletion/match_arm/return_value probes
+# on the base side of the diff, which is the gate's entire blocking count for
+# this PR. A focused test can never close these probes: the code is deleted, and
+# the fn-pointer call site that broke the static graph is gone with it.
+#
+# The replacement seam IS directly proven on the head side:
+#   - 6 inline #[cfg(test)] unit tests call from_stop_cause directly
+#     (cancellation_classifies_as_cancelled,
+#     recursion_budget_exhaustion_classifies_as_recursion_limit,
+#     nesting_budget_exhaustion_classifies_as_nesting_too_deep,
+#     uncategorized_cause_reports_the_terminal_diagnostic,
+#     future_typed_terminal_does_not_infer_failure_from_diagnostics,
+#     uncategorized_cause_without_diagnostics_withholds_the_failure);
+#   - 3 integration tests in tests/parse_failure_taxonomy.rs exercise the
+#     recursion-vs-nesting boundary end to end through parse_detailed, including
+#     an executed falsifier (reverting the RecursionBudgetExhausted arm fails
+#     both recursion tests with the exact unclassified diagnostic) and an
+#     earlier-recovered-diagnostic masking regression.
+#
+# HONEST SCOPE NOTE: the matcher is path-scoped, so a future no_static_path seam
+# in this file is masked for this window. That is a real cost; it is accepted
+# because lib.rs is the facade's one production file and reachable_unrevealed
+# findings still block. Narrow immediately if any seam unrelated to the
+# failure-classification surface lands in this file.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-tree-sitter-perl-rs-from-diagnostic-deletion"
+kind = "predicate_infection_untraceable"
+paths = ["crates/tree-sitter-perl-rs/src/lib.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#12952"
+reason = "PR #15593 (fix #12952) deletes ParseFailure::from_diagnostic in favor of from_stop_cause. The deleted body's only call site passed it as a fn value (find_map(ParseFailure::from_diagnostic)), so diff-scoped RIPR 0.10.x has no static test path to the deleted lines and reports the 7 no_static_path deletion probes that are this PR's entire blocking gap count — a ripr#1429-class fn-pointer tracing limitation a focused test cannot close (the code is deleted). The head-side replacement is directly proven: 6 inline unit tests call from_stop_cause for every arm (Cancelled, RecursionBudgetExhausted, NestingOrDepthBudgetExhausted, catch-all with terminal diagnostic, FutureTypedTerminal non-inference, empty-diagnostics None edge) and 3 tests/parse_failure_taxonomy.rs integration tests pin the recursion-vs-nesting boundary end to end with an executed falsifier and a masking regression. Remove when ripr traces deletions whose deleted owner was only invoked through a fn pointer."
+created = "2026-09-15"
+review_after = "2026-10-15"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1429-class tracing covers fn-pointer call sites on the deletion side of a diff, or when this PR's deletion probes age out of the diff scope. Narrow immediately if any seam unrelated to ParseFailure classification lands in this file."
