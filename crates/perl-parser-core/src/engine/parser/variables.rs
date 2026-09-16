@@ -1,20 +1,31 @@
+/// Return `true` when `inner` is a directly written bareword glob name: a
+/// plain identifier or a `::`-qualified symbol path (`foo`, `Foo::Bar`).
+///
+/// Anything else inside `*{...}` is a computed body whose symbol only exists
+/// at runtime — a call (`foo()`), a quoted/symbolic name (`"name"`), an
+/// interpolation, or an expression (`$x . $y`) — and must keep the braced
+/// dynamic spelling (#15650, #15712).
+fn is_plain_bareword_glob_name(inner: &str) -> bool {
+    inner.split("::").all(|segment| {
+        !segment.is_empty() && segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
 /// Normalize the name of a dynamic typeglob (`*{...}`) in assignment position.
 ///
-/// A braced bareword (`*{name}`, `*{ name }`) is a directly written symbol and
-/// normalizes to its bare name so the stash layer can resolve it. A braced
-/// runtime capture (`*{$name}`) keeps the literal braced spelling: its symbol
-/// is only known at runtime, and downstream consumers classify a leading `{`
-/// as a dynamic, non-static glob name (#15650).
+/// A braced bareword (`*{name}`, `*{ name }`, `*{Foo::name}`) is a directly
+/// written symbol and normalizes to its bare name so the stash layer can
+/// resolve it. Every other computed body keeps the literal braced spelling:
+/// its symbol is only known at runtime, and downstream consumers classify a
+/// leading `{` as a dynamic, non-static glob name (#15650). Reporting the
+/// bare expression text (`foo()`, `"name"`) as a static glob name would mint
+/// a symbol that no static consumer can resolve (#15712).
 fn normalize_dynamic_typeglob_name(name: &str) -> String {
     let Some(inner) = name.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else {
         return name.trim().trim_end_matches(';').trim().to_string();
     };
     let inner = inner.trim().trim_end_matches(';').trim();
-    if inner.starts_with(['$', '@', '%', '&', '*']) {
-        format!("{{{inner}}}")
-    } else {
-        inner.to_string()
-    }
+    if is_plain_bareword_glob_name(inner) { inner.to_string() } else { format!("{{{inner}}}") }
 }
 
 impl<'a> Parser<'a> {
