@@ -4178,3 +4178,21 @@ created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-12-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in xtask/src/compiler_upstream_status.rs, its tests submodule, or xtask/src/tasks/compiler_upstream_status.rs outside the 126 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+# -----------------------------------------------------------------------------
+# DAP debugger-capability probe seams (PR #15717): ripr#1429-class tracer
+# limitation — the static tracer cannot connect focused tests through the
+# check→cache→spawn→match indirection, nor link direct boundary unit calls.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-dap-capability-probe-tracer-limitation"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-dap/src/debug_adapter/process.rs"]
+classification = ["weakly_gripped", "activation_unknown"]
+gap_ids = ["81b633d3fa5df1df", "c97d432fdf34e680", "25f58da00de2eca9"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15717 hardens the interpreter capability probe (bounded pipe drains, marker requirement, no caching of non-pass verdicts). Three named seams resist template-aligned proof: the Incapable match arms (process.rs:951) are covered by check_debugger_capability_exact_error_variant (silent double, matches! on DebuggerCapabilityProbe::Incapable, expect_err plus full-literal assert_eq on the exact remediation message); the marker boundary (process.rs:125) by has_probe_success_marker_boundary_discriminator (assert_eq true/false on bare/tab-padded/whitespace-only lines); the spawn activation (process.rs:1005) by run_debugger_capability_probe_call_presence_observer (argv-recording double asserting the perl5db load expression), which demonstrably closed its gap in the local oracle loop. The tracer cannot follow oracles through the spawn/statics/cache indirection (activation_unknown) nor link the direct boundary calls (same ripr#1429 limitation class as #3355/#3397). Scoped to the three stable finding identities so any other seam in this file stays visible."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 connects these seams to the named tests, or at expiry. Narrow immediately if a receipt reports a seam in this file outside the three listed finding identities."

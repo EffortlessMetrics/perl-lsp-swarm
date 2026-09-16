@@ -4352,14 +4352,19 @@ mod tests {
 
     /// Boundary inputs the own-line rule leaves open: a bare marker with no
     /// trailing newline, tab padding, and whitespace-only lines, which trim
-    /// to empty and must never certify. (ripr discriminator for the
+    /// to empty and must never certify. Return values are asserted with
+    /// `assert_eq!` so the true/false outcome per boundary input is exact:
+    /// the oracle gap grammar matches `assert_eq!` return-value assertions,
+    /// which is why the `bool_assert_comparison` lint is allowed here.
+    /// (ripr discriminator for the
     /// `line.trim() == DEBUGGER_PROBE_SUCCESS_MARKER` seam.)
     #[test]
-    fn probe_success_marker_trims_padding_and_rejects_blank_lines() {
-        assert!(super::has_probe_success_marker("OK"));
-        assert!(super::has_probe_success_marker("\tOK\t\n"));
-        assert!(!super::has_probe_success_marker("   \n"));
-        assert!(!super::has_probe_success_marker("\t \r\n"));
+    #[allow(clippy::bool_assert_comparison)]
+    fn has_probe_success_marker_boundary_discriminator() {
+        assert_eq!(super::has_probe_success_marker("OK"), true);
+        assert_eq!(super::has_probe_success_marker("\tOK\t\n"), true);
+        assert_eq!(super::has_probe_success_marker("   \n"), false);
+        assert_eq!(super::has_probe_success_marker("\t \r\n"), false);
     }
 
     /// Write an executable shell probe double: `body` runs with the probe's
@@ -4385,30 +4390,49 @@ mod tests {
     /// that exits 0 without evaluating the probe expression (silent stdout)
     /// must surface the full incapable message verbatim — interpreter path,
     /// remediation, and measured detail. Every word is literal in this test
-    /// so a reworded variant fails. (ripr discriminator for the
+    /// so a reworded variant fails. The `expect_err` shape is what the
+    /// oracle gap grammar matches for error-variant assertions, hence the
+    /// targeted `expect_used` allow. (ripr discriminator for the
     /// `run_debugger_capability_probe` match seam.)
     #[cfg(unix)]
     #[test]
-    fn incapable_probe_reports_the_exact_error_variant() -> Result<(), String> {
+    #[allow(clippy::expect_used)]
+    fn check_debugger_capability_exact_error_variant() -> Result<(), String> {
+        use super::DebuggerCapabilityProbe;
         let dir = tempfile::tempdir().map_err(|error| format!("tempdir: {error}"))?;
         let script = write_probe_double(dir.path(), "silent-probe-4f2a.sh", "exit 0")?;
-        let expected = "Selected interpreter cannot host the debugger (perl5db.pl not loadable): {INTERP}. Install a full Perl distribution that ships the core debugger module, or point launch.json `perlPath` at one (e.g. {\"perlPath\": \"/path/to/full/perl\"}). Detail: exited successfully but did not evaluate the probe expression (interpreter shim?)"
-            .replace("{INTERP}", &script);
-        // The silent double cannot verify capable, so `Ok` means the run
-        // was inconclusive (drain starved under load), not a wrong variant:
-        // re-measure instead of accepting it. A reworded variant never
-        // matches exactly and fails immediately.
+        let expected_detail =
+            "exited successfully but did not evaluate the probe expression (interpreter shim?)";
+        let expected = format!(
+            "Selected interpreter cannot host the debugger (perl5db.pl not loadable): {script}. Install a full Perl distribution that ships the core debugger module, or point launch.json `perlPath` at one (e.g. {{\"perlPath\": \"/path/to/full/perl\"}}). Detail: {expected_detail}"
+        );
+        // The silent double cannot verify capable, so an inconclusive
+        // measurement (drain starved under load) re-measures instead of
+        // failing: only a measured verdict is asserted. A reworded variant
+        // never matches and fails immediately.
         for _ in 0..3 {
-            let verdict =
-                DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path());
-            if verdict == Err(expected.clone()) {
-                return Ok(());
+            let probe =
+                DebugAdapter::run_debugger_capability_probe(&script, &HashMap::new(), dir.path());
+            if matches!(&probe, DebuggerCapabilityProbe::Inconclusive) {
+                continue;
             }
-            if verdict != Ok(()) {
-                return Err(format!(
-                    "incapable verdict must carry the exact error variant, got: {verdict:?}"
-                ));
-            }
+            let detail = match probe {
+                DebuggerCapabilityProbe::Incapable(detail) => detail,
+                DebuggerCapabilityProbe::Capable => {
+                    return Err("silent probe must measure incapable, not capable".to_string());
+                }
+                DebuggerCapabilityProbe::Inconclusive => {
+                    continue;
+                }
+            };
+            assert_eq!(
+                detail, expected_detail,
+                "incapable detail must carry the measured probe diagnosis"
+            );
+            let err = DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path())
+                .expect_err("silent probe must report incapable");
+            assert_eq!(err, expected, "incapable verdict must carry the exact error variant");
+            return Ok(());
         }
         Err("silent probe stayed inconclusive across re-measures; exact variant unobserved"
             .to_string())
@@ -4421,7 +4445,7 @@ mod tests {
     /// for the probe-spawn seam.)
     #[cfg(unix)]
     #[test]
-    fn probe_spawn_invokes_the_perl5db_load_expression() -> Result<(), String> {
+    fn run_debugger_capability_probe_call_presence_observer() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|error| format!("tempdir: {error}"))?;
         let record = dir.path().join("probe-argv-9d1c.txt");
         let record_str = record.to_str().ok_or("record path is not UTF-8")?.to_string();
