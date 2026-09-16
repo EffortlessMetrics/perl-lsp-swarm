@@ -316,7 +316,7 @@ fn payload_summary(kind: &NodeKind) -> PayloadSummary {
             }
         }
         NodeKind::Glob { pattern } => push_str(&mut parts, &mut truncated, "pattern", pattern),
-        NodeKind::Typeglob { name } => push_str(&mut parts, &mut truncated, "name", name),
+        NodeKind::Typeglob { name, .. } => push_str(&mut parts, &mut truncated, "name", name),
         NodeKind::If { keyword, .. } | NodeKind::While { keyword, .. } => {
             if let Some(keyword) = keyword {
                 push_str(&mut parts, &mut truncated, "keyword", keyword);
@@ -409,7 +409,7 @@ fn payload_summary(kind: &NodeKind) -> PayloadSummary {
             push_bool(&mut parts, "has_filter_risk", *has_filter_risk);
         }
         NodeKind::PhaseBlock { phase, .. } => push_str(&mut parts, &mut truncated, "phase", phase),
-        NodeKind::DataSection { marker, body } => {
+        NodeKind::DataSection { marker, body, .. } => {
             push_str(&mut parts, &mut truncated, "marker", marker);
             if let Some(body) = body {
                 push_str(&mut parts, &mut truncated, "body", body);

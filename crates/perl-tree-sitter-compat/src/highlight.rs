@@ -60,11 +60,8 @@ fn collect(node: &TsNode, out: &mut Vec<Highlight>) {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
+    use perl_test_must::must_with;
 
     #[test]
     fn maps_known_kinds() {
@@ -79,7 +76,10 @@ mod tests {
 
     #[test]
     fn highlights_a_parsed_tree() {
-        let tree = crate::convert::parse_to_tree("use strict;\nmy $x = 42;\n").unwrap();
+        let tree = must_with(
+            crate::convert::parse_to_tree("use strict;\nmy $x = 42;\n"),
+            "highlight fixture must parse to a tree",
+        );
         let hl = highlights(&tree);
         assert!(hl.iter().any(|h| h.capture == "keyword"), "use → keyword; got {hl:?}");
         assert!(hl.iter().any(|h| h.capture == "number"), "42 → number; got {hl:?}");

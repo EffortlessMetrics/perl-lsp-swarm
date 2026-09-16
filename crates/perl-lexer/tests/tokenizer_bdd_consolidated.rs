@@ -1,6 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use perl_lexer::{PerlLexer, TokenType};
-use perl_parser_core::tokens::token_stream::TokenStream;
+use perl_parser_core::tokens::token_stream::{
+    ContextualFallbackReason, ContextualOpResult, ContextualTokenOp, TokenStream,
+};
 use perl_token::{Token, TokenKind};
 
 fn collect_raw_lexer_tokens(source: &str) -> Vec<perl_lexer::Token> {
@@ -77,8 +79,19 @@ fn bdd_given_buffered_tokens_when_peek_is_invalidated_then_cursor_advances_from_
     stream.invalidate_peek();
     assert_eq!(stream.peek()?.kind(), TokenKind::Identifier);
 
-    stream.on_stmt_boundary();
-    assert_eq!(stream.peek()?.kind(), TokenKind::Semicolon);
+    // Issue #8128: a statement-boundary reset can change token classification,
+    // and a buffered stream cannot re-classify. The request is refused with a
+    // typed fallback requirement; the in-flight lookahead is preserved so the
+    // caller can observe that nothing was applied, and the buffered kinds stay
+    // position-bound and consumable.
+    let result = stream.apply_contextual(ContextualTokenOp::StatementBoundaryReset);
+    assert_eq!(
+        result,
+        ContextualOpResult::FallbackRequired { reason: ContextualFallbackReason::NoBufferedSource }
+    );
+    assert_eq!(stream.peek()?.kind(), TokenKind::Identifier);
+
+    assert_eq!(stream.next()?.kind(), TokenKind::Identifier);
     assert_eq!(stream.next()?.kind(), TokenKind::Semicolon);
     assert_eq!(stream.next()?.kind(), TokenKind::Eof);
 

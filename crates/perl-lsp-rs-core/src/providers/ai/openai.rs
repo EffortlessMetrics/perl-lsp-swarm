@@ -1,9 +1,11 @@
 //! OpenAI-compatible completion provider.
 
+use super::budget::{AiResponseBudget, BudgetKind, BudgetViolation};
 use super::destination::{ApprovedDestination, credential_may_attach, validate_endpoint};
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
-use super::sse::SseParser;
+use super::sanitize::{sanitize_completion_text, sanitize_streaming_text};
+use super::sse::{SseParser, budget_violation};
 use crate::config::{
     DEFAULT_AI_API_KEY_HEADER, DEFAULT_AI_API_KEY_PREFIX, is_safe_http_header_value_part,
     normalize_ai_api_key_header, normalize_ai_api_key_prefix,
@@ -11,7 +13,7 @@ use crate::config::{
 use crate::providers::inline_completion::{
     BackendError, BackendRequest, InlineCompletionBackend, StreamChunk, StreamControl,
 };
-use std::io::BufReader;
+use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use ureq::unversioned::resolver::{ResolvedSocketAddrs, Resolver};
@@ -43,6 +45,10 @@ pub struct OpenAiProvider {
     /// Destination validated once on first use; subsequent requests only
     /// re-check credential binding against the URL about to be dispatched.
     approved: OnceLock<ApprovedDestination>,
+    /// Resource ceiling applied to every response this provider reads.
+    /// Compiled policy for now; a user-owned backend profile selects values
+    /// within the same compiled maxima once #10252 lands.
+    budget: AiResponseBudget,
 }
 
 impl OpenAiConfig {
@@ -97,10 +103,96 @@ impl Resolver for PinnedIpResolver {
     }
 }
 
+/// Incremental accounting for the cumulative streamed completion.
+///
+/// Size is tracked as each delta arrives rather than recomputed from the text
+/// already held, so a run of individually legal deltas is bounded as cheaply
+/// as a single oversized one and no bound check rescans or clones the
+/// candidate.
+struct CumulativeOutput {
+    text: String,
+    chars: u64,
+    terminators: u64,
+    /// The previous delta ended on a carriage return, so a leading `\n` in the
+    /// next one completes that CRLF rather than starting a second line.
+    pending_cr: bool,
+}
+
+impl CumulativeOutput {
+    const fn new() -> Self {
+        Self { text: String::new(), chars: 0, terminators: 0, pending_cr: false }
+    }
+
+    /// Line terminators in `delta`, counted the way [`super::sanitize`] splits
+    /// lines: LF, CRLF as one, and a bare CR.
+    ///
+    /// Counting only `\n` would let a candidate that uses CR-only endings —
+    /// which the sanitizer downstream does split on — report a single line
+    /// however many lines it really spans, and so slip past the line ceiling.
+    /// `leading_lf_is_continuation` carries a CRLF split across two deltas.
+    fn count_terminators(delta: &str, leading_lf_is_continuation: bool) -> u64 {
+        let bytes = delta.as_bytes();
+        let mut terminators = 0_u64;
+        let mut index = 0_usize;
+        while let Some(&byte) = bytes.get(index) {
+            match byte {
+                b'\n' => {
+                    let continues_previous = index == 0 && leading_lf_is_continuation;
+                    if !continues_previous {
+                        terminators = terminators.saturating_add(1);
+                    }
+                    index = index.saturating_add(1);
+                }
+                b'\r' => {
+                    terminators = terminators.saturating_add(1);
+                    // Consume the LF of a CRLF pair so it is not counted twice.
+                    let pair = usize::from(bytes.get(index.saturating_add(1)) == Some(&b'\n'));
+                    index = index.saturating_add(1).saturating_add(pair);
+                }
+                _ => index = index.saturating_add(1),
+            }
+        }
+        terminators
+    }
+
+    /// The candidate accumulated so far.
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Admit `delta`, or refuse it before any part of it is retained.
+    fn push(&mut self, delta: &str, budget: AiResponseBudget) -> Result<(), BudgetViolation> {
+        let delta_bytes = delta.len() as u64;
+        budget.check(BudgetKind::DeltaBytes, delta_bytes)?;
+
+        let bytes = (self.text.len() as u64).saturating_add(delta_bytes);
+        budget.check(BudgetKind::CompletionBytes, bytes)?;
+
+        let chars = self.chars.saturating_add(delta.chars().count() as u64);
+        budget.check(BudgetKind::CompletionChars, chars)?;
+
+        let terminators =
+            self.terminators.saturating_add(Self::count_terminators(delta, self.pending_cr));
+        // A non-empty candidate spans one more line than it holds terminators.
+        budget.check(BudgetKind::CompletionLines, terminators.saturating_add(1))?;
+
+        self.text.push_str(delta);
+        self.chars = chars;
+        self.terminators = terminators;
+        self.pending_cr = delta.as_bytes().last() == Some(&b'\r');
+        Ok(())
+    }
+}
+
 impl OpenAiProvider {
     /// Create a new provider with the given config and rate limiter.
     pub fn new(config: OpenAiConfig, limiter: Arc<RateLimiter>) -> Self {
-        Self { config, limiter, approved: OnceLock::new() }
+        Self {
+            config,
+            limiter,
+            approved: OnceLock::new(),
+            budget: AiResponseBudget::compiled_default(),
+        }
     }
 
     fn approved_destination(&self) -> Result<&ApprovedDestination, BackendError> {
@@ -233,14 +325,126 @@ impl OpenAiProvider {
             .and_then(|choice| choice.get("finish_reason"))
             .and_then(serde_json::Value::as_str)
         {
-            return Some(reason.to_string());
+            // A content-filter rejection repudiates the candidate: normalize
+            // it to "error" so the stream terminal treats it as a provider
+            // failure instead of finalizing the rejected text.
+            return Some(if reason == "content_filter" {
+                "error".to_string()
+            } else {
+                reason.to_string()
+            });
         }
 
         match parsed.get("type").and_then(serde_json::Value::as_str) {
             Some("response.completed") => Some("stop".to_string()),
-            Some("response.failed") | Some("response.incomplete") => Some("error".to_string()),
+            // `max_output_tokens` exhaustion is the Responses API equivalent
+            // of the chat `length` finish reason: the accumulated text is
+            // usable and must finalize instead of surfacing as a provider
+            // error. Any other incomplete reason stays a failure.
+            Some("response.incomplete") => {
+                let token_limited = parsed
+                    .get("incomplete_details")
+                    .and_then(|details| details.get("reason"))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|reason| reason == "max_output_tokens");
+                Some(if token_limited { "length".to_string() } else { "error".to_string() })
+            }
+            Some("response.failed") | Some("error") => Some("error".to_string()),
             _ => None,
         }
+    }
+
+    /// Text for one `StreamChunk`: held-back live text for in-flight chunks,
+    /// full boundary sanitization once the completion is final. Buffered
+    /// `complete()` consumes this same final chunk, so both routes observe
+    /// the identical sanitized candidate from this single choke point.
+    fn stream_chunk_text(cumulative: &str, is_final: bool) -> String {
+        if is_final {
+            sanitize_completion_text(cumulative)
+        } else {
+            sanitize_streaming_text(cumulative)
+        }
+    }
+
+    /// Drive the SSE event loop, forwarding cumulative candidate chunks to
+    /// `sink`. Split out from [`Self::stream`] so the delta-to-sink wiring
+    /// is testable without an HTTP transport.
+    ///
+    /// `budget` bounds the candidate itself. The parser has already bounded
+    /// the bytes, lines, and events beneath it; this level stops a stream of
+    /// individually legal deltas from accumulating without limit.
+    fn drive_sse_stream<R: BufRead>(
+        parser: &mut SseParser<R>,
+        budget: AiResponseBudget,
+        api_key: &str,
+        sink: &mut dyn FnMut(StreamChunk) -> StreamControl,
+    ) -> Result<(), BackendError> {
+        let mut cumulative = CumulativeOutput::new();
+
+        loop {
+            match parser.next_event() {
+                Ok(Some(event)) => {
+                    // Provider failure events are typed errors, not candidate
+                    // text: `response.failed`, `response.incomplete`, or an
+                    // explicit error finish reason must surface as
+                    // [`BackendError::Provider`] instead of silently
+                    // finalizing whatever text accumulated by EOF.
+                    if Self::extract_finish_reason(&event.data).as_deref() == Some("error") {
+                        return Err(BackendError::Provider(
+                            "stream ended with a provider failure event (response.failed, \
+                             response.incomplete, content_filter, or error event)"
+                                .to_string(),
+                        ));
+                    }
+                    if let Some(delta) = Self::extract_content_delta(&event.data) {
+                        // Refused before the delta is retained, so a chunk
+                        // that crosses a limit is never partially emitted.
+                        if let Err(violation) = cumulative.push(&delta, budget) {
+                            return Err(BackendError::BudgetExceeded(violation));
+                        }
+
+                        let is_final = Self::extract_finish_reason(&event.data)
+                            .is_some_and(|r| r == "stop" || r == "length");
+
+                        // In-flight chunks show the live candidate with
+                        // ambiguous fence markers held back; only the
+                        // completion boundary runs the full strip (#5049).
+                        // Stateless per-chunk stripping deleted already-shown
+                        // code mid-stream whenever a content fence arrived
+                        // and leaked partially delivered markers for a tick.
+                        let control = sink(StreamChunk {
+                            text: Self::stream_chunk_text(cumulative.text(), is_final),
+                            is_final,
+                        });
+
+                        if control == StreamControl::Stop || is_final {
+                            break;
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // Stream ended -- emit final chunk if we have content
+                    if !cumulative.text().is_empty() {
+                        sink(StreamChunk {
+                            text: Self::stream_chunk_text(cumulative.text(), true),
+                            is_final: true,
+                        });
+                    }
+                    break;
+                }
+                Err(error) => {
+                    // A refused response carries its typed violation through
+                    // the IO channel; only a genuine transport failure is
+                    // classified by message.
+                    return Err(budget_violation(&error).map_or_else(
+                        || Self::map_transport_error(error.to_string(), api_key),
+                        BackendError::BudgetExceeded,
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -250,9 +454,16 @@ impl OpenAiProvider {
     reason = "policy:#2064: OpenAI unit tests stay beside config helpers before backend implementation"
 )]
 mod tests {
-    use super::{OpenAiConfig, OpenAiProvider};
+    use super::{AiResponseBudget, OpenAiConfig, OpenAiProvider};
     use crate::providers::ai::rate_limiter::RateLimiter;
     use std::sync::Arc;
+
+    /// The budget every existing stream test runs under: the same compiled
+    /// policy production uses, so those tests keep proving production
+    /// behavior rather than a relaxed test-only ceiling.
+    fn test_budget() -> AiResponseBudget {
+        AiResponseBudget::compiled_default()
+    }
 
     fn provider_with_endpoint(endpoint: &str) -> OpenAiProvider {
         OpenAiProvider::new(
@@ -291,6 +502,258 @@ mod tests {
     fn detects_responses_completion_event() {
         let data = r#"{"type":"response.completed"}"#;
         assert_eq!(OpenAiProvider::extract_finish_reason(data), Some("stop".to_string()));
+    }
+
+    /// Frame a delta sequence as chat-completions SSE events; the final
+    /// event carries `finish_reason: "stop"`.
+    fn sse_framed_deltas(deltas: &[String]) -> String {
+        let last = deltas.len() - 1;
+        let mut body = String::new();
+        for (i, delta) in deltas.iter().enumerate() {
+            let finish_reason: serde_json::Value =
+                if i == last { "stop".into() } else { serde_json::Value::Null };
+            let event = serde_json::json!({
+                "choices": [{
+                    "delta": { "content": delta },
+                    "finish_reason": finish_reason,
+                }]
+            });
+            body.push_str(&format!("data: {event}\n\n"));
+        }
+        body
+    }
+
+    /// Drive the real SSE loop over synthetic frames and collect every
+    /// `(text, is_final)` chunk handed to the sink.
+    fn collect_stream_chunks(deltas: &[String]) -> Vec<(String, bool)> {
+        let body = sse_framed_deltas(deltas);
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut chunks: Vec<(String, bool)> = Vec::new();
+        OpenAiProvider::drive_sse_stream(&mut parser, test_budget(), "test-key", &mut |chunk| {
+            chunks.push((chunk.text, chunk.is_final));
+            if chunk.is_final {
+                crate::providers::inline_completion::StreamControl::Stop
+            } else {
+                crate::providers::inline_completion::StreamControl::Continue
+            }
+        })
+        .expect("synthetic SSE frames must drive the stream loop");
+        chunks
+    }
+
+    #[test]
+    fn stream_holds_partial_fence_markers_and_sanitizes_only_at_the_boundary()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Character-by-character delivery of a fenced candidate: both the
+        // opening and the closing marker arrive split across deltas.
+        let deltas: Vec<String> = ["`", "`", "`", "perl", "\n", "my $x = 1;", "\n", "`", "`", "`"]
+            .iter()
+            .map(|delta| (*delta).to_string())
+            .collect();
+        let chunks = collect_stream_chunks(&deltas);
+
+        // The cumulative partial opening marker never reaches the sink.
+        assert_eq!(
+            chunks[1],
+            (String::new(), false),
+            "partial opening fence must be held back, got: {:?}",
+            chunks[1]
+        );
+        // No in-flight chunk surfaces any fence marker for this candidate,
+        // and only the boundary event is final.
+        for (text, is_final) in chunks.iter().take(chunks.len() - 1) {
+            assert!(!is_final, "only the boundary event may be final");
+            assert!(!text.contains('`'), "in-flight chunk surfaced a fence marker: {text:?}");
+        }
+        // The candidate grows monotonically once visible; shown code is
+        // never deleted mid-stream.
+        for window in chunks.windows(2) {
+            assert!(
+                window[1].0.starts_with(&window[0].0),
+                "streamed candidate deleted shown text: {:?} -> {:?}",
+                window[0].0,
+                window[1].0
+            );
+        }
+        // Boundary parity: the final streamed chunk equals the buffered
+        // sanitize of the whole candidate, and `complete()` consumes exactly
+        // this chunk, so both routes agree.
+        let (final_text, is_final) = chunks.last().ok_or("expected at least one chunk")?;
+        assert!(is_final);
+        assert_eq!(final_text, "my $x = 1;");
+        assert_eq!(
+            final_text,
+            &crate::providers::ai::sanitize::sanitize_completion_text(&deltas.concat())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stream_heredoc_candidate_never_collapses_or_truncates_mid_stream()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The sanitize.rs here-doc falsifier, streamed: a candidate whose
+        // CONTENT contains line-initial fences must never collapse to an
+        // empty candidate, never delete already-shown text, and land
+        // unchanged at the boundary.
+        let raw = "my $doc = <<'EOF';\n# Usage\n```perl\nmy $x = 1;\n```\nEOF";
+        let deltas: Vec<String> = raw.chars().map(String::from).collect();
+        let chunks = collect_stream_chunks(&deltas);
+
+        assert!(
+            chunks.iter().all(|(text, _)| !text.is_empty()),
+            "content-anchored candidate must never collapse mid-stream"
+        );
+        for window in chunks.windows(2) {
+            assert!(
+                window[1].0.starts_with(&window[0].0),
+                "streamed candidate deleted shown text: {:?} -> {:?}",
+                window[0].0,
+                window[1].0
+            );
+        }
+        let (final_text, is_final) = chunks.last().ok_or("expected at least one chunk")?;
+        assert!(is_final);
+        assert_eq!(final_text, raw, "content fences must survive the boundary");
+        Ok(())
+    }
+
+    #[test]
+    fn stream_provider_failure_event_is_a_typed_error() {
+        // `response.failed` / `response.incomplete` carry no candidate text:
+        // they must surface as a typed provider error instead of being
+        // ignored until EOF finalizes the accumulated text.
+        let body = "data: {\"type\": \"response.failed\"}\n\n";
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let result =
+            OpenAiProvider::drive_sse_stream(&mut parser, test_budget(), "test-key", &mut |_| {
+                crate::providers::inline_completion::StreamControl::Continue
+            });
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "provider failure events must be typed errors"
+        );
+    }
+
+    #[test]
+    fn stream_failure_after_partial_text_never_finalizes_the_candidate() {
+        // Text accumulated before the failure event must not be finalized as
+        // a completion: no `is_final` chunk may reach the sink.
+        let mut body = String::new();
+        body.push_str(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"my $x = \"},\"finish_reason\":null}]}\n\n",
+        );
+        body.push_str("data: {\"type\": \"response.incomplete\"}\n\n");
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut chunks: Vec<(String, bool)> = Vec::new();
+        let result = OpenAiProvider::drive_sse_stream(
+            &mut parser,
+            test_budget(),
+            "test-key",
+            &mut |chunk| {
+                chunks.push((chunk.text, chunk.is_final));
+                crate::providers::inline_completion::StreamControl::Continue
+            },
+        );
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "provider failure events must be typed errors"
+        );
+        assert!(
+            chunks.iter().all(|(_, is_final)| !is_final),
+            "failure events must not finalize the candidate, got: {chunks:?}"
+        );
+    }
+
+    #[test]
+    fn stream_max_output_tokens_incomplete_finalizes_accumulated_text() {
+        // `response.incomplete` with `max_output_tokens` is the Responses API
+        // equivalent of the chat `length` finish reason: the accumulated text
+        // is usable and must finalize, not surface as a provider error.
+        let mut body = String::new();
+        body.push_str(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"my $x = \"},\"finish_reason\":null}]}\n\n",
+        );
+        body.push_str(
+            "data: {\"type\":\"response.incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}\n\n",
+        );
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut chunks: Vec<(String, bool)> = Vec::new();
+        let result = OpenAiProvider::drive_sse_stream(
+            &mut parser,
+            test_budget(),
+            "test-key",
+            &mut |chunk| {
+                chunks.push((chunk.text, chunk.is_final));
+                crate::providers::inline_completion::StreamControl::Continue
+            },
+        );
+        result.expect("token-limited incomplete must not be a provider error");
+        let (text, is_final) = chunks.last().expect("boundary chunk");
+        assert!(is_final, "token-limited output must finalize");
+        assert_eq!(text, "my $x = ");
+    }
+
+    #[test]
+    fn stream_incomplete_without_token_limit_stays_a_provider_error() {
+        let body = "data: {\"type\":\"response.incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"}}\n\n";
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let result =
+            OpenAiProvider::drive_sse_stream(&mut parser, test_budget(), "test-key", &mut |_| {
+                crate::providers::inline_completion::StreamControl::Continue
+            });
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "non-token-limited incomplete reasons stay failures"
+        );
+    }
+
+    #[test]
+    fn stream_content_filter_finish_reason_is_a_typed_error() {
+        // A chat-completions `content_filter` rejection after partial text
+        // must surface as a provider failure: the rejected text must never
+        // be finalized into the candidate.
+        let mut body = String::new();
+        body.push_str(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"my $x = \"},\"finish_reason\":null}]}\n\n",
+        );
+        body.push_str(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"dropped\"},\"finish_reason\":\"content_filter\"}]}\n\n",
+        );
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut chunks: Vec<(String, bool)> = Vec::new();
+        let result = OpenAiProvider::drive_sse_stream(
+            &mut parser,
+            test_budget(),
+            "test-key",
+            &mut |chunk| {
+                chunks.push((chunk.text, chunk.is_final));
+                crate::providers::inline_completion::StreamControl::Continue
+            },
+        );
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "content_filter rejections must be provider errors"
+        );
+        assert!(
+            chunks.iter().all(|(_, is_final)| !is_final),
+            "rejected text must not reach the sink as final"
+        );
+    }
+
+    #[test]
+    fn stream_responses_error_event_is_a_typed_error() {
+        // A Responses API `type: "error"` event is a provider failure even
+        // though it carries no choices/finish_reason shape.
+        let body = "data: {\"type\": \"error\"}\n\n";
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let result =
+            OpenAiProvider::drive_sse_stream(&mut parser, test_budget(), "test-key", &mut |_| {
+                crate::providers::inline_completion::StreamControl::Continue
+            });
+        assert!(
+            matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
+            "Responses API error events must be provider errors"
+        );
     }
 
     #[test]
@@ -367,6 +830,208 @@ mod tests {
         assert!(!message.contains("connector-key"));
         Ok(())
     }
+
+    // ── cumulative output bounds ─────────────────────────────────────────
+
+    use crate::providers::ai::budget::{BudgetKind, BudgetViolation};
+    use crate::providers::inline_completion::{BackendError, StreamControl};
+
+    fn budget_with(kind: BudgetKind, value: u64) -> AiResponseBudget {
+        let Ok(budget) = AiResponseBudget::compiled_default().with_limit(kind, value) else {
+            unreachable!("{kind} narrowing to {value} must be within the compiled maximum");
+        };
+        budget
+    }
+
+    /// Frame `deltas` as chat-completions SSE events with no terminal
+    /// `finish_reason`, drive the real loop, and return every chunk the sink
+    /// saw alongside the outcome.
+    fn drive_open_ended(
+        deltas: &[String],
+        budget: AiResponseBudget,
+    ) -> (Vec<String>, Result<(), BackendError>) {
+        let mut body = String::new();
+        for delta in deltas {
+            let event = serde_json::json!({
+                "choices": [{ "delta": { "content": delta }, "finish_reason": null }]
+            });
+            body.push_str(&format!("data: {event}\n\n"));
+        }
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut seen: Vec<String> = Vec::new();
+        let outcome =
+            OpenAiProvider::drive_sse_stream(&mut parser, budget, "test-key", &mut |chunk| {
+                seen.push(chunk.text);
+                StreamControl::Continue
+            });
+        (seen, outcome)
+    }
+
+    fn violation_of(outcome: &Result<(), BackendError>) -> Option<BudgetViolation> {
+        match outcome {
+            Err(BackendError::BudgetExceeded(violation)) => Some(*violation),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn one_oversized_delta_is_refused_before_it_is_retained() {
+        let deltas = vec!["x".repeat(64)];
+        let (seen, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::DeltaBytes, 32));
+        assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::DeltaBytes));
+        assert!(seen.is_empty(), "an over-limit delta must not reach the sink: {seen:?}");
+    }
+
+    #[test]
+    fn a_delta_exactly_at_its_limit_is_admitted() {
+        // Negative control for the refusal above.
+        let deltas = vec!["x".repeat(32)];
+        let (seen, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::DeltaBytes, 32));
+        assert!(outcome.is_ok(), "a delta at the limit must be admitted: {outcome:?}");
+        assert_eq!(seen.last().map(String::as_str), Some("x".repeat(32).as_str()));
+    }
+
+    #[test]
+    fn many_individually_legal_deltas_are_refused_once_they_cross_the_byte_limit() {
+        // Each delta is far under the per-delta limit; only the cumulative
+        // accounting can catch this.
+        let deltas: Vec<String> = (0..64).map(|_| "abcd".to_string()).collect();
+        // The delta limit is brought down alongside the completion limit so
+        // the budget stays coherent; at 100 bytes it still dwarfs every
+        // 4-byte delta, so only cumulative accounting can trip here.
+        let Ok(budget) =
+            budget_with(BudgetKind::DeltaBytes, 100).with_limit(BudgetKind::CompletionBytes, 100)
+        else {
+            unreachable!("narrowing both output limits to 100 must be coherent");
+        };
+        let (seen, outcome) = drive_open_ended(&deltas, budget);
+        let violation = violation_of(&outcome);
+        assert_eq!(violation.map(|v| v.kind), Some(BudgetKind::CompletionBytes));
+        assert_eq!(violation.map(|v| v.limit), Some(100));
+        // Nothing past the limit was ever handed out.
+        for text in &seen {
+            assert!(text.len() <= 100, "sink saw {} bytes past a 100-byte limit", text.len());
+        }
+    }
+
+    #[test]
+    fn cumulative_character_overflow_counts_scalars_not_bytes() {
+        // Twenty four-byte emoji: 80 bytes, but only 20 characters. A limit of
+        // 16 characters must trip while the byte limit stays untouched.
+        let deltas: Vec<String> = (0..20).map(|_| "\u{1F980}".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionChars, 16));
+        let violation = violation_of(&outcome);
+        assert_eq!(violation.map(|v| v.kind), Some(BudgetKind::CompletionChars));
+        assert_eq!(violation.map(|v| v.observed_at_least), Some(17));
+    }
+
+    #[test]
+    fn cumulative_line_overflow_is_refused() {
+        let deltas: Vec<String> = (0..10).map(|_| "line\n".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 4));
+        assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::CompletionLines));
+    }
+
+    #[test]
+    fn a_single_line_candidate_is_not_refused_by_a_one_line_limit() {
+        // Boundary control for the newline accounting: a candidate with no
+        // newline spans exactly one line and must survive a limit of one.
+        let deltas = vec!["my $x = 1;".to_string()];
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 1));
+        assert!(outcome.is_ok(), "a single-line candidate must fit one line: {outcome:?}");
+    }
+
+    #[test]
+    fn malformed_event_json_under_the_limits_is_not_a_budget_error() {
+        // Negative control: budget enforcement must not swallow ordinary
+        // parse outcomes. An undecodable event yields no delta and the stream
+        // simply ends without content.
+        let body = "data: {not json at all}\n\n";
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut seen = 0_usize;
+        let outcome =
+            OpenAiProvider::drive_sse_stream(&mut parser, test_budget(), "test-key", &mut |_| {
+                seen = seen.saturating_add(1);
+                StreamControl::Continue
+            });
+        assert!(outcome.is_ok(), "malformed JSON is not a budget breach: {outcome:?}");
+        assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn a_transport_level_budget_breach_surfaces_as_a_typed_backend_error() {
+        // The violation is raised inside the parser and must reach the caller
+        // as BudgetExceeded rather than being flattened into Transport.
+        let body = "data: hello\n\ndata: world\n\n";
+        let budget = budget_with(BudgetKind::EventCount, 1);
+        let mut parser =
+            crate::providers::ai::sse::SseParser::with_budget(std::io::Cursor::new(body), budget);
+        let outcome =
+            OpenAiProvider::drive_sse_stream(&mut parser, budget, "test-key", &mut |_| {
+                StreamControl::Continue
+            });
+        assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::EventCount));
+    }
+
+    #[test]
+    fn cr_only_line_endings_count_toward_the_line_ceiling() {
+        // `sanitize::line_bounds` splits on a bare CR, so a CR-only candidate
+        // really does span these lines downstream. Counting only `\n` reported
+        // one line and let it past the ceiling.
+        let deltas: Vec<String> = (0..10).map(|_| "line\r".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 4));
+        assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::CompletionLines));
+    }
+
+    #[test]
+    fn a_crlf_pair_counts_as_one_line_ending() {
+        // Negative control for the CR counting above: CRLF must not be
+        // double-counted, or a legitimate DOS-line candidate would be refused
+        // at half the configured ceiling.
+        let deltas: Vec<String> = (0..3).map(|_| "line\r\n".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 4));
+        assert!(outcome.is_ok(), "three CRLF lines must fit a limit of four: {outcome:?}");
+    }
+
+    #[test]
+    fn a_crlf_split_across_two_deltas_counts_once() {
+        // The CR arrives at the end of one delta and the LF at the start of
+        // the next; that is one terminator, not two.
+        let deltas = vec!["a\r".to_string(), "\nb\r".to_string(), "\nc".to_string()];
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 3));
+        assert!(outcome.is_ok(), "a split CRLF must not be counted twice: {outcome:?}");
+    }
+
+    #[test]
+    fn a_budget_breach_is_classified_as_a_resource_limit() {
+        use perl_parser_core::ErrorClass;
+        let error = BackendError::BudgetExceeded(BudgetViolation {
+            kind: BudgetKind::CompletionBytes,
+            limit: 16,
+            observed_at_least: 17,
+        });
+        // `ResourceLimit` is the class the framing guard gives `FrameTooLarge`,
+        // and it selects `Disposition::Cap` rather than an infrastructure
+        // notification.
+        assert_eq!(error.error_class(), perl_parser_core::ErrorCategory::ResourceLimit);
+        assert_eq!(
+            crate::protocol::error_disposition::disposition_for(error.error_class()),
+            crate::protocol::error_disposition::Disposition::Cap
+        );
+    }
+
+    #[test]
+    fn a_budget_error_message_leaks_no_response_content() {
+        let secret = "SUPER-SECRET-COMPLETION";
+        let deltas = vec![secret.to_string()];
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::DeltaBytes, 4));
+        let Err(error) = outcome else {
+            unreachable!("an over-limit delta must fail");
+        };
+        let message = error.to_string();
+        assert!(!message.contains(secret), "budget error leaked response content: {message}");
+        assert!(message.contains("delta_bytes"), "budget error lost its limit identity: {message}");
+    }
 }
 
 impl InlineCompletionBackend for OpenAiProvider {
@@ -410,39 +1075,11 @@ impl InlineCompletionBackend for OpenAiProvider {
             ));
         }
 
+        // Every byte read from here on is counted against one request-scoped
+        // budget: the non-2xx path above returns before any body is read, so
+        // this is the only route that consumes a response.
         let reader = BufReader::new(response.into_body().into_reader());
-        let mut parser = SseParser::new(reader);
-        let mut cumulative = String::new();
-
-        loop {
-            match parser.next_event() {
-                Ok(Some(event)) => {
-                    if let Some(delta) = Self::extract_content_delta(&event.data) {
-                        cumulative.push_str(&delta);
-
-                        let is_final = Self::extract_finish_reason(&event.data)
-                            .is_some_and(|r| r == "stop" || r == "length");
-
-                        let control = sink(StreamChunk { text: cumulative.clone(), is_final });
-
-                        if control == StreamControl::Stop || is_final {
-                            break;
-                        }
-                    }
-                }
-                Ok(None) => {
-                    // Stream ended -- emit final chunk if we have content
-                    if !cumulative.is_empty() {
-                        sink(StreamChunk { text: cumulative, is_final: true });
-                    }
-                    break;
-                }
-                Err(e) => {
-                    return Err(Self::map_transport_error(e.to_string(), &self.config.api_key));
-                }
-            }
-        }
-
-        Ok(())
+        let mut parser = SseParser::with_budget(reader, self.budget);
+        Self::drive_sse_stream(&mut parser, self.budget, &self.config.api_key, sink)
     }
 }

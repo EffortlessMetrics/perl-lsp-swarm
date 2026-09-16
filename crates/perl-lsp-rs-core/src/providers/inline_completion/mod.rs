@@ -364,6 +364,11 @@ pub enum BackendError {
     RateLimited,
     /// Request was cancelled.
     Cancelled,
+    /// The response crossed a compiled resource limit and was refused before
+    /// the offending bytes were accumulated. Carries only limit identity and
+    /// bounded numeric metadata — never response, prompt, or completion
+    /// content.
+    BudgetExceeded(crate::providers::ai::budget::BudgetViolation),
 }
 
 impl std::fmt::Display for BackendError {
@@ -375,6 +380,7 @@ impl std::fmt::Display for BackendError {
             Self::Timeout => write!(f, "request timed out"),
             Self::RateLimited => write!(f, "rate limit exceeded"),
             Self::Cancelled => write!(f, "request cancelled"),
+            Self::BudgetExceeded(violation) => write!(f, "{violation}"),
         }
     }
 }
@@ -386,6 +392,12 @@ impl perl_parser_core::ErrorClass for BackendError {
         match self {
             // Network/IO or external service error — infrastructure.
             Self::Transport(_) | Self::Provider(_) => perl_parser_core::ErrorCategory::Infra,
+            // A configured safety limit was exceeded, which is what
+            // `ResourceLimit` names. This is the same class the framing guard
+            // gives `FrameTooLarge`, and it selects `Disposition::Cap` rather
+            // than the infrastructure notification — the honest disposition
+            // for a response the server deliberately refused to grow.
+            Self::BudgetExceeded(_) => perl_parser_core::ErrorCategory::ResourceLimit,
             // Bad key or expired token — user configuration issue.
             Self::Auth(_) => perl_parser_core::ErrorCategory::UserError,
             // All three may succeed on retry after backoff or cancellation
@@ -3922,16 +3934,17 @@ fn token_hard_reject_zone(token_type: &TokenType) -> Option<(HardRejectZone, boo
         TokenType::StringLiteral
         | TokenType::InterpolatedString(_)
         | TokenType::QuoteSingle
-        | TokenType::QuoteDouble
+        | TokenType::QuoteDouble(_)
         | TokenType::QuoteWords
         | TokenType::QuoteCommand => Some((HardRejectZone::StringLike, false, false)),
         TokenType::RegexMatch
         | TokenType::QuoteRegex
         | TokenType::Substitution
         | TokenType::Transliteration => Some((HardRejectZone::RegexLike, false, false)),
-        TokenType::HeredocBody(_) | TokenType::FormatBody(_) | TokenType::DataBody(_) => {
-            Some((HardRejectZone::HeredocBody, true, false))
-        }
+        TokenType::HeredocBody(_)
+        | TokenType::InterpolatedHeredocBody(_)
+        | TokenType::FormatBody(_)
+        | TokenType::DataBody(_) => Some((HardRejectZone::HeredocBody, true, false)),
         TokenType::Error(message)
             if message.contains("unterminated string") || message.contains("unclosed") =>
         {

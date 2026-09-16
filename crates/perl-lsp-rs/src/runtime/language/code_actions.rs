@@ -3,12 +3,52 @@
 //! Handles textDocument/codeAction and codeAction/resolve requests.
 //! Provides quick fixes, refactoring actions, and source actions.
 
+use super::super::diagnostics_sink::DiagnosticSubject;
 use super::super::{
-    BuiltInAnalyzer, CodeActionsProvider, CodeActionsProviderV2, DiagnosticsProvider,
-    EnhancedCodeActionsProvider, GLOBAL_CANCELLATION_REGISTRY, HashMap, InternalCodeActionKind,
-    InternalCodeActionKindV2, JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken,
-    TestGenerator, Value, json,
+    CodeActionsProvider, CodeActionsProviderV2, DiagnosticsProvider, EnhancedCodeActionsProvider,
+    GLOBAL_CANCELLATION_REGISTRY, HashMap, InternalCodeActionKind, InternalCodeActionKindV2,
+    JsonRpcError, JsonRpcId, LspServer, PerlLspCancellationToken, TestGenerator, Value, json,
 };
+
+/// One immutable accepted subject for a native critic code-action run (#9062).
+///
+/// `handle_code_action` fills this under the runtime document guard and then
+/// releases that guard before any rule evaluates. Everything the run and its
+/// projection need travels in the value — including the rope and line index the
+/// captured offsets are expressed in — so finding ranges are mapped against the
+/// exact text that was analyzed rather than against whatever the live document
+/// has become.
+struct NativeCriticActionSubject {
+    ast: std::sync::Arc<perl_parser::ast::Node>,
+    text: std::sync::Arc<str>,
+    /// Accepted document generation, revalidated after analysis.
+    generation: u32,
+    /// Canonical document-instance token, revalidated together with the
+    /// generation. A numeric generation alone cannot survive close/reopen: a
+    /// replacement document can present the same counter value, so identity
+    /// must be compared by instance as well (#12067 review).
+    document_instance: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    rope: ropey::Rope,
+    line_starts: perl_position_tracking::LineStartsCache,
+    /// One sealed policy/root authority, shared by evaluation and final
+    /// publication currentness.
+    accepted_snapshot: perl_lsp_rs_core::config::AcceptedCriticSnapshot,
+    topology_generation: u32,
+    /// Producer-declared core overlap observations (#11918) over this exact
+    /// generation — the same set push and pull hand the service.
+    overlap_observations: Vec<perl_lsp_rs_core::tooling::perl_critic::BuiltInCriticObservation>,
+}
+
+/// Native quick-fix effects staged from one sealed diagnostic subject. Nothing
+/// in this value is response authority until the handler commits it through
+/// the shared document/policy linearization boundary.
+struct StagedNativeCriticActions {
+    document_instance: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    generation: u32,
+    accepted_snapshot: perl_lsp_rs_core::config::AcceptedCriticSnapshot,
+    topology_generation: u32,
+    actions: Vec<Value>,
+}
 
 /// Serialize a slice of typed values to a JSON array (#4995).
 fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
@@ -18,6 +58,7 @@ use super::misc::{
     DIAGNOSTIC_EXPLANATION_SCHEMA_VERSION, diagnostic_explanation_payload_from_diagnostics,
 };
 use crate::cancellation::RequestCleanupGuard;
+use crate::protocol::command::Command;
 use crate::protocol::{REQUEST_CANCELLED, req_range, req_uri};
 use std::sync::LazyLock;
 
@@ -561,10 +602,133 @@ impl LspServer {
         enforce_code_action_tag_capability(code_actions, supports_llm_generated_tag);
     }
 
+    fn finalize_code_action_candidate(
+        &self,
+        code_actions: &mut Vec<Value>,
+        uri: &str,
+        doc_version: i32,
+        requested_kinds: &[&str],
+    ) {
+        dedupe_code_actions(code_actions);
+        if let Some(fix_all) = build_source_fix_all(code_actions, uri) {
+            code_actions.push(fix_all);
+        }
+        if self.supports_workspace_snippet_text_edits() {
+            convert_pragma_quickfix_edits_to_snippet_text_edits(code_actions, uri, doc_version);
+        }
+        self.enforce_code_action_tag_capabilities(code_actions);
+        retain_requested_code_action_kinds(code_actions, requested_kinds);
+    }
+
+    /// Choose the native-bearing staged response only while the accepted
+    /// document/root/policy subject is locked current. The supplied hook is a
+    /// deterministic test seam after all projection work and immediately
+    /// before the actual response linearization point.
+    fn commit_staged_native_code_action_response(
+        &self,
+        uri: &str,
+        staged: StagedNativeCriticActions,
+        with_native: Vec<Value>,
+        without_native: Vec<Value>,
+        after_staging: impl FnOnce(),
+    ) -> Value {
+        after_staging();
+        match self.commit_if_diagnostic_subject_current(
+            DiagnosticSubject {
+                uri,
+                document_instance: &staged.document_instance,
+                generation: staged.generation,
+                workspace_generation: None,
+                accepted_folder_config_generation: None,
+                accepted_critic_snapshot: Some(&staged.accepted_snapshot),
+                accepted_topology_generation: Some(staged.topology_generation),
+            },
+            || to_json_array(&with_native),
+        ) {
+            Ok(response) => response,
+            Err(_) => self
+                .commit_if_diagnostic_subject_current(
+                    DiagnosticSubject {
+                        uri,
+                        document_instance: &staged.document_instance,
+                        generation: staged.generation,
+                        workspace_generation: None,
+                        accepted_folder_config_generation: None,
+                        accepted_critic_snapshot: None,
+                        accepted_topology_generation: Some(staged.topology_generation),
+                    },
+                    || to_json_array(&without_native),
+                )
+                .unwrap_or_else(|_| Value::Array(Vec::new())),
+        }
+    }
+
+    /// Finalize both provider candidates and validate the selected response.
+    fn finalize_staged_code_action_response(
+        &self,
+        base_subject: DiagnosticSubject<'_>,
+        staged_native_actions: Option<StagedNativeCriticActions>,
+        mut code_actions: Vec<Value>,
+        native_insert_at: usize,
+        doc_version: i32,
+        requested_kinds: &[&str],
+    ) -> Value {
+        if let Some(staged) = staged_native_actions {
+            let mut with_native = code_actions.clone();
+            let insertion = native_insert_at.min(with_native.len());
+            with_native.splice(insertion..insertion, staged.actions.iter().cloned());
+            self.finalize_code_action_candidate(
+                &mut with_native,
+                base_subject.uri,
+                doc_version,
+                requested_kinds,
+            );
+            self.finalize_code_action_candidate(
+                &mut code_actions,
+                base_subject.uri,
+                doc_version,
+                requested_kinds,
+            );
+            self.commit_staged_native_code_action_response(
+                base_subject.uri,
+                staged,
+                with_native,
+                code_actions,
+                || {},
+            )
+        } else {
+            self.finalize_code_action_candidate(
+                &mut code_actions,
+                base_subject.uri,
+                doc_version,
+                requested_kinds,
+            );
+            self.commit_if_diagnostic_subject_current(base_subject, || to_json_array(&code_actions))
+                .unwrap_or_else(|_| Value::Array(Vec::new()))
+        }
+    }
+
     /// Handle textDocument/codeAction request
     pub(crate) fn handle_code_action(
         &self,
         params: Option<Value>,
+    ) -> Result<Option<Value>, JsonRpcError> {
+        self.handle_code_action_with_cancellation(params, None)
+    }
+
+    /// Ordinary code-action logic, able to observe the request's cancellation
+    /// authority (#12067 review).
+    ///
+    /// `handle_code_action_cancellable` owns the token but previously consulted
+    /// it only once, before delegating, so native critic analysis ran under an
+    /// open cancellation gate and a cancellation arriving during that work could
+    /// still produce a full response. The token is threaded through here instead
+    /// of registering a second cancellation mechanism. `None` keeps the ordinary
+    /// entry point usable from non-dispatch callers and tests.
+    pub(crate) fn handle_code_action_with_cancellation(
+        &self,
+        params: Option<Value>,
+        cancellation: Option<&PerlLspCancellationToken>,
     ) -> Result<Option<Value>, JsonRpcError> {
         // Gate unadvertised feature
         if !self.advertised_features.lock().code_action {
@@ -628,184 +792,65 @@ impl LspServer {
             // with the problem it resolves. The default native engine publishes
             // `native.*` codes under source "perl-lsp" (built-in diagnostics);
             // the opt-in legacy engine keeps the `Perl::Critic` policy names it
-            // shares with the external tool it emulates. Running the legacy
-            // analyzer
-            // unconditionally (as before) leaked the `Perl::Critic` brand onto
-            // the native product surface and produced quick-fixes whose source +
-            // code never matched the published native diagnostic.
-            // Read the engine and every critic field in ONE lock scope so the
-            // code action is built from a single coherent config snapshot. A
-            // split lock (engine, then the rest) could tear if
-            // didChangeConfiguration lands between the two acquisitions —
-            // "we decided Native" (stale) + a fresh profile/include/exclude — a
-            // state that never coherently existed. This mirrors
-            // `collect_native_critic_diagnostics` in runtime/diagnostics.rs.
-            let (critic_engine, severity, profile, native_profile, native_include, native_exclude) = {
-                let cfg = self.config.lock();
-                (
-                    cfg.critic_engine,
-                    cfg.perlcritic_severity,
-                    cfg.perlcritic_profile.clone(),
-                    cfg.native_critic_profile.clone(),
-                    cfg.native_critic_include.clone(),
-                    cfg.native_critic_exclude.clone(),
-                )
+            // shares with the external tool it emulates (its removal is
+            // #9068's). Running the legacy analyzer unconditionally (as before)
+            // leaked the `Perl::Critic` brand onto the native product surface.
+            //
+            // Resolve the owning folder key first (#9062): the same root
+            // identity governs capture and revalidation, so multi-root
+            // workspaces carry distinct critic policy and currentness through
+            // the action transport exactly like the pull path.
+            // Resolve URI ownership and accepted policy into one sealed
+            // snapshot (#8253/#13304), then release the lock
+            // before any rule evaluation (#9062): the native arm runs through
+            // the one protocol-neutral service over that immutable subject, so
+            // a torn split (stale engine + fresh policy) can never exist and
+            // no consumer composes its own registry/policy pipeline.
+            let accepted_snapshot = self.capture_accepted_critic(uri);
+            let topology_generation =
+                self.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+            // The last live-document read the rest of this branch needs, hoisted
+            // so the guard can be released before the native critic run.
+            let doc_version = doc.version;
+            let base_document_instance = std::sync::Arc::clone(&doc.generation);
+            let base_subject = DiagnosticSubject {
+                uri,
+                document_instance: &base_document_instance,
+                generation: doc.current_generation(),
+                workspace_generation: None,
+                accepted_folder_config_generation: None,
+                accepted_critic_snapshot: None,
+                accepted_topology_generation: Some(topology_generation),
             };
-            match critic_engine {
-                perl_lsp_rs_core::config::CriticEngine::Native => {
-                    let critic_config = crate::perl_critic::CriticConfig {
-                        severity: severity.clamp(1, 5),
-                        profile,
-                        include: native_include,
-                        exclude: native_exclude,
-                        ..crate::perl_critic::CriticConfig::default()
-                    };
-                    let critic_context =
-                        crate::perl_critic::CriticContext::new(&doc.text, ast, &critic_config);
-                    let native_profile =
-                        crate::perl_critic::NativeCriticProfile::parse(&native_profile)
-                            .unwrap_or(crate::perl_critic::NativeCriticProfile::Strict);
-                    let registry =
-                        crate::perl_critic::NativeCriticRegistry::for_profile_with_config(
-                            native_profile,
-                            &critic_config,
-                        );
-                    use perl_lsp_rs_core::tooling::perl_critic::{
-                        CriticSuppressionMap, NativeCriticPolicy, critic_source_identity_for_uri,
-                        native_finding_candidates_with_accounting, normalize_with_native_policy,
-                    };
 
-                    let raw_findings = registry.check_unfiltered(&critic_context);
-                    let candidates = native_finding_candidates_with_accounting(
-                        uri,
-                        raw_findings.iter().cloned(),
-                        critic_source_identity_for_uri(uri, 0),
-                    );
-                    let suppressions = CriticSuppressionMap::from_source(&doc.text);
-                    let policy = NativeCriticPolicy::new(
-                        severity.clamp(1, 5),
-                        &critic_config.include,
-                        &critic_config.exclude,
-                        &suppressions,
-                    );
-
-                    for normalized in normalize_with_native_policy(candidates, &policy) {
-                        // Normalization decides whether this logical finding is
-                        // admitted. The raw producer is retained only for its
-                        // existing safe edit and title; no raw finding can
-                        // bypass alias-aware exclusion or suppression.
-                        let Some(finding) = raw_findings.iter().find(|finding| {
-                            finding.range == normalized.range()
-                                && normalized.contributors().iter().any(|contributor| {
-                                    let identity = contributor.identity();
-                                    identity.origin()
-                                        == perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin::NativeCritic
-                                        && identity.code() == finding.rule_id
-                                        && identity.shape() == finding.observed_shape
-                                })
-                        }) else {
-                            continue;
-                        };
-                        // Only findings that carry a Safe automatic edit become
-                        // quick-fixes. Suggested fixes need user confirmation
-                        // (declaration-only renames corrupt references);
-                        // ManualOnly and empty edits are diagnostic-only guidance.
-                        let Some(fix) = finding.fix.as_ref() else {
-                            continue;
-                        };
-                        if fix.safety != crate::perl_critic::FixSafety::Safe || fix.edits.is_empty()
-                        {
-                            continue;
-                        }
-                        let (start_line, start_char) =
-                            self.offset_to_pos16(doc, finding.range.start.byte);
-                        let (end_line, end_char) =
-                            self.offset_to_pos16(doc, finding.range.end.byte);
-
-                        let edits: Vec<Value> = fix
-                            .edits
-                            .iter()
-                            .map(|edit| {
-                                let (es_line, es_char) =
-                                    self.offset_to_pos16(doc, edit.range.start.byte);
-                                let (ee_line, ee_char) =
-                                    self.offset_to_pos16(doc, edit.range.end.byte);
-                                json!({
-                                    "range": {
-                                        "start": {"line": es_line, "character": es_char},
-                                        "end": {"line": ee_line, "character": ee_char},
-                                    },
-                                    "newText": edit.new_text.clone(),
-                                })
-                            })
-                            .collect();
-                        let mut changes = HashMap::new();
-                        changes.insert(uri.to_string(), edits);
-
-                        code_actions.push(json!({
-                            "title": fix.title.clone(),
-                            "kind": "quickfix",
-                            "diagnostics": [{
-                                "range": {
-                                    "start": {"line": start_line, "character": start_char},
-                                    "end": {"line": end_line, "character": end_char},
-                                },
-                                "severity": finding.severity.to_diagnostic_severity(),
-                                "code": finding.rule_id.clone(),
-                                "source": "perl-lsp",
-                                "message": finding.message.clone(),
-                            }],
-                            "edit": {
-                                "changes": changes,
-                            },
-                        }));
-                    }
-                }
-                perl_lsp_rs_core::config::CriticEngine::Legacy => {
-                    let builtin_analyzer = BuiltInAnalyzer::new();
-                    let violations = builtin_analyzer.analyze(ast, &doc.text);
-                    for violation in &violations {
-                        if let Some(quick_fix) =
-                            builtin_analyzer.get_quick_fix(violation, &doc.text)
-                        {
-                            let mut changes = HashMap::new();
-                            let (start_line, start_char) =
-                                self.offset_to_pos16(doc, violation.range.start.byte);
-                            let (end_line, end_char) =
-                                self.offset_to_pos16(doc, violation.range.end.byte);
-
-                            changes.insert(
-                                uri.to_string(),
-                                vec![json!({
-                                    "range": {
-                                        "start": {"line": start_line, "character": start_char},
-                                        "end": {"line": end_line, "character": end_char},
-                                    },
-                                    "newText": quick_fix.edit.new_text,
-                                })],
-                            );
-
-                            code_actions.push(json!({
-                                "title": quick_fix.title,
-                                "kind": "quickfix",
-                                "diagnostics": [{
-                                    "range": {
-                                        "start": {"line": start_line, "character": start_char},
-                                        "end": {"line": end_line, "character": end_char},
-                                    },
-                                    "severity": violation.severity.to_diagnostic_severity(),
-                                    "code": violation.policy.clone(),
-                                    "source": "Perl::Critic",
-                                    "message": violation.description.clone()
-                                }],
-                                "edit": {
-                                    "changes": changes,
-                                },
-                            }));
-                        }
-                    }
-                }
-            }
+            // #9062: the native run must observe an immutable accepted subject
+            // with NO document lock held. Capture everything it needs here —
+            // AST, exact source, accepted generation, the position index those
+            // offsets are expressed in, and the producer-declared overlap
+            // observations from the SAME collected diagnostic set push and pull
+            // feed the service — then evaluate after the guard is released
+            // further down. `native_insert_at` holds this arm's position in the
+            // emitted action order so the deferred run splices back in place.
+            let native_insert_at = code_actions.len();
+            // #9062: routing authority is the accepted state (#8253), never the
+            // raw engine setting. `EffectiveCriticState` is `Disabled | Native`,
+            // so a deprecated `legacy`/`external`/`perlcritic` value is a
+            // migration observation that cannot construct runtime state and
+            // cannot select a second evaluator here.
+            let native_critic_subject = Some(NativeCriticActionSubject {
+                ast: std::sync::Arc::clone(ast),
+                text: std::sync::Arc::clone(&doc.text_arc),
+                generation: doc.current_generation(),
+                document_instance: std::sync::Arc::clone(&doc.generation),
+                rope: doc.rope.clone(),
+                line_starts: doc.line_starts.clone(),
+                accepted_snapshot,
+                topology_generation,
+                overlap_observations:
+                    perl_lsp_rs_core::providers::diagnostics::critic_overlap_observations(
+                        &diagnostics,
+                    ),
+            });
 
             // Get quick-fixes from the V2 provider (diagnostic-based)
             let provider_v2 = CodeActionsProviderV2::new(doc.text_arc.to_string());
@@ -1000,6 +1045,16 @@ impl LspServer {
                 }));
             }
 
+            // Every remaining consumer of the document snapshot is done, so the
+            // runtime document lock is released before the native critic run
+            // evaluates a single rule (#9062). The subject captured above is
+            // immutable and self-contained: the analysis, its range mapping and
+            // its revalidation all read from it, never from live server state.
+            drop(documents);
+            let staged_native_actions = native_critic_subject.and_then(|subject| {
+                self.stage_native_critic_code_actions(uri, subject, cancellation)
+            });
+
             // Emit a disabled "Extract variable" placeholder when the selection
             // is zero-width (cursor-only) and the client declared
             // `textDocument.codeAction.disabledSupport`.
@@ -1016,42 +1071,27 @@ impl LspServer {
                 code_actions.push(json!({
                     "title": format!("Generate test for '{}'", sub_info.name),
                     "kind": "source",
-                    "command": {
-                        "title": "Generate test",
-                        "command": "perl.generateTest",
-                        "arguments": [json!({
+                    "command": Command::presented(
+                        "Generate test",
+                        "perl.generateTest",
+                        "Insert a Test::More skeleton for this subroutine",
+                        Some(vec![json!({
                             "uri": uri,
                             "name": sub_info.name,
                             "test": test_code
-                        })]
-                    }
+                        })]),
+                    ),
                 }));
             }
 
-            // Multiple providers can emit the same fix for the same finding;
-            // collapse byte-identical actions before aggregating or returning so
-            // the lightbulb menu does not show repeated entries.
-            dedupe_code_actions(&mut code_actions);
-
-            // Aggregate all quick fixes collected so far into a single
-            // `source.fixAll` action (LSP 3.17) when there are two or more
-            // distinct edits. Editors use this to apply every safe fix with
-            // one keystroke.
-            if let Some(fix_all) = build_source_fix_all(&code_actions, uri) {
-                code_actions.push(fix_all);
-            }
-
-            if self.supports_workspace_snippet_text_edits() {
-                convert_pragma_quickfix_edits_to_snippet_text_edits(
-                    &mut code_actions,
-                    uri,
-                    doc.version,
-                );
-            }
-
-            self.enforce_code_action_tag_capabilities(&mut code_actions);
-            retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
-            Ok(Some(to_json_array(&code_actions)))
+            Ok(Some(self.finalize_staged_code_action_response(
+                base_subject,
+                staged_native_actions,
+                code_actions,
+                native_insert_at,
+                doc_version,
+                &requested_kinds,
+            )))
         } else {
             // No AST (parse error), but we can still offer some actions
             let mut code_actions: Vec<Value> = Vec::new();
@@ -1108,11 +1148,12 @@ impl LspServer {
             code_actions.push(json!({
                 "title": "Add debug print",
                 "kind": "refactor.rewrite",
-                "command": {
-                    "title": "Add debug print",
-                    "command": "perl.addDebugPrint",
-                    "arguments": [json!({ "uri": uri })]
-                }
+                "command": Command::presented(
+                    "Add debug print",
+                    "perl.addDebugPrint",
+                    "Insert a STDERR debug print in this document",
+                    Some(vec![json!({ "uri": uri })]),
+                ),
             }));
 
             // Check for global variables that could use 'my' declarations
@@ -1120,11 +1161,12 @@ impl LspServer {
                 code_actions.push(json!({
                     "title": "Convert globals to 'my' declarations",
                     "kind": "refactor.rewrite",
-                    "command": {
-                        "title": "Convert to my declarations",
-                        "command": "perl.convertToMyDeclarations",
-                        "arguments": [json!({ "uri": uri })]
-                    }
+                    "command": Command::presented(
+                        "Convert to my declarations",
+                        "perl.convertToMyDeclarations",
+                        "Rewrite file-scope globals as lexical my declarations",
+                        Some(vec![json!({ "uri": uri })]),
+                    ),
                 }));
             }
 
@@ -1138,6 +1180,226 @@ impl LspServer {
             retain_requested_code_action_kinds(&mut code_actions, &requested_kinds);
             Ok(Some(to_json_array(&code_actions)))
         }
+    }
+
+    /// Stage native critic quick-fixes over one immutable accepted subject with
+    /// no document lock held (#9062). The handler owns the later response
+    /// commit boundary; this function cannot publish its staged effects.
+    ///
+    /// The action run consumes the same accepted overlap candidates as the
+    /// diagnostic transports, so a reviewed core/native alias carries identical
+    /// contributors and public identity on both surfaces, and each embedded
+    /// diagnostic is projected from the normalized finding — the public code,
+    /// severity and message a client must match against the published
+    /// diagnostic — not from producer-local fields.
+    fn stage_native_critic_code_actions(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+        cancellation: Option<&PerlLspCancellationToken>,
+    ) -> Option<StagedNativeCriticActions> {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        // The service consults this at its pre-evaluation and settlement
+        // barriers, so a cancellation arriving while rules run settles the run
+        // Cancelled and nothing publishes.
+        let not_cancelled = || cancellation.is_none_or(|token| !token.is_cancelled_relaxed());
+        self.stage_native_critic_code_actions_with_gate(uri, subject, RunGate::new(&not_cancelled))
+    }
+
+    #[cfg(test)]
+    fn native_critic_code_actions(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+        cancellation: Option<&PerlLspCancellationToken>,
+    ) -> Vec<Value> {
+        let Some(staged) = self.stage_native_critic_code_actions(uri, subject, cancellation) else {
+            return Vec::new();
+        };
+        self.commit_staged_native_actions_for_test(uri, staged, || {})
+    }
+
+    /// Native critic action evaluation under a caller-supplied cancellation
+    /// gate.
+    ///
+    /// The gate is a parameter so the consumer's cancellation wiring is
+    /// deterministically testable at exactly the seam the review is about: a
+    /// gate that reports open on its first consultation and closed on its
+    /// second proves this consumer preserves the service's two-barrier
+    /// semantics, without a production test hook and without racing a real
+    /// token through synchronous analysis.
+    #[cfg(test)]
+    fn native_critic_code_actions_with_gate(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+        cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
+    ) -> Vec<Value> {
+        let Some(staged) =
+            self.stage_native_critic_code_actions_with_gate(uri, subject, cancellation)
+        else {
+            return Vec::new();
+        };
+        self.commit_staged_native_actions_for_test(uri, staged, || {})
+    }
+
+    /// Test-only response-boundary mutation seam after staging.
+    #[cfg(test)]
+    fn native_critic_code_actions_with_gates(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+        cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
+        before_publication: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
+    ) -> Vec<Value> {
+        let Some(staged) =
+            self.stage_native_critic_code_actions_with_gate(uri, subject, cancellation)
+        else {
+            return Vec::new();
+        };
+        self.commit_staged_native_actions_for_test(uri, staged, || {
+            let _ = before_publication.holds();
+        })
+    }
+
+    #[cfg(test)]
+    fn commit_staged_native_actions_for_test(
+        &self,
+        uri: &str,
+        staged: StagedNativeCriticActions,
+        after_staging: impl FnOnce(),
+    ) -> Vec<Value> {
+        after_staging();
+        self.commit_if_diagnostic_subject_current(
+            DiagnosticSubject {
+                uri,
+                document_instance: &staged.document_instance,
+                generation: staged.generation,
+                workspace_generation: None,
+                accepted_folder_config_generation: None,
+                accepted_critic_snapshot: Some(&staged.accepted_snapshot),
+                accepted_topology_generation: Some(staged.topology_generation),
+            },
+            || staged.actions,
+        )
+        .unwrap_or_default()
+    }
+
+    fn stage_native_critic_code_actions_with_gate(
+        &self,
+        uri: &str,
+        subject: NativeCriticActionSubject,
+        cancellation: perl_lsp_rs_core::tooling::perl_critic::RunGate<'_>,
+    ) -> Option<StagedNativeCriticActions> {
+        use perl_lsp_rs_core::tooling::perl_critic::{
+            NativeCriticService, NativeCriticSubject, RunGate,
+        };
+
+        let accepted_snapshot = subject.accepted_snapshot.clone();
+        let snapshot_is_current = || self.capture_accepted_critic(uri) == accepted_snapshot;
+        let source_identity =
+            perl_lsp_rs_core::tooling::perl_critic::critic_source_identity_for_uri(
+                uri,
+                subject.generation,
+            );
+
+        let run = NativeCriticService::analyze(NativeCriticSubject::accepted(
+            uri,
+            source_identity,
+            &subject.ast,
+            &subject.text,
+            subject.accepted_snapshot.state().clone(),
+            subject.overlap_observations.clone(),
+            cancellation,
+            RunGate::new(&snapshot_is_current),
+        ));
+
+        // A superseded run offers no actions this round; the next request
+        // re-snapshots current state (#9062). A disabled accepted state
+        // contributes none by configuration (#8253).
+        if !run.is_publishable() {
+            return None;
+        }
+
+        let pos16 =
+            |offset: usize| subject.line_starts.offset_to_position_rope(&subject.rope, offset);
+
+        let mut actions = Vec::new();
+        for normalized in run.findings() {
+            // Normalization decides whether this logical finding is admitted.
+            // The raw producer is retained only for its existing safe edit and
+            // title; no raw finding can bypass alias-aware exclusion or
+            // suppression, and none of its local fields reach the wire.
+            let Some(finding) = run.producer_findings().iter().find(|finding| {
+                finding.range == normalized.range()
+                    && normalized.contributors().iter().any(|contributor| {
+                        let identity = contributor.identity();
+                        identity.origin()
+                            == perl_lsp_rs_core::tooling::perl_critic::CriticFindingOrigin::NativeCritic
+                            && identity.code() == finding.rule_id
+                            && identity.shape() == finding.observed_shape
+                    })
+            }) else {
+                continue;
+            };
+            // Only findings that carry a Safe automatic edit become quick-fixes.
+            // Suggested fixes need user confirmation (declaration-only renames
+            // corrupt references); ManualOnly and empty edits are
+            // diagnostic-only guidance.
+            let Some(fix) = finding.fix.as_ref() else {
+                continue;
+            };
+            if fix.safety != crate::perl_critic::FixSafety::Safe || fix.edits.is_empty() {
+                continue;
+            }
+
+            let (start_line, start_char) = pos16(normalized.range().start.byte);
+            let (end_line, end_char) = pos16(normalized.range().end.byte);
+
+            let edits: Vec<Value> = fix
+                .edits
+                .iter()
+                .map(|edit| {
+                    let (es_line, es_char) = pos16(edit.range.start.byte);
+                    let (ee_line, ee_char) = pos16(edit.range.end.byte);
+                    json!({
+                        "range": {
+                            "start": {"line": es_line, "character": es_char},
+                            "end": {"line": ee_line, "character": ee_char},
+                        },
+                        "newText": edit.new_text.clone(),
+                    })
+                })
+                .collect();
+            let mut changes = HashMap::new();
+            changes.insert(uri.to_string(), edits);
+
+            actions.push(json!({
+                "title": fix.title.clone(),
+                "kind": "quickfix",
+                "diagnostics": [{
+                    "range": {
+                        "start": {"line": start_line, "character": start_char},
+                        "end": {"line": end_line, "character": end_char},
+                    },
+                    "severity": normalized.severity().to_diagnostic_severity(),
+                    "code": normalized.public_code(),
+                    "source": "perl-lsp",
+                    "message": normalized.user_visible_message(),
+                }],
+                "edit": {
+                    "changes": changes,
+                },
+            }));
+        }
+        Some(StagedNativeCriticActions {
+            document_instance: subject.document_instance,
+            generation: subject.generation,
+            accepted_snapshot: subject.accepted_snapshot,
+            topology_generation: subject.topology_generation,
+            actions,
+        })
     }
 
     /// Cancellation-aware wrapper for `textDocument/codeAction`.
@@ -1155,23 +1417,36 @@ impl LspServer {
         let typed_id = request_id.and_then(JsonRpcId::try_from_value);
         let _cleanup_guard = RequestCleanupGuard::from_ref(typed_id.as_ref());
 
-        if let Some(ref tid) = typed_id {
-            let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
-                let token =
-                    PerlLspCancellationToken::new(tid.clone(), "textDocument/codeAction".into());
-                let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
-                token
-            });
-            if token.is_cancelled_relaxed() {
-                return Err(JsonRpcError {
-                    code: REQUEST_CANCELLED,
-                    message: "Request cancelled - code action provider".to_string(),
-                    data: None,
-                });
-            }
+        let Some(ref tid) = typed_id else {
+            return self.handle_code_action(params);
+        };
+
+        let token = GLOBAL_CANCELLATION_REGISTRY.get_token(tid).unwrap_or_else(|| {
+            let token =
+                PerlLspCancellationToken::new(tid.clone(), "textDocument/codeAction".into());
+            let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+            token
+        });
+        let cancelled = || JsonRpcError {
+            code: REQUEST_CANCELLED,
+            message: "Request cancelled - code action provider".to_string(),
+            data: None,
+        };
+        if token.is_cancelled_relaxed() {
+            return Err(cancelled());
         }
 
-        self.handle_code_action(params)
+        // The token now reaches native critic analysis, so a cancellation
+        // arriving mid-service settles that run Cancelled instead of letting it
+        // publish (#12067 review).
+        let response = self.handle_code_action_with_cancellation(params, Some(&token))?;
+
+        // A cancellation arriving after the work finished but before the
+        // response is returned must not deliver a computed result either.
+        if token.is_cancelled_relaxed() {
+            return Err(cancelled());
+        }
+        Ok(response)
     }
 
     /// Handle textDocument/codeAction request for pragmas
@@ -1204,6 +1479,11 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         if let Some(mut action) = params {
+            if action.get("title").and_then(Value::as_str).is_none() {
+                return Err(crate::protocol::invalid_params(
+                    "Missing or invalid code action title",
+                ));
+            }
             // The action should already have minimal information
             // We now need to compute the actual edits
 
@@ -1242,7 +1522,7 @@ impl LspServer {
             self.enforce_code_action_tag_capabilities(std::slice::from_mut(&mut action));
             Ok(Some(action))
         } else {
-            Ok(None)
+            Err(crate::protocol::invalid_params("Missing code action parameters"))
         }
     }
 }
@@ -1346,10 +1626,11 @@ impl LspServer {
             "title": "Explain this diagnostic",
             "kind": "quickfix",
             "diagnostics": [diagnostic_value],
-            "command": {
-                "title": "Explain this diagnostic",
-                "command": "perl-lsp.explainDiagnostic",
-                "arguments": [{
+            "command": Command::presented(
+                "Explain this diagnostic",
+                "perl-lsp.explainDiagnostic",
+                "Show why this diagnostic was produced and its claim boundary",
+                Some(vec![json!({
                     "provider": "diagnostics",
                     "request_receipt": receipt,
                     "request_position": {
@@ -1357,8 +1638,8 @@ impl LspServer {
                         "line": line,
                         "character": character,
                     },
-                }]
-            }
+                })]),
+            ),
         })
     }
 
@@ -1436,6 +1717,521 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    /// Build a server with one open document and the native critic armed.
+    fn server_with_document(uri: &str) -> crate::runtime::LspServer {
+        let server = crate::runtime::LspServer::new();
+        server.test_configure_critic_engine(perl_lsp_rs_core::config::CriticEngine::Native);
+        server.test_configure_native_critic_profile("strict");
+        server
+            .test_handle_did_open(Some(json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "perl",
+                    "version": 1,
+                    "text": "my $x = 1;
+print $x;
+"
+                }
+            })))
+            .expect("did_open must succeed");
+        server
+    }
+
+    /// Capture the accepted action subject exactly as `handle_code_action` does,
+    /// optionally substituting a foreign document-instance token to model a
+    /// close/reopen that restored the same numeric generation.
+    fn action_subject(
+        server: &crate::runtime::LspServer,
+        uri: &str,
+        foreign_instance: bool,
+    ) -> NativeCriticActionSubject {
+        let documents = server.documents_guard();
+        let doc = server.get_document(&documents, uri).expect("document must be open");
+        let parsed = doc.current_parsed().expect("document must be parsed");
+        let ast = parsed.ast().expect("document must have an AST");
+        let generation = doc.current_generation();
+        let accepted_snapshot = server.capture_accepted_critic(uri);
+        let topology_generation =
+            server.workspace_topology_generation.load(std::sync::atomic::Ordering::SeqCst);
+        NativeCriticActionSubject {
+            ast: std::sync::Arc::clone(ast),
+            text: std::sync::Arc::clone(&doc.text_arc),
+            generation,
+            document_instance: if foreign_instance {
+                // Same counter value, different instance: exactly what a
+                // close/reopen of the same URI produces.
+                std::sync::Arc::new(std::sync::atomic::AtomicU32::new(generation))
+            } else {
+                std::sync::Arc::clone(&doc.generation)
+            },
+            rope: doc.rope.clone(),
+            line_starts: doc.line_starts.clone(),
+            accepted_snapshot,
+            topology_generation,
+            overlap_observations: Vec::new(),
+        }
+    }
+
+    /// #12067 review: revalidating only the numeric generation cannot detect a
+    /// close/reopen. A replacement document can carry the same counter, so the
+    /// stale analysis would have been published against a different document.
+    #[test]
+    fn native_actions_are_withheld_when_the_document_instance_was_replaced() {
+        let uri = "file:///action_aba.pl";
+        let server = server_with_document(uri);
+
+        // Non-vacuity: the same subject with the live instance does publish.
+        let current =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, false), None);
+        assert!(
+            !current.is_empty(),
+            "the fixture must produce native actions, or the ABA assertion proves nothing"
+        );
+
+        let replaced =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, true), None);
+        assert!(
+            replaced.is_empty(),
+            "analysis captured against a replaced document instance must publish no actions,              even though the numeric generation still matches; got: {replaced:?}"
+        );
+    }
+
+    /// Policy can move after the service's settlement recheck but before the
+    /// handler serializes its response. The final publication boundary must
+    /// compare the sealed snapshot again, not trust settlement or a compact
+    /// legacy fingerprint.
+    #[test]
+    fn native_actions_are_withheld_when_policy_moves_at_publication_boundary() -> Result<(), String>
+    {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        let uri = "file:///action_policy_publication.pl";
+        let server = server_with_document(uri);
+        let current =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, false), None);
+        if current.is_empty() {
+            return Err("the current-policy control must produce a native action".to_string());
+        }
+
+        let consultations = std::sync::atomic::AtomicUsize::new(0);
+        let move_policy = || {
+            consultations.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            server.test_configure_native_critic_filters(
+                Vec::new(),
+                vec!["native.testing.require_use_strict".to_string()],
+            );
+            true
+        };
+        let actions = server.native_critic_code_actions_with_gates(
+            uri,
+            action_subject(&server, uri, false),
+            RunGate::open(),
+            RunGate::new(&move_policy),
+        );
+        if consultations.load(std::sync::atomic::Ordering::SeqCst) != 1 {
+            return Err("the final publication barrier must be consulted exactly once".to_string());
+        }
+        if !actions.is_empty() {
+            return Err(format!(
+                "a policy moved after settlement must publish no native actions; got: {actions:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// URI ownership is part of the accepted Critic subject. Rebinding the
+    /// document to a different live workspace root after settlement must
+    /// withhold actions even when the document generation and bytes are still
+    /// identical.
+    #[test]
+    fn native_actions_are_withheld_when_workspace_root_rebinds_at_publication_boundary()
+    -> Result<(), String> {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        let uri = "file:///workspace-a/action_root_rebind.pl";
+        let server = server_with_document(uri);
+        server.test_set_workspace_folder_uris(&["file:///workspace-a/"]);
+        let current =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, false), None);
+        if current.is_empty() {
+            return Err("the current-root control must produce a native action".to_string());
+        }
+
+        let rebind_root = || {
+            server.test_set_workspace_folder_uris(&["file:///workspace-b/"]);
+            true
+        };
+        let actions = server.native_critic_code_actions_with_gates(
+            uri,
+            action_subject(&server, uri, false),
+            RunGate::open(),
+            RunGate::new(&rebind_root),
+        );
+        if !actions.is_empty() {
+            return Err(format!(
+                "a workspace-root rebind after settlement must publish no native actions; got: {actions:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_actions_are_withheld_when_topology_moves_at_publication_boundary()
+    -> Result<(), String> {
+        let uri = "file:///workspace-a/action_topology_publication.pl";
+        let server = server_with_document(uri);
+        server.test_set_workspace_folder_uris(&["file:///workspace-a/"]);
+        let staged = server
+            .stage_native_critic_code_actions(uri, action_subject(&server, uri, false), None)
+            .ok_or_else(|| "current subject must stage native actions".to_string())?;
+        if staged.actions.is_empty() {
+            return Err("current subject must stage a non-empty native effect".to_string());
+        }
+        let base = vec![json!({ "title": "base action", "kind": "refactor" })];
+        let mut candidate = base.clone();
+        candidate.extend(staged.actions.iter().cloned());
+        let result = server.commit_staged_native_code_action_response(
+            uri,
+            staged,
+            candidate,
+            base.clone(),
+            || {
+                server
+                    .workspace_topology_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        if result != Value::Array(Vec::new()) {
+            return Err(format!(
+                "a topology move after action staging must withhold all actions; got: {result:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Projection and aggregation happen before response authority is granted.
+    /// If the document advances after that staging work, the entire
+    /// native-bearing candidate (including an effect derived from its rows) is
+    /// withheld together with base edits derived from the same old document.
+    #[test]
+    fn staged_native_response_is_withheld_when_document_moves_before_commit() -> Result<(), String>
+    {
+        let uri = "file:///action_generation_publication.pl";
+        let server = server_with_document(uri);
+        let base = edit_bearing_base_actions(uri);
+
+        let current_staged = server
+            .stage_native_critic_code_actions(uri, action_subject(&server, uri, false), None)
+            .ok_or_else(|| "current subject must stage native actions".to_string())?;
+        if current_staged.actions.is_empty() {
+            return Err("current subject must stage a non-empty native effect".to_string());
+        }
+        let mut current_candidate = base.clone();
+        current_candidate.extend(current_staged.actions.iter().cloned());
+        current_candidate.push(json!({ "title": "derived from native", "kind": "source.fixAll" }));
+        let current_expected = to_json_array(&current_candidate);
+        let current = server.commit_staged_native_code_action_response(
+            uri,
+            current_staged,
+            current_candidate,
+            base.clone(),
+            || {},
+        );
+        if current != current_expected {
+            return Err("a current staged subject must commit its native-bearing response".into());
+        }
+
+        let stale_staged = server
+            .stage_native_critic_code_actions(uri, action_subject(&server, uri, false), None)
+            .ok_or_else(|| "second current subject must stage native actions".to_string())?;
+        let live_generation = std::sync::Arc::clone(&stale_staged.document_instance);
+        let mut stale_candidate = base.clone();
+        stale_candidate.extend(stale_staged.actions.iter().cloned());
+        stale_candidate.push(json!({ "title": "derived from native", "kind": "source.fixAll" }));
+        let generation = stale_staged.generation;
+        let stale = server.commit_staged_native_code_action_response(
+            uri,
+            stale_staged,
+            stale_candidate,
+            base.clone(),
+            || live_generation.store(generation + 1, std::sync::atomic::Ordering::SeqCst),
+        );
+        if stale != Value::Array(Vec::new()) {
+            return Err(format!(
+                "a document moved after projection must expose no stale edits; got: {stale:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    fn edit_bearing_base_actions(uri: &str) -> Vec<Value> {
+        vec![json!({
+            "title": "rename local variable",
+            "kind": "refactor.rename",
+            "edit": { "changes": { (uri): [{
+                "range": {
+                    "start": { "line": 0, "character": 3 },
+                    "end": { "line": 0, "character": 5 }
+                },
+                "newText": "$renamed"
+            }] } }
+        })]
+    }
+
+    #[test]
+    fn unstaged_native_response_revalidates_base_edits() -> Result<(), String> {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        for movement in ["unchanged", "advance", "close", "replace", "topology"] {
+            let uri = "file:///action_unstaged_publication.pl";
+            let server = server_with_document(uri);
+            let native_subject = action_subject(&server, uri, false);
+            let document_instance = std::sync::Arc::clone(&native_subject.document_instance);
+            let generation = native_subject.generation;
+            let topology_generation = native_subject.topology_generation;
+            let refuse = || false;
+            let staged = server.stage_native_critic_code_actions_with_gate(
+                uri,
+                native_subject,
+                RunGate::new(&refuse),
+            );
+            if staged.is_some() {
+                return Err("a refused service run must exercise the unstaged response".into());
+            }
+            if movement == "advance" {
+                document_instance.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            } else if movement == "topology" {
+                server
+                    .workspace_topology_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            } else if movement == "close" || movement == "replace" {
+                let normalized_uri = server.normalize_uri_key(uri);
+                let mut documents = server.documents.lock();
+                if movement == "close" {
+                    documents.remove(&normalized_uri);
+                } else {
+                    let document = documents
+                        .get_mut(&normalized_uri)
+                        .ok_or_else(|| "replacement fixture needs an open document".to_string())?;
+                    document.generation =
+                        std::sync::Arc::new(std::sync::atomic::AtomicU32::new(generation));
+                }
+            }
+            let base = edit_bearing_base_actions(uri);
+            let mut expected = base.clone();
+            server.finalize_code_action_candidate(&mut expected, uri, 1, &[]);
+            if !expected.iter().any(|action| action.get("edit").is_some()) {
+                return Err("current base control must retain an edit after finalization".into());
+            }
+            let response = server.finalize_staged_code_action_response(
+                DiagnosticSubject {
+                    uri,
+                    document_instance: &document_instance,
+                    generation,
+                    workspace_generation: None,
+                    accepted_folder_config_generation: None,
+                    accepted_critic_snapshot: None,
+                    accepted_topology_generation: Some(topology_generation),
+                },
+                staged,
+                base,
+                0,
+                1,
+                &[],
+            );
+            let expected_response = if movement != "unchanged" {
+                Value::Array(Vec::new())
+            } else {
+                to_json_array(&expected)
+            };
+            if response != expected_response {
+                return Err(format!(
+                    "unstaged native response violated base currency, movement={movement}: {response:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn staged_base_edits_require_current_document_even_when_critic_policy_moves()
+    -> Result<(), String> {
+        for move_policy in [false, true] {
+            for movement in ["unchanged", "advance", "close", "replace"] {
+                let uri = "file:///action_base_publication.pl";
+                let server = server_with_document(uri);
+                let staged = server
+                    .stage_native_critic_code_actions(
+                        uri,
+                        action_subject(&server, uri, false),
+                        None,
+                    )
+                    .ok_or_else(|| "current subject must stage native actions".to_string())?;
+                if staged.actions.is_empty() {
+                    return Err("fixture must stage a non-empty native effect".to_string());
+                }
+                let base = edit_bearing_base_actions(uri);
+                let mut candidate = base.clone();
+                candidate.extend(staged.actions.iter().cloned());
+                let expected = if movement != "unchanged" {
+                    Value::Array(Vec::new())
+                } else if move_policy {
+                    to_json_array(&base)
+                } else {
+                    to_json_array(&candidate)
+                };
+                let result = server.commit_staged_native_code_action_response(
+                    uri,
+                    staged,
+                    candidate,
+                    base,
+                    || {
+                        if move_policy {
+                            server.test_configure_native_critic_filters(
+                                Vec::new(),
+                                vec!["native.testing.require_use_strict".to_string()],
+                            );
+                        }
+                        let normalized_uri = server.normalize_uri_key(uri);
+                        let mut documents = server.documents.lock();
+                        if movement == "close" {
+                            documents.remove(&normalized_uri);
+                        } else if let Some(document) = documents.get_mut(&normalized_uri) {
+                            if movement == "advance" {
+                                document
+                                    .generation
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            } else if movement == "replace" {
+                                document.generation =
+                                    std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+                                        document.current_generation(),
+                                    ));
+                            }
+                        }
+                    },
+                );
+                if result != expected {
+                    return Err(format!(
+                        "base edit authority failed for {movement}, policy movement {move_policy}: {result:?}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Boundary 1: a request already cancelled when it arrives must never reach
+    /// the ordinary handler's work at all.
+    #[test]
+    fn cancelled_request_returns_request_cancelled_from_the_wrapper() {
+        let uri = "file:///action_cancel_wrapper.pl";
+        let server = server_with_document(uri);
+        let request_id = json!(4243);
+        let token = PerlLspCancellationToken::new(
+            JsonRpcId::from_value(&request_id).expect("numeric request id is valid"),
+            "textDocument/codeAction".into(),
+        );
+        let _ = GLOBAL_CANCELLATION_REGISTRY.register_token(token.clone());
+        token.cancel();
+
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 5, "character": 0 },
+            },
+            "context": { "diagnostics": [] },
+        });
+        let result = server.handle_code_action_cancellable(Some(params), Some(&request_id));
+        assert!(
+            result.is_err(),
+            "an already-cancelled code-action request must be refused, not answered; got: {:?}",
+            result.ok()
+        );
+        if let Err(error) = result {
+            assert_eq!(
+                error.code, REQUEST_CANCELLED,
+                "refusal must use the protocol cancellation code"
+            );
+        }
+    }
+
+    /// Boundary 2, the exact scenario the review named: cancellation arriving
+    /// *during* native analysis.
+    ///
+    /// The gate reports open on its first consultation (the service's
+    /// pre-evaluation barrier) and closed on its second (the settlement barrier
+    /// after rules have run). Reaching a second consultation is itself the proof
+    /// that real native work occurred -- the service only consults again after
+    /// evaluation -- so this cannot be satisfied by a pre-cancellation, which
+    /// would short-circuit at the first consultation.
+    #[test]
+    fn cancellation_during_native_analysis_publishes_no_actions() {
+        use perl_lsp_rs_core::tooling::perl_critic::RunGate;
+
+        let uri = "file:///action_cancel_midflight.pl";
+        let server = server_with_document(uri);
+
+        let consultations = std::sync::atomic::AtomicUsize::new(0);
+        let open_then_cancelled =
+            || consultations.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+        let actions = server.native_critic_code_actions_with_gate(
+            uri,
+            action_subject(&server, uri, false),
+            RunGate::new(&open_then_cancelled),
+        );
+
+        assert_eq!(
+            consultations.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the service must consult cancellation again after evaluating; a single              consultation would mean no native work ran and the test would prove nothing"
+        );
+        assert!(
+            actions.is_empty(),
+            "a run cancelled at the settlement barrier must publish no actions; got: {actions:?}"
+        );
+    }
+
+    /// #12067 review: the request cancellation token reached only the wrapper,
+    /// so native analysis ran under `RunGate::open()`.
+    ///
+    /// This pins the *reachability* boundary — the token now backs the service's
+    /// cancellation gate — with a non-vacuity control showing the same subject
+    /// publishes when no cancellation authority is supplied. It does not pin the
+    /// mid-flight case: analysis is synchronous in-process, so a real token
+    /// cannot be flipped between the service's pre-evaluation and settlement
+    /// barriers without adding a production test hook, which is not worth its
+    /// cost here. The settlement recheck is the service's own contract, already
+    /// covered by its cancellation tests.
+    #[test]
+    fn cancelled_request_withholds_native_actions_from_the_service() {
+        let uri = "file:///action_cancel.pl";
+        let server = server_with_document(uri);
+
+        // Non-vacuity: without a cancellation authority the actions publish.
+        let uncancelled =
+            server.native_critic_code_actions(uri, action_subject(&server, uri, false), None);
+        assert!(
+            !uncancelled.is_empty(),
+            "the fixture must produce native actions, or the cancellation assertion is vacuous"
+        );
+
+        let token = PerlLspCancellationToken::new(
+            JsonRpcId::from_value(&json!(4242)).expect("numeric request id is valid"),
+            "textDocument/codeAction".into(),
+        );
+        token.cancel();
+        let cancelled = server.native_critic_code_actions(
+            uri,
+            action_subject(&server, uri, false),
+            Some(&token),
+        );
+        assert!(
+            cancelled.is_empty(),
+            "a cancelled request must not publish native actions; got: {cancelled:?}"
+        );
+    }
 
     #[test]
     fn code_action_kind_filter_matches_subkinds() {
@@ -1596,6 +2392,19 @@ mod tests {
                 Some("perl-lsp.explainDiagnostic")
             );
             assert_eq!(
+                action.pointer("/command/title").and_then(Value::as_str),
+                Some("Explain this diagnostic")
+            );
+            assert_eq!(
+                action.pointer("/command/tooltip").and_then(Value::as_str),
+                Some("Show why this diagnostic was produced and its claim boundary")
+            );
+            assert_ne!(
+                action.pointer("/command/tooltip").and_then(Value::as_str),
+                action.pointer("/command/title").and_then(Value::as_str),
+                "tooltip must not replace the command title: {action}"
+            );
+            assert_eq!(
                 action.pointer("/command/arguments/0/provider").and_then(Value::as_str),
                 Some("diagnostics")
             );
@@ -1627,6 +2436,109 @@ mod tests {
         assert!(codes.contains(&"PL701"), "missing PL701 explain receipt: {actions:#?}");
         assert!(codes.contains(&"PL109"), "missing PL109 explain receipt: {actions:#?}");
 
+        Ok(())
+    }
+
+    fn command_object<'a>(
+        actions: &'a [Value],
+        command_id: &str,
+    ) -> Result<&'a Value, Box<dyn std::error::Error>> {
+        actions
+            .iter()
+            .find_map(|action| {
+                let command = action.get("command")?;
+                (command.get("command").and_then(Value::as_str) == Some(command_id))
+                    .then_some(command)
+            })
+            .ok_or_else(|| format!("missing command {command_id} in {actions:#?}").into())
+    }
+
+    fn assert_presented_command(command: &Value, title: &str, command_id: &str, tooltip: &str) {
+        assert_eq!(command.get("title").and_then(Value::as_str), Some(title));
+        assert_eq!(command.get("command").and_then(Value::as_str), Some(command_id));
+        assert_eq!(command.get("tooltip").and_then(Value::as_str), Some(tooltip));
+        assert_ne!(
+            tooltip, title,
+            "tooltip must add information beyond the command title: {command}"
+        );
+    }
+
+    #[test]
+    fn generate_test_command_carries_lsp_318_tooltip_without_replacing_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///generate-test.pl";
+        open_test_document(&server, uri, "sub calculate {\n    return 1;\n}\n");
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 2, "character": 1 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .cloned()
+            .ok_or("code action response must be an array")?;
+        let command = command_object(&actions, "perl.generateTest")?;
+        assert_presented_command(
+            command,
+            "Generate test",
+            "perl.generateTest",
+            "Insert a Test::More skeleton for this subroutine",
+        );
+        assert_eq!(command.pointer("/arguments/0/name").and_then(Value::as_str), Some("calculate"));
+        assert!(
+            command
+                .pointer("/arguments/0/test")
+                .and_then(Value::as_str)
+                .is_some_and(|test| !test.is_empty()),
+            "generate-test arguments must keep the generated skeleton: {command}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pending_parse_commands_carry_lsp_318_tooltips_without_replacing_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let uri = "file:///pending-parse-commands.pl";
+        open_with_pending_parse(&server, uri)?;
+
+        let response = server.handle_code_action(Some(json!({
+            "textDocument": { "uri": uri },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            },
+            "context": { "diagnostics": [] }
+        })))?;
+        let actions = response
+            .ok_or("missing code action response")?
+            .as_array()
+            .cloned()
+            .ok_or("code action response must be an array")?;
+
+        let debug = command_object(&actions, "perl.addDebugPrint")?;
+        assert_presented_command(
+            debug,
+            "Add debug print",
+            "perl.addDebugPrint",
+            "Insert a STDERR debug print in this document",
+        );
+        assert_eq!(debug.pointer("/arguments/0/uri").and_then(Value::as_str), Some(uri));
+
+        let convert = command_object(&actions, "perl.convertToMyDeclarations")?;
+        assert_presented_command(
+            convert,
+            "Convert to my declarations",
+            "perl.convertToMyDeclarations",
+            "Rewrite file-scope globals as lexical my declarations",
+        );
+        assert_eq!(convert.pointer("/arguments/0/uri").and_then(Value::as_str), Some(uri));
         Ok(())
     }
 

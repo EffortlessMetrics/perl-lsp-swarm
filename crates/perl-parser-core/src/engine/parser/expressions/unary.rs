@@ -80,7 +80,7 @@ impl<'a> Parser<'a> {
 
     fn parse_unary_inner(&mut self) -> ParseResult<Node> {
         if self.peek_kind() == Some(TokenKind::Slash) {
-            self.tokens.relex_as_term();
+            self.reclassify_head_as_term()?;
         }
 
         if self.is_contextual_await_start() {
@@ -321,7 +321,7 @@ impl<'a> Parser<'a> {
                             ) {
                                 let t = self.tokens.next()?;
                                 return Ok(Node::new(
-                                    NodeKind::Typeglob { name },
+                                    NodeKind::Typeglob { name, body: None },
                                     SourceLocation { start, end: t.end() },
                                 ));
                             }
@@ -333,7 +333,7 @@ impl<'a> Parser<'a> {
                                     let id_token = self.tokens.next()?;
                                     let end = id_token.end();
                                     let node = Node::new(
-                                        NodeKind::Typeglob { name: id_token.text.to_string() },
+                                        NodeKind::Typeglob { name: id_token.text.to_string(), body: None },
                                         SourceLocation { start, end },
                                     );
                                     // Allow postfix chaining: *$self->{key}
@@ -347,20 +347,25 @@ impl<'a> Parser<'a> {
                                     let brace_expr = self.parse_primary()?;
                                     let direct_assignment =
                                         self.peek_kind() == Some(TokenKind::Assign);
-                                    let body_start = brace_expr.location.start.saturating_add(1);
                                     let body_end = brace_expr.location.end;
                                     let brace_expr = self.parse_postfix_chain(brace_expr)?;
                                     let end = brace_expr.location.end;
                                     if direct_assignment {
-                                        let name = String::from_utf8_lossy(
-                                            &self.src_bytes[body_start..body_end.saturating_sub(1)],
-                                        )
-                                        .trim()
-                                        .trim_end_matches(';')
-                                        .trim()
-                                        .to_string();
+                                        // Slice the braced source text (including the
+                                        // braces) and normalize exactly like the
+                                        // variable-path dynamic typeglob assignment.
+                                        let raw = String::from_utf8_lossy(
+                                            &self.src_bytes[brace_expr.location.start..body_end],
+                                        );
+                                        let name = normalize_dynamic_typeglob_name(&raw);
+                                        // A computed body keeps its braced name; retain
+                                        // the parsed expression as the structured body
+                                        // so scope analysis can see the variables it
+                                        // uses (#15731). A braced bareword strips to
+                                        // its static name and carries no body.
+                                        let body = name.starts_with('{').then(|| Box::new(brace_expr));
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name },
+                                            NodeKind::Typeglob { name, body },
                                             SourceLocation { start, end: body_end },
                                         ));
                                     }
@@ -381,7 +386,7 @@ impl<'a> Parser<'a> {
                                         let name = format!("^{}", id_token.text);
                                         let end = id_token.end();
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name },
+                                            NodeKind::Typeglob { name, body: None },
                                             SourceLocation { start, end },
                                         ));
                                     }
@@ -398,7 +403,7 @@ impl<'a> Parser<'a> {
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name: "<".to_string() },
+                                            NodeKind::Typeglob { name: "<".to_string(), body: None },
                                             SourceLocation { start, end: t.end() },
                                         ));
                                     }
@@ -409,7 +414,7 @@ impl<'a> Parser<'a> {
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name: ">".to_string() },
+                                            NodeKind::Typeglob { name: ">".to_string(), body: None },
                                             SourceLocation { start, end: t.end() },
                                         ));
                                     }
@@ -420,7 +425,7 @@ impl<'a> Parser<'a> {
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name: "(".to_string() },
+                                            NodeKind::Typeglob { name: "(".to_string(), body: None },
                                             SourceLocation { start, end: t.end() },
                                         ));
                                     }
@@ -431,7 +436,7 @@ impl<'a> Parser<'a> {
                                     // context, so no lookahead disambiguation is needed.
                                     let t = self.tokens.next()?;
                                     return Ok(Node::new(
-                                        NodeKind::Typeglob { name: ")".to_string() },
+                                        NodeKind::Typeglob { name: ")".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
                                     ));
                                 }
@@ -440,7 +445,7 @@ impl<'a> Parser<'a> {
                                 TokenKind::Question => {
                                     let t = self.tokens.next()?;
                                     return Ok(Node::new(
-                                        NodeKind::Typeglob { name: "?".to_string() },
+                                        NodeKind::Typeglob { name: "?".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
                                     ));
                                 }
@@ -449,7 +454,7 @@ impl<'a> Parser<'a> {
                                 TokenKind::Comma => {
                                     let t = self.tokens.next()?;
                                     return Ok(Node::new(
-                                        NodeKind::Typeglob { name: ",".to_string() },
+                                        NodeKind::Typeglob { name: ",".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
                                     ));
                                 }
@@ -459,7 +464,7 @@ impl<'a> Parser<'a> {
                                 TokenKind::Assign => {
                                     let t = self.tokens.next()?;
                                     return Ok(Node::new(
-                                        NodeKind::Typeglob { name: "=".to_string() },
+                                        NodeKind::Typeglob { name: "=".to_string(), body: None },
                                         SourceLocation { start, end: t.end() },
                                     ));
                                 }
@@ -472,7 +477,7 @@ impl<'a> Parser<'a> {
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name: "/".to_string() },
+                                            NodeKind::Typeglob { name: "/".to_string(), body: None },
                                             SourceLocation { start, end: t.end() },
                                         ));
                                     }
@@ -486,7 +491,7 @@ impl<'a> Parser<'a> {
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name: ".".to_string() },
+                                            NodeKind::Typeglob { name: ".".to_string(), body: None },
                                             SourceLocation { start, end: t.end() },
                                         ));
                                     }
@@ -500,7 +505,7 @@ impl<'a> Parser<'a> {
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name: "|".to_string() },
+                                            NodeKind::Typeglob { name: "|".to_string(), body: None },
                                             SourceLocation { start, end: t.end() },
                                         ));
                                     }
@@ -514,7 +519,7 @@ impl<'a> Parser<'a> {
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name: ":".to_string() },
+                                            NodeKind::Typeglob { name: ":".to_string(), body: None },
                                             SourceLocation { start, end: t.end() },
                                         ));
                                     }

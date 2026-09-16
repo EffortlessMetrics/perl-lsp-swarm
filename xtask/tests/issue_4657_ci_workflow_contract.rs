@@ -3,6 +3,18 @@
 use std::fs;
 use std::path::PathBuf;
 
+const CACHE_HARNESS_COMMAND: &str =
+    "        run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture";
+const CACHE_HARNESS_STEP: &str =
+    "      - name: Direct command guidance contract (required merge surface)";
+const WORKFLOW_POLICY_COMMAND: &str =
+    "        run: cargo test -p xtask --bin xtask --locked -- workflow_policy_lint";
+const WORKFLOW_POLICY_STEP: &str =
+    "      - name: Workflow policy CLI wiring (required merge surface)";
+const REQUIRED_JOB_IF: &str = "    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
+
+use serde_yaml_ng::Value;
+
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -51,6 +63,154 @@ fn job_block<'a>(workflow: &'a str, job: &str) -> Option<&'a str> {
         })
         .map_or(rest.len(), |(idx, _)| body_offset + idx + 1);
     Some(&rest[..end])
+}
+
+fn yaml_key(line: &str) -> Option<&str> {
+    let (key, _) = line.trim_start().split_once(':')?;
+    Some(key.trim().trim_matches(['\"', '\'']))
+}
+
+fn cache_harness_wiring(workflow: &str) -> Result<(), &'static str> {
+    required_step_wiring(workflow, CACHE_HARNESS_STEP, CACHE_HARNESS_COMMAND)
+}
+
+fn required_step_wiring(
+    workflow: &str,
+    expected_step: &str,
+    expected_command: &str,
+) -> Result<(), &'static str> {
+    let job = job_block(workflow, "check-all-targets").ok_or("required job is absent")?;
+    if job.lines().filter(|line| *line == REQUIRED_JOB_IF).count() != 1 {
+        return Err("required job reachability changed");
+    }
+    if job.lines().any(|line| {
+        line.starts_with("    ")
+            && !line.starts_with("      ")
+            && yaml_key(line) == Some("continue-on-error")
+    }) {
+        return Err("required job became optional");
+    }
+
+    let lines = job.lines().collect::<Vec<_>>();
+    let starts = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.starts_with("      - ").then_some(index))
+        .collect::<Vec<_>>();
+    let matching = starts
+        .iter()
+        .enumerate()
+        .filter_map(|(position, start)| {
+            let end = starts.get(position + 1).copied().unwrap_or(lines.len());
+            let step = &lines[*start..end];
+            (step.first() == Some(&expected_step)).then_some(step)
+        })
+        .collect::<Vec<_>>();
+    let [step] = matching.as_slice() else {
+        return Err("required contract step must be unique");
+    };
+    let run_fields = step
+        .iter()
+        .filter(|line| {
+            line.starts_with("        ")
+                && !line.starts_with("          ")
+                && yaml_key(line) == Some("run")
+        })
+        .collect::<Vec<_>>();
+    if run_fields.len() != 1 || *run_fields[0] != expected_command {
+        return Err("required contract run command changed");
+    }
+    if step.iter().any(|line| {
+        line.starts_with("        ")
+            && !line.starts_with("          ")
+            && matches!(yaml_key(line), Some("if" | "continue-on-error"))
+    }) {
+        return Err("required contract step became conditional or optional");
+    }
+    Ok(())
+}
+
+#[test]
+fn workflow_policy_cli_wiring_is_required() -> Result<(), Box<dyn std::error::Error>> {
+    let ci =
+        fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    required_step_wiring(&ci, WORKFLOW_POLICY_STEP, WORKFLOW_POLICY_COMMAND)?;
+
+    let removed_step =
+        ci.replace(&format!("{WORKFLOW_POLICY_STEP}\n{WORKFLOW_POLICY_COMMAND}\n"), "");
+    let removed_filter = ci.replace(WORKFLOW_POLICY_COMMAND, "        run: echo no-proof");
+    let compile_only = ci.replace(
+        WORKFLOW_POLICY_COMMAND,
+        "        run: cargo test -p xtask --bin xtask --locked --no-run -- workflow_policy_lint",
+    );
+    let unreachable_job = ci.replace(REQUIRED_JOB_IF, "    if: false");
+    let optional_job = ci.replacen(
+        "  check-all-targets:\n",
+        "  check-all-targets:\n    continue-on-error: true\n",
+        1,
+    );
+    let mut mutants =
+        vec![removed_step, removed_filter, compile_only, unreachable_job, optional_job];
+    for field in ["        if: false", "        continue-on-error: true"] {
+        mutants.push(
+            ci.replace(WORKFLOW_POLICY_COMMAND, &format!("{field}\n{WORKFLOW_POLICY_COMMAND}")),
+        );
+    }
+    for mutant in mutants {
+        if mutant == ci {
+            return Err("workflow-policy wiring mutation did not change the workflow".into());
+        }
+        if required_step_wiring(&mutant, WORKFLOW_POLICY_STEP, WORKFLOW_POLICY_COMMAND).is_ok() {
+            return Err("disabled workflow-policy execution was accepted".into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn required_cache_harness_wiring_is_independently_enforced()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    assert_eq!(cache_harness_wiring(&ci), Ok(()));
+
+    let job = job_block(&ci, "check-all-targets").ok_or("required job is absent")?;
+    let mutated_job = job.replacen(
+        REQUIRED_JOB_IF,
+        "    if: false\n        if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'",
+        1,
+    );
+    let copied_if = ci.replacen(job, &mutated_job, 1);
+    assert!(cache_harness_wiring(&copied_if).is_err());
+    let orphaned = ci.replace(CACHE_HARNESS_COMMAND, "        run: echo orphaned");
+    assert!(cache_harness_wiring(&orphaned).is_err());
+    let block_scalar = ci.replace(
+        CACHE_HARNESS_COMMAND,
+        "        run: |\n          cargo test -p xtask --test direct_command_guidance --locked -- --nocapture",
+    );
+    assert!(cache_harness_wiring(&block_scalar).is_err());
+    for field in [
+        "        if: false",
+        "        continue-on-error: true",
+        "        continue-on-error : true",
+        "        \"continue-on-error\": true",
+        "        \"continue-on-error\" : true",
+    ] {
+        let mutant =
+            ci.replacen(CACHE_HARNESS_COMMAND, &format!("{field}\n{CACHE_HARNESS_COMMAND}"), 1);
+        assert!(cache_harness_wiring(&mutant).is_err());
+    }
+    for field in [
+        "    continue-on-error: true",
+        "    continue-on-error : true",
+        "    \"continue-on-error\": true",
+        "    \"continue-on-error\" : true",
+    ] {
+        let mutant =
+            ci.replacen("  check-all-targets:\n", &format!("  check-all-targets:\n{field}\n"), 1);
+        assert!(cache_harness_wiring(&mutant).is_err());
+    }
+    Ok(())
 }
 
 /// #9594: the bit-rot guard must not pin the pull-request head SHA.
@@ -111,8 +271,8 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
     );
     assert!(
         routed_rust.contains("if [ \"$ROUTE_RESULT\" = \"skipped\" ]; then")
-            && routed_rust.contains("required check is neutral/pass"),
-        "Rust Small result aggregation must treat an intentionally skipped draft route as neutral"
+            && routed_rust.contains("RUST_SMALL_GATE_VERDICT=draft-no-proof"),
+        "Rust Small result aggregation must refuse proof for an intentionally skipped draft route"
     );
     assert!(
         title_check
@@ -138,8 +298,9 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
 ///
 /// The required `Compile All Targets (bit-rot guard)` job runs the guarded
 /// recipe `just check-all-targets`, which grew a third compile-only pass
-/// (`cargo test --workspace --examples --no-run --locked`, #12650). That
-/// changed the cost shape of the whole chain — justfile recipe →
+/// (`cargo test --workspace --examples --no-run --locked`, #12650) and later
+/// added two parser-profile checks. That changed the cost shape of the whole
+/// chain — justfile recipe →
 /// `.ci/gate-policy.yaml` `compile_all_targets` row → `ci.yml` job watchdog —
 /// while every prior contract in this file pinned only presence, name, and
 /// checkout shape. A budget move therefore lands silently, exactly when the
@@ -176,21 +337,21 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
          the timeout_seconds/max_duration_ms pins below describe exactly this \
          recipe chain. Extracted gate:\n{gate}"
     );
-    // The runner-enforced hard timeout (three full-workspace compile passes).
+    // The runner-enforced hard timeout for the complete five-command recipe.
     assert!(
-        gate.contains("\n    timeout_seconds: 600\n"),
-        "gate `compile_all_targets.timeout_seconds` drifted from 600: this is \
-         the only budget the gate runner enforces, sized to the two workspace \
-         checks plus the example-test pass. Raising it needs measured receipts \
-         on #12693's chain; lowering it below the third pass reopens the \
-         cancel-at-timeout family. Extracted gate:\n{gate}"
+        gate.contains("\n    timeout_seconds: 900\n"),
+        "gate `compile_all_targets.timeout_seconds` drifted from 900: this is \
+         the only budget the gate runner enforces, sized from hosted receipts \
+         for the two workspace checks, example-test compilation, and two \
+         parser-profile checks. Lowering it below the measured chain reopens \
+         the cancel-at-timeout family. Extracted gate:\n{gate}"
     );
     // The declared soft budget reviewers cite as the shared ceiling
     // (clippy_tests_kernel explicitly stays "below the compile_all_targets
     // ceiling").
     assert!(
-        gate.contains("\n      max_duration_ms: 540000\n"),
-        "gate `compile_all_targets.budgets.max_duration_ms` drifted from 540000: \
+        gate.contains("\n      max_duration_ms: 780000\n"),
+        "gate `compile_all_targets.budgets.max_duration_ms` drifted from 780000: \
          other lanes derive their ceilings from this constant. Extracted \
          gate:\n{gate}"
     );
@@ -221,4 +382,60 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
     );
 
     Ok(())
+}
+
+/// #14355: the Windows portability lane must admit integration targets.
+///
+/// The release-artifact smoke target is intentionally Unix-only at runtime,
+/// but its crate-root cfg must still be compiled on Windows. The Windows lane
+/// therefore retains its library execution and adds a narrow compile-only
+/// command for this integration target.
+#[test]
+fn windows_platform_smoke_compiles_integration_targets_without_running_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    let workflow: Value = serde_yaml_ng::from_str(&ci)?;
+    let run = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("windows-platform-smoke"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                let name = step.get("name")?.as_str()?;
+                (name == "Run Windows portability smoke")
+                    .then(|| step.get("run")?.as_str().map(str::to_owned))
+                    .flatten()
+            })
+        })
+        .ok_or("windows platform smoke has no named run command")?;
+    assert!(
+        !run.contains("Conflict-marker guard"),
+        "run extraction must stop at the end of the YAML block scalar; command: {run}"
+    );
+
+    assert!(
+        run.contains("cargo test $WINDOWS_TEST_CRATES --locked --lib"),
+        "Windows portability smoke must retain its library execution; command: {run}"
+    );
+    assert!(
+        run.contains(
+            "cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run"
+        ),
+        "Windows portability smoke must compile the Unix-only integration target without running it; command: {run}"
+    );
+    Ok(())
+}
+
+#[path = "support/draft_routed_result.rs"]
+mod draft_routed_result;
+
+#[test]
+fn rust_small_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
+    draft_routed_result::check_contract(
+        &project_root()?.join(".github/workflows/em-ci-routed-rust.yml"),
+        "rust-small-result",
+        "RUST_SMALL_GATE_VERDICT=draft-no-proof",
+    )
 }

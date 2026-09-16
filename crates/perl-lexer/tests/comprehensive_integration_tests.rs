@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Comprehensive integration tests for the perl-lexer crate.
 //!
 //! Covers: tokenization of real Perl snippets, edge cases, unicode,
@@ -302,7 +303,7 @@ fn qq_operator() -> R {
     let toks = significant_tokens(input);
     let first = toks.first().ok_or("no tokens")?;
     assert!(
-        matches!(first.token_type, TokenType::QuoteDouble),
+        matches!(first.token_type, TokenType::QuoteDouble(_)),
         "expected QuoteDouble, got {:?}",
         first.token_type
     );
@@ -365,7 +366,7 @@ fn backtick_literal() -> R {
 fn quote_operators_with_single_quote_delimiter() -> R {
     let cases = [
         ("q'hello'", TokenType::QuoteSingle),
-        ("qq'hello'", TokenType::QuoteDouble),
+        ("qq'hello'", TokenType::QuoteDouble(Vec::new())),
         ("qw'foo bar'", TokenType::QuoteWords),
         ("qx'echo hi'", TokenType::QuoteCommand),
         ("qr'foo+'", TokenType::QuoteRegex),
@@ -392,8 +393,8 @@ fn quote_operators_with_alternate_delimiters() -> R {
         ("q<hello>", TokenType::QuoteSingle),
         ("q[hello]", TokenType::QuoteSingle),
         ("q(hello)", TokenType::QuoteSingle),
-        ("qq!hello!", TokenType::QuoteDouble),
-        ("qq#hello#", TokenType::QuoteDouble),
+        ("qq!hello!", TokenType::QuoteDouble(Vec::new())),
+        ("qq#hello#", TokenType::QuoteDouble(Vec::new())),
     ];
     for (input, expected_variant) in cases {
         let toks = significant_tokens(input);
@@ -965,6 +966,7 @@ fn next_token_returns_none_after_eof() -> R {
 // ===========================================================================
 
 #[test]
+#[allow(deprecated)] // Deliberately exercises the deprecated compatibility field.
 fn custom_config() -> R {
     let config = LexerConfig {
         parse_interpolation: false,
@@ -980,6 +982,7 @@ fn custom_config() -> R {
 }
 
 #[test]
+#[allow(deprecated)] // Deliberately exercises the deprecated compatibility field.
 fn default_config_works() -> R {
     let config = LexerConfig::default();
     assert!(config.parse_interpolation);
@@ -1000,7 +1003,7 @@ fn checkpoint_save_and_restore() -> R {
     let cp = lexer.checkpoint();
     let second = lexer.next_token().ok_or("no second token")?;
 
-    lexer.restore(&cp);
+    assert!(lexer.restore(&cp).is_ok());
     let replayed = lexer.next_token().ok_or("no token after restore")?;
 
     assert_eq!(second.start, replayed.start, "restore should replay from checkpoint");
@@ -1015,19 +1018,19 @@ fn checkpoint_save_and_restore() -> R {
 #[test]
 fn can_restore_checks() -> R {
     let lexer = PerlLexer::new("my $x = 1;");
-    let cp = LexerCheckpoint::new();
-    assert!(lexer.can_restore(&cp), "should be able to restore to start");
+    let cp = lexer.checkpoint();
+    assert!(lexer.can_restore(&cp), "live origin must restore onto the same source");
 
     let far_cp = LexerCheckpoint::at_position(99999);
-    assert!(!lexer.can_restore(&far_cp), "should not restore past input end");
+    assert!(!lexer.can_restore(&far_cp), "caller-selected positions must not restore");
     Ok(())
 }
 
 #[test]
 fn checkpoint_validity() -> R {
     let input = "my $x";
-    let cp = LexerCheckpoint::at_position(3);
-    assert!(cp.is_valid_for(input), "position 3 should be valid for 5-byte input");
+    let cp = LexerCheckpoint::origin(input);
+    assert!(cp.is_valid_for(input), "origin must be valid for its source");
 
     let cp2 = LexerCheckpoint::at_position(100);
     assert!(!cp2.is_valid_for(input), "position 100 should not be valid for 5-byte input");
@@ -1240,7 +1243,7 @@ my $out = qx{ls};
             matches!(
                 t.token_type,
                 TokenType::QuoteSingle
-                    | TokenType::QuoteDouble
+                    | TokenType::QuoteDouble(_)
                     | TokenType::QuoteWords
                     | TokenType::QuoteRegex
                     | TokenType::QuoteCommand

@@ -4,10 +4,12 @@
 //! The primary provider is OpenAI-compatible, supporting any endpoint that
 //! implements the OpenAI chat completions API with SSE streaming.
 
+pub mod budget;
 pub mod destination;
 pub mod openai;
 pub mod prompt;
 pub mod rate_limiter;
+pub mod sanitize;
 pub mod sse;
 
 pub use destination::{

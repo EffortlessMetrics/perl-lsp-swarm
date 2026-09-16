@@ -229,7 +229,12 @@ fn heredoc_body_event_precedes_the_resumed_statement() -> R {
         .ok_or_else(|| missing("missing heredoc opener token"))?;
     let body_index = tokens
         .iter()
-        .position(|token| matches!(&token.token_type, TokenType::HeredocBody(_)))
+        .position(|token| {
+            matches!(
+                &token.token_type,
+                TokenType::HeredocBody(_) | TokenType::InterpolatedHeredocBody(_)
+            )
+        })
         .ok_or_else(|| missing("missing heredoc body token"))?;
     let resumed_index = tokens
         .iter()
@@ -313,7 +318,7 @@ fn checkpoint_after_arrow_replays_the_exact_method_suffix() -> R {
     assert!(lexer.can_restore(&checkpoint));
     let first_suffix = collect_remaining(&mut lexer, input)?;
 
-    lexer.restore(&checkpoint);
+    assert!(lexer.restore(&checkpoint).is_ok());
     let restored_suffix = collect_remaining(&mut lexer, input)?;
 
     assert_eq!(first_suffix, restored_suffix);

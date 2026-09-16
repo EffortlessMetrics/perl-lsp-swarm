@@ -1,9 +1,31 @@
+/// Return `true` when `inner` is a directly written bareword glob name: a
+/// plain identifier or a `::`-qualified symbol path (`foo`, `Foo::Bar`).
+///
+/// Anything else inside `*{...}` is a computed body whose symbol only exists
+/// at runtime — a call (`foo()`), a quoted/symbolic name (`"name"`), an
+/// interpolation, or an expression (`$x . $y`) — and must keep the braced
+/// dynamic spelling (#15650, #15712).
+fn is_plain_bareword_glob_name(inner: &str) -> bool {
+    inner.split("::").all(|segment| {
+        !segment.is_empty() && segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Normalize the name of a dynamic typeglob (`*{...}`) in assignment position.
+///
+/// A braced bareword (`*{name}`, `*{ name }`, `*{Foo::name}`) is a directly
+/// written symbol and normalizes to its bare name so the stash layer can
+/// resolve it. Every other computed body keeps the literal braced spelling:
+/// its symbol is only known at runtime, and downstream consumers classify a
+/// leading `{` as a dynamic, non-static glob name (#15650). Reporting the
+/// bare expression text (`foo()`, `"name"`) as a static glob name would mint
+/// a symbol that no static consumer can resolve (#15712).
 fn normalize_dynamic_typeglob_name(name: &str) -> String {
-    let inner = name
-        .strip_prefix('{')
-        .and_then(|inner| inner.strip_suffix('}'))
-        .unwrap_or(name);
-    inner.trim().trim_end_matches(';').trim().to_string()
+    let Some(inner) = name.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) else {
+        return name.trim().trim_end_matches(';').trim().to_string();
+    };
+    let inner = inner.trim().trim_end_matches(';').trim();
+    if is_plain_bareword_glob_name(inner) { inner.to_string() } else { format!("{{{inner}}}") }
 }
 
 impl<'a> Parser<'a> {
@@ -178,10 +200,15 @@ impl<'a> Parser<'a> {
 
             // Don't consume semicolon here - let parse_statement handle it uniformly
 
-            let end = initializer.as_ref().map_or_else(
-                || self.previous_position(),
-                |node| node.location.end.max(self.previous_position()),
-            );
+            // `previous_position()` only advances through `consume_token`, and
+            // the `local` target above is parsed through `parse_assignment`,
+            // which pulls the operator and RHS straight from the token stream.
+            // Anchor the end on the parsed nodes so `local $x = EXPR` spans the
+            // whole assignment instead of stopping at `$x`.
+            let end = initializer
+                .as_ref()
+                .map_or(variable.location.end, |node| node.location.end)
+                .max(self.previous_position());
             let node = Node::new(
                 NodeKind::VariableDeclaration {
                     declarator,
@@ -329,7 +356,12 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let end = self.previous_position();
+        // See `parse_variable_declaration`: the localized lvalue and RHS are
+        // parsed from the raw token stream, so anchor the end on the nodes.
+        let end = initializer
+            .as_ref()
+            .map_or(variable.location.end, |node| node.location.end)
+            .max(self.previous_position());
         let node = Node::new(
             NodeKind::VariableDeclaration {
                 declarator,
@@ -630,8 +662,16 @@ impl<'a> Parser<'a> {
 
         if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&full_name);
+            // A fused `*{EXPR}` assignment token carries no parsed body yet.
+            // When normalization keeps the brace marker (a computed body),
+            // recover the inner expression so scope analysis can see the
+            // variables it uses (#15731). Recovery is best-effort: the raw
+            // braced text stays in `name`, and the assignment path neither
+            // fails nor gains diagnostics from a body the tokenizer fused
+            // away — exactly its behavior before the body child existed.
+            let body = fused_typeglob_body(&name, token.start());
             Ok(Node::new(
-                NodeKind::Typeglob { name },
+                NodeKind::Typeglob { name, body },
                 SourceLocation { start: token.start(), end },
             ))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
@@ -1083,10 +1123,20 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::RightBrace)?;
             let end = self.previous_position();
             if self.peek_kind() == Some(TokenKind::Assign) {
+                // Slice the braced source text (including the braces) so the
+                // same normalization applies to the fused and split forms.
                 let name = normalize_dynamic_typeglob_name(&String::from_utf8_lossy(
-                    &self.src_bytes[body_start..end.saturating_sub(1)],
+                    &self.src_bytes[body_start.saturating_sub(1)..end],
                 ));
-                return Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }));
+                // A computed body keeps its braced name; retain the parsed
+                // expression as the structured body so scope analysis can see
+                // the variables it uses (#15731). A braced bareword strips to
+                // its static name and carries no body.
+                let body = name.starts_with('{').then(|| Box::new(expr));
+                return Ok(Node::new(
+                    NodeKind::Typeglob { name, body },
+                    SourceLocation { start, end },
+                ));
             }
             let node = Node::new(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(expr) },
@@ -1151,7 +1201,7 @@ impl<'a> Parser<'a> {
             Ok(Node::new(NodeKind::AmperCall { name, args }, SourceLocation { start, end }))
         } else if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&name);
-            Ok(Node::new(NodeKind::Typeglob { name }, SourceLocation { start, end }))
+            Ok(Node::new(NodeKind::Typeglob { name, body: None }, SourceLocation { start, end }))
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&name)
         {
@@ -1656,6 +1706,25 @@ impl<'a> Parser<'a> {
     fn is_variable_name_kind(kind: TokenKind) -> bool {
         kind == TokenKind::Identifier || Self::can_be_sub_name(kind)
     }
+}
+
+/// Recover the parsed body of a fused `*{EXPR}` typeglob assignment token.
+///
+/// The lexer keeps `*{...}` as one identifier token, so a dynamic typeglob
+/// assignment reaches [`Parser::parse_variable`] with the braced body only as
+/// raw text. When normalization kept the brace marker (a computed body),
+/// re-parse the inner expression so the `Typeglob` node carries it as a
+/// structured child (#15731). Recovery is best-effort: on any inner parse
+/// failure the body stays `None` and the raw braced text in `name` remains the
+/// only representation, matching the assignment path's pre-#15731 diagnostic
+/// surface. A braced bareword (`*{name}`) strips to its static name and never
+/// gets a body.
+fn fused_typeglob_body(name: &str, token_start: usize) -> Option<Box<Node>> {
+    let inner = name.strip_prefix('{')?.strip_suffix('}')?;
+    // Advisory diagnostics from the inner parse are deliberately dropped:
+    // the assignment path never surfaced them before #15731.
+    let (body, _) = parse_inline_expression(inner, token_start.saturating_add(2)).ok()?;
+    Some(Box::new(body))
 }
 
 /// Parse an expression captured inside the lexer's single `*{...}` token and
