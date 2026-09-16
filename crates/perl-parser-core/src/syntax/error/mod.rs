@@ -1263,7 +1263,8 @@ impl ParseError {
             // Anchored at the declaration whose collection was refused, so
             // `get_error_contexts` reports that line rather than falling back
             // to EOF. Must stay consistent with `diagnostic_anchor`.
-            ParseError::HeredocBudgetExhausted { location, .. } => Some(*location),
+            ParseError::HeredocBudgetExhausted { location, .. }
+            | ParseError::DoWhileTrailingBlock { location } => Some(*location),
             _ => None,
         }
     }

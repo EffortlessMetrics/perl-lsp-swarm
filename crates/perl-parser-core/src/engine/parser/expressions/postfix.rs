@@ -645,17 +645,24 @@ impl<'a> Parser<'a> {
                     //
                     // #15649: a `{` following a do-while condition is the
                     // trailing block that real Perl rejects near `") {"`. While
-                    // a `do BLOCK while/until COND` condition parses, leave the
-                    // brace unconsumed so `parse_statement_modifier` can report
-                    // it instead of absorbing it as a subscript. Variable
-                    // subscripts (`while $h{k}`) and bareword call/block forms
-                    // (`while Foo {k}`) are ordinary condition shapes and keep
-                    // consuming the brace.
+                    // a `do BLOCK while/until COND` condition parses, leave a
+                    // brace in place only when it cannot be a subscript:
+                    // variable subscripts (`while $h{k}`), bareword call/block
+                    // forms (`while Foo {k}`), and chained subscripts
+                    // (`while $h{k}{j}` — each subscript turns the expression
+                    // into a `{}`-op binary) are ordinary condition shapes and
+                    // keep consuming the brace; a brace after a completed
+                    // non-subscript shape (`while ($a eq $b) {`) is the
+                    // trailing block, left for `parse_statement_modifier` to
+                    // reject.
+                    let chained_subscript =
+                        matches!(&expr.kind, NodeKind::Binary { op, .. } if op == "{}");
                     if self.in_do_while_condition
                         && !matches!(
                             &expr.kind,
                             NodeKind::Variable { .. } | NodeKind::Identifier { .. }
                         )
+                        && !chained_subscript
                     {
                         break;
                     }
