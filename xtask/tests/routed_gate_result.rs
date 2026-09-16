@@ -8,7 +8,12 @@
 //! mis-attribution class the issue lists is exercised against the type's
 //! validation alone, plus the durable publication pipeline.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#![expect(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "falsifier assertions on fixture building"
+)]
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -863,11 +868,13 @@ fn explicit_null_hosted_identity_fails_closed() {
         "explicit null hosted must fail closed"
     );
 
-    // The same rule holds on the runner-supplied observation.
+    // The same rule holds on the runner-supplied observation. The status
+    // spelling is the Serde-valid `Pass` (the enum carries no `rename_all`),
+    // and prerequisites are valid, so `hosted: null` is the refusal cause.
     let observation_bytes = serde_json::to_vec(&serde_json::json!({
-        "runner_status": "pass",
+        "runner_status": "Pass",
         "hosted": null,
-        "prerequisites": null,
+        "prerequisites": {"state": "ready", "missing_artifacts": [], "dependency_gates": {}},
         "command_started": true,
         "child": {
             "exit_code": 0,

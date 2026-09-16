@@ -213,13 +213,15 @@ pub(super) fn ensure_plan_subject_fields_match_receipt(
             receipt.head_sha
         );
     }
-    if let Some(base_sha) = plan_subject.base_sha.as_deref()
-        && base_sha != receipt.base_sha
-    {
+    // Every receipt carries a base SHA (all subject inputs require one), so
+    // the plan must mirror it exactly: an omitted base binds nothing, and a
+    // re-sealed plan could otherwise drop `base_sha` entirely and still pass
+    // against a receipt carrying a concrete base.
+    if plan_subject.base_sha.as_deref() != Some(receipt.base_sha.as_str()) {
         bail!(
-            "route plan subject base {} does not match immutable subject receipt base {}; \
+            "route plan subject base {:?} does not match immutable subject receipt base {}; \
              refusing to publish a result under a false subject identity",
-            base_sha,
+            plan_subject.base_sha,
             receipt.base_sha
         );
     }
@@ -630,7 +632,14 @@ fn expand_declaration(declaration: &str, root: &Path) -> Vec<String> {
         .filter_map(Result::ok)
         .filter(|path| path.is_file())
         .filter_map(|path| {
-            path.strip_prefix(root).ok().map(|relative| relative.display().to_string())
+            path.strip_prefix(root).ok().map(|relative| {
+                // `ArtifactRef::path` is fingerprinted verbatim, so spell it
+                // in the forward-slash contract form on every platform:
+                // `display()` emits the platform separator, which would seal
+                // a different identity for the same artifact on Windows than
+                // the literal branch and `project_log_artifact` record.
+                relative.display().to_string().replace('\\', "/")
+            })
         })
         .collect();
     matched.sort();
@@ -1212,10 +1221,13 @@ timeout_seconds: 60
         assert!(refused.is_err(), "kind mismatch must refuse, got {refused:?}");
         assert!(refused.unwrap_err().to_string().contains("subject kind"));
 
-        // A plan that carries no base binds nothing extra and stays accepted.
+        // A plan that carries no base binds nothing: the receipt always
+        // carries one, so omission must refuse rather than pass.
         let mut baseless = plan.subject.clone();
         baseless.base_sha = None;
-        assert!(ensure_plan_subject_fields_match_receipt(&baseless, &receipt).is_ok());
+        let refused = ensure_plan_subject_fields_match_receipt(&baseless, &receipt);
+        assert!(refused.is_err(), "omitted base must refuse, got {refused:?}");
+        assert!(refused.unwrap_err().to_string().contains("subject base"));
     }
 
     #[test]
