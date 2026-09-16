@@ -4505,6 +4505,12 @@ enum CiSubcommand {
         /// Explicit changed file path. Repeat for tests or disconnected runs; when omitted, git diff is used.
         #[arg(long = "changed-file")]
         changed_file: Vec<String>,
+
+        /// Schema version for the route receipt envelope. Must match a supported value
+        /// (currently `ci-route.v1`); an unknown version fails closed with an error so
+        /// the consumer never silently coerces a mismatched envelope.
+        #[arg(long, default_value = "ci-route.v1")]
+        envelope_version: String,
     },
 
     /// Explain the blocking CI check failure with a local reproduction path.
@@ -5189,15 +5195,21 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Ci { command } => match command {
             None => ci::run(),
             Some(CiSubcommand::Doctor) => ci_doctor::run(),
-            Some(CiSubcommand::Route { base, head, receipt, summary, changed_file }) => {
-                ci_route::run(ci_route::CiRouteArgs {
-                    base,
-                    head,
-                    receipt,
-                    summary,
-                    changed_files: changed_file,
-                })
-            }
+            Some(CiSubcommand::Route {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_file,
+                envelope_version,
+            }) => ci_route::run(ci_route::CiRouteArgs {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_files: changed_file,
+                envelope_version,
+            }),
             Some(CiSubcommand::Explain { receipt, run_id, base }) => {
                 ci_explain::run(receipt, run_id, base)
             }
