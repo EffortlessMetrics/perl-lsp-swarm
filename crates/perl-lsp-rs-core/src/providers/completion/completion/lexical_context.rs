@@ -1214,6 +1214,81 @@ fn quote_like_closer(opener: u8) -> Option<u8> {
     }
 }
 
+/// End index (exclusive) of a quote-like literal whose opening delimiter is
+/// the `#` byte at `hash_index`, when that `#` belongs to a quote-like
+/// operator (`q#...#`, `s#...#...#`, ...) rather than a line comment.
+///
+/// Shares the quote-like operator authority (parameter table and boundary
+/// guards) with the literal scan machines so hand scanners agree with them on
+/// where code resumes. Only non-bracketing `#` delimiters are modeled here;
+/// bracketing delimiters (`qr/{/`) remain owned by the general scan machines.
+pub(super) fn quote_like_hash_literal_span(bytes: &[u8], hash_index: usize) -> Option<usize> {
+    if bytes.get(hash_index) != Some(&b'#') {
+        return None;
+    }
+    // The operator ends at the first non-space before the delimiter; spaces
+    // are allowed between operator and delimiter (`q #...#`), but a newline
+    // puts the `#` on its own comment line, which the operator never sees.
+    let mut operator_end = hash_index;
+    while operator_end > 0 && matches!(bytes.get(operator_end - 1), Some(b' ' | b'\t')) {
+        operator_end -= 1;
+    }
+    if operator_end == 0 {
+        return None;
+    }
+    let two_byte_operator =
+        if operator_end >= 2 { Some(&bytes[operator_end - 2..operator_end]) } else { None };
+    let operator_index = match two_byte_operator {
+        Some(b"qr" | b"qq" | b"qw" | b"qx" | b"tr") => operator_end - 2,
+        _ if matches!(bytes[operator_end - 1], b'q' | b'm' | b's' | b'y') => operator_end - 1,
+        _ => return None,
+    };
+    if !quote_like_operator_boundary(bytes, operator_index)
+        || quote_like_follows_sub_declaration(bytes, operator_index)
+        || quote_like_follows_method_or_qualified_name(bytes, operator_index)
+    {
+        return None;
+    }
+    let (delimiter_offset, sections, allow_space, _) = quote_like_operator_parameters(
+        bytes.get(operator_index).copied()?,
+        bytes.get(operator_index + 1).copied(),
+    )?;
+    let mut delimiter_index = operator_index + delimiter_offset;
+    if allow_space {
+        delimiter_index = skip_ascii_space(bytes, delimiter_index);
+    }
+    if delimiter_index != hash_index {
+        return None;
+    }
+    // Scan each `#`-delimited section escape-aware: the delimiter bytes
+    // alternate opener/closer/closer-opener/closer (`s#...#...#`), so each
+    // section runs from the current byte to the next unescaped `#`.
+    let mut cursor = hash_index + 1;
+    for _ in 0..sections {
+        let mut escaped = false;
+        let closed = loop {
+            match bytes.get(cursor) {
+                None => break false,
+                Some(byte) => {
+                    if escaped {
+                        escaped = false;
+                    } else if *byte == b'\\' {
+                        escaped = true;
+                    } else if *byte == b'#' {
+                        cursor += 1;
+                        break true;
+                    }
+                    cursor += 1;
+                }
+            }
+        };
+        if !closed {
+            return None;
+        }
+    }
+    Some(cursor)
+}
+
 struct HeredocDelimiter {
     label: String,
     allow_indented_close: bool,

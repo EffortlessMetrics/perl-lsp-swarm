@@ -231,6 +231,15 @@ fn undef_write_clears_constructor_evidence() {
         has_label(&reassigned_labels, "post"),
         "a constructor assignment after `undef` re-establishes the receiver type"
     );
+
+    // Valid Perl whitespace, including newlines, between `undef` and the
+    // receiver must still clear the evidence (FC3 MULTILINE_UNDEF_OPERAND).
+    let multiline = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\nundef\n    $http;\n$http->po";
+    let multiline_labels = labels(&completions_at_end(multiline));
+    assert!(
+        !has_label(&multiline_labels, "post"),
+        "`undef \\n $http` must clear inferred constructor evidence: {multiline_labels:?}"
+    );
 }
 
 #[test]
@@ -293,6 +302,21 @@ fn other_package_our_redeclaration_does_not_clear_shared_evidence() {
 }
 
 #[test]
+fn quote_like_hash_arguments_keep_constructor_evidence() {
+    let source = "use LWP::UserAgent;\nmy $ua = LWP::UserAgent->new(agent => q#foo#);\n$ua->re";
+    let item_labels = labels(&completions_at_end(source));
+
+    assert!(
+        has_label(&item_labels, "request"),
+        "a quote-like `#` delimiter must not swallow the constructor evidence: {item_labels:?}"
+    );
+    assert!(
+        has_label(&item_labels, "requests_redirectable"),
+        "constructor evidence must survive quote-like `#` delimiters: {item_labels:?}"
+    );
+}
+
+#[test]
 fn undef_named_method_or_sub_call_does_not_clear_evidence() {
     let method_call =
         "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$cleaner->undef($http);\n$http->po";
@@ -307,5 +331,23 @@ fn undef_named_method_or_sub_call_does_not_clear_evidence() {
     assert!(
         has_label(&sub_labels, "post"),
         "`&undef($http)` is a subroutine call, not the builtin; evidence must survive: {sub_labels:?}"
+    );
+
+    // Separator whitespace between the call operator and `undef` must not
+    // reclassify the call as the builtin clearing operator (FC2
+    // UNDEF_CALL_SEPARATOR_WS).
+    let spaced_method =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$cleaner -> undef($http);\n$http->po";
+    let spaced_method_labels = labels(&completions_at_end(spaced_method));
+    assert!(
+        has_label(&spaced_method_labels, "post"),
+        "`$cleaner -> undef($http)` is a method call; evidence must survive: {spaced_method_labels:?}"
+    );
+
+    let spaced_sub = "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n& undef($http);\n$http->po";
+    let spaced_sub_labels = labels(&completions_at_end(spaced_sub));
+    assert!(
+        has_label(&spaced_sub_labels, "post"),
+        "`& undef($http)` is a subroutine call; evidence must survive: {spaced_sub_labels:?}"
     );
 }
