@@ -3678,6 +3678,67 @@ expires = "2026-12-31"
 removal_criteria = "Remove when #13238 lands the exact installed-name state that replaces this containment, or when the candidate gains its first production consumer (then re-scope the suppression to that consumer's seams and require activation evidence through it), or when ripr#1429 resolves activation tracing for modules with no production entry point. Narrow immediately if any seam unrelated to the containment predicates lands in this file."
 
 # -----------------------------------------------------------------------------
+# PR #15615 (#14168) outbound response settlement: six no_static_path
+# field_construction probes, all stop_reason no_changed_rust_line.
+# Producer run 34821132933 / receipt quality-gate-ripr.json at evaluated
+# merge-tree 120dc109 (PR head c786fb3a):
+#
+# - outbound.rs:143 `failed: AtomicBool` — new sticky-failure flag on
+#   WriterCompletion. Discriminators already call through publish /
+#   signal_failure / response_failure_notified
+#   (writer_failure_wakes_response_failure_waiter,
+#   required_response_full_queue_is_sticky_transport_failure,
+#   notification_full_queue_is_nonterminal). The same receipt classifies
+#   those executable call sites as reached; only the declaration line is
+#   no_static_path.
+# - scheduler.rs:320 `mutation_seq_done: Arc<AtomicU64>` and
+#   `mutation_notify: Arc<Notify>` — fields this PR *deleted* from
+#   Scheduler, passing them as worker-function parameters instead. The
+#   probes are base-relative and land on a surviving head comment
+#   (#6260 / #15484 deleted-owner class). No test can reach deleted
+#   declarations. The moved uses are pinned by
+#   abandoned_mutation_settlement_releases_pending_marker_and_barrier.
+# - scheduler.rs:430-432 AdmissionGuard `{ server, id, armed }` —
+#   declaration-line probes on the cancellation cleanup guard. The
+#   Drop path is pinned by
+#   cancelled_full_mutation_admission_keeps_sequence_and_pending_clean.
+#
+# A co-located constructor-only test is the receipt's own anti-pattern
+# ("say so in the PR instead of adding proof theatre") and the #14958
+# precedent: literal construction left the declaration-line count
+# unchanged. reachable_unrevealed on this receipt is 0.
+#
+# Identity key: `gap_ids` lists the six probe identities from that
+# receipt. Path + classification are additional filters, not the
+# selector. A future executable no_static_path seam in these files with
+# a different probe id stays visible. `kind` remains descriptive
+# metadata, not a declaration selector. Weakly_exposed /
+# reachable_unrevealed / other classes stay visible.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-15615-outbound-settlement-declaration-probes"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-lsp-rs/src/runtime/outbound.rs",
+  "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:crates_perl-lsp-rs_src_runtime_outbound.rs:field_construction:9673d288",
+  "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:field_construction:a87ea6ff",
+  "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:field_construction:30a93b64",
+  "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:field_construction:6f18ede8",
+  "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:field_construction:b8a2cfdc",
+  "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:field_construction:699adfd7",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15615 (#14168): six no_static_path field_construction probes, all stop_reason no_changed_rust_line, on run 34821132933. One is the new WriterCompletion.failed AtomicBool declaration (executable publish/signal_failure/waiter path already reached by writer_failure_wakes_response_failure_waiter, required_response_full_queue_is_sticky_transport_failure, and notification_full_queue_is_nonterminal). Two are deleted Scheduler fields mutation_seq_done/mutation_notify whose base-relative probes land on a surviving head comment (#6260/#15484; no test can reach deleted declarations; moved uses pinned by abandoned_mutation_settlement_releases_pending_marker_and_barrier). Three are AdmissionGuard field declarations whose Drop cleanup is pinned by cancelled_full_mutation_admission_keeps_sequence_and_pending_clean. Same ripr#1429 declaration-line class as ripr-suppress-14958-startup-inc-snapshot-declarations: constructor-only tests do not resolve the probes. reachable_unrevealed is 0 on that receipt. Selector is the six gap_ids from that receipt, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in outbound.rs or scheduler.rs with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
+created = "2026-09-15"
+review_after = "2026-10-15"
+expires = "2026-12-15"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line and deleted-owner probes to the tests that construct or replace them, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in outbound.rs or scheduler.rs outside the six field_construction declaration/deleted-owner identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+
 # Framework-DSL gating state declarations (#8119, PR #15469): the same
 # declaration-line ripr#1429 class already accepted for this crate's siblings
 # (ripr-suppress-structural-access-contract-declarations,
