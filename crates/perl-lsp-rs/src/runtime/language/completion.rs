@@ -2383,11 +2383,17 @@ impl LspServer {
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
         let Some(mut item) = params else {
-            return Ok(None);
+            return Err(crate::protocol::invalid_params("Missing completion item parameters"));
         };
 
         // Extract the label and kind upfront (clone to avoid borrow issues)
-        let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let label = item
+            .get("label")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                crate::protocol::invalid_params("Missing or invalid completion item label")
+            })?
+            .to_string();
         let kind = item.get("kind").and_then(|v| v.as_u64()).unwrap_or(0);
         let has_doc = item.get("documentation").is_some();
         let label_details_support = self.client_capabilities.lock().label_details_support;
@@ -4006,7 +4012,7 @@ mod tests {
     fn shared_request_context_is_built_once_for_both_completion_consumers()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::routing::IndexAccessMode;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
         use tempfile::TempDir;
         use url::Url;
@@ -4079,7 +4085,7 @@ mod tests {
     fn no_inc_context_is_assembled_when_no_consumer_needs_one()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::runtime::routing::IndexAccessMode;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
         use tempfile::TempDir;
         use url::Url;
@@ -5182,7 +5188,7 @@ mod tests {
     fn strategy_b_multi_folder_filters_cross_folder_var() {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
 
         let server = LspServer::default();
@@ -5232,7 +5238,7 @@ our $cross_folder_var_b;
     fn strategy_b_single_folder_skips_filter_includes_symbol() {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
 
         let server = LspServer::default();
@@ -5290,7 +5296,7 @@ our $single_root_var;
     ) -> Vec<(String, Option<String>, Option<(usize, usize)>)> {
         use crate::runtime::routing::IndexAccessMode;
         use crate::runtime::workspace_folder::WorkspaceFolderState;
-        use perl_parser::workspace_index::IndexCoordinator;
+        use perl_workspace::workspace_index::IndexCoordinator;
         use std::sync::Arc;
 
         let server = LspServer::default();
