@@ -29,6 +29,8 @@ on:
       - '.ci/schemas/editor-client-compat.v1.schema.json'
       - 'AGENTS.md'
       - '.github/workflows/emacs-train-context-contract.yml'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:
