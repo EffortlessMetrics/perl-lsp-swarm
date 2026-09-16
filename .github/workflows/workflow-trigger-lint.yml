@@ -9,8 +9,8 @@ on:
     branches: [main, master]
 
 concurrency:
-  group: workflow-trigger-lint-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: workflow-trigger-lint-bootstrap-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -57,14 +57,6 @@ jobs:
           args=(
             --receipt target/receipts/action-pin-provenance.json
           )
-          # pull_request jobs check out GitHub's simulated merge result, which is
-          # rebuilt whenever either side moves, while the event-time
-          # pull_request.base.sha lags it after intervening merges and charges
-          # other people's pin changes to this candidate (#10194). Resolve the
-          # merge base against the fetched base branch at run time instead;
-          # unresolvable ancestry fails closed inside the tool. The scan is
-          # bound to this subject: HEAD must be the simulated merge of this
-          # candidate head, and origin must name this repository.
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             args+=(
               --merge-base "origin/$PR_BASE_REF"
