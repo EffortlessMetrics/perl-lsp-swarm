@@ -34,11 +34,12 @@ use super::generation::{RuntimeModuleGeneration, RuntimeModuleGenerationClock};
 use super::invalidation::{
     InvalidationPlanError, ReloadInvalidationPlan, invalidation_plan_for, verify_invalidation_plan,
 };
+use super::runtime::ReloadExecution;
 use super::transaction::LoadedModuleReloadOutcome;
 use crate::reload_family::{
     ClientFamilyDeclaration, FamilyNegotiationRefusal, LoadedModuleReloadWireResponse,
     ReloadFamilySession, ReloadRequestEvaluation, WireReconciliation,
-    WireReconciliationDisposition, project_outcome,
+    WireReconciliationDisposition, project_execution,
 };
 use std::collections::VecDeque;
 
@@ -349,15 +350,18 @@ impl ReloadSessionWiring {
             return Err(ReloadWiringRefusal::GenerationExhausted);
         }
 
-        // Single clock authority: `project_outcome` applies the outcome to
-        // the injected clock and fails closed on contract-invalid
-        // phase/kind pairings before the clock can move.
-        let response =
-            project_outcome(outcome, operation_id, clock, reasons, None).map_err(|_| {
-                ReloadWiringRefusal::ComposedTableViolated(
-                    InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied,
-                )
-            })?;
+        // Single clock authority: settle the terminal against the
+        // injected clock (advance for both mutating kinds, hold
+        // otherwise) and project the genuine (outcome, witness) pair;
+        // fail closed on contract-invalid phase/kind pairings before
+        // anything publishes.
+        let execution =
+            ReloadExecution::settle_preview_terminal(outcome.clone(), operation_id, clock);
+        let response = project_execution(&execution, reasons, None).map_err(|_| {
+            ReloadWiringRefusal::ComposedTableViolated(
+                InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied,
+            )
+        })?;
 
         let invalidation = invalidation_plan_for(outcome);
         let reconciliation = reconciliation_dispositions_for(outcome);

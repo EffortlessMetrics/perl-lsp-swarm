@@ -42,8 +42,34 @@ use crate::reload_family::{
     ClientFamilyDeclaration, LOADED_MODULE_RELOAD_FAMILY, LoadedModuleReloadOutcomeBody,
     LoadedModuleReloadResponseBody, LoadedModuleReloadWireResponse,
 };
-use crate::reload_family::{LOADED_MODULE_RELOAD_REQUEST, ReloadRequestEvaluation};
+use crate::reload_family::{LOADED_MODULE_RELOAD_REQUEST, ReloadRequestEvaluation, WireSubject};
 use std::collections::BTreeMap;
+
+/// An adapter-issued subject binding: the opaque module identity together
+/// with the exact source snapshot it was issued for. A reload request must
+/// present all four fields unchanged before a mutating terminal — the
+/// identity alone never binds a source (FC-PARTIAL-SUBJECT-IDENTITY).
+pub(super) struct WireSubjectBinding {
+    /// Affected source path for breakpoint reconciliation and events.
+    source_path: String,
+    /// Saved-source content digest token at issuance.
+    saved_source_digest: String,
+    /// Adapter-issued logical source identity at issuance.
+    logical_source_uri: String,
+    /// Loaded-source observation generation at issuance.
+    observation_generation: u64,
+}
+
+impl WireSubjectBinding {
+    /// Whether the presented wire subject is the issued one, field for
+    /// field. Any divergence — altered digest, URI, or generation under a
+    /// reused identity — is not the issued subject.
+    fn matches(&self, subject: &WireSubject) -> bool {
+        self.saved_source_digest == subject.saved_source_digest
+            && self.logical_source_uri == subject.logical_source_uri
+            && self.observation_generation == subject.observation_generation
+    }
+}
 
 /// Adapter-level route state for the reload family.
 pub(super) struct ReloadRouteState {
@@ -58,10 +84,11 @@ pub(super) struct ReloadRouteState {
     epoch: u64,
     /// Session-scoped family wiring (negotiation, admission, terminals).
     wiring: Option<ReloadSessionWiring>,
-    /// Adapter-issued opaque subject identity to affected source path.
-    /// Populated by the preview/test profile; the live loaded-source
-    /// observation owner (#9585/#10098) replaces this when it lands.
-    subject_sources: BTreeMap<String, String>,
+    /// Adapter-issued subject bindings: opaque module identity to the
+    /// exact issued source snapshot. Populated by the preview/test
+    /// profile; the live loaded-source observation owner (#9585/#10098)
+    /// replaces this when it lands.
+    subject_sources: BTreeMap<String, WireSubjectBinding>,
     /// The terminal outcome the runtime transaction would deliver for the
     /// next admitted operation; preview/test profile only.
     seeded_outcome: Option<LoadedModuleReloadOutcome>,
@@ -96,6 +123,10 @@ impl DebugAdapter {
     /// request receives the adapter's ordinary unknown-command response.
     /// `backed` states whether the profile claims reload mechanism
     /// backing; version 1 production sessions are always unbacked.
+    ///
+    /// Test-profile only: the gate is unavailable to library consumers
+    /// so the profile cannot become a supported surface by accident.
+    #[cfg(any(test, feature = "test-helpers"))]
     pub fn enable_loaded_module_reload_preview_profile(&mut self, backed: bool) {
         let mut route = lock_or_recover(&self.reload_route, "debug_adapter.reload_route");
         route.preview_profile = true;
@@ -129,16 +160,28 @@ impl DebugAdapter {
     }
 
     /// Bind an adapter-issued opaque subject identity to its affected
-    /// source path for the preview/test profile. The live subject
-    /// issuance surface (#9585/#10098) replaces this when it lands.
+    /// source path and exact issued snapshot for the preview/test
+    /// profile. The live subject issuance surface (#9585/#10098)
+    /// replaces this when it lands.
     #[cfg(any(test, feature = "test-helpers"))]
     pub fn seed_loaded_module_reload_subject_for_test(
         &self,
         module_identity: &str,
         source_path: &str,
+        saved_source_digest: &str,
+        logical_source_uri: &str,
+        observation_generation: u64,
     ) {
         let mut route = lock_or_recover(&self.reload_route, "debug_adapter.reload_route");
-        route.subject_sources.insert(module_identity.to_string(), source_path.to_string());
+        route.subject_sources.insert(
+            module_identity.to_string(),
+            WireSubjectBinding {
+                source_path: source_path.to_string(),
+                saved_source_digest: saved_source_digest.to_string(),
+                logical_source_uri: logical_source_uri.to_string(),
+                observation_generation,
+            },
+        );
     }
 
     /// Supply the terminal outcome the runtime transaction (#10098, not
@@ -226,11 +269,20 @@ impl DebugAdapter {
         // unbacked runtime is the frozen `unsupported_runtime` refusal —
         // availability is never product authority.
         let seeded = route.seeded_outcome.take();
+        // The request must present the issued subject field for field: a
+        // reused identity with an altered digest, URI, or generation is
+        // not the issued snapshot, so it binds no source and a mutating
+        // terminal for it refuses inexact/stale identity below.
         let subject_source = raw
             .get("subject")
-            .and_then(|subject| subject.get("moduleIdentity"))
-            .and_then(Value::as_str)
-            .and_then(|identity| route.subject_sources.get(identity).cloned());
+            .and_then(|subject| serde_json::from_value::<WireSubject>(subject.clone()).ok())
+            .and_then(|subject| {
+                route
+                    .subject_sources
+                    .get(&subject.module_identity)
+                    .filter(|binding| binding.matches(&subject))
+                    .map(|binding| binding.source_path.clone())
+            });
 
         // Terminal routing on the debug session's generation clock. Lock
         // order is reload_route → session everywhere this route runs.
@@ -434,6 +486,12 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     const MODULE_IDENTITY: &str = "opaque-module-token-r03";
+    /// The issued subject snapshot every `request()` below presents: the
+    /// seeded binding must match it field for field.
+    const SUBJECT_DIGEST: &str =
+        "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d";
+    const SUBJECT_URI: &str = "perl-lsp-subject:epoch=1;observation=3";
+    const SUBJECT_GENERATION: u64 = 3;
 
     fn noop_child() -> Child {
         if let Ok(child) = Command::new("perl")
@@ -530,7 +588,9 @@ mod tests {
             stack_frame_arguments: HashMap::from([(1, vec!["$x".to_string()])]),
             variable_cache: VariableCache::default(),
             thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            initial_stop_pending: false,
             stopped_generation: 3,
             module_generation: RuntimeModuleGenerationClock::new(),
         };
@@ -581,9 +641,9 @@ mod tests {
             "operationId": operation_id,
             "subject": {
                 "moduleIdentity": MODULE_IDENTITY,
-                "savedSourceDigest": "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d",
-                "logicalSourceUri": "perl-lsp-subject:epoch=1;observation=3",
-                "observationGeneration": 3
+                "savedSourceDigest": SUBJECT_DIGEST,
+                "logicalSourceUri": SUBJECT_URI,
+                "observationGeneration": SUBJECT_GENERATION
             },
             "deadlineMs": 5000
         })
@@ -689,6 +749,9 @@ mod tests {
         adapter.seed_loaded_module_reload_subject_for_test(
             MODULE_IDENTITY,
             &sources.path_string(true),
+            SUBJECT_DIGEST,
+            SUBJECT_URI,
+            SUBJECT_GENERATION,
         );
         adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Reloaded);
         seed_stopped_session(&adapter, &sources);
@@ -794,6 +857,9 @@ mod tests {
         adapter.seed_loaded_module_reload_subject_for_test(
             MODULE_IDENTITY,
             &sources.path_string(true),
+            SUBJECT_DIGEST,
+            SUBJECT_URI,
+            SUBJECT_GENERATION,
         );
         adapter.seed_loaded_module_reload_outcome_for_test(
             LoadedModuleReloadOutcome::IndeterminatePossiblyApplied {
@@ -897,6 +963,52 @@ mod tests {
         Ok(())
     }
 
+    /// FC-PID-ATTACH-STALE-RELOAD (#10102, R03): a successful PID attach
+    /// is a replacement session, so it must reset the reload route like
+    /// the launch/TCP paths — prior epoch, negotiation, subjects, and
+    /// operation identities never survive the new debuggee.
+    #[test]
+    fn pid_attach_resets_reload_route_identities() -> TestResult {
+        let mut adapter = DebugAdapter::new();
+        adapter.enable_loaded_module_reload_preview_profile(true);
+        adapter.declare_loaded_module_reload_client_for_test(&[1])?;
+        let sources = SeededSources::new();
+        adapter.seed_loaded_module_reload_subject_for_test(
+            MODULE_IDENTITY,
+            &sources.path_string(true),
+            SUBJECT_DIGEST,
+            SUBJECT_URI,
+            SUBJECT_GENERATION,
+        );
+        let old_epoch = adapter.loaded_module_reload_epoch_for_test();
+
+        // Attaching to this test process always verifies: the target
+        // exists and is signalable by definition.
+        let attach = adapter.handle_request(
+            2,
+            "attach",
+            Some(serde_json::json!({ "processId": std::process::id() })),
+        );
+        let DapMessage::Response { success, .. } = attach else {
+            return Err("attach must answer with a response".into());
+        };
+        assert!(success, "attaching to the test's own process must succeed");
+
+        assert_eq!(
+            adapter.loaded_module_reload_epoch_for_test(),
+            old_epoch + 1,
+            "PID attach must advance the reload epoch"
+        );
+        let unnegotiated =
+            adapter.handle_request(3, LOADED_MODULE_RELOAD_REQUEST, Some(request(4, old_epoch)));
+        assert_eq!(
+            rejection_code(&unnegotiated),
+            "family_not_negotiated",
+            "prior negotiation and subjects never survive a PID attach"
+        );
+        Ok(())
+    }
+
     #[test]
     fn mutating_outcome_without_a_session_refuses_not_stopped() -> TestResult {
         let mut adapter = DebugAdapter::new();
@@ -960,6 +1072,62 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn mutating_outcome_with_an_altered_subject_snapshot_refuses_inexact_identity() -> TestResult {
+        // FC-PARTIAL-SUBJECT-IDENTITY: reusing the issued module identity
+        // with an altered digest binds no source — the exact issued
+        // snapshot was never presented, so a mutating terminal for it
+        // refuses inexact identity rather than publishing for an
+        // unverified source.
+        let sources = SeededSources::new();
+        let mut adapter = DebugAdapter::new();
+        let (event_sender, receiver) = sync_channel(64);
+        adapter.set_event_sender(event_sender);
+        adapter.enable_loaded_module_reload_preview_profile(true);
+        adapter.declare_loaded_module_reload_client_for_test(&[1])?;
+        adapter.seed_loaded_module_reload_subject_for_test(
+            MODULE_IDENTITY,
+            &sources.path_string(true),
+            SUBJECT_DIGEST,
+            SUBJECT_URI,
+            SUBJECT_GENERATION,
+        );
+        adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Reloaded);
+        seed_stopped_session(&adapter, &sources);
+
+        // Same identity, shape-valid but never-issued digest.
+        let tampered = serde_json::json!({
+            "family": LOADED_MODULE_RELOAD_FAMILY,
+            "familyVersion": 1,
+            "sessionEpoch": 1,
+            "operationId": 1,
+            "subject": {
+                "moduleIdentity": MODULE_IDENTITY,
+                "savedSourceDigest": "sha256:0f12e4d6a9b8c7d5e3f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0e",
+                "logicalSourceUri": SUBJECT_URI,
+                "observationGeneration": SUBJECT_GENERATION
+            },
+            "deadlineMs": 5000
+        });
+        let response = adapter.handle_request(2, LOADED_MODULE_RELOAD_REQUEST, Some(tampered));
+        let DapMessage::Response { success, body: Some(body), .. } = &response else {
+            return Err("expected a response body".into());
+        };
+        assert!(!success);
+        let wire: LoadedModuleReloadWireResponse = serde_json::from_value(body.clone())?;
+        let outcome = loaded_module_reload_outcome_body(&wire).ok_or("expected an outcome body")?;
+        assert_eq!(outcome.kind.as_str(), "refused");
+        assert_eq!(
+            serde_json::to_value(outcome.disposition)?,
+            serde_json::json!("source_not_exact_or_stale")
+        );
+        // Nothing was invalidated and nothing was emitted.
+        let (frames, _, _) = session_state_snapshot(&adapter);
+        assert_eq!(frames, 2, "an altered subject never triggers invalidation");
+        assert!(receiver.try_recv().is_err());
+        Ok(())
+    }
+
     /// Review finding (admission gating): a session that exists but is not
     /// stopped is not command-ready; a seeded mutating outcome must refuse
     /// with the frozen disposition instead of routing a reload into a
@@ -975,6 +1143,9 @@ mod tests {
         adapter.seed_loaded_module_reload_subject_for_test(
             MODULE_IDENTITY,
             &sources.path_string(true),
+            SUBJECT_DIGEST,
+            SUBJECT_URI,
+            SUBJECT_GENERATION,
         );
         adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Reloaded);
         seed_stopped_session(&adapter, &sources);
@@ -1016,6 +1187,9 @@ mod tests {
         adapter.seed_loaded_module_reload_subject_for_test(
             MODULE_IDENTITY,
             &sources.path_string(true),
+            SUBJECT_DIGEST,
+            SUBJECT_URI,
+            SUBJECT_GENERATION,
         );
         adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Reloaded);
         seed_stopped_session(&adapter, &sources);
@@ -1050,6 +1224,9 @@ mod tests {
         adapter.seed_loaded_module_reload_subject_for_test(
             MODULE_IDENTITY,
             &sources.path_string(true),
+            SUBJECT_DIGEST,
+            SUBJECT_URI,
+            SUBJECT_GENERATION,
         );
         adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Refused {
             disposition: LoadedModuleReloadEligibility::OutsideLaunchAuthority,

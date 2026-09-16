@@ -1,9 +1,9 @@
 //! Execution control: continue, next, step in, step out, pause, goto, cancel.
 
 use super::{
-    AstBreakpointValidator, BreakpointValidator, ContinueResponseBody, DapMessage, DebugAdapter,
-    DebugState, GotoArguments, GotoTarget, GotoTargetsArguments, GotoTargetsResponseBody, Ordering,
-    ResumeMode, Value, Write, catalog_has_feature, json, lock_or_recover,
+    AstBreakpointValidator, BreakpointValidator, CancelArguments, ContinueResponseBody, DapMessage,
+    DebugAdapter, DebugState, GotoArguments, GotoTarget, GotoTargetsArguments,
+    GotoTargetsResponseBody, ResumeMode, Value, Write, catalog_has_feature, json, lock_or_recover,
 };
 impl DebugAdapter {
     /// Synthetic execution-context id exposed for TCP-attach sessions, which
@@ -537,11 +537,6 @@ impl DebugAdapter {
         // targets could never be executed, so a one-row promotion of
         // `dap.goto_targets` alone still fails closed here.
         if !(catalog_has_feature("dap.goto_targets") && catalog_has_feature("dap.goto")) {
-            // A refused request must not leave a previously armed `cancel`
-            // flag for the next unrelated request to trip over. The pre-gate
-            // handler reset the advisory flag in its line-scan loop, which
-            // this gate bypasses, so consume it at the request boundary.
-            self.cancel_requested.store(false, Ordering::Release);
             return DapMessage::Response {
                 seq,
                 request_seq,
@@ -629,11 +624,27 @@ impl DebugAdapter {
         let mut targets = Vec::new();
         let search_start = (args.line - 5).max(1);
         let search_end = args.line + 5;
+        let operation = match self.operation_broker.register_request(
+            request_seq,
+            super::operation_broker::OperationClass::Inspection,
+            std::time::Duration::from_secs(1),
+        ) {
+            Ok(operation) => operation,
+            Err(error) => {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: false,
+                    command: "gotoTargets".to_string(),
+                    body: None,
+                    message: Some(format!("Unable to register cancellation: {error:?}")),
+                };
+            }
+        };
 
         if let Ok(validator) = AstBreakpointValidator::new(&content) {
             for line in search_start..=search_end {
-                if self.cancel_requested.load(Ordering::Acquire) {
-                    self.cancel_requested.store(false, Ordering::Release);
+                if operation.token().is_some_and(|token| token.is_cancelled()) {
                     break;
                 }
                 if validator.is_executable_line(line) {
@@ -653,6 +664,23 @@ impl DebugAdapter {
         }
         drop(goto_map);
         drop(id_counter);
+
+        let terminal = if operation.token().is_some_and(|token| token.is_cancelled()) {
+            super::operation_broker::BrokerTerminal::Cancelled
+        } else {
+            super::operation_broker::BrokerTerminal::Completed(Vec::new())
+        };
+        let terminal = operation.settle(terminal);
+        if !matches!(terminal, super::operation_broker::BrokerTerminal::Completed(_)) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "gotoTargets".to_string(),
+                body: None,
+                message: Some(format!("gotoTargets did not complete: {}", terminal.as_str())),
+            };
+        }
 
         let body = GotoTargetsResponseBody { targets };
         DapMessage::Response {
@@ -677,10 +705,6 @@ impl DebugAdapter {
         // below is unreachable while the catalog row is unadvertised) and must
         // not run the intervening code between the current stop and the target.
         if !catalog_has_feature("dap.goto") {
-            // Consume a previously armed `cancel` flag at the request boundary
-            // so a refused goto cannot poison the next unrelated request (the
-            // gated line-scan loop used to reset it).
-            self.cancel_requested.store(false, Ordering::Release);
             return DapMessage::Response {
                 seq,
                 request_seq,
@@ -809,10 +833,13 @@ impl DebugAdapter {
         &self,
         seq: i64,
         request_seq: i64,
-        _arguments: Option<Value>,
+        arguments: Option<Value>,
     ) -> DapMessage {
-        // cancel_requested field will be added by the integration task
-        self.cancel_requested.store(true, Ordering::Release);
+        let target = arguments
+            .and_then(|value| serde_json::from_value::<CancelArguments>(value).ok())
+            .and_then(|args| args.request_id);
+        let disposition = target.map(|request| self.operation_broker.cancel_request(request));
+        tracing::debug!(target_request = ?target, disposition = ?disposition, "cancel request disposition");
         DapMessage::Response {
             seq,
             request_seq,
@@ -884,7 +911,9 @@ mod thread_identity_tests {
             stack_frame_arguments: HashMap::new(),
             variable_cache: VariableCache::default(),
             thread_id,
+            debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
+            initial_stop_pending: false,
             stopped_generation: 0,
             module_generation: RuntimeModuleGenerationClock::new(),
         }
