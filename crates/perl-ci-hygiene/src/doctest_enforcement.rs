@@ -594,7 +594,7 @@ pub fn violations(
 
 #[cfg(test)]
 mod tests {
-    use perl_test_must::must_with;
+    use perl_test_must::{must_err_with, must_with};
 
     use super::{
         ContractSite, PackageFacts, Violation, compile_fail_fence_lines, is_compile_fail_fence,
@@ -840,29 +840,36 @@ mod tests {
     fn a_demoted_route_is_an_error() {
         // FC3: an advisory route executes no contract on the merge path, yet
         // the ratchet would stay green because the row still exists with a
-        // `--doc` command.
+        // `--doc` command. The error must name the observed tier, so a test
+        // can pin the exact failure instead of accepting any error.
         let policy = policy_with_route_field("tier", "pr_fast");
+        let error = must_err_with(route_packages(&policy), "the fixture demotes the route");
+        let message = format!("{error:#}");
         assert!(
-            route_packages(&policy).is_err(),
-            "a demoted route cannot enforce anything at merge time"
+            message.contains("is `tier: pr_fast`, not `merge_gate`"),
+            "the demotion error must name the observed and required tiers; got: {message}"
         );
     }
 
     #[test]
     fn an_unrequired_route_is_an_error() {
         let policy = policy_with_route_field("required", "false");
+        let error = must_err_with(route_packages(&policy), "the fixture unrequires the route");
+        let message = format!("{error:#}");
         assert!(
-            route_packages(&policy).is_err(),
-            "an optional route fails no merge, so it enforces nothing"
+            message.contains("is not `required: true`"),
+            "the unrequired error must name the missing requirement; got: {message}"
         );
     }
 
     #[test]
     fn a_quarantined_route_is_an_error() {
         let policy = policy_with_route_field("quarantine", "true");
+        let error = must_err_with(route_packages(&policy), "the fixture quarantines the route");
+        let message = format!("{error:#}");
         assert!(
-            route_packages(&policy).is_err(),
-            "a quarantined route cannot block a merge, so it enforces nothing"
+            message.contains("is not `quarantine: false`"),
+            "the quarantine error must name the violated field; got: {message}"
         );
     }
 
