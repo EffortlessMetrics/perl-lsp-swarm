@@ -111,12 +111,10 @@ fn parse_bounded(code: String) -> BoundedParse {
         // it must not be misreported as a watchdog timeout.
         Err(mpsc::RecvTimeoutError::Disconnected) => BoundedParse {
             parse_time: parse_watchdog_window(),
-            outcome: Err(
-                "watchdog worker died mid-parse before delivering a result \
+            outcome: Err("watchdog worker died mid-parse before delivering a result \
                  (channel disconnected, typically a worker panic such as an \
                  allocation failure)"
-                    .to_string(),
-            ),
+                .to_string()),
         },
     }
 }
