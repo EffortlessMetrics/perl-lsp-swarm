@@ -12,12 +12,12 @@ fn assert_valid_case(source: &str) {
     assert_no_blocking_diagnostics(source);
 }
 
+/// Delegates to the canonical shared walker so "is this AST clean?" keeps a
+/// single source of truth with the other CPAN fixtures
+/// (`cpan_test_helpers::find_first_error` covers `Error` and every `Missing*`
+/// kind).
 fn has_recovery_node(node: &Node) -> bool {
-    if matches!(node.kind, NodeKind::Error { .. } | NodeKind::MissingExpression) {
-        return true;
-    }
-
-    node.children().into_iter().any(has_recovery_node)
+    cpan_test_helpers::find_first_error(node).is_some()
 }
 
 fn has_unrecovered_blocking_diagnostic(diagnostics: &[ParseError]) -> bool {
@@ -263,6 +263,9 @@ fn valid_same_line_statement_boundaries_remain_clean() -> Result<(), String> {
         "use strict; my $x = 1; print \"hi\";",
         "copy($from, $to) or goto fail;",
         "my $x = 1; $x += 2;",
+        // Valid repetition assignment must survive residue classification on
+        // the combined tree (#13169/#13496 family).
+        "my $s = 1; $s x= 2; print $s;",
         "foo($x, $y); bar($z);",
     ] {
         assert_valid_case(source);

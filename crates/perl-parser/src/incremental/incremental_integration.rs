@@ -271,5 +271,10 @@ mod tests {
         let (line, char) = byte_to_lsp_pos(&rope, byte_after_emoji);
         assert_eq!(line, 0);
         assert_eq!(char, 8); // "Hello " = 6 + emoji = 2 = 8 UTF-16 units
+
+        // Forward mapping must mirror it: UTF-16 column 8 (two code units past
+        // the astral emoji) maps back to the byte offset after the emoji.
+        assert_eq!(lsp_pos_to_byte(&rope, 0, 8), byte_after_emoji);
+        assert_eq!(lsp_pos_to_byte(&rope, 0, 6), "Hello ".len());
     }
 }

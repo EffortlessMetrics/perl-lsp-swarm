@@ -21,7 +21,7 @@ fn parse_with_diagnostics(source: &str) -> (Node, String, bool) {
 
 /// Walk the AST recursively and return the kind_name of the first error or
 /// missing node found, or `None` if the tree is clean.
-fn find_first_error(node: &Node) -> Option<&'static str> {
+pub fn find_first_error(node: &Node) -> Option<&'static str> {
     match &node.kind {
         NodeKind::Error { .. }
         | NodeKind::MissingExpression
