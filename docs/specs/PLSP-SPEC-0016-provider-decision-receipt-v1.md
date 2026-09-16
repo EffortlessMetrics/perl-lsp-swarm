@@ -234,6 +234,9 @@ A provider decision receipt PR satisfies this spec when:
 - normalized fields do not contradict provider-local receipt fields
 - unknown providers produce conservative low-confidence fallback receipts
 - caller-supplied `request_receipt` takes precedence over reconstructed state
+- an optional typed `request_id` selector only attaches the matching latest
+  runtime receipt; numeric and string IDs remain distinct, mismatches expose no
+  request evidence, and selectors cannot be combined with caller receipts
 - copyable payloads redact workspace identity
 - support-tier and dashboard wording remain bounded by current receipts
 

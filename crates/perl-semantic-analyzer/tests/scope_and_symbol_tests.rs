@@ -724,6 +724,54 @@ fn scope_local_typeglob_alias_keeps_rhs_target_visible() -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// #15712: `*{$x . $y} = \&target;` has a computed body, not a single variable
+/// named "x . $y". Recording the raw body text as one variable fabricated a
+/// false undeclared-variable diagnostic under strict mode; only a body that is
+/// exactly one simple variable may be recorded.
+#[test]
+fn computed_typeglob_body_records_no_fabricated_variable() -> Result<(), Box<dyn std::error::Error>>
+{
+    let issues = scope_issues_strict("use strict;\nmy ($x, $y);\n*{$x . $y} = \\&target;\n");
+
+    assert!(
+        !has_issue(&issues, IssueKind::UndeclaredVariable, "x . $y"),
+        "compound braced glob body must not fabricate an undeclared variable; got: {issues:?}"
+    );
+    assert!(
+        !issues.iter().any(|issue| issue.variable_name.contains("x . $y")),
+        "no diagnostic may name the compound body text; got: {issues:?}"
+    );
+    Ok(())
+}
+
+/// Even when the compound body's parts are undeclared, the analyzer must not
+/// invent one variable named after the whole expression.
+#[test]
+fn computed_typeglob_body_with_undeclared_parts_stays_unfabricated()
+-> Result<(), Box<dyn std::error::Error>> {
+    let issues = scope_issues_strict("use strict;\n*{$x . $y} = \\&target;\n");
+
+    assert!(
+        !issues.iter().any(|issue| issue.variable_name.contains("x . $y")),
+        "compound braced glob body must not be reported as one variable; got: {issues:?}"
+    );
+    Ok(())
+}
+
+/// Control: a braced body that is exactly one simple variable stays recorded —
+/// an undeclared capture still gets the strict-mode diagnostic.
+#[test]
+fn simple_variable_typeglob_body_still_reports_undeclared_capture()
+-> Result<(), Box<dyn std::error::Error>> {
+    let issues = scope_issues_strict("use strict;\n*{$undeclared} = \\&target;\n");
+
+    assert!(
+        has_issue(&issues, IssueKind::UndeclaredVariable, "$undeclared"),
+        "simple-variable braced glob body must remain a recorded use; got: {issues:?}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 3b. local with builtin special variables — issue #3502
 // ---------------------------------------------------------------------------
