@@ -101,6 +101,13 @@ import validate_review_surfaces as vrs  # noqa: E402
 DEFAULT_MANIFEST = vrs.DEFAULT_MANIFEST
 DEFAULT_PROJECTION = vrs.DEFAULT_PROJECTION
 
+# Self-describing version token for the emitted review receipt (#15651).
+# Peer context emitters use string tokens ("ci_route.v1", "ci_gate_shard.v1",
+# "rustfmt_check.v1", "ci-subject.v1"); a bare integer has zero cross-family
+# semantic identity and cannot be negotiated by a reader without out-of-band
+# context.
+SCHEMA = "authority-transfer-review.v1"
+
 PASS_NOT_APPLICABLE = "PASS_NOT_APPLICABLE"
 PASS_CURRENT_REVIEW = "PASS_CURRENT_REVIEW"
 FAIL_REVIEW_MISSING = "FAIL_REVIEW_MISSING"
@@ -1017,7 +1024,7 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
 
     result = aggregate(global_results)
     return {
-        "schema_version": 1,
+        "schema_version": SCHEMA,
         "policy": "authority-transfer-review",
         "issue": "11795",
         "status_boundary": STATUS_BOUNDARY,
@@ -1611,6 +1618,7 @@ def self_test() -> int:
         # 1. Not-applicable PR takes the cheap deterministic route.
         receipt = evaluate(make_inputs(["crates/other/src/lib.rs"], []))
         expect("not_applicable", receipt["result"], PASS_NOT_APPLICABLE)
+        expect("self_describing_schema_token", receipt["schema_version"], SCHEMA)
 
         # 2. Governed change without a packet fails typed-missing, bound to the exact head.
         receipt = evaluate(make_inputs(["src/authority/catalog.rs"], []))

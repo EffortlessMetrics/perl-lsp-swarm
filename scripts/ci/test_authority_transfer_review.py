@@ -91,6 +91,13 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         self.assertEqual([], receipt["governed_rows"])
         self.assertEqual([], receipt["verdicts"])
 
+    def test_emitted_receipt_pins_self_describing_schema_token(self) -> None:
+        # D1 Python variant (#15651): the receipt's schema_version must be a
+        # self-describing string token, never a bare integer literal.
+        receipt = self.evaluate(UNRELATED_CHANGED, [])
+        self.assertEqual("authority-transfer-review.v1", receipt["schema_version"])
+        self.assertEqual(receipt["schema_version"], atr.SCHEMA)
+
     def test_governed_change_without_packet_is_typed_missing_and_head_bound(self) -> None:
         # Falsifier 1: candidate touches the configuration authority catalog with no packet.
         receipt = self.evaluate(GOVERNED_CHANGED, [])
