@@ -1328,7 +1328,25 @@ fn proof_level_is_explicitly_excluded(
     }
     PROOF_LEVEL_TERMS.iter().any(|term| {
         issue_requires_proof_level_term(&issue_requirements, term)
-            && contains_proof_level_term(&exclusions_lower, term)
+            && proof_level_term_is_excluded(&exclusions_lower, term)
+    })
+}
+
+/// Returns true when `text` (already known to contain at least one explicit-
+/// exclusion marker from [`contains_explicit_exclusion`]) excludes the proof-
+/// level `term` somewhere in the same sentence/list-item/clause.
+///
+/// This mirrors `unit_requires_proof_level_term`'s clause-scoping for the PR
+/// side. The earlier section-wide `contains_proof_level_term` allowed any
+/// mention of `public`/`installed`/`packaged`/`presentation`/`release`/
+/// `actual host` to satisfy the rule as long as the section also contained
+/// any exclusion marker — so a Claim Boundary that *asserted* the public
+/// surface was covered still armed CP00 whenever a sibling sentence said
+/// "Not claimed: foo.". See #15627.
+fn proof_level_term_is_excluded(text: &str, term: &str) -> bool {
+    requirement_units(text).iter().flat_map(|unit| split_coordinated_clauses(unit)).any(|unit| {
+        let lower = unit.to_ascii_lowercase();
+        contains_explicit_exclusion(&lower) && contains_proof_level_term(&lower, term)
     })
 }
 
@@ -2687,6 +2705,192 @@ mod tests {
         let unchanged = "## Acceptance\nThe actual host surface remains unchanged.\n";
         assert!(!proof_level_from_bodies(unchanged, pr)?);
         Ok(())
+    }
+
+    // PR-side polarity: the section-wide "term appears anywhere" check is
+    // loosened so a sentence that *asserts* a public/installed/packaged/released
+    // surface does not arm the rule merely because another sentence in the same
+    // section contains an exclusion marker. The PR side now requires the term
+    // and the exclusion marker to share a sentence/list-item/clause. See #15627.
+
+    #[test]
+    fn proof_level_pr_assertion_does_not_arm_when_exclusion_is_in_a_separate_sentence() -> Result<()>
+    {
+        // Reproducer from #15627 against #7129: the Claim Boundary contains an
+        // explicit-exclusion marker ("Not claimed:") for an unrelated surface and
+        // an assertion that the public formatter surface is covered. The
+        // existing issue acceptance requires "public" proof.
+        let issue = "## Acceptance\nRemove compat from public configuration.\n";
+        let pr = "## Claim Boundary\nNot claimed: the legacy compat engine shim.\n\
+                  Provably true: no public formatter surface offers compat as an engine.\n\n\
+                  Closes #7129\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in one sentence must not arm the rule because another \
+             sentence excludes an unrelated surface"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_exclusion_in_same_sentence_still_arms() -> Result<()> {
+        // Negative control: the exclusion marker and the term live in the same
+        // sentence, so the term genuinely is being excluded.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an exclusion that names the term in the same sentence must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_exclusion_via_does_not_prove_in_same_sentence_still_arms() -> Result<()> {
+        // A second exclusion-marker style in the same sentence still arms.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\nThe release train does not prove public surface parity.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an exclusion that names the term in the same sentence via a different marker must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_assertion_in_markdown_table_cell_does_not_arm() -> Result<()> {
+        // Markdown-table reproducer from the #15627 comment about #15633/#7588:
+        // the table cell quotes the issue's acceptance criterion verbatim while
+        // asserting it is satisfied; the exclusion marker lives in a separate
+        // paragraph. The check must not arm on the cell mention.
+        let issue = "## Acceptance\nPublic docs/API make the per-file claim explicit.\n";
+        let pr = "## Claim Boundary\n\
+                  | Acceptance criterion | Evidence |\n\
+                  | --- | --- |\n\
+                  | Public docs/API make the per-file claim explicit | rewritten module docs |\n\
+                  \n\
+                  Not claimed: the per-file proof in legacy 5.8 branches.\n\n\
+                  Closes #7588\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "a Markdown-table cell that quotes the issue's acceptance criterion must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_exclusion_clause_of_split_sentence_arms() -> Result<()> {
+        // The exclusion marker and the term live in the same coordinate clause,
+        // even when the sentence also contains an assertion for another term.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  Public evidence is explicitly out of scope, but installed proof is asserted.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a clause that excludes the term must still arm even when another clause asserts a different term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_different_coordinate_clause_does_not_arm() -> Result<()> {
+        // Coordinate-clause scoping (#15627 review): the exclusion marker
+        // lives in one coordinate ("Not claimed: the legacy shim") while the
+        // term is asserted in the other ("the public formatter surface is
+        // covered"). The marker must not leak across the "but" boundary.
+        // Inverse of proof_level_pr_term_in_exclusion_clause_of_split_sentence_arms.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  Not claimed: the legacy shim, but the public formatter surface is covered.\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in a different coordinate clause from the exclusion marker must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_different_list_item_from_marker_does_not_arm() -> Result<()> {
+        // List-item clause scoping: the exclusion marker is in one bullet, the
+        // term appears in a different bullet asserting coverage.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  - Not claimed: the legacy compat shim.\n\
+                  - The public formatter surface is provably covered.\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in a different list item from the exclusion marker must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_and_marker_in_same_list_item_arm() -> Result<()> {
+        // Negative control for list-item clause scoping.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  - Public evidence is explicitly out of scope.\n\
+                  - Installed proof is asserted.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a list item that excludes the term must arm even when another list item asserts a different term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_template_claim_boundary_does_not_arm_per_template_vocabulary() -> Result<()> {
+        // Reproducer for the .github/PULL_REQUEST_TEMPLATE.md vocabulary path:
+        // the template's "Claim Boundary" heading contains "out of scope" as
+        // section vocabulary, but the body itself contains no actual
+        // exclusion. The rule must not arm merely because the section name
+        // carries exclusion vocabulary.
+        let issue = "## Acceptance\nPublic docs carry the per-file claim.\n";
+        let pr = "## Claim Boundary\n\
+                  ## What becomes provably true\n\
+                  The public formatter surface is covered by the rewritten module docs.\n\
+                  ## What is explicitly out of scope\n\
+                  The 5.8-era per-file parity test bench.\n\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "the template's Claim Boundary vocabulary must not arm when no clause excludes the term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_local_requirement_only_false_counts_as_excluded() {
+        // The PR-side helper mirrors unit_requires_proof_level_term but counts
+        // a term as excluded when its local polarity is negative (Some(false))
+        // rather than when it is positive (Some(true)).
+        // "Public evidence is explicitly out of scope." has no polarity
+        // marker in the negative-polarity list, but the section-level
+        // explicit-exclusion marker carries it. The helper checks
+        // (contains_explicit_exclusion && contains_proof_level_term) at the
+        // sentence granularity produced by requirement_units.
+        assert!(proof_level_term_is_excluded(
+            "Public evidence is explicitly out of scope.",
+            "public"
+        ));
+        assert!(!proof_level_term_is_excluded(
+            "Provably true: no public formatter surface offers compat as an engine.",
+            "public"
+        ));
+        assert!(proof_level_term_is_excluded(
+            "Public evidence is explicitly out of scope, but installed proof is asserted.",
+            "public"
+        ));
+        assert!(!proof_level_term_is_excluded(
+            "Not claimed: the legacy shim. The public surface is covered.",
+            "public"
+        ));
     }
 
     #[test]
