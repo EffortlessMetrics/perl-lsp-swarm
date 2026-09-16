@@ -31,13 +31,24 @@ fn do_while_condition_keeps_chained_subscripts() -> Result<(), String> {
     parse_clean("do { $s++ } while $h{k}{j};")?;
     parse_clean("do { $s++ } while $h{k}{j}{l};")?;
 
+    // The whole subscript family chains on unparenthesized conditions:
+    // arrow and index subscripts produce their own binary ops (#15649
+    // review wave 3).
+    parse_clean("do { $s++ } while $a[0]{k};")?;
+    parse_clean("do { $s++ } while $self->{a}{b};")?;
+    parse_clean("do { $s++ } while $self->{a}[0];")?;
+
     // A subscripted variable inside a parenthesized condition is also an
     // ordinary condition shape.
     parse_clean("do { $s++ } while ($h{k});")?;
 
     // Nested grouping inside a parenthesized condition: subscripts inside the
     // groups keep parsing, and the parse stays clean after both groups close.
-    parse_clean("do { $s++ } while (($h{k}));")
+    parse_clean("do { $s++ } while (($h{k}));")?;
+
+    // A lowercase bareword before `{` is the block-call form — ordinary
+    // condition shape, stays allowed (#15649 review wave 3 insurance).
+    parse_clean("sub foo { 0 } do { $i++ } while foo { $i++; };")
 }
 
 #[test]
@@ -55,6 +66,9 @@ fn do_while_rejects_trailing_block() -> Result<(), String> {
         // bareword (#15649 review).
         r#"do { $i++; } while ($flag) { $i++; }"#,
         r#"do { $i++; } while (Foo) { $i++; }"#,
+        // Same after the group closes for a subscripted condition: the
+        // chain cannot continue past the `)` (#15649 review wave 3).
+        r#"do { $i++; } while ($h{k}) { $i++; }"#,
     ] {
         let mut parser = Parser::new(code);
         if parser.parse().is_ok() {

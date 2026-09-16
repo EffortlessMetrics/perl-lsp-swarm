@@ -649,17 +649,23 @@ impl<'a> Parser<'a> {
                     // the expression shape: inside the condition's `(...)`
                     // (paren depth > 0) every postfix brace is an ordinary
                     // subscript (`while ($h{k})`), and after the group closed
-                    // no shape can subscript (`while ($flag) {k}` rejects even
-                    // though grouping left a bare `Variable` here).
-                    // Unparenthesized conditions keep the shape rule:
-                    // variable subscripts (`while $h{k}`), bareword call/block
-                    // forms (`while Foo {k}`), and chained subscripts
-                    // (`while $h{k}{j}`) keep consuming; a brace after a
+                    // no shape can subscript (`while ($flag) {k}` and
+                    // `($h{k}){k}` reject even though grouping left a bare
+                    // variable or subscript binary here). Unparenthesized
+                    // conditions keep the shape rule: bare variables and
+                    // bareword call/block forms (`while foo {k}`) and any
+                    // subscript-chain result (`$h{k}{j}`, `$a[0]{k}`,
+                    // `$self->{a}{b}`) keep consuming; a brace after a
                     // completed non-subscript shape (`while $a eq $b {`) is
                     // the trailing block, left for `parse_statement_modifier`
                     // to reject.
-                    let chained_subscript =
-                        matches!(&expr.kind, NodeKind::Binary { op, .. } if op == "{}");
+                    let subscript_chain = matches!(
+                        &expr.kind,
+                        NodeKind::Binary { op, .. } if matches!(
+                            op.as_str(),
+                            "{}" | "[]" | "->{}" | "->[]" | "->@[]" | "->%{}"
+                        )
+                    );
                     let bare_shape = matches!(
                         &expr.kind,
                         NodeKind::Variable { .. } | NodeKind::Identifier { .. }
@@ -670,8 +676,7 @@ impl<'a> Parser<'a> {
                     let unparenthesized_condition =
                         self.in_do_while_condition && !self.do_while_paren_reject;
                     let keep_consuming = inside_condition_group
-                        || chained_subscript
-                        || (unparenthesized_condition && bare_shape);
+                        || (unparenthesized_condition && (bare_shape || subscript_chain));
                     if self.in_do_while_condition && !keep_consuming {
                         break;
                     }
