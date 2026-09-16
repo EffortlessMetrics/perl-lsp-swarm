@@ -702,6 +702,11 @@ struct RiprSuppression {
     paths: Vec<String>,
     #[serde(default)]
     classification: Vec<String>,
+    /// Optional exact finding/probe identities. Empty means "no identity filter"
+    /// (path + classification only). Non-empty is fail-closed: a finding without a
+    /// matching id is not suppressed, even on a matching path.
+    #[serde(default)]
+    gap_ids: Vec<String>,
     #[serde(default)]
     reason: String,
 }
@@ -711,6 +716,8 @@ struct RiprSuppressionRules {
     display_patterns: Vec<String>,
     path_patterns: Vec<Pattern>,
     classification_patterns: Vec<Vec<String>>,
+    /// Parallel to `path_patterns`. Empty inner lists mean no identity filter.
+    gap_id_sets: Vec<Vec<String>>,
     invalid_patterns: Vec<String>,
     suppression_reasons: Vec<Value>,
 }
@@ -730,12 +737,16 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
             || !suppression.kind.trim().is_empty()
             || !suppression.reason.trim().is_empty()
         {
-            rules.suppression_reasons.push(json!({
+            let mut reason = json!({
                 "id": suppression.id,
                 "kind": suppression.kind,
                 "reason": suppression.reason,
                 "paths": paths.clone(),
-            }));
+            });
+            if !suppression.gap_ids.is_empty() {
+                reason["gap_ids"] = json!(suppression.gap_ids);
+            }
+            rules.suppression_reasons.push(reason);
         }
         for path_pattern in paths {
             match Pattern::new(&path_pattern) {
@@ -743,6 +754,7 @@ fn read_ripr_suppression_rules(repo: &Path, path: &Path) -> Result<RiprSuppressi
                     rules.display_patterns.push(path_pattern);
                     rules.path_patterns.push(pattern);
                     rules.classification_patterns.push(suppression.classification.clone());
+                    rules.gap_id_sets.push(suppression.gap_ids.clone());
                 }
                 Err(_) => rules.invalid_patterns.push(path_pattern),
             }
@@ -759,7 +771,10 @@ fn suppression_matches_seam(rules: &RiprSuppressionRules, seam: &Value) -> bool 
         return false;
     };
     let path = normalize_suppression_match_path(&path);
-    rules.path_patterns.iter().any(|pattern| pattern.matches(&path))
+    let seam_id = ripr_suppression_identity(seam);
+    rules.path_patterns.iter().enumerate().any(|(index, pattern)| {
+        pattern.matches(&path) && suppression_gap_ids_match(rules, index, seam_id)
+    })
 }
 
 fn current_head(repo: &Path) -> Result<String> {
@@ -2313,12 +2328,14 @@ fn suppression_matches_finding(rules: &RiprSuppressionRules, finding: &Value) ->
         .get("classification")
         .and_then(Value::as_str)
         .or_else(|| finding.get("grip_class").and_then(Value::as_str));
+    let finding_id = ripr_suppression_identity(finding);
     rules
         .path_patterns
         .iter()
         .zip(rules.display_patterns.iter())
         .zip(rules.classification_patterns.iter())
-        .any(|((pattern, pattern_text), allowed_classifications)| {
+        .enumerate()
+        .any(|(index, ((pattern, pattern_text), allowed_classifications))| {
             let path_matches = pattern.matches(&path)
                 || suppression_directory_pattern_matches(pattern_text, &path);
             path_matches
@@ -2329,7 +2346,31 @@ fn suppression_matches_finding(rules: &RiprSuppressionRules, finding: &Value) ->
                                 == canonical_suppression_classification(allowed)
                         })
                     }))
+                && suppression_gap_ids_match(rules, index, finding_id)
         })
+}
+
+/// Exact finding/probe identity used by optional `gap_ids` filters.
+///
+/// A missing identity cannot satisfy a non-empty filter (fail closed). Empty
+/// filters do not consult this value.
+fn ripr_suppression_identity(value: &Value) -> Option<&str> {
+    ["id", "gap_id"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .or_else(|| value.get("probe").and_then(|probe| probe.get("id").and_then(Value::as_str)))
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
+fn suppression_gap_ids_match(
+    rules: &RiprSuppressionRules,
+    index: usize,
+    identity: Option<&str>,
+) -> bool {
+    let allowed = rules.gap_id_sets.get(index).map(Vec::as_slice).unwrap_or(&[]);
+    allowed.is_empty()
+        || identity.is_some_and(|id| allowed.iter().any(|allowed_id| allowed_id == id))
 }
 
 fn canonical_suppression_classification(classification: &str) -> &str {
@@ -6934,6 +6975,7 @@ mod maybe_tests {
             ],
             classification_patterns: vec![Vec::new(), Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
 
@@ -6971,6 +7013,7 @@ mod maybe_tests {
             path_patterns: Vec::new(),
             classification_patterns: Vec::new(),
             invalid_patterns: vec!["archive/[".to_string()],
+            gap_id_sets: Vec::new(),
             suppression_reasons: vec![json!({
                 "id": "ripr-suppress-archive",
                 "kind": "generated_or_non_production_surface",
@@ -7432,6 +7475,56 @@ paths = ["archive/["]
     }
 
     #[test]
+    fn install_surface_route_unit_suppression_matches_no_static_path_only() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let path = "xtask/src/install_surface_route_units.rs";
+
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({"classification": "no_static_path", "probe": {"file": path}})
+            ),
+            "no_static_path on {path} must match the #10831 declaration suppression"
+        );
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({"grip_class": "no_static_path", "seam": {"file": path}})
+            ),
+            "ripr 0.9.x grip_class no_static_path on {path} must match"
+        );
+        // The blocking bucket this entry deliberately does not cover: a future
+        // executable seam must still stop the gate.
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({"classification": "reachable_unrevealed", "probe": {"file": path}})
+            ),
+            "reachable_unrevealed on {path} must remain visible"
+        );
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({"classification": "weakly_exposed", "probe": {"file": path}})
+            ),
+            "weakly_exposed on {path} must remain visible"
+        );
+        // The registry vocabulary's other owner is not in scope of this entry.
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({
+                    "classification": "no_static_path",
+                    "probe": {"file": "xtask/src/tasks/install_surface_inventory.rs"}
+                })
+            ),
+            "the inventory task must not inherit this file-scoped suppression"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn mutation_label_routes_targeted() {
         let decision = routing_decision(&["mutation".to_string()], false);
         assert!(decision.requires_targeted_mutation);
@@ -7559,6 +7652,7 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
 
@@ -7598,6 +7692,7 @@ paths = ["archive/["]
             ],
             classification_patterns: vec![Vec::new(), Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
         let finding = json!({
@@ -7618,6 +7713,7 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/perl-lsp-ux-tests/tests/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
         let finding = json!({
@@ -7628,6 +7724,150 @@ paths = ["archive/["]
         });
 
         assert!(suppression_matches_finding(&rules, &finding));
+        Ok(())
+    }
+
+    #[test]
+    fn gap_ids_filter_matches_only_listed_finding_identities() -> Result<()> {
+        let listed = "probe:crates_perl-lsp-rs_src_runtime_outbound.rs:field_construction:9673d288";
+        let unlisted =
+            "probe:crates_perl-lsp-rs_src_runtime_outbound.rs:field_construction:deadbeef";
+        let rules = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-lsp-rs/src/runtime/outbound.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-lsp-rs/src/runtime/outbound.rs")?],
+            classification_patterns: vec![vec!["no_static_path".to_string()]],
+            invalid_patterns: Vec::new(),
+            gap_id_sets: vec![vec![listed.to_string()]],
+            suppression_reasons: Vec::new(),
+        };
+        let listed_finding = json!({
+            "id": listed,
+            "classification": "no_static_path",
+            "probe": {
+                "id": listed,
+                "file": "crates/perl-lsp-rs/src/runtime/outbound.rs",
+                "line": 143
+            }
+        });
+        let unlisted_finding = json!({
+            "id": unlisted,
+            "classification": "no_static_path",
+            "probe": {
+                "id": unlisted,
+                "file": "crates/perl-lsp-rs/src/runtime/outbound.rs",
+                "line": 200
+            }
+        });
+        let missing_id = json!({
+            "classification": "no_static_path",
+            "probe": { "file": "crates/perl-lsp-rs/src/runtime/outbound.rs", "line": 143 }
+        });
+
+        assert!(suppression_matches_finding(&rules, &listed_finding));
+        assert!(!suppression_matches_finding(&rules, &unlisted_finding));
+        assert!(!suppression_matches_finding(&rules, &missing_id));
+        Ok(())
+    }
+
+    #[test]
+    fn gap_ids_filter_on_seams_does_not_path_mask_unlisted_identities() -> Result<()> {
+        let listed =
+            "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:field_construction:6f18ede8";
+        let rules = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-lsp-rs/src/runtime/scheduler.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-lsp-rs/src/runtime/scheduler.rs")?],
+            classification_patterns: vec![Vec::new()],
+            invalid_patterns: Vec::new(),
+            gap_id_sets: vec![vec![listed.to_string()]],
+            suppression_reasons: Vec::new(),
+        };
+        let listed_seam = json!({
+            "id": listed,
+            "file": "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+            "kind": "no_static_path"
+        });
+        let unlisted_seam = json!({
+            "id": "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:error_path:abcd1234",
+            "file": "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+            "kind": "error_path"
+        });
+        let path_only_seam = json!({
+            "file": "crates/perl-lsp-rs/src/runtime/scheduler.rs",
+            "kind": "no_static_path"
+        });
+
+        assert!(suppression_matches_seam(&rules, &listed_seam));
+        assert!(!suppression_matches_seam(&rules, &unlisted_seam));
+        assert!(!suppression_matches_seam(&rules, &path_only_seam));
+        Ok(())
+    }
+
+    #[test]
+    fn outbound_settlement_suppression_matches_only_listed_probe_identities() -> Result<()> {
+        let rules =
+            read_ripr_suppression_rules(&repo_root()?, Path::new("policy/ripr-suppressions.toml"))?;
+        let outbound = "crates/perl-lsp-rs/src/runtime/outbound.rs";
+        let scheduler = "crates/perl-lsp-rs/src/runtime/scheduler.rs";
+        let listed_outbound =
+            "probe:crates_perl-lsp-rs_src_runtime_outbound.rs:field_construction:9673d288";
+        let listed_scheduler =
+            "probe:crates_perl-lsp-rs_src_runtime_scheduler.rs:field_construction:6f18ede8";
+        let unlisted = "probe:crates_perl-lsp-rs_src_runtime_outbound.rs:error_path:ffffffff";
+
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({
+                    "id": listed_outbound,
+                    "classification": "no_static_path",
+                    "probe": {"id": listed_outbound, "file": outbound, "line": 143}
+                })
+            ),
+            "listed WriterCompletion.failed probe must match"
+        );
+        assert!(
+            suppression_matches_finding(
+                &rules,
+                &json!({
+                    "id": listed_scheduler,
+                    "classification": "no_static_path",
+                    "probe": {"id": listed_scheduler, "file": scheduler, "line": 430}
+                })
+            ),
+            "listed AdmissionGuard.server probe must match"
+        );
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({
+                    "id": unlisted,
+                    "classification": "no_static_path",
+                    "probe": {"id": unlisted, "file": outbound, "line": 250}
+                })
+            ),
+            "unlisted no_static_path in outbound.rs must stay visible"
+        );
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({
+                    "classification": "no_static_path",
+                    "probe": {"file": outbound, "line": 143}
+                })
+            ),
+            "missing identity must not satisfy the gap_ids filter"
+        );
+        assert!(
+            !suppression_matches_finding(
+                &rules,
+                &json!({
+                    "id": listed_outbound,
+                    "classification": "reachable_unrevealed",
+                    "probe": {"id": listed_outbound, "file": outbound, "line": 143}
+                })
+            ),
+            "reachable_unrevealed in outbound.rs must stay visible"
+        );
         Ok(())
     }
 
@@ -7681,6 +7921,7 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
 
@@ -7746,6 +7987,7 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/execution.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
 
@@ -7773,6 +8015,7 @@ paths = ["archive/["]
             path_patterns: Vec::new(),
             classification_patterns: Vec::new(),
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         }
     }
@@ -7955,6 +8198,7 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("archive/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
         let extents = HeadLineExtents {
@@ -8115,6 +8359,7 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("archive/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
 
@@ -8524,6 +8769,7 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/suppressed/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
         let production_surface = ProductionSurface::from_parts("/ws", &[]);
@@ -8602,6 +8848,7 @@ paths = ["archive/["]
             path_patterns: vec![Pattern::new("crates/suppressed/**")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
         let first_findings = vec![raw_check_finding(
@@ -11328,6 +11575,7 @@ esac
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
 
@@ -11397,6 +11645,7 @@ esac
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
 
@@ -11472,6 +11721,7 @@ esac
             path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
             classification_patterns: vec![Vec::new()],
             invalid_patterns: Vec::new(),
+            gap_id_sets: Vec::new(),
             suppression_reasons: Vec::new(),
         };
 

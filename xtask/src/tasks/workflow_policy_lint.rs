@@ -2,6 +2,7 @@ use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail};
 use serde::Serialize;
 use serde_yaml_ng::{Mapping, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -107,6 +108,7 @@ const ALLOWLIST_WORKFLOW_LANE_MISSING: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct WorkflowPolicyLintConfig {
+    pub root: Option<PathBuf>,
     pub receipt: Option<PathBuf>,
     pub fixture: Option<PathBuf>,
     /// Run the per-workflow lane-whitelist check against
@@ -131,41 +133,113 @@ struct WorkflowPolicyReceipt {
     error_count: usize,
     warning_count: usize,
     issues: Vec<LintIssue>,
+    subject: WorkflowPolicySubject,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorkflowPolicySubject {
+    mode: &'static str,
+    selection: &'static str,
+    path_identity_sha256: Option<String>,
+    workflow_file_count: usize,
+    scan_completed: bool,
+    lane_whitelist_requested: bool,
+    isolation_registry_requested: bool,
+}
+
+fn subject_path_identity(path: &Path) -> String {
+    Sha256::digest(path.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn lint_selected_subject(
+    config: &WorkflowPolicyLintConfig,
+    default_root: impl FnOnce() -> Result<PathBuf>,
+    subject: &mut WorkflowPolicySubject,
+    issues: &mut Vec<LintIssue>,
+) -> Result<()> {
+    if let Some(fixture) = &config.fixture {
+        if config.root.is_some() || config.check_lane_whitelist {
+            bail!("fixture mode cannot select a repository root or lane-whitelist check");
+        }
+        let canonical_fixture =
+            fixture.canonicalize().wrap_err("resolving workflow-policy fixture")?;
+        subject.path_identity_sha256 = Some(subject_path_identity(&canonical_fixture));
+        lint_workflow_file(fixture, true, issues)?;
+        subject.workflow_file_count = 1;
+    } else {
+        let root = match &config.root {
+            Some(root) => root.clone(),
+            None => default_root()?,
+        };
+        let root = root.canonicalize().wrap_err("resolving selected workflow-policy root")?;
+        if !root.is_dir() {
+            bail!("selected workflow-policy root is not a directory");
+        }
+        subject.path_identity_sha256 = Some(subject_path_identity(&root));
+        let workflows_dir = root.join(".github").join("workflows");
+        let mut workflows = Vec::new();
+        for entry in fs::read_dir(&workflows_dir)
+            .wrap_err("reading .github/workflows under selected workflow-policy root")?
+        {
+            let path = entry.wrap_err("reading workflow inventory entry")?.path();
+            if matches!(path.extension().and_then(|value| value.to_str()), Some("yml" | "yaml")) {
+                workflows.push(path);
+            }
+        }
+        if workflows.is_empty() {
+            bail!("selected workflow-policy root has no .yml or .yaml workflows");
+        }
+        workflows.sort();
+        for path in workflows {
+            lint_workflow_file(&path, false, issues)?;
+            subject.workflow_file_count += 1;
+        }
+        if config.check_lane_whitelist {
+            check_lane_whitelist(&root, issues)?;
+        }
+        check_self_hosted_isolation(&root, Utc::now().date_naive(), issues)?;
+    }
+    subject.scan_completed = true;
+    Ok(())
 }
 
 pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
-    let root = project_root()?;
+    run_with_default_root(config, project_root)
+}
+
+fn run_with_default_root(
+    config: WorkflowPolicyLintConfig,
+    default_root: impl FnOnce() -> Result<PathBuf>,
+) -> Result<()> {
+    let mut subject = WorkflowPolicySubject {
+        mode: if config.fixture.is_some() { "fixture" } else { "repository" },
+        selection: if config.fixture.is_some() {
+            "fixture"
+        } else if config.root.is_some() {
+            "explicit_root"
+        } else {
+            "compiled_root"
+        },
+        path_identity_sha256: None,
+        workflow_file_count: 0,
+        scan_completed: false,
+        lane_whitelist_requested: config.check_lane_whitelist,
+        isolation_registry_requested: config.fixture.is_none(),
+    };
     let mut issues = Vec::new();
-
-    if let Some(fixture) = config.fixture {
-        lint_workflow_file(&fixture, true, &mut issues)?;
-    } else {
-        let workflows_dir = root.join(".github").join("workflows");
-        if workflows_dir.exists() {
-            for entry in fs::read_dir(&workflows_dir)
-                .with_context(|| format!("reading {}", workflows_dir.display()))?
-            {
-                let path = entry.context("reading workflow entry")?.path();
-                let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
-                    continue;
-                };
-                if ext != "yml" && ext != "yaml" {
-                    continue;
-                }
-                lint_workflow_file(&path, false, &mut issues)?;
-            }
-        }
-
-        if config.check_lane_whitelist {
-            check_lane_whitelist(&root, &mut issues)?;
-        }
-
-        // Unconditional: routing pull-request-controlled code onto self-hosted
-        // capacity is a trust-boundary question, not a lane-economics one, so it
-        // is not gated behind `--check-lane-whitelist` (#15070, under #7414).
-        check_self_hosted_isolation(&root, Utc::now().date_naive(), &mut issues)?;
+    let scan_result = lint_selected_subject(&config, default_root, &mut subject, &mut issues);
+    if scan_result.is_err() {
+        issues.push(LintIssue {
+            level: "error",
+            code: "WORKFLOW_POLICY_INPUT_UNAVAILABLE",
+            workflow: "<subject>".to_string(),
+            message: "selected inputs could not be evaluated; see the command diagnostic"
+                .to_string(),
+        });
     }
-
     issues.sort_by(|left, right| {
         (&left.level, &left.workflow, &left.code, &left.message).cmp(&(
             &right.level,
@@ -192,6 +266,7 @@ pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
             error_count,
             warning_count,
             issues,
+            subject,
         };
         if let Some(parent) = receipt_path.parent() {
             fs::create_dir_all(parent)
@@ -203,6 +278,7 @@ pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
         println!("Workflow policy lint receipt written: {}", receipt_path.display());
     }
 
+    scan_result.wrap_err("workflow policy lint instrument failure")?;
     if !passed {
         bail!(
             "workflow policy lint failed with {} error(s) and {} warning(s)",
@@ -1220,11 +1296,6 @@ pub(crate) fn is_sha_pinned(uses: &str) -> bool {
 /// happens only after a calibration window.
 fn check_lane_whitelist(root: &Path, issues: &mut Vec<LintIssue>) -> Result<()> {
     let whitelist_path = root.join("policy").join("ci-lane-whitelist.toml");
-    if !whitelist_path.exists() {
-        // Whitelist not present in this repo; silently skip rather than failing.
-        return Ok(());
-    }
-
     let whitelist_text = fs::read_to_string(&whitelist_path)
         .with_context(|| format!("reading {}", whitelist_path.display()))?;
     let whitelist: toml::Value = toml::from_str(&whitelist_text)
@@ -2023,6 +2094,212 @@ fn check_self_hosted_isolation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
+
+    const CLEAN_SUBJECT_WORKFLOW: &str = "on: push\npermissions: read-all\njobs:\n  check:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo checked\n";
+
+    fn subject_config(root: Option<PathBuf>, receipt: &Path) -> WorkflowPolicyLintConfig {
+        WorkflowPolicyLintConfig {
+            root,
+            receipt: Some(receipt.to_path_buf()),
+            fixture: None,
+            check_lane_whitelist: false,
+        }
+    }
+
+    fn subject_receipt(path: &Path) -> Result<serde_json::Value> {
+        Ok(serde_json::from_slice(&fs::read(path)?)?)
+    }
+
+    fn write_subject_workflow(root: &Path, content: impl AsRef<[u8]>) -> Result<()> {
+        let workflows = root.join(".github/workflows");
+        fs::create_dir_all(&workflows)?;
+        fs::write(workflows.join("subject.yml"), content)?;
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_unavailable_subject_replaces_stale_success() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let parent = temporary.path();
+        fs::write(parent.join("file-root"), "not a directory")?;
+        fs::create_dir(parent.join("missing-workflows"))?;
+        fs::create_dir_all(parent.join("empty/.github/workflows"))?;
+        fs::write(parent.join("empty/.github/workflows/README.md"), "not a workflow")?;
+        fs::create_dir_all(parent.join("directory-yaml/.github/workflows/subject.yml"))?;
+        write_subject_workflow(&parent.join("unreadable-yaml"), [0xff])?;
+        for name in [
+            "missing",
+            "file-root",
+            "missing-workflows",
+            "empty",
+            "directory-yaml",
+            "unreadable-yaml",
+        ] {
+            let receipt = parent.join("receipt.json");
+            fs::write(&receipt, r#"{"passed":true}"#)?;
+            let result =
+                run_with_default_root(subject_config(Some(parent.join(name)), &receipt), || {
+                    bail!("explicit root unexpectedly consulted the default")
+                });
+            ensure!(result.is_err(), "unavailable subject {name} passed");
+            let evidence = subject_receipt(&receipt)?;
+            ensure!(evidence["passed"] == false, "stale success survived for {name}");
+            ensure!(
+                evidence["subject"]["scan_completed"] == false,
+                "incomplete scan claimed completion"
+            );
+            ensure!(
+                evidence["subject"]["workflow_file_count"] == 0,
+                "unreadable workflow counted as evaluated"
+            );
+            ensure!(evidence["schema_version"] == "1.0.0", "receipt version changed");
+            ensure!(
+                evidence["issues"].as_array().is_some_and(|issues| issues
+                    .iter()
+                    .any(|issue| issue["code"] == "WORKFLOW_POLICY_INPUT_UNAVAILABLE")),
+                "instrument failure absent from receipt"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_explicit_root_overrides_unavailable_default() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("selected");
+        let receipt = temporary.path().join("receipt.json");
+        write_subject_workflow(&root, CLEAN_SUBJECT_WORKFLOW)?;
+        run_with_default_root(subject_config(Some(root.clone()), &receipt), || {
+            bail!("explicit root unexpectedly consulted the default")
+        })?;
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(evidence["passed"] == true, "clean explicit root failed");
+        ensure!(evidence["subject"]["selection"] == "explicit_root", "wrong root selection");
+        ensure!(evidence["subject"]["workflow_file_count"] == 1, "workflow denominator missing");
+        ensure!(
+            evidence["subject"]["path_identity_sha256"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64),
+            "root identity missing"
+        );
+        let missing = temporary.path().join("removed-build-root");
+        ensure!(
+            run_with_default_root(subject_config(None, &receipt), || Ok(missing)).is_err(),
+            "unavailable compiled root passed"
+        );
+        ensure!(
+            subject_receipt(&receipt)?["passed"] == false,
+            "default root failure retained success"
+        );
+        run_with_default_root(subject_config(None, &receipt), || Ok(root.clone()))?;
+        write_subject_workflow(&root, CLEAN_SUBJECT_WORKFLOW.replace("read-all", "write-all"))?;
+        ensure!(
+            run_with_default_root(subject_config(Some(root), &receipt), || bail!(
+                "default consulted"
+            ))
+            .is_err(),
+            "selected workflow violation passed"
+        );
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(
+            evidence["subject"]["scan_completed"] == true,
+            "policy failure misclassified as instrument failure"
+        );
+        ensure!(
+            evidence["issues"].as_array().is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "WRITE_ALL_PERMISSIONS")),
+            "wrong root or missing policy finding"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_fixture_has_no_repository_authority() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let fixture = temporary.path().join("fixture.yml");
+        let receipt = temporary.path().join("receipt.json");
+        fs::write(&fixture, CLEAN_SUBJECT_WORKFLOW)?;
+        let mut config = subject_config(None, &receipt);
+        config.fixture = Some(fixture);
+        run_with_default_root(config.clone(), || {
+            bail!("fixture consulted unavailable default root")
+        })?;
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(evidence["passed"] == true, "clean fixture failed");
+        ensure!(evidence["subject"]["mode"] == "fixture", "fixture claims repository authority");
+        ensure!(evidence["subject"]["workflow_file_count"] == 1, "fixture count differs");
+        ensure!(
+            evidence["subject"]["isolation_registry_requested"] == false,
+            "fixture claims isolation coverage"
+        );
+        config.root = Some(temporary.path().to_path_buf());
+        ensure!(
+            run_with_default_root(config.clone(), || bail!("default consulted")).is_err(),
+            "ambiguous fixture root accepted"
+        );
+        config.root = None;
+        config.check_lane_whitelist = true;
+        ensure!(
+            run_with_default_root(config, || bail!("default consulted")).is_err(),
+            "fixture silently ignores requested policy"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_required_lane_input_preserves_advisory_and_isolation_rules() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("selected");
+        let receipt = temporary.path().join("receipt.json");
+        write_subject_workflow(&root, CLEAN_SUBJECT_WORKFLOW)?;
+        let mut config = subject_config(Some(root.clone()), &receipt);
+        config.check_lane_whitelist = true;
+        ensure!(
+            run_with_default_root(config.clone(), || bail!("default consulted")).is_err(),
+            "missing requested policy passed"
+        );
+        fs::create_dir(root.join("policy"))?;
+        fs::write(root.join("policy/ci-lane-whitelist.toml"), "[malformed")?;
+        ensure!(
+            run_with_default_root(config.clone(), || bail!("default consulted")).is_err(),
+            "malformed requested policy passed"
+        );
+        fs::write(root.join("policy/ci-lane-whitelist.toml"), "lane = []\n")?;
+        run_with_default_root(config.clone(), || bail!("default consulted"))?;
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(evidence["passed"] == true, "advisory findings became errors");
+        ensure!(
+            evidence["issues"].as_array().is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "LANE_WHITELIST_MISSING")),
+            "advisory coverage silently skipped"
+        );
+        write_subject_workflow(
+            &root,
+            CLEAN_SUBJECT_WORKFLOW
+                .replace("on: push", "on: pull_request")
+                .replace("ubuntu-24.04", "self-hosted"),
+        )?;
+        config.check_lane_whitelist = false;
+        ensure!(
+            run_with_default_root(config, || bail!("default consulted")).is_err(),
+            "missing isolation registry cleared self-hosted PR job"
+        );
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(
+            evidence["subject"]["scan_completed"] == true,
+            "absent isolation registry became an input error"
+        );
+        ensure!(
+            evidence["issues"].as_array().is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "SELF_HOSTED_ISOLATION_UNDECLARED")),
+            "missing isolation profile was not denied"
+        );
+        Ok(())
+    }
 
     fn fixture_path(name: &str) -> Result<PathBuf> {
         let root = project_root()?;
