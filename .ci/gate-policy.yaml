@@ -2479,7 +2479,10 @@ workflow_integration:
         - unit_lsp_core_full
         - unit_lsp_full
         - unit_dap_support_full
-        - compile_all_targets
+        # compile_all_targets is intentionally absent (#15638): the required
+        # `check-all-targets` workflow job owns it; the meta-shard copy was a
+        # deterministic timeout duplicate. Lane mapping lives in
+        # scripts/ci/validate_gate_lane_mapping.py.
         - common_corpus_clean
         - lsp_smoke
         - pending_parse_freshness

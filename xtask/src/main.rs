@@ -1515,6 +1515,13 @@ enum Commands {
         out: PathBuf,
     },
 
+    /// Enforce source-authority and instruction/data boundaries for the Zed
+    /// agent stage packets.
+    ZedTrain {
+        #[command(subcommand)]
+        command: ZedTrainCommand,
+    },
+
     /// Read-only upstream refresh and drift classification for the pinned
     /// vim-lsp subject (#11411). Advisory only: never a CI gate, never a pin
     /// update; live observation is gated behind --allow-network.
@@ -3762,6 +3769,25 @@ enum FreshnessCheckMode {
     Block,
 }
 
+#[derive(Subcommand)]
+enum ZedTrainCommand {
+    /// Verify every stage-packet input is authority-classified, current, and
+    /// data-only, and that every packet generator is declared.
+    #[command(name = "source-check")]
+    SourceCheck {
+        /// Source-authority manifest JSON.
+        fixture: PathBuf,
+
+        /// Repository root used to resolve the packet-relative subjects.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/zed-source-authority.json")]
+        out: PathBuf,
+    },
+}
+
 /// Subcommands of `cargo xtask vim-lsp-subject` (#11411).
 #[derive(Debug, Subcommand)]
 enum VimLspSubjectCommand {
@@ -5102,6 +5128,11 @@ enum AgentLedgersCommand {
         /// Output format: `human` (default) or `json`.
         #[arg(long, default_value = "human")]
         format: String,
+        /// Require every ledger file to declare this schema id (e.g.
+        /// `workflow-outcome.v1`). Without it, each file is validated against the
+        /// schema it declares.
+        #[arg(long, value_name = "ID")]
+        expected_schema: Option<String>,
     },
 }
 
@@ -6218,6 +6249,11 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
         }
+        Commands::ZedTrain { command } => match command {
+            ZedTrainCommand::SourceCheck { fixture, repo_root, out } => {
+                xtask::source_authority::run_with_paths(fixture, repo_root, out)
+            }
+        },
         Commands::VimLspSubject {
             command:
                 VimLspSubjectCommand::Refresh { check, proposal, observation, allow_network, repo_root },
@@ -6746,15 +6782,18 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             },
             AgentCommand::Ledgers { command } => match command {
-                AgentLedgersCommand::Validate { dir, format } => {
-                    let fmt = if format == "json" {
-                        tasks::agent_ledgers::ValidateFormat::Json
-                    } else {
-                        tasks::agent_ledgers::ValidateFormat::Human
+                AgentLedgersCommand::Validate { dir, format, expected_schema } => {
+                    let fmt = match format.as_str() {
+                        "json" => tasks::agent_ledgers::ValidateFormat::Json,
+                        "human" => tasks::agent_ledgers::ValidateFormat::Human,
+                        other => color_eyre::eyre::bail!(
+                            "unknown --format `{other}`; expected `human` or `json`"
+                        ),
                     };
                     tasks::agent_ledgers::validate(tasks::agent_ledgers::ValidateConfig {
                         ledger_dir: dir,
                         format: fmt,
+                        expected_schema,
                     })
                 }
             },
