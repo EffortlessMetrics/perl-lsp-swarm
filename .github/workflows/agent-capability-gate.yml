@@ -30,6 +30,8 @@ on:
       - '.claude/agents/**'
       - 'xtask/src/tasks/agent_capability_policy.rs'
       - '.github/workflows/agent-capability-gate.yml'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
   merge_group:
   push:
     branches:

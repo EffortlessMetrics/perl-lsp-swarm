@@ -1169,6 +1169,10 @@ enum Commands {
 
     /// Lint GitHub workflow security policy invariants.
     WorkflowPolicyLint {
+        /// Evaluate this repository instead of the compile-time project root.
+        #[arg(long, conflicts_with = "fixture")]
+        root: Option<PathBuf>,
+
         /// Write a JSON receipt artifact for CI consumption.
         #[arg(long)]
         receipt: Option<PathBuf>,
@@ -1180,7 +1184,7 @@ enum Commands {
         /// Also validate that every workflow has a `[[lane]]` entry in
         /// policy/ci-lane-whitelist.toml. Advisory (warning-level) until the
         /// whitelist has stabilized — see docs/ci/perl-lsp-rollout-plan.md PR 11.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "fixture")]
         check_lane_whitelist: bool,
     },
 
@@ -5945,8 +5949,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)
         }
-        Commands::WorkflowPolicyLint { receipt, fixture, check_lane_whitelist } => {
+        Commands::WorkflowPolicyLint { root, receipt, fixture, check_lane_whitelist } => {
             workflow_policy_lint::run(workflow_policy_lint::WorkflowPolicyLintConfig {
+                root,
                 receipt,
                 fixture,
                 check_lane_whitelist,
