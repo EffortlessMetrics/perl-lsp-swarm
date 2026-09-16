@@ -1,111 +1,53 @@
-name: MiniMax Agent Finalize Baseline
+name: MiniMax Agent Compile Check
 
 on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
     paths:
+      - '.github/workflows/minimax-coding-agent.md'
+      - '.github/workflows/minimax-coding-agent.lock.yml'
       - '.github/workflows/minimax-agent-compile-check.yml'
-      - '.ci/workflow-security-baseline.json'
-      - '.github/workflows/workflow-security-ratchet.yml'
-      - 'scripts/ci/workflow_security_ratchet.py'
-      - 'scripts/ci/test_workflow_security_ratchet.py'
+      - '.github/aw/actions-lock.json'
+      - '.gitattributes'
+      - '.github/dependabot.yml'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: minimax-agent-finalize-${{ github.event.pull_request.number || github.run_id }}
+  group: minimax-agent-compile-check-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
-  finalize:
-    if: >-
-      github.event.pull_request.number == 15762 &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref == 'feat/gh-aw-minimax-canary'
+  compile-check:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Checkout exact candidate
+      - name: Checkout candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Regenerate baseline against permanent read-only checker
+      - name: Install checksum-pinned gh-aw compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          compiler="${RUNNER_TEMP:?}/gh-aw-v0.88.7"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors             --connect-timeout 15 --max-time 180             https://github.com/github/gh-aw/releases/download/v0.88.7/linux-amd64             --output "$compiler"
+          printf '%s  %s
+'             37faaaa95f622b910568bc878452f6036f01e951380fdfc41441944a95da43bf             "$compiler" | sha256sum --check --status
+          chmod 0755 "$compiler"
+          "$compiler" --version
+          echo "GH_AW_COMPILER=$compiler" >> "$GITHUB_ENV"
+
+      - name: Verify generated authority is current
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          PERMANENT_CHECKER_BLOB: c31d223e5d4c704c3e1abd83622cc9309b408b10
         run: |
           set -euo pipefail
-          gh api "repos/$REPOSITORY/git/blobs/$PERMANENT_CHECKER_BLOB" --jq .content \
-            | base64 --decode > .github/workflows/minimax-agent-compile-check.yml
-
-          python3 -m py_compile scripts/ci/workflow_security_ratchet.py
-          python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
-          python3 scripts/ci/workflow_security_ratchet.py baseline \
-            --root . \
-            --output .ci/workflow-security-baseline.json
-          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
-            --root . \
-            --baseline .ci/workflow-security-baseline.json \
-            --baseline-root . \
-            --report "${RUNNER_TEMP:?}/workflow-security-report.json"
-
-          python3 - <<'PY'
-          import hashlib
-          import json
-          from pathlib import Path
-
-          path = Path('.ci/workflow-security-baseline.json')
-          payload = json.loads(path.read_text())
-          findings = payload['findings']
-          assert len(findings) == 88, len(findings)
-          assert not any(f['path'] == '.github/workflows/minimax-agent-compile-check.yml' for f in findings)
-          print(f"final_baseline_findings={len(findings)}")
-          print(f"final_baseline_sha256={hashlib.sha256(path.read_bytes()).hexdigest()}")
-          PY
-
-      - name: Commit exact baseline to candidate branch
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          set -euo pipefail
-          remote_head="$(gh api "repos/$REPOSITORY/git/ref/heads/$HEAD_REF" --jq .object.sha)"
-          test "$remote_head" = "$HEAD_SHA"
-
-          blob_request="${RUNNER_TEMP:?}/baseline-blob.json"
-          jq -n --rawfile content .ci/workflow-security-baseline.json \
-            '{content:$content,encoding:"utf-8"}' > "$blob_request"
-          baseline_blob="$(gh api --method POST "repos/$REPOSITORY/git/blobs" \
-            --input "$blob_request" --jq .sha)"
-          echo "baseline_blob=$baseline_blob"
-
-          base_tree="$(gh api "repos/$REPOSITORY/git/commits/$HEAD_SHA" --jq .tree.sha)"
-          tree_request="${RUNNER_TEMP}/baseline-tree.json"
-          jq -n --arg base_tree "$base_tree" --arg sha "$baseline_blob" \
-            '{base_tree:$base_tree,tree:[{path:".ci/workflow-security-baseline.json",mode:"100644",type:"blob",sha:$sha}]}' \
-            > "$tree_request"
-          tree_sha="$(gh api --method POST "repos/$REPOSITORY/git/trees" \
-            --input "$tree_request" --jq .sha)"
-
-          commit_request="${RUNNER_TEMP}/baseline-commit.json"
-          jq -n --arg tree "$tree_sha" --arg parent "$HEAD_SHA" \
-            '{message:"ci(agent): record final workflow-security baseline",tree:$tree,parents:[$parent]}' \
-            > "$commit_request"
-          commit_sha="$(gh api --method POST "repos/$REPOSITORY/git/commits" \
-            --input "$commit_request" --jq .sha)"
-
-          ref_request="${RUNNER_TEMP}/baseline-ref.json"
-          jq -n --arg sha "$commit_sha" '{sha:$sha,force:false}' > "$ref_request"
-          gh api --method PATCH "repos/$REPOSITORY/git/refs/heads/$HEAD_REF" \
-            --input "$ref_request" >/dev/null
-          echo "materialized_commit=$commit_sha"
+          "$GH_AW_COMPILER" compile minimax-coding-agent             --strict --verbose --approve --no-check-update
+          git diff --exit-code --             .github/workflows/minimax-coding-agent.lock.yml             .github/aw/actions-lock.json             .gitattributes             .github/dependabot.yml
