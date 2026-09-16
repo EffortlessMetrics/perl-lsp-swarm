@@ -235,6 +235,7 @@ impl DebugAdapter {
                             DEBUGGER_QUERY_WAIT_MS,
                             None,
                             Some(expected_session_generation),
+                            None,
                             cancellation.clone(),
                         )
                         .ok()
@@ -421,6 +422,7 @@ impl DebugAdapter {
                         DEBUGGER_QUERY_WAIT_MS * 8,
                         None,
                         expected_session_generation,
+                        None,
                         cancellation.clone(),
                     )
                     .ok()
