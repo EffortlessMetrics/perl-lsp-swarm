@@ -18,6 +18,11 @@ pub mod dbix_class;
 
 /// Mojo::Base framework adapter (#9681).
 pub mod mojo_base;
+/// Registry-activated Mojo::Base object-fact minting (#9682).
+pub mod mojo_base_facts;
 
 /// Mojolicious application/controller identity adapter (#9688).
 pub mod mojolicious;
+
+/// Version-bound DBIx::QuickORM API return and preserving-method contract (#13374).
+pub mod quickorm_api;

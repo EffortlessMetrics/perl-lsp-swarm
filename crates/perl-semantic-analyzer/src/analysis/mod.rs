@@ -25,6 +25,8 @@ pub mod declaration;
 /// Export symbol extraction for Exporter-based Perl modules.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod export_analyzer;
+/// Compatibility decoding for `field` trait spellings and their arguments.
+pub(crate) mod field_trait;
 /// Generated member extraction from Moo/Moose `has` declarations.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod generated_member_extractor;
@@ -36,6 +38,8 @@ pub mod import_extractor;
 pub mod index;
 /// Registry-backed Mojo::Base activation-site extraction (#9681).
 pub mod mojo_base_activation;
+/// Mojo::Base `has` attribute-declaration extraction (#9682).
+pub mod mojo_base_attributes;
 /// Registry-backed Mojolicious::Lite activation-site extraction (#9688).
 pub mod mojolicious_activation;
 /// Package graph edge extraction from inheritance and role-composition patterns.

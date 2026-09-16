@@ -6,6 +6,10 @@
 //! a clean exit or a recognized runner/mode status — reach structural and
 //! count validation. Everything else stays outside [`ValidatedRunReport`]
 //! and is handled as `NotProven` by the classifier.
+//!
+//! This module also owns observation *completeness*: an observation that
+//! contains no `file_results` is refused in every mode, because each per-row
+//! validator here succeeds vacuously on an empty collection (#14375).
 
 use crate::transition::model::AcceptedBaseline;
 use crate::transition::terminal::TerminalProcessOutcome;
@@ -58,9 +62,10 @@ impl ValidatedCompileBaselineV2 {
 /// Validate a current run report for definitive transition classification.
 ///
 /// Requires a terminally scoreable observation (#6884 typed admission: clean
-/// exit or recognized runner/mode status) plus path uniqueness, per-file
-/// assertion bounds, summary/file-result reconciliation, and honest
-/// semantic-boundary identity. Terminal validity precedes every count check.
+/// exit or recognized runner/mode status) plus a non-empty observation in any
+/// mode (#14375), path uniqueness, per-file assertion bounds, summary/file-result
+/// reconciliation, and honest semantic-boundary identity. Terminal validity
+/// precedes every count check, and completeness precedes every per-row check.
 pub fn validate_run_report(
     report: &RunReport,
 ) -> Result<ValidatedRunReport, EvidenceValidationError> {
@@ -83,6 +88,7 @@ pub fn validate_run_report(
             terminal.not_proven_reason()
         )));
     }
+    reject_vacuous_observation(&report.file_results, "current")?;
     if let Some(path) = first_whitespace_contaminated_path(&report.file_results) {
         return Err(EvidenceValidationError::new(format!(
             "current file-result path {path:?} has leading or trailing whitespace"
@@ -110,6 +116,42 @@ pub fn validate_run_report(
     Ok(ValidatedRunReport { inner: report.clone() })
 }
 
+/// Reject transition evidence that observes nothing at all.
+///
+/// Observation *completeness* is this module's contract, so the non-vacuity rule
+/// belongs here rather than in a per-row validator (#14375). Every per-row check
+/// — assertions, failure inventory, semantic-boundary identity, mechanism claims
+/// — iterates `file_results` and therefore succeeds vacuously on an empty
+/// collection, while `validate_summary_against_file_results` reconciles
+/// `0 == 0 + 0`. Without this gate an empty accepted/current pair reaches the
+/// classifier's identity arm and lands `NoChange`: a ratchet reporting "complete
+/// observation exactly matches the accepted v2 ratchet" while holding no
+/// observations.
+///
+/// Emptiness is never legitimate transition evidence, in any mode: the producing
+/// paths already refuse it before a report exists — `normalize_discovered_tests`
+/// rejects an empty file list, `read_runner_records` rejects a runner context
+/// with no records, and `artifacts::read_json_lines` rejects an empty
+/// runner-record artifact. An empty observation is therefore hand-written or
+/// synthesized, and "nothing to compare" is `NotProven`, not "nothing changed".
+///
+/// Mode-independent by design. The execute-only emptiness check in
+/// [`validate_file_result_mechanisms`] answers a different question for a
+/// different consumer (is this row's *rail claim* admissible, for the permissive
+/// receipt/report/baseline readers) and stays as it is; this gate is what closes
+/// the identical compile and parse holes.
+fn reject_vacuous_observation(
+    file_results: &[RunFileResult],
+    subject: &str,
+) -> Result<(), EvidenceValidationError> {
+    if file_results.is_empty() {
+        return Err(EvidenceValidationError::new(format!(
+            "{subject} observation contains no file results, so there is nothing to compare"
+        )));
+    }
+    Ok(())
+}
+
 /// Reject transition evidence whose per-file execution-mechanism claims are not
 /// admissible for the mode that produced them.
 ///
@@ -128,6 +170,10 @@ fn validate_mechanism_claims(
 }
 
 /// Validate an accepted V2 baseline's structural count and membership invariants.
+///
+/// Refuses an empty observation in any mode before the membership and count
+/// checks, so a vacuous baseline is reported as such rather than as a
+/// membership mismatch (#14375).
 pub fn validate_compile_baseline_v2(
     baseline: &CompileBaselineV2,
 ) -> Result<ValidatedCompileBaselineV2, EvidenceValidationError> {
@@ -142,6 +188,7 @@ pub fn validate_compile_baseline_v2(
             "accepted V2 report schema is not the supported run-report version",
         ));
     }
+    reject_vacuous_observation(&baseline.file_results, "accepted V2")?;
     if let Some(path) = first_whitespace_contaminated_str(
         baseline.file_membership.iter().map(String::as_str),
         "accepted V2 file_membership",
@@ -215,7 +262,9 @@ pub fn validate_accepted_baseline(
             // The V1 arm re-implements its structural checks inline, so it does
             // not inherit the V2 arm's contract. Delegate the mechanism claim to
             // the same shared helper: the documented future V1-migration slice
-            // must not reopen this gap (#14363).
+            // must not reopen this gap (#14363). The same reasoning applies to
+            // the non-vacuity gate (#14375).
+            reject_vacuous_observation(&value.file_results, "accepted")?;
             validate_mechanism_claims(value.mode, &value.file_results, "accepted")?;
             if let Some(path) = first_whitespace_contaminated_path(&value.file_results) {
                 return Err(EvidenceValidationError::new(format!(
@@ -513,8 +562,12 @@ mod ripr_inventory_call_observers {
 
         let err = validate_run_report(&report).expect_err("empty execution observation");
 
+        // Still refused, but now by the mode-independent completeness gate that
+        // owns the rule rather than as a side effect of mechanism admissibility
+        // (#14375). The execute-scoped check in `validate_file_result_mechanisms`
+        // is unchanged and still covers the permissive reader path.
         assert!(
-            err.reason.contains("names no execution mechanism for anything"),
+            err.reason.contains("contains no file results"),
             "unexpected reason: {}",
             err.reason
         );
@@ -532,11 +585,119 @@ mod ripr_inventory_call_observers {
         let err = validate_accepted_baseline(&AcceptedBaseline::V1(accepted))
             .expect_err("empty accepted execution baseline");
 
+        // As above: the refusal now comes from the completeness gate (#14375).
         assert!(
-            err.reason.contains("names no execution mechanism for anything"),
+            err.reason.contains("contains no file results"),
             "unexpected reason: {}",
             err.reason
         );
+    }
+
+    #[test]
+    fn validate_run_report_rejects_an_empty_compile_observation() {
+        // The hole #14375 reported: compile carries no mechanism, so the
+        // execute-scoped emptiness check never fired here.
+        let mut report = clean_report();
+        report.file_results.clear();
+        report.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+
+        let err = validate_run_report(&report).expect_err("empty compile observation");
+
+        assert_eq!(
+            err,
+            EvidenceValidationError::new(
+                "current observation contains no file results, so there is nothing to compare"
+            )
+        );
+    }
+
+    #[test]
+    fn validate_run_report_rejects_an_empty_parse_observation() {
+        // Parse carries no mechanism either, so it shared the compile hole.
+        let mut report = clean_report();
+        report.mode = HarnessMode::Parse;
+        report.file_results.clear();
+        report.summary = RunSummary {
+            files_total: 0,
+            files_passed: 0,
+            files_failed: 0,
+            tap_assertions_total: 0,
+            tap_assertions_passed: 0,
+        };
+
+        let err = validate_run_report(&report).expect_err("empty parse observation");
+
+        assert!(
+            err.reason.contains("contains no file results"),
+            "unexpected reason: {}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn validate_accepted_baseline_v1_rejects_an_empty_compile_baseline() {
+        let mut accepted = clean_v1_accepted(None);
+        accepted.mode = HarnessMode::Compile;
+        accepted.file_results.clear();
+        accepted.files_total = 0;
+        accepted.files_passed = 0;
+        accepted.tap_assertions_total = 0;
+        accepted.tap_assertions_passed = 0;
+
+        let err = validate_accepted_baseline(&AcceptedBaseline::V1(accepted))
+            .expect_err("empty accepted compile baseline");
+
+        assert_eq!(
+            err,
+            EvidenceValidationError::new(
+                "accepted observation contains no file results, so there is nothing to compare"
+            )
+        );
+    }
+
+    /// The V2 arm is exercised through `classify_transition` elsewhere; this
+    /// pins its own message directly, so the gate cannot be dropped from
+    /// `validate_compile_baseline_v2` and hidden behind the membership check.
+    #[test]
+    fn validate_compile_baseline_v2_rejects_an_empty_baseline() {
+        let mut baseline = clean_v2_accepted();
+        baseline.file_results.clear();
+        baseline.file_membership.clear();
+        baseline.files_total = 0;
+        baseline.files_passed = 0;
+        baseline.files_failed = 0;
+        baseline.tap_assertions_total = 0;
+        baseline.tap_assertions_passed = 0;
+
+        let err = validate_compile_baseline_v2(&baseline).expect_err("empty accepted V2 baseline");
+
+        assert_eq!(
+            err,
+            EvidenceValidationError::new(
+                "accepted V2 observation contains no file results, so there is nothing to compare"
+            )
+        );
+    }
+
+    #[test]
+    fn validate_compile_baseline_v2_accepts_a_single_file_baseline() {
+        // Opposite-direction control for the V2 arm.
+        validate_compile_baseline_v2(&clean_v2_accepted())
+            .expect("a one-file accepted V2 baseline stays comparable");
+    }
+
+    #[test]
+    fn validate_run_report_accepts_a_single_file_compile_observation() {
+        // Opposite-direction control: the completeness gate must refuse only
+        // emptiness, not a legitimately small observation.
+        validate_run_report(&clean_report())
+            .expect("a one-file compile observation stays comparable");
     }
 
     #[test]
@@ -596,6 +757,41 @@ mod ripr_inventory_call_observers {
         // Opposite-direction control: the contract must not block real evidence.
         validate_run_report(&clean_execute_report())
             .expect("an honestly classified execute observation stays comparable");
+    }
+
+    /// A minimal well-formed accepted V2 baseline in compile mode.
+    fn clean_v2_accepted() -> CompileBaselineV2 {
+        let report = clean_report();
+        CompileBaselineV2 {
+            schema_version: COMPILE_BASELINE_V2_SCHEMA_VERSION.into(),
+            report_schema_version: RUN_REPORT_SCHEMA_VERSION.into(),
+            series_id: "series".into(),
+            manifest_hash: "manifest".into(),
+            repository_commit: "a".repeat(40),
+            perl_resolved_ref: report.perl_ref.clone(),
+            preparation_receipt_id: "prepare".into(),
+            compiler_subject_identity: "compiler".into(),
+            invocation_identity: "invocation".into(),
+            capability_identity: "capability".into(),
+            environment_identity: "environment".into(),
+            source_report_digest: "digest".into(),
+            accepted_transition_id: Some("transition".into()),
+            evidence_bundle: Some("bundle".into()),
+            mode: report.mode,
+            profile: report.profile,
+            runner: report.runner,
+            file_membership: report.file_results.iter().map(|result| result.path.clone()).collect(),
+            files_total: report.summary.files_total,
+            files_passed: report.summary.files_passed,
+            files_failed: report.summary.files_failed,
+            tap_assertions_total: report.summary.tap_assertions_total,
+            tap_assertions_passed: report.summary.tap_assertions_passed,
+            buckets: BTreeMap::new(),
+            expected_failures: Vec::new(),
+            file_results: report.file_results.clone(),
+            semantic_boundaries: Vec::new(),
+            boundary_retirements: Vec::new(),
+        }
     }
 
     /// A V1 accepted baseline in execute mode with an honest mechanism.
