@@ -42,7 +42,7 @@ use crate::reload_family::{
     ReloadRequestEvaluation, WireReconciliation, WireReconciliationDisposition, WireRejectionCode,
     project_execution,
 };
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 /// Bound on retained completed reload operations per session wiring,
 /// following the family registry's retained-operations precedent.
@@ -286,6 +286,18 @@ pub struct ReloadSessionWiring {
     family: ReloadFamilySession,
     pending: VecDeque<u64>,
     completed: VecDeque<CompletedReload>,
+    /// Every operation identity admitted under this epoch, retained for the
+    /// session lifetime (FC-OP-ID-EPOCH-UNIQUENESS). The `pending` and
+    /// `completed` deques and the family registry's retained-operations
+    /// window are all bounded (64 entries), so after enough later
+    /// completions they forget an identity that this session already
+    /// used; re-admitting it would duplicate a pending entry or replay a
+    /// terminal and advance the generation again. This set never forgets
+    /// within the epoch, so reuse always refuses stale. It resets with the
+    /// session lifecycle (a fresh wiring per epoch), and one entry costs a
+    /// single `u64` per reload — reloads are rare control operations, so
+    /// the set stays small for any realistic session.
+    seen_operation_ids: HashSet<u64>,
 }
 
 impl ReloadSessionWiring {
@@ -298,6 +310,7 @@ impl ReloadSessionWiring {
             family: ReloadFamilySession::new(epoch, backed),
             pending: VecDeque::new(),
             completed: VecDeque::new(),
+            seen_operation_ids: HashSet::new(),
         }
     }
 
@@ -325,23 +338,23 @@ impl ReloadSessionWiring {
     /// admitted operation is recorded as pending until it reaches a
     /// terminal kind.
     ///
-    /// An identity already in flight (`pending`) or already terminal
-    /// (`completed`) is refused as stale before the family registry is
-    /// consulted (FC-OP-ID-REUSE): the registry's retained-operations
-    /// window is bounded, so after enough later admissions it forgets an
-    /// ID that is still pending here. Re-admitting it would duplicate the
-    /// pending entry, and the first terminal would leave the duplicate
-    /// behind for a later replay after the completion record is evicted.
+    /// An identity admitted at any point under this epoch is refused as
+    /// stale before the family registry is consulted
+    /// (FC-OP-ID-EPOCH-UNIQUENESS, narrowing FC-OP-ID-REUSE): the
+    /// registry's retained-operations window and the wiring's own
+    /// pending/completed deques are bounded, so after enough later
+    /// admissions they forget an ID that this session already used.
+    /// Re-admitting it would duplicate the pending entry, and the first
+    /// terminal would leave the duplicate behind for a later replay after
+    /// the completion record is evicted. The session-lifetime seen set
+    /// never forgets within the epoch, so reuse always refuses.
     pub fn evaluate(&mut self, raw: &serde_json::Value) -> ReloadRequestEvaluation {
         let operation_id = raw
             .as_object()
             .and_then(|object| object.get("operationId"))
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        if operation_id != 0
-            && (self.pending.contains(&operation_id)
-                || self.completed.iter().any(|completed| completed.operation_id == operation_id))
-        {
+        if operation_id != 0 && self.seen_operation_ids.contains(&operation_id) {
             return ReloadRequestEvaluation::Response(LoadedModuleReloadWireResponse {
                 success: false,
                 operation_id,
@@ -353,6 +366,7 @@ impl ReloadSessionWiring {
         let evaluation = self.family.evaluate(raw);
         if let ReloadRequestEvaluation::Admitted { operation_id } = evaluation {
             self.pending.push_back(operation_id);
+            self.seen_operation_ids.insert(operation_id);
         }
         evaluation
     }
@@ -832,6 +846,48 @@ mod tests {
         routed(wiring.route_terminal(1, &reloaded(), &mut clock, &[]), "first")?;
         stale_code(&mut wiring)?;
         Ok(())
+    }
+
+    #[test]
+    fn completed_operation_identity_never_reused_within_the_session_epoch() -> TestResult {
+        // FC-OP-ID-EPOCH-UNIQUENESS: complete more operations than either
+        // bounded history retains (`MAX_RETAINED_COMPLETIONS` wiring
+        // completions and the family registry's retained-operations
+        // window), evicting operation 1 from both. Re-admitting it must
+        // still refuse stale — otherwise the replay would route a second
+        // terminal and advance the generation again.
+        let mut wiring = negotiated_wiring(1);
+        let operations = u64::try_from(MAX_RETAINED_COMPLETIONS + 1)
+            .map_err(|_| "the retained-completions bound must fit a request identity")?;
+        for operation in 1..=operations {
+            admit(&mut wiring, operation);
+        }
+        let mut clock = RuntimeModuleGenerationClock::new();
+        for operation in 1..=operations {
+            routed(
+                wiring.route_terminal(operation, &refused_unsupported(), &mut clock, &[]),
+                "complete",
+            )?;
+        }
+        assert_eq!(
+            clock.current(),
+            RuntimeModuleGeneration::INITIAL,
+            "non-mutating completions move no clock"
+        );
+        match wiring.evaluate(&request_value(1, 1)) {
+            ReloadRequestEvaluation::Response(response) => {
+                let crate::reload_family::LoadedModuleReloadResponseBody::Rejected(rejection) =
+                    &response.body
+                else {
+                    return Err("an evicted-then-reused identity must be a typed rejection".into());
+                };
+                assert_eq!(rejection.code.as_str(), "operation_stale");
+                Ok(())
+            }
+            admitted => {
+                Err(format!("an evicted identity must not be re-admitted: {admitted:?}").into())
+            }
+        }
     }
 
     #[test]
