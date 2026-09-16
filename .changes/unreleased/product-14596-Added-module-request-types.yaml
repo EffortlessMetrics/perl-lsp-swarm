@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "M01 of the module train (#8497): `perl-module` gains a protocol-neutral validated request and typed resolution-outcome vocabulary. `ModuleName` validates a canonical module name and records the source `PackageSeparatorForm`, making the legacy `'` separator an explicit `LegacySeparatorProfile` decision instead of an unconditional rewrite; `ModuleFilePath` validates a literal relative filename so a quoted `require \"Foo::Bar\"` stays a filename and is never rewritten to `Foo/Bar.pm`; `ModuleRequest` keeps bareword, literal-file, partially-static, and dynamic operands distinct, with `RequestBoundary` reasons and retained span/fragment evidence for the inexact forms, and refuses to expose a module identity for a filename; `ModuleResolutionOutcome` separates invalid, dynamic, ambiguous, outside-authority, environment-unavailable, timed-out, and I/O-limited states from a genuine `NotFound`, with `has_complete_denominator()` as the honesty predicate for reporting a proven absence. Compatibility adapters `outcome_from_uri_resolution` and `uri_resolution_from_outcome` carry their caller inventory and removal owner (#8521); the narrowing adapter returns `None` rather than collapsing a classification the legacy three-state enum cannot mean. `is_lookup_safe_module_name` becomes the boolean projection of `ModuleName::parse` so the module-identifier grammar has one authority instead of two, guarded by an equivalence oracle over a decision-boundary corpus, a valid-name-biased property generator, and a deterministic fuzzer. No root ordering, open-document precedence, filesystem policy, or provider behaviour changes."
+time: 2026-09-02T00:00:00Z
+custom:
+  PR: "14596"
+  Slug: module-request-types-8497
+  Breaking: "no"
