@@ -14,6 +14,7 @@ import tempfile
 import unittest
 import tarfile
 import zipfile
+from unittest.mock import patch
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).with_name("release_terminal_manifest.py")
@@ -59,9 +60,9 @@ def packet(executable: str, package: str, role: str) -> dict[str, object]:
             "profile": "release",
             "identity_state": "exact",
         },
-        "artifact": {"role": "archive", "digest": None, "candidate_identity": TAG},
+        "artifact": {"role": "archive", "candidate_identity": TAG},
         "compatibility": {"expected_product_identity_version": 1, "dap_posture": "preview"},
-        "limitations": [],
+        "limitations": ["artifact_digest_not_externally_bound"],
     }
 
 
@@ -182,6 +183,34 @@ def candidate(root: Path) -> Path:
 
 
 class ReleaseTerminalManifestTests(unittest.TestCase):
+    def test_subject_extraction_preserves_terminal_and_inventory_bytes(self) -> None:
+        def previous_subjects(archives, evidence, release_notes):
+            paths = list(archives) + list(evidence)
+            paths.extend([
+                "dist/SHA256SUMS", "dist/sbom-spdx.json", "dist/release-terminal-manifest.json"
+            ])
+            if release_notes:
+                paths.append("release_notes.md")
+            return paths
+
+        for notes_present in (False, True):
+            with self.subTest(notes_present=notes_present), tempfile.TemporaryDirectory() as directory:
+                root = candidate(Path(directory))
+                if notes_present:
+                    (root / "release_notes.md").write_text("fixture release notes", encoding="utf-8")
+                with patch.object(subject, "terminal_subject_paths", side_effect=previous_subjects):
+                    output, inventory = subject.write_outputs(root, SOURCE, TAG)
+                    previous_manifest = output.read_bytes()
+                    previous_inventory = inventory.read_bytes()
+                subject.write_outputs(root, SOURCE, TAG)
+                self.assertEqual(output.read_bytes(), previous_manifest)
+                self.assertEqual(inventory.read_bytes(), previous_inventory)
+                paths = json.loads(previous_manifest)["attestation_subject_paths"]
+                self.assertEqual("release_notes.md" in paths, notes_present)
+                self.assertNotIn("attestation-subjects.sha256", paths)
+                self.assertEqual(paths[-1], "release_notes.md" if notes_present else "dist/release-terminal-manifest.json")
+                subject.check_outputs(root, SOURCE, TAG)
+
     def test_archive_member_digest_rejects_duplicate_and_nonregular_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -367,6 +396,16 @@ class ReleaseTerminalManifestTests(unittest.TestCase):
             with self.assertRaisesRegex(subject.ManifestError, "not a passing"):
                 subject.build_manifest(root, SOURCE, TAG)
 
+    def test_local_adapter_receipt_is_not_public_terminal_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = candidate(Path(directory))
+            receipt_path = root / "evidence" / TARGET / "release-build-receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["build_execution"] = "adapter"
+            write_json(receipt_path, receipt)
+            with self.assertRaisesRegex(subject.ManifestError, "execution authority"):
+                subject.build_manifest(root, SOURCE, TAG)
+
     def test_forged_binary_packet_digest_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = candidate(Path(directory))
@@ -376,6 +415,24 @@ class ReleaseTerminalManifestTests(unittest.TestCase):
             write_json(receipt_path, receipt)
             with self.assertRaisesRegex(subject.ManifestError, "packet digest"):
                 subject.build_manifest(root, SOURCE, TAG)
+
+    def test_artifact_digest_and_unknown_fields_fail_closed(self) -> None:
+        for artifact in (
+            {"role": "archive", "candidate_identity": TAG, "digest": "f" * 64},
+            {"role": "archive", "candidate_identity": TAG, "unexpected": "field"},
+        ):
+            with self.subTest(artifact=artifact), tempfile.TemporaryDirectory() as directory:
+                root = candidate(Path(directory))
+                receipt_path = root / "evidence" / TARGET / "release-build-receipt.json"
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                packet = receipt["binaries"][0]["packet"]
+                packet["artifact"] = artifact
+                receipt["binaries"][0]["packet_sha256"] = hashlib.sha256(
+                    subject.canonical(packet)
+                ).hexdigest()
+                write_json(receipt_path, receipt)
+                with self.assertRaisesRegex(subject.ManifestError, "artifact"):
+                    subject.build_manifest(root, SOURCE, TAG)
 
     def test_attestation_inventory_drift_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

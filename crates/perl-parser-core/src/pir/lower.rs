@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use crate::hir::{
     AccessMode, AssignMode, BranchKeyword, BranchShell, CallForm, ControlTransferKind,
     DeclStorageClass, DerefExpr, DynamicBoundaryKind, HIR_BODY_MODEL_VERSION, HirBody, HirBodyId,
-    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirScopeId, HirStmt, LiteralKind, LoopShell,
-    RegexTargetKind, Sigil, StatementModifierKind, UnaryMode, VariableKind,
+    HirExpr, HirExprId, HirFile, HirItem, HirKind, HirRegexTarget, HirScopeId, HirStmt,
+    LiteralKind, LoopShell, RegexTargetKind, Sigil, StatementModifierKind, UnaryMode, VariableKind,
 };
 
 use super::model::{
@@ -1054,7 +1054,10 @@ impl BodyLowerer {
             None => return,
         };
         match stmt {
-            HirStmt::Let { name, sigil, storage, init, binding_range } => {
+            // `binding` (#14166) is deliberately not consumed here yet: threading
+            // canonical binding identity and storage class into PIR facts is
+            // #6659 item 2, a separate slice.
+            HirStmt::Let { name, sigil, storage, init, binding_range, binding: _ } => {
                 if *storage == DeclStorageClass::Unknown {
                     // Parser-shaped legacy calls (for example `field $x = 1`)
                     // do not bind a lexical declaration. For `Unknown` storage
@@ -1187,6 +1190,15 @@ impl BodyLowerer {
                 // not become an unconditional predecessor of later siblings.
                 self.last_in_scope.remove(&None);
             }
+        }
+    }
+
+    /// Walk the operand of a regex-family operation (#7136).
+    ///
+    /// An implicit default topic has no operand expression to walk.
+    fn lower_regex_target(&mut self, body: &HirBody, target: &HirRegexTarget, file: &HirFile) {
+        if let HirRegexTarget::Bound { expr, .. } = target {
+            self.lower_expr(body, *expr, file);
         }
     }
 
@@ -1561,6 +1573,37 @@ impl BodyLowerer {
                 // `Fallthrough` edge *from* the Return node.
                 self.edges.push(PirEdge { from: return_id, to: None, kind: PirEdgeKind::Return });
                 self.last_in_scope.remove(&None);
+            }
+
+            // Regex-family operations (#7136).
+            //
+            // Canonical body HIR now models these as typed forms, but PIR-A
+            // does not yet own canonical regex operations — that is #7137, and
+            // implementing them here is an explicit non-goal. Each family is
+            // therefore still recorded as unsupported, but under its own honest
+            // key: previously match/substitution/transliteration were booked as
+            // `"Call"` and `qr//` as `"OpaqueExpr"`, which conflated regex
+            // operations with function calls in the receipt.
+            //
+            // The bound target is still walked so variable reads in target
+            // position keep emitting facts, exactly as before.
+            HirExpr::Regex(_) => {
+                *self.unsupported.entry("Regex").or_insert(0) += 1;
+            }
+
+            HirExpr::Match(op) => {
+                *self.unsupported.entry("Match").or_insert(0) += 1;
+                self.lower_regex_target(body, &op.target, file);
+            }
+
+            HirExpr::Substitution(op) => {
+                *self.unsupported.entry("Substitution").or_insert(0) += 1;
+                self.lower_regex_target(body, &op.target, file);
+            }
+
+            HirExpr::Transliteration(op) => {
+                *self.unsupported.entry("Transliteration").or_insert(0) += 1;
+                self.lower_regex_target(body, &op.target, file);
             }
 
             HirExpr::Opaque { ast_kind } => {

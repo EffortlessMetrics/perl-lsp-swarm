@@ -1,4 +1,19 @@
 pub mod perl_source_identity
+pub perl_source_identity::LogicalPathError::BackslashSeparator
+pub perl_source_identity::LogicalPathError::ControlCharacter
+pub perl_source_identity::LogicalPathError::CurrentDirectorySegment
+pub perl_source_identity::LogicalPathError::Empty
+pub perl_source_identity::LogicalPathError::EmptySegment
+pub perl_source_identity::LogicalPathError::LeadingSeparator
+pub perl_source_identity::LogicalPathError::ParentDirectorySegment
+pub perl_source_identity::LogicalPathError::WindowsDrivePrefix
+pub fn perl_source_identity::LogicalPathError::clone(&self) -> perl_source_identity::LogicalPathError
+pub fn perl_source_identity::LogicalPathError::cmp(&self, other: &perl_source_identity::LogicalPathError) -> core::cmp::Ordering
+pub fn perl_source_identity::LogicalPathError::eq(&self, other: &perl_source_identity::LogicalPathError) -> bool
+pub fn perl_source_identity::LogicalPathError::partial_cmp(&self, other: &perl_source_identity::LogicalPathError) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::LogicalPathError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::LogicalPathError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::LogicalPathError::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub perl_source_identity::PhysicalSourceRole::Generated
 pub perl_source_identity::PhysicalSourceRole::Primary
 pub perl_source_identity::PhysicalSourceRole::RuntimeDerived
@@ -80,6 +95,7 @@ pub fn perl_source_identity::ContentRevision::deserialize<__D>(__deserializer: _
 pub struct perl_source_identity::LogicalSourceId(_)
 pub fn perl_source_identity::LogicalSourceId::as_wire(&self) -> &str
 pub fn perl_source_identity::LogicalSourceId::from_wire(s: &str) -> core::option::Option<Self>
+pub fn perl_source_identity::LogicalSourceId::from_root_and_logical_path(workspace_root_id: &perl_source_identity::WorkspaceRootId, root_relative_path: &perl_source_identity::RootRelativeLogicalPath) -> Self
 pub fn perl_source_identity::LogicalSourceId::from_root_and_path(workspace_root_id: &perl_source_identity::WorkspaceRootId, root_relative_path: &str) -> Self
 pub fn perl_source_identity::LogicalSourceId::clone(&self) -> perl_source_identity::LogicalSourceId
 pub fn perl_source_identity::LogicalSourceId::cmp(&self, other: &perl_source_identity::LogicalSourceId) -> core::cmp::Ordering
@@ -103,6 +119,15 @@ pub fn perl_source_identity::ProjectId::fmt(&self, f: &mut core::fmt::Formatter<
 pub fn perl_source_identity::ProjectId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_source_identity::ProjectId::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_source_identity::ProjectId::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct perl_source_identity::RootRelativeLogicalPath(_)
+pub fn perl_source_identity::RootRelativeLogicalPath::as_str(&self) -> &str
+pub fn perl_source_identity::RootRelativeLogicalPath::parse(candidate: &str) -> core::result::Result<Self, perl_source_identity::LogicalPathError>
+pub fn perl_source_identity::RootRelativeLogicalPath::clone(&self) -> perl_source_identity::RootRelativeLogicalPath
+pub fn perl_source_identity::RootRelativeLogicalPath::cmp(&self, other: &perl_source_identity::RootRelativeLogicalPath) -> core::cmp::Ordering
+pub fn perl_source_identity::RootRelativeLogicalPath::eq(&self, other: &perl_source_identity::RootRelativeLogicalPath) -> bool
+pub fn perl_source_identity::RootRelativeLogicalPath::partial_cmp(&self, other: &perl_source_identity::RootRelativeLogicalPath) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_source_identity::RootRelativeLogicalPath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_source_identity::RootRelativeLogicalPath::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub struct perl_source_identity::SourceIdentityEnvelope
 pub perl_source_identity::SourceIdentityEnvelope::content_revision: core::option::Option<perl_source_identity::ContentRevision>
 pub perl_source_identity::SourceIdentityEnvelope::generation: perl_source_identity::SourceGeneration

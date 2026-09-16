@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 9933,
-  "reason": "The #9933 receipt-summary test entry changes the packaged extension package.json by 44 bytes; the exact candidate VSIX is measured against the merged current-main baseline.",
-  "base_baseline_file_sha256": "d95cf9327ba072657b6481b42fa3c3076d7774d4b5a03e7496b431518c765683",
-  "candidate_baseline_file_sha256": "d0f4bd2eaf0a74de3e8e74119e79ec070be3cdd3fb498188b68944f6e38f1d42",
-  "base_inventory_sha256": "695a05e2c3e7508d19ff0c35c30b5aedf5149e0953f31912d823c044f8a9e4d2",
-  "candidate_inventory_sha256": "f96e90df387423bb1b58aeed16ec63df14638bc35c37ce748e423333314856ce"
+  "owner_issue": 15503,
+  "reason": "Issue #15503 records the migration-registry historical-era slice of #7837: era bounds become a comparable closed grammar, genuinely overlapping eras are rejected, and row selection is disambiguated by the registry envelope's own source_public_release, failing closed when no era at the value's scope covers it. After #15494 landed, the exact binaryless Linux combined package measures out/extension.js at 1687306 bytes, a declared +5118-byte size-only transition from the accepted #15494 base. No packaged file is added, removed, or renamed.",
+  "base_baseline_file_sha256": "18b0841c20e13679581d5e63fd0de300dc0d435852f63e422b6454e84b87c360",
+  "candidate_baseline_file_sha256": "4975456bf6937f17c1ebdb1d947103ebd3773cf2d455f5b2aa2475aa551b249a",
+  "base_inventory_sha256": "40c1690a3bf0175ee2dcfff78f4d6a72ff5d64322285cc5c2ed0fd91a7936442",
+  "candidate_inventory_sha256": "d45b4db58d565d8473bdbac8140ebaec65dec3624ae2151f2a82b4bdef7db9f1"
 }
