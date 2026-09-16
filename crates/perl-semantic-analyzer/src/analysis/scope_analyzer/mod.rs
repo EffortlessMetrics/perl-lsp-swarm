@@ -798,8 +798,18 @@ impl ScopeAnalyzer {
                     strict_vars_mode,
                 );
             }
-            NodeKind::Typeglob { name } => {
-                uses::handle_typeglob(self, node, name, scope, issues, context, strict_vars_mode);
+            NodeKind::Typeglob { name, body } => {
+                uses::handle_typeglob(
+                    self,
+                    node,
+                    name,
+                    body.as_deref(),
+                    scope,
+                    ancestors,
+                    issues,
+                    context,
+                    strict_vars_mode,
+                );
             }
             NodeKind::Readline { filehandle: Some(filehandle) } => {
                 uses::handle_readline(

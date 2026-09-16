@@ -2046,7 +2046,7 @@ impl Lowerer {
         confidence: RecoveryConfidence,
     ) {
         match &lhs.kind {
-            NodeKind::Typeglob { name } => {
+            NodeKind::Typeglob { name, .. } => {
                 let (package, symbol) = package_and_symbol(name, self.package_context.as_deref());
                 // A dynamically dereferenced glob (`*{$name} = ...`) captures its
                 // destination symbol from a runtime expression, so `name` is the raw
@@ -2529,13 +2529,13 @@ fn static_glob_alias_target(node: &Node) -> Option<(GlobSlotKind, String)> {
             NodeKind::AmperCall { name, args } if args.is_empty() => {
                 Some((GlobSlotKind::Code, name.clone()))
             }
-            NodeKind::Typeglob { name } => Some((GlobSlotKind::Code, name.clone())),
+            NodeKind::Typeglob { name, .. } => Some((GlobSlotKind::Code, name.clone())),
             NodeKind::Variable { sigil, name } => {
                 slot_kind_for_sigil(sigil).map(|slot_kind| (slot_kind, name.clone()))
             }
             _ => None,
         },
-        NodeKind::Typeglob { name } => Some((GlobSlotKind::Code, name.clone())),
+        NodeKind::Typeglob { name, .. } => Some((GlobSlotKind::Code, name.clone())),
         _ => None,
     }
 }
@@ -3098,7 +3098,7 @@ fn named_variable_or_glob(node: &Node) -> Option<(&str, String)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
         NodeKind::VariableWithAttributes { variable, .. } => named_variable_or_glob(variable),
-        NodeKind::Typeglob { name } if is_direct_glob_name(name) => Some(("*", name.clone())),
+        NodeKind::Typeglob { name, .. } if is_direct_glob_name(name) => Some(("*", name.clone())),
         _ => None,
     }
 }
@@ -3115,7 +3115,9 @@ fn is_arrow_postfix_op(op: &str) -> bool {
 fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
-        NodeKind::Typeglob { name } if is_direct_glob_name(name) => Some(("*", name.clone(), node)),
+        NodeKind::Typeglob { name, .. } if is_direct_glob_name(name) => {
+            Some(("*", name.clone(), node))
+        }
         NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
         NodeKind::Binary { op, left, .. } if is_arrow_postfix_op(op) => {
             declared_base_variable(left)
@@ -3170,7 +3172,7 @@ fn require_target(argument: Option<&Node>) -> Option<String> {
     match argument.map(|node| &node.kind) {
         Some(NodeKind::Identifier { name })
         | Some(NodeKind::String { value: name, .. })
-        | Some(NodeKind::Typeglob { name }) => Some(name.clone()),
+        | Some(NodeKind::Typeglob { name, .. }) => Some(name.clone()),
         _ => None,
     }
 }
@@ -3272,7 +3274,7 @@ fn variable_binding(node: &Node) -> Option<VariableBinding> {
             Some(VariableBinding { sigil: sigil.clone(), name: name.clone(), range: node.location })
         }
         NodeKind::VariableWithAttributes { variable, .. } => variable_binding(variable),
-        NodeKind::Typeglob { name } => Some(VariableBinding {
+        NodeKind::Typeglob { name, .. } => Some(VariableBinding {
             sigil: "*".to_string(),
             name: name.clone(),
             range: node.location,
