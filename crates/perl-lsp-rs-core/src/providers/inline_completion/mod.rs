@@ -384,6 +384,11 @@ pub enum BackendError {
     Saturated,
     /// Request was cancelled.
     Cancelled,
+    /// The response crossed a compiled resource limit and was refused before
+    /// the offending bytes were accumulated. Carries only limit identity and
+    /// bounded numeric metadata — never response, prompt, or completion
+    /// content.
+    BudgetExceeded(crate::providers::ai::budget::BudgetViolation),
 }
 
 impl std::fmt::Display for BackendError {
@@ -396,6 +401,7 @@ impl std::fmt::Display for BackendError {
             Self::RateLimited => write!(f, "rate limit exceeded"),
             Self::Saturated => write!(f, "concurrency limit reached"),
             Self::Cancelled => write!(f, "request cancelled"),
+            Self::BudgetExceeded(violation) => write!(f, "{violation}"),
         }
     }
 }
@@ -407,6 +413,12 @@ impl perl_parser_core::ErrorClass for BackendError {
         match self {
             // Network/IO or external service error — infrastructure.
             Self::Transport(_) | Self::Provider(_) => perl_parser_core::ErrorCategory::Infra,
+            // A configured safety limit was exceeded, which is what
+            // `ResourceLimit` names. This is the same class the framing guard
+            // gives `FrameTooLarge`, and it selects `Disposition::Cap` rather
+            // than the infrastructure notification — the honest disposition
+            // for a response the server deliberately refused to grow.
+            Self::BudgetExceeded(_) => perl_parser_core::ErrorCategory::ResourceLimit,
             // Bad key or expired token — user configuration issue.
             Self::Auth(_) => perl_parser_core::ErrorCategory::UserError,
             // All three may succeed on retry after backoff or cancellation

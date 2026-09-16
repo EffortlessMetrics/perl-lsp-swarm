@@ -86,7 +86,7 @@ pub(crate) mod declaration {
 
 /// Workspace index re-export
 pub(crate) mod workspace_index {
-    pub use perl_parser::workspace_index::*;
+    pub use perl_workspace::workspace_index::*;
 }
 
 /// Symbol types re-export
