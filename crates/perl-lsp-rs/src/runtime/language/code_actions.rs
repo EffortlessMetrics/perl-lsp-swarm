@@ -750,7 +750,13 @@ impl LspServer {
             None => return Ok(Some(json!([]))),
         };
 
-        let parsed = doc.current_parsed();
+        // Prefer the generation-current snapshot; fall back to the latest
+        // published one when the current generation has no snapshot yet —
+        // the workspace indexer bumps the generation after didOpen, which
+        // would otherwise strip every AST-derived quick fix (unused-variable
+        // fixes et al.) down to the text-only actions (#11858 pattern,
+        // #15430).
+        let parsed = doc.current_parsed().or_else(|| doc.latest_parsed());
         let start_offset = self.pos16_to_offset(doc, start_line, start_char);
         let end_offset = self.pos16_to_offset(doc, end_line, end_char);
         if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {
