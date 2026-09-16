@@ -41,6 +41,12 @@ const WRAPPER_INVOCATION = 'node scripts/governed-tsc.js';
  */
 
 /**
+ * @typedef {ExitResult & {output?: string}} SpawnedTscResult
+ *   A child result that may carry the compiler's captured output when the
+ *   caller spawned it in piped mode.
+ */
+
+/**
  * Runs the authority gate, then executes the pinned `tsc` with `args`.
  *
  * Dependency injection keeps the two load-bearing behaviors provable without
@@ -53,9 +59,10 @@ const WRAPPER_INVOCATION = 'node scripts/governed-tsc.js';
  *   args: string[],
  *   reporter: {info: (message: string) => void, error: (message: string) => void},
  *   authorityCheck?: (extensionRoot: string) => {ok: boolean, failures: string[], facts: string[]},
- *   spawnChild?: (command: string, argv: string[]) => Promise<ExitResult> | ExitResult,
+ *   spawnChild?: (command: string, argv: string[]) =>
+ *     Promise<SpawnedTscResult> | SpawnedTscResult,
  * }} input
- * @returns {Promise<{code: number, spawned: boolean, authorityFailures: string[], childOutput?: string}>}
+ * @returns {Promise<{code: number, spawned: boolean, authorityFailures: string[], childOutput?: string | undefined}>}
  *   Resolves with the process exit code. Never rejects: a red gate or a
  *   launch failure is a result, not an exception, so callers and tests can
  *   assert on the code rather than catch. `childOutput` carries the compiler's
