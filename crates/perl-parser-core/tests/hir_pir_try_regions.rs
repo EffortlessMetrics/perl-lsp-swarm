@@ -229,7 +229,7 @@ fn catch_binding_is_a_source_exact_write_place() {
     let HirCatchHandler { binding, .. } = &catch_handlers[0];
     let binding = binding.expect("catch ($err) must introduce a binding");
 
-    let Some(HirExpr::Variable(HirVariable { sigil, name, kind, access })) =
+    let Some(HirExpr::Variable(HirVariable { sigil, name, kind, access, binding: place_binding })) =
         body.exprs.get(binding.0)
     else {
         panic!("catch binding must lower to a Variable place, got {:?}", body.exprs.get(binding.0))
@@ -239,6 +239,7 @@ fn catch_binding_is_a_source_exact_write_place() {
     assert_eq!(name, "err", "name must not retain the sigil");
     assert_eq!(*kind, VariableKind::Lexical);
     assert_eq!(*access, AccessMode::Write, "the binding is written, not read");
+    assert!(place_binding.is_some(), "the binding place must carry its canonical binding identity");
 
     // Source-exactness: the range must cover `$err`, not the `catch (...)` header.
     let range = body.source_map.expr_range(binding).expect("binding must be anchored");

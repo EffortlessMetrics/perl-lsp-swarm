@@ -4962,7 +4962,9 @@ impl<'a> BodyBuilder2<'a> {
 
         let previous_scope = self.start_scope;
         self.start_scope = find_body_scope(self.scope_graph, handler.location);
-        let kind = self.resolve_variable_kind(sigil, name);
+        let resolved = self.resolve_visible_binding(sigil, name);
+        let kind = Self::kind_for(name, resolved);
+        let binding = resolved.map(|found| found.id);
         self.start_scope = previous_scope;
 
         self.alloc_expr(
@@ -4971,6 +4973,7 @@ impl<'a> BodyBuilder2<'a> {
                 name: name.to_string(),
                 kind,
                 access: AccessMode::Write,
+                binding,
             }),
             range,
         )
