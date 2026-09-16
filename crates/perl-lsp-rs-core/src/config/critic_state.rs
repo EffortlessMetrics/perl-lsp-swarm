@@ -27,6 +27,7 @@ use super::{
 };
 use crate::hashing::fnv1a64_hex;
 use crate::tooling::perl_critic::NativeCriticProfile;
+use perl_source_identity::ContentDigest;
 
 /// Separator used when serializing accepted-state content into its fingerprint
 /// input. Chosen so ordinary setting values cannot collide across fields.
@@ -34,6 +35,10 @@ const FINGERPRINT_FIELD_SEPARATOR: &str = "\u{1f}";
 
 /// Version tag binding the fingerprint recipe to this accepted-state shape.
 const FINGERPRINT_RECIPE_VERSION: &str = "critic-state-v1";
+
+/// Domain/version for the collision-resistant accepted-state identity used by
+/// reusable diagnostic result IDs.
+const RESULT_IDENTITY_FINGERPRINT_VERSION: &str = "critic-state-result-identity-v1";
 
 /// One accepted critic runtime state (#8253).
 ///
@@ -51,8 +56,9 @@ pub enum EffectiveCriticState {
 impl EffectiveCriticState {
     /// Deterministic identity of this accepted state.
     ///
-    /// Two states with equal fingerprints carry equal accepted policy;
-    /// restart reconstruction from the same inputs reproduces the same value.
+    /// This compact FNV observation token predates reusable result identities.
+    /// It is deterministic, but it is not a collision-resistant authority and
+    /// must not decide whether a client-held diagnostic result ID is reusable.
     #[must_use]
     pub fn fingerprint(&self) -> String {
         match self {
@@ -121,6 +127,118 @@ pub(crate) fn canonical_rule_ids(values: &[String]) -> Vec<String> {
     canonical.sort();
     canonical.dedup();
     canonical
+}
+
+/// One accepted critic subject: the state, the root it was derived for, and the
+/// fingerprint that decides whether it is still current (#9062/#12067 review).
+///
+/// Before this type existed, a transport could sample the accepted state, the
+/// owning root and the raw identity fields at three different moments and then
+/// evaluate under one policy while composing a report identity from another.
+/// Bundling them makes that split unrepresentable: the same value is handed to
+/// the service, to the currentness check, and to the Critic portion of the
+/// report identity.
+///
+/// This deliberately does not redesign the broader result-ID model, which
+/// remains #7480's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedCriticSnapshot {
+    state: EffectiveCriticState,
+    owning_root: Option<String>,
+}
+
+impl AcceptedCriticSnapshot {
+    /// Capture the accepted subject for one owning root, in a single read of
+    /// the accepted-state authority.
+    ///
+    /// The only constructor. There is deliberately no `Default` and no
+    /// field-wise public constructor: a caller must not be able to pair a state
+    /// with a root or digest it was not derived from, which is the same class of
+    /// split authority this type exists to remove.
+    #[must_use]
+    pub fn capture(config: &ServerConfig, owning_root: Option<&str>) -> Self {
+        Self {
+            state: config.effective_critic_state(owning_root),
+            owning_root: owning_root.map(ToOwned::to_owned),
+        }
+    }
+
+    /// The accepted state this subject evaluates under.
+    #[must_use]
+    pub const fn state(&self) -> &EffectiveCriticState {
+        &self.state
+    }
+
+    /// The owning root the state was derived for.
+    #[must_use]
+    pub fn owning_root(&self) -> Option<&str> {
+        self.owning_root.as_deref()
+    }
+
+    /// Deterministic identity of the accepted state.
+    ///
+    /// Derived rather than stored: the digest is a pure function of the state,
+    /// so keeping a copy would add an independently representable fact that
+    /// could disagree with it.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        self.state.fingerprint()
+    }
+
+    /// Collision-resistant canonical fingerprint for reusable result identity.
+    ///
+    /// Unlike the compact legacy [`Self::fingerprint`] observation token, this
+    /// digest length-prefixes every accepted-state fragment and then applies
+    /// domain-separated SHA-256. Distinct field boundaries therefore remain
+    /// distinct before hashing, and the 64-bit FNV token is never trusted as a
+    /// cache-reuse authority.
+    #[must_use]
+    pub fn result_identity_fingerprint(&self) -> ContentDigest {
+        let mut canonical = Vec::new();
+        push_identity_fragment(&mut canonical, RESULT_IDENTITY_FINGERPRINT_VERSION.as_bytes());
+        match &self.state {
+            EffectiveCriticState::Disabled => {
+                push_identity_fragment(&mut canonical, b"disabled");
+            }
+            EffectiveCriticState::Native(native) => {
+                push_identity_fragment(&mut canonical, b"native");
+                push_identity_fragment(&mut canonical, native.profile.as_str().as_bytes());
+                push_identity_fragment(&mut canonical, &[native.severity_threshold]);
+                push_identity_sequence(&mut canonical, &native.include);
+                push_identity_sequence(&mut canonical, &native.exclude);
+                match native.owning_root.as_deref() {
+                    Some(root) => {
+                        push_identity_fragment(&mut canonical, b"root:some");
+                        push_identity_fragment(&mut canonical, root.as_bytes());
+                    }
+                    None => push_identity_fragment(&mut canonical, b"root:none"),
+                }
+            }
+        }
+        ContentDigest::of_bytes(&canonical)
+    }
+
+    /// Whether live configuration still accepts this exact subject.
+    ///
+    /// Compared against the same owning root the snapshot was captured for, so
+    /// a multi-root workspace cannot judge one root's subject against another
+    /// root's live policy.
+    #[must_use]
+    pub fn is_current(&self, config: &ServerConfig) -> bool {
+        config.effective_critic_state(self.owning_root.as_deref()) == self.state
+    }
+}
+
+fn push_identity_sequence(output: &mut Vec<u8>, values: &[String]) {
+    push_identity_fragment(output, &(values.len() as u64).to_be_bytes());
+    for value in values {
+        push_identity_fragment(output, value.as_bytes());
+    }
+}
+
+fn push_identity_fragment(output: &mut Vec<u8>, value: &[u8]) {
+    output.extend_from_slice(&(value.len() as u64).to_be_bytes());
+    output.extend_from_slice(value);
 }
 
 impl ServerConfig {
@@ -489,6 +607,119 @@ mod tests {
         }
     }
 
+    /// #12067 review: evaluation, currentness and Critic result identity used to
+    /// sample configuration independently and could disagree. The snapshot is
+    /// the single accepted subject all three consume.
+    #[test]
+    fn accepted_snapshot_is_one_authority_bound_to_its_root() {
+        let mut config = ServerConfig { perlcritic_enabled: true, ..ServerConfig::default() };
+        config.perlcritic_severity = 3;
+        let snapshot = AcceptedCriticSnapshot::capture(&config, Some("/root-a"));
+
+        assert_eq!(snapshot.owning_root(), Some("/root-a"));
+        assert_eq!(
+            snapshot.fingerprint(),
+            snapshot.state().fingerprint(),
+            "the digest must be derived from the captured state, never a separate fact"
+        );
+        assert!(snapshot.is_current(&config), "an unchanged config still accepts the subject");
+
+        // Policy movement invalidates the subject.
+        config.perlcritic_severity = 5;
+        assert!(
+            !snapshot.is_current(&config),
+            "a moved severity threshold must invalidate the captured subject"
+        );
+
+        // Currentness is judged against the root the snapshot was captured for,
+        // so a multi-root workspace cannot check one root against another.
+        let rooted = AcceptedCriticSnapshot::capture(&config, Some("/root-b"));
+        assert_eq!(rooted.owning_root(), Some("/root-b"));
+        assert!(rooted.is_current(&config));
+        assert_ne!(
+            rooted.fingerprint(),
+            AcceptedCriticSnapshot::capture(&config, Some("/root-c")).fingerprint(),
+            "distinct owning roots must be distinct accepted subjects"
+        );
+    }
+
+    /// `is_current` compares accepted states directly, so every behaviour-bearing
+    /// axis of the effective state must invalidate a captured subject. Pinned
+    /// here so typed equality cannot silently stop covering an axis.
+    #[test]
+    fn every_accepted_state_axis_invalidates_a_captured_subject() {
+        let base = ServerConfig {
+            perlcritic_enabled: true,
+            perlcritic_severity: 3,
+            native_critic_profile: "recommended".to_string(),
+            native_critic_include: Vec::new(),
+            native_critic_exclude: Vec::new(),
+            ..ServerConfig::default()
+        };
+        let snapshot = AcceptedCriticSnapshot::capture(&base, Some("/root"));
+        assert!(snapshot.is_current(&base), "the capturing config must accept its own subject");
+
+        let moved: [(&str, ServerConfig); 5] = [
+            ("severity", ServerConfig { perlcritic_severity: 5, ..base.clone() }),
+            (
+                "profile",
+                ServerConfig { native_critic_profile: "strict".to_string(), ..base.clone() },
+            ),
+            (
+                "include",
+                ServerConfig {
+                    native_critic_include: vec!["native.testing.require_use_strict".to_string()],
+                    ..base.clone()
+                },
+            ),
+            (
+                "exclude",
+                ServerConfig {
+                    native_critic_exclude: vec!["native.testing.require_use_strict".to_string()],
+                    ..base.clone()
+                },
+            ),
+            ("enabled", ServerConfig { perlcritic_enabled: false, ..base.clone() }),
+        ];
+        for (axis, config) in moved {
+            assert!(
+                !snapshot.is_current(&config),
+                "moving the {axis} axis must invalidate the captured accepted subject"
+            );
+        }
+
+        // An identical config rebuilt from scratch still accepts the subject:
+        // currentness is about the accepted value, not object identity.
+        let rebuilt = ServerConfig {
+            perlcritic_enabled: true,
+            perlcritic_severity: 3,
+            native_critic_profile: "recommended".to_string(),
+            native_critic_include: Vec::new(),
+            native_critic_exclude: Vec::new(),
+            ..ServerConfig::default()
+        };
+        assert!(
+            snapshot.is_current(&rebuilt),
+            "an equal effective configuration must still accept the subject"
+        );
+    }
+
+    /// Disabling the critic is a deliberate accepted subject, not an absence of
+    /// one: it still has an identity and can still be current.
+    #[test]
+    fn disabled_is_a_capturable_accepted_subject() {
+        let config = ServerConfig { perlcritic_enabled: false, ..ServerConfig::default() };
+        let snapshot = AcceptedCriticSnapshot::capture(&config, Some("/root"));
+        assert_eq!(snapshot.state(), &EffectiveCriticState::Disabled);
+        assert!(snapshot.is_current(&config));
+
+        let enabled = ServerConfig { perlcritic_enabled: true, ..ServerConfig::default() };
+        assert!(
+            !snapshot.is_current(&enabled),
+            "enabling the critic must invalidate a disabled subject"
+        );
+    }
+
     #[test]
     fn disabled_carries_no_policy_or_root() {
         let state = EffectiveCriticState::Disabled;
@@ -510,6 +741,42 @@ mod tests {
             ..native_config(Some("root-a"))
         };
         assert_ne!(a.fingerprint(), EffectiveCriticState::Native(other_profile).fingerprint());
+    }
+
+    /// The legacy separator-joined FNV token can alias distinct accepted
+    /// filters. Reusable result identity must discriminate the same pair with
+    /// the canonical SHA-256 fingerprint.
+    #[test]
+    fn result_identity_fingerprint_discriminates_legacy_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let joined = EffectiveCriticState::Native(EffectiveNativeCriticConfig {
+            include: vec![format!("a{FINGERPRINT_FIELD_SEPARATOR}b")],
+            ..native_config(Some("root-a"))
+        });
+        let split = EffectiveCriticState::Native(EffectiveNativeCriticConfig {
+            include: vec!["a".to_string(), "b".to_string()],
+            ..native_config(Some("root-a"))
+        });
+
+        if joined.fingerprint() != split.fingerprint() {
+            return Err("fixture must alias under the legacy separator-joined token".into());
+        }
+
+        let joined_snapshot =
+            AcceptedCriticSnapshot { state: joined, owning_root: Some("root-a".to_string()) };
+        let split_snapshot =
+            AcceptedCriticSnapshot { state: split, owning_root: Some("root-a".to_string()) };
+        let joined_identity = joined_snapshot.result_identity_fingerprint();
+        let split_identity = split_snapshot.result_identity_fingerprint();
+        if joined_identity == split_identity {
+            return Err("canonical result identity must distinguish field boundaries".into());
+        }
+        if !joined_identity.as_wire().starts_with("sha256:")
+            || joined_identity.as_wire().len() != "sha256:".len() + 64
+        {
+            return Err("accepted-state result identity must be a SHA-256 digest".into());
+        }
+        Ok(())
     }
 
     #[test]
