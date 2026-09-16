@@ -28,7 +28,7 @@ mod project_metadata;
 pub mod toolchain_profile;
 
 pub(crate) use critic_state::CriticSettingsCandidate;
-pub use critic_state::{EffectiveCriticState, EffectiveNativeCriticConfig};
+pub use critic_state::{AcceptedCriticSnapshot, EffectiveCriticState, EffectiveNativeCriticConfig};
 pub use dependency_detection::{
     detect_dependency_include_paths, detect_dependency_include_paths_with_declaration,
 };
@@ -4748,8 +4748,16 @@ profile = "recommended"
             ..WorkspaceConfig::default()
         };
         config.refresh_dependency_include_paths(workspace.path());
+        // `detected_dependency_include_paths` records paths as produced by
+        // `normalize_include_path`, which re-joins components with the
+        // platform separator, so on Windows the owned root is rendered as
+        // `local\lib\perl5`. Compare through the same normalization (as
+        // `metadata_replacement_retains_detector_until_refresh` does) instead
+        // of the raw forward-slash detector literal (#15611).
+        let detected_root =
+            normalize_include_path("local/lib/perl5").ok_or("detected root should normalize")?;
         assert!(
-            config.detected_dependency_include_paths.contains(&"local/lib/perl5".to_string()),
+            config.detected_dependency_include_paths.contains(&detected_root),
             "the detector owns the root it contributed"
         );
 
