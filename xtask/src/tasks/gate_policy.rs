@@ -104,6 +104,16 @@ fn validate_clippy_all_targets_partition(
 }
 
 fn validate_clippy_command_contract(command: &str) -> Result<()> {
+    // Token checks below operate on whitespace-split words, so any shell
+    // syntax would let a chained command forge coverage tokens (e.g. flags
+    // smuggled in via `echo`). The gate only accepts a single cargo clippy
+    // invocation.
+    const SHELL_SYNTAX: [&str; 5] = [";", "|", "&", "`", "$("];
+    if let Some(operator) = SHELL_SYNTAX.iter().find(|operator| command.contains(**operator)) {
+        bail!(
+            "'{CLIPPY_TESTS_KERNEL_GATE}' must be a single cargo clippy invocation, found shell syntax '{operator}'"
+        );
+    }
     let words: Vec<_> = command.split_whitespace().collect();
     if !words.contains(&"--all-targets") {
         bail!("'{CLIPPY_TESTS_KERNEL_GATE}' must retain --all-targets");
@@ -160,36 +170,47 @@ fn residual_package_map() -> Result<BTreeMap<String, String>> {
 }
 
 fn workspace_package_names(root: &Path) -> Result<BTreeSet<String>> {
-    let root_manifest = read_toml(&root.join("Cargo.toml"))?;
-    let members = root_manifest
-        .get("workspace")
-        .and_then(|value| value.get("members"))
-        .and_then(toml::Value::as_array)
-        .ok_or_else(|| eyre!("root Cargo.toml workspace.members must be an array"))?;
+    // Derive membership from `cargo metadata`, not the workspace.members
+    // array: Cargo also admits in-tree path dependencies as workspace
+    // members, so the array alone would undercount the denominator and let
+    // unlisted packages escape classification.
+    let output = std::process::Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version=1"])
+        .current_dir(root)
+        .output()?;
+    if !output.status.success() {
+        bail!("cargo metadata failed: {}", String::from_utf8_lossy(&output.stderr));
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    workspace_package_names_from_metadata(&metadata)
+}
 
-    let mut packages = BTreeSet::new();
-    for member in members {
-        let member = member
-            .as_str()
-            .ok_or_else(|| eyre!("root Cargo.toml workspace.members entries must be strings"))?;
-        if member.contains('*') || member.contains('?') || member.contains('[') {
-            bail!(
-                "workspace member pattern '{member}' is not supported by the exact package partition"
-            );
-        }
-        let manifest_path = root.join(member).join("Cargo.toml");
-        let manifest = read_toml(&manifest_path)?;
-        let package = manifest
-            .get("package")
-            .and_then(|value| value.get("name"))
-            .and_then(toml::Value::as_str)
-            .ok_or_else(|| eyre!("{} package.name must be a string", manifest_path.display()))?;
-        if !packages.insert(package.to_owned()) {
-            bail!("workspace package name '{package}' is declared more than once");
+fn workspace_package_names_from_metadata(metadata: &serde_json::Value) -> Result<BTreeSet<String>> {
+    let members: BTreeSet<&str> = metadata
+        .get("workspace_members")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| eyre!("cargo metadata: expected workspace_members array"))?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| eyre!("cargo metadata: expected packages array"))?;
+
+    let mut names = BTreeSet::new();
+    for package in packages {
+        let id = package.get("id").and_then(serde_json::Value::as_str);
+        let name = package.get("name").and_then(serde_json::Value::as_str);
+        let (Some(id), Some(name)) = (id, name) else {
+            bail!("cargo metadata: packages entries require string id and name");
+        };
+        if members.contains(id) && !names.insert(name.to_owned()) {
+            bail!("workspace package name '{name}' is declared more than once");
         }
     }
 
-    Ok(packages)
+    Ok(names)
 }
 
 fn validate_package_partition(
@@ -531,6 +552,39 @@ mod tests {
             };
             assert!(error.to_string().contains(expected));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn clippy_command_contract_rejects_shell_syntax() -> Result<()> {
+        for command in [
+            "cargo clippy -p alpha --locked -- -D warnings && echo -p beta --all-targets",
+            "cargo clippy -p alpha --all-targets --locked -- -D warnings; cargo clippy -p beta",
+            "cargo clippy -p alpha --all-targets --locked -- -D warnings | tee clippy.log",
+        ] {
+            let error = match validate_clippy_command_contract(command) {
+                Ok(()) => bail!("shell syntax in command must fail: {command}"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("shell"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_members_come_from_cargo_metadata() -> Result<()> {
+        let metadata = serde_json::json!({
+            "packages": [
+                {"id": "alpha 0.1.0 (path+file:///repo/crates/alpha)", "name": "alpha"},
+                {"id": "helper 0.1.0 (path+file:///repo/crates/helper)", "name": "helper"}
+            ],
+            "workspace_members": [
+                "alpha 0.1.0 (path+file:///repo/crates/alpha)",
+                "helper 0.1.0 (path+file:///repo/crates/helper)"
+            ]
+        });
+        let names = workspace_package_names_from_metadata(&metadata)?;
+        assert_eq!(names, ["alpha".to_owned(), "helper".to_owned()].into_iter().collect());
         Ok(())
     }
 
