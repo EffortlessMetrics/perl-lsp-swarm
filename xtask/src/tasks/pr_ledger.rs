@@ -38,11 +38,14 @@
 //!   "cleanup_done": false,
 //!   "known_gaps": [],
 //!   "is_draft": false,
-//!   "mergeable": "MERGEABLE",
+//!   "mergeable": "unknown",
 //!   "head_ref": "feat/1234-thing",
 //!   "author": "EffortlessSteven"
 //! }
 //! ```
+//!
+//! `mergeable` is `"unknown"` for list-sourced rows: the pulls list endpoint
+//! exposes no mergeability field (see `RestPull`).
 //!
 //! # Exit codes
 //! - `0` — generation succeeded (completeness recorded in the receipt).
@@ -89,12 +92,12 @@ pub struct GenerateConfig {
     pub out: PathBuf,
     /// Optional fixture JSON path (one per repo, for testing without live gh).
     /// When set, the fixture is used instead of shelling to gh. The fixture
-    /// shape is an array of `GhPr` JSON objects (single-page semantics for
+    /// shape is an array of `RestPull` JSON objects (single-page semantics for
     /// tests; see also `paginated_fixture`).
     pub fixture: Option<PathBuf>,
     /// Optional paginated fixture path used in tests to drive the multi-page
     /// pagination path without shelling to gh. The fixture shape is an array
-    /// of pages, where each page is an array of `GhPr` JSON objects.
+    /// of pages, where each page is an array of `RestPull` JSON objects.
     pub paginated_fixture: Option<PathBuf>,
     /// When true, the fetch call is allowed to use a fake clock anchor for
     /// `observed_at`. Tests use this to make receipts byte-deterministic.
@@ -215,17 +218,29 @@ impl Completeness {
 // Raw GitHub PR shape (what gh returns)
 // ---------------------------------------------------------------------------
 
+/// One entry of the REST `GET repos/{owner}/{repo}/pulls` list response.
+/// Field names follow the REST representation (`draft`, `user.login`,
+/// `head.ref`), NOT the `gh pr list --json` GraphQL shape (`isDraft`,
+/// `author`, `headRefName`): parsing list output as the latter fails on
+/// every live page (#15345 review).
+///
+/// The list endpoint exposes no mergeability field (that lives on the
+/// single-PR representation), so rows honestly record `"unknown"`; detail
+/// enrichment can fill it in later.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-struct GhPr {
+struct RestPull {
     pub number: u64,
     pub title: String,
     pub labels: Vec<GhLabel>,
-    #[serde(rename = "isDraft")]
-    pub is_draft: bool,
-    pub mergeable: String,
-    #[serde(rename = "headRefName")]
-    pub head_ref_name: String,
-    pub author: GhAuthor,
+    pub draft: bool,
+    pub head: RestHead,
+    pub user: GhAuthor,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct RestHead {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -246,7 +261,16 @@ pub fn generate(config: GenerateConfig) -> Result<()> {
     fs::create_dir_all(&config.out)
         .with_context(|| format!("creating output directory {}", config.out.display()))?;
 
-    let mut all_rows: Vec<(String, Vec<LedgerRow>)> = Vec::new();
+    if config.deterministic_clock && config.fixture.is_none() && config.paginated_fixture.is_none()
+    {
+        bail!(
+            "--deterministic-clock is test-only: it pins receipts to the 1970 anchor, \
+             which would masquerade a live observation time. Use it with --fixture or \
+             --paginated-fixture."
+        );
+    }
+
+    let mut all_rows: Vec<(String, Vec<LedgerRow>, Completeness)> = Vec::new();
 
     for repo in &config.repos {
         let outcome = if let Some(ref fixture) = config.fixture {
@@ -254,14 +278,14 @@ pub fn generate(config: GenerateConfig) -> Result<()> {
         } else if let Some(ref paginated) = config.paginated_fixture {
             load_outcome_from_paginated_fixture(paginated, repo, config.deterministic_clock)?
         } else {
-            fetch_outcome_from_gh(repo, config.deterministic_clock)?
+            fetch_outcome_from_gh(repo)?
         };
 
         let rows: Vec<LedgerRow> = outcome.prs.into_iter().map(|pr| shape_row(pr, repo)).collect();
 
         write_repo_json(&rows, repo, &config.out)?;
         write_repo_receipt(&outcome.receipt, repo, &config.out)?;
-        all_rows.push((repo.clone(), rows));
+        all_rows.push((repo.clone(), rows, outcome.receipt.completeness));
 
         if outcome.receipt.completeness.is_partial() {
             eprintln!(
@@ -297,35 +321,71 @@ fn receipt_completeness_label(c: &Completeness) -> &'static str {
 // gh invocation (paginated)
 // ---------------------------------------------------------------------------
 
-fn fetch_outcome_from_gh(repo: &str, deterministic_clock: bool) -> Result<FetchOutcome> {
+/// Fetch one REST list page: `GET repos/{owner}/{repo}/pulls` with explicit
+/// query parameters. `--method GET` is load-bearing: `gh api` defaults to
+/// POST once `-F` parameters are present, and POST on the pulls collection
+/// is the pull-*creation* endpoint, so every live fetch failed before any
+/// ledger was generated (#15345 review).
+fn fetch_page(repo: &str, page_number: u64) -> Result<serde_json::Value> {
     let endpoint = format!("repos/{repo}/pulls");
 
     let output = Command::new("gh")
         .args([
             "api",
             endpoint.as_str(),
+            "--method",
+            "GET",
             "-H",
             "Accept: application/vnd.github+json",
             "-F",
             "state=open",
             "-F",
             &format!("per_page={PAGE_SIZE}"),
-            "--paginate",
-            "--slurp",
+            "-F",
+            &format!("page={page_number}"),
         ])
         .output()
-        .with_context(|| format!("running `gh api {endpoint} --paginate` for {repo}"))?;
+        .with_context(|| format!("running `gh api {endpoint}` page {page_number} for {repo}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("gh api paginate failed for {repo}: {stderr}");
+        bail!("gh api page {page_number} failed for {repo}: {stderr}");
     }
 
     let raw = String::from_utf8_lossy(&output.stdout);
-    let pages_value: serde_json::Value = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing gh api paginated output for {repo}"))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("parsing gh api page {page_number} for {repo}"))
+}
 
-    assemble_outcome(pages_value, repo, deterministic_clock, "gh api")
+/// Drive pagination page-by-page with an explicit counter instead of
+/// `gh api --paginate`, which buffers every page before any cap can apply.
+/// Stops at the first short page (fewer than `PAGE_SIZE` items, including
+/// the empty terminal probe that settles exact page multiples as complete)
+/// or at `MAX_PAGES_PER_REPO`. A full trailing page therefore always means
+/// the cap stopped traversal, which is exactly what `assemble_outcome`'s
+/// `last_page_full` rule reports as `Truncated`. The fetcher is injectable
+/// so the stop discipline is unit-provable without shelling out.
+fn collect_pages(
+    mut fetch_one: impl FnMut(u64) -> Result<serde_json::Value>,
+) -> Result<Vec<serde_json::Value>> {
+    let mut pages = Vec::new();
+    let mut page_number = 1u64;
+    loop {
+        let page_value = fetch_one(page_number)?;
+        let page_len = page_value.as_array().map(|a| a.len()).unwrap_or(0);
+        pages.push(page_value);
+        if page_len < PAGE_SIZE || pages.len() >= MAX_PAGES_PER_REPO {
+            return Ok(pages);
+        }
+        page_number += 1;
+    }
+}
+
+fn fetch_outcome_from_gh(repo: &str) -> Result<FetchOutcome> {
+    // Live receipts always carry the real observation time: the
+    // deterministic anchor belongs to fixture-backed runs only.
+    let pages = collect_pages(|page_number| fetch_page(repo, page_number))?;
+    assemble_outcome(serde_json::Value::from(pages), repo, false, "gh api")
 }
 
 fn load_outcome_from_fixture(
@@ -372,7 +432,7 @@ fn assemble_outcome(
         );
     }
 
-    let mut all_prs: Vec<GhPr> = Vec::new();
+    let mut all_prs: Vec<RestPull> = Vec::new();
     let mut seen_numbers: BTreeSet<u64> = BTreeSet::new();
     let mut page_identity: Vec<String> = Vec::with_capacity(pages_array.len());
     let mut snapshot_drift = false;
@@ -382,8 +442,9 @@ fn assemble_outcome(
             color_eyre::eyre::eyre!("page {page_idx} of {repo} response is not an array")
         })?;
 
-        let items: Vec<GhPr> = serde_json::from_value(serde_json::Value::from(page_array.clone()))
-            .with_context(|| format!("parsing page {page_idx} of {repo}"))?;
+        let items: Vec<RestPull> =
+            serde_json::from_value(serde_json::Value::from(page_array.clone()))
+                .with_context(|| format!("parsing page {page_idx} of {repo}"))?;
 
         for pr in items {
             if !seen_numbers.insert(pr.number) {
@@ -438,7 +499,7 @@ fn assemble_outcome(
         repository: repo.to_string(),
         query_state: "open".to_string(),
         observed_at,
-        source_endpoint: format!("{source_label} repos/{{repo}}/pulls"),
+        source_endpoint: format!("{source_label} repos/{repo}/pulls"),
         api_generation: "v3".to_string(),
         reported_total: None,
         fetched_unique,
@@ -455,7 +516,7 @@ fn assemble_outcome(
 }
 
 struct FetchOutcome {
-    prs: Vec<GhPr>,
+    prs: Vec<RestPull>,
     receipt: PaginationReceipt,
 }
 
@@ -477,7 +538,7 @@ fn compute_digest(ordered: &[u64]) -> String {
 // Row shaping
 // ---------------------------------------------------------------------------
 
-fn shape_row(pr: GhPr, _repo: &str) -> LedgerRow {
+fn shape_row(pr: RestPull, _repo: &str) -> LedgerRow {
     let label_names: Vec<String> = pr.labels.iter().map(|l| l.name.clone()).collect();
     let surface_guess = infer_surface(&pr.title, &label_names);
 
@@ -490,10 +551,12 @@ fn shape_row(pr: GhPr, _repo: &str) -> LedgerRow {
         evidence: Vec::new(),
         cleanup_done: false,
         known_gaps: Vec::new(),
-        is_draft: pr.is_draft,
-        mergeable: pr.mergeable,
-        head_ref: pr.head_ref_name,
-        author: pr.author.login,
+        is_draft: pr.draft,
+        // The pulls list endpoint exposes no mergeability; "unknown" is the
+        // honest value until a detail view enriches the row.
+        mergeable: "unknown".to_string(),
+        head_ref: pr.head.ref_name,
+        author: pr.user.login,
     }
 }
 
@@ -559,7 +622,10 @@ fn write_repo_receipt(receipt: &PaginationReceipt, repo: &str, out_dir: &Path) -
     Ok(())
 }
 
-fn write_summary_md(all_rows: &[(String, Vec<LedgerRow>)], out_dir: &Path) -> Result<()> {
+fn write_summary_md(
+    all_rows: &[(String, Vec<LedgerRow>, Completeness)],
+    out_dir: &Path,
+) -> Result<()> {
     let path = out_dir.join("pr-ledger.md");
     let mut buf = String::new();
 
@@ -569,8 +635,16 @@ fn write_summary_md(all_rows: &[(String, Vec<LedgerRow>)], out_dir: &Path) -> Re
          Classification and evidence columns are blank — fill in via scout.\n\n",
     );
 
-    for (repo, rows) in all_rows {
+    for (repo, rows, completeness) in all_rows {
         buf.push_str(&format!("## {repo}\n\n"));
+        // The summary must not let a partial inventory read as a complete
+        // backlog: every section carries its receipt completeness state.
+        buf.push_str(&format!(
+            "*Inventory: {} ({} PRs; see {}.receipt.json).*\n\n",
+            receipt_completeness_label(completeness),
+            rows.len(),
+            repo.replace('/', "-"),
+        ));
         if rows.is_empty() {
             buf.push_str("_No open PRs._\n\n");
             continue;
@@ -644,21 +718,20 @@ mod tests {
 
     // ----- row shaping from canned gh JSON ----------------------------------
 
-    fn make_gh_pr(number: u64, title: &str, labels: &[&str]) -> GhPr {
-        GhPr {
+    fn make_rest_pull(number: u64, title: &str, labels: &[&str]) -> RestPull {
+        RestPull {
             number,
             title: title.to_string(),
             labels: labels.iter().map(|l| GhLabel { name: l.to_string() }).collect(),
-            is_draft: false,
-            mergeable: "MERGEABLE".to_string(),
-            head_ref_name: format!("feat/{number}-thing"),
-            author: GhAuthor { login: "test-user".to_string() },
+            draft: false,
+            head: RestHead { ref_name: format!("feat/{number}-thing") },
+            user: GhAuthor { login: "test-user".to_string() },
         }
     }
 
     #[test]
     fn test_shape_row_defaults() -> Result<()> {
-        let pr = make_gh_pr(42, "fix(lsp): hover docs (#42)", &[]);
+        let pr = make_rest_pull(42, "fix(lsp): hover docs (#42)", &[]);
         let row = shape_row(pr, "EffortlessMetrics/perl-lsp-swarm");
 
         assert_eq!(row.pr, "42");
@@ -673,8 +746,8 @@ mod tests {
 
     #[test]
     fn test_shape_row_draft_preserved() -> Result<()> {
-        let mut pr = make_gh_pr(7, "wip: draft (#7)", &[]);
-        pr.is_draft = true;
+        let mut pr = make_rest_pull(7, "wip: draft (#7)", &[]);
+        pr.draft = true;
         let row = shape_row(pr, "owner/repo");
         assert!(row.is_draft);
         Ok(())
@@ -682,32 +755,36 @@ mod tests {
 
     #[test]
     fn test_shape_row_author_preserved() -> Result<()> {
-        let pr = make_gh_pr(9, "feat(dap): thing (#9)", &[]);
+        let pr = make_rest_pull(9, "feat(dap): thing (#9)", &[]);
         let row = shape_row(pr, "owner/repo");
         assert_eq!(row.author, "test-user");
         Ok(())
     }
 
     #[test]
-    fn test_shape_row_mergeable_preserved() -> Result<()> {
-        let mut pr = make_gh_pr(10, "fix(parser): thing (#10)", &[]);
-        pr.mergeable = "CONFLICTING".to_string();
+    fn test_shape_row_mergeable_is_unknown_from_list() -> Result<()> {
+        // The pulls list endpoint exposes no mergeability field, so rows
+        // honestly record "unknown" instead of fabricating a verdict.
+        let pr = make_rest_pull(10, "fix(parser): thing (#10)", &[]);
         let row = shape_row(pr, "owner/repo");
-        assert_eq!(row.mergeable, "CONFLICTING");
+        assert_eq!(row.mergeable, "unknown");
+        assert_eq!(row.head_ref, "feat/10-thing");
         Ok(())
     }
 
     // ----- receipt + pagination assembly ------------------------------------
 
+    // Fixtures use the REST list representation (what `gh api` returns),
+    // never the `gh pr list --json` GraphQL shape: only the REST shape
+    // exercises the production deserialization boundary (#15345 review).
     fn pr_json(number: u64, title: &str) -> serde_json::Value {
         serde_json::json!({
             "number": number,
             "title": title,
             "labels": [],
-            "isDraft": false,
-            "mergeable": "MERGEABLE",
-            "headRefName": format!("feat/{number}-thing"),
-            "author": {"login": "test-user"}
+            "draft": false,
+            "head": {"ref": format!("feat/{number}-thing")},
+            "user": {"login": "test-user"}
         })
     }
 
@@ -761,9 +838,10 @@ mod tests {
 
     #[test]
     fn test_assemble_outcome_exactly_one_full_page_is_truncated() -> Result<()> {
-        // Per GitHub's REST API for pulls, the max `per_page` is 100.
-        // If gh api --paginate returns exactly one full page, our defensive
-        // check refuses to call it complete.
+        // `collect_pages` only stops on a full trailing page at the cap, so
+        // a full last page reaching assembly means traversal may have more
+        // pages: the receipt refuses completeness. (The live loop would have
+        // probed one page further; fixtures drive assembly directly.)
         let prs: Vec<serde_json::Value> =
             (1..=PAGE_SIZE as u64).map(|n| pr_json(n, &format!("fix(lsp): n#{n}"))).collect();
         let pages = single_page(prs);
@@ -922,6 +1000,62 @@ mod tests {
         assert!(result.is_err(), "expected max-pages error");
     }
 
+    // ----- collect_pages stop discipline ------------------------------------
+
+    #[test]
+    fn test_collect_pages_stops_at_first_short_page() -> Result<()> {
+        let pages = collect_pages(|page_number| {
+            Ok(match page_number {
+                1 => serde_json::json!(
+                    (1..=PAGE_SIZE as u64).map(|n| pr_json(n, "x")).collect::<Vec<_>>()
+                ),
+                _ => serde_json::json!([]),
+            })
+        })?;
+
+        // One full page plus the empty terminal probe: exact multiples are
+        // complete, not truncated.
+        assert_eq!(pages.len(), 2);
+        let outcome =
+            assemble_outcome(serde_json::Value::from(pages), "owner/repo", true, "gh api")?;
+        assert_eq!(outcome.receipt.completeness, Completeness::Complete);
+        assert_eq!(outcome.receipt.pages_requested, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_collect_pages_stops_at_cap() -> Result<()> {
+        let mut requested = 0u64;
+        let pages = collect_pages(|page_number| {
+            requested += 1;
+            Ok(serde_json::json!(
+                (1..=PAGE_SIZE as u64)
+                    .map(|n| pr_json((page_number - 1) * PAGE_SIZE as u64 + n, "x"))
+                    .collect::<Vec<_>>()
+            ))
+        })?;
+
+        // The loop stops instead of paging forever; assembly reports the
+        // full trailing page as truncated.
+        assert_eq!(pages.len(), MAX_PAGES_PER_REPO);
+        assert_eq!(requested, MAX_PAGES_PER_REPO as u64);
+        let outcome =
+            assemble_outcome(serde_json::Value::from(pages), "owner/repo", true, "gh api")?;
+        assert_eq!(outcome.receipt.completeness, Completeness::Truncated);
+        Ok(())
+    }
+
+    #[test]
+    fn test_collect_pages_short_first_page_is_complete() -> Result<()> {
+        let pages = collect_pages(|_| Ok(serde_json::json!([pr_json(1, "x")])))?;
+
+        assert_eq!(pages.len(), 1);
+        let outcome =
+            assemble_outcome(serde_json::Value::from(pages), "owner/repo", true, "gh api")?;
+        assert_eq!(outcome.receipt.completeness, Completeness::Complete);
+        Ok(())
+    }
+
     // ----- fixture-based end-to-end -----------------------------------------
 
     #[test]
@@ -930,25 +1064,23 @@ mod tests {
 
         let tmp = tempfile::tempdir().context("creating temp dir")?;
 
-        // Write a small canned gh JSON fixture.
+        // Write a small canned gh JSON fixture in the REST list shape.
         let fixture_data = serde_json::json!([
             {
                 "number": 101,
                 "title": "feat(lsp): add definition provider (#101)",
                 "labels": [{"name": "size/S"}],
-                "isDraft": false,
-                "mergeable": "MERGEABLE",
-                "headRefName": "feat/101-def-provider",
-                "author": {"login": "EffortlessSteven"}
+                "draft": false,
+                "head": {"ref": "feat/101-def-provider"},
+                "user": {"login": "EffortlessSteven"}
             },
             {
                 "number": 102,
                 "title": "fix(parser): heredoc edge case (#102)",
                 "labels": [{"name": "area/parser"}],
-                "isDraft": true,
-                "mergeable": "UNKNOWN",
-                "headRefName": "fix/102-heredoc",
-                "author": {"login": "bot"}
+                "draft": true,
+                "head": {"ref": "fix/102-heredoc"},
+                "user": {"login": "bot"}
             }
         ]);
 
@@ -999,6 +1131,8 @@ mod tests {
         assert!(md.contains("EffortlessMetrics/perl-lsp-swarm"));
         assert!(md.contains("#101"));
         assert!(md.contains("#102"));
+        // The summary carries the receipt completeness state per repo.
+        assert!(md.contains("*Inventory: complete (2 PRs;"), "{md}");
 
         Ok(())
     }
@@ -1017,10 +1151,9 @@ mod tests {
                         "number": n,
                         "title": format!("fix(lsp): page1-{n} (#{n})"),
                         "labels": [],
-                        "isDraft": false,
-                        "mergeable": "MERGEABLE",
-                        "headRefName": format!("feat/{n}-page1"),
-                        "author": {"login": "test-user"}
+                        "draft": false,
+                        "head": {"ref": format!("feat/{n}-page1")},
+                        "user": {"login": "test-user"}
                     })
                 })
                 .collect(),
@@ -1032,10 +1165,9 @@ mod tests {
                         "number": n,
                         "title": format!("fix(lsp): page2-{n} (#{n})"),
                         "labels": [],
-                        "isDraft": false,
-                        "mergeable": "MERGEABLE",
-                        "headRefName": format!("feat/{n}-page2"),
-                        "author": {"login": "test-user"}
+                        "draft": false,
+                        "head": {"ref": format!("feat/{n}-page2")},
+                        "user": {"login": "test-user"}
                     })
                 })
                 .collect(),
@@ -1111,10 +1243,9 @@ mod tests {
                         "number": n,
                         "title": format!("fix(lsp): n#{n} (#{n})"),
                         "labels": [],
-                        "isDraft": false,
-                        "mergeable": "MERGEABLE",
-                        "headRefName": format!("feat/{n}-x"),
-                        "author": {"login": "test-user"}
+                        "draft": false,
+                        "head": {"ref": format!("feat/{n}-x")},
+                        "user": {"login": "test-user"}
                     })
                 })
                 .collect::<Vec<_>>(),
@@ -1142,6 +1273,11 @@ mod tests {
         let rows: Vec<LedgerRow> =
             serde_json::from_str(&fs::read_to_string(out_dir.join("owner-repo.json"))?)?;
         assert_eq!(rows.len(), PAGE_SIZE);
+
+        // The summary banner carries the truncated state, never a total.
+        let md = fs::read_to_string(out_dir.join("pr-ledger.md"))?;
+        assert!(md.contains("*Inventory: truncated"), "{md}");
+        assert!(!md.contains("total"), "{md}");
 
         Ok(())
     }
