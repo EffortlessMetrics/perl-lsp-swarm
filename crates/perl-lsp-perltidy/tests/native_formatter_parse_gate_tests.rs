@@ -384,9 +384,6 @@ fn selected_sentinel_inside_a_string_is_restored_without_corruption() {
 
 /// A POD block outside the range must not block range-format of clean lines.
 #[test]
-
-/// A POD block outside the range must not block range-format of clean lines.
-#[test]
 fn range_format_clean_lines_succeeds_when_pod_is_elsewhere_in_document() {
     let formatter = NativeFormatter::new();
     // Line 0 has a POD marker; line 1 is a clean declaration.

@@ -20,7 +20,9 @@
 //! Every existing parse, literal-preservation, render, and post-parse gate still
 //! runs in the underlying engine.
 
-use super::implementation::counters::NativePipelineCounters;
+use super::implementation::counters::{
+    NativePipelineCounters, PipelineCollectorScope, merge_counters, record_with,
+};
 use super::implementation::{
     self, FormatConfig, FormatResult, FormatterMode, PerlFormatter, TextRange, range_includes_line,
 };
@@ -123,10 +125,22 @@ impl NativeFormatter {
             return engine.format_document_typed_with_counters(source, config, context, counters);
         };
         let source_identity = FormatIdentity::for_request(source, config, context);
-        let typed =
-            engine.format_document_typed_with_counters(&sanitized.text, config, context, counters);
+        // The sanitized attempt may be discarded when restoration fails, so it
+        // records in scratch counters; only the attempt whose result is
+        // returned merges into the caller's collector (one pipeline per
+        // public request, NPC-003).
+        let mut attempt = NativePipelineCounters::default();
+        let typed = engine.format_document_typed_with_counters(
+            &sanitized.text,
+            config,
+            context,
+            &mut attempt,
+        );
         match restore_typed_result(source, &sanitized, source_identity, typed) {
-            Some(result) => result,
+            Some(result) => {
+                merge_counters(counters, &attempt);
+                result
+            }
             None => engine.format_document_typed_with_counters(source, config, context, counters),
         }
     }
@@ -151,30 +165,56 @@ impl NativeFormatter {
         if valid_range(source, range)
             && range_overlaps_completed_heredoc(source, range, &source_line_ranges(source))
         {
+            // The guard refuses before any engine entry runs, but the request
+            // still happened: record one typed pipeline invocation so counted
+            // receipts do not silently omit the guarded heredoc cases
+            // (NPC-003). Installing the scope keeps nested outer collectors
+            // observing the same request.
+            let scope = PipelineCollectorScope::install();
+            record_with(|recorded| recorded.observe_pipeline_invocation());
+            scope.merge_into(counters);
             return typed_heredoc_range_refusal(source, range, config, context);
         }
 
-        let baseline =
-            engine.format_range_typed_with_counters(source, range, config, context, counters);
+        // Both internal attempts may be discarded, so each records in scratch
+        // counters; only the attempt whose result is returned merges into the
+        // caller's collector (one pipeline per public request, NPC-003).
+        let mut baseline_attempt = NativePipelineCounters::default();
+        let baseline = engine.format_range_typed_with_counters(
+            source,
+            range,
+            config,
+            context,
+            &mut baseline_attempt,
+        );
         if baseline.outcome.reason == FormatReasonCode::UnsafeRange {
+            merge_counters(counters, &baseline_attempt);
             return baseline;
         }
 
         let Some(sanitized) = sanitize_non_code_heredoc_markers(source) else {
+            merge_counters(counters, &baseline_attempt);
             return baseline;
         };
 
+        let mut sanitized_attempt = NativePipelineCounters::default();
         let typed = engine.format_range_typed_with_counters(
             &sanitized.text,
             range,
             config,
             context,
-            counters,
+            &mut sanitized_attempt,
         );
         let source_identity = baseline.outcome.identity.clone();
         match restore_typed_result(source, &sanitized, source_identity, typed) {
-            Some(result) => result,
-            None => baseline,
+            Some(result) => {
+                merge_counters(counters, &sanitized_attempt);
+                result
+            }
+            None => {
+                merge_counters(counters, &baseline_attempt);
+                baseline
+            }
         }
     }
 }
