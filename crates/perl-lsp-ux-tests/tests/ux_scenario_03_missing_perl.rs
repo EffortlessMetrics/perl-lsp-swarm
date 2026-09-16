@@ -72,9 +72,7 @@ fn scenario_03_degraded_mode_hover_does_not_crash() {
             let harness = UxHarness::new(config_without_perl())
                 .context("Failed to create UX harness without perl")?;
 
-            harness
-                .open_file("degraded.pl", source)
-                .context("didOpen should succeed")?;
+            harness.open_file("degraded.pl", source).context("didOpen should succeed")?;
             harness
                 .hover("degraded.pl", 0, 3)
                 .context("hover should not return a transport error in degraded mode")?;
@@ -105,9 +103,7 @@ fn scenario_03_degraded_mode_completion_does_not_crash() {
             let harness = UxHarness::new(config_without_perl())
                 .context("Failed to create UX harness without perl")?;
 
-            harness
-                .open_file("complete.pl", source)
-                .context("didOpen should succeed")?;
+            harness.open_file("complete.pl", source).context("didOpen should succeed")?;
             harness
                 .completion("complete.pl", 0, 7)
                 .context("completion should not return a transport error in degraded mode")?;
