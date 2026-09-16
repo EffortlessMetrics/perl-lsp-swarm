@@ -4221,3 +4221,32 @@ created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-10-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 connects these seams to the named tests, or at expiry. Narrow immediately if a receipt reports a seam in this file outside the three listed finding identities."
+
+# -----------------------------------------------------------------------------
+# DAP debugger-capability probe declarations (PR #15717): the two
+# gate-blocking no_static_path probes are declaration lines the tracer can
+# never connect to a test — the DEBUGGER_PROBE_SUCCESS_MARKER const
+# (process.rs:71, field_construction) and the Incapable(String) enum variant
+# (process.rs:82, call_deletion). Constructor-only tests would be proof
+# theatre: the marker's behavior is covered by
+# probe_success_marker_requires_its_own_line plus
+# has_probe_success_marker_boundary_discriminator (13 direct_owner_call
+# links), and the variant by check_debugger_capability_exact_error_variant
+# (matches! on DebuggerCapabilityProbe::Incapable plus the exact remediation
+# literal). Same ripr#1429 declaration-line class as the compiler-upstream
+# and framework-DSL declaration entries. Scoped to the two stable probe
+# identities so any other seam in this file stays visible.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-dap-capability-probe-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-dap/src/debug_adapter/process.rs"]
+classification = ["no_static_path"]
+gap_ids = ["probe:crates_perl-dap_src_debug_adapter_process.rs:field_construction:9898b020", "probe:crates_perl-dap_src_debug_adapter_process.rs:call_deletion:933cb207"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15717 hardens the interpreter capability probe. Its two gate-blocking no_static_path probes are declaration lines with no function body to trace into: the DEBUGGER_PROBE_SUCCESS_MARKER const (process.rs:71) and the Incapable(String) variant (process.rs:82). Behavior is covered without them — the marker by probe_success_marker_requires_its_own_line and has_probe_success_marker_boundary_discriminator, the variant by check_debugger_capability_exact_error_variant. Same declaration-line class as the compiler-upstream-status and framework-DSL suppression entries."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports a no_static_path seam in this file outside the two listed probe identities."
