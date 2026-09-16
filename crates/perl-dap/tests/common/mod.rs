@@ -302,7 +302,7 @@ impl DapWorkflowSession {
         Ok(resolved)
     }
 
-    /// Block until a `stopped` event arrives, then immediately issue a `stackTrace`
+    /// Block until a `stopped` event arrives, then issue a `stackTrace`
     /// request to obtain the current source location.
     ///
     /// Returns a [`StoppedFrameInfo`] combining the stopped reason/thread with
@@ -310,16 +310,40 @@ impl DapWorkflowSession {
     ///
     /// Use this helper when the test must assert BOTH the stop reason AND the
     /// current source line, without the latency of a separate `stack_trace()` call.
+    ///
+    /// The entry stop is announced by the adapter the moment the debuggee
+    /// spawns, so an immediate `stackTrace` can race the perl5db bootstrap —
+    /// a freshly staged interpreter pays first-touch library-scan costs
+    /// before it answers the framed `T` query, and the ambient-output
+    /// fallback has no context lines yet. A real DAP client re-requests the
+    /// snapshot in that window, so the helper retries an empty-frame answer
+    /// on the same stop until the debugger responds or the bounded budget
+    /// expires. A persistent empty answer still fails with the same error.
     pub fn wait_stopped_with_frame(&mut self) -> Result<StoppedFrameInfo, String> {
         let stopped = self.wait_stopped()?;
-        let (frame_id, source_path, line) = self.stack_trace(stopped.thread_id)?;
-        Ok(StoppedFrameInfo {
-            reason: stopped.reason,
-            thread_id: stopped.thread_id,
-            frame_id,
-            source_path,
-            line,
-        })
+        const EMPTY_FRAME_RACE_BUDGET: Duration = Duration::from_secs(5);
+        const EMPTY_FRAME_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+        let deadline = Instant::now() + EMPTY_FRAME_RACE_BUDGET;
+        loop {
+            match self.stack_trace(stopped.thread_id) {
+                Ok((frame_id, source_path, line)) => {
+                    return Ok(StoppedFrameInfo {
+                        reason: stopped.reason,
+                        thread_id: stopped.thread_id,
+                        frame_id,
+                        source_path,
+                        line,
+                    });
+                }
+                Err(error) => {
+                    if error == "stackTrace returned empty frames" && Instant::now() < deadline {
+                        std::thread::sleep(EMPTY_FRAME_RETRY_INTERVAL);
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+        }
     }
 
     /// Send `configurationDone`.
@@ -773,40 +797,40 @@ fn decode_evaluate_path(reported: &str) -> Result<String, String> {
         Ok(trimmed.to_string())
     }?;
 
-    if let Some((prefix, payload)) = decoded.split_once(" '") {
-        if prefix.trim().parse::<u64>().is_ok() {
-            let mut path = String::with_capacity(payload.len());
-            let mut characters = payload.chars();
-            let mut closed = false;
-            while let Some(character) = characters.next() {
-                match character {
-                    '\\' => match characters.next() {
-                        Some('\\') => path.push('\\'),
-                        Some('\'') => path.push('\''),
-                        Some(other) => {
-                            return Err(format!(
-                                "unsupported perl5db ordinal escape \\{other} in {decoded:?}"
-                            ));
-                        }
-                        None => {
-                            return Err(format!("trailing perl5db ordinal escape in {decoded:?}"));
-                        }
-                    },
-                    '\'' => {
-                        closed = true;
-                        break;
+    if let Some((prefix, payload)) = decoded.split_once(" '")
+        && prefix.trim().parse::<u64>().is_ok()
+    {
+        let mut path = String::with_capacity(payload.len());
+        let mut characters = payload.chars();
+        let mut closed = false;
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => match characters.next() {
+                    Some('\\') => path.push('\\'),
+                    Some('\'') => path.push('\''),
+                    Some(other) => {
+                        return Err(format!(
+                            "unsupported perl5db ordinal escape \\{other} in {decoded:?}"
+                        ));
                     }
-                    other => path.push(other),
+                    None => {
+                        return Err(format!("trailing perl5db ordinal escape in {decoded:?}"));
+                    }
+                },
+                '\'' => {
+                    closed = true;
+                    break;
                 }
+                other => path.push(other),
             }
-            if !closed || characters.any(|character| !character.is_whitespace()) {
-                return Err(format!("unclosed perl5db ordinal path {decoded:?}"));
-            }
-            if path.is_empty() {
-                return Err(format!("empty perl5db ordinal path {decoded:?}"));
-            }
-            return Ok(path);
         }
+        if !closed || characters.any(|character| !character.is_whitespace()) {
+            return Err(format!("unclosed perl5db ordinal path {decoded:?}"));
+        }
+        if path.is_empty() {
+            return Err(format!("empty perl5db ordinal path {decoded:?}"));
+        }
+        return Ok(path);
     }
     Ok(decoded)
 }
@@ -1481,9 +1505,9 @@ pub const DEBUGGEE_PERL_OVERRIDE_ENV: &str = "PERL_LSP_DAP_DEBUGGEE_PERL";
 
 /// Wall-clock budget for one [`probe_debuggee_perl`] attempt.
 ///
-/// A working perl5db emits its banner well inside a second; a broken one
-/// (native MSWin32 builds at piped bootstrap) hangs forever, so the budget is
-/// what bounds the probe.
+/// A working perl5db emits its banner well inside a second; an interpreter
+/// that cannot bootstrap its debugger over pipes may hang, so the budget
+/// bounds the probe.
 const DEBUGGEE_PROBE_BUDGET: Duration = Duration::from_secs(10);
 
 /// A debuggee interpreter proven able to run a real debugger session over
@@ -1525,11 +1549,10 @@ fn debuggee_perl_candidates() -> Vec<PathBuf> {
 
     let mut candidates = vec![PathBuf::from("perl")];
 
-    // Windows: add well-known MSYS-family perl locations. The cataloged root
-    // cause (#12594 item 6b) is that native MSWin32 perl5db builds cannot run
-    // over piped stdio, while MSYS/cygwin-flavored builds can; these paths are
+    // Windows: add well-known MSYS-family perl locations. These paths are
     // only PROPOSALS — every candidate still has to pass the conformance
-    // probe before it is trusted. Environments with other layouts should set
+    // probe, including the native piped-stdio bootstrap, before it is
+    // trusted. Environments with other layouts should set
     // [`DEBUGGEE_PERL_OVERRIDE_ENV`].
     if cfg!(windows) {
         if let Some(system_drive) = std::env::var_os("SystemDrive") {
@@ -1961,6 +1984,19 @@ fn probe_debuggee_perl_with_options_and_barrier(
             .env_remove("PERL5OPT")
             .env("LC_ALL", "C")
             .env("TZ", "UTC");
+        // Keep the resolver probe on the same native Windows stdio path as a
+        // real adapter launch. Strawberry's perl5db selects its console
+        // transport unless EMACS is set, and ReadLine must not query console
+        // handles when the child is attached to pipes. Preserve caller
+        // PERLDB_OPTS and append the debugger-only override, matching the
+        // production launcher in debug_adapter/process.rs.
+        #[cfg(windows)]
+        {
+            command.env("EMACS", "1");
+            let mut perl_db_opts = std::env::var_os("PERLDB_OPTS").unwrap_or_default();
+            perl_db_opts.push(" ReadLine=0");
+            command.env("PERLDB_OPTS", perl_db_opts);
+        }
         if let Some(descendant_pid_file) = descendant_pid_file {
             command.env("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE", descendant_pid_file);
             command.env(
@@ -1986,17 +2022,15 @@ fn probe_debuggee_perl_with_options_and_barrier(
         }
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
         #[cfg(all(test, windows))]
-        if publication_barrier {
-            if let Err(error) = resume_suspended_probe_process(&child) {
-                let cleanup =
-                    terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
-                return Err(fail(format!(
-                    "cannot resume probe process for publication barrier: {error}{}",
-                    cleanup
-                        .err()
-                        .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
-                )));
-            }
+        if publication_barrier && let Err(error) = resume_suspended_probe_process(&child) {
+            let cleanup =
+                terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+            return Err(fail(format!(
+                "cannot resume probe process for publication barrier: {error}{}",
+                cleanup
+                    .err()
+                    .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+            )));
         }
         #[cfg(test)]
         if let Some(descendant_pid_file) = descendant_pid_file {
@@ -2412,6 +2446,14 @@ pub(crate) fn run_cleanup_command_for_test(
         Some(pid) => Ok((pid, result)),
         None => Err(format!("cleanup command did not spawn: {result:?}")),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn run_bounded_command_for_test(
+    command: Command,
+    budget: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    run_cleanup_command(command, budget)
 }
 
 fn run_cleanup_command_inner(
@@ -2930,6 +2972,21 @@ fn identity_from_probe_output(stderr: &str, stdout: &str) -> String {
     identity_line.chars().take(120).collect()
 }
 
+/// Whether a probe failure is the "interpreter cannot load perl5db.pl" class.
+///
+/// A copied or staged interpreter can pass its in-place probe and still be
+/// unusable: relocation breaks mount-relative `@INC` resolution, so a
+/// Git-Bash/MSYS perl copy reports `Can't locate perl5db.pl in @INC`. That is
+/// a property of the environment (no candidate survives staging), not a
+/// candidate bug, so live proofs use this to distinguish a typed skip from a
+/// hard failure.
+// Shared helper: each integration-test binary compiles `common` separately, so
+// binaries that do not call it would otherwise trip per-target dead_code.
+#[allow(dead_code)]
+pub(crate) fn staged_copy_cannot_load_perl5db(reason: &str) -> bool {
+    reason.to_ascii_lowercase().contains("perl5db")
+}
+
 /// Resolve and cache a pipe-capable debuggee interpreter for live sessions.
 ///
 /// Candidate order: [`DEBUGGEE_PERL_OVERRIDE_ENV`] (exclusive when set),
@@ -2985,6 +3042,45 @@ fn candidate_is_executable(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn candidate_is_executable(_path: &Path) -> bool {
     true
+}
+
+/// Every `perl` executable visible on the platform search path, in PATH
+/// order, deduplicated by first appearance and checked for existence.
+///
+/// Unix `which` resolves a bare program name to only its first PATH hit, so a
+/// proof that rejects one candidate (for example a staged copy whose
+/// mount-relative `@INC` cannot load perl5db.pl) could not continue with a
+/// later PATH interpreter — it would never even see one. Enumerate the search
+/// path directly instead. Windows keeps `where.exe`, which already reports
+/// every PATH match (including PATHEXT variants such as `perl.bat`) in PATH
+/// order.
+pub(crate) fn search_path_perl_candidates() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let raw: Vec<PathBuf> = {
+        let output = match Command::new("where.exe").arg("perl").output() {
+            Ok(output) if output.status.success() => output,
+            _ => return Vec::new(),
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| PathBuf::from(line.trim()))
+            .collect()
+    };
+    #[cfg(not(windows))]
+    let raw: Vec<PathBuf> = match std::env::var_os("PATH") {
+        Some(path) => std::env::split_paths(&path)
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .map(|directory| directory.join("perl"))
+            .collect(),
+        None => Vec::new(),
+    };
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for candidate in raw {
+        if candidate.is_file() && !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
 }
 
 /// Resolve one ambient candidate to the absolute interpreter path the probe

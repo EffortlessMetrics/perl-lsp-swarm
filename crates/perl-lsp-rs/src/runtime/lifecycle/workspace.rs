@@ -7,6 +7,9 @@ use super::super::*;
 use super::super::{LspServer, MessageType};
 use perl_dap::platform::{PerlInterpreterResult, find_perl_interpreter};
 use perl_lsp_rs_core::config::WorkspaceConfig;
+use perl_uri::uri_to_fs_path;
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Once;
 
 /// Fires at most once per LSP session, when Perl is not found anywhere.
@@ -141,21 +144,38 @@ impl LspServer {
     /// or more folders set the same global key to different values, a single
     /// `window/showMessage` Warning is emitted naming the folders and keys, instead
     /// of silently discarding a folder's configuration.
-    pub(crate) fn load_and_apply_project_config(&self) {
+    pub(crate) fn load_and_apply_project_config(&self) -> bool {
         // Discover before taking the workspace-folder lock because discovery
         // takes the documents lock. This keeps lock acquisition ordered as
         // documents -> workspace_folders for diagnostic/reload snapshots.
         let single_file_config = if self.workspace_folders.lock().is_empty() {
             self.discover_single_file_config()
         } else {
-            None
+            Ok(None)
         };
+        let mut complete = true;
         let mut folders = self.workspace_folders.lock();
 
         if folders.is_empty() {
             // Single-file mode: try to discover .perl-lsp.toml from the
             // open document's directory. This is a common workflow — opening
             // a lone .pl file that has a .perl-lsp.toml next to it. (#UX15)
+            let single_file_config = match single_file_config {
+                Ok(config) => config,
+                Err(msg) => {
+                    complete = false;
+                    tracing::warn!(message = %msg, "Single-file project config warning");
+                    if let Err(error) = self.show_message(
+                        MessageType::Warning,
+                        &format!(
+                            "Perl LSP: {msg} Fix the error in .perl-lsp.toml and reload the window."
+                        ),
+                    ) {
+                        tracing::warn!(%error, "Failed to send single-file config warning");
+                    }
+                    None
+                }
+            };
             self.set_single_file_project_config(single_file_config.clone());
             if let Some(config) = single_file_config {
                 if let Some(raw_version) = config.perl.version.as_deref()
@@ -166,7 +186,7 @@ impl LspServer {
                 let mut server_config = self.config.lock();
                 config.apply_to_server_config(&mut server_config);
             }
-            return;
+            return complete;
         }
 
         // Folder mode now owns per-folder configuration. Drop any retained
@@ -174,6 +194,11 @@ impl LspServer {
         // `.perl-lsp.toml` cannot inherit a config discovered from an
         // unrelated document directory (#13195 review).
         self.set_single_file_project_config(None);
+
+        let metadata_roots: BTreeSet<PathBuf> = folders
+            .iter()
+            .filter_map(|folder| folder.path.clone().or_else(|| uri_to_fs_path(&folder.uri)))
+            .collect();
 
         // Collect (display_name, project_config) for folders that have a
         // .perl-lsp.toml, in workspace-folder iteration order, so the server-global
@@ -183,7 +208,7 @@ impl LspServer {
 
         for folder in folders.iter_mut() {
             // Try to load .perl-lsp.toml from this folder
-            if let Some(folder_path) = &folder.path {
+            if let Some(folder_path) = folder.path.clone() {
                 let previous_project_config = folder.project_config.clone();
                 folder.project_config = None;
 
@@ -202,9 +227,9 @@ impl LspServer {
                         );
                     }
                 }
-                folder.effective_workspace_config = effective_config;
+                folder.replace_effective_workspace_config(effective_config);
 
-                match perl_lsp_rs_core::config::load_project_config(folder_path) {
+                match perl_lsp_rs_core::config::load_project_config(&folder_path) {
                     Ok(None) => {
                         // No .perl-lsp.toml found — normal, no action needed
                         if previous_project_config.is_some() {
@@ -236,7 +261,7 @@ impl LspServer {
                         // already stored in folder.effective_workspace_config.
                         let rejected_include_paths = project_config.apply_to_workspace_config(
                             &mut folder.effective_workspace_config,
-                            folder_path,
+                            &folder_path,
                         );
                         if !rejected_include_paths.is_empty() {
                             self.emit_rejected_include_paths_warning(
@@ -250,6 +275,7 @@ impl LspServer {
                         global_configs.push((folder.display_name().to_string(), project_config));
                     }
                     Err(msg) => {
+                        complete = false;
                         // A malformed replacement is still a new accepted
                         // configuration state. Advance the folder-local
                         // generation so cached reports from the prior valid
@@ -274,9 +300,14 @@ impl LspServer {
                         }
                     }
                 }
-                folder.refresh_workspace_metadata();
             }
         }
+
+        // Apply the accepted configuration before refreshing metadata through
+        // the buffer-aware route. Keeping this outside the folder lock also
+        // preserves the documented lock order (#15088).
+        drop(folders);
+        self.refresh_project_metadata_facts(&metadata_roots);
 
         // Merge the server-global sections across all folders that have a config,
         // using first-folder-wins per field, then apply the merged result to the
@@ -302,19 +333,27 @@ impl LspServer {
         // the post-initialize lifecycle. During `initialize` only local project
         // and initialization-option state may be applied; server→client requests
         // are not legal until after InitializeResult has been returned (#7708).
-        drop(folders);
+        complete
     }
 
     /// In single-file mode, try to discover `.perl-lsp.toml` from the
     /// directory of the first open document. (#UX15)
-    fn discover_single_file_config(&self) -> Option<perl_lsp_rs_core::config::ProjectConfig> {
+    fn discover_single_file_config(
+        &self,
+    ) -> Result<Option<perl_lsp_rs_core::config::ProjectConfig>, String> {
         let documents = self.documents.lock();
-        let uri = documents.keys().next()?.to_string();
+        let Some(uri) = documents.keys().next().map(ToString::to_string) else {
+            return Ok(None);
+        };
         drop(documents);
 
-        let path = super::super::source_path_from_uri(&uri)?;
-        let dir = std::path::Path::new(&path).parent()?;
-        perl_lsp_rs_core::config::load_project_config(dir).ok().flatten()
+        let Some(path) = super::super::source_path_from_uri(&uri) else {
+            return Ok(None);
+        };
+        let Some(dir) = std::path::Path::new(&path).parent() else {
+            return Ok(None);
+        };
+        perl_lsp_rs_core::config::load_project_config(dir).map_err(|error| error.to_string())
     }
 
     /// Re-run single-file project discovery after a document install.
@@ -1227,6 +1266,320 @@ include_paths = ["stale_lib"]
             );
         }
     }
+
+    #[test]
+    fn project_config_reload_keeps_open_metadata_buffer_authoritative() -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'Disk::Only';\n")?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+        let cpanfile_uri = url::Url::from_file_path(temp.path().join("cpanfile"))
+            .map_err(|()| anyhow::anyhow!("failed to create cpanfile URI"))?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri)
+                .with_path(temp.path().to_path_buf()),
+        );
+
+        server.load_and_apply_project_config();
+        server.handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": cpanfile_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "requires 'Buffer::Only';\n"
+            }
+        })))?;
+        server.load_and_apply_project_config();
+
+        let folders = server.workspace_folders.lock();
+        let folder = folders
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("workspace folder was not registered"))?;
+        let dependencies = &folder.effective_workspace_config.declared_dependencies;
+        anyhow::ensure!(
+            dependencies.iter().any(|dependency| dependency.module == "Buffer::Only"),
+            "project configuration reload must retain the open metadata buffer",
+        );
+        anyhow::ensure!(
+            dependencies.iter().all(|dependency| dependency.module != "Disk::Only"),
+            "project configuration reload must not fall back to stale disk metadata",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn did_change_configuration_keeps_open_metadata_buffer_and_accepts_settings()
+    -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'Disk::Only';\n")?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+        let cpanfile_uri = url::Url::from_file_path(temp.path().join("cpanfile"))
+            .map_err(|()| anyhow::anyhow!("failed to create cpanfile URI"))?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri)
+                .with_path(temp.path().to_path_buf()),
+        );
+        server.load_and_apply_project_config();
+        server.handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": cpanfile_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "requires 'Buffer::Only';\n"
+            }
+        })))?;
+
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": { "resolutionTimeout": 321 } } }
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder = folders
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("workspace folder was not registered"))?;
+        let config = &folder.effective_workspace_config;
+        anyhow::ensure!(
+            config.resolution_timeout_ms == 321,
+            "didChangeConfiguration must accept the new resolution timeout"
+        );
+        anyhow::ensure!(
+            config
+                .declared_dependencies
+                .iter()
+                .any(|dependency| dependency.module == "Buffer::Only"),
+            "didChangeConfiguration must retain the open metadata buffer",
+        );
+        anyhow::ensure!(
+            config.declared_dependencies.iter().all(|dependency| dependency.module != "Disk::Only"),
+            "didChangeConfiguration must not re-read stale disk metadata",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_configuration_response_keeps_open_metadata_buffer_and_accepts_settings()
+    -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'Disk::Only';\n")?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+        let cpanfile_uri = url::Url::from_file_path(temp.path().join("cpanfile"))
+            .map_err(|()| anyhow::anyhow!("failed to create cpanfile URI"))?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(temp.path().to_path_buf()),
+        );
+        server.load_and_apply_project_config();
+        server.handle_did_open(Some(serde_json::json!({
+            "textDocument": {
+                "uri": cpanfile_uri,
+                "languageId": "perl",
+                "version": 1,
+                "text": "requires 'Buffer::Only';\n"
+            }
+        })))?;
+        server.pending_workspace_configuration_requests.lock().insert(
+            ServerRequestId::for_test(15088),
+            crate::runtime::PendingWorkspaceConfigurationRequest {
+                folder_uris: vec![uri],
+                includes_global_item: true,
+                created_at: std::time::Instant::now(),
+            },
+        );
+
+        server.handle_client_response(Some(serde_json::json!({
+            "id": 15088,
+            "result": [
+                { "workspace": { "useSystemInc": true } },
+                { "workspace": { "resolutionTimeout": 654 } }
+            ]
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder = folders
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("workspace folder was not registered"))?;
+        let config = &folder.effective_workspace_config;
+        anyhow::ensure!(
+            config.resolution_timeout_ms == 654,
+            "workspace/configuration response must accept the new resolution timeout"
+        );
+        anyhow::ensure!(
+            config.use_system_inc,
+            "workspace/configuration response must accept useSystemInc"
+        );
+        anyhow::ensure!(
+            config
+                .declared_dependencies
+                .iter()
+                .any(|dependency| dependency.module == "Buffer::Only"),
+            "workspace/configuration response must retain the open metadata buffer",
+        );
+        anyhow::ensure!(
+            config.declared_dependencies.iter().all(|dependency| dependency.module != "Disk::Only"),
+            "workspace/configuration response must not re-read stale disk metadata",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn did_change_configuration_retains_unreadable_metadata_and_recovers() -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let cpanfile = temp.path().join("cpanfile");
+        std::fs::write(&cpanfile, "requires 'Before::Unreadable';\n")?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(temp.path().to_path_buf()),
+        );
+        server.load_and_apply_project_config();
+
+        std::fs::write(&cpanfile, [0x72, 0x65, 0xff, 0xfe, 0x71])?;
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": { "resolutionTimeout": 987 } } }
+        })));
+
+        {
+            let folders = server.workspace_folders.lock();
+            let folder = folders
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("workspace folder was not registered"))?;
+            let config = &folder.effective_workspace_config;
+            anyhow::ensure!(
+                config.resolution_timeout_ms == 987,
+                "didChangeConfiguration must accept settings during unreadable retention"
+            );
+            anyhow::ensure!(
+                config
+                    .declared_dependencies
+                    .iter()
+                    .any(|dependency| dependency.module == "Before::Unreadable"),
+                "an unreadable source must retain its last known facts across reload",
+            );
+            anyhow::ensure!(
+                server.dependency_facts_are_stale(&uri),
+                "retained facts from an unreadable source must be marked stale",
+            );
+        }
+
+        std::fs::write(&cpanfile, "requires 'After::Recovery';\n")?;
+        server.handle_did_change_configuration(Some(serde_json::json!({
+            "settings": { "perl": { "workspace": { "resolutionTimeout": 988 } } }
+        })));
+
+        let folders = server.workspace_folders.lock();
+        let folder = folders
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("workspace folder was not registered"))?;
+        let dependencies = &folder.effective_workspace_config.declared_dependencies;
+        anyhow::ensure!(
+            dependencies.iter().any(|dependency| dependency.module == "After::Recovery"),
+            "a readable replacement must recover current metadata facts",
+        );
+        anyhow::ensure!(
+            dependencies.iter().all(|dependency| dependency.module != "Before::Unreadable"),
+            "recovery must retire facts from the unreadable snapshot",
+        );
+        anyhow::ensure!(
+            !server.dependency_facts_are_stale(&uri),
+            "a readable replacement must clear the stale metadata disposition",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn did_change_configuration_reconciles_detected_and_user_include_root_ownership()
+    -> anyhow::Result<()> {
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("cpanfile"), "requires 'Root::Owner';\n")?;
+        let carton_lock = temp.path().join("carton.lock");
+        std::fs::write(&carton_lock, "snapshot\n")?;
+        let uri = url::Url::from_directory_path(temp.path())
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri)
+                .with_path(temp.path().to_path_buf()),
+        );
+        server.load_and_apply_project_config();
+
+        let client_settings = |include_paths: &[&str]| {
+            serde_json::json!({
+                "settings": { "perl": { "workspace": { "includePaths": include_paths } } }
+            })
+        };
+
+        server.handle_did_change_configuration(Some(client_settings(&["lib", "."])));
+        {
+            let folders = server.workspace_folders.lock();
+            let folder = folders
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("workspace folder was not registered"))?;
+            anyhow::ensure!(
+                folder
+                    .effective_workspace_config
+                    .include_paths
+                    .contains(&"local/lib/perl5".to_string()),
+                "the marker must contribute a detected include root"
+            );
+        }
+
+        std::fs::remove_file(&carton_lock)?;
+        server.handle_did_change_configuration(Some(client_settings(&["lib", "."])));
+        {
+            let folders = server.workspace_folders.lock();
+            let folder = folders
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("workspace folder was not registered"))?;
+            anyhow::ensure!(
+                !folder
+                    .effective_workspace_config
+                    .include_paths
+                    .contains(&"local/lib/perl5".to_string()),
+                "a removed marker must retire a detected root"
+            );
+        }
+
+        std::fs::write(&carton_lock, "snapshot\n")?;
+        server.handle_did_change_configuration(Some(client_settings(&[
+            "lib",
+            ".",
+            "local/lib/perl5",
+        ])));
+        std::fs::remove_file(&carton_lock)?;
+        server.handle_did_change_configuration(Some(client_settings(&[
+            "lib",
+            ".",
+            "local/lib/perl5",
+        ])));
+        let folders = server.workspace_folders.lock();
+        let folder = folders
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("workspace folder was not registered"))?;
+        anyhow::ensure!(
+            folder
+                .effective_workspace_config
+                .include_paths
+                .contains(&"local/lib/perl5".to_string()),
+            "a user-configured root must survive marker removal"
+        );
+        Ok(())
+    }
+
     #[test]
     fn request_workspace_configuration_supersedes_older_pending_requests() {
         let server = LspServer::new();
