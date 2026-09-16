@@ -470,14 +470,6 @@
       "rule": "expression_in_run_source"
     },
     {
-      "evidence": "contents: write",
-      "fingerprint": "6713ecb1a8a9ac42b410bba53059c63f9e701fbfe0d5e050bcca916d0e56ffcc",
-      "line": 37,
-      "message": "PR-triggered workflow grants write authority",
-      "path": ".github/workflows/minimax-agent-compile-check.yml",
-      "rule": "pr_write_permission"
-    },
-    {
       "evidence": "--ref \"${{ steps.upstream.outputs.ref }}\" \\",
       "fingerprint": "fc6d5957d790c4717701cf05ec0be0a3ca8b82ccfc25679bee8408d43ba9e691",
       "line": 52,
