@@ -1739,10 +1739,12 @@ fn test_15750_bare_double_sigil_emits_error_and_recovers() {
         "v3 must surface an UnexpectedToken diagnostic for bare-@ followed by another sigil; got 0 diagnostics, sexp: {}",
         output.ast.to_sexp()
     );
-    let has_unexpected = output.diagnostics.iter().any(|d| {
-        format!("{}", d).to_lowercase().contains("unexpected")
-            || format!("{}", d).to_lowercase().contains("bare")
-    });
+    // The diagnostic must be the UnexpectedToken variant the claim promises.
+    // (ParseError::UnexpectedToken's Display renders only
+    // "expected …, found … at position …", so the wording cannot be matched
+    // through Display; the variant is the stable contract.)
+    let has_unexpected =
+        output.diagnostics.iter().any(|d| matches!(d, ParseError::UnexpectedToken { .. }));
     assert!(
         has_unexpected,
         "expected at least one UnexpectedToken / bare-sigil diagnostic, got: {:?}",
@@ -1826,11 +1828,7 @@ fn test_15750_rejects_each_bare_double_sigil_shape() {
 // sigil; `$ref` (ScalarSigil) after `@`/`%`/`$` is still valid.
 #[test]
 fn test_15750_preserves_unbraced_scalar_deref() {
-    let cases = [
-        ("@$ref", "(unbraced"),
-        ("%$ref", "(unbraced"),
-        ("$$", "pid"),
-    ];
+    let cases = [("@$ref", "(unbraced"), ("%$ref", "(unbraced"), ("$$", "pid")];
     for (src, marker) in cases {
         let mut parser = Parser::new(src);
         let output = parser.parse_with_recovery();

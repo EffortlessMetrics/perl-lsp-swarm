@@ -51,8 +51,13 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Cache mdBook
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      # Restore-only: this is a pull_request workflow, and candidate runs may
+      # restore but not publish shared cache state (docs/ci/cache-policy.md,
+      # #15590). The canonical `*-mdbook-*` entry is written by
+      # docs-deploy.yml on main; restoring it here also keeps the cached
+      # `mdbook` executable trusted instead of candidate-built.
+      - name: Restore mdBook cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: |
             ~/.cargo/bin/mdbook
