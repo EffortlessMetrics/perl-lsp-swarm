@@ -735,6 +735,12 @@ impl ProfileContract {
         }
 
         let mut cell_ids = BTreeMap::new();
+        // Canonical evidence root for containment below: the lexical check
+        // rejects `..` but `is_file` follows symlinks, so a repo-local link
+        // to an external file would otherwise count as repository proof.
+        let canonical_root = evidence_root.canonicalize().with_context(|| {
+            format!("evidence root {} does not resolve", evidence_root.display())
+        })?;
         for cell in &self.dap_cells {
             if !is_non_empty(&cell.cell_id) {
                 bail!("dap cell rows need non-empty cell ids");
@@ -787,6 +793,16 @@ impl ProfileContract {
                                 evidence_root.display()
                             );
                         }
+                        // Containment after resolution: a symlink inside the
+                        // root pointing outside it is not repository proof,
+                        // even though the lexical reference is well-formed
+                        // and the target exists.
+                        resolve_contained_evidence(
+                            evidence_root,
+                            &canonical_root,
+                            reference,
+                            cell.cell_id.as_str(),
+                        )?;
                         proof_files += 1;
                     }
                     if proof_files == 0 {
@@ -855,6 +871,20 @@ impl ProfileContract {
                 bail!(
                     "security requirement {required:?} is missing; #10112's ownership facts are \
                      pinned by id, not by count"
+                );
+            }
+        }
+        // Exact equality, mirroring the admitted-cell block above: presence
+        // checks stop the set shrinking but not growing, and render_status
+        // publishes every row as a normative requirement. An extra
+        // requirement_id would widen the published contract with no enforcing
+        // admission branch, so widening requires a contract revision.
+        for requirement in &self.security_requirements {
+            if !REQUIRED_SECURITY_REQUIREMENTS.contains(&requirement.requirement_id.as_str()) {
+                bail!(
+                    "security requirement {:?} is not in the #10112 required set; widening the \
+                     published requirements requires a contract revision, not a new row",
+                    requirement.requirement_id
                 );
             }
         }
@@ -1210,6 +1240,63 @@ fn is_normalized_relative_reference(value: &str) -> bool {
 
 fn is_contained_path(root: &str, path: &str) -> bool {
     root == "/" || path == root || path.starts_with(&format!("{root}/"))
+}
+
+/// Resolve one evidence reference against the canonical evidence root.
+/// The lexical check already rejected `..`, but `is_file` follows symlinks:
+/// a repo-local link to an external file must not satisfy `proof_files`.
+/// Returns the resolved path when it exists under the root, else a typed
+/// failure naming the cell.
+fn resolve_contained_evidence(
+    evidence_root: &Path,
+    canonical_root: &Path,
+    reference: &str,
+    cell_id: &str,
+) -> Result<PathBuf> {
+    let resolved = evidence_root.join(reference).canonicalize().map_err(|_| {
+        anyhow!(
+            "initial admitted cell {cell_id:?} references evidence {reference:?} that \
+             does not resolve under {}",
+            evidence_root.display()
+        )
+    })?;
+    if !resolved.starts_with(canonical_root) {
+        bail!(
+            "initial admitted cell {cell_id:?} references evidence {reference:?} that \
+             resolves outside {}",
+            evidence_root.display()
+        );
+    }
+    Ok(resolved)
+}
+
+/// Parse an adapter target triple (`arch-vendor-os[-env]`, e.g.
+/// `x86_64-unknown-linux-gnu`) into subject-spelling `(arch, os, libc)`.
+/// Subject space says `amd64`/`arm64` where triples say `x86_64`/`aarch64`,
+/// and `glibc` where triples say `gnu`; anything else compares literally in
+/// lowercase. `None` when the triple has fewer than four components: a
+/// target that does not name its libc cannot identify the platform.
+fn parse_adapter_target_triple(target: &str) -> Option<(String, String, String)> {
+    let mut parts = target.split('-');
+    let arch = parts.next()?;
+    let _vendor = parts.next()?;
+    let os = parts.next()?;
+    let env = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let arch = match arch.to_lowercase().as_str() {
+        "x86_64" | "amd64" => "amd64".to_string(),
+        "aarch64" | "arm64" => "arm64".to_string(),
+        other => other.to_string(),
+    };
+    let libc = match env.to_lowercase().as_str() {
+        "gnu" | "glibc" => "glibc".to_string(),
+        "musl" => "musl".to_string(),
+        "msvc" => "msvc".to_string(),
+        other => other.to_string(),
+    };
+    Some((arch, os.to_lowercase(), libc))
 }
 
 impl ProfileDocument {
@@ -1650,6 +1737,34 @@ impl ProfileDocument {
                     self.loader.libc, subject_libc
                 )),
             );
+        }
+        // The declared adapter target must identify the same platform the
+        // subject and loader already agreed on. Non-emptiness alone admits a
+        // foreign-arch adapter (e.g. an aarch64 target beside an amd64
+        // subject), so the triple binds arch/os/libc in subject spelling.
+        let (target_arch, target_os, target_libc) = parse_adapter_target_triple(&adapter.target)
+            .ok_or_else(|| {
+                Rejection::new(
+                    RejectionReason::AdapterIdentityIncomplete,
+                    why(format!(
+                        "adapter target {:?} is not a parseable arch-vendor-os[-env] triple",
+                        adapter.target
+                    )),
+                )
+            })?;
+        for (label, target_value, subject_value) in [
+            ("adapter target architecture", target_arch.as_str(), subject_architecture),
+            ("adapter target os", target_os.as_str(), subject_os),
+            ("adapter target libc", target_libc.as_str(), subject_libc),
+        ] {
+            if target_value != subject_value.to_lowercase() {
+                return rejection(
+                    RejectionReason::LoaderContractMismatch,
+                    why(format!(
+                        "{label} {target_value:?} does not match subject {subject_value:?}"
+                    )),
+                );
+            }
         }
         if !self.loader.container_matches {
             return rejection(
@@ -3261,6 +3376,63 @@ mod tests {
         let mut contract = committed_contract()?;
         contract.source_namespace.canonicalization_authority = "#9999".into();
         assert!(contract.validate(repository_root()?).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn adapter_target_triple_binds_subject_spelling() {
+        assert_eq!(
+            parse_adapter_target_triple("x86_64-unknown-linux-gnu"),
+            Some(("amd64".to_string(), "linux".to_string(), "glibc".to_string()))
+        );
+        assert_eq!(
+            parse_adapter_target_triple("aarch64-unknown-linux-musl"),
+            Some(("arm64".to_string(), "linux".to_string(), "musl".to_string()))
+        );
+        assert_eq!(parse_adapter_target_triple("x86_64-linux"), None);
+        assert_eq!(parse_adapter_target_triple("x86_64-unknown-linux-gnu-extra"), None);
+        assert_eq!(parse_adapter_target_triple(""), None);
+    }
+
+    #[test]
+    fn extra_security_requirement_widens_nothing_without_revision() -> Result<()> {
+        // render_status publishes every requirement row as normative, so an
+        // unmapped extra id would claim an unenforced control. Exact equality
+        // with the required set keeps widening a contract revision.
+        let mut contract = committed_contract()?;
+        contract.security_requirements.push(SecurityRequirementRow {
+            requirement_id: "air_gapped_runtime".to_string(),
+            statement: "Runtimes are air-gapped.".to_string(),
+        });
+        assert!(
+            contract.validate(repository_root()?).is_err(),
+            "an extra requirement id must fail the contract, not widen it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn symlink_evidence_escaping_the_root_satisfies_nothing() -> Result<()> {
+        // A repo-local symlink to an external temp file is lexically
+        // well-formed and exists, yet resolves outside the evidence root.
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::NamedTempFile::new()?;
+        std::fs::write(root.path().join("real.md"), "inside")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path(), root.path().join("link.md"))?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(outside.path(), root.path().join("link.md"))?;
+        let canonical_root = root.path().canonicalize()?;
+        assert!(
+            resolve_contained_evidence(root.path(), &canonical_root, "real.md", "cell").is_ok()
+        );
+        assert!(
+            resolve_contained_evidence(root.path(), &canonical_root, "link.md", "cell").is_err(),
+            "a symlink escaping the evidence root must not satisfy proof_files"
+        );
+        assert!(
+            resolve_contained_evidence(root.path(), &canonical_root, "absent.md", "cell").is_err()
+        );
         Ok(())
     }
 }
