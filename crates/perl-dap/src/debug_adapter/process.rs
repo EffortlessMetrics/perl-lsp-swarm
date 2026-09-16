@@ -2102,10 +2102,18 @@ impl DebugAdapter {
                                     // parseable context. Preserve the existing
                                     // generation in the former case and advance
                                     // it in the latter; never reset the frame id
-                                    // to the historical constant 1.
+                                    // to the historical constant 1. The entry
+                                    // deferral leaves the state `Running` while
+                                    // waiting for the prompt, but its context
+                                    // already established this suspension's
+                                    // generation — a prompt carrying that native
+                                    // context must reuse it rather than advance
+                                    // a second time.
+                                    let context_established_suspension = prompt_has_native_context;
                                     let current_frame_id = current_stopped_frame_id(
                                         s,
-                                        matches!(s.state, DebugState::Running),
+                                        matches!(s.state, DebugState::Running)
+                                            && !context_established_suspension,
                                     );
                                     let has_source_frame =
                                         !prompt_file.is_empty() && prompt_line > 0;
