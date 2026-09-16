@@ -1338,16 +1338,12 @@ fn word_boundaries_hold(text: &str, index: usize, len: usize) -> bool {
     // term (`release`) as a standalone proof-level mention (#15505): `-`
     // joins identifier characters for proof-level matching, alongside
     // alphanumerics and `_`.
-    let before_ok = text
-        .get(..index)
-        .and_then(|prefix| prefix.chars().next_back())
-        .is_none_or(|character| {
+    let before_ok =
+        text.get(..index).and_then(|prefix| prefix.chars().next_back()).is_none_or(|character| {
             !character.is_ascii_alphanumeric() && character != '_' && character != '-'
         });
-    let after_ok = text
-        .get(index + len..)
-        .and_then(|suffix| suffix.chars().next())
-        .is_none_or(|character| {
+    let after_ok =
+        text.get(index + len..).and_then(|suffix| suffix.chars().next()).is_none_or(|character| {
             !character.is_ascii_alphanumeric() && character != '_' && character != '-'
         });
     before_ok && after_ok
