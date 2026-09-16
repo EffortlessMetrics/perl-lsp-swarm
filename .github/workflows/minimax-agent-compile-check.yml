@@ -11,6 +11,9 @@ on:
       - '.github/aw/actions-lock.json'
       - '.gitattributes'
       - '.github/dependabot.yml'
+      - 'scripts/ci/workflow_security_ratchet.py'
+      - 'scripts/ci/test_workflow_security_ratchet.py'
+      - '.ci/workflow-security-baseline.json'
   workflow_dispatch:
 
 permissions:
@@ -23,7 +26,7 @@ concurrency:
 jobs:
   compile-check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,3 +63,43 @@ jobs:
             .github/aw/actions-lock.json \
             .gitattributes \
             .github/dependabot.yml
+
+      - name: Generate exact permanent-tree ratchet baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP:?}/workflow-security-baseline.json"
+          report="${RUNNER_TEMP:?}/workflow-security-report.json"
+          python3 -m py_compile scripts/ci/workflow_security_ratchet.py
+          python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output "$out"
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root . \
+            --baseline "$out" \
+            --baseline-root . \
+            --report "$report"
+          if grep -Fq '"path": ".github/workflows/minimax-agent-compile-check.yml"' "$out"; then
+            echo 'The read-only permanent compile check unexpectedly produced a baseline finding.' >&2
+            exit 1
+          fi
+          python3 - "$out" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              payload = json.load(handle)
+          findings = payload.get("findings", payload.get("allowed_findings", []))
+          print(f"generated_findings={len(findings)}")
+          PY
+
+      - name: Upload exact baseline candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: minimax-agent-baseline-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/workflow-security-baseline.json
+            ${{ runner.temp }}/workflow-security-report.json
+          if-no-files-found: error
+          retention-days: 1
