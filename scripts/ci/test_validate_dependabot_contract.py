@@ -517,5 +517,24 @@ class NegativeControlTests(unittest.TestCase):
             self.assertIn("master-as-default-branch", _ids(_findings(tmp)))
 
 
+class CooldownTests(unittest.TestCase):
+    def test_each_ecosystem_refuses_missing_or_wrong_cooldown(self) -> None:
+        original = (ROOT / CONFIG_PATH).read_text(encoding="utf-8")
+        marker = "    cooldown:\n      default-days: 14\n"
+        pieces = original.split(marker)
+        if len(pieces) != 4:
+            raise ValueError("fixture requires exactly three updater cooldowns")
+        for row in range(3):
+            for replacement in ("", "    cooldown:\n      default-days: 13\n"):
+                with self.subTest(row=row, replacement=replacement), tempfile.TemporaryDirectory() as raw:
+                    root = Path(raw)
+                    _clone_surfaces(root)
+                    changed = pieces[0]
+                    for index, piece in enumerate(pieces[1:]):
+                        changed += (replacement if index == row else marker) + piece
+                    (root / CONFIG_PATH).write_text(changed, encoding="utf-8")
+                    self.assertIn("cooldown-drift", _ids(_findings(root)))
+
+
 if __name__ == "__main__":
     unittest.main()

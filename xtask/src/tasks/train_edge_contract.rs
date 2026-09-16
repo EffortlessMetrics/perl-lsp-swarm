@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
+use xtask::schema_apply::validate_payload_against_schema;
 
 const SCHEMA_PATH: &str = "schemas/train_edge_contract.v1.schema.json";
 const SCHEMA_ID: &str =
@@ -1137,10 +1138,15 @@ fn load_adaptations(root: &Path) -> Result<ManifestAdaptations> {
                 "adaptation row for {kind} must declare a stage exactly when the kind is external_checkpoint"
             );
         }
-        rows.insert(
-            (schema.to_string(), class.to_string()),
-            (kind.to_string(), stage.map(str::to_string)),
-        );
+        if rows
+            .insert(
+                (schema.to_string(), class.to_string()),
+                (kind.to_string(), stage.map(str::to_string)),
+            )
+            .is_some()
+        {
+            bail!("adaptation row for {schema}/{class} is declared more than once");
+        }
     }
     for manifest in root_map.get("manifests").and_then(Value::as_array).unwrap_or(&Vec::new()) {
         let Some(manifest) = as_str_map(manifest) else {
@@ -1151,6 +1157,9 @@ fn load_adaptations(root: &Path) -> Result<ManifestAdaptations> {
         else {
             bail!("manifest entry missing bundle/programme_schema");
         };
+        if manifests.iter().any(|(existing, _)| existing == bundle) {
+            bail!("manifest bundle {bundle} is registered more than once");
+        }
         manifests.push((bundle.to_string(), schema.to_string()));
     }
     if manifests.is_empty() {
@@ -1382,6 +1391,7 @@ pub fn run() -> Result<()> {
         failures.push(format!("{SCHEMA_PATH}: {violation}"));
     }
 
+    let schema = load_json(&root.join(SCHEMA_PATH))?;
     let fixture_dir = root.join(FIXTURE_DIR);
     let valid_documents = ["neovim_examples.v1.json", "external_stages.v1.json"];
     for name in valid_documents {
@@ -1391,6 +1401,17 @@ pub fn run() -> Result<()> {
             failures
                 .push(format!("{name}: expected a valid contract document, got {violations:?}"));
         }
+        // `validate_document` is the Rust-side reader of the contract, and
+        // `validate_schema_file` only proves the schema still declares the
+        // pinned vocabulary. Applying the compiled schema to the document is
+        // what binds a schema-only consumer to `additionalProperties`, the
+        // `required` lists, and every nested `$defs` constraint (#14268).
+        failures.extend(validate_payload_against_schema(
+            &schema,
+            SCHEMA_PATH,
+            &doc,
+            &format!("{FIXTURE_DIR}/{name}"),
+        )?);
     }
 
     // Deterministic profile eligibility for the reviewed examples: the run
@@ -1497,7 +1518,19 @@ pub fn run() -> Result<()> {
                 "{bundle}: adapted document violates the shared contract: {:?}",
                 violation_codes(&violations)
             ));
-        } else {
+        }
+        // An adapted document declares `schema: train_edge_contract.v1` and
+        // `schema_version: 1`, so it claims to be a full contract document and
+        // must satisfy the published schema, not only the Rust reader. Without
+        // this a later schema constraint could diverge from what adaptation
+        // emits while this task stayed green (#14268).
+        failures.extend(validate_payload_against_schema(
+            &schema,
+            SCHEMA_PATH,
+            &adapted,
+            &format!("{bundle} (adapted)"),
+        )?);
+        if violations.is_empty() {
             let total: usize = kind_counts.values().sum();
             let summary: Vec<String> =
                 kind_counts.iter().map(|(kind, count)| format!("{kind}={count}")).collect();
@@ -1594,6 +1627,103 @@ mod tests {
             doc.pointer("/projection/external_stage_states/0").and_then(as_str_map),
             "first external stage state must be an object",
         )
+    }
+
+    fn schema() -> TestResult<Value> {
+        load_json(&project_root()?.join(SCHEMA_PATH))
+    }
+
+    /// The committed documents must satisfy the published schema, not only
+    /// the Rust reader. Without this the schema is documentation.
+    #[test]
+    fn committed_documents_satisfy_the_published_schema() -> TestResult {
+        let schema = schema()?;
+        for name in ["neovim_examples.v1.json", "external_stages.v1.json"] {
+            let violations =
+                validate_payload_against_schema(&schema, SCHEMA_PATH, &fixture(name)?, name)?;
+            assert!(violations.is_empty(), "{name}: {violations:?}");
+        }
+        Ok(())
+    }
+
+    /// The adapted documents are generated rather than committed, so nothing
+    /// else in the suite would notice if the apply step over them were removed.
+    /// Adaptation stamps `train_edge_contract.v1` on its output, so each landed
+    /// programme manifest must adapt into a document the schema accepts.
+    #[test]
+    fn adapted_manifests_satisfy_the_published_schema() -> TestResult {
+        let root = project_root()?;
+        let schema = schema()?;
+        let adaptations = load_adaptations(&root)?;
+
+        assert!(!adaptations.manifests.is_empty(), "expected at least one adapted manifest");
+        for (bundle, programme_schema) in &adaptations.manifests {
+            let manifest = load_json(&root.join(bundle).join("train.manifest.json"))?;
+            let (adapted, _) = adapt_manifest(&manifest, programme_schema, &adaptations)?;
+
+            let violations = validate_payload_against_schema(
+                &schema,
+                SCHEMA_PATH,
+                &adapted,
+                &format!("{bundle} (adapted)"),
+            )?;
+            assert!(violations.is_empty(), "{bundle}: {violations:?}");
+        }
+        Ok(())
+    }
+
+    /// Discriminating controls for #14268.
+    ///
+    /// The Rust reader is deliberately thorough about unknown keys, missing
+    /// fields, empty strings, and duplicate ids -- it already catches those,
+    /// and this test does not claim otherwise. The gap the apply step closes
+    /// is the narrower set of *value* constraints the reader never looks at:
+    /// `claim_profile.version` is only checked for being an integer, never
+    /// against `minimum: 1`; and `allowed_terminal_limitation_states` is only
+    /// checked for reason-class membership, never against `uniqueItems`.
+    /// Both documents passed the task before the apply step while violating
+    /// the published contract.
+    #[test]
+    fn schema_rejects_values_the_rust_reader_never_constrains() -> TestResult {
+        let cases: &[(&str, fn(&mut Value))] = &[
+            ("version below the schema minimum", |doc| {
+                doc["claim_profiles"][0]["version"] = Value::from(0);
+            }),
+            ("duplicate terminal limitation state", |doc| {
+                let first =
+                    doc["claim_profiles"][0]["allowed_terminal_limitation_states"][0].clone();
+                if let Some(states) =
+                    doc["claim_profiles"][0]["allowed_terminal_limitation_states"].as_array_mut()
+                {
+                    states.push(first);
+                }
+            }),
+        ];
+
+        for (label, mutate) in cases {
+            let mut doc = fixture("neovim_examples.v1.json")?;
+            mutate(&mut doc);
+
+            // Negative control: the Rust reader accepts every one of these.
+            let reader_violations = validate_document(&doc);
+            assert!(
+                reader_violations.is_empty(),
+                "{label}: the Rust reader is not expected to catch this: {:?}",
+                violation_codes(&reader_violations)
+            );
+
+            let violations = validate_payload_against_schema(
+                &schema()?,
+                SCHEMA_PATH,
+                &doc,
+                "neovim_examples.v1.json",
+            )?;
+            assert!(
+                !violations.is_empty(),
+                "{label}: the applied schema must reject this document"
+            );
+        }
+        Ok(())
     }
 
     // Fixture 1: full-document v0.18 does not require atomic-ranged
@@ -1799,6 +1929,40 @@ mod tests {
             Value::String("programme-local editor role".to_string()),
         );
         assert!(validate_document(&localized).is_empty());
+        Ok(())
+    }
+
+    // A duplicated adaptation row or manifest registration must fail closed
+    // instead of silently overwriting or re-running.
+    #[test]
+    fn duplicate_adaptation_rows_and_manifests_are_rejected() -> TestResult {
+        let scratch = std::env::temp_dir().join(format!(
+            "train-edge-contract-dup-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let dir = scratch.join(".spec/10858-train-edge-contract");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("adaptations.json");
+        let base = |rows: &str, manifests: &str| {
+            format!(
+                r#"{{"schema":"train_edge_contract.adaptations.v1","adaptations":[{rows}],"manifests":[{manifests}]}}"#
+            )
+        };
+        let row = r#"{"programme_schema":"x.v1","class":"hard","kind":"requires_implementation"}"#;
+        let manifest = r#"{"bundle":".spec/x","programme_schema":"x.v1"}"#;
+
+        fs::write(&path, base(&format!("{row},{row}"), manifest))?;
+        let duplicate_row = load_adaptations(&scratch);
+        fs::write(&path, base(row, &format!("{manifest},{manifest}")))?;
+        let duplicate_manifest = load_adaptations(&scratch);
+        fs::write(&path, base(row, manifest))?;
+        let clean = load_adaptations(&scratch);
+        let _ = fs::remove_dir_all(&scratch);
+
+        assert!(duplicate_row.is_err(), "duplicate adaptation row must be rejected");
+        assert!(duplicate_manifest.is_err(), "duplicate manifest registration must be rejected");
+        assert!(clean.is_ok(), "a unique registry still loads");
         Ok(())
     }
 

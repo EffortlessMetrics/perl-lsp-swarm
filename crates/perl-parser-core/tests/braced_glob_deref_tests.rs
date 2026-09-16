@@ -104,8 +104,8 @@ fn split_token_glob_assignment_preserves_typeglob_lhs() -> Result<(), Box<dyn st
     let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
         return Err("find_assignment returned a non-assignment node".into());
     };
-    if typeglob_name(lhs) != Some("$name") {
-        return Err("expected Typeglob name $name on the dynamic assignment LHS".into());
+    if typeglob_name(lhs) != Some("{$name}") {
+        return Err("expected braced Typeglob name {{$name}} on the dynamic assignment LHS".into());
     }
     Ok(())
 }
@@ -119,8 +119,12 @@ fn fused_token_glob_assignment_preserves_typeglob_name() -> Result<(), Box<dyn s
     let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
         return Err("find_assignment returned a non-assignment node".into());
     };
-    if typeglob_name(lhs) != Some("$name") {
-        return Err(format!("expected Typeglob name $name on fused LHS, got {:?}", lhs.kind).into());
+    if typeglob_name(lhs) != Some("{$name}") {
+        return Err(format!(
+            "expected braced Typeglob name {{$name}} on fused LHS, got {:?}",
+            lhs.kind
+        )
+        .into());
     }
     Ok(())
 }
@@ -183,6 +187,64 @@ fn inline_glob_forwards_recoverable_diagnostics() -> Result<(), Box<dyn std::err
             if message.contains("Nested quantifiers detected"))
     }) {
         return Err(format!("expected forwarded inline advisory, got {:?}", parser.errors()).into());
+    }
+    Ok(())
+}
+
+/// #15712: every computed `*{EXPR}` body that is not a plain bareword keeps the
+/// braced dynamic spelling, so downstream consumers (perl-symbol suppression,
+/// HIR dynamic boundaries) classify it as runtime-computed instead of minting a
+/// static glob named after the raw expression text (`foo()`, `"name"`).
+#[test]
+fn computed_glob_bodies_keep_the_dynamic_brace_marker() -> Result<(), Box<dyn std::error::Error>> {
+    for (source, expected) in [
+        ("*{foo()} = \\&target;", "{foo()}"),
+        ("*{\"name\"} = \\&target;", "{\"name\"}"),
+        ("*{\"glob_$name\"} = \\&target;", "{\"glob_$name\"}"),
+        ("*{ $a . $b } = \\&target;", "{$a . $b}"),
+        // A single runtime capture keeps its braced spelling (existing #15650 behavior).
+        ("*{$name} = \\&target;", "{$name}"),
+    ] {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        let assignment = find_assignment(&ast).ok_or("expected typeglob assignment")?;
+        let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
+            return Err("find_assignment returned a non-assignment node".into());
+        };
+        if typeglob_name(lhs) != Some(expected) {
+            return Err(format!(
+                "expected Typeglob name {expected:?} for {source:?}, got {:?}",
+                lhs.kind
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Control: a braced bareword (`*{foo}`, `*{ name }`, `*{Foo::Bar}`) is a
+/// directly written symbol and still strips to its bare name.
+#[test]
+fn braced_bareword_glob_assignment_still_strips_to_the_bare_name()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (source, expected) in [
+        ("*{foo} = \\&target;", "foo"),
+        ("*{ name } = \\&target;", "name"),
+        ("*{Foo::Bar} = \\&target;", "Foo::Bar"),
+    ] {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        let assignment = find_assignment(&ast).ok_or("expected typeglob assignment")?;
+        let NodeKind::Assignment { lhs, .. } = &assignment.kind else {
+            return Err("find_assignment returned a non-assignment node".into());
+        };
+        if typeglob_name(lhs) != Some(expected) {
+            return Err(format!(
+                "expected bare Typeglob name {expected:?} for {source:?}, got {:?}",
+                lhs.kind
+            )
+            .into());
+        }
     }
     Ok(())
 }

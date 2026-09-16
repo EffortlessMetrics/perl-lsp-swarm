@@ -53,11 +53,11 @@ use tasks::{
     native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
     parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
-    perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
     product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
     provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
     publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, receipts, release, release_artifact_check,
+    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
     release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
     release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
     semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
@@ -183,12 +183,29 @@ enum Commands {
     /// declared adaptations of the landed programme train manifests.
     CheckTrainEdgeContract,
 
+    /// Validate the structural release-candidate security contract (no audits).
+    CandidateSecurityContract {
+        /// Path to the contract JSON document.
+        #[arg(long)]
+        contract: PathBuf,
+    },
+
     /// Validate the stable native Neovim implementation train manifest
     /// (native_neovim_train.v1, #11392): the closed schema, graph shift-left
     /// rejection law with named diagnostics, the shuffled determinism
     /// control, and every discriminating invalid fixture.
     #[command(name = "check-native-neovim-train")]
     CheckNativeNeovimTrain,
+
+    /// Stable perl-corpus authority train (perl_corpus_train.v1, #10980):
+    /// validate the checked manifest, render deterministic reviewer
+    /// projections, or explain one static node packet. Offline and
+    /// read-only; derives no frontier and observes no GitHub state.
+    #[command(name = "perl-corpus-train")]
+    PerlCorpusTrain {
+        #[command(subcommand)]
+        command: PerlCorpusTrainCommand,
+    },
 
     /// Validate the dependency-neutral product-health rail/adapter registry contract.
     #[command(name = "check-product-health-rail-contract")]
@@ -319,6 +336,17 @@ enum Commands {
         check: bool,
     },
 
+    /// Generate or check the DBIx::QuickORM API return matrix.
+    ///
+    /// The matrix is a projection of the reviewed registry in
+    /// `perl-semantic-facts`; edit the registry, not the generated document.
+    #[command(name = "generate-quickorm-api-matrix")]
+    GenerateQuickormApiMatrix {
+        /// Check that the checked-in matrix matches generated content.
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Generate or check the Perl command-line analysis capability matrix.
     ///
     /// Fails when a declared capability row claims support without fixture
@@ -425,14 +453,15 @@ enum Commands {
 
     /// Verify landing and content-survival proof without evaluating semantic completion.
     ///
-    /// Implements the landing-proof layer of CLOSE_PROOF_POLICY.md: runs
-    /// `git merge-base --is-ancestor <commit> <canonical-main>` and emits a
+    /// Implements the landing-proof layer of CLOSE_PROOF_POLICY.md: proves
+    /// ancestry through the shared `xtask::git_ancestry` authority and emits a
     /// structured `landing_proof.v1` receipt. Landing ancestry never
     /// authorizes an issue close; `semantic_completion` is always
     /// `not_evaluated`.
     ///
-    /// Exit 0 = landing proof passes, exit 2 = commit is not reachable,
-    /// exit 1 = error (git failed).
+    /// Exit 0 = landing proof passes, exit 2 = commit is provably not
+    /// reachable, exit 1 = error or not-proven (git failed, bad input, or a
+    /// shallow/partial checkout that cannot decide ancestry).
     #[command(name = "landing-proof")]
     PrCloseProof {
         /// Commit SHA to verify.
@@ -500,8 +529,9 @@ enum Commands {
         #[arg(long)]
         expected_base_sha: Option<String>,
 
-        /// GitHub repo (owner/name) for the writer-collision PR-ownership
-        /// check.
+        /// GitHub repo (owner/name) for the advisory candidate-presence
+        /// lookup: an open PR is surfaced as continuation evidence, never
+        /// as proof of a live writer or a collision.
         #[arg(long)]
         repo: Option<String>,
 
@@ -1139,6 +1169,10 @@ enum Commands {
 
     /// Lint GitHub workflow security policy invariants.
     WorkflowPolicyLint {
+        /// Evaluate this repository instead of the compile-time project root.
+        #[arg(long, conflicts_with = "fixture")]
+        root: Option<PathBuf>,
+
         /// Write a JSON receipt artifact for CI consumption.
         #[arg(long)]
         receipt: Option<PathBuf>,
@@ -1150,7 +1184,7 @@ enum Commands {
         /// Also validate that every workflow has a `[[lane]]` entry in
         /// policy/ci-lane-whitelist.toml. Advisory (warning-level) until the
         /// whitelist has stabilized — see docs/ci/perl-lsp-rollout-plan.md PR 11.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "fixture")]
         check_lane_whitelist: bool,
     },
 
@@ -2279,9 +2313,22 @@ enum Commands {
     /// job in `.github/workflows/em-ci-routed-rust.yml` invokes this single
     /// definition, so the aggregate required check means one proof on all
     /// routes; the yml keeps only runner instrumentation and the #12320
-    /// pinned `cargo fmt` literal. Typed step receipts remain issue #8408.
+    /// pinned `cargo fmt` literal. Emits one versioned receipt binding the
+    /// candidate SHA, toolchain, and scorecard profile/features to every
+    /// selected step's typed outcome (#8407); route adoption of that receipt
+    /// as status evidence is issue #8408.
     #[command(name = "rust-small-proof")]
-    RustSmallProof,
+    RustSmallProof {
+        /// Receipt destination (default: `target/receipts/rust-small-proof.json`).
+        #[arg(long, conflicts_with = "verify_receipt")]
+        receipt: Option<PathBuf>,
+
+        /// Validate an existing receipt against this checkout and exit without
+        /// running the proof. Fails closed on a malformed, stale, or
+        /// wrong-subject receipt, or one missing any canonical step.
+        #[arg(long)]
+        verify_receipt: Option<PathBuf>,
+    },
 
     /// Publish/check 0.13.2 semantic scorecard artifacts from deterministic fixtures.
     SemanticScorecard {
@@ -2681,6 +2728,12 @@ enum Commands {
         command: NonRustCommand,
     },
 
+    /// Exact-tree test panic-family debt denominator (#13397).
+    NoPanic {
+        #[command(subcommand)]
+        command: NoPanicCommand,
+    },
+
     /// Read-only policy obligation tooling.
     Policy {
         #[command(subcommand)]
@@ -2870,6 +2923,14 @@ enum VimEditorCompatCommand {
     /// reload route, project config through the restart route, client
     /// settings through the live push channel, stale generation rejection,
     /// and provider ownership — against the governed freshness fixture.
+    /// `recovery-generations` (#11398) runs the eight-cell server-generation
+    /// recovery journey — explicit restart through the public stop+reopen
+    /// route, the unexpected-exit disposition (honest manual_restart_required;
+    /// the adverse-exit cell never passes), new-generation
+    /// initialize/readiness, document replay, the current post-recovery
+    /// result, old-generation rejection, the retry/manual disposition, and
+    /// shutdown-during-recovery cleanup — against the governed recovery
+    /// fixture. The canonical variant must reach its honest partial top-line.
     /// `save-format` (#11396) runs the seven-cell format-on-save journey —
     /// the documented BufWritePre autocmd owner over the canonical sync
     /// format action, one-save-one-invocation cardinality, exact applied and
@@ -2883,13 +2944,17 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// freshness-generations, or save-format.
+        /// freshness-generations, recovery-generations, or save-format.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
         /// Fixture variant for the bootstrap-diagnostics,
-        /// freshness-generations, and save-format journeys (canonical must
-        /// pass; the negative controls must fail with their typed reason).
+        /// freshness-generations, recovery-generations, and save-format
+        /// journeys. The canonical variant must reach its journey's honest
+        /// top-line — `pass`, except `recovery-generations`, whose
+        /// adverse-exit cell is never a passing observation, so its honest
+        /// canonical top-line is `partial`. The negative controls must fail
+        /// with their typed reason.
         #[arg(long, default_value = "canonical")]
         fixture_variant: String,
 
@@ -2914,6 +2979,58 @@ enum VimEditorCompatCommand {
         /// Host run timeout in milliseconds (default 240000).
         #[arg(long, default_value_t = 240_000)]
         timeout_ms: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum NoPanicCommand {
+    /// Exact-tree test panic-family debt projection and checks.
+    Debt {
+        #[command(subcommand)]
+        command: NoPanicDebtCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum NoPanicDebtCommand {
+    /// Generate `test_panic_family_debt.v1` from current source.
+    Inventory {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Machine JSON path. Defaults to `target/policy/test_panic_family_debt.v1.json`.
+        #[arg(long)]
+        json: Option<PathBuf>,
+        /// Human Markdown path. Defaults to `target/policy/test_panic_family_debt.v1.md`.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
+    /// Re-derive the denominator and fail on missing population, stale joins, or identity drift.
+    Check {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Previously generated artifact that must match current source.
+        #[arg(long)]
+        artifact: Option<PathBuf>,
+        /// Accepted artifact compared by identity, not by counts.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+        /// Optional Clippy observation JSON. Aborted/missing targets are `not_proven`.
+        #[arg(long)]
+        clippy_observation: Option<PathBuf>,
+        /// Optional owner-state JSON. Ordinary checks do not call GitHub.
+        #[arg(long)]
+        owner_state: Option<PathBuf>,
+    },
+    /// Print the human projection for the current tree.
+    Report {
+        /// Repository root. Defaults to the workspace enclosing the current directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Optional machine JSON path.
+        #[arg(long)]
+        json: Option<PathBuf>,
     },
 }
 
@@ -3053,6 +3170,23 @@ enum PolicyCommand {
         #[arg(long, default_value = "target/receipts/policy-cadence.md")]
         markdown: PathBuf,
     },
+
+    /// Check that registered time-bound records did not move a governing date
+    /// later without a supported disposition and refreshed subject-bound
+    /// evidence. Read-only; mutates no ledger.
+    Transition {
+        /// Accepted base revision the candidate is compared against.
+        #[arg(long, default_value = "origin/main")]
+        base: String,
+
+        /// Deterministic JSON receipt path.
+        #[arg(long, default_value = "target/receipts/policy-transition.json")]
+        json: PathBuf,
+
+        /// Optional deterministic Markdown summary path.
+        #[arg(long)]
+        markdown: Option<PathBuf>,
+    },
 }
 
 /// CLI-facing output format for non-Rust migration candidate reports.
@@ -3189,9 +3323,9 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         perl_tree: PathBuf,
 
-        /// Host Perl used to run upstream t/TEST or t/harness.
-        #[arg(long, default_value = "perl")]
-        host_perl: PathBuf,
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
 
         /// Upstream scheduler to query.
         #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
@@ -3352,9 +3486,9 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         perl_tree: PathBuf,
 
-        /// Host Perl used to run upstream t/TEST or t/harness.
-        #[arg(long, default_value = "perl")]
-        host_perl: PathBuf,
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
 
         /// Upstream scheduler to run.
         #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
@@ -3453,9 +3587,9 @@ enum PerlCoreHarnessCommand {
         #[arg(long)]
         perl_tree: PathBuf,
 
-        /// Host Perl used to run upstream t/TEST or t/harness.
-        #[arg(long, default_value = "perl")]
-        host_perl: PathBuf,
+        /// Explicit override for the scheduler interpreter; defaults to the prepared tree's built perl ($TREE/perl).
+        #[arg(long)]
+        host_perl: Option<PathBuf>,
 
         /// Upstream scheduler to run.
         #[arg(long, value_enum, default_value_t = perl_core_harness::HarnessRunner::Test)]
@@ -4484,6 +4618,26 @@ enum EmacsIntegrationCommand {
         #[arg(long, default_value_t = 180_000)]
         timeout_ms: u64,
     },
+    /// Governed Emacs host-journey and fixture/cell manifest operations
+    /// (#11768). Offline, deterministic, and second-run clean; validating or
+    /// explaining cells proves no host behavior.
+    Journeys {
+        #[command(subcommand)]
+        command: EmacsJourneysCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EmacsJourneysCommand {
+    /// Validate the compiled journey manifest against its fail-closed laws
+    /// and print a deterministic summary receipt.
+    Check,
+    /// Explain one governed identity: `summary`, a stable cell id
+    /// (`emacs.<class>.<name>`), or a registered journey-class token.
+    Explain {
+        /// Journey class, stable cell id, or `summary`.
+        subject: String,
+    },
 }
 
 /// Union of the Emacs train command families over the stable
@@ -4662,6 +4816,29 @@ enum DevexCommand {
 }
 
 #[derive(Subcommand)]
+enum PerlCorpusTrainCommand {
+    /// Validate the closed schema, every named graph law, the shuffled
+    /// determinism control, every discriminating invalid fixture, and the
+    /// freshness of the generated projections.
+    Check,
+
+    /// Regenerate the deterministic Markdown/JSON/DOT/Mermaid projections
+    /// under the bundle's `projections/` directory, or verify them.
+    Graph {
+        /// Fail if the committed projections differ from a fresh render.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Render one bounded static node packet. Makes no readiness claim.
+    #[command(name = "explain-static")]
+    ExplainStatic {
+        /// Node identifier, e.g. `pc_opened_asset_7693`.
+        node: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum ModuleTrainCommand {
     /// Project every stable node into its typed exact current-tree state.
     ///
@@ -4819,16 +4996,17 @@ enum SmokeCommand {
 
 #[derive(Subcommand)]
 enum AgentFlowCommand {
-    /// Check provider-local skill metadata and route references.
+    /// Check provider-local skill metadata, routes, and shared operating contracts.
     Check {
-        /// Restrict the check to one skill name in each provider tree.
+        /// Restrict skill-local route and guidance checks to one skill;
+        /// shared metadata, contracts, and scenario checks remain global.
         #[arg(long)]
         skill: Option<String>,
         /// Output format: human or json.
         #[arg(long, default_value = "human")]
         format: String,
     },
-    /// Check the deterministic route-scenario fixtures only.
+    /// Check deterministic shared route, continuation, and guidance controls.
     Scenarios {
         /// Output format: human or json.
         #[arg(long, default_value = "human")]
@@ -4979,7 +5157,17 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::CandidateSecurityContract { contract } => {
+            tasks::candidate_security_contract::run(&contract)
+        }
         Commands::CheckNativeNeovimTrain => native_neovim_train::run(),
+        Commands::PerlCorpusTrain { command } => match command {
+            PerlCorpusTrainCommand::Check => perl_corpus_train::run_check(),
+            PerlCorpusTrainCommand::Graph { check } => perl_corpus_train::run_graph(check),
+            PerlCorpusTrainCommand::ExplainStatic { node } => {
+                perl_corpus_train::run_explain_static(&node)
+            }
+        },
         Commands::CheckProductHealthRailContract => product_health_rail_contract::run(),
         Commands::ProductHealth { command } => product_health_status::run(command),
         Commands::CheckAgentImplementationPacket { update_golden } => {
@@ -5112,6 +5300,74 @@ fn run_cli(cli: Cli) -> Result<()> {
                         }
                         return Ok(());
                     }
+                    if journey == "recovery-generations" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_recovery_run::RecoveryFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_recovery_run::host_recovery_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim recovery-generations run complete (variant {}): \
+                             result={:?} cleanup={:?} driver_complete={} \
+                             driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with \
+                                         the typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                // The canonical recovery journey's honest
+                                // top-line is partial by #11386 law: the
+                                // adverse-exit cell never passes, so anything
+                                // else (a forced pass, a fail, or missing
+                                // evidence) is an oracle fault.
+                                if *result
+                                    != xtask::editor_client_compat::ObservationResult::Partial
+                                {
+                                    return Err(eyre!(
+                                        "vim recovery-generations run did not reach its \
+                                         honest partial disposition: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "freshness-generations" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -5233,7 +5489,8 @@ fn run_cli(cli: Cli) -> Result<()> {
                     if journey != "host-lifecycle" {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
-                             bootstrap-diagnostics, freshness-generations, save-format"
+                             bootstrap-diagnostics, freshness-generations, recovery-generations, \
+                             save-format"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
@@ -5280,6 +5537,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckSemanticTokenClasses => semantic_token_classes::run(),
         Commands::CheckLsp318Claims => lsp_318_claims::run(),
         Commands::GenerateLsp318Matrix { check } => lsp_318_matrix::run(check),
+        Commands::GenerateQuickormApiMatrix { check } => quickorm_api_matrix::run(check),
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
@@ -5447,6 +5705,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             receipt,
             summary,
             check,
+            quiet: false,
         }),
         Commands::RiprPr { root, base, head, pr_head, check } => {
             ripr_evidence::ripr_pr(&root, &base, &head, pr_head.as_deref(), check)
@@ -5690,8 +5949,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)
         }
-        Commands::WorkflowPolicyLint { receipt, fixture, check_lane_whitelist } => {
+        Commands::WorkflowPolicyLint { root, receipt, fixture, check_lane_whitelist } => {
             workflow_policy_lint::run(workflow_policy_lint::WorkflowPolicyLintConfig {
+                root,
                 receipt,
                 fixture,
                 check_lane_whitelist,
@@ -5836,6 +6096,51 @@ fn run_cli(cli: Cli) -> Result<()> {
                         Err(eyre!("host run did not pass: {:?}", outcome.result))
                     }
                 }
+                EmacsIntegrationCommand::Journeys { command } => match command {
+                    EmacsJourneysCommand::Check => {
+                        let summary = xtask::emacs_host_journeys::validate_compiled_registry()
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&summary)
+                                .map_err(|error| eyre!("{error:#}"))?
+                        );
+                        Ok(())
+                    }
+                    EmacsJourneysCommand::Explain { subject } => {
+                        // Explain validates registry laws only; on-disk subject authority remains
+                        // the responsibility of Check.
+                        let cells = xtask::emacs_host_journeys::registry()
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        xtask::emacs_host_journeys::validate_registry(&cells)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let (class, matched) = xtask::emacs_host_journeys::lookup(&cells, &subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let mut explained = serde_json::json!({
+                            "schema_version": xtask::emacs_host_journeys::MANIFEST_SCHEMA_VERSION,
+                            "subject": subject,
+                        });
+                        if let Some(class) = class {
+                            explained["journey_class"] = serde_json::Value::String(class);
+                        }
+                        let mut rows = Vec::new();
+                        for cell in matched {
+                            let digest = xtask::emacs_host_journeys::cell_digest(cell)
+                                .map_err(|error| eyre!("{error:#}"))?;
+                            rows.push(serde_json::json!({
+                                "cell": cell,
+                                "digest": digest,
+                            }));
+                        }
+                        explained["cells"] = serde_json::Value::Array(rows);
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&explained)
+                                .map_err(|error| eyre!("{error:#}"))?
+                        );
+                        Ok(())
+                    }
+                },
             },
         },
         Commands::RepoHygiene { base, head, receipt, summary } => {
@@ -6524,7 +6829,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::SemanticScorecard { manifest, output, status_md, check } => {
             semantic_scorecard::run(manifest, output, status_md, check)
         }
-        Commands::RustSmallProof => rust_small_proof::run(),
+        Commands::RustSmallProof { receipt, verify_receipt } => {
+            rust_small_proof::run(receipt, verify_receipt)
+        }
         Commands::SemanticShadowCompare { output, status_md, check } => {
             semantic_shadow_compare::run(output, status_md, check)
         }
@@ -6759,6 +7066,55 @@ fn run_cli(cli: Cli) -> Result<()> {
                 allow_manual_edits,
             } => generated_files::check(receipt, fixture, generator_receipt, allow_manual_edits),
         },
+        Commands::NoPanic { command } => match command {
+            NoPanicCommand::Debt { command } => match command {
+                NoPanicDebtCommand::Inventory { root, json, markdown } => {
+                    let root = match root {
+                        Some(path) => path,
+                        None => utils::project_root()?,
+                    };
+                    let summary = xtask::no_panic_debt::run_inventory(&root, json, markdown)?;
+                    println!("{summary}");
+                    Ok(())
+                }
+                NoPanicDebtCommand::Check {
+                    root,
+                    artifact,
+                    baseline,
+                    clippy_observation,
+                    owner_state,
+                } => {
+                    let root = match root {
+                        Some(path) => path,
+                        None => utils::project_root()?,
+                    };
+                    let result = xtask::no_panic_debt::run_check(
+                        &root,
+                        artifact,
+                        baseline,
+                        clippy_observation,
+                        owner_state,
+                    )?;
+                    println!("{}", xtask::no_panic_debt::format_check_result(&result));
+                    if result.ok {
+                        Ok(())
+                    } else {
+                        Err(eyre!(
+                            "test_panic_family_debt.v1 check failed with {} finding(s)",
+                            result.findings.len()
+                        ))
+                    }
+                }
+                NoPanicDebtCommand::Report { root, json } => {
+                    let root = match root {
+                        Some(path) => path,
+                        None => utils::project_root()?,
+                    };
+                    print!("{}", xtask::no_panic_debt::run_report(&root, json)?);
+                    Ok(())
+                }
+            },
+        },
         Commands::NonRust { command } => match command {
             NonRustCommand::ExactTree {
                 base_sha,
@@ -6845,6 +7201,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                 tasks::policy_cadence::run(
                     &root,
                     tasks::policy_cadence::CadenceArgs { as_of, json, markdown },
+                )
+            }
+            PolicyCommand::Transition { base, json, markdown } => {
+                let root = utils::project_root()?;
+                tasks::policy_cadence::transition::run(
+                    &root,
+                    tasks::policy_cadence::transition::TransitionArgs { base, json, markdown },
                 )
             }
         },
@@ -7020,6 +7383,26 @@ mod tests {
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+    #[test]
+    fn candidate_security_contract_command_requires_and_preserves_path() -> TestResult {
+        match Cli::try_parse_from([
+            "xtask",
+            "candidate-security-contract",
+            "--contract",
+            "candidate.json",
+        ])?
+        .command
+        {
+            Commands::CandidateSecurityContract { contract }
+                if contract == PathBuf::from("candidate.json") => {}
+            _ => return Err(std::io::Error::other("contract path was not preserved").into()),
+        }
+        if Cli::try_parse_from(["xtask", "candidate-security-contract"]).is_ok() {
+            return Err(std::io::Error::other("contract path must be required").into());
+        }
+        Ok(())
+    }
+
     fn parse_devex_command(args: &[&str]) -> TestResult<DevexCommand> {
         match Cli::try_parse_from(args)?.command {
             Commands::Devex { command } => Ok(command),
@@ -7153,7 +7536,7 @@ mod tests {
                 PerlCoreHarnessCommand::Run {
                     mode: perl_core_harness::HarnessMode::Execute,
                     perl_tree: PathBuf::from("unused"),
-                    host_perl: PathBuf::from("perl"),
+                    host_perl: None,
                     runner: perl_core_harness::HarnessRunner::Test,
                     profile: perl_core_harness::HarnessProfile::Base,
                     tests: Vec::new(),
@@ -7186,7 +7569,7 @@ mod tests {
             command: Commands::PerlCoreHarness {
                 command: PerlCoreHarnessCommand::Discover {
                     perl_tree: missing_tree,
-                    host_perl: PathBuf::from("perl"),
+                    host_perl: None,
                     runner: perl_core_harness::HarnessRunner::Test,
                     profile: perl_core_harness::HarnessProfile::Base,
                     output: None,

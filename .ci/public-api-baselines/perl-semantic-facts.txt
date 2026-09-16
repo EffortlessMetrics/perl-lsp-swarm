@@ -897,6 +897,79 @@ pub fn perl_semantic_facts::framework_adapters::mojo_base::detect_mojo_base(inpu
 pub fn perl_semantic_facts::framework_adapters::mojo_base::mojo_base_activation_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, anchor: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseSiteAnchor, evidence: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseImportEvidence) -> perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts
 pub fn perl_semantic_facts::framework_adapters::mojo_base::mojo_base_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
 pub fn perl_semantic_facts::framework_adapters::mojo_base::parse_mojo_base_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::mojo_base::MojoBaseImportEvidence
+pub mod perl_semantic_facts::framework_adapters::mojo_base_facts
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Absent
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Constant
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Dynamic
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Dynamic::reason: alloc::string::String
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::LazyBuilder
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Unsupported
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Unsupported::reason: alloc::string::String
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Dynamic
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Dynamic::reason: alloc::string::String
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Literal(alloc::string::String)
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Malformed
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Malformed::reason: alloc::string::String
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::literal(&self) -> core::option::Option<&str>
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::CompileImmediate
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::PostCompile
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::Run
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::is_order_sensitive(self) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::Collides
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::None
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::declaration_anchor: perl_semantic_facts::SourceAnchor
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::declaration_index: u32
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::default: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::execution_phase: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::explicit_method: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::file_id: perl_semantic_facts::FileId
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::name: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::name_anchor: perl_semantic_facts::SourceAnchor
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::name_index: u32
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::package: core::option::Option<alloc::string::String>
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::source_generation: perl_semantic_facts::SourceGeneration
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::unmodeled_options: alloc::vec::Vec<alloc::string::String>
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::envelope: perl_semantic_facts::SemanticFactEnvelope
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::explicit_method: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::member: perl_semantic_facts::GeneratedMember
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::members: alloc::vec::Vec<perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact>
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::parents: alloc::vec::Vec<perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact>
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::reader_results: alloc::vec::Vec<perl_semantic_facts::CallableResultFact>
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::setter_results: alloc::vec::Vec<perl_semantic_facts::CallableResultFact>
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::is_empty(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::default() -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::edge: perl_semantic_facts::PackageEdge
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::envelope: perl_semantic_facts::SemanticFactEnvelope
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_member_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, name_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_object_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts, file_id: perl_semantic_facts::FileId, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration]) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_parent_identity(file_id: perl_semantic_facts::FileId, import_start_byte: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_reader_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, name_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_setter_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, name_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
 pub mod perl_semantic_facts::framework_adapters::mojolicious
 pub perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationOutcome::AbsentWithCompleteEvidence
 pub perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationOutcome::AbsentWithCompleteEvidence::reason: alloc::string::String
@@ -996,6 +1069,184 @@ pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_lite_de
 pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_lite_import_evidence(args: &[alloc::string::String], explicit_empty_import: bool, version: &perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteVersionRequirement) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteImportEvidence
 pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_role_facts_from_mojo_base(mojo_base: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts
 pub fn perl_semantic_facts::framework_adapters::mojolicious::parse_mojolicious_lite_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteImportEvidence
+pub mod perl_semantic_facts::framework_adapters::quickorm_api
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::ExplicitUndefClearing
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::NoSourceArgument
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::None
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::Optional
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::Required
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::SourceOrRowRebinding
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::TrailingCoderef
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::TrailingDataHashref
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::ValueSetter
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::ZeroArgGetter
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::Exact
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::RuntimeResolved
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::UnsupportedAtPinnedVersion
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::ConditionalNonSync
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::NotApplicable
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::SyncAsyncAsideForked
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::SyncAsyncAsideOnly
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::SyncOnly
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::SyncWithAsyncRowResult
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::ArrayRefOfOptionalPerArgument
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::ArrayRefOfZeroOrMore
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::Hash
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::IteratorOfZeroOrMore
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::KeyValueSequence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::ListOfZeroOrMore
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::Nothing
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::One
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::OptionalHash
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::ZeroOrOne
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Connection
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::GeneratedTablePackage
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Handle
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::HandleAsDerivedSource
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Iterator
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Orm
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::Row
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::BooleanOrCount
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::DataOnlyTransition
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::IteratorOfRows
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::MetadataOrScalar
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::MultipleRows
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::MutationOrSideEffectResult
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::OpenHashOrHashSequence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::PreserveHandleSourceRow
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::SingleOptionalRow
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::TransformHandleSourceRow
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::UnsupportedDynamicVariant
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::as_str(self) -> &'static str
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::may_carry_row_identity(self) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::DerivedFromArgumentSource
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::DeterminedByArgumentValue
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::ErasedToPlainData
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::NotApplicable
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::PreservedFromReceiver
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::SourcePreservedBoundRow
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::SourcePreservedRowFromArgument
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::SourcePreservedRowUnbound
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::TransformedToJoinRow
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::Croaks
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::Permitted
+pub const fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::as_str(self) -> &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext) -> core::cmp::Ordering
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::api_case_id: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::arguments: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmArgumentCohort
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::boundary: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmBoundary
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::evidence: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::method: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::mode: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmModeSupport
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::multiplicity: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmMultiplicity
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::notes: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::package: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::receiver: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::receiver_constraints: &'static [&'static str]
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::return_class: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReturnClass
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::type_params: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmTypeParamEffect
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::void_context: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmVoidContext
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub struct perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::file: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::line: u32
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::evidence: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmEvidence
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::method: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::package: &'static str
+pub perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::reason: &'static str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::clone(&self) -> perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::eq(&self, other: &perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod) -> bool
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_API_CASES: &[perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase]
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_API_RETURN_REGISTRY_VERSION: &str
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_EVIDENCE_FILES: &[&str]
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_FRAMEWORK_NAME: &str
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_UNCOVERED_METHODS: &[perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod]
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_UPSTREAM_COMMIT: &str
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_UPSTREAM_REPOSITORY: &str
+pub const perl_semantic_facts::framework_adapters::quickorm_api::QUICKORM_UPSTREAM_VERSION: &str
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_case(api_case_id: &str) -> core::option::Option<&'static perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_cases() -> &'static [perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase]
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_cases_for_method<'a>(package: &'a str, method: &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'static perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase> + 'a
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_api_cases_for_receiver(receiver: perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmReceiver) -> impl core::iter::traits::iterator::Iterator<Item = &'static perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmApiCase>
+pub fn perl_semantic_facts::framework_adapters::quickorm_api::quickorm_uncovered_methods() -> &'static [perl_semantic_facts::framework_adapters::quickorm_api::QuickOrmUncoveredMethod]
 pub mod perl_semantic_facts::handler
 pub perl_semantic_facts::handler::FrameworkHandler::Bounded
 pub perl_semantic_facts::handler::FrameworkHandler::Bounded::anchor: core::option::Option<perl_semantic_facts::SourceAnchor>
@@ -2841,6 +3092,209 @@ pub fn perl_semantic_facts::SemanticQuerySubject::eq(&self, other: &perl_semanti
 pub fn perl_semantic_facts::SemanticQuerySubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_semantic_facts::SemanticQuerySubject::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_semantic_facts::SemanticQuerySubject::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub mod perl_semantic_facts::structural_access
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::DynamicBoundary(perl_semantic_facts::BoundaryLink)
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::Fact(perl_semantic_facts::FactId)
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::PrecedingHop
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::PrecedingHop::ordinal: u32
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::Variable
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::Variable::name: alloc::string::String
+pub perl_semantic_facts::structural_access::StructuralAccessAggregate::Variable::sigil: alloc::string::String
+pub const fn perl_semantic_facts::structural_access::StructuralAccessAggregate::refuses_promotion(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessAggregate::tag(&self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessAggregate
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessAggregate) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessAggregate::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::AggregateChainPosition
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::AggregateChainPosition::ordinal: u32
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::AggregateChainPosition::reason: &'static str
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::ContradictoryStatus(&'static str)
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::EmptyIdentityField(&'static str)
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedBudget(&'static str)
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedChain(&'static str)
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedRange
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedRange::end_byte: u32
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::MalformedRange::start_byte: u32
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::SelectorOperatorMismatch
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::SelectorOperatorMismatch::operator: &'static str
+pub perl_semantic_facts::structural_access::StructuralAccessContractError::SelectorOperatorMismatch::selector: &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessContractError::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessContractError
+pub fn perl_semantic_facts::structural_access::StructuralAccessContractError::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessContractError) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessContractError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessContractError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::BudgetExhausted
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::CompatibilityBridge
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::DynamicSelector
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::EscapedAggregate
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::MutatedAggregate
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::OpenAggregate
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::RecoveredSyntax
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::StaleDependency
+pub perl_semantic_facts::structural_access::StructuralAccessLimitation::Unsupported
+pub const fn perl_semantic_facts::structural_access::StructuralAccessLimitation::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessLimitation
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessLimitation) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessLimitation) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessLimitation) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessLimitation::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessOperator::ArrayIndex
+pub perl_semantic_facts::structural_access::StructuralAccessOperator::ArrayRefIndex
+pub perl_semantic_facts::structural_access::StructuralAccessOperator::HashRefSlot
+pub perl_semantic_facts::structural_access::StructuralAccessOperator::HashSlot
+pub const fn perl_semantic_facts::structural_access::StructuralAccessOperator::dereferences(self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessOperator::is_keyed(self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessOperator::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessOperator
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessOperator) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessOperator) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessOperator) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessOperator::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessSelector::DynamicIndex(perl_semantic_facts::BoundaryLink)
+pub perl_semantic_facts::structural_access::StructuralAccessSelector::DynamicKey(perl_semantic_facts::BoundaryLink)
+pub perl_semantic_facts::structural_access::StructuralAccessSelector::StaticIndex(i64)
+pub perl_semantic_facts::structural_access::StructuralAccessSelector::StaticKey(alloc::string::String)
+pub const fn perl_semantic_facts::structural_access::StructuralAccessSelector::is_dynamic(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessSelector::is_keyed(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessSelector::refuses_promotion(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessSelector::tag(&self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessSelector
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessSelector) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessSelector::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAggregateCompleteness::Closed
+pub perl_semantic_facts::structural_access::StructuralAggregateCompleteness::Open
+pub const fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::clone(&self) -> perl_semantic_facts::structural_access::StructuralAggregateCompleteness
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateCompleteness) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateCompleteness) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateCompleteness) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAggregateCompleteness::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAggregateDisposition::Escaped
+pub perl_semantic_facts::structural_access::StructuralAggregateDisposition::EscapedAndMutated
+pub perl_semantic_facts::structural_access::StructuralAggregateDisposition::Mutated
+pub perl_semantic_facts::structural_access::StructuralAggregateDisposition::Stable
+pub const fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::is_stable(self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::clone(&self) -> perl_semantic_facts::structural_access::StructuralAggregateDisposition
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateDisposition) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateDisposition) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAggregateDisposition) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAggregateDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralHopCertainty::Definite
+pub perl_semantic_facts::structural_access::StructuralHopCertainty::Possible
+pub const fn perl_semantic_facts::structural_access::StructuralHopCertainty::tag(self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::clone(&self) -> perl_semantic_facts::structural_access::StructuralHopCertainty
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralHopCertainty) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::eq(&self, other: &perl_semantic_facts::structural_access::StructuralHopCertainty) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralHopCertainty) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralHopCertainty::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::AbsentMember
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::Boundary(perl_semantic_facts::BoundaryLink)
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::BudgetExhausted
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::Selected
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::Selected::shape: perl_semantic_facts::ValueShape
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::Selected::value_fact: core::option::Option<perl_semantic_facts::FactId>
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::ShapeMismatch
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::ShapeMismatch::observed: perl_semantic_facts::ValueShape
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::StaleGeneration
+pub perl_semantic_facts::structural_access::StructuralHopOutcome::UnknownMember
+pub const fn perl_semantic_facts::structural_access::StructuralHopOutcome::claims_member_answer(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralHopOutcome::depends_on_aggregate_contents(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralHopOutcome::is_selecting(&self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralHopOutcome::tag(&self) -> &'static str
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::clone(&self) -> perl_semantic_facts::structural_access::StructuralHopOutcome
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::eq(&self, other: &perl_semantic_facts::structural_access::StructuralHopOutcome) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralHopOutcome::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessBudget::units_after: u32
+pub perl_semantic_facts::structural_access::StructuralAccessBudget::units_before: u32
+pub const fn perl_semantic_facts::structural_access::StructuralAccessBudget::is_exhausted(self) -> bool
+pub const fn perl_semantic_facts::structural_access::StructuralAccessBudget::new(units_before: u32, units_after: u32) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessBudget::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessBudget
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessBudget) -> core::cmp::Ordering
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessBudget) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::partial_cmp(&self, other: &perl_semantic_facts::structural_access::StructuralAccessBudget) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessBudget::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::fingerprint(&self) -> alloc::string::String
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::hops(&self) -> &[perl_semantic_facts::structural_access::StructuralAccessHop]
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::new(subject: perl_semantic_facts::structural_access::StructuralAccessSubject, hops: alloc::vec::Vec<perl_semantic_facts::structural_access::StructuralAccessHop>) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessChain::schema_version(&self) -> u32
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::selected(&self) -> core::option::Option<&perl_semantic_facts::structural_access::StructuralHopOutcome>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessChain::subject(&self) -> &perl_semantic_facts::structural_access::StructuralAccessSubject
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessChain
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessChain) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessChain::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::aggregate(&self) -> &perl_semantic_facts::structural_access::StructuralAccessAggregate
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::budget(&self) -> perl_semantic_facts::structural_access::StructuralAccessBudget
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::certainty(&self) -> perl_semantic_facts::structural_access::StructuralHopCertainty
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::completeness(&self) -> perl_semantic_facts::structural_access::StructuralAggregateCompleteness
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::confidence(&self) -> perl_semantic_facts::SemanticConfidence
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::disposition(&self) -> perl_semantic_facts::structural_access::StructuralAggregateDisposition
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::fingerprint(&self) -> alloc::string::String
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::limitations(&self) -> &[perl_semantic_facts::structural_access::StructuralAccessLimitation]
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::new(ordinal: u32, aggregate: perl_semantic_facts::structural_access::StructuralAccessAggregate, operator: perl_semantic_facts::structural_access::StructuralAccessOperator, selector: perl_semantic_facts::structural_access::StructuralAccessSelector, spelling: perl_semantic_facts::structural_access::StructuralAccessSpelling, outcome: perl_semantic_facts::structural_access::StructuralHopOutcome, certainty: perl_semantic_facts::structural_access::StructuralHopCertainty, completeness: perl_semantic_facts::structural_access::StructuralAggregateCompleteness, disposition: perl_semantic_facts::structural_access::StructuralAggregateDisposition, producer: perl_semantic_facts::SemanticProducer, provenance: perl_semantic_facts::SemanticProvenance, confidence: perl_semantic_facts::SemanticConfidence, reason_code: perl_semantic_facts::SemanticReasonCode, budget: perl_semantic_facts::structural_access::StructuralAccessBudget, limitations: alloc::vec::Vec<perl_semantic_facts::structural_access::StructuralAccessLimitation>) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::operator(&self) -> perl_semantic_facts::structural_access::StructuralAccessOperator
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::ordinal(&self) -> u32
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::outcome(&self) -> &perl_semantic_facts::structural_access::StructuralHopOutcome
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::producer(&self) -> perl_semantic_facts::SemanticProducer
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::provenance(&self) -> perl_semantic_facts::SemanticProvenance
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::reason_code(&self) -> perl_semantic_facts::SemanticReasonCode
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::selector(&self) -> &perl_semantic_facts::structural_access::StructuralAccessSelector
+pub const fn perl_semantic_facts::structural_access::StructuralAccessHop::spelling(&self) -> &perl_semantic_facts::structural_access::StructuralAccessSpelling
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessHop
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessHop) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessHop::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessSpelling::anchor: perl_semantic_facts::SourceAnchor
+pub perl_semantic_facts::structural_access::StructuralAccessSpelling::text: alloc::string::String
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::new(text: impl core::convert::Into<alloc::string::String>, anchor: perl_semantic_facts::SourceAnchor) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessSpelling
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessSpelling) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessSpelling::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_semantic_facts::structural_access::StructuralAccessSubject::document: perl_semantic_facts::FileId
+pub perl_semantic_facts::structural_access::StructuralAccessSubject::project_generation: core::option::Option<perl_semantic_facts::SourceGeneration>
+pub perl_semantic_facts::structural_access::StructuralAccessSubject::source_generation: perl_semantic_facts::SourceGeneration
+pub perl_semantic_facts::structural_access::StructuralAccessSubject::workspace_root: core::option::Option<alloc::string::String>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::new(document: perl_semantic_facts::FileId, source_generation: perl_semantic_facts::SourceGeneration, workspace_root: core::option::Option<alloc::string::String>, project_generation: core::option::Option<perl_semantic_facts::SourceGeneration>) -> core::result::Result<Self, perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::validate(&self) -> core::result::Result<(), perl_semantic_facts::structural_access::StructuralAccessContractError>
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::clone(&self) -> perl_semantic_facts::structural_access::StructuralAccessSubject
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::eq(&self, other: &perl_semantic_facts::structural_access::StructuralAccessSubject) -> bool
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_semantic_facts::structural_access::StructuralAccessSubject::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub const perl_semantic_facts::structural_access::STRUCTURAL_ACCESS_CHAIN_SCHEMA_VERSION: u32
+pub const perl_semantic_facts::structural_access::STRUCTURAL_ACCESS_SCHEMA_TAG: &str
 pub perl_semantic_facts::BoundaryDisposition::Degrade
 pub perl_semantic_facts::BoundaryDisposition::Refuse
 pub fn perl_semantic_facts::BoundaryDisposition::clone(&self) -> perl_semantic_facts::BoundaryDisposition

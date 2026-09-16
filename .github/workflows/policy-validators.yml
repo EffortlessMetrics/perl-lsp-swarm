@@ -16,11 +16,17 @@ on:
       - '.ci/gate-policy.yaml'
       - '.ci/parser-facade/**'
       - '.github/workflows/**'
-      - 'crates/perl-parser/Cargo.toml'
+      # Any manifest anywhere: `discover_consumer_contexts` scans every
+      # Cargo.toml in the repository for perl-parser dependencies, so a
+      # consumer manifest outside `crates/**` (xtask, fuzz, tests/fuzz,
+      # archive/...) must trigger this workflow too, or consumer drift in
+      # those files passes silently (#15580). `**/Cargo.toml` names manifests
+      # at any depth; the bare `Cargo.toml` entry pins the workspace-root
+      # manifest explicitly.
+      - '**/Cargo.toml'
+      - 'Cargo.toml'
       - 'crates/perl-parser/src/lib.rs'
       - 'crates/perl-parser/src/incremental/mod.rs'
-      - 'crates/perl-parser-core/Cargo.toml'
-      - 'crates/**/Cargo.toml'
       - 'docs/project/PARSER_FACADE_AUTHORITY.md'
       - 'scripts/ci/parser_facade_authority.py'
       - 'scripts/ci/parser_facade_inventory.py'
@@ -48,6 +54,9 @@ on:
       - '.github/dependabot.yml'
       - 'scripts/ci/validate_dependabot_contract.py'
       - 'scripts/ci/test_validate_dependabot_contract.py'
+      - 'scripts/ci/validate_dependabot_cooldown.py'
+      - 'scripts/ci/test_validate_dependabot_cooldown.py'
+      - 'vscode-extension/.npmrc'
       - 'docs/reference/WORKTREE_PROTOCOL.md'
       - 'docs/project/CI_LOCAL_VALIDATION.md'
       - 'scripts/ci/check_perl_lsp_rs_core_package.py'
@@ -152,6 +161,11 @@ jobs:
         run: |
           python3 scripts/ci/test_validate_dependabot_contract.py
           python3 scripts/ci/validate_dependabot_contract.py --repo-root .
+
+      - name: Validate Dependabot cooldown contract
+        run: |
+          python3 scripts/ci/test_validate_dependabot_cooldown.py
+          python3 scripts/ci/validate_dependabot_cooldown.py --repo-root .
 
       - name: Validate exposed-surface disposition contract
         run: |
