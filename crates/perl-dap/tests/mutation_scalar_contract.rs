@@ -155,6 +155,53 @@ fn one_referent_through_two_locations_stays_two_targets() -> TestResult {
 }
 
 #[test]
+fn whole_scalar_referent_is_not_storage_identity() -> TestResult {
+    // A whole scalar's cell is frame plus binding; the referent is the value
+    // currently in it. Rebinding the same cell after its value was replaced by
+    // a different reference must yield the same target and the same receipt
+    // fingerprint, or a plain replacement would look like a different cell
+    // (FC1, PR #14931 review).
+    let observed = |referent: &str| InspectedValueIdentity {
+        value_node: "node-1".to_string(),
+        referent: Some(referent.to_string()),
+        value_authority_generation: 11,
+    };
+    let candidate = |referent: &str| {
+        let mut candidate = lexical_candidate("frame#1", "pad:$x@0");
+        candidate.inspected_value = Some(observed(referent));
+        candidate
+    };
+
+    let before = bind(&candidate("REF(0xaaaa)"))?;
+    let after = bind(&candidate("REF(0xbbbb)"))?;
+
+    if before != after {
+        return Err("replacing a whole scalar's referent changed the target".to_string());
+    }
+    if before.location().referent_identity().is_some() {
+        return Err("whole-scalar provenance carried the observed referent".to_string());
+    }
+    let before_receipt = before.receipt_projection();
+    let after_receipt = after.receipt_projection();
+    if before_receipt.location_fingerprint != after_receipt.location_fingerprint {
+        return Err("replacing a whole scalar's referent moved the cell fingerprint".to_string());
+    }
+
+    // The container case must still discriminate: the same selector reaching a
+    // different array is a different cell.
+    let mut first_cell = lexical_candidate("frame#1", "pad:@rows@0");
+    first_cell.kind = Some(MutationLocationKind::CurrentFrameArrayElement);
+    first_cell.member = Some(MutationMember::ArrayIndex(0));
+    first_cell.inspected_value = Some(observed("ARRAY(0xdead)"));
+    let mut replacement = first_cell.clone();
+    replacement.inspected_value = Some(observed("ARRAY(0xbeef)"));
+    if bind(&first_cell)? == bind(&replacement)? {
+        return Err("a container referent replacement did not change the target".to_string());
+    }
+    Ok(())
+}
+
+#[test]
 fn hash_key_data_round_trips_exactly() -> TestResult {
     // Client display escaping is a rendering concern; key data is bytes.
     let keys = ["", " ", "0", "-", "\\", "\"", "'", "a\\b", "ключ", "🔑", "a;b", "$x", "  DB<1>  "];

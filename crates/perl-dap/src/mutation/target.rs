@@ -549,7 +549,17 @@ impl MutationTargetCandidate {
         let cohort = MutationTargetCohort::from_kind(kind)
             .ok_or(MutationTargetBindingError::UnsupportedLocationKind(kind))?;
 
-        let referent_identity = self.inspected_value.as_ref().and_then(|v| v.referent.clone());
+        // A proven referent identifies the addressed *cell* only for container
+        // members: there it discriminates which array or hash the selector
+        // reaches. For `WholeScalar` the cell is frame plus binding alone and
+        // the referent is just the value currently stored in it, so carrying it
+        // into location provenance would change target equality and the cell
+        // fingerprint whenever that value is replaced (FC1, PR #14931 review).
+        let referent_identity = if member.is_container_member() {
+            self.inspected_value.as_ref().and_then(|v| v.referent.clone())
+        } else {
+            None
+        };
         if member.is_container_member() && referent_identity.is_none() {
             return Err(MutationTargetBindingError::MissingReferentForContainerMember);
         }
