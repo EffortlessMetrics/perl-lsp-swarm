@@ -24,7 +24,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
-      group: droid-mention-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.workflow_sha }}
+      # Keep one current/pending run per PR while separating this hosted generation
+      # from the stale pre-repair self-hosted queue.
+      group: droid-mention-hosted-v1-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: false
     permissions:
       contents: read
