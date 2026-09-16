@@ -3647,7 +3647,9 @@ mod tests {
     use perl_tdd_support::{must_err_with, must_some_with, must_with};
     use serde::Serialize;
     use serde::de::DeserializeOwned;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
+
+    use color_eyre::eyre::{Context, Result, bail};
 
     use super::{
         DiffResult, FirstFailure, GateDefinition, GateMetrics, GatePlanningConfig,
@@ -4571,6 +4573,76 @@ gates:
         Ok(())
     }
 
+    /// Spin up a throwaway git repo with one commit and a synthetic
+    /// `origin/main` remote-tracking ref. The fixture mirrors the live
+    /// repo shape that `plan_gates` expects (`base_ref: "origin/main"`
+    /// resolves via `change_set::resolve_base_ref`, and the second pass at
+    /// `gates.rs:1619` calls `git rev-parse --verify origin/main^{commit}`)
+    /// without touching the live project index — see issue #15413:
+    /// running `git write-tree` against the real index races against
+    /// parallel tests' transient `git add`/`rm` locks and flakes ~1/8.
+    fn isolated_git_repo_with_origin_main() -> Result<tempfile::TempDir> {
+        let dir = tempfile::tempdir().context("failed to create temp repo dir")?;
+        let root = dir.path();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "user.name", "Test"],
+            vec!["config", "core.fileMode", "false"],
+        ] {
+            let status = Command::new("git")
+                .current_dir(root)
+                .args(&args)
+                .status()
+                .with_context(|| format!("failed to run git {args:?}"))?;
+            if !status.success() {
+                bail!("git {args:?} failed in isolated repo setup");
+            }
+        }
+        // Stage one file and commit so `git write-tree` returns a non-empty
+        // tree and `origin/main^{commit}` resolves to a real commit. Without
+        // a commit, `change_set::resolve_base_ref` rejects `origin/main`
+        // (see #3985 Slice 2 review), and the second-pass
+        // `rev-parse --verify origin/main^{commit}` would also fail.
+        std::fs::write(root.join("seed.txt"), "seed\n")
+            .context("failed to write seed file in isolated repo")?;
+        for args in [vec!["add", "seed.txt"], vec!["commit", "--quiet", "-m", "seed"]] {
+            let status = Command::new("git")
+                .current_dir(root)
+                .args(&args)
+                .status()
+                .with_context(|| format!("failed to run git {args:?}"))?;
+            if !status.success() {
+                bail!("git {args:?} failed in isolated repo setup");
+            }
+        }
+        // Synthesize `refs/remotes/origin/main` at HEAD so `git rev-parse
+        // --verify origin/main` succeeds without actually setting up a
+        // remote. The real repository has this because it is a clone of
+        // `origin`; tests must mirror that exact shape because
+        // `change_set::resolve_base_ref` only accepts explicit bases that
+        // exist (issue #3985: no silent substitution).
+        let head = String::from_utf8(
+            Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .context("failed to run git rev-parse HEAD")?
+                .stdout,
+        )
+        .context("git rev-parse HEAD output was not UTF-8")?;
+        let head = head.trim();
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(["update-ref", "refs/remotes/origin/main", head])
+            .status()
+            .context("failed to run git update-ref for origin/main")?;
+        if !status.success() {
+            bail!("git update-ref refs/remotes/origin/main failed");
+        }
+        Ok(dir)
+    }
+
     #[test]
     fn plan_gates_threads_staged_tree_oid_into_non_commit_tiers() -> color_eyre::eyre::Result<()> {
         // Regression for a deep-review P1 on PR #4016: `plan_pr_fast_gates`
@@ -4581,6 +4653,13 @@ gates:
         // `all` keep every gate regardless of tier) runs against the exact
         // staged tree, but the receipt's `staged_tree_oid` silently stays
         // `None`, losing the very identity `--staged` was supposed to prove.
+        //
+        // Runs against an isolated git repo (issue #15413): the prior
+        // implementation called `git write-tree` against the live project
+        // root, which races against transient `git index.lock` files held
+        // by parallel tests and flakes ~1/8 in clean-main runs. Production
+        // `staged_tree_oid` must keep surfacing a persistent lock as a real
+        // error — the fix lives in the test, not in the production path.
         let policy = policy_with_gates(vec![
             pr_gate("fmt", GatePlanningRole::AlwaysOn, "cargo xtask fmt --check"),
             tier_gate(
@@ -4595,14 +4674,81 @@ gates:
             staged: true,
             ..GateRunnerConfig::default()
         };
-        let root = crate::utils::project_root()?;
+        let repo = isolated_git_repo_with_origin_main()?;
+        let root = repo.path();
 
-        let plan = plan_gates(&root, &policy, &config)?;
+        let plan = plan_gates(root, &policy, &config)?;
 
         assert!(
             plan.staged_tree_oid.is_some(),
             "--staged must thread the tree OID into the plan for --tier all, not only \
              --tier commit"
+        );
+        Ok(())
+    }
+
+    /// Confirms the isolated-repo helper resolves the exact refs `plan_gates`
+    /// will probe. Regression guard for #15413: if the helper ever stops
+    /// publishing `origin/main` (or stops committing), the test above will
+    /// flake at `change_set::resolve_base_ref` — this test names that seam so
+    /// the fix is local.
+    #[test]
+    fn isolated_repo_helper_publishes_origin_main_and_seed_commit() -> color_eyre::eyre::Result<()>
+    {
+        let repo = isolated_git_repo_with_origin_main()?;
+        let root = repo.path();
+
+        let head_exists = Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .status()
+            .context("failed to run git rev-parse HEAD")?
+            .success();
+        assert!(head_exists, "isolated repo must have a HEAD commit");
+
+        let origin_main_exists = Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--verify", "--quiet", "origin/main"])
+            .status()
+            .context("failed to run git rev-parse origin/main")?
+            .success();
+        assert!(
+            origin_main_exists,
+            "isolated repo must synthesize refs/remotes/origin/main so \
+             change_set::resolve_base_ref accepts the explicit base"
+        );
+
+        let head_oid = String::from_utf8(
+            Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .context("failed to run git rev-parse HEAD for OID")?
+                .stdout,
+        )
+        .context("git rev-parse HEAD output was not UTF-8")?;
+        let origin_main_oid = String::from_utf8(
+            Command::new("git")
+                .current_dir(root)
+                .args(["rev-parse", "--verify", "origin/main"])
+                .output()
+                .context("failed to run git rev-parse origin/main for OID")?
+                .stdout,
+        )
+        .context("git rev-parse origin/main output was not UTF-8")?;
+        assert_eq!(
+            head_oid.trim(),
+            origin_main_oid.trim(),
+            "origin/main must point at the seeded commit"
+        );
+
+        // And the staged-tree OID query itself must succeed against the
+        // isolated repo -- this is the exact call site the original flake
+        // hit via the live project index.
+        let staged_tree = super::super::staged::staged_tree_oid(root)?;
+        assert!(
+            !staged_tree.is_empty(),
+            "staged_tree_oid must return a non-empty OID against the isolated repo"
         );
         Ok(())
     }
