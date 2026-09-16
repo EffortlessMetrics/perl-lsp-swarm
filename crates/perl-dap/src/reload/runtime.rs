@@ -680,6 +680,47 @@ impl ReloadExecution {
             generation,
         }
     }
+
+    /// Settle a preview-profile (R03, #10102) terminal without running a
+    /// mechanism transaction.
+    ///
+    /// The R03 composer owns no debugger channel: admitted operations on an
+    /// unbacked runtime (and seeded test terminals) settle against the
+    /// session clock here through the same
+    /// [`RuntimeModuleGenerationClock::apply`] every production execution
+    /// uses, then project through `project_execution`. `phase_reached`
+    /// derives from the outcome by the fixture rule above and
+    /// `mutation_issued` reports the witness, so the projector's
+    /// direction/contiguity checks still bind.
+    ///
+    /// `mechanism` records no execution fact here — `project_execution`
+    /// never publishes it — so a reader must not treat a preview-settled
+    /// execution as evidence that a mechanism ran. Production mechanism
+    /// executions come exclusively from [`execute_reload`]; if a future
+    /// consumer publishes `mechanism`, this constructor must grow a real
+    /// mechanism parameter instead of reusing the placeholder below.
+    pub(crate) fn settle_preview_terminal(
+        outcome: LoadedModuleReloadOutcome,
+        operation_id: u64,
+        clock: &mut RuntimeModuleGenerationClock,
+    ) -> Self {
+        let phase_reached = match &outcome {
+            LoadedModuleReloadOutcome::Reloaded => ReloadTransactionPhase::TerminalProjection,
+            LoadedModuleReloadOutcome::Refused { .. } => ReloadTransactionPhase::Admission,
+            LoadedModuleReloadOutcome::FailedBeforeMutation { phase, .. }
+            | LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, .. } => *phase,
+        };
+        let generation = clock.apply(&outcome, operation_id);
+        let mutation_issued = generation.advanced();
+        Self {
+            operation_id,
+            outcome,
+            phase_reached,
+            mutation_issued,
+            mechanism: ReloadMechanism::IncDeletionAndRequire,
+            generation,
+        }
+    }
 }
 
 /// Assemble an execution result, applying the outcome to the clock.

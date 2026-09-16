@@ -29,6 +29,7 @@ mod perl_info;
 mod perl_spawn;
 
 use super::variable_cache::VariableCache;
+use crate::reload::RuntimeModuleGenerationClock;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
@@ -705,6 +706,7 @@ impl DebugAdapter {
                     last_resume_mode: ResumeMode::Unknown,
                     initial_stop_pending: !stop_on_entry,
                     stopped_generation: 0,
+                    module_generation: RuntimeModuleGenerationClock::new(),
                 };
 
                 if let Ok(mut guard) = self.session.lock() {
@@ -2005,6 +2007,12 @@ impl DebugAdapter {
 
                 // Reset existing process/tcp attachment state before switching to PID mode.
                 self.begin_session_generation();
+                // Debuggee replacement invalidates the reload family's
+                // session identities (#10102, R03): a PID attach is a
+                // replacement session like launch/TCP attach, so the prior
+                // reload epoch, negotiation, subjects, and operation
+                // identities must not survive it.
+                self.reset_reload_route_for_replacement_session();
                 if !self.clear_active_session_state() {
                     return DapMessage::Response {
                         seq,
@@ -2329,6 +2337,11 @@ impl DebugAdapter {
     /// protocol state while retaining process ownership for retry.
     fn prepare_replacement_session(&self) -> bool {
         self.begin_session_generation();
+        // Debuggee replacement invalidates the reload family's session
+        // identities (#10102): a new epoch refuses prior family/operation
+        // claims, and the runtime-module generation resets with the new
+        // debuggee process (it lives on `DebugSession`).
+        self.reset_reload_route_for_replacement_session();
         self.clear_active_session_state()
     }
 
@@ -2981,6 +2994,7 @@ mod tests {
         emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter, lock_or_recover,
         reserve_terminated_event, terminated_delivery_is_current,
     };
+    use crate::reload::RuntimeModuleGenerationClock;
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
     use std::collections::HashMap;
@@ -3948,6 +3962,7 @@ mod tests {
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
@@ -4321,6 +4336,7 @@ mod tests {
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
