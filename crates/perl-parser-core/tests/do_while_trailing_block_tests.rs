@@ -67,9 +67,7 @@ fn trailing_block_error_anchors_at_the_brace() -> Result<(), String> {
         Ok(_) => return Err("expected outright parse failure".to_string()),
         Err(error) => error,
     };
-    let anchor = error
-        .location()
-        .ok_or_else(|| format!("error carries no location: {error:?}"))?;
+    let anchor = error.location().ok_or_else(|| format!("error carries no location: {error:?}"))?;
     let brace = code.rfind('{').ok_or("trailing brace not found")?;
     if anchor != brace {
         return Err(format!("error anchors at {anchor}, trailing brace is at {brace}"));
