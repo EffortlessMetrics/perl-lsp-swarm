@@ -5,14 +5,14 @@
 
 use super::{
     ActionClass, Applicability, ArchiveFormat, CandidateDisposition, ContractError, ContractResult,
-    ContractViolation, DAG_SCHEMA_VERSION, DestinationRole, ExactRegistrySourceSubject,
-    FallbackPolicy, FanInInput, INTENT_SCHEMA_VERSION, InstallMode, InstallOperation,
-    InstrumentCompleteness, LibcDisposition, LocalDevelopmentSubject, MemberIdentity, MemberRole,
-    PathPolicy, Platform, ProductUnit, RECEIPT_SCHEMA_VERSION, ReasonFamily, RedactionDisposition,
-    ReleaseArchiveSubject, ReleaseSelector, ResolvedStandaloneInstallSubject, RouteMode,
-    SUBJECT_SCHEMA_VERSION, StageDag, StageId, StageNode, StageReceipt, StageResult,
-    StandaloneInstallIntent, TargetIdentity, TerminalResult, TerminalStandaloneInstallOutcome,
-    expected_receipt_policies, fallback_branch, fold_terminal_outcome, resolve_subject, violation,
+    ContractViolation, DagSchemaVersion, DestinationRole, ExactRegistrySourceSubject,
+    FallbackPolicy, FanInInput, InstallMode, InstallOperation, InstrumentCompleteness,
+    IntentSchemaVersion, LibcDisposition, LocalDevelopmentSubject, MemberIdentity, MemberRole,
+    PathPolicy, Platform, ProductUnit, ReasonFamily, ReceiptSchemaVersion, RedactionDisposition,
+    ReleaseArchiveSubject, ReleaseSelector, ResolvedStandaloneInstallSubject, RouteMode, StageDag,
+    StageId, StageNode, StageReceipt, StageResult, StandaloneInstallIntent, SubjectSchemaVersion,
+    TargetIdentity, TerminalResult, TerminalStandaloneInstallOutcome, expected_receipt_policies,
+    fallback_branch, fold_terminal_outcome, resolve_subject, violation,
 };
 
 /// Run every canonical pipeline; returns the number verified.
@@ -23,7 +23,9 @@ pub(super) fn run_canonical_pipelines() -> ContractResult<usize> {
     uninstall_green_pipeline()?;
     latest_requested_never_resolves_probe()?;
     fallback_branch_probe()?;
-    Ok(6)
+    evidence_after_terminal_evidence_probe()?;
+    unauthorized_skip_probe()?;
+    Ok(8)
 }
 
 pub(super) fn linux_gnu_target() -> TargetIdentity {
@@ -36,7 +38,7 @@ pub(super) fn linux_gnu_target() -> TargetIdentity {
 
 fn base_intent(mode: InstallMode, operation: InstallOperation) -> StandaloneInstallIntent {
     StandaloneInstallIntent {
-        schema_version: INTENT_SCHEMA_VERSION.to_string(),
+        schema_version: IntentSchemaVersion::V1,
         transaction_id: "tx-11099-canonical".to_string(),
         attempt_id: "attempt-1".to_string(),
         operation,
@@ -61,7 +63,7 @@ fn base_intent(mode: InstallMode, operation: InstallOperation) -> StandaloneInst
 
 pub(super) fn release_archive_subject(intent: &StandaloneInstallIntent) -> ReleaseArchiveSubject {
     ReleaseArchiveSubject {
-        schema_version: SUBJECT_SCHEMA_VERSION.to_string(),
+        schema_version: SubjectSchemaVersion::V1,
         subject_id: "subject-archive-canonical".to_string(),
         repository: "EffortlessMetrics/perl-lsp-swarm".to_string(),
         tag: "v0.18.0".to_string(),
@@ -90,7 +92,7 @@ pub(super) fn release_archive_subject(intent: &StandaloneInstallIntent) -> Relea
 
 fn registry_source_subject(intent: &StandaloneInstallIntent) -> ExactRegistrySourceSubject {
     ExactRegistrySourceSubject {
-        schema_version: SUBJECT_SCHEMA_VERSION.to_string(),
+        schema_version: SubjectSchemaVersion::V1,
         subject_id: "subject-registry-canonical".to_string(),
         registry_id: "crates-io".to_string(),
         package: "perllsp".to_string(),
@@ -150,7 +152,7 @@ fn dag_for(intent: &StandaloneInstallIntent) -> StageDag {
         ));
     }
     StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
+        schema_version: DagSchemaVersion::V1,
         mode: intent.mode,
         product_unit: intent.requested_product_unit,
         nodes,
@@ -163,20 +165,21 @@ fn node(stage: StageId, applicability: Applicability, predecessors: &[StageId]) 
 
 /// Build the canonical green receipt chain for a DAG: succeeded receipts with
 /// recomputed predecessor digests and subject-bound policy identities,
-/// explicit not_applicable evidence for authorized skips.
+/// explicit not_applicable evidence for authorized skips. Every receipt binds
+/// the intent digest the chain executes under.
 pub(super) fn green_chain(
-    transaction: &str,
-    attempt: &str,
+    intent: &StandaloneInstallIntent,
     subject: &ResolvedStandaloneInstallSubject,
     subject_digest: &str,
     dag: &StageDag,
 ) -> ContractResult<Vec<StageReceipt>> {
+    let intent_digest = intent.validate()?;
     let mut chain: Vec<(StageId, String)> = Vec::new();
     let mut receipts = Vec::new();
     for node in dag.nodes.iter() {
         if node.applicability == Applicability::NotApplicable {
             let mut skip =
-                succeeded_receipt(transaction, attempt, subject_digest, node.stage_id, &[]);
+                succeeded_receipt(intent, &intent_digest, subject_digest, node.stage_id, &[]);
             skip.result = StageResult::NotApplicable;
             let (integrity, provenance, toolchain) =
                 expected_receipt_policies(subject, node.stage_id);
@@ -209,7 +212,7 @@ pub(super) fn green_chain(
             })
             .collect::<ContractResult<Vec<_>>>()?;
         let mut receipt =
-            succeeded_receipt(transaction, attempt, subject_digest, node.stage_id, &predecessors);
+            succeeded_receipt(intent, &intent_digest, subject_digest, node.stage_id, &predecessors);
         let (integrity, provenance, toolchain) = expected_receipt_policies(subject, node.stage_id);
         receipt.integrity_policy_id = integrity;
         receipt.provenance_policy_id = provenance;
@@ -222,16 +225,17 @@ pub(super) fn green_chain(
 }
 
 pub(super) fn succeeded_receipt(
-    transaction: &str,
-    attempt: &str,
+    intent: &StandaloneInstallIntent,
+    intent_digest: &str,
     subject_digest: &str,
     stage: StageId,
     predecessors: &[String],
 ) -> StageReceipt {
     StageReceipt {
-        schema_version: RECEIPT_SCHEMA_VERSION.to_string(),
-        transaction_id: transaction.to_string(),
-        attempt_id: attempt.to_string(),
+        schema_version: ReceiptSchemaVersion::V1,
+        transaction_id: intent.transaction_id.clone(),
+        attempt_id: intent.attempt_id.clone(),
+        intent_digest: intent_digest.to_string(),
         subject_digest: subject_digest.to_string(),
         stage_id: stage,
         implementation_identity: format!("fixture/{}", stage.as_str()),
@@ -255,18 +259,8 @@ fn fold_green(
     subject: &ResolvedStandaloneInstallSubject,
     subject_digest: &str,
 ) -> ContractResult<TerminalStandaloneInstallOutcome> {
-    let receipts =
-        green_chain(&intent.transaction_id, &intent.attempt_id, subject, subject_digest, dag)?;
-    fold_terminal_outcome(FanInInput {
-        dag,
-        operation: intent.operation,
-        mode: intent.mode,
-        transaction_id: &intent.transaction_id,
-        attempt_id: &intent.attempt_id,
-        subject,
-        subject_digest,
-        receipts: &receipts,
-    })
+    let receipts = green_chain(intent, subject, subject_digest, dag)?;
+    fold_terminal_outcome(FanInInput { dag, intent, subject, subject_digest, receipts: &receipts })
 }
 
 fn archive_pair_green_pipeline() -> ContractResult<()> {
@@ -316,7 +310,7 @@ fn local_development_non_authoritative_pipeline() -> ContractResult<()> {
     let intent = base_intent(InstallMode::ExplicitLocalDevelopment, InstallOperation::Repair);
     let candidate =
         ResolvedStandaloneInstallSubject::ExplicitLocalDevelopment(LocalDevelopmentSubject {
-            schema_version: SUBJECT_SCHEMA_VERSION.to_string(),
+            schema_version: SubjectSchemaVersion::V1,
             subject_id: "subject-localdev-canonical".to_string(),
             description: "developer checkout build; never authoritative".to_string(),
             destination_role: intent.destination_role,
@@ -397,7 +391,7 @@ fn fallback_branch_probe() -> ContractResult<()> {
     let failed_digest = "ee".repeat(32);
     let new_subject =
         ResolvedStandaloneInstallSubject::ExactRegistrySource(ExactRegistrySourceSubject {
-            schema_version: SUBJECT_SCHEMA_VERSION.to_string(),
+            schema_version: SubjectSchemaVersion::V1,
             subject_id: "subject-fallback-canonical".to_string(),
             registry_id: "crates-io".to_string(),
             package: "perllsp".to_string(),
@@ -420,5 +414,97 @@ fn fallback_branch_probe() -> ContractResult<()> {
             ContractViolation::FallbackNotAllowed,
             "fallback branch must be a new subject on a new attempt",
         )
+    }
+}
+
+/// Negative probe: terminal evidence truncates the chain. No receipt —
+/// success, failure, or skip — may follow a cancelled stage, or post-terminal
+/// noise could widen the digest or resurface as composition input.
+fn evidence_after_terminal_evidence_probe() -> ContractResult<()> {
+    let intent = base_intent(InstallMode::ReleaseArchive, InstallOperation::Install);
+    let subject = resolve_subject(
+        &intent,
+        ResolvedStandaloneInstallSubject::ReleaseArchive(release_archive_subject(&intent)),
+    )?;
+    let subject_digest = subject.validate()?;
+    let dag = dag_for(&intent);
+    let mut receipts = green_chain(&intent, &subject, &subject_digest, &dag)?;
+    if let Some(receipt) = receipts.get_mut(4) {
+        receipt.result = StageResult::Cancelled;
+        receipt.reason = ReasonFamily::Cancelled;
+        receipt.next_action = ActionClass::AbortInstall;
+    }
+    // Recompute citations from the mutated chain, exactly as an honest
+    // composer would, so the probe isolates the truncation rule from
+    // citation drift.
+    let mut chain: Vec<(StageId, String)> = Vec::new();
+    for receipt in receipts.iter_mut() {
+        if receipt.result == StageResult::NotApplicable {
+            receipt.predecessor_receipt_digests.clear();
+        } else if let Some(node) = dag.nodes.iter().find(|node| node.stage_id == receipt.stage_id) {
+            receipt.predecessor_receipt_digests = node
+                .predecessors
+                .iter()
+                .filter_map(|stage| chain.iter().find(|(done, _)| done == stage))
+                .map(|(_, digest)| digest.clone())
+                .collect();
+        } else {
+            receipt.predecessor_receipt_digests.clear();
+        }
+        if let Ok(digest) = receipt.validate() {
+            chain.push((receipt.stage_id, digest));
+        }
+    }
+    match fold_terminal_outcome(FanInInput {
+        dag: &dag,
+        intent: &intent,
+        subject: &subject,
+        subject_digest: &subject_digest,
+        receipts: &receipts,
+    }) {
+        Err(error) if error.code() == ContractViolation::EvidenceAfterTerminalEvidence => Ok(()),
+        Err(error) => violation(
+            ContractViolation::EvidenceAfterTerminalEvidence,
+            format!("post-terminal evidence must fail closed, got {error}"),
+        ),
+        Ok(_) => violation(
+            ContractViolation::EvidenceAfterTerminalEvidence,
+            "evidence after terminal evidence folded; the truncation rule is broken",
+        ),
+    }
+}
+
+/// Negative probe: a required stage cannot fold as a skip. DAG authorization
+/// is the only skip authority, and a required row never grants it.
+fn unauthorized_skip_probe() -> ContractResult<()> {
+    let intent = base_intent(InstallMode::ReleaseArchive, InstallOperation::Install);
+    let subject = resolve_subject(
+        &intent,
+        ResolvedStandaloneInstallSubject::ReleaseArchive(release_archive_subject(&intent)),
+    )?;
+    let subject_digest = subject.validate()?;
+    let dag = dag_for(&intent);
+    let mut receipts = green_chain(&intent, &subject, &subject_digest, &dag)?;
+    if let Some(receipt) =
+        receipts.iter_mut().find(|receipt| receipt.stage_id == StageId::Promotion)
+    {
+        receipt.result = StageResult::NotApplicable;
+    }
+    match fold_terminal_outcome(FanInInput {
+        dag: &dag,
+        intent: &intent,
+        subject: &subject,
+        subject_digest: &subject_digest,
+        receipts: &receipts,
+    }) {
+        Err(error) if error.code() == ContractViolation::UnauthorizedStageApplicability => Ok(()),
+        Err(error) => violation(
+            ContractViolation::UnauthorizedStageApplicability,
+            format!("required-stage skip must fail closed, got {error}"),
+        ),
+        Ok(_) => violation(
+            ContractViolation::UnauthorizedStageApplicability,
+            "a required stage folded as a skip; the authorization map is broken",
+        ),
     }
 }

@@ -44,7 +44,7 @@ fn parse_of<T: for<'de> Deserialize<'de>>(text: &str) -> T {
 
 fn base_intent() -> StandaloneInstallIntent {
     StandaloneInstallIntent {
-        schema_version: INTENT_SCHEMA_VERSION.to_string(),
+        schema_version: IntentSchemaVersion::V1,
         transaction_id: "tx-11099-test".to_string(),
         attempt_id: "attempt-1".to_string(),
         operation: InstallOperation::Install,
@@ -66,7 +66,7 @@ fn base_intent() -> StandaloneInstallIntent {
 fn archive_dag(unit: ProductUnit) -> StageDag {
     use StageId::*;
     StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
+        schema_version: DagSchemaVersion::V1,
         mode: InstallMode::ReleaseArchive,
         product_unit: unit,
         nodes: vec![
@@ -91,7 +91,7 @@ fn archive_dag(unit: ProductUnit) -> StageDag {
 fn source_dag(unit: ProductUnit) -> StageDag {
     use StageId::*;
     StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
+        schema_version: DagSchemaVersion::V1,
         mode: InstallMode::ExactRegistrySource,
         product_unit: unit,
         nodes: vec![
@@ -112,7 +112,7 @@ fn source_dag(unit: ProductUnit) -> StageDag {
 fn local_dag() -> StageDag {
     use StageId::*;
     StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
+        schema_version: DagSchemaVersion::V1,
         mode: InstallMode::ExplicitLocalDevelopment,
         product_unit: ProductUnit::ServerOnly,
         nodes: vec![
@@ -143,19 +143,9 @@ fn folded(
     subject_digest: &str,
     mutate: impl FnOnce(&mut Vec<StageReceipt>),
 ) -> ContractResult<TerminalStandaloneInstallOutcome> {
-    let mut receipts =
-        green_chain(&intent.transaction_id, &intent.attempt_id, subject, subject_digest, dag)?;
+    let mut receipts = green_chain(intent, subject, subject_digest, dag)?;
     mutate(&mut receipts);
-    fold_terminal_outcome(FanInInput {
-        dag,
-        operation: intent.operation,
-        mode: intent.mode,
-        transaction_id: &intent.transaction_id,
-        attempt_id: &intent.attempt_id,
-        subject,
-        subject_digest,
-        receipts: &receipts,
-    })
+    fold_terminal_outcome(FanInInput { dag, intent, subject, subject_digest, receipts: &receipts })
 }
 
 #[track_caller]
@@ -247,10 +237,9 @@ fn every_field_of_the_intent_is_digest_load_bearing() {
                 ..base.clone()
             },
         ),
-        (
-            "path_policy",
-            StandaloneInstallIntent { path_policy: PathPolicy::SessionOnly, ..base.clone() },
-        ),
+        // path_policy has no digest mutation here: `session_only` is refused
+        // by validate() while uncomposed (see the dedicated refusal test),
+        // and `persist` is the baseline.
         (
             "fallback_policy",
             StandaloneInstallIntent {
@@ -271,7 +260,10 @@ fn every_field_of_the_intent_is_digest_load_bearing() {
             "target_override",
             StandaloneInstallIntent {
                 target_override: Some(TargetOverride {
-                    triple: "aarch64-pc-windows-msvc".into(),
+                    // Coherent with the intent's platform/libc but a
+                    // different triple, so the override stays identity
+                    // load-bearing without amplifying across platforms.
+                    triple: "aarch64-unknown-linux-gnu".into(),
                     authority: "operator-request".into(),
                 }),
                 ..base
@@ -289,11 +281,14 @@ fn every_field_of_the_intent_is_digest_load_bearing() {
 
 #[test]
 fn malformed_intents_fail_closed() {
-    let wrong_schema = StandaloneInstallIntent {
-        schema_version: "standalone_install_intent.v2".into(),
-        ..base_intent()
-    };
-    expect_code(wrong_schema.validate(), ContractViolation::UnknownSchemaVersion);
+    // A foreign/future schema spelling cannot even decode: the typed
+    // schema identity fails at the serde boundary, never at a string
+    // comparison.
+    let mut foreign_schema = json_of(&base_intent());
+    foreign_schema["schema_version"] = serde_json::json!("standalone_install_intent.v2");
+    let parsed: std::result::Result<StandaloneInstallIntent, _> =
+        serde_json::from_value(foreign_schema);
+    assert!(parsed.is_err(), "unknown intent schema spellings must fail the serde boundary");
 
     let empty_transaction =
         StandaloneInstallIntent { transaction_id: String::new(), ..base_intent() };
@@ -363,6 +358,63 @@ fn glibc_never_applies_to_windows_or_macos_targets() {
     }
 }
 
+/// The triple is not a free-form label: its OS/environment components must
+/// describe exactly the declared platform/libc, including under an explicit
+/// target override.
+#[test]
+fn target_triples_must_describe_their_declared_identity() {
+    // A Windows triple on a Linux/Gnu identity.
+    let mut intent = base_intent();
+    intent.target = TargetIdentity {
+        platform: Platform::Linux,
+        triple: "x86_64-pc-windows-msvc".into(),
+        libc: LibcDisposition::Gnu,
+    };
+    expect_code(intent.validate(), ContractViolation::IncoherentTargetIdentity);
+
+    // A libc environment a darwin triple cannot carry.
+    intent.target = TargetIdentity {
+        platform: Platform::Macos,
+        triple: "x86_64-apple-darwin".into(),
+        libc: LibcDisposition::Gnu,
+    };
+    expect_code(intent.validate(), ContractViolation::IncoherentTargetIdentity);
+
+    // A linux triple without a gnu/musl environment.
+    intent.target = TargetIdentity {
+        platform: Platform::Linux,
+        triple: "x86_64-unknown-linux-mystery".into(),
+        libc: LibcDisposition::Gnu,
+    };
+    expect_code(intent.validate(), ContractViolation::IncoherentTargetIdentity);
+
+    // A windows triple outside the msvc environment.
+    intent.target = TargetIdentity {
+        platform: Platform::Windows,
+        triple: "x86_64-pc-windows-gnuish".into(),
+        libc: LibcDisposition::Msvc,
+    };
+    expect_code(intent.validate(), ContractViolation::IncoherentTargetIdentity);
+
+    // An explicit override amplifies resolution, never the platform: its
+    // triple must still describe the intent's declared platform/libc.
+    let mut override_drift = base_intent();
+    override_drift.target_override = Some(TargetOverride {
+        triple: "x86_64-pc-windows-msvc".into(),
+        authority: "operator-request".into(),
+    });
+    expect_code(override_drift.validate(), ContractViolation::IncoherentTargetIdentity);
+
+    // Coherent non-default triples stay valid.
+    let mut coherent = base_intent();
+    coherent.target = TargetIdentity {
+        platform: Platform::Linux,
+        triple: "aarch64-unknown-linux-musl".into(),
+        libc: LibcDisposition::Musl,
+    };
+    must(coherent.validate(), "coherent musl triple validates");
+}
+
 #[test]
 fn unresolved_latest_selector_can_never_mint_a_subject() {
     let mut intent = base_intent();
@@ -374,6 +426,44 @@ fn unresolved_latest_selector_can_never_mint_a_subject() {
         .err()
         .unwrap_or_else(|| fail("latest_requested cannot authorize artifact work"));
     assert_eq!(error.code(), ContractViolation::AmbiguousSelector);
+}
+
+/// Exact-registry-source intents are exact by construction: the mode pins the
+/// registry identity, so the authorization predicate must reflect that
+/// instead of demanding a release selector the mode can never carry. Local
+/// development never authorizes.
+#[test]
+fn registry_source_intents_authorize_and_local_development_never_does() {
+    let mut registry = base_intent();
+    registry.mode = InstallMode::ExactRegistrySource;
+    registry.selector = ReleaseSelector::not_applicable();
+    assert!(
+        registry.authorizes_artifact_work(),
+        "an exact-registry-source intent authorizes artifact work"
+    );
+
+    let mut local = base_intent();
+    local.mode = InstallMode::ExplicitLocalDevelopment;
+    local.selector = ReleaseSelector::not_applicable();
+    assert!(
+        !local.authorizes_artifact_work(),
+        "local development can never authorize artifact work"
+    );
+
+    let latest = base_intent();
+    let mut latest = latest;
+    latest.selector = ReleaseSelector::latest_requested();
+    assert!(!latest.authorizes_artifact_work());
+}
+
+/// Session-only PATH is retained for the closed vocabulary but not yet
+/// composed into DAG validation; the validator refuses it rather than folding
+/// green while silently ignoring the declared policy.
+#[test]
+fn session_only_path_policy_fails_closed_until_composed() {
+    let mut intent = base_intent();
+    intent.path_policy = PathPolicy::SessionOnly;
+    expect_code(intent.validate(), ContractViolation::PathPolicyConflict);
 }
 
 #[test]
@@ -483,7 +573,7 @@ fn registry_source_resolver_drift_fails_coherence() {
 
 fn registry_candidate(intent: &StandaloneInstallIntent) -> ResolvedStandaloneInstallSubject {
     ResolvedStandaloneInstallSubject::ExactRegistrySource(ExactRegistrySourceSubject {
-        schema_version: SUBJECT_SCHEMA_VERSION.to_string(),
+        schema_version: SubjectSchemaVersion::V1,
         subject_id: "subject-source-test".into(),
         registry_id: "crates-io".into(),
         package: "perllsp".into(),
@@ -534,13 +624,6 @@ fn malformed_subjects_fail_closed() {
 
     let bad_repo = mutated(&|subject| subject.repository = "EffortlessMetrics".into());
     expect_code(bad_repo.validate().map(|_| ()), ContractViolation::MalformedDocument);
-
-    let wrong_subject_schema =
-        mutated(&|subject| subject.schema_version = "standalone_install_subject.v2".into());
-    expect_code(
-        wrong_subject_schema.validate().map(|_| ()),
-        ContractViolation::UnknownSchemaVersion,
-    );
 
     // Registry-source subjects validate their own closed shape.
     let good_registry = registry_candidate(&intent);
@@ -633,7 +716,7 @@ fn fallback_requires_explicit_admission_and_creates_a_new_branch() {
             &failed_digest,
             "attempt-2",
             ResolvedStandaloneInstallSubject::ExplicitLocalDevelopment(LocalDevelopmentSubject {
-                schema_version: SUBJECT_SCHEMA_VERSION.to_string(),
+                schema_version: SubjectSchemaVersion::V1,
                 subject_id: "localdev".into(),
                 description: "non-authoritative".into(),
                 destination_role: DestinationRole::UserLocal,
@@ -717,8 +800,15 @@ fn unknown_fields_are_rejected_on_every_closed_type() {
         serde_json::from_str(value.to_string().as_str());
     assert!(parsed.is_err(), "deny_unknown_fields must reject sneaky intent fields");
 
-    let (_, subject_digest) = resolved_archive(&base_intent());
-    let receipt = succeeded_receipt("tx", "attempt-1", &subject_digest, StageId::Transport, &[]);
+    let intent = base_intent();
+    let (_, subject_digest) = resolved_archive(&intent);
+    let receipt = succeeded_receipt(
+        &intent,
+        &intent.validate().unwrap_or_else(|error| fail(&format!("intent: {error}"))),
+        &subject_digest,
+        StageId::Transport,
+        &[],
+    );
     let mut value: JsonValue = parse_of(wire(&receipt).as_str());
     // A producer-declared completeness flag does not even exist on the type.
     value["complete"] = serde_json::json!(true);
@@ -732,19 +822,14 @@ fn unknown_fields_are_rejected_on_every_closed_type() {
     let parsed: std::result::Result<StageDag, _> = serde_json::from_value(value);
     assert!(parsed.is_err(), "deny_unknown_fields must reject sneaky DAG fields");
 
-    let intent = base_intent();
     let (subject, subject_digest) = resolved_archive(&intent);
     let dag = archive_dag(intent.requested_product_unit);
-    let receipts =
-        green_chain(&intent.transaction_id, &intent.attempt_id, &subject, &subject_digest, &dag)
-            .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
+    let receipts = green_chain(&intent, &subject, &subject_digest, &dag)
+        .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
     let outcome = must(
         fold_terminal_outcome(FanInInput {
             dag: &dag,
-            operation: intent.operation,
-            mode: intent.mode,
-            transaction_id: &intent.transaction_id,
-            attempt_id: &intent.attempt_id,
+            intent: &intent,
             subject: &subject,
             subject_digest: &subject_digest,
             receipts: &receipts,
@@ -756,6 +841,122 @@ fn unknown_fields_are_rejected_on_every_closed_type() {
     let parsed: std::result::Result<TerminalStandaloneInstallOutcome, _> =
         serde_json::from_value(value);
     assert!(parsed.is_err(), "deny_unknown_fields must reject sneaky outcome fields");
+}
+
+/// The resolved-subject union is internally tagged: fields smuggled next to
+/// `mode` sit outside every variant struct, so enum-level `deny_unknown_fields`
+/// must reject them on all three variants instead of silently dropping them.
+#[test]
+fn unknown_outer_fields_are_rejected_on_every_subject_variant() {
+    let intent = base_intent();
+    for candidate in [
+        ResolvedStandaloneInstallSubject::ReleaseArchive(release_archive_subject(&intent)),
+        registry_candidate(&intent),
+        ResolvedStandaloneInstallSubject::ExplicitLocalDevelopment(LocalDevelopmentSubject {
+            schema_version: SubjectSchemaVersion::V1,
+            subject_id: "subject-outer-fields".into(),
+            description: "developer checkout".into(),
+            destination_role: intent.destination_role,
+        }),
+    ] {
+        let mut value = json_of(&candidate);
+        value["sneaky_outer_field"] = serde_json::json!("smuggled");
+        let parsed: std::result::Result<ResolvedStandaloneInstallSubject, _> =
+            serde_json::from_value(value);
+        assert!(
+            parsed.is_err(),
+            "outer unknown fields must be rejected on the {} variant",
+            candidate.mode().as_str()
+        );
+    }
+}
+
+/// Campaign removal control (cf. #15554): a valid document loses each of its
+/// required fields in turn and every removal must fail the decode. Fields the
+/// schema marks optional (`#[serde(default)]`) are exempt by name.
+#[test]
+fn required_field_removal_is_rejected_on_every_closed_type() {
+    fn removal_rejected<T: for<'de> Deserialize<'de>>(
+        value: JsonValue,
+        optional: &[&str],
+        what: &str,
+    ) {
+        let object = match &value {
+            JsonValue::Object(map) => map.clone(),
+            other => fail(&format!("{what}: expected a JSON object, got {other}")),
+        };
+        for key in object.keys() {
+            if optional.contains(&key.as_str()) {
+                continue;
+            }
+            let mut trimmed = object.clone();
+            trimmed.remove(key);
+            let parsed: std::result::Result<T, _> =
+                serde_json::from_value(JsonValue::Object(trimmed));
+            assert!(
+                parsed.is_err(),
+                "{what}: removing required field {key:?} was accepted by the decode"
+            );
+        }
+    }
+
+    // `target_override: Option<_>` decodes as None when absent, so it is
+    // schema-optional despite carrying no `#[serde(default)]`.
+    removal_rejected::<StandaloneInstallIntent>(
+        json_of(&base_intent()),
+        &["target_override"],
+        "intent",
+    );
+
+    removal_rejected::<StageDag>(json_of(&archive_dag(ProductUnit::ServerDapPair)), &[], "dag");
+
+    let intent = base_intent();
+    let (subject, subject_digest) = resolved_archive(&intent);
+    removal_rejected::<ResolvedStandaloneInstallSubject>(json_of(&subject), &[], "archive subject");
+    removal_rejected::<ResolvedStandaloneInstallSubject>(
+        json_of(&registry_candidate(&intent)),
+        &["lockfile_digest"],
+        "registry subject",
+    );
+    removal_rejected::<ResolvedStandaloneInstallSubject>(
+        json_of(&ResolvedStandaloneInstallSubject::ExplicitLocalDevelopment(
+            LocalDevelopmentSubject {
+                schema_version: SubjectSchemaVersion::V1,
+                subject_id: "subject-removal".into(),
+                description: "developer checkout".into(),
+                destination_role: intent.destination_role,
+            },
+        )),
+        &[],
+        "local-development subject",
+    );
+
+    let dag = archive_dag(intent.requested_product_unit);
+    let receipts = green_chain(&intent, &subject, &subject_digest, &dag)
+        .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
+    removal_rejected::<StageReceipt>(
+        json_of(&receipts[0]),
+        &[
+            "integrity_policy_id",
+            "provenance_policy_id",
+            "toolchain_policy_id",
+            "input_artifact_ids",
+            "output_evidence_ids",
+        ],
+        "receipt",
+    );
+
+    let outcome = must(
+        fold_terminal_outcome(FanInInput {
+            dag: &dag,
+            intent: &intent,
+            subject: &subject,
+            subject_digest: &subject_digest,
+            receipts: &receipts,
+        }),
+        "fold",
+    );
+    removal_rejected::<TerminalStandaloneInstallOutcome>(json_of(&outcome), &[], "outcome");
 }
 
 #[test]
@@ -775,16 +976,12 @@ fn full_packet_round_trip_is_byte_stable_under_key_permutation() {
     let intent = base_intent();
     let (subject, subject_digest) = resolved_archive(&intent);
     let dag = archive_dag(intent.requested_product_unit);
-    let receipts =
-        green_chain(&intent.transaction_id, &intent.attempt_id, &subject, &subject_digest, &dag)
-            .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
+    let receipts = green_chain(&intent, &subject, &subject_digest, &dag)
+        .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
     let outcome = must(
         fold_terminal_outcome(FanInInput {
             dag: &dag,
-            operation: intent.operation,
-            mode: intent.mode,
-            transaction_id: &intent.transaction_id,
-            attempt_id: &intent.attempt_id,
+            intent: &intent,
             subject: &subject,
             subject_digest: &subject_digest,
             receipts: &receipts,
@@ -896,9 +1093,12 @@ fn dag_structure_falsifiers() {
     local_with_promotion.nodes.push(node(Promotion, Applicability::Required, &[ResolveSubject]));
     expect_code(local_with_promotion.validate(), ContractViolation::UnauthorizedStageApplicability);
 
-    let mut wrong_schema = source_dag(ProductUnit::ServerOnly);
-    wrong_schema.schema_version = "standalone_stage_dag.v2".into();
-    expect_code(wrong_schema.validate(), ContractViolation::UnknownSchemaVersion);
+    // A foreign/future DAG schema spelling cannot decode: the typed schema
+    // identity fails at the serde boundary.
+    let mut foreign_schema = json_of(&source_dag(ProductUnit::ServerOnly));
+    foreign_schema["schema_version"] = serde_json::json!("standalone_stage_dag.v2");
+    let parsed: std::result::Result<StageDag, _> = serde_json::from_value(foreign_schema);
+    assert!(parsed.is_err(), "unknown DAG schema spellings must fail the serde boundary");
 }
 
 /// Canonical composition floor (#11099): promotion is mandatory outside local
@@ -913,7 +1113,7 @@ fn canonical_dag_floor_rejects_promotion_less_and_unordered_graphs() {
     // A promotion-less archive DAG is structurally valid but can never reach
     // installed: the floor must reject it outright.
     let promotionless = StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
+        schema_version: DagSchemaVersion::V1,
         mode: InstallMode::ReleaseArchive,
         product_unit: ProductUnit::ServerDapPair,
         nodes: vec![
@@ -1209,7 +1409,7 @@ fn rechain(dag: &StageDag, receipts: &mut [StageReceipt]) {
 }
 
 #[test]
-fn success_after_cancelled_evidence_is_rejected() {
+fn evidence_after_cancelled_evidence_is_rejected() {
     let intent = base_intent();
     let (subject, subject_digest) = resolved_archive(&intent);
     let dag = archive_dag(intent.requested_product_unit);
@@ -1221,10 +1421,10 @@ fn success_after_cancelled_evidence_is_rejected() {
                 receipt.next_action = ActionClass::AbortInstall;
             }
             // Honest downstream citations: the violation under test is
-            // success continuing after terminal evidence, not drift.
+            // evidence continuing after terminal evidence, not drift.
             rechain(&dag, receipts);
         }),
-        ContractViolation::SuccessAfterTerminalEvidence,
+        ContractViolation::EvidenceAfterTerminalEvidence,
     );
 }
 
@@ -1299,7 +1499,9 @@ fn timeout_and_not_proven_terminate_distinctly() {
 /// cancellation, timeout, or unproven evidence as a plain failure.
 #[test]
 fn failed_receipt_cannot_borrow_cancelled_or_timeout_reasons() {
-    let (_, subject_digest) = resolved_archive(&base_intent());
+    let intent = base_intent();
+    let (_, subject_digest) = resolved_archive(&intent);
+    let intent_digest = must(intent.validate(), "intent validates");
     for reason in [
         ReasonFamily::Cancelled,
         ReasonFamily::Timeout,
@@ -1308,7 +1510,7 @@ fn failed_receipt_cannot_borrow_cancelled_or_timeout_reasons() {
         ReasonFamily::MissingEvidence,
     ] {
         let mut receipt =
-            succeeded_receipt("tx", "attempt-1", &subject_digest, StageId::Transport, &[]);
+            succeeded_receipt(&intent, &intent_digest, &subject_digest, StageId::Transport, &[]);
         receipt.result = StageResult::Failed;
         receipt.reason = reason;
         receipt.next_action = ActionClass::AbortInstall;
@@ -1323,7 +1525,7 @@ fn green_local_development_still_cannot_claim_installed() {
     intent.selector = ReleaseSelector::not_applicable();
     let subject =
         ResolvedStandaloneInstallSubject::ExplicitLocalDevelopment(LocalDevelopmentSubject {
-            schema_version: SUBJECT_SCHEMA_VERSION.to_string(),
+            schema_version: SubjectSchemaVersion::V1,
             subject_id: "subject-localdev-test".into(),
             description: "developer checkout".into(),
             destination_role: DestinationRole::UserLocal,
@@ -1346,7 +1548,7 @@ fn local_development_subject_cannot_drift_destination() {
     intent.selector = ReleaseSelector::not_applicable();
     let subject =
         ResolvedStandaloneInstallSubject::ExplicitLocalDevelopment(LocalDevelopmentSubject {
-            schema_version: SUBJECT_SCHEMA_VERSION.to_string(),
+            schema_version: SubjectSchemaVersion::V1,
             subject_id: "subject-localdev-drift".into(),
             description: "developer checkout".into(),
             destination_role: DestinationRole::SystemShared,
@@ -1356,31 +1558,78 @@ fn local_development_subject_cannot_drift_destination() {
 
 #[test]
 fn terminal_result_follows_operation_vocabulary() {
-    let intent = base_intent();
-    let (subject, subject_digest) = resolved_archive(&intent);
-    let dag = archive_dag(intent.requested_product_unit);
-    let receipts =
-        green_chain(&intent.transaction_id, &intent.attempt_id, &subject, &subject_digest, &dag)
-            .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
+    // Each operation folds under its OWN validated intent: relabeling a
+    // receipt set's operation is impossible because every receipt binds the
+    // intent digest the operation was declared in.
     for (operation, expected) in [
+        (InstallOperation::Install, TerminalResult::Installed),
         (InstallOperation::Repair, TerminalResult::Repaired),
         (InstallOperation::Update, TerminalResult::Updated),
         (InstallOperation::Rollback, TerminalResult::RolledBack),
     ] {
-        let outcome = fold_terminal_outcome(FanInInput {
+        let intent = StandaloneInstallIntent { operation, ..base_intent() };
+        let (subject, subject_digest) = resolved_archive(&intent);
+        let dag = archive_dag(intent.requested_product_unit);
+        let outcome = folded(&intent, &dag, &subject, &subject_digest, |_| {})
+            .unwrap_or_else(|error| fail(&format!("{}: {error}", operation.as_str())));
+        assert_eq!(outcome.result, expected, "operation mapping drift for {}", operation.as_str());
+        assert_eq!(outcome.side_effect_ceiling, SideEffectCeiling::InstalledClaim);
+    }
+}
+
+/// The relabeled-operation attack: receipts executed under an install intent
+/// can never recompose as repair/update/rollback evidence, because the fold
+/// re-derives the operation from the validated intent and every receipt binds
+/// that intent's digest.
+#[test]
+fn receipts_cannot_be_relabelled_into_another_operation() {
+    let intent = base_intent();
+    let (subject, subject_digest) = resolved_archive(&intent);
+    let dag = archive_dag(intent.requested_product_unit);
+    let receipts = green_chain(&intent, &subject, &subject_digest, &dag)
+        .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
+    for relabelled in
+        [InstallOperation::Repair, InstallOperation::Update, InstallOperation::Rollback]
+    {
+        let other_intent = StandaloneInstallIntent { operation: relabelled, ..intent.clone() };
+        let error = fold_terminal_outcome(FanInInput {
             dag: &dag,
-            operation,
-            mode: intent.mode,
-            transaction_id: &intent.transaction_id,
-            attempt_id: &intent.attempt_id,
+            intent: &other_intent,
             subject: &subject,
             subject_digest: &subject_digest,
             receipts: &receipts,
         })
-        .unwrap_or_else(|error| fail(&format!("{}: {error}", operation.as_str())));
-        assert_eq!(outcome.result, expected, "operation mapping drift for {}", operation.as_str());
-        assert_eq!(outcome.side_effect_ceiling, SideEffectCeiling::InstalledClaim);
+        .err()
+        .unwrap_or_else(|| {
+            fail(&format!(
+                "install receipts must not recompose as {} evidence",
+                relabelled.as_str()
+            ))
+        });
+        assert_eq!(
+            error.code(),
+            ContractViolation::IntentDigestMismatch,
+            "relabelling to {} must fail on the intent digest",
+            relabelled.as_str()
+        );
     }
+
+    // A receipt citing a foreign intent digest fails the same binding even
+    // when transaction/attempt/subject all match.
+    let mut foreign = receipts.clone();
+    if let Some(receipt) = foreign.first_mut() {
+        receipt.intent_digest = "ab".repeat(32);
+    }
+    expect_violation(
+        fold_terminal_outcome(FanInInput {
+            dag: &dag,
+            intent: &intent,
+            subject: &subject,
+            subject_digest: &subject_digest,
+            receipts: &foreign,
+        }),
+        ContractViolation::IntentDigestMismatch,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1472,16 +1721,23 @@ fn unknown_receipt_schema_version_fails_closed() {
     let intent = base_intent();
     let (subject, subject_digest) = resolved_archive(&intent);
     let dag = archive_dag(intent.requested_product_unit);
-    expect_violation(
-        folded(&intent, &dag, &subject, &subject_digest, |receipts| {
-            // A future/foreign receipt schema can never compose into this
-            // model's digest domains.
-            if let Some(receipt) = receipts.first_mut() {
-                receipt.schema_version = "standalone_stage_receipt.v2".into();
-            }
-        }),
-        ContractViolation::UnknownReceiptSchema,
+    // A future/foreign receipt schema can never even decode into this
+    // model's typed schema identity, let alone compose into its digest
+    // domains.
+    let receipt = succeeded_receipt(
+        &intent,
+        &intent.validate().unwrap_or_else(|error| fail(&format!("intent: {error}"))),
+        &subject_digest,
+        StageId::Transport,
+        &[],
     );
+    let mut value = json_of(&receipt);
+    value["schema_version"] = serde_json::json!("standalone_stage_receipt.v2");
+    let parsed: std::result::Result<StageReceipt, _> = serde_json::from_value(value);
+    assert!(parsed.is_err(), "unknown receipt schema spellings must fail the serde boundary");
+    // The unmutated wire still reparses clean.
+    let parsed: StageReceipt = parse_of(wire(&receipt).as_str());
+    assert_eq!(parsed.intent_digest, receipt.intent_digest, "own wire reparses");
 }
 
 #[test]
@@ -1489,25 +1745,17 @@ fn receipt_citing_a_stage_absent_from_the_dag_is_rejected() {
     let intent = base_intent();
     let (subject, subject_digest) = resolved_archive(&intent);
     let dag = archive_dag(intent.requested_product_unit);
-    let mut receipts =
-        green_chain(&intent.transaction_id, &intent.attempt_id, &subject, &subject_digest, &dag)
-            .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
+    let intent_digest = must(intent.validate(), "intent validates");
+    let mut receipts = green_chain(&intent, &subject, &subject_digest, &dag)
+        .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
     // Well-formed receipt whose stage simply does not exist in this DAG.
-    let intruder = succeeded_receipt(
-        &intent.transaction_id,
-        &intent.attempt_id,
-        &subject_digest,
-        StageId::Uninstall,
-        &[],
-    );
+    let intruder =
+        succeeded_receipt(&intent, &intent_digest, &subject_digest, StageId::Uninstall, &[]);
     assert!(intruder.validate().is_ok(), "the intruding receipt must be valid on its own terms");
     receipts.push(intruder);
     let error = fold_terminal_outcome(FanInInput {
         dag: &dag,
-        operation: intent.operation,
-        mode: intent.mode,
-        transaction_id: &intent.transaction_id,
-        attempt_id: &intent.attempt_id,
+        intent: &intent,
         subject: &subject,
         subject_digest: &subject_digest,
         receipts: &receipts,
@@ -1521,7 +1769,7 @@ fn receipt_citing_a_stage_absent_from_the_dag_is_rejected() {
 fn empty_or_truncated_dags_cannot_authorize_success() {
     let intent = base_intent();
     let empty = StageDag {
-        schema_version: DAG_SCHEMA_VERSION.to_string(),
+        schema_version: DagSchemaVersion::V1,
         mode: intent.mode,
         product_unit: intent.requested_product_unit,
         nodes: Vec::new(),
@@ -1538,18 +1786,14 @@ fn receipts_cannot_arrive_before_declared_predecessors() {
     let intent = base_intent();
     let (subject, subject_digest) = resolved_archive(&intent);
     let dag = archive_dag(intent.requested_product_unit);
-    let mut receipts =
-        green_chain(&intent.transaction_id, &intent.attempt_id, &subject, &subject_digest, &dag)
-            .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
+    let mut receipts = green_chain(&intent, &subject, &subject_digest, &dag)
+        .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
     let predecessor = receipts.remove(0);
     receipts.insert(1, predecessor);
     expect_code(
         fold_terminal_outcome(FanInInput {
             dag: &dag,
-            operation: intent.operation,
-            mode: intent.mode,
-            transaction_id: &intent.transaction_id,
-            attempt_id: &intent.attempt_id,
+            intent: &intent,
             subject: &subject,
             subject_digest: &subject_digest,
             receipts: &receipts,
@@ -1575,7 +1819,11 @@ fn candidate_disposition_follows_the_operation_and_receipts() {
     let rolled_back = folded(&rollback, &dag, &subject, &subject_digest, |_| {})
         .unwrap_or_else(|error| fail(&format!("rollback fold: {error}")));
     assert_eq!(rolled_back.result, TerminalResult::RolledBack);
-    assert_eq!(rolled_back.candidate_disposition, CandidateDisposition::Unresolved);
+    assert_eq!(
+        rolled_back.candidate_disposition,
+        CandidateDisposition::PreviousRestored,
+        "a green rollback's installed-transition evidence restores the previous candidate"
+    );
 
     // Green uninstall leaves no candidate installed.
     let mut uninstall = base_intent();
@@ -1623,16 +1871,12 @@ fn folding_twice_produces_byte_identical_outcomes() {
     let intent = base_intent();
     let (subject, subject_digest) = resolved_archive(&intent);
     let dag = archive_dag(intent.requested_product_unit);
-    let receipts =
-        green_chain(&intent.transaction_id, &intent.attempt_id, &subject, &subject_digest, &dag)
-            .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
+    let receipts = green_chain(&intent, &subject, &subject_digest, &dag)
+        .unwrap_or_else(|error| fail(&format!("green chain: {error}")));
     let fold = || {
         fold_terminal_outcome(FanInInput {
             dag: &dag,
-            operation: intent.operation,
-            mode: intent.mode,
-            transaction_id: &intent.transaction_id,
-            attempt_id: &intent.attempt_id,
+            intent: &intent,
             subject: &subject,
             subject_digest: &subject_digest,
             receipts: &receipts,
@@ -1810,8 +2054,8 @@ fn private_state_never_enters_durable_output() {
     let intent = base_intent();
     let (_, subject_digest) = resolved_archive(&intent);
     let mut leaky = succeeded_receipt(
-        &intent.transaction_id,
-        &intent.attempt_id,
+        &intent,
+        &intent.validate().unwrap_or_else(|error| fail(&format!("intent: {error}"))),
         &subject_digest,
         StageId::Transport,
         &[],

@@ -50,11 +50,52 @@ use std::fmt::{Display, Formatter};
 // Schema versions and digest domains
 // ---------------------------------------------------------------------------
 
-pub const INTENT_SCHEMA_VERSION: &str = "standalone_install_intent.v1";
-pub const SUBJECT_SCHEMA_VERSION: &str = "standalone_install_subject.v1";
-pub const RECEIPT_SCHEMA_VERSION: &str = "standalone_stage_receipt.v1";
-pub const DAG_SCHEMA_VERSION: &str = "standalone_stage_dag.v1";
-pub const OUTCOME_SCHEMA_VERSION: &str = "standalone_terminal_outcome.v1";
+/// Closed, one-variant-per-published-shape schema identity. The wire literal
+/// is the single spelling authority; unknown spellings fail at the serde
+/// boundary, so a `schema_version` field can never silently compare equal to
+/// a drifted string. A future shape adds a variant plus an explicit decode
+/// acceptance rule — never a widened equality check.
+macro_rules! schema_version {
+    ($(#[$meta:meta])* $name:ident => $text:literal) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        $(#[$meta])*
+        pub enum $name {
+            #[serde(rename = $text)]
+            V1,
+        }
+
+        impl $name {
+            /// The wire literal this shape publishes. Consumed by the
+            /// adapter/bindings children as a closed surface even where this
+            /// crate only constructs the variant.
+            #[allow(dead_code)]
+            pub const fn as_str(self) -> &'static str {
+                $text
+            }
+        }
+    };
+}
+
+schema_version!(
+    /// Schema identity of [`StandaloneInstallIntent`].
+    IntentSchemaVersion => "standalone_install_intent.v1"
+);
+schema_version!(
+    /// Schema identity of every [`ResolvedStandaloneInstallSubject`] variant.
+    SubjectSchemaVersion => "standalone_install_subject.v1"
+);
+schema_version!(
+    /// Schema identity of [`StageReceipt`].
+    ReceiptSchemaVersion => "standalone_stage_receipt.v1"
+);
+schema_version!(
+    /// Schema identity of [`StageDag`].
+    DagSchemaVersion => "standalone_stage_dag.v1"
+);
+schema_version!(
+    /// Schema identity of [`TerminalStandaloneInstallOutcome`].
+    OutcomeSchemaVersion => "standalone_terminal_outcome.v1"
+);
 
 const INTENT_DIGEST_DOMAIN: &[u8] = b"perl-lsp-swarm:standalone-install-intent.v1\0";
 const SUBJECT_DIGEST_DOMAIN: &[u8] = b"perl-lsp-swarm:standalone-subject.v1\0";
@@ -153,7 +194,13 @@ closed_enum!(DestinationRole {
     SystemShared => "system_shared"
 });
 closed_enum!(PathPolicy {
+    /// PATH changes survive the session (the only policy currently composed
+    /// into DAG validation).
     Persist => "persist",
+    /// Session-scoped PATH. Retained for the closed vocabulary but not yet
+    /// composed into DAG composition rules: the validator refuses it rather
+    /// than folding green while ignoring the declared policy. #11099's
+    /// adapter children wire session scope before this value may validate.
     SessionOnly => "session_only"
 });
 closed_enum!(FallbackPolicy {
@@ -298,7 +345,6 @@ closed_enum!(Applicability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractViolation {
     MalformedDocument,
-    UnknownSchemaVersion,
     AmbiguousSelector,
     SelectorSubjectMismatch,
     ModeMismatch,
@@ -310,18 +356,19 @@ pub enum ContractViolation {
     UnknownPredecessor,
     CyclicStageGraph,
     UnauthorizedStageApplicability,
-    UnknownReceiptSchema,
     SubjectDigestMismatch,
+    IntentDigestMismatch,
     TransactionMismatch,
     AttemptMismatch,
     DuplicateStageResult,
     PredecessorMismatch,
     MissingRequiredStage,
-    SuccessAfterTerminalEvidence,
+    EvidenceAfterTerminalEvidence,
     InstrumentIncompleteSuccess,
     OutcomeConflict,
     PrivateOutputLeakage,
     PolicyIdentityMismatch,
+    PathPolicyConflict,
 }
 
 impl ContractViolation {
@@ -331,7 +378,6 @@ impl ContractViolation {
     #[allow(dead_code)]
     pub const ALL: &'static [Self] = &[
         Self::MalformedDocument,
-        Self::UnknownSchemaVersion,
         Self::AmbiguousSelector,
         Self::SelectorSubjectMismatch,
         Self::ModeMismatch,
@@ -343,24 +389,24 @@ impl ContractViolation {
         Self::UnknownPredecessor,
         Self::CyclicStageGraph,
         Self::UnauthorizedStageApplicability,
-        Self::UnknownReceiptSchema,
         Self::SubjectDigestMismatch,
+        Self::IntentDigestMismatch,
         Self::TransactionMismatch,
         Self::AttemptMismatch,
         Self::DuplicateStageResult,
         Self::PredecessorMismatch,
         Self::MissingRequiredStage,
-        Self::SuccessAfterTerminalEvidence,
+        Self::EvidenceAfterTerminalEvidence,
         Self::InstrumentIncompleteSuccess,
         Self::OutcomeConflict,
         Self::PrivateOutputLeakage,
         Self::PolicyIdentityMismatch,
+        Self::PathPolicyConflict,
     ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::MalformedDocument => "malformed_document",
-            Self::UnknownSchemaVersion => "unknown_schema_version",
             Self::AmbiguousSelector => "ambiguous_selector",
             Self::SelectorSubjectMismatch => "selector_subject_mismatch",
             Self::ModeMismatch => "mode_mismatch",
@@ -372,18 +418,19 @@ impl ContractViolation {
             Self::UnknownPredecessor => "unknown_predecessor",
             Self::CyclicStageGraph => "cyclic_stage_graph",
             Self::UnauthorizedStageApplicability => "unauthorized_stage_applicability",
-            Self::UnknownReceiptSchema => "unknown_receipt_schema",
             Self::SubjectDigestMismatch => "subject_digest_mismatch",
+            Self::IntentDigestMismatch => "intent_digest_mismatch",
             Self::TransactionMismatch => "transaction_mismatch",
             Self::AttemptMismatch => "attempt_mismatch",
             Self::DuplicateStageResult => "duplicate_stage_result",
             Self::PredecessorMismatch => "predecessor_mismatch",
             Self::MissingRequiredStage => "missing_required_stage",
-            Self::SuccessAfterTerminalEvidence => "success_after_terminal_evidence",
+            Self::EvidenceAfterTerminalEvidence => "evidence_after_terminal_evidence",
             Self::InstrumentIncompleteSuccess => "instrument_incomplete_success",
             Self::OutcomeConflict => "outcome_conflict",
             Self::PrivateOutputLeakage => "private_output_leakage",
             Self::PolicyIdentityMismatch => "policy_identity_mismatch",
+            Self::PathPolicyConflict => "path_policy_conflict",
         }
     }
 
@@ -644,15 +691,83 @@ fn reject_private_output<T: Serialize>(value: &T, what: &str) -> ContractResult<
 // Shared scalar shapes
 // ---------------------------------------------------------------------------
 
-fn schema_check(actual: &str, expected: &str) -> ContractResult<()> {
-    if actual == expected {
-        Ok(())
-    } else {
-        violation(
-            ContractViolation::UnknownSchemaVersion,
-            format!("schema_version must be {expected}, got {actual}"),
-        )
+/// Derive the (platform, libc) identity a release triple names, then let the
+/// caller compare it against the declared identity. Structural, not an
+/// allowlist: the OS and environment components must agree with the
+/// platform/libc disposition; unknown OS or environment spellings fail
+/// closed so a triple can never certify a target it does not describe.
+fn triple_identity(triple: &str) -> ContractResult<(Platform, LibcDisposition)> {
+    let parts: Vec<&str> = triple.split('-').collect();
+    if parts.len() < 3 {
+        return violation(
+            ContractViolation::IncoherentTargetIdentity,
+            format!("target triple {triple:?} is not arch-vendor-os[-environment]"),
+        );
     }
+    let os = parts[2];
+    let environment = parts[3..].join("-");
+    match os {
+        "linux" => {
+            let libc = if environment.starts_with("gnu") {
+                LibcDisposition::Gnu
+            } else if environment.starts_with("musl") {
+                LibcDisposition::Musl
+            } else {
+                return violation(
+                    ContractViolation::IncoherentTargetIdentity,
+                    format!("linux triple {triple:?} must name a gnu or musl environment"),
+                );
+            };
+            Ok((Platform::Linux, libc))
+        }
+        "darwin" => {
+            if !environment.is_empty() {
+                return violation(
+                    ContractViolation::IncoherentTargetIdentity,
+                    format!("darwin triple {triple:?} carries no libc environment"),
+                );
+            }
+            Ok((Platform::Macos, LibcDisposition::NoneLibc))
+        }
+        "windows" => {
+            if environment != "msvc" {
+                return violation(
+                    ContractViolation::IncoherentTargetIdentity,
+                    format!("windows triple {triple:?} must name the msvc environment"),
+                );
+            }
+            Ok((Platform::Windows, LibcDisposition::Msvc))
+        }
+        other => violation(
+            ContractViolation::IncoherentTargetIdentity,
+            format!("target triple {triple:?} names unsupported OS {other:?}"),
+        ),
+    }
+}
+
+/// Reject a triple whose implied (platform, libc) contradicts the declared
+/// identity. Used for the intent target, every resolved subject target, and
+/// the explicit target override.
+fn cross_check_triple(
+    triple: &str,
+    platform: Platform,
+    libc: LibcDisposition,
+) -> ContractResult<()> {
+    let (implied_platform, implied_libc) = triple_identity(triple)?;
+    if implied_platform != platform || implied_libc != libc {
+        return violation(
+            ContractViolation::IncoherentTargetIdentity,
+            format!(
+                "target triple {triple:?} describes {} on {} but the declared identity is \
+                 {} on {}",
+                implied_libc.as_str(),
+                implied_platform.as_str(),
+                libc.as_str(),
+                platform.as_str()
+            ),
+        );
+    }
+    Ok(())
 }
 
 /// Platform / execution environment / architecture / libc disposition.
@@ -667,25 +782,10 @@ pub struct TargetIdentity {
 impl TargetIdentity {
     fn validate(&self) -> ContractResult<()> {
         bounded_id(&self.triple, "target.triple")?;
-        // External platform truth: gnu/musl are Linux libcs, msvc is
-        // Windows-only; macOS carries no libc disposition.
-        let coherent = match self.libc {
-            LibcDisposition::Gnu | LibcDisposition::Musl => self.platform == Platform::Linux,
-            LibcDisposition::Msvc => self.platform == Platform::Windows,
-            LibcDisposition::NoneLibc => self.platform == Platform::Macos,
-        };
-        if coherent {
-            Ok(())
-        } else {
-            violation(
-                ContractViolation::IncoherentTargetIdentity,
-                format!(
-                    "libc {} is impossible on platform {}",
-                    self.libc.as_str(),
-                    self.platform.as_str()
-                ),
-            )
-        }
+        // The triple is not a free-form label: its OS/environment components
+        // must describe exactly the declared platform/libc, so a target can
+        // never claim one platform while naming another's artifact.
+        cross_check_triple(&self.triple, self.platform, self.libc)
     }
 }
 
@@ -817,7 +917,7 @@ pub struct TargetOverride {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StandaloneInstallIntent {
-    pub schema_version: String,
+    pub schema_version: IntentSchemaVersion,
     pub transaction_id: String,
     pub attempt_id: String,
     pub operation: InstallOperation,
@@ -840,7 +940,6 @@ impl StandaloneInstallIntent {
     /// Validate fail-closed and recompute the immutable intent identity over
     /// canonical bytes.
     pub fn validate(&self) -> ContractResult<String> {
-        schema_check(&self.schema_version, INTENT_SCHEMA_VERSION)?;
         bounded_id(&self.transaction_id, "transaction_id")?;
         bounded_id(&self.attempt_id, "attempt_id")?;
         hex_sha256(&self.trusted_config_digest, "trusted_config_digest")?;
@@ -855,6 +954,20 @@ impl StandaloneInstallIntent {
         if let Some(override_target) = &self.target_override {
             bounded_id(&override_target.triple, "target_override.triple")?;
             bounded_text(&override_target.authority, "target_override.authority", MAX_TEXT_CHARS)?;
+            // The override widens resolution, never the platform: its triple
+            // must describe the same platform/libc the immutable intent
+            // declares, or the override amplifies into a cross-target claim.
+            cross_check_triple(&override_target.triple, self.target.platform, self.target.libc)?;
+        }
+        // Fail closed while session-scoped PATH is not composed into DAG
+        // validation: a green outcome that silently ignored the declared
+        // policy would be false confidence (see PathPolicy::SessionOnly).
+        if self.path_policy == PathPolicy::SessionOnly {
+            return violation(
+                ContractViolation::PathPolicyConflict,
+                "session_only PATH policy is not yet composed into DAG validation; declare \
+                 persist until #11099's adapter children wire session scope",
+            );
         }
         self.selector.validate()?;
         // Only release-archive intents select releases. `latest_requested`
@@ -891,12 +1004,19 @@ impl StandaloneInstallIntent {
     }
 
     /// True when this intent's selection is fully resolved and may authorize
-    /// artifact work. `latest_requested` and local development never satisfy
-    /// this. Resolver/adapters children consume this predicate.
+    /// artifact work. Local development never satisfies this, and an
+    /// unresolved `latest_requested` selector names an intent without
+    /// authorizing transport, staging, or mutation. An exact-registry-source
+    /// intent is exact by construction: its mode pins the registry identity,
+    /// so it authorizes without a release selector. Resolver/adapters
+    /// children consume this predicate.
     #[allow(dead_code)]
     pub fn authorizes_artifact_work(&self) -> bool {
-        self.mode != InstallMode::ExplicitLocalDevelopment
-            && self.selector.kind == SelectorKind::Exact
+        match self.mode {
+            InstallMode::ExplicitLocalDevelopment => false,
+            InstallMode::ExactRegistrySource => true,
+            InstallMode::ReleaseArchive => self.selector.kind == SelectorKind::Exact,
+        }
     }
 }
 
@@ -908,7 +1028,7 @@ impl StandaloneInstallIntent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReleaseArchiveSubject {
-    pub schema_version: String,
+    pub schema_version: SubjectSchemaVersion,
     pub subject_id: String,
     /// Exact repository identity (`owner/name`).
     pub repository: String,
@@ -937,7 +1057,7 @@ pub struct ReleaseArchiveSubject {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExactRegistrySourceSubject {
-    pub schema_version: String,
+    pub schema_version: SubjectSchemaVersion,
     pub subject_id: String,
     pub registry_id: String,
     pub package: String,
@@ -958,7 +1078,7 @@ pub struct ExactRegistrySourceSubject {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalDevelopmentSubject {
-    pub schema_version: String,
+    pub schema_version: SubjectSchemaVersion,
     pub subject_id: String,
     /// Bounded non-authoritative description (redaction-scanned).
     pub description: String,
@@ -966,8 +1086,12 @@ pub struct LocalDevelopmentSubject {
 }
 
 /// The single second-phase subject. Mode is the closed union tag: a resolved
-/// subject is always exactly one mode-specific shape.
+/// subject is always exactly one mode-specific shape. Enum-level
+/// `deny_unknown_fields` closes the outer map: internally tagged decoding
+/// buffers the whole object, so fields smuggled next to `mode` must fail the
+/// decode rather than being silently dropped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum ResolvedStandaloneInstallSubject {
     ReleaseArchive(ReleaseArchiveSubject),
@@ -1026,7 +1150,6 @@ impl ResolvedStandaloneInstallSubject {
     pub fn validate(&self) -> ContractResult<String> {
         match self {
             Self::ReleaseArchive(subject) => {
-                schema_check(&subject.schema_version, SUBJECT_SCHEMA_VERSION)?;
                 bounded_repo(&subject.repository, "repository")?;
                 bounded_id(&subject.tag, "tag")?;
                 bounded_id(&subject.topology_id, "topology_id")?;
@@ -1041,7 +1164,6 @@ impl ResolvedStandaloneInstallSubject {
                 validate_member_set(subject.product_unit, &subject.expected_members)?;
             }
             Self::ExactRegistrySource(subject) => {
-                schema_check(&subject.schema_version, SUBJECT_SCHEMA_VERSION)?;
                 bounded_id(&subject.registry_id, "registry_id")?;
                 bounded_package(&subject.package, "package")?;
                 bounded_id(&subject.version, "version")?;
@@ -1072,7 +1194,6 @@ impl ResolvedStandaloneInstallSubject {
                 }
             }
             Self::ExplicitLocalDevelopment(subject) => {
-                schema_check(&subject.schema_version, SUBJECT_SCHEMA_VERSION)?;
                 bounded_text(&subject.description, "description", MAX_TEXT_CHARS)?;
             }
         }
@@ -1256,9 +1377,15 @@ pub fn fallback_branch(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageReceipt {
-    pub schema_version: String,
+    pub schema_version: ReceiptSchemaVersion,
     pub transaction_id: String,
     pub attempt_id: String,
+    /// Digest of the immutable intent this receipt executed under (64 hex).
+    /// Receipts certify an operation only through the intent that declared
+    /// it: a receipt set folded against a relabeled intent can never
+    /// recompose, so the terminal claim stays bound to the validated intent
+    /// identity.
+    pub intent_digest: String,
     /// Digest of the resolved subject this receipt binds to (64 hex).
     pub subject_digest: String,
     pub stage_id: StageId,
@@ -1294,17 +1421,9 @@ impl StageReceipt {
     /// Validate fail-closed and recompute the receipt digest over canonical
     /// bytes.
     pub fn validate(&self) -> ContractResult<String> {
-        if self.schema_version != RECEIPT_SCHEMA_VERSION {
-            return violation(
-                ContractViolation::UnknownReceiptSchema,
-                format!(
-                    "schema_version must be {RECEIPT_SCHEMA_VERSION}, got {}",
-                    self.schema_version
-                ),
-            );
-        }
         bounded_id(&self.transaction_id, "transaction_id")?;
         bounded_id(&self.attempt_id, "attempt_id")?;
+        hex_sha256(&self.intent_digest, "intent_digest")?;
         hex_sha256(&self.subject_digest, "subject_digest")?;
         for predecessor in &self.predecessor_receipt_digests {
             hex_sha256(predecessor, "predecessor_receipt_digests[]")?;
@@ -1442,7 +1561,7 @@ pub struct StageNode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageDag {
-    pub schema_version: String,
+    pub schema_version: DagSchemaVersion,
     pub mode: InstallMode,
     pub product_unit: ProductUnit,
     /// Nodes in topological declaration order (predecessors first).
@@ -1454,7 +1573,6 @@ impl StageDag {
     /// acyclic graph, topological declaration order, and applicability that
     /// the mode/stage authorization map positively allows.
     pub fn validate(&self) -> ContractResult<()> {
-        schema_check(&self.schema_version, DAG_SCHEMA_VERSION)?;
         let required_floor: &[StageId] = match self.mode {
             InstallMode::ReleaseArchive => &[
                 StageId::ResolveSubject,
@@ -1728,10 +1846,12 @@ fn authorized_applicabilities(mode: InstallMode, stage: StageId) -> Option<[Appl
 /// Inputs to one deterministic fan-in fold over an ordered receipt set.
 pub struct FanInInput<'a> {
     pub dag: &'a StageDag,
-    pub operation: InstallOperation,
-    pub mode: InstallMode,
-    pub transaction_id: &'a str,
-    pub attempt_id: &'a str,
+    /// The immutable intent the receipts executed under. The fold re-validates
+    /// it (recomputing its digest), and derives transaction, attempt,
+    /// operation, and mode from it — the terminal claim can never be
+    /// relabeled by a free caller argument because every receipt binds the
+    /// intent digest the operation was declared in.
+    pub intent: &'a StandaloneInstallIntent,
     /// The settled subject every receipt binds to; its recomputed digest must
     /// equal `subject_digest` and its policies anchor receipt bindings.
     pub subject: &'a ResolvedStandaloneInstallSubject,
@@ -1747,7 +1867,7 @@ pub struct FanInInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TerminalStandaloneInstallOutcome {
-    pub schema_version: String,
+    pub schema_version: OutcomeSchemaVersion,
     pub transaction_id: String,
     pub attempt_id: String,
     pub subject_digest: String,
@@ -1768,7 +1888,6 @@ pub struct TerminalStandaloneInstallOutcome {
 impl TerminalStandaloneInstallOutcome {
     /// Validate and recompute the stage-set binding over canonical bytes.
     pub fn validate(&self) -> ContractResult<String> {
-        schema_check(&self.schema_version, OUTCOME_SCHEMA_VERSION)?;
         bounded_id(&self.transaction_id, "transaction_id")?;
         bounded_id(&self.attempt_id, "attempt_id")?;
         hex_sha256(&self.subject_digest, "subject_digest")?;
@@ -1781,11 +1900,14 @@ impl TerminalStandaloneInstallOutcome {
 /// Fold one ordered receipt set into its single terminal outcome, enforcing
 /// every composition rule from #10243/#11099:
 ///
-/// - exact transaction/attempt/subject/schema binding on every receipt;
+/// - exact intent-digest/transaction/attempt/subject/schema binding on every
+///   receipt, so the terminal claim can never be relabeled to another
+///   operation;
 /// - no duplicate, unknown, out-of-DAG-order, or unauthorized results;
 /// - predecessor digests recomputed from THIS validated chain, never trusted;
 /// - cancelled/timed-out/instrument-failed/failing mandatory evidence blocks
-///   all downstream success;
+///   all downstream authorization: the chain truncates at the first terminal
+///   receipt and every later receipt is rejected;
 /// - producer-declared completeness is never authority (instrument state is
 ///   checked against the claimed result);
 /// - explicit local development can never terminate as an install claim.
@@ -1793,8 +1915,13 @@ pub fn fold_terminal_outcome(
     input: FanInInput<'_>,
 ) -> ContractResult<TerminalStandaloneInstallOutcome> {
     input.dag.validate()?;
-    if input.mode != InstallMode::ExplicitLocalDevelopment {
-        let terminal_stage = match input.operation {
+    // The supplied intent is re-validated here, never trusted: its recomputed
+    // digest is the identity every receipt must cite, and the operation that
+    // names the terminal claim is the intent's — never a free argument.
+    let intent_digest = input.intent.validate()?;
+    let intent_mode = input.intent.mode;
+    if intent_mode != InstallMode::ExplicitLocalDevelopment {
+        let terminal_stage = match input.intent.operation {
             InstallOperation::Uninstall => StageId::Uninstall,
             _ => StageId::InstalledTransition,
         };
@@ -1803,25 +1930,28 @@ pub fn fold_terminal_outcome(
                 ContractViolation::MissingRequiredStage,
                 format!(
                     "{} operation requires a {} terminal stage",
-                    input.operation.as_str(),
+                    input.intent.operation.as_str(),
                     terminal_stage.as_str()
                 ),
             );
         }
     }
-    if input.dag.mode != input.mode {
-        return violation(ContractViolation::ModeMismatch, "fold mode disagrees with the DAG mode");
+    if input.dag.mode != intent_mode {
+        return violation(
+            ContractViolation::ModeMismatch,
+            "the intent's mode disagrees with the DAG mode",
+        );
     }
     // The settled subject must describe the same installation the DAG
     // composes: mode and product unit bind both, or evidence gathered for
     // one installation shape could certify another.
-    if input.subject.mode() != input.mode {
+    if input.subject.mode() != intent_mode {
         return violation(
             ContractViolation::ModeMismatch,
-            "fold mode disagrees with the settled subject's mode",
+            "the intent's mode disagrees with the settled subject's mode",
         );
     }
-    if input.mode != InstallMode::ExplicitLocalDevelopment
+    if intent_mode != InstallMode::ExplicitLocalDevelopment
         && input.subject.product_unit() != input.dag.product_unit
     {
         // Local development declares no product-unit identity; the accessor's
@@ -1831,8 +1961,6 @@ pub fn fold_terminal_outcome(
             "settled subject product unit disagrees with the DAG's declared unit",
         );
     }
-    bounded_id(input.transaction_id, "transaction_id")?;
-    bounded_id(input.attempt_id, "attempt_id")?;
     hex_sha256(input.subject_digest, "subject_digest")?;
     // The supplied subject is re-validated here, never trusted: its
     // recomputed digest must equal the digest every receipt cites, or the
@@ -1856,7 +1984,18 @@ pub fn fold_terminal_outcome(
 
     for receipt in input.receipts {
         let digest = receipt.validate()?;
-        if receipt.transaction_id != input.transaction_id {
+        if receipt.intent_digest != intent_digest {
+            return violation(
+                ContractViolation::IntentDigestMismatch,
+                format!(
+                    "receipt for stage {} executed under another intent; this fold composes \
+                     the intent digested to {} only",
+                    receipt.stage_id.as_str(),
+                    head(&intent_digest)
+                ),
+            );
+        }
+        if receipt.transaction_id != input.intent.transaction_id {
             return violation(
                 ContractViolation::TransactionMismatch,
                 format!(
@@ -1865,14 +2004,14 @@ pub fn fold_terminal_outcome(
                 ),
             );
         }
-        if receipt.attempt_id != input.attempt_id {
+        if receipt.attempt_id != input.intent.attempt_id {
             return violation(
                 ContractViolation::AttemptMismatch,
                 format!(
                     "receipt for stage {} binds stale attempt {}; this fold composes {} only",
                     receipt.stage_id.as_str(),
                     head(&receipt.attempt_id),
-                    head(input.attempt_id)
+                    head(&input.intent.attempt_id)
                 ),
             );
         }
@@ -2037,19 +2176,23 @@ pub fn fold_terminal_outcome(
                 ),
             );
         }
-        if blocked.is_some() && receipt.result == StageResult::Succeeded {
+        // Terminal evidence truncates the chain: cancellation, timeout,
+        // instrument failure, and failure all stop downstream authorization,
+        // and no evidence — success, failure, or skip — may follow a
+        // terminal receipt, or post-failure noise could widen the digest or
+        // resurface later as composition input.
+        if let Some((terminal_stage, _)) = &blocked {
             return violation(
-                ContractViolation::SuccessAfterTerminalEvidence,
+                ContractViolation::EvidenceAfterTerminalEvidence,
                 format!(
-                    "stage {} succeeded after terminal evidence at {}; cancellation, \
-                     timeout, instrument failure, and failure block downstream \
-                     authorization",
+                    "stage {} produced evidence after terminal evidence at {}; the validated \
+                     chain is truncated at the first terminal receipt",
                     receipt.stage_id.as_str(),
-                    blocked.as_ref().map(|(stage, _)| stage.as_str()).unwrap_or("?")
+                    terminal_stage.as_str()
                 ),
             );
         }
-        if blocked.is_none() && receipt.result != StageResult::Succeeded {
+        if receipt.result != StageResult::Succeeded {
             blocked = Some((receipt.stage_id, receipt.clone()));
         }
         validated_chain.push((receipt.stage_id, digest));
@@ -2088,8 +2231,8 @@ pub fn fold_terminal_outcome(
     let mut ordered_executed: Vec<StageId> = executed.into_iter().collect();
     ordered_executed.sort_by_key(|stage| input.dag.position_of(*stage).unwrap_or_default());
     let installed_transition_green = ordered_executed.contains(&StageId::InstalledTransition);
-    if blocked.is_none() && input.mode != InstallMode::ExplicitLocalDevelopment {
-        let terminal_stage = match input.operation {
+    if blocked.is_none() && intent_mode != InstallMode::ExplicitLocalDevelopment {
+        let terminal_stage = match input.intent.operation {
             InstallOperation::Uninstall => StageId::Uninstall,
             _ => StageId::InstalledTransition,
         };
@@ -2098,7 +2241,7 @@ pub fn fold_terminal_outcome(
                 ContractViolation::MissingRequiredStage,
                 format!(
                     "{} operation produced no {} terminal evidence",
-                    input.operation.as_str(),
+                    input.intent.operation.as_str(),
                     terminal_stage.as_str()
                 ),
             );
@@ -2124,7 +2267,7 @@ pub fn fold_terminal_outcome(
         None => {
             let terminal_stage =
                 ordered_executed.last().copied().unwrap_or(StageId::ResolveSubject);
-            if input.mode == InstallMode::ExplicitLocalDevelopment {
+            if intent_mode == InstallMode::ExplicitLocalDevelopment {
                 // Green local-development evidence still cannot satisfy a
                 // release/install claim.
                 (
@@ -2134,7 +2277,7 @@ pub fn fold_terminal_outcome(
                     ActionClass::VerifyEnvironmentThenRetry,
                 )
             } else {
-                let result = match input.operation {
+                let result = match input.intent.operation {
                     InstallOperation::Install => TerminalResult::Installed,
                     InstallOperation::Repair => TerminalResult::Repaired,
                     InstallOperation::Update => TerminalResult::Updated,
@@ -2149,26 +2292,29 @@ pub fn fold_terminal_outcome(
     // Candidate disposition (#11099), derived from the validated receipts
     // only: an authoritative disposition requires green evidence through the
     // installed transition; blocked folds and non-authoritative local
-    // development stay unresolved rather than guessed.
+    // development stay unresolved rather than guessed. A green rollback's
+    // validated chain promoted and observed the restored previous candidate
+    // through the installed transition, so its disposition is
+    // previous_restored — never guessed.
     let candidate_disposition = if blocked_terminal
-        || input.mode == InstallMode::ExplicitLocalDevelopment
+        || intent_mode == InstallMode::ExplicitLocalDevelopment
         || !installed_transition_green
     {
         CandidateDisposition::Unresolved
     } else {
-        match input.operation {
+        match input.intent.operation {
             InstallOperation::Install | InstallOperation::Repair | InstallOperation::Update => {
                 CandidateDisposition::CurrentConfirmed
             }
-            InstallOperation::Rollback => CandidateDisposition::Unresolved,
+            InstallOperation::Rollback => CandidateDisposition::PreviousRestored,
             InstallOperation::Uninstall => CandidateDisposition::NoneRemaining,
         }
     };
 
     let outcome = TerminalStandaloneInstallOutcome {
-        schema_version: OUTCOME_SCHEMA_VERSION.to_string(),
-        transaction_id: input.transaction_id.to_string(),
-        attempt_id: input.attempt_id.to_string(),
+        schema_version: OutcomeSchemaVersion::V1,
+        transaction_id: input.intent.transaction_id.clone(),
+        attempt_id: input.intent.attempt_id.clone(),
         subject_digest: input.subject_digest.to_string(),
         result,
         terminal_stage,
