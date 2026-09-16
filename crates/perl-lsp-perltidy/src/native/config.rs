@@ -6,13 +6,14 @@ use serde::{Deserialize, Serialize};
 pub enum FormatterMode {
     /// Run the Rust-native formatter.
     ///
-    /// The retired `compat` / `perltidy-compat` configuration tokens project
-    /// onto this mode (#7129). `compat` was a bare alias: it selected the
-    /// native formatter and produced byte-identical output, so it named no
-    /// behavior a user could observe or rely on. A future compatibility
-    /// profile must arrive as its own behavior-backed contract with a profile
-    /// identity, a reviewed mapping table, and behavior fixtures — it does not
-    /// inherit authority from the removed alias.
+    /// The retired `compat` / `perltidy-compat` configuration tokens were
+    /// removed by #7129 and are rejected since #15624 closed the deprecation
+    /// window: `compat` was a bare alias that selected this mode and produced
+    /// byte-identical output, so it named no behavior a user could observe or
+    /// rely on. A future compatibility profile must arrive as its own
+    /// behavior-backed contract with a profile identity, a reviewed mapping
+    /// table, and behavior fixtures — it does not inherit authority from the
+    /// removed alias.
     #[default]
     Native,
     /// Explicitly use an external legacy formatter adapter.

@@ -57,7 +57,8 @@ off               disabled
 A `compat` formatter mode was specified here and implemented as a bare alias
 for `native`: it selected the same engine and produced byte-identical output.
 #7129 retired it rather than leave a public distinction the formatter could
-not defend. A future compatibility profile must arrive as its own
+not defend, and #15624 closed the deprecation window, so the retired tokens
+are rejected outright. A future compatibility profile must arrive as its own
 behavior-backed contract — profile identity and version, a reviewed mapping
 table from named legacy conventions, declared supported/approximated/
 unsupported dispositions, and behavior fixtures distinguishing it from native

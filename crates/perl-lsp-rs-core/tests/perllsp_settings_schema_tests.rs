@@ -225,9 +225,9 @@ fn generic_formatter_schema_excludes_external_process_modes() -> Result<(), Box<
     // `compat` is deliberately absent (#7129): it was a bare alias for the
     // native formatter, producing byte-identical output, so the public
     // settings contract must not offer it as an engine to choose. The server
-    // still accepts the token for a bounded deprecation window — that is a
-    // migration affordance, not a supported value, and the schema is what
-    // tells a user what to pick.
+    // rejects the token outright (#15624 closed the deprecation window), so
+    // the schema and the parser now agree: only `native` and `off` are
+    // engines on this channel.
     assert_eq!(engine["enum"], json!(["native", "off"]));
     Ok(())
 }

@@ -1419,13 +1419,3 @@ fn formatter_modes_resolve_to_distinct_engines() {
 
     assert_eq!(seen.len(), modes.len(), "every formatter mode must be classified");
 }
-
-/// The engine a retired alias projects onto must be the native one.
-///
-/// Pairs with the config-layer projection tests: those prove `compat` parses
-/// to [`FormatterMode::Native`], and this proves that mode still runs the
-/// native engine, so the deprecation genuinely preserves behavior end to end.
-#[test]
-fn retired_compat_alias_target_runs_the_native_engine() {
-    assert_eq!(actual_engine_for_mode(FormatterMode::Native), "native");
-}
