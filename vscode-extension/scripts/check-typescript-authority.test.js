@@ -36,6 +36,7 @@ function healthyInput(overrides = {}) {
       expected: '/ext/node_modules/typescript/bin/tsc',
     },
     tsconfigs: [{ file: 'tsconfig.json', ignoreDeprecations: undefined }],
+    typePackages: [{ name: '@types/node', declaredRange: '^24.0.0', installed: true }],
     ...overrides,
   };
 }
@@ -366,6 +367,64 @@ void test('an unreadable tsconfig is red, and is not counted as clean', () => {
   );
 });
 
+void test('a declared type package missing from the install is red and names the repair', () => {
+  // The exact #15626 shape: an incomplete install left a declared `@types/*`
+  // package absent while the manifest still named it. Nothing failed loudly —
+  // imports from the untyped module degraded to `any` and the strict compile
+  // scattered implicit-any errors across the files that consume it, which read
+  // as a source defect in files that never changed. The gate names the package
+  // and the repair instead.
+  assertFailedWith(
+    evaluateTypeScriptAuthority(
+      healthyInput({
+        typePackages: [
+          { name: '@types/tar', declaredRange: '^7.0.87', installed: true },
+          { name: '@types/yauzl', declaredRange: '^3.4.0', installed: false },
+        ],
+      }),
+    ),
+    /"@types\/yauzl" \("\^3\.4\.0"\) is not installed .*run `npm ci`/,
+  );
+});
+
+void test('a fully installed declared type surface is green evidence', () => {
+  const result = evaluateTypeScriptAuthority(
+    healthyInput({
+      typePackages: [
+        { name: '@types/tar', declaredRange: '^7.0.87', installed: true },
+        { name: '@types/yauzl', declaredRange: '^3.4.0', installed: true },
+      ],
+    }),
+  );
+  assert.ok(result.ok, JSON.stringify(result.failures));
+  assert.ok(
+    result.facts.some((fact) => /all 2 declared @types\/\* packages are installed/.test(fact)),
+    `expected the installed type surface among the facts, got ${JSON.stringify(result.facts)}`,
+  );
+});
+
+void test('a manifest declaring no @types packages has nothing to gate', () => {
+  const result = evaluateTypeScriptAuthority(healthyInput({ typePackages: [] }));
+  assert.ok(result.ok, JSON.stringify(result.failures));
+  assert.ok(
+    !result.facts.some((fact) => fact.includes('@types/')),
+    `no type packages are declared, so none may be claimed: ${JSON.stringify(result.facts)}`,
+  );
+});
+
+void test('every missing declared type package is named, not just the first', () => {
+  const result = evaluateTypeScriptAuthority(
+    healthyInput({
+      typePackages: [
+        { name: '@types/tar', declaredRange: '^7.0.87', installed: false },
+        { name: '@types/yauzl', declaredRange: '^3.4.0', installed: false },
+      ],
+    }),
+  );
+  assertFailedWith(result, /"@types\/tar"/);
+  assertFailedWith(result, /"@types\/yauzl"/);
+});
+
 void test('every drifted fact is reported, not just the first', () => {
   const result = evaluateTypeScriptAuthority(
     healthyInput({
@@ -433,6 +492,35 @@ void test('a drifted tree on disk goes red through the real file-reading path', 
       !result.facts.some((fact) => /tsconfig authority files carry no/.test(fact)),
       `no config was readable, so none may be reported clean: ${JSON.stringify(result.facts)}`,
     );
+  } finally {
+    fs.rmSync(drifted, { recursive: true, force: true });
+  }
+});
+
+void test('a declared type package absent on disk goes red through the real file-reading path', () => {
+  // The pure-evaluator cases prove the invariant; this one proves the manifest
+  // is actually read: a package.json declaring `@types/tar` with no such
+  // directory under node_modules is red, never assumed installed.
+  const drifted = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-ts-typepkg-'));
+  try {
+    fs.writeFileSync(
+      path.join(drifted, 'package.json'),
+      JSON.stringify({ devDependencies: { typescript: '^7.0.2', '@types/tar': '^7.0.87' } }),
+    );
+    fs.writeFileSync(
+      path.join(drifted, 'package-lock.json'),
+      JSON.stringify({
+        packages: {
+          'node_modules/typescript': {
+            version: '7.0.2',
+            resolved: 'https://registry.npmjs.org/typescript/-/typescript-7.0.2.tgz',
+            integrity: 'sha512-deadbeef',
+          },
+        },
+      }),
+    );
+    const result = checkTypeScriptAuthority(drifted);
+    assertFailedWith(result, /"@types\/tar" \("\^7\.0\.87"\) is not installed/);
   } finally {
     fs.rmSync(drifted, { recursive: true, force: true });
   }

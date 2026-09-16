@@ -35,6 +35,15 @@
  *      Effective, not declared: four of the five authority configs `extends`
  *      another, so reading each file's own `compilerOptions` would miss one
  *      introduced in a shared base while `tsc` still applied it.
+ *   6. every `@types/*` package the manifest declares is actually installed.
+ *      A missing one — an interrupted or pruned `npm ci` — does not fail the
+ *      compile loudly; it silently degrades it: imports from the untyped
+ *      module and their callback parameters fall back to `any`, and a strict
+ *      compile instead scatters implicit-any errors across whichever files
+ *      consume the module (#15626 reported nine TS7006 errors in
+ *      `managedArchiveExtract*` that vanished entirely under a complete
+ *      install). A named, fail-closed red here turns that state into one
+ *      actionable line instead of a misleading source-defect hunt.
  *
  * Adopting a new compiler major is a deliberate act: bump
  * `TYPESCRIPT_AUTHORITY_MAJOR` in the same change that bumps the dependency.
@@ -80,6 +89,9 @@ const TSCONFIG_FILES = [
  * @property {Array<{file: string, ignoreDeprecations: unknown, error?: string}>} tsconfigs
  *   One entry per authority tsconfig. `error` is set when the file could not be
  *   read or parsed, in which case its `ignoreDeprecations` state is unknown.
+ * @property {Array<{name: string, declaredRange: string, installed: boolean}>} typePackages
+ *   Every `@types/*` package the manifest declares, and whether the installed
+ *   tree actually provides it.
  */
 
 /**
@@ -364,6 +376,26 @@ function evaluateTypeScriptAuthority(input) {
     facts.push(`${readableTsconfigs} tsconfig authority files carry no \`ignoreDeprecations\``);
   }
 
+  // 6. The declared ambient type surface is installed.
+  //
+  // A missing `@types/*` package never fails a compile loudly. It degrades it
+  // silently: the module's imports and their callback parameters fall back to
+  // `any`, so a strict compile reports a scatter of implicit-any errors in
+  // whichever files consume the module — which reads as a source defect in
+  // files that never changed. An install that dropped a declared package is an
+  // environment defect, and it is named here, once, with its repair.
+  const missingTypePackages = input.typePackages.filter((typePackage) => !typePackage.installed);
+  for (const typePackage of missingTypePackages) {
+    failures.push(
+      `the declared type package "${typePackage.name}" ("${typePackage.declaredRange}") is not ` +
+        'installed — type-checking would silently degrade to implicit-any errors for everything ' +
+        `that imports it (run \`npm ci\`)`,
+    );
+  }
+  if (input.typePackages.length > 0 && missingTypePackages.length === 0) {
+    facts.push(`all ${input.typePackages.length} declared @types/* packages are installed`);
+  }
+
   return { ok: failures.length === 0, facts, failures };
 }
 
@@ -550,6 +582,58 @@ function resolveBinShim(extensionRoot, typescriptDir) {
 }
 
 /**
+ * Collects the `@types/*` packages the manifest declares and whether the
+ * installed tree actually provides each one.
+ *
+ * Presence is the invariant (#15626): a package the manifest declares but that
+ * is missing from node_modules is an incomplete install, and TypeScript
+ * degrades every import from that module to `any` without a word. Scoped names
+ * map one-to-one to `node_modules/<name>` directories in npm's hoisted layout,
+ * so a direct manifest probe is deterministic; a copy reachable only through a
+ * nested conflicting install would be reported missing, and the named `npm ci`
+ * repair is the correct response to that shape too.
+ *
+ * @param {string} extensionRoot
+ * @param {{dependencies?: Record<string, string>, devDependencies?: Record<string, string>}} packageJson
+ * @returns {Array<{name: string, declaredRange: string, installed: boolean}>}
+ */
+function declaredTypePackages(extensionRoot, packageJson) {
+  const declared = {
+    ...packageJson.dependencies,
+    ...packageJson.devDependencies,
+  };
+  return Object.entries(declared)
+    .filter(([name]) => name.startsWith('@types/'))
+    .map(([name, declaredRange]) => ({
+      name,
+      declaredRange,
+      installed: isInstalledTypePackage(extensionRoot, name),
+    }));
+}
+
+/**
+ * Decides whether a declared package exists as a real installed package.
+ *
+ * A directory that cannot be read, or whose manifest does not name that very
+ * package, is not installed: "cannot prove it is there" and "it is not there"
+ * get the same red, because neither may silently degrade the type surface.
+ *
+ * @param {string} extensionRoot
+ * @param {string} name
+ * @returns {boolean}
+ */
+function isInstalledTypePackage(extensionRoot, name) {
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(extensionRoot, 'node_modules', name, 'package.json'), 'utf8'),
+    );
+    return manifest?.name === name && typeof manifest?.version === 'string';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Gathers the real facts from the extension tree and evaluates them.
  *
  * @param {string} extensionRoot
@@ -635,6 +719,7 @@ function checkTypeScriptAuthority(extensionRoot) {
     binaryVersionOutput,
     binShim: resolveBinShim(extensionRoot, typescriptDir),
     tsconfigs,
+    typePackages: declaredTypePackages(extensionRoot, packageJson),
   });
 }
 

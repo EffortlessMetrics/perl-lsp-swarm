@@ -121,6 +121,25 @@ void test('the real spawner settles on error events for a command that cannot la
   assert.ok(typeof result.error === 'string' && result.error.length > 0);
 });
 
+void test('a piped child still forwards its real exit code while its output goes nowhere', async () => {
+  // The pipe mode exists so a deliberately broken compile (#15609) cannot leak
+  // its expected diagnostics into a CI log, where the tsc problem matcher
+  // annotates them as unattributed errors. A piped child must behave exactly
+  // like an inherited one apart from that: same exit forwarding, same launch
+  // semantics, no second code path. The "goes nowhere" half is proven by this
+  // suite's own log: the canaries below must not appear in it, which CI asserts
+  // by the absence of both strings from the job output.
+  const result = await spawnPinnedTsc(
+    process.execPath,
+    [
+      '-e',
+      'process.stdout.write("PIPED-STDOUT-CANARY");process.stderr.write("PIPED-STDERR-CANARY");process.exitCode = 7;',
+    ],
+    { stdio: 'pipe' },
+  );
+  assert.equal(result.code, 7, 'the piped child exit code is forwarded unchanged');
+});
+
 void test('no forwarded arguments is a usage error, not an implicit project compile', async () => {
   /** @type {{command: string, argv: string[]} | null} */
   let spawned = null;
@@ -160,6 +179,13 @@ void test('a real type error exits nonzero through the seam (type failure blocks
       args: ['-p', path.join(fixtureDir, 'tsconfig.json')],
       reporter: captureReporter(),
       authorityCheck: GREEN_AUTHORITY,
+      // The compiler's expected TS2322 diagnostic must not reach this suite's
+      // output: inherited stdio put it in the CI log, where GitHub's tsc
+      // problem matcher annotated the /tmp fixture path as an unattributed
+      // error on every run, green or red (#15609). Piping keeps the end-to-end
+      // proof — a real spawn of the real pinned compiler against a real broken
+      // file — while the expected diagnostics are drained.
+      childStdio: 'pipe',
     });
     assert.equal(result.spawned, true);
     assert.notEqual(result.code, 0, 'a type error must fail the governed compile');
