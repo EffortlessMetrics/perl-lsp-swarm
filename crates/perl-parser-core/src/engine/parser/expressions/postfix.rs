@@ -15,6 +15,35 @@ impl<'a> Parser<'a> {
     /// build an initial node outside the normal `parse_primary` path
     /// (e.g. typeglobs in `parse_unary`) can still participate in postfix chaining.
     ///
+    /// Do-while trailing-block brace policy (#15649).
+    ///
+    /// A `{` following a do-while condition is the trailing block that real
+    /// Perl rejects near `") {"`. The grammar boundary is the condition's own
+    /// parentheses, not the expression shape: inside the condition's `(...)`
+    /// (paren depth > 0) every postfix brace is an ordinary subscript
+    /// (`while ($h{k})`), and after the group closed no shape can subscript
+    /// (`while ($flag) {k}` and `($h{k}){k}` reject even though grouping left
+    /// a bare variable or subscript binary here). Unparenthesized conditions
+    /// keep the shape rule: bare variables and bareword call/block forms
+    /// (`while foo {k}`) and any subscript-chain result (`$h{k}{j}`,
+    /// `$a[0]{k}`, `$self->{a}{b}`) keep consuming; a brace after a completed
+    /// non-subscript shape (`while $a eq $b {`) is the trailing block, left
+    /// for `parse_statement_modifier` to reject.
+    fn do_while_keep_consuming_brace(&self, expr: &Node) -> bool {
+        let subscript_chain = matches!(
+            &expr.kind,
+            NodeKind::Binary { op, .. }
+                if matches!(op.as_str(), "{}" | "[]" | "->{}" | "->[]" | "->@[]" | "->%{}")
+        );
+        let bare_shape =
+            matches!(&expr.kind, NodeKind::Variable { .. } | NodeKind::Identifier { .. });
+        let inside_condition_group = self.in_do_while_condition
+            && self.do_while_paren_reject
+            && self.do_while_paren_depth > 0;
+        let unparenthesized_condition = self.in_do_while_condition && !self.do_while_paren_reject;
+        inside_condition_group || (unparenthesized_condition && (bare_shape || subscript_chain))
+    }
+
     /// The loop handles several postfix patterns in order of precedence:
     /// 1. Hash/array slice without arrow (`@hash{...}`, `%hash{...}`)
     /// 2. Increment/decrement operators (`++`, `--`)
@@ -39,6 +68,17 @@ impl<'a> Parser<'a> {
         };
 
         loop {
+            // #15649: leave a surviving do-while trailing `{` for
+            // `parse_statement_modifier` to reject with `DoWhileTrailingBlock`.
+            // This single gate covers every direct-`{` postfix arm below (hash
+            // slices, block-call forms, hash subscripts): after the
+            // parenthesized condition's own `)` closes, no shape subscripts.
+            if self.peek_kind() == Some(TokenKind::LeftBrace)
+                && self.in_do_while_condition
+                && !self.do_while_keep_consuming_brace(&expr)
+            {
+                break;
+            }
             // --------------------------------------------------------------------
             // Hash/array slice without arrow: @hash{...} or %hash{...}
             //
@@ -641,43 +681,10 @@ impl<'a> Parser<'a> {
                         }
                     }
 
-                    // Hash element access
-                    //
-                    // #15649: a `{` following a do-while condition is the
-                    // trailing block that real Perl rejects near `") {"`. The
-                    // grammar boundary is the condition's own parentheses, not
-                    // the expression shape: inside the condition's `(...)`
-                    // (paren depth > 0) every postfix brace is an ordinary
-                    // subscript (`while ($h{k})`), and after the group closed
-                    // no shape can subscript (`while ($flag) {k}` and
-                    // `($h{k}){k}` reject even though grouping left a bare
-                    // variable or subscript binary here). Unparenthesized
-                    // conditions keep the shape rule: bare variables and
-                    // bareword call/block forms (`while foo {k}`) and any
-                    // subscript-chain result (`$h{k}{j}`, `$a[0]{k}`,
-                    // `$self->{a}{b}`) keep consuming; a brace after a
-                    // completed non-subscript shape (`while $a eq $b {`) is
-                    // the trailing block, left for `parse_statement_modifier`
-                    // to reject.
-                    let subscript_chain = matches!(
-                        &expr.kind,
-                        NodeKind::Binary { op, .. } if matches!(
-                            op.as_str(),
-                            "{}" | "[]" | "->{}" | "->[]" | "->@[]" | "->%{}"
-                        )
-                    );
-                    let bare_shape = matches!(
-                        &expr.kind,
-                        NodeKind::Variable { .. } | NodeKind::Identifier { .. }
-                    );
-                    let inside_condition_group = self.in_do_while_condition
-                        && self.do_while_paren_reject
-                        && self.do_while_paren_depth > 0;
-                    let unparenthesized_condition =
-                        self.in_do_while_condition && !self.do_while_paren_reject;
-                    let keep_consuming = inside_condition_group
-                        || (unparenthesized_condition && (bare_shape || subscript_chain));
-                    if self.in_do_while_condition && !keep_consuming {
+                    // Hash element access (do-while trailing `{` already left
+                    // by the loop-top gate above; this re-check keeps the arm
+                    // honest if it is ever reached directly).
+                    if self.in_do_while_condition && !self.do_while_keep_consuming_brace(&expr) {
                         break;
                     }
                     self.tokens.next()?; // consume {

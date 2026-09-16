@@ -54,6 +54,10 @@ fn do_while_condition_keeps_chained_subscripts() -> Result<(), String> {
     parse_clean("do { $s++ } while $self->{a}{b};")?;
     parse_clean("do { $s++ } while $self->{a}[0];")?;
 
+    // An unparenthesized `@`-sigil slice key is an ordinary condition
+    // shape: the loop-top gate must not over-reject it.
+    parse_clean("do { $s++ } while @h{k};")?;
+
     // A subscripted variable inside a parenthesized condition is also an
     // ordinary condition shape.
     parse_clean("do { $s++ } while ($h{k});")?;
@@ -85,6 +89,11 @@ fn do_while_rejects_trailing_block() -> Result<(), String> {
         // Same after the group closes for a subscripted condition: the
         // chain cannot continue past the `)` (#15649 review wave 3).
         r#"do { $i++; } while ($h{k}) { $i++; }"#,
+        // Post-`)` bypasses through the other direct-`{` postfix arms: the
+        // loop-top gate covers slices and block-call forms too, not just the
+        // hash-subscript arm (real `perl -c` rejects both near `") {"`).
+        r#"do { $s++; } while (@h) { $s++; }"#,
+        r#"do { $s++; } while (foo) { $s++; }"#,
     ] {
         let mut parser = Parser::new(code);
         if parser.parse().is_ok() {
@@ -136,6 +145,27 @@ fn do_while_discriminates_bare_chain_from_closed_group_chain() -> Result<(), Str
 #[test]
 fn do_while_chain_inside_nested_condition_group_stays_clean() -> Result<(), String> {
     parse_clean("do { $s++; } while (($h{k}{j}));")
+}
+
+/// Post-`)` bypass regression: the loop-top gate must run before every
+/// direct-`{` postfix arm, so a trailing block after a parenthesized
+/// condition raises the exact `DoWhileTrailingBlock` variant even when the
+/// surviving shape is slice-eligible (`@h`) or block-call-eligible (`foo`).
+/// Both outcomes confirmed with `perl -c` (rejects near `") {"`).
+#[test]
+fn do_while_post_close_slice_and_block_call_reject_exact_variant() -> Result<(), String> {
+    for code in ["do { $s++; } while (@h) { $s++; }", "do { $s++; } while (foo) { $s++; }"] {
+        let mut parser = Parser::new(code);
+        let err = match parser.parse() {
+            Ok(_) => return Err(format!("expected outright parse failure for `{code}`")),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, ParseError::DoWhileTrailingBlock { .. }),
+            "expected DoWhileTrailingBlock for `{code}`, got: {err:?}"
+        );
+    }
+    Ok(())
 }
 
 #[test]
