@@ -160,7 +160,7 @@ fn test_diagnostics_clear_protocol_framing() -> Result<(), Box<dyn std::error::E
 
 #[test]
 fn test_workspace_symbol_deduplication() -> Result<(), Box<dyn std::error::Error>> {
-    use perl_parser::workspace_index::WorkspaceIndex;
+    use perl_workspace::workspace_index::WorkspaceIndex;
     use std::collections::HashSet;
     use url::Url;
 
@@ -218,7 +218,7 @@ sub another {
 
 #[test]
 fn test_workspace_symbol_response_format() -> Result<(), Box<dyn std::error::Error>> {
-    use perl_parser::workspace_index::{LspWorkspaceSymbol, WorkspaceIndex};
+    use perl_workspace::workspace_index::{LspWorkspaceSymbol, WorkspaceIndex};
     use url::Url;
 
     let index = WorkspaceIndex::new();
@@ -360,7 +360,7 @@ fn test_tool_detection() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn test_uri_normalization() -> Result<(), Box<dyn std::error::Error>> {
-    use perl_parser::workspace_index::WorkspaceIndex;
+    use perl_workspace::workspace_index::WorkspaceIndex;
     use url::Url;
 
     let index = WorkspaceIndex::new();
