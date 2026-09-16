@@ -21,7 +21,7 @@ const WORKFLOW_ID: &str = "missing_perl_graceful_degradation";
 const SCENARIO_FILE: &str = "ux_scenario_03_missing_perl.rs";
 
 fn config_without_perl() -> ScenarioConfig {
-    ScenarioConfig { path_restriction: Some(Vec::new()), ..Default::default() }
+    ScenarioConfig::with_empty_path()
 }
 
 #[test]
