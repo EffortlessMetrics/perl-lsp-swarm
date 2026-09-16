@@ -1400,6 +1400,32 @@ created = "2026-09-10"
 review_after = "2026-12-10"
 
 [[allow]]
+id = "non-rust-release-topology-v3-schema"
+path = "schemas/release_topology.v3.schema.json"
+kind = "release_contract"
+language = "json"
+surface = "release"
+classification = "config"
+owner = "release/ci"
+reason = "Explicitly selected source-bound SBOM and attestation subject projection for #15281; does not establish artifact or attestation execution."
+covered_by = ["python -m unittest scripts.test_generate_release_topology", "cargo xtask check-file-policy"]
+created = "2026-09-15"
+review_after = "2026-12-15"
+
+[[allow]]
+id = "non-rust-release-subject-projection"
+path = "scripts/release_subject_projection.py"
+kind = "release_contract"
+language = "python"
+surface = "release"
+classification = "production"
+owner = "release/ci"
+reason = "Shared pure terminal subject relationships and selected topology projection; preserves existing terminal manifest output."
+covered_by = ["python -m unittest scripts.test_generate_release_topology scripts.test_release_terminal_manifest", "cargo xtask check-file-policy"]
+created = "2026-09-15"
+review_after = "2026-12-15"
+
+[[allow]]
 id = "non-rust-release-trust-invariants-schema"
 path = "schemas/release_trust_invariants.v1.schema.json"
 kind = "release_contract"
