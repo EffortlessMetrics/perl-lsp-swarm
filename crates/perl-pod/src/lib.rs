@@ -547,9 +547,11 @@ fn extract_link_display(link: &str, depth: usize) -> String {
         let target = encode_pod_link_target(link[pipe_pos + 1..].trim());
         // `L<|Target>` with an empty display label has no link text to show;
         // emit the bare target as plain text instead of a dead
-        // `[](perldoc://target)` empty-label link.
+        // `[](perldoc://target)` empty-label link. Plain text wants the raw
+        // target — percent-encoding is a link-href concern, not display
+        // text.
         if display.is_empty() {
-            return target;
+            return link[pipe_pos + 1..].trim().to_string();
         }
         return format!("[{display}](perldoc://{target})");
     }

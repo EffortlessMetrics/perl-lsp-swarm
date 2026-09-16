@@ -372,11 +372,14 @@ impl LspServer {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
                 Some(doc) => {
-                    (doc.text_arc.to_string(), doc.current_parsed().or_else(|| doc.latest_parsed()))
+                    // Clone the Arc (O(1)) under the lock; the full string
+                    // copy happens after release, keeping the lock hold short.
+                    (doc.text_arc.clone(), doc.current_parsed().or_else(|| doc.latest_parsed()))
                 }
                 None => return Ok(Some(json!([]))),
             }
         };
+        let text = text.to_string();
 
         let doc_text = &text;
         let mut lsp_ranges = Vec::new();
