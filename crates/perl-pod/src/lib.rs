@@ -548,10 +548,11 @@ fn extract_link_display(link: &str, depth: usize) -> String {
         // `L<|Target>` with an empty display label has no link text to show;
         // emit the bare target as plain text instead of a dead
         // `[](perldoc://target)` empty-label link. Plain text wants the raw
-        // target — percent-encoding is a link-href concern, not display
-        // text.
+        // target — percent-encoding is a link-href concern — but a target
+        // containing `[`/`]` must not inject Markdown structure into the
+        // rendered output, so label delimiters stay escaped.
         if display.is_empty() {
-            return link[pipe_pos + 1..].trim().to_string();
+            return escape_markdown_link_text(link[pipe_pos + 1..].trim());
         }
         return format!("[{display}](perldoc://{target})");
     }
