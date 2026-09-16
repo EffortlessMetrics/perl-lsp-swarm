@@ -41,30 +41,30 @@ use tasks::{
     ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
     ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
     code_action_generation_ledger, command_evidence, compare, compat_inventory,
-    compiler_lexical_cutline, compiler_upstream_status, corpus_audit, count_ratchet, cpan_corpus,
-    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
-    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
-    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
-    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
-    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
-    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
-    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
-    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
-    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    compiler_lexical_cutline, compiler_performance_receipt, compiler_upstream_status,
+    completion_candidates, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof, dead_code,
+    debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims,
+    e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features, finalize_check,
+    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
+    github, github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
+    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
+    metrics, module_train, module_train_live, native_critic, native_format, native_neovim_train,
+    native_product_surface, native_tooling, oneliner_capability_matrix, oracle_fixture_manifest,
+    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
+    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
+    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
+    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
+    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
+    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
     workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
     writer_admission,
@@ -177,6 +177,9 @@ enum Commands {
 
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
+
+    /// Validate the compiler performance receipt schema, its vocabularies, and every committed fixture.
+    CheckCompilerPerformanceReceipt,
 
     /// Validate the shared typed train edge and claim-profile contract
     /// (train_edge_contract.v1), its programme-neutral fixtures, and the
@@ -373,6 +376,16 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Reconcile `policy/completion-candidate-producers.toml` against the live
+    /// `textDocument/completion` candidate producers and hold the finalizer
+    /// route closed (#10949).
+    #[command(name = "completion-candidates")]
+    CompletionCandidates {
+        /// Operation to run against the inventory.
+        #[command(subcommand)]
+        command: completion_candidates::CompletionCandidatesSubcommand,
     },
 
     /// Generate or check the protocol-type substrate and migration-denominator
@@ -5230,6 +5243,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckCompilerPerformanceReceipt => compiler_performance_receipt::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CandidateSecurityContract { contract } => {
             tasks::candidate_security_contract::run(&contract)
@@ -5615,6 +5629,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
+        Commands::CompletionCandidates { command } => completion_candidates::run(command),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
         }
@@ -7483,6 +7498,66 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    fn parse_completion_candidates(
+        args: &[&str],
+    ) -> TestResult<completion_candidates::CompletionCandidatesSubcommand> {
+        match Cli::try_parse_from(args)?.command {
+            Commands::CompletionCandidates { command } => Ok(command),
+            _ => Err(std::io::Error::other("expected completion-candidates command").into()),
+        }
+    }
+
+    /// The inventory's four verbs are its whole interface (#10949). A wrong
+    /// clap name, a missing `#[command(subcommand)]`, or an argument declared
+    /// as a flag instead of a positional all compile cleanly and break the CLI,
+    /// so each shape is parsed here and each wrong shape is refused.
+    #[test]
+    fn completion_candidates_cli_shapes_parse() -> TestResult {
+        use completion_candidates::CompletionCandidatesSubcommand as Sub;
+
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "check"])?,
+            Sub::Check
+        ));
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "list"])?,
+            Sub::List
+        ));
+
+        let explain = parse_completion_candidates(&[
+            "xtask",
+            "completion-candidates",
+            "explain",
+            "some::producer::id",
+        ])?;
+        match explain {
+            Sub::Explain { producer_id } => assert_eq!(producer_id, "some::producer::id"),
+            other => {
+                return Err(
+                    std::io::Error::other(format!("expected explain, got {other:?}")).into()
+                );
+            }
+        }
+
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "graph"])?,
+            Sub::Graph { stdout: false }
+        ));
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "graph", "--stdout"])?,
+            Sub::Graph { stdout: true }
+        ));
+
+        // A verb is required, `explain` needs its producer id, and the
+        // subcommand name is `completion-candidates` rather than the Rust
+        // identifier — each is a regression clap would otherwise accept.
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates", "explain"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion_candidates", "check"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates", "chekc"]).is_err());
+        Ok(())
+    }
 
     #[test]
     fn candidate_security_contract_command_requires_and_preserves_path() -> TestResult {
