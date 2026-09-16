@@ -554,10 +554,26 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
         arithmetic_result.contains("15"),
         "watch evaluate should include the arithmetic result in debugger output, got `{arithmetic_result}`"
     );
+
+    let (spaced_arithmetic_result, _) = session.evaluate_expression("6 * 7", frame_id)?;
+    if !spaced_arithmetic_result.split_whitespace().eq(["0", "42"]) {
+        return Err(format!(
+            "watch evaluate should return the exact spaced arithmetic result, got `{spaced_arithmetic_result}`"
+        )
+        .into());
+    }
     assert!(
         matches!(arithmetic_type.as_deref(), Some("scalar" | "integer" | "string")),
         "arithmetic evaluate should include a scalar-like result type, got {arithmetic_type:?}"
     );
+
+    let (leading_space_result, _) = session.evaluate_expression(" 6 * 7", frame_id)?;
+    if !leading_space_result.split_whitespace().eq(["0", "42"]) {
+        return Err(format!(
+            "watch evaluate should preserve leading whitespace numeric arithmetic, got `{leading_space_result}`"
+        )
+        .into());
+    }
 
     let (string_result, string_type) = session.evaluate_expression("'dap-e2e'", frame_id)?;
     assert!(

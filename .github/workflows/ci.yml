@@ -1127,6 +1127,10 @@ jobs:
         if: matrix.name == 'meta'
         run: python3 -m unittest scripts/ci/test_scope_cache_key.py
 
+      - name: Verify candidate proof presence classification
+        if: matrix.name == 'meta'
+        run: python3 -m unittest scripts/ci/test_candidate_proof_presence.py
+
       - name: Run merge-gate shard with receipts
         shell: bash
         env:
@@ -1784,6 +1788,9 @@ jobs:
       # drop from this surface.
       - name: Changelog fragment gate contract (required merge surface)
         run: cargo test -p xtask --bin xtask --locked -- --nocapture changelog changie
+
+      - name: Workflow policy CLI wiring (required merge surface)
+        run: cargo test -p xtask --bin xtask --locked -- workflow_policy_lint
 
       # #14180: same required-surface reasoning as the Cargo dependency-name
       # contract above. This suite asserts that the GitHub Actions `/` and npm

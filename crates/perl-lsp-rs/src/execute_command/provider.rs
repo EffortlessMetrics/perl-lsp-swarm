@@ -150,6 +150,10 @@ struct ExplainProviderDecisionRequest {
     request_receipt: Option<Value>,
     #[serde(default)]
     request_position: Option<ProviderDecisionRequestPosition>,
+    /// Optional exact JSON-RPC request ID used to select the latest matching
+    /// provider trace. Numeric and string IDs remain distinct.
+    #[serde(default)]
+    request_id: Option<crate::protocol::JsonRpcId>,
 }
 
 /// Maximum accepted length of one client-supplied identifier echo field
@@ -360,17 +364,35 @@ impl ExecuteCommandProvider {
         let request_value = arguments
             .first()
             .ok_or_else(|| "Missing explain-provider-decision argument".to_string())?;
+        if request_value.get("request_id").is_some_and(Value::is_null) {
+            return Err(
+                "Invalid explain-provider-decision argument: request_id must be a JSON-RPC string or number"
+                    .to_string(),
+            );
+        }
         let request: ExplainProviderDecisionRequest = serde_json::from_value(request_value.clone())
             .map_err(|error| format!("Invalid explain-provider-decision argument: {error}"))?;
+        if request.request_id.is_some() && request.request_receipt.is_some() {
+            return Err(
+                "Invalid explain-provider-decision argument: request_id cannot be combined with request_receipt"
+                    .to_string(),
+            );
+        }
 
         let mut explanation = default_provider_decision_explanation(request.provider);
+        // Capture only the defaults. Caller context and request details belong
+        // outside the policy heading, even though the shared formatter supports both.
+        let policy_summary = format_provider_decision_explanation(&explanation);
+        let mut request_context = String::new();
 
         if let Some(receipt_id) = request.receipt_id {
             validate_explanation_echo(&receipt_id, "receipt_id")?;
+            request_context.push_str(&format!("\nReceipt: {receipt_id}."));
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
             validate_explanation_echo(&scenario, "scenario")?;
+            request_context.push_str(&format!("\nScenario: {scenario}."));
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
@@ -384,7 +406,29 @@ impl ExecuteCommandProvider {
         }
 
         let request_position = request.request_position;
-        let user_message = format_provider_decision_explanation(&explanation);
+        // These top-level defaults describe provider policy, not a recorded
+        // request outcome. Keep attached evidence distinct in the editor message.
+        let request_evidence = if let Some(receipt) = &explanation.request_receipt {
+            let freshness = receipt.get("freshness").and_then(|value| {
+                serde_json::from_value::<ProviderDecisionFreshness>(value.clone()).ok()
+            });
+            let label = match freshness {
+                Some(ProviderDecisionFreshness::Fresh) => "fresh",
+                Some(ProviderDecisionFreshness::Stale) => "stale",
+                Some(ProviderDecisionFreshness::NotApplicable) => "not applicable",
+                _ => "unknown",
+            };
+            let mut evidence = format!("Attached request freshness: {label}.");
+            if let Some(detail) = receipt.get("user_message").and_then(Value::as_str) {
+                evidence.push_str(&format!("\nRequest detail: {detail}"));
+            }
+            evidence
+        } else {
+            "No request evidence is attached.".to_string()
+        };
+        let user_message = format!(
+            "{request_evidence}{request_context}\nProvider policy summary:\n{policy_summary}"
+        );
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,

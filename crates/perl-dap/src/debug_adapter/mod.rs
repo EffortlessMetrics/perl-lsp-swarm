@@ -42,11 +42,11 @@ use crate::feature_catalog::has_feature as catalog_has_feature;
 use crate::inline_values::{collect_inline_values_with_runtime, extract_variable_names};
 use crate::protocol::{
     BreakpointLocation, BreakpointLocationsArguments, BreakpointLocationsResponseBody,
-    CompletionItem, CompletionsArguments, CompletionsResponseBody, ContinueResponseBody,
-    DataBreakpointInfoArguments, DataBreakpointInfoResponseBody, DisconnectArguments,
-    EvaluateArguments, EvaluateResponseBody, ExceptionDetails, ExceptionInfoArguments,
-    ExceptionInfoResponseBody, GotoArguments, GotoTarget, GotoTargetsArguments,
-    GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
+    CancelArguments, CompletionItem, CompletionsArguments, CompletionsResponseBody,
+    ContinueResponseBody, DataBreakpointInfoArguments, DataBreakpointInfoResponseBody,
+    DisconnectArguments, EvaluateArguments, EvaluateResponseBody, ExceptionDetails,
+    ExceptionInfoArguments, ExceptionInfoResponseBody, GotoArguments, GotoTarget,
+    GotoTargetsArguments, GotoTargetsResponseBody, InlineValuesArguments, InlineValuesResponseBody,
     LoadedSourcesResponseBody, Module, ModulesArguments, ModulesResponseBody, RestartArguments,
     Scope, ScopesArguments, ScopesResponseBody, SetDataBreakpointsArguments,
     SetDataBreakpointsResponseBody, SetExceptionBreakpointsArguments, SetExpressionArguments,
@@ -127,6 +127,9 @@ pub(super) fn parse_dap_arguments<T: serde::de::DeserializeOwned>(
 
 /// DAP server that handles debug sessions
 pub struct DebugAdapter {
+    /// Whether this adapter is serving the proven native stdio transport.
+    /// Direct/in-process and peer frontends remain fail-closed for cancellation.
+    native_stdio_transport: bool,
     /// Sequence number for messages
     seq: Arc<Mutex<i64>>,
     /// Active debug session (process-based)
@@ -169,8 +172,6 @@ pub struct DebugAdapter {
     debugger_output_marker: Arc<AtomicU64>,
     /// Test-observable count of framed debugger query writes.
     debugger_query_count: Arc<AtomicU64>,
-    /// Cancellation flag for in-progress requests.
-    cancel_requested: Arc<AtomicBool>,
     /// Data breakpoints (watchpoints) stored with REPLACE semantics
     /// Legacy retained slot: the #9091 fail-closed request path neither reads
     /// nor writes it; lifecycle cleanup retires it at its own boundary.
@@ -190,8 +191,11 @@ pub struct DebugAdapter {
     next_goto_target_id: Arc<Mutex<i64>>,
     /// Workspace root for path validation (set during launch)
     workspace_root: Arc<Mutex<Option<PathBuf>>>,
-    /// Transport broken flag: set by event handler on persistent write failure
+    /// Transport broken flag: set by the event handler on the first write or flush failure
     transport_broken: Arc<AtomicBool>,
+    /// Test-only fault injection for exercising retained cleanup ownership.
+    #[cfg(test)]
+    cleanup_failure_for_test: Arc<AtomicBool>,
     /// Tracks whether initialize request has been received (state machine validation)
     initialized: Arc<AtomicBool>,
     /// Typed, generation-aware broker for framed debugger operations (#8564).
@@ -253,7 +257,6 @@ impl Default for DebugAdapter {
 
 impl Drop for DebugAdapter {
     fn drop(&mut self) {
-        self.cancel_requested.store(true, Ordering::Release);
         // Adapter drop settles every pending broker operation (#8564): the
         // correlation surface is going away with the adapter.
         self.operation_broker.settle_all("adapter_dropped");
@@ -265,6 +268,7 @@ impl DebugAdapter {
     /// Create a new debug adapter
     pub fn new() -> Self {
         Self {
+            native_stdio_transport: false,
             seq: Arc::new(Mutex::new(0)),
             session: Arc::new(Mutex::new(None)),
             rejected_child: Arc::new(Mutex::new(None)),
@@ -281,7 +285,6 @@ impl DebugAdapter {
             exception_break_on_warn: Arc::new(Mutex::new(false)),
             debugger_output_marker: Arc::new(AtomicU64::new(1)),
             debugger_query_count: Arc::new(AtomicU64::new(0)),
-            cancel_requested: Arc::new(AtomicBool::new(false)),
             data_breakpoints: Arc::new(Mutex::new(Vec::new())),
             last_exception_message: Arc::new(Mutex::new(None)),
             last_launch_args: Arc::new(Mutex::new(None)),
@@ -290,6 +293,8 @@ impl DebugAdapter {
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            cleanup_failure_for_test: Arc::new(AtomicBool::new(false)),
             initialized: Arc::new(AtomicBool::new(false)),
             operation_broker: Arc::new(operation_broker::OperationBroker::new()),
         }
@@ -661,12 +666,6 @@ impl DebugAdapter {
         }
     }
 
-    /// Snapshot debugger output history for parsing without holding locks.
-    fn snapshot_recent_output_lines(&self) -> Vec<String> {
-        let output = lock_or_recover(&self.recent_output, "debug_adapter.recent_output");
-        output.lines.iter().map(|line| line.raw.clone()).collect()
-    }
-
     fn append_recent_output_line_locked(output: &mut RecentOutputBuffer, line: &str) {
         if output.lines.len() >= RECENT_OUTPUT_MAX_LINES {
             let _ = output.lines.pop_front();
@@ -676,7 +675,6 @@ impl DebugAdapter {
         output.next_line_id = output.next_line_id.saturating_add(1);
         output.lines.push_back(RecentOutputLine {
             id,
-            raw: line.to_string(),
             normalized: Self::normalize_debugger_output_line(line),
         });
     }
@@ -710,21 +708,85 @@ impl DebugAdapter {
         commands: &[String],
         timeout_ms: u64,
     ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound(stdin, commands, timeout_ms, None, None)
+    }
+
+    fn send_framed_debugger_query_bound(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        timeout_ms: u64,
+        suspension_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound_with_token(
+            stdin,
+            commands,
+            timeout_ms,
+            suspension_generation,
+            expected_session_generation,
+            None,
+            None,
+        )
+    }
+
+    fn send_framed_debugger_query_bound_for_request(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        timeout_ms: u64,
+        suspension_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+        request_seq: i64,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound_with_token(
+            stdin,
+            commands,
+            timeout_ms,
+            suspension_generation,
+            expected_session_generation,
+            Some(request_seq),
+            None,
+        )
+    }
+
+    fn send_framed_debugger_query_bound_with_token(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        timeout_ms: u64,
+        suspension_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+        request_seq: Option<i64>,
+        cancellation: Option<operation_broker::CancellationToken>,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
         self.debugger_query_count.fetch_add(1, Ordering::Relaxed);
+        let cancellation = cancellation
+            .or_else(|| request_seq.map(|_| operation_broker::CancellationToken::new()));
         let marker_id = self.next_debugger_marker_id();
         let begin_marker = format!("DAP_BEGIN_{marker_id}");
         let end_marker = format!("DAP_END_{marker_id}");
         let spec = operation_broker::BrokerOperationSpec {
+            request_seq,
             class: operation_broker::OperationClass::Query,
-            session_generation: self.operation_broker.current_session_generation(),
-            suspension_generation: None,
+            session_generation: expected_session_generation
+                .unwrap_or_else(|| self.operation_broker.current_session_generation()),
+            suspension_generation: suspension_generation
+                .map(operation_broker::SuspensionGeneration::from_u64),
             timeout: Duration::from_millis(Self::debugger_timeout_budget_ms(timeout_ms)),
-            cancellation: None,
+            cancellation,
         };
         let operation = self
             .operation_broker
             .submit(spec)
             .map_err(|terminal| format!("framed query not submitted: {}", terminal.as_str()))?;
+
+        if let Err(error) =
+            self.operation_broker.register_reader_frame(&operation, &begin_marker, &end_marker)
+        {
+            self.operation_broker.retire_after_write_failure(operation.id);
+            return Err(error);
+        }
 
         if let Err(error) =
             self.write_framed_debugger_commands(stdin, commands, &begin_marker, &end_marker)
@@ -773,6 +835,7 @@ impl DebugAdapter {
         timeout_ms: u64,
     ) -> Option<Vec<String>> {
         let spec = operation_broker::BrokerOperationSpec {
+            request_seq: None,
             class: operation_broker::OperationClass::Query,
             session_generation: self.operation_broker.current_session_generation(),
             suspension_generation: None,
@@ -803,13 +866,28 @@ impl DebugAdapter {
         begin_marker: &str,
         end_marker: &str,
     ) -> operation_broker::BrokerTerminal {
-        self.operation_broker.await_framed_payload(
+        let terminal = self.operation_broker.await_framed_payload(
             operation,
             begin_marker,
             end_marker,
             &self.recent_output,
-            &self.cancel_requested,
-        )
+        );
+        if matches!(terminal, operation_broker::BrokerTerminal::Completed(_))
+            && (self.operation_broker.current_session_generation() != operation.session_generation
+                || operation.suspension_generation.is_some_and(|expected| {
+                    self.current_stopped_generation() != Some(expected.as_u64())
+                }))
+        {
+            return operation_broker::BrokerTerminal::StaleGeneration;
+        }
+        terminal
+    }
+
+    fn current_stopped_generation(&self) -> Option<u64> {
+        lock_or_recover(&self.session, "debug_adapter.session")
+            .as_ref()
+            .filter(|session| session.state == DebugState::Stopped)
+            .map(|session| session.stopped_generation)
     }
 
     fn capture_framed_debugger_output_for_operation(
@@ -825,15 +903,6 @@ impl DebugAdapter {
                 None
             }
         }
-    }
-
-    /// Wait briefly for debugger command responses to arrive in the output buffer.
-    fn debugger_output_window_ms(timeout_ms: u32) -> u64 {
-        u64::from(timeout_ms).max(DEBUGGER_QUERY_WAIT_MS)
-    }
-
-    fn wait_for_debugger_output_window(timeout_ms: u32) {
-        thread::sleep(Duration::from_millis(Self::debugger_output_window_ms(timeout_ms)));
     }
 
     /// Expand debugger query budgets in heavily instrumented environments.
@@ -1283,20 +1352,6 @@ print "result: $final\n";
     // `policy/ripr-suppressions.toml`).
 
     #[test]
-    fn test_drop_sets_cancel_requested_before_clearing_session_state() {
-        let adapter = DebugAdapter::new();
-        let cancel_flag = Arc::clone(&adapter.cancel_requested);
-        assert!(!cancel_flag.load(Ordering::Acquire), "cancel flag should start false");
-
-        drop(adapter);
-
-        assert!(
-            cancel_flag.load(Ordering::Acquire),
-            "Drop must set cancel_requested so any in-flight output-reader thread observes it"
-        );
-    }
-
-    #[test]
     fn test_drop_clears_attached_pid_session_state() {
         let adapter = DebugAdapter::new();
         let attached_pid = Arc::clone(&adapter.attached_pid);
@@ -1318,16 +1373,6 @@ print "result: $final\n";
         assert_eq!(adapter.next_seq(), 1);
         assert_eq!(adapter.next_seq(), 2);
         assert_eq!(adapter.next_seq(), 3);
-    }
-
-    #[test]
-    fn test_debugger_output_window_ms_enforces_minimum_budget() {
-        assert_eq!(DebugAdapter::debugger_output_window_ms(1), DEBUGGER_QUERY_WAIT_MS);
-    }
-
-    #[test]
-    fn test_debugger_output_window_ms_honors_extended_budget() {
-        assert_eq!(DebugAdapter::debugger_output_window_ms(600), 600);
     }
 
     #[test]
