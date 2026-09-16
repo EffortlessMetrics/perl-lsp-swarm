@@ -276,6 +276,74 @@ fn a_zero_limit_refuses_the_first_unit() {
     }
 }
 
+/// A core refusal raised while reading a `use`'s `qw(...)` import list is a
+/// terminal resource condition, not malformed `qw` input.
+///
+/// `parse_use`'s `qw` fallback catches every error from `parse_qw_words` and
+/// from `advance_token` to recover malformed lists; `CoreBudgetExhausted` must
+/// never be routed into that recovery.
+///
+/// Honest limitation, established by running this fixture against the pre-fix
+/// implementation: on the current lexer every `use ... qw...` spelling reaches
+/// `parse_qw_words` with the list as its final token, so a refusal fires at the
+/// opener advance and then re-fires at the next advance before any `Use` node
+/// can be constructed — the two implementations are observably equivalent
+/// here, and this test cannot discriminate them. It pins the reachable
+/// invariant instead: the refusal surfaces as the typed stop, with exact
+/// usage, no recovery consumption, and no `Use` node in the returned tree. A
+/// discriminating partial-`Use` fixture would require a lexer that surfaces
+/// qw word tokens individually on the use-statement path.
+#[test]
+fn a_core_refusal_inside_a_use_qw_list_terminates_instead_of_building_a_partial_use() {
+    const SOURCE: &str = "use POSIX qw(floor ceil);";
+
+    // The fixture reaches the qw import-list path and parses cleanly when
+    // unlimited. The lexer delivers `qw(floor ceil)` as one token, so the
+    // charged advances are `use`, `POSIX`, `qw`, then the list token itself.
+    let unlimited = parse_with_budget(SOURCE, ParseBudget::unlimited());
+    assert_eq!(
+        unlimited.stop_cause(),
+        None,
+        "the fixture must parse cleanly under an unlimited budget; got {:?}",
+        unlimited.stop_cause()
+    );
+    assert_eq!(usage_unlimited(SOURCE).tokens_consumed, 4, "pinned token count for the fixture");
+
+    // Three tokens are admitted (`use`, `POSIX`, `qw`); the fourth advance is
+    // the qw list token read as the opener *inside* `parse_qw_words`, so a
+    // limit of 3 refuses exactly there — before any `Use` node exists.
+    let refused = parse_with_budget(SOURCE, budget_with(ParseCoreDimension::TokensConsumed, 3));
+    let cause = refused.stop_cause();
+    assert_eq!(
+        cause,
+        Some(ParseStopCause::CoreBudgetExhausted {
+            dimension: ParseCoreDimension::TokensConsumed,
+            limit: 3,
+            usage: 3,
+        }),
+        "a refusal raised inside the qw list must surface as the typed core stop; got {cause:?}"
+    );
+    assert_eq!(
+        refused.budget_usage.tokens_consumed, 3,
+        "the refused advance and everything after it must consume nothing"
+    );
+    // The discriminator: the old fallback swallowed this refusal, kept parsing,
+    // and built a partial `NodeKind::Use` — the typed stop only re-fired later
+    // at the next refused advance, so the stop cause alone cannot tell the two
+    // implementations apart. The fixed parser must return the bare terminal
+    // program shell with no `Use` node in it.
+    assert_eq!(
+        refused.budget_usage.nodes_constructed, 1,
+        "only the terminal program shell may be constructed; a partial Use node is a \
+         recovered parse, not a refused one"
+    );
+    assert_eq!(
+        refused.ast.to_sexp(),
+        "(source_file)",
+        "the refused parse must not splice a partial Use node into the tree"
+    );
+}
+
 /// The diagnostic dimension is bounded by the operation's *configured*
 /// `max_errors`, and the retained vector never exceeds the charged count.
 ///
