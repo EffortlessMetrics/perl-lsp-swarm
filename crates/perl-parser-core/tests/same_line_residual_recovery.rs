@@ -64,9 +64,7 @@ fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
         return Some(node);
     }
 
-    node.children()
-        .into_iter()
-        .find_map(|child| find_assignment(child, expected_op))
+    node.children().into_iter().find_map(|child| find_assignment(child, expected_op))
 }
 
 fn contains_goto(node: &Node) -> bool {
@@ -248,10 +246,7 @@ fn spaced_repetition_tokens_are_not_rewritten_to_x_assign() -> Result<(), String
     let source = "$value x = 3;";
     let output = Parser::new(source).parse_with_recovery();
     if find_assignment(&output.ast, "x=").is_some() {
-        return Err(format!(
-            "spaced x = must not be normalized to x=:\n{}",
-            output.ast.to_sexp()
-        ));
+        return Err(format!("spaced x = must not be normalized to x=:\n{}", output.ast.to_sexp()));
     }
     if output.diagnostics.is_empty() && !has_recovery_node(&output.ast) {
         return Err(format!(
@@ -278,9 +273,7 @@ fn valid_same_line_statement_boundaries_remain_clean() -> Result<(), String> {
 #[test]
 fn cross_line_or_goto_stays_one_control_flow_expression() -> Result<(), String> {
     for (operator, target) in [("or", "fail_or"), ("and", "fail_and"), ("xor", "fail_xor")] {
-        let source = format!(
-            "copy($from, $to)\n    {operator} goto {target};\nprint \"ok\";\n"
-        );
+        let source = format!("copy($from, $to)\n    {operator} goto {target};\nprint \"ok\";\n");
         let output = Parser::new(&source).parse_with_recovery();
         let statements = match &output.ast.kind {
             NodeKind::Program { statements } => statements,
@@ -315,9 +308,7 @@ fn same_line_word_operator_goto_variants_keep_their_control_flow_rhs() -> Result
         ("or", "&fail_sub"),
         ("or", "$dynamic_target"),
     ] {
-        let source = format!(
-            "copy($from, $to) {operator} goto {target}; print \"ok\";"
-        );
+        let source = format!("copy($from, $to) {operator} goto {target}; print \"ok\";");
         let output = Parser::new(&source).parse_with_recovery();
         let statements = match &output.ast.kind {
             NodeKind::Program { statements } => statements,
@@ -541,11 +532,7 @@ fn valid_low_precedence_and_directive_continuations_do_not_gain_residual_errors(
 
 #[test]
 fn malformed_guard_boundaries_are_not_claimed_as_same_line_residue() -> Result<(), String> {
-    for source in [
-        "use strict qw(",
-        "no warnings qw(",
-        "my $x = <<'END';\nunterminated\n",
-    ] {
+    for source in ["use strict qw(", "no warnings qw(", "my $x = <<'END';\nunterminated\n"] {
         assert_no_same_line_residual(source)?;
     }
     Ok(())
@@ -609,11 +596,7 @@ fn real_perl_oracle_agrees_on_supported_continuations_and_residue() -> Result<()
         }
     }
 
-    for source in [
-        "my $x = 1 print \"hi\";",
-        "my $x = 1 2;",
-        "$value x = 3;",
-    ] {
+    for source in ["my $x = 1 print \"hi\";", "my $x = 1 2;", "$value x = 3;"] {
         if perl_compile_accepts(source)? {
             return Err(format!("real Perl unexpectedly accepted invalid residue: {source:?}"));
         }

@@ -1136,16 +1136,9 @@ impl<'a> Parser<'a> {
                     if peeked_text != "x" {
                         break;
                     }
-                    let is_operand_start = self
-                        .tokens
-                        .peek_second()
-                        .ok()
-                        .is_some_and(|next| {
-                            Self::ordinary_binary_repetition_rhs_starts(
-                                next.kind(),
-                                next.text.as_ref(),
-                            )
-                        });
+                    let is_operand_start = self.tokens.peek_second().ok().is_some_and(|next| {
+                        Self::ordinary_binary_repetition_rhs_starts(next.kind(), next.text.as_ref())
+                    });
                     if !is_operand_start {
                         break;
                     }
