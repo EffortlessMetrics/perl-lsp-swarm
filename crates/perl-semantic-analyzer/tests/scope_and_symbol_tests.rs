@@ -772,6 +772,52 @@ fn simple_variable_typeglob_body_still_reports_undeclared_capture()
     Ok(())
 }
 
+/// Declared variables used only inside a computed glob body count as used:
+/// no false UnusedVariable diagnostics (#15731).
+#[test]
+fn computed_typeglob_body_counts_declared_variables_as_used()
+-> Result<(), Box<dyn std::error::Error>> {
+    let issues =
+        scope_issues_strict("use strict;\nuse warnings;\nmy ($x, $y);\n*{$x . $y} = \\&target;\n");
+
+    let false_unused: Vec<_> = issues
+        .iter()
+        .filter(|issue| {
+            issue.kind == IssueKind::UnusedVariable
+                && (issue.variable_name == "x" || issue.variable_name == "y")
+        })
+        .collect();
+    assert!(
+        false_unused.is_empty(),
+        "variables used inside a computed glob body must not be reported unused; got: {issues:?}"
+    );
+    Ok(())
+}
+
+/// Undeclared variables inside a computed glob body each earn their own
+/// strict-mode diagnostic — never one fabricated compound name (#15731).
+#[test]
+fn computed_typeglob_body_reports_each_undeclared_variable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let issues = scope_issues_strict("use strict;\n*{$x . $y} = \\&target;\n");
+
+    let undeclared_x = issues
+        .iter()
+        .any(|issue| issue.kind == IssueKind::UndeclaredVariable && issue.variable_name == "$x");
+    let undeclared_y = issues
+        .iter()
+        .any(|issue| issue.kind == IssueKind::UndeclaredVariable && issue.variable_name == "$y");
+    assert!(
+        undeclared_x && undeclared_y,
+        "each undeclared variable in a computed glob body needs its own diagnostic; got: {issues:?}"
+    );
+    assert!(
+        !issues.iter().any(|issue| issue.variable_name.contains("x . $y")),
+        "the compound body text must never become one variable name; got: {issues:?}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 3b. local with builtin special variables — issue #3502
 // ---------------------------------------------------------------------------
