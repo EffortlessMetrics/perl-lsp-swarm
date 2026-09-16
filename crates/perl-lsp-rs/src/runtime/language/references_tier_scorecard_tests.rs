@@ -54,7 +54,7 @@ mod routing_matrix {
     use crate::runtime::LspServer;
     use crate::util::is_word_boundary;
     use parking_lot::Mutex;
-    use perl_parser::workspace_index::IndexCoordinator;
+    use perl_workspace::workspace_index::IndexCoordinator;
     use serde_json::{Value, json};
     use std::fs;
     use std::io::Cursor;
@@ -226,7 +226,7 @@ use warnings;
                     let _ = coordinator.index().index_live_file(
                         url,
                         doc.text_str().to_string(),
-                        perl_parser::workspace_index::SourceCommit::new(commit_gen),
+                        perl_workspace::workspace_index::SourceCommit::new(commit_gen),
                     );
                 }
             }

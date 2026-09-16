@@ -248,6 +248,7 @@ pub perl_parser_core::engine::error::ParseError::UnexpectedToken::found: alloc::
 pub perl_parser_core::engine::error::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
@@ -722,6 +723,7 @@ pub perl_parser_core::error::ParseError::UnexpectedToken::found: alloc::string::
 pub perl_parser_core::error::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
@@ -2447,8 +2449,6 @@ pub fn perl_parser_core::path_security::resolve_completion_base_directory(dir_pa
 pub fn perl_parser_core::path_security::sanitize_completion_path_input(path: &str) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::path_security::split_completion_path_components(path: &str) -> (alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::path_security::validate_workspace_path(path: &std::path::Path, workspace_root: &std::path::Path) -> core::result::Result<std::path::PathBuf, perl_parser_core::syntax::path_security::WorkspacePathError>
-pub mod perl_parser_core::percentile
-pub fn perl_parser_core::percentile::nearest_rank_percentile(sorted_values: &[u64], pct: u64) -> u64
 pub mod perl_parser_core::pir
 pub enum perl_parser_core::pir::BuildKind
 pub perl_parser_core::pir::BuildKind::NewBuild
@@ -3329,6 +3329,7 @@ pub perl_parser_core::syntax::error::ParseError::UnexpectedToken::found: alloc::
 pub perl_parser_core::syntax::error::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
@@ -3524,8 +3525,6 @@ pub fn perl_parser_core::syntax::path_security::resolve_completion_base_director
 pub fn perl_parser_core::syntax::path_security::sanitize_completion_path_input(path: &str) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::syntax::path_security::split_completion_path_components(path: &str) -> (alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::syntax::path_security::validate_workspace_path(path: &std::path::Path, workspace_root: &std::path::Path) -> core::result::Result<std::path::PathBuf, perl_parser_core::syntax::path_security::WorkspacePathError>
-pub mod perl_parser_core::syntax::percentile
-pub fn perl_parser_core::syntax::percentile::nearest_rank_percentile(sorted_values: &[u64], pct: u64) -> u64
 pub mod perl_parser_core::syntax::qualified_name
 pub enum perl_parser_core::syntax::qualified_name::QualifiedNameError
 pub perl_parser_core::syntax::qualified_name::QualifiedNameError::EmptyName
@@ -4156,6 +4155,7 @@ pub perl_parser_core::ParseError::UnexpectedToken::found: alloc::string::String
 pub perl_parser_core::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
