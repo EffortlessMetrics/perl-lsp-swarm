@@ -150,3 +150,39 @@ fn scenario_05_format_with_bad_perltidy_path_returns_graceful_error() {
         },
     );
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::{ensure_no_panic_trace, protocol_error_message};
+    use anyhow::Result;
+    use serde_json::json;
+
+    #[test]
+    fn protocol_error_requires_typed_code_and_message() -> Result<()> {
+        let valid = json!({"code": -32603, "message": "bounded formatting failure"});
+        assert_eq!(protocol_error_message(&valid)?, "bounded formatting failure");
+
+        for malformed in [
+            json!(null),
+            json!([]),
+            json!({}),
+            json!({"message": "missing code"}),
+            json!({"code": "-32603", "message": "string code"}),
+            json!({"code": -32603}),
+            json!({"code": -32603, "message": 7}),
+        ] {
+            assert!(
+                protocol_error_message(&malformed).is_err(),
+                "malformed protocol error must be rejected: {malformed:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn panic_signatures_are_rejected() {
+        assert!(ensure_no_panic_trace("tool unavailable").is_ok());
+        assert!(ensure_no_panic_trace("thread panicked at src/main.rs:1").is_err());
+        assert!(ensure_no_panic_trace("child terminated with SIGABRT").is_err());
+    }
+}
