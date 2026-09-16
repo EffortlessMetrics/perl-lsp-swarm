@@ -20,8 +20,11 @@
 //! this live adapter can only emit classes the current runner surface
 //! actually observes:
 //!
-//! - `GateResult` records exit codes, the runner's timeout flag, and
-//!   never-started (`error`/`skip`) statuses — those bind directly;
+//! - `GateResult` records exit codes, the runner's timeout flag, and an
+//!   explicit start state (`GateResult::command_started`) for the
+//!   never-started (`skip`) and after-start-error (`error`) statuses; those
+//!   bind directly, and a post-start error is never flattened into a
+//!   never-started one (review thread FC-ADAPTER-ERROR-FLATTEN);
 //! - the runner observes no signal identities, has no cancellation path,
 //!   and has no dependency gating, so `signal` is `None`, `cancelled` is
 //!   `false`, and dependency maps are empty on every live record: these are
@@ -242,10 +245,17 @@ pub(super) fn ensure_plan_subject_fields_match_receipt(
 /// profile or another selection base can select the same commands, and its
 /// published results would then claim a selection authority that did not
 /// govern this execution.
+///
+/// The base is required, not optional: the runner always resolves a
+/// selection base (subject scope, `--base`, or the ambient scope default —
+/// exactly what planning used), so skipping the comparison when the CLI
+/// `--base` flag is absent would let a foreign-base plan publish under
+/// selection authority that did not govern the run (review threads
+/// FC-SELECTION-BASE-OPTIONAL-SKIP / P1 timing).
 pub(super) fn ensure_plan_authority_matches_invocation(
     plan: &CiRoutePlanV1,
     tier: &GateTier,
-    resolved_base_sha: Option<&str>,
+    resolved_base_sha: &str,
 ) -> Result<()> {
     let runner_profile = tier.to_string();
     if plan.requested_profile != runner_profile {
@@ -256,14 +266,11 @@ pub(super) fn ensure_plan_authority_matches_invocation(
             runner_profile
         );
     }
-    if let Some(base) = resolved_base_sha
-        && plan.selection.base != base
-    {
+    if plan.selection.base != resolved_base_sha {
         bail!(
-            "route plan selection base {} does not match this runner's resolved base {}; \
+            "route plan selection base {} does not match this runner's resolved base {resolved_base_sha}; \
              refusing a plan whose selection authority did not govern this invocation",
-            plan.selection.base,
-            base
+            plan.selection.base
         );
     }
     Ok(())
@@ -406,11 +413,27 @@ pub(super) fn observation_from_gate_result(
                 in_process: false,
             },
         ),
-        // "error" (spawn/setup never produced a process result) and any
-        // runtime "skip" both mean the planned command did not start.
-        _ => (
+        // "skip" always means the planned command did not start. An "error"
+        // carries the runner's explicit start state: the in-process paths
+        // know their closure ran, and the shell path knows whether the child
+        // spawned before the failure, so a post-start error is never
+        // flattened into a never-started one (review thread
+        // FC-ADAPTER-ERROR-FLATTEN). A started error settles no process
+        // verdict, so the child facts stay empty rather than invented.
+        _ if !result.command_started => (
             RoutedReaderGateStatus::SpawnErrorBeforeStart,
             false,
+            ChildObservation {
+                exit_code: None,
+                signal: None,
+                timed_out: false,
+                cancelled: false,
+                in_process: false,
+            },
+        ),
+        _ => (
+            RoutedReaderGateStatus::ErrorAfterStart,
+            true,
             ChildObservation {
                 exit_code: None,
                 signal: None,
@@ -524,15 +547,22 @@ fn project_log_artifact(
 
 /// Project the gate policy's declared artifacts (repository-root relative
 /// paths such as `target/receipts/clippy.json`) into bounded receipt
-/// identities. A declared artifact that a completed command did not produce
-/// is a named reporting shortfall, so consumers can inspect declared outputs
-/// through the normalized record instead of re-deriving them from policy.
-/// Never-started commands declare nothing.
+/// identities. Glob declarations (the `benchmarks` gate declares
+/// `target/criterion/**`) are expanded deterministically through the shared
+/// `glob` crate and every matched regular file is hashed, so matched outputs
+/// stop being reported as false shortfalls (review thread
+/// FC-ARTIFACT-LITERAL-PROJECTION); expansion is bounded and a truncated or
+/// unmatched declaration stays a named shortfall. A declared artifact that a
+/// completed command did not produce is a named reporting shortfall, so
+/// consumers can inspect declared outputs through the normalized record
+/// instead of re-deriving them from policy. Never-started commands declare
+/// nothing.
 fn project_declared_artifacts(
     result: &GateResult,
     root: &Path,
     receipt_shortfall: &mut Vec<String>,
 ) -> Vec<ArtifactRef> {
+    const MAX_EXPANDED_ARTIFACTS: usize = 128;
     let Some(declared) = result.artifacts.as_deref() else {
         return Vec::new();
     };
@@ -540,21 +570,103 @@ fn project_declared_artifacts(
         return Vec::new();
     }
     let mut projected = Vec::new();
-    for path in declared {
-        match std::fs::read(root.join(path)) {
-            Ok(bytes) => {
-                let mut hasher = Sha256::new();
-                hasher.update(&bytes);
-                projected.push(ArtifactRef {
-                    role: "artifact".to_string(),
-                    path: path.clone(),
-                    sha256: Some(hex(&hasher.finalize())),
-                });
+    for declaration in declared {
+        let is_glob = declaration.contains(['*', '?', '[', ']']);
+        if !is_glob {
+            match std::fs::read(root.join(declaration)) {
+                Ok(bytes) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&bytes);
+                    projected.push(ArtifactRef {
+                        role: "artifact".to_string(),
+                        path: declaration.clone(),
+                        sha256: Some(hex(&hasher.finalize())),
+                    });
+                }
+                Err(_) => receipt_shortfall.push(format!(
+                    "declared artifact absent or unreadable for completed gate {}: {declaration}",
+                    result.gate_name
+                )),
             }
-            Err(_) => receipt_shortfall.push(format!(
-                "declared artifact absent or unreadable for completed gate {}: {path}",
+            continue;
+        }
+        // Deterministic glob expansion: walk the pattern, sort the matches,
+        // and hash every regular file up to the bound. A pattern that
+        // matches nothing, expands past the bound, or is malformed stays a
+        // named shortfall — never a silent omission.
+        let pattern = root.join(declaration);
+        let pattern = match pattern.to_str() {
+            Some(pattern) => pattern.to_string(),
+            None => {
+                receipt_shortfall.push(format!(
+                    "declared artifact pattern is not representable as UTF-8 for completed gate \
+                     {}: {declaration}",
+                    result.gate_name
+                ));
+                continue;
+            }
+        };
+        let paths: Vec<std::path::PathBuf> = match glob::glob(&pattern) {
+            Ok(paths) => paths
+                .filter_map(|entry| match entry {
+                    Ok(path) => Some(path),
+                    Err(_) => {
+                        receipt_shortfall.push(format!(
+                            "declared artifact pattern iteration failed for completed gate {}: \
+                         {declaration}",
+                            result.gate_name
+                        ));
+                        None
+                    }
+                })
+                .collect(),
+            Err(_) => {
+                receipt_shortfall.push(format!(
+                    "declared artifact pattern is malformed for completed gate {}: {declaration}",
+                    result.gate_name
+                ));
+                continue;
+            }
+        };
+        let mut matched_paths = paths;
+        matched_paths.sort();
+        if matched_paths.is_empty() {
+            receipt_shortfall.push(format!(
+                "declared artifact pattern matched nothing for completed gate {}: {declaration}",
                 result.gate_name
-            )),
+            ));
+            continue;
+        }
+        let mut expanded = 0usize;
+        for matched in matched_paths {
+            if expanded >= MAX_EXPANDED_ARTIFACTS {
+                receipt_shortfall.push(format!(
+                    "declared artifact pattern exceeded the {MAX_EXPANDED_ARTIFACTS}-artifact \
+                     expansion bound for completed gate {}: {declaration}",
+                    result.gate_name
+                ));
+                break;
+            }
+            if !matched.is_file() {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&matched) else {
+                receipt_shortfall.push(format!(
+                    "declared artifact match unreadable for completed gate {}: {}",
+                    result.gate_name,
+                    matched.display()
+                ));
+                continue;
+            };
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let relative = matched.strip_prefix(root).unwrap_or(&matched).to_string_lossy();
+            projected.push(ArtifactRef {
+                role: "artifact".to_string(),
+                path: relative.into_owned(),
+                sha256: Some(hex(&hasher.finalize())),
+            });
+            expanded += 1;
         }
     }
     projected
@@ -606,9 +718,9 @@ mod fixtures {
     use super::*;
     use xtask::ci_route_plan::{
         Applicability, CompileRoutePlanInput, ExpansionStatus, GateSelectorInput,
-        LifecycleDisposition, LifecycleState, PlannedOutcome, PolicyRole, Resolution,
-        RouteDispositionInput, RouteExecutionIdentity, RouteProfileExpansionInput,
-        RouteSelectionEvidence, RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
+        LifecycleDisposition, LifecycleState, PolicyRole, Resolution, RouteDispositionInput,
+        RouteExecutionIdentity, RouteProfileExpansionInput, RouteSelectionEvidence,
+        RouteSubjectRef, SelectorPlacement, SelectorProof, SelectorRole,
     };
     use xtask::routed_result::TerminalOutcome;
 
@@ -758,7 +870,7 @@ mod fixtures {
     }
 
     #[test]
-    fn execution_error_is_never_started_with_no_invented_prerequisites() {
+    fn an_after_start_error_is_not_flattened_and_never_started_stays_missing() {
         let plan = compiled_fixture();
         let dir = tempfile::tempdir().expect("tempdir");
         let receipt_root = dir.path().join("target/receipts");
@@ -776,11 +888,30 @@ mod fixtures {
             None,
         )
         .expect("emission succeeds honestly");
+        // A started command that errored carries the explicit after-start
+        // status: the work ran, so the record must not claim it never
+        // started and must not invent a product verdict for it (review
+        // thread FC-ADAPTER-ERROR-FLATTEN).
+        assert!(built.command_started);
+        assert!(matches!(built.product.outcome, TerminalOutcome::InstrumentFailure));
+        assert!(matches!(built.prerequisites.state, PrerequisiteState::Ready));
+
+        // A genuinely never-started command keeps the honest missing record:
+        // no prerequisite evidence is invented (review thread 3872200285).
+        let mut never_started = error_result();
+        never_started.command_started = false;
+        let built = emit_planned_run_row_result(
+            &plan,
+            &gate,
+            &never_started,
+            dir.path(),
+            &receipt_root,
+            &dir.path().join("routed"),
+            None,
+        )
+        .expect("emission succeeds honestly");
         assert!(matches!(built.product.outcome, TerminalOutcome::BlockedNotProven));
         assert!(!built.command_started);
-        // No prerequisite evidence is invented for a never-started command:
-        // the builder records Missing, never an assumed-ready fact (review
-        // thread 3872200285).
         assert!(matches!(built.prerequisites.state, PrerequisiteState::Missing));
         assert!(matches!(built.instrument.outcome, TerminalOutcome::Missing));
     }
@@ -849,7 +980,6 @@ mod fixtures {
         // cannot be read, would publish a command that did start as a
         // never-started record — the exact mis-attribution this record
         // exists to prevent, so it refuses instead.
-        let plan = compiled_fixture();
         let gate = fmt_gate_definition();
         let mut result = passing_result();
         result.duration_ms = u64::MAX;
@@ -885,14 +1015,14 @@ mod fixtures {
         let accepted = ensure_plan_authority_matches_invocation(
             &plan,
             &GateTier::MergeGate,
-            Some(plan.selection.base.as_str()),
+            plan.selection.base.as_str(),
         );
         assert!(accepted.is_ok(), "the plan's own identity must accept, got {accepted:?}");
 
         let foreign_profile = ensure_plan_authority_matches_invocation(
             &plan,
             &GateTier::Nightly,
-            Some(plan.selection.base.as_str()),
+            plan.selection.base.as_str(),
         );
         assert!(foreign_profile.is_err(), "a plan compiled for another profile must refuse");
         assert!(foreign_profile.err().unwrap().to_string().contains("profile"));
@@ -900,7 +1030,7 @@ mod fixtures {
         let foreign_base = ensure_plan_authority_matches_invocation(
             &plan,
             &GateTier::MergeGate,
-            Some("cccccccccccccccccccccccccccccccccccccccc"),
+            "cccccccccccccccccccccccccccccccccccccccc",
         );
         assert!(foreign_base.is_err(), "a plan compiled against another base must refuse");
         assert!(foreign_base.err().unwrap().to_string().contains("selection base"));
@@ -1033,6 +1163,7 @@ timeout_seconds: 60
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: true,
         }
     }
 
@@ -1080,7 +1211,41 @@ timeout_seconds: 60
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: true,
         }
+    }
+
+    #[test]
+    fn a_post_start_error_is_never_published_as_never_started() {
+        // A started command that errored without a settled process result
+        // must carry the explicit after-start status, not the never-started
+        // flattening (review thread FC-ADAPTER-ERROR-FLATTEN).
+        let started_error = error_result();
+        let observation = observation_from_gate_result(
+            &fmt_gate_definition(),
+            &started_error,
+            Path::new("."),
+            Path::new("target"),
+            None,
+        )
+        .expect("a started error observes cleanly");
+        assert!(observation.command_started, "the closure ran; started must bind true");
+        assert!(matches!(observation.runner_status, RoutedReaderGateStatus::ErrorAfterStart));
+
+        // The never-started spelling stays available for a command that
+        // genuinely never spawned.
+        let mut never_started = error_result();
+        never_started.command_started = false;
+        let observation = observation_from_gate_result(
+            &fmt_gate_definition(),
+            &never_started,
+            Path::new("."),
+            Path::new("target"),
+            None,
+        )
+        .expect("a never-started error observes cleanly");
+        assert!(!observation.command_started);
+        assert!(matches!(observation.runner_status, RoutedReaderGateStatus::SpawnErrorBeforeStart));
     }
 
     // Silence unused-import lint for re-exported helper types used by
@@ -1141,21 +1306,20 @@ timeout_seconds: 60
     fn plan_selection_authority_binds_runner_profile_and_base() {
         let plan = compiled_fixture();
         assert!(
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, Some(SHA_B))
-                .is_ok()
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, SHA_B).is_ok()
         );
-        assert!(
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, None).is_ok(),
-            "a runner without a base ref binds the profile only"
-        );
+        // The base is required: a runner without a resolved base cannot bind
+        // the plan's selection authority at all, so the None skip is gone
+        // (review thread FC-SELECTION-BASE-OPTIONAL-SKIP). The signature now
+        // takes the base by value.
 
         let foreign_profile =
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::PrFast, Some(SHA_B));
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::PrFast, SHA_B);
         assert!(foreign_profile.is_err(), "profile mismatch must refuse: {foreign_profile:?}");
         assert!(foreign_profile.unwrap_err().to_string().contains("profile"));
 
         let foreign_base =
-            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, Some(SHA_A));
+            ensure_plan_authority_matches_invocation(&plan, &GateTier::MergeGate, SHA_A);
         assert!(foreign_base.is_err(), "base mismatch must refuse: {foreign_base:?}");
         assert!(foreign_base.unwrap_err().to_string().contains("selection base"));
     }

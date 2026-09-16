@@ -2478,7 +2478,7 @@ enum Commands {
         /// before execution; when set, one normalized `routed_gate_result.v1`
         /// (#9156) is emitted per executed planned `run` row under
         /// target/receipts/routed-results/.
-        #[arg(long)]
+        #[arg(long, requires = "subject")]
         route_plan: Option<PathBuf>,
     },
 
