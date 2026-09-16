@@ -99,6 +99,26 @@ review_after = "2026-07-19"
 expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
+# Completion candidate-producer inventory checker: declaration-anchored probes.
+# The checker's own `every_scan_root_still_matches_tracked_source` test iterates
+# the inventoried constants and fails by name when a scan root is mutated (the
+# rename experiment on the #15015 head), but RIPR cannot statically connect a
+# declaration's consumers to that test oracle, so the probes report
+# no_static_path even though a named test detects the mutation.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-completion-candidates-declaration-probes"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/tasks/completion_candidates.rs"]
+classification = ["no_static_path"]
+owner = "tooling-inventory"
+issue = "#15788"
+reason = "PR #15015 adds completion_candidates.rs, the checker behind `cargo xtask completion-candidates check`. RIPR reports 88 no_static_path (info) probes on it: 87 field_construction probes anchored at declarations of module constants and struct fields (SCAN_ROOTS, TEST_SURFACE_FILES, and table shapes) plus one return_value and one call_deletion. The checker's own every_scan_root_still_matches_tracked_source test directly iterates SCAN_ROOTS/TEST_SURFACE_FILES and fails by name when a root is renamed, verified experimentally on the PR head, yet the probes remain no_static_path because the probes anchor at declarations with no static construction site for a test oracle to reach. Echoing 87 declarations in assertions would be tautological proof (the Tautology Detection gate exists to reject it), and a whole-file suppression would discard real signal. This suppression is scoped to one file and only the no_static_path class, keeping every stronger classification (exposed, weakly_exposed, reachable_unrevealed, error_path) live for new findings in the same file. Remove when RIPR's declaration-anchored reachability improves (#15788)."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-16"
+
+# -----------------------------------------------------------------------------
 # Documentation target resolver predicates: centralized string-boundary helpers
 # are covered by focused resolver and virtual-content tests, but RIPR 0.9.x cannot
 # trace the predicate evidence after #1962 moves link parsing behind the canonical
@@ -3987,6 +4007,31 @@ expires = "2026-12-31"
 removal_criteria = "Remove when ripr#1429-class tracing covers fn-pointer call sites on the deletion side of a diff, or when this PR's deletion probes age out of the diff scope. Narrow immediately if any seam unrelated to ParseFailure classification lands in this file."
 
 # -----------------------------------------------------------------------------
+# xtask automation: compiler performance receipt gate module — no production
+# caller by design (#9311, PR #15569).
+#
+# xtask/src/tasks/compiler_performance_receipt.rs implements the
+# compiler_performance_receipt.v1 schema validator and its merge-gate command
+# (check-compiler-performance-receipt). It is repository automation: its
+# functions are module-private and activated only by the xtask binary's own
+# check command and the module's in-binary #[cfg(test)] control suite, so
+# RIPR's static tracer finds no path from a production entry point. Same
+# class as the other xtask automation suppressions above (ci_route.rs,
+# quality_baseline.rs, agent_ledgers.rs). The production surfaces the receipt
+# describes (compiler facts, cache receipts) remain subject to their own gates.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-compiler-performance-receipt-automation"
+kind = "generated_or_non_production_surface"
+paths = ["xtask/src/tasks/compiler_performance_receipt.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#9311"
+reason = "xtask/src/tasks/compiler_performance_receipt.rs (#9311, PR #15569) is repository automation, not a production surface: the compiler_performance_receipt.v1 schema validator plus its merge-gate command. Every function is module-private and activated only through the xtask binary's check-compiler-performance-receipt command and the module's own in-binary #[cfg(test)] control suite (whose size is floored by CONTROL_SUITE_FLOOR in the module, not restated here), so diff-scoped RIPR 0.10.x reports the file's seams as no_static_path — there is no static path from a production entry point by design. Same class as the existing xtask automation suppressions (ripr-suppress-quality-baseline-cfg-test-scanner, ripr-suppress-agent-ledgers-validate-line-predicates). The gate itself runs the control suite as falsifiers, so the contract stays discriminated despite the suppressed tracing class. Remove when the module gains a production caller, when RIPR classifies xtask automation seams as non-production, or when the receipt gate is retired."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-31"
+removal_criteria = "Remove when the module gains a production caller, when ripr gains a non-production classification for xtask automation modules, or when compiler_performance_receipt_contract is retired. Narrow immediately if any seam outside this module's automation scope is attributed to this entry."
 # Compiler upstream conformance status packet declaration probes (#12532,
 # PR #15604): the same declaration-line ripr#1429 class accepted for this
 # crate's siblings (ripr-suppress-14958-startup-inc-snapshot-declarations,
