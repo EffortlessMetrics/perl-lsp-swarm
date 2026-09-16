@@ -12,6 +12,7 @@ on:
       - 'scripts/zed_exact_source_*.py'
       - 'scripts/zed_host/**'
       - 'scripts/tests/test_zed_host_*.py'
+      - 'scripts/tests/test_zed_assets.py'
       - 'scripts/zed_assets/**'
       - 'scripts/zed_public_asset_receipts.py'
       - 'xtask/src/bin/validate-zed-*.rs'
@@ -92,6 +93,13 @@ jobs:
       # the only code that ever touches a real Zed host has no executed proof.
       # The driver imports tomllib (Python >= 3.11) and uses 3.10+ syntax, so
       # pin a supported interpreter instead of relying on the runner default.
+      # Zed-assets contract oracle (#15400/A4 of #15394): 37 assertions
+      # gating the archive extraction, contract validation, and asset
+      # production pipeline that the zed extension depends on.
+      - name: Run zed-assets contract oracle tests
+        shell: bash
+        run: python3 -m unittest scripts.tests.test_zed_assets
+
       - name: Run exact-source host driver unit tests
         shell: bash
         run: |
