@@ -59,7 +59,7 @@ mod workspace;
 
 use super::{LspServer, io};
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::IndexState;
+use perl_workspace::workspace_index::IndexState;
 use serde_json::json;
 
 impl LspServer {

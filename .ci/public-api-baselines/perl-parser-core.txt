@@ -248,6 +248,7 @@ pub perl_parser_core::engine::error::ParseError::UnexpectedToken::found: alloc::
 pub perl_parser_core::engine::error::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
@@ -722,6 +723,7 @@ pub perl_parser_core::error::ParseError::UnexpectedToken::found: alloc::string::
 pub perl_parser_core::error::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
@@ -1373,6 +1375,7 @@ pub fn perl_parser_core::hir::HirRegexTarget::fmt(&self, f: &mut core::fmt::Form
 pub enum perl_parser_core::hir::HirStmt
 pub perl_parser_core::hir::HirStmt::Expr(perl_parser_core::hir::HirExprId)
 pub perl_parser_core::hir::HirStmt::Let
+pub perl_parser_core::hir::HirStmt::Let::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::HirStmt::Let::binding_range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::hir::HirStmt::Let::init: core::option::Option<perl_parser_core::hir::HirExprId>
 pub perl_parser_core::hir::HirStmt::Let::name: alloc::string::String
@@ -1981,6 +1984,7 @@ pub fn perl_parser_core::hir::HirTransliteration::eq(&self, other: &perl_parser_
 pub fn perl_parser_core::hir::HirTransliteration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::hir::HirVariable
 pub perl_parser_core::hir::HirVariable::access: perl_parser_core::hir::AccessMode
+pub perl_parser_core::hir::HirVariable::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::HirVariable::kind: perl_parser_core::hir::VariableKind
 pub perl_parser_core::hir::HirVariable::name: alloc::string::String
 pub perl_parser_core::hir::HirVariable::sigil: perl_parser_core::hir::Sigil
@@ -3327,6 +3331,7 @@ pub perl_parser_core::syntax::error::ParseError::UnexpectedToken::found: alloc::
 pub perl_parser_core::syntax::error::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
@@ -4153,6 +4158,7 @@ pub perl_parser_core::ParseError::UnexpectedToken::found: alloc::string::String
 pub perl_parser_core::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
