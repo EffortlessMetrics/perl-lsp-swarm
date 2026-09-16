@@ -395,4 +395,22 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Regression (#15712): a computed call body `*{foo()}` now keeps the
+    /// braced dynamic spelling end to end — it must not fall through to a
+    /// static `TypeglobReference` named after the raw expression text.
+    #[test]
+    fn dynamic_typeglob_computed_call_body_is_not_emitted() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let node = Node::new(NodeKind::Typeglob { name: "{foo()}".to_string() }, loc(0, 9));
+        let program = Node::new(NodeKind::Program { statements: vec![node] }, loc(0, 9));
+
+        let refs = extract_symbol_refs(&program);
+
+        assert!(
+            refs.is_empty(),
+            "computed typeglob *{{foo()}} must not produce a static SymbolRef; got: {refs:?}"
+        );
+        Ok(())
+    }
 }
