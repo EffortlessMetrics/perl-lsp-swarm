@@ -4149,7 +4149,7 @@ profile = "recommended"
     fn external_perltidy_is_selected_only_by_explicit_engine() {
         // `parse_formatter_mode` is a pure mapping with no environment/PATH
         // probe: the external engine is reachable only through explicit config.
-        let mode = |value| parse_formatter_mode(value).map(|choice| choice.mode);
+        let mode = |value| parse_formatter_mode(value);
         assert_eq!(mode("external-perltidy"), Some(FormatterMode::ExternalLegacy));
         assert_eq!(mode("external-legacy"), Some(FormatterMode::ExternalLegacy));
         assert_eq!(mode("perltidy"), Some(FormatterMode::ExternalLegacy));
