@@ -1607,6 +1607,28 @@ impl LspServer {
                     tracing::debug!("Updated server config from perl settings");
                 }
 
+                // Cache the most recent tier-3 (client) perl settings so a
+                // later `load_and_apply_project_config` triggered by
+                // `workspace/didChangeWorkspaceFolders` can replay them on
+                // top of the merged TOML after resetting project-owned
+                // fields (issue #15715). Without this, server-global fields
+                // touched only by `didChangeConfiguration` would be erased
+                // every time the merged TOML layer is rebuilt.
+                *self.last_client_settings.lock() = Some(perl.clone());
+
+                // Update the post-tier-1 baseline with the same tier-3
+                // payload so the next `load_and_apply_project_config` reset
+                // preserves tier-3 contributions to fields that no remaining
+                // folder's TOML touches. The baseline started as
+                // `defaults + tier-1` (captured in `handle_initialize`); we
+                // advance it in lockstep with tier-3 so it represents
+                // `defaults + tier-1 + tier-3` and never includes any tier-2
+                // contribution from a (now removed) folder (#15715).
+                if let Some(mut baseline) = self.server_config_baseline.lock().clone() {
+                    baseline.update_from_value(perl);
+                    *self.server_config_baseline.lock() = Some(baseline);
+                }
+
                 #[cfg(not(target_arch = "wasm32"))]
                 let critic_config_changed = {
                     let cfg = self.config.lock();

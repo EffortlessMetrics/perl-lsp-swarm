@@ -686,6 +686,13 @@ impl LspServer {
                 limits.update_from_value(perl);
             }
             *self.initialization_options_perl_settings.lock() = Some(perl.clone());
+
+            // Snapshot the post-tier-1 ServerConfig so the next
+            // `load_and_apply_project_config` can reset to `defaults + tier-1`
+            // before layering tier-2 (project config). This snapshot is
+            // updated on every `didChangeConfiguration` so subsequent resets
+            // also include tier-3 (issue #15715).
+            *self.server_config_baseline.lock() = Some(self.config.lock().clone());
         }
 
         // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
