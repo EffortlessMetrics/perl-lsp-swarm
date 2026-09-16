@@ -624,8 +624,14 @@ impl<'a> Parser<'a> {
         let starts_with_ampersand = self.peek_kind() == Some(TokenKind::BitwiseAnd);
 
         // Parse the target as an assignment-level expression (not full comma
-        // expression) to avoid consuming surrounding list separators.
-        let target = self.parse_assignment()?;
+        // expression) to avoid consuming surrounding list separators.  Perl
+        // permits a bare `goto` in a short-circuit expression, so preserve the
+        // control-flow node when a statement boundary immediately follows it.
+        let target = if let Some(missing) = self.recover_missing_infix_rhs(start) {
+            missing
+        } else {
+            self.parse_assignment()?
+        };
         let end = target.location.end;
 
         // Phase 2: Determine form based on parsed target (and whether it started with &)

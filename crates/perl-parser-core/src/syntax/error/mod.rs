@@ -87,6 +87,9 @@ pub enum RecoveryKind {
     TruncatedChain,
     /// A statement boundary (`;`) was inferred from context.
     InferredSemicolon,
+    /// A statement parser stopped before a token that cannot legally continue
+    /// the statement on the same line.
+    UnexpectedSameLineResidue,
 }
 
 /// Budget limits for parser operations to prevent runaway parsing.
@@ -1784,6 +1787,9 @@ fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
         }
         RecoveryKind::InferredSemicolon => {
             format!("Missing `;` at the end of the {site_desc}")
+        }
+        RecoveryKind::UnexpectedSameLineResidue => {
+            format!("Unexpected same-line residue after the {site_desc}")
         }
     }
 }
