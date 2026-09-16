@@ -1000,6 +1000,7 @@ impl DebugAdapter {
                 debuggee_cwd: std::path::PathBuf::from("."),
                 last_resume_mode: ResumeMode::Continue,
                 initial_stop_pending: false,
+                entry_stop_pending: false,
                 stopped_generation: 0,
             });
         }
@@ -1034,6 +1035,7 @@ impl DebugAdapter {
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
+            entry_stop_pending: false,
             stopped_generation: 0,
         });
         Ok(())
@@ -1141,6 +1143,7 @@ impl DebugAdapter {
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
+            entry_stop_pending: false,
             stopped_generation: 0,
         });
     }
