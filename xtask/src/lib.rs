@@ -43,6 +43,7 @@ pub mod publication_drift;
 pub mod release_trust_invariants;
 pub mod rust_hygiene;
 pub mod schema_apply;
+pub mod source_authority;
 pub mod utils;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
