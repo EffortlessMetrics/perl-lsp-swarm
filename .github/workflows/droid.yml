@@ -156,7 +156,7 @@ jobs:
           echo "path=$binary" >> "$GITHUB_OUTPUT"
 
       - name: Run isolated Droid review with MiniMax M3
-        uses: EffortlessMetrics/droid-action-safe/isolated-review@2e37d0ac790aeca76856628dc8e6ee186abf87cd # dev merge of #7 (2026-09-16)
+        uses: EffortlessMetrics/droid-action-safe/isolated-review@0c2019dd56a43750a0abf30b6449001707f90807 # dev merges #7 + #8 (2026-09-16)
         with:
           github_token: ${{ github.token }}
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
