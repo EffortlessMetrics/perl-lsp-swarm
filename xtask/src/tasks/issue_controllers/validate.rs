@@ -200,9 +200,9 @@ fn byte_hygiene(raw: &[u8], diagnostics: &mut Vec<Diagnostic>) {
     }
 }
 
-/// Mirror the parsed-value scan over the exact bytes: SHA-like runs and
-/// timestamps must fail closed even when they hide outside string values
-/// (for example inside a key name).
+/// Mirror the parsed-value scan over the exact bytes: SHA-like runs,
+/// timestamps, and live-state tokens must fail closed even when they hide
+/// outside parsed string values (for example inside a key name).
 fn raw_bytes_live_state_scan(raw: &[u8], diagnostics: &mut Vec<Diagnostic>) {
     let text = String::from_utf8_lossy(raw);
     for line in text.lines() {
@@ -219,6 +219,15 @@ fn raw_bytes_live_state_scan(raw: &[u8], diagnostics: &mut Vec<Diagnostic>) {
                 "manifest bytes".to_owned(),
                 "possible live timestamp in manifest bytes".to_owned(),
             ));
+        }
+        for token in LIVE_STATE_TOKENS {
+            if line.contains(token) {
+                diagnostics.push(Diagnostic::new(
+                    "live-state",
+                    "manifest bytes".to_owned(),
+                    format!("possible live-state token '{token}' in manifest bytes"),
+                ));
+            }
         }
     }
 }
@@ -256,45 +265,62 @@ fn looks_like_live_sha(text: &str) -> bool {
 }
 
 fn looks_like_timestamp(text: &str) -> bool {
-    // Shape: YYYY-MM-DDT...
+    // Shape: YYYY-MM-DDT..., at ANY offset. A timestamp embedded in prose
+    // ("approved on 2026-09-11T12:00:00Z") is as much live state as one that
+    // starts the string, so the window slides over the whole text.
     let bytes = text.as_bytes();
-    bytes.len() > 10
-        && bytes[..4].iter().all(u8::is_ascii_digit)
-        && bytes[4] == b'-'
-        && bytes[5].is_ascii_digit()
-        && bytes[6].is_ascii_digit()
-        && bytes[7] == b'-'
-        && bytes[8].is_ascii_digit()
-        && bytes[9].is_ascii_digit()
-        && bytes[10] == b'T'
+    if bytes.len() < 11 {
+        return false;
+    }
+    for start in 0..=(bytes.len() - 11) {
+        let window = &bytes[start..start + 11];
+        if window[..4].iter().all(u8::is_ascii_digit)
+            && window[4] == b'-'
+            && window[5].is_ascii_digit()
+            && window[6].is_ascii_digit()
+            && window[7] == b'-'
+            && window[8].is_ascii_digit()
+            && window[9].is_ascii_digit()
+            && window[10] == b'T'
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The shared string-shape checks, applied to both string values and object
+/// key names: a live token in a key is as unreachable as one in a value.
+fn scan_live_state_text(text: &str, subject: &str, diagnostics: &mut Vec<Diagnostic>) {
+    if looks_like_live_sha(text) {
+        diagnostics.push(Diagnostic::new(
+            "live-state",
+            subject.to_owned(),
+            format!("possible live SHA/state token in stable bytes: {text}"),
+        ));
+    }
+    if looks_like_timestamp(text) {
+        diagnostics.push(Diagnostic::new(
+            "live-state",
+            subject.to_owned(),
+            format!("possible live timestamp in stable bytes: {text}"),
+        ));
+    }
+    for token in LIVE_STATE_TOKENS {
+        if text.contains(token) {
+            diagnostics.push(Diagnostic::new(
+                "live-state",
+                subject.to_owned(),
+                format!("possible live-state token '{token}' in stable bytes"),
+            ));
+        }
+    }
 }
 
 fn live_state_scan(value: &serde_json::Value, diagnostics: &mut Vec<Diagnostic>) {
     match value {
         serde_json::Value::String(text) => {
-            if looks_like_live_sha(text) {
-                diagnostics.push(Diagnostic::new(
-                    "live-state",
-                    "manifest string value".to_owned(),
-                    format!("possible live SHA/state token in stable bytes: {text}"),
-                ));
-            }
-            if looks_like_timestamp(text) {
-                diagnostics.push(Diagnostic::new(
-                    "live-state",
-                    "manifest string value".to_owned(),
-                    format!("possible live timestamp in stable bytes: {text}"),
-                ));
-            }
-            for token in LIVE_STATE_TOKENS {
-                if text.contains(token) {
-                    diagnostics.push(Diagnostic::new(
-                        "live-state",
-                        "manifest string value".to_owned(),
-                        format!("possible live-state token '{token}' in stable bytes"),
-                    ));
-                }
-            }
+            scan_live_state_text(text, "manifest string value", diagnostics);
         }
         serde_json::Value::Array(items) => {
             for item in items {
@@ -303,8 +329,8 @@ fn live_state_scan(value: &serde_json::Value, diagnostics: &mut Vec<Diagnostic>)
         }
         serde_json::Value::Object(map) => {
             for (key, item) in map {
+                scan_live_state_text(key, "manifest object key", diagnostics);
                 live_state_scan(item, diagnostics);
-                let _ = key;
             }
         }
         _ => {}
@@ -1440,8 +1466,25 @@ fn orphan_and_route_laws(manifest: &Manifest, diagnostics: &mut Vec<Diagnostic>)
     }
 
     // Forward reachability to the terminal: a node reaches the fan-in when
-    // one of its successors (nodes that depend on it) is already known to
-    // reach it, over hard/evidence/optional edges.
+    // one of its consumers is already known to reach it, over
+    // hard/evidence/optional edges only. The `successors` field is
+    // class-blind by derivation, so the route is computed from the actual
+    // edge classes: an external-class edge delegates to an outside authority
+    // and carries no train flow, and must never satisfy the route.
+    let mut class_dependents: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for node in &manifest.nodes {
+        for dep in &node.dependencies {
+            if dep.target.starts_with('#') {
+                continue;
+            }
+            if matches!(dep.class.as_str(), "hard" | "evidence" | "optional") {
+                class_dependents
+                    .entry(dep.target.as_str())
+                    .or_default()
+                    .insert(node.node_id.as_str());
+            }
+        }
+    }
     let mut reach: BTreeSet<&str> = BTreeSet::new();
     reach.insert(terminal);
     let mut changed = true;
@@ -1452,7 +1495,9 @@ fn orphan_and_route_laws(manifest: &Manifest, diagnostics: &mut Vec<Diagnostic>)
                 continue;
             }
             let reaches_terminal =
-                node.successors.iter().any(|successor| reach.contains(successor.as_str()));
+                class_dependents.get(node.node_id.as_str()).is_some_and(|dependents| {
+                    dependents.iter().any(|dependent| reach.contains(*dependent))
+                });
             if reaches_terminal {
                 reach.insert(node.node_id.as_str());
                 changed = true;

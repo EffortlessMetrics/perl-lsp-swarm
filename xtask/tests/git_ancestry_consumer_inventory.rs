@@ -179,11 +179,25 @@ fn dispositions_match_observed_is_ancestor_use() -> std::io::Result<()> {
             Disposition::Authority => {}
             // Data-only rows must also never acquire a history verdict; the
             // literal's presence is covered by the observed/recorded set tests.
-            Disposition::LiteralOnly => assert!(
-                !uses_is_ancestor,
-                "{} is recorded as literal-only but now calls `merge-base --is-ancestor`; route it through xtask::git_ancestry instead (#14557)",
-                row.path
-            ),
+            Disposition::LiteralOnly => {
+                assert!(
+                    !uses_is_ancestor,
+                    "{} is recorded as literal-only but now calls `merge-base --is-ancestor`; \
+                     route it through xtask::git_ancestry instead (#14557)",
+                    row.path
+                );
+                // The disposition claims the file NEVER invokes git — not
+                // merely that it avoids the `--is-ancestor` spelling. Any
+                // process construction in a data-only row would let a direct
+                // `git merge-base` (or any other private history verdict)
+                // appear without tripping this contract.
+                assert!(
+                    !source.contains("Command::new"),
+                    "{} is recorded as literal-only but now constructs a process; it must name \
+                     `merge-base` as data only and never invoke git (#10304)",
+                    row.path
+                );
+            }
         }
     }
     Ok(())

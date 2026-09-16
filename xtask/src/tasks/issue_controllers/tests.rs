@@ -647,6 +647,63 @@ fn live_tokens_hidden_outside_string_values_are_rejected_by_the_byte_scan() -> R
     );
     Ok(())
 }
+#[test]
+fn embedded_timestamp_without_any_other_live_token_is_rejected() -> Result<()> {
+    // The timestamp window must slide over the whole string: a live timestamp
+    // embedded mid-prose, carrying no other live token to lean on, must fail
+    // by itself. A prefix-only matcher silently accepts this document.
+    expect_reject_with("embedded-timestamp", "live timestamp", |value| {
+        let limitations = node_mut(value, "T03")?
+            .get_mut("limitations")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("no limitations"))?;
+        limitations.push(json!("stale after 2026-08-20T10:00:00Z elapsed"));
+        Ok(())
+    })
+}
+#[test]
+fn live_state_token_in_an_object_key_is_rejected() -> Result<()> {
+    // A live-state token inside a KEY name is contract bytes like any other:
+    // neither the parsed-value walk (which used to skip keys) nor the raw
+    // byte scan (which used to check only SHAs and timestamps) may let a
+    // `refs/heads/`-style token through.
+    let mut value = base_value()?;
+    let map =
+        value.as_object_mut().ok_or_else(|| color_eyre::eyre::eyre!("root is not an object"))?;
+    if let Some(limited) = map.remove("limitations") {
+        map.insert("refs/heads/main_notes".to_owned(), limited);
+    }
+    let raw = serialize(&value)?;
+    let report = validate_static_bytes(&raw);
+    ensure!(
+        report.diagnostics.iter().any(|d| d.check == "live-state"),
+        "a live-state token inside an object key must be rejected"
+    );
+    Ok(())
+}
+#[test]
+fn external_class_edge_cannot_satisfy_the_terminal_route() -> Result<()> {
+    // P02 (the terminal fan-in) is D02's only hard/evidence/optional
+    // consumer. Flipping that edge to the external class must strand D02:
+    // an external edge delegates to an outside authority and is not a
+    // train-flow route, even though the class-blind successor derivation
+    // still records the consumer.
+    expect_reject_with("external-route", "no route to the terminal", |value| {
+        let node_value = node_mut(value, "P02")?;
+        let deps = node_value
+            .get_mut("dependencies")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| color_eyre::eyre::eyre!("P02 has no dependencies"))?;
+        for dep in deps.iter_mut() {
+            if dep.get("target").and_then(Value::as_str) == Some("D02") {
+                dep.as_object_mut()
+                    .ok_or_else(|| color_eyre::eyre::eyre!("dependency is not an object"))?
+                    .insert("class".to_owned(), json!("external"));
+            }
+        }
+        Ok(())
+    })
+}
 
 #[test]
 fn generated_projection_carries_no_live_state() -> Result<()> {

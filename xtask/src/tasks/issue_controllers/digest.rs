@@ -37,14 +37,23 @@ fn walk(value: &Value, out: &mut String) -> Result<()> {
             }
         }
         Value::Number(n) => {
-            let Some(integer) = n.as_i64().or_else(|| n.as_u64().map(|u| u as i64)) else {
+            // Encode losslessly and injectively: a `u64` above `i64::MAX` must
+            // not share an encoding with the negative `i64` its two's-complement
+            // cast would produce (`-1` and `18446744073709551615` are distinct
+            // contract tokens). Values that fit `i64` keep the reference
+            // spelling, so the pinned semantic digest is unchanged.
+            if let Some(integer) = n.as_i64() {
+                out.push_str("i:");
+                out.push_str(&integer.to_string());
+            } else if let Some(unsigned) = n.as_u64() {
+                out.push_str("u:");
+                out.push_str(&unsigned.to_string());
+            } else {
                 bail!(
                     "non-integer JSON number is a schema defect and cannot be canonically \
                      digested: {n}"
                 );
-            };
-            out.push_str("i:");
-            out.push_str(&integer.to_string());
+            }
             out.push(';');
         }
         Value::String(s) => {
@@ -158,6 +167,19 @@ mod tests {
             .err()
             .ok_or_else(|| color_eyre::eyre::eyre!("float must fail closed"))?;
         assert!(err.to_string().contains("non-integer"));
+        Ok(())
+    }
+
+    #[test]
+    fn large_unsigned_and_negative_one_never_collide() -> Result<()> {
+        // `18446744073709551615 as i64` is `-1`; a lossy cast would give both
+        // documents the same canonical digest. They are distinct contract
+        // tokens and must digest differently.
+        let negative = json!({"x": -1});
+        let unsigned = json!({"x": 18446744073709551615u64});
+        let d_negative = canonical_digest(&negative)?;
+        let d_unsigned = canonical_digest(&unsigned)?;
+        assert_ne!(d_negative, d_unsigned);
         Ok(())
     }
 }
