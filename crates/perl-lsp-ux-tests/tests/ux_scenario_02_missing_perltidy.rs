@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(
+    clippy::print_stderr,
+    reason = "Scenario 02 reports a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 //! Scenario 02 — Missing perltidy.
 //!
@@ -29,43 +31,38 @@ fn config_without_perltidy() -> ScenarioConfig {
 }
 
 #[test]
-fn scenario_02_formatting_without_perltidy_does_not_crash() {
+fn scenario_02_formatting_without_perltidy_does_not_crash() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_02: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let source = "sub test{my$x=1;return$x;}\n";
-    let harness = UxHarness::new(config_without_perltidy()).expect("Failed to create UX harness");
+    let harness = UxHarness::new(config_without_perltidy())
+        .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
-    harness.open_file("format_me.pl", source).expect("didOpen should succeed");
+    harness
+        .open_file("format_me.pl", source)
+        .map_err(|error| format!("didOpen should succeed: {error}"))?;
 
-    let result = harness.format_document("format_me.pl");
-
-    match result {
-        Ok(FormatResult::Edits(_)) => {
-            eprintln!("INFO scenario_02: formatting succeeded despite empty PATH");
-        }
-        Ok(FormatResult::Empty) => {
-            // Graceful no-op — acceptable.
-        }
-        Ok(FormatResult::Error(err_val)) => {
-            let msg = err_val["message"].as_str().unwrap_or("");
+    match harness.format_document("format_me.pl") {
+        Ok(FormatResult::Edits(_)) | Ok(FormatResult::Empty) => {}
+        Ok(FormatResult::Error(error_value)) => {
+            let message = error_value.get("message").and_then(|value| value.as_str()).unwrap_or("");
             assert!(
-                !msg.contains("panicked at") && !msg.contains("SIGABRT"),
-                "Error message looks like a Rust panic: {}",
-                msg
+                !message.contains("panicked at") && !message.contains("SIGABRT"),
+                "Error message looks like a Rust panic: {message}"
             );
         }
-        Err(e) => {
-            eprintln!(
-                "INFO scenario_02: harness error (server may have returned error quickly): {}",
-                e
-            );
+        Err(error) => {
+            return Err(format!(
+                "Formatting failed at the UX harness boundary instead of returning a bounded product result: {error}"
+            ));
         }
     }
 
     harness.assert_no_crash();
+    Ok(())
 }
 
 #[test]
@@ -76,20 +73,24 @@ fn scenario_02_server_remains_alive_after_failed_format() -> Result<(), String> 
     }
 
     let source = "my $x = 1;\n";
-    let harness = UxHarness::new(config_without_perltidy()).expect("Failed to create UX harness");
+    let harness = UxHarness::new(config_without_perltidy())
+        .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
-    harness.open_file("alive.pl", source).expect("didOpen should succeed");
+    harness
+        .open_file("alive.pl", source)
+        .map_err(|error| format!("didOpen should succeed: {error}"))?;
 
-    let _ = harness.format_document("alive.pl");
-
-    let hover = harness.hover("alive.pl", 0, 3);
-    match hover {
-        Ok(_) => {}
-        Err(e) => {
+    match harness.format_document("alive.pl") {
+        Ok(FormatResult::Edits(_)) | Ok(FormatResult::Empty) | Ok(FormatResult::Error(_)) => {}
+        Err(error) => {
             return Err(format!(
-                "Server unresponsive after failed formatting — UX regression: {e}"
+                "Formatting failed at the UX harness boundary instead of returning a bounded product result: {error}"
             ));
         }
     }
+
+    harness.hover("alive.pl", 0, 3).map_err(|error| {
+        format!("Server unresponsive after failed formatting — UX regression: {error}")
+    })?;
     Ok(())
 }
