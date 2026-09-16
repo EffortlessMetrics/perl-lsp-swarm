@@ -4,7 +4,7 @@
 
 use super::lexical_context::{
     ascii_word_start, is_in_comment, is_in_heredoc, is_in_pod, is_in_regex, is_in_string,
-    quote_like_hash_literal_span,
+    quote_like_literal_span,
 };
 use super::scope_distance;
 use super::{context::CompletionContext, items::CompletionItem, items::InsertTextFormat};
@@ -654,9 +654,17 @@ fn occurrence_is_undef_operand(source: &str, receiver_pos: usize, after_receiver
     // A word spelled `undef` reached through a method call (`$c->undef`),
     // subroutine sigil (`&undef`), or qualified name (`Foo::undef`) is a user
     // sub call, not the built-in clearing operator. Separator whitespace
-    // (`$c -> undef`, `& undef`) must not hide the call operator.
+    // (`$c -> undef`, `& undef`) must not hide the call operator. A single
+    // `&` is the sigil only in prefix position: after an operand
+    // (`$ok & undef $http`) it is the bitwise-and operator and the builtin
+    // still executes; `&&` is never a sigil.
     let before_word = trimmed[..word_start].trim_end();
-    !before_word.ends_with('&') && !before_word.ends_with("->") && !before_word.ends_with("::")
+    let amp_is_sigil = before_word.ends_with('&')
+        && !before_word.ends_with("&&")
+        && !before_word[..before_word.len() - 1]
+            .trim_end()
+            .ends_with(|byte: char| byte.is_alphanumeric() || matches!(byte, ')' | ']' | '}'));
+    !amp_is_sigil && !before_word.ends_with("->") && !before_word.ends_with("::")
 }
 
 /// Byte index of the first statement-terminating `;` that sits outside quoted
@@ -665,10 +673,9 @@ fn occurrence_is_undef_operand(source: &str, receiver_pos: usize, after_receiver
 /// assignment-evidence extraction.
 ///
 /// A `#` opens a comment only outside quotes and only when it is not the
-/// `$#` array-length sigil; a `#` delimiter of a quote-like operator
-/// (`q#...#`, `s#...#...#`) is consumed as a literal via the shared
-/// quote-like authority. Bracketing quote-like delimiters (`qr/{/`) remain a
-/// known depth-heuristic limit owned by #13244.
+/// `$#` array-length sigil; a quote-like operator's literal (any delimiter,
+/// including `#` and bracketing forms) is consumed via the shared quote-like
+/// authority before the `#` and depth heuristics apply.
 fn statement_terminator_index(text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut depth = 0usize;
@@ -692,25 +699,25 @@ fn statement_terminator_index(text: &str) -> usize {
             index += 1;
             continue;
         }
+        if let Some(span_end) = quote_like_literal_span(bytes, index) {
+            // A quote-like operator opens a literal (`q#a;b#`, `qq{Foo#1}`,
+            // `s{a;b}{c}`): skip its body escape- and nesting-aware.
+            index = span_end;
+            continue;
+        }
         match byte {
             b'\'' | b'"' | b'`' => quote = Some(byte),
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth = depth.saturating_sub(1),
             b'#' if index == 0 || bytes[index - 1] != b'$' => {
-                if let Some(span_end) = quote_like_hash_literal_span(bytes, index) {
-                    // A quote-like operator's `#` delimiter opens a literal,
-                    // not a comment: skip its body escape-aware.
-                    index = span_end;
-                } else {
-                    // Always advance at least one byte: a `#` as the last byte
-                    // with no trailing newline must still terminate the scan.
-                    while index < bytes.len() {
-                        if bytes[index] == b'\n' {
-                            index += 1;
-                            break;
-                        }
+                // Always advance at least one byte: a `#` as the last byte
+                // with no trailing newline must still terminate the scan.
+                while index < bytes.len() {
+                    if bytes[index] == b'\n' {
                         index += 1;
+                        break;
                     }
+                    index += 1;
                 }
                 continue;
             }
@@ -809,20 +816,21 @@ fn call_arguments_end_expression(after_name: &str) -> bool {
             index += 1;
             continue;
         }
-        if matches!(byte, b'\'' | b'"') {
+        if matches!(byte, b'\'' | b'"' | b'`') {
             quote = Some(byte);
             index += 1;
             continue;
         }
+        if let Some(span_end) = quote_like_literal_span(bytes, index) {
+            // A quote-like operator opens a literal (`q#...#`, `qq{Foo#1}`):
+            // skip its body escape- and nesting-aware.
+            index = span_end;
+            continue;
+        }
         // A `#` outside quotes opens a line comment (unless it is the `$#`
         // sigil), so an apostrophe inside constructor-argument comments must
-        // not open a phantom quote that swallows the close parenthesis. A `#`
-        // delimiter of a quote-like operator opens a literal instead.
+        // not open a phantom quote that swallows the close parenthesis.
         if byte == b'#' && (index == 0 || bytes[index - 1] != b'$') {
-            if let Some(span_end) = quote_like_hash_literal_span(bytes, index) {
-                index = span_end;
-                continue;
-            }
             // Always advance at least one byte: a `#` as the last byte
             // with no trailing newline must still terminate the scan.
             while index < bytes.len() {
@@ -1311,6 +1319,42 @@ mod tests {
     }
 
     #[test]
+    fn terminator_matches_perl_quotelike_whitespace_rule() {
+        // Measured on perl 5.42.0: a `#` separated from the quote-like
+        // operator by whitespace is a line comment, not a delimiter — the
+        // `q` stays unterminated and the next statement's `;` terminates.
+        let spaced_hash = "my $x = q #a#;\nmy $y = 2;";
+        assert_eq!(statement_terminator_index(spaced_hash), spaced_hash.len() - 1);
+    }
+
+    #[test]
+    fn terminator_skips_hash_inside_bracketing_quotelike() {
+        // `#` inside a bracketing quote-like literal is content (measured:
+        // `qq{Foo#1}` is `Foo#1`), so the literal must be skipped whole —
+        // the comment heuristic must not eat the closing brace and `;`.
+        let braced = "my $x = qq{Foo#1};\nmy $y = 2;";
+        assert_eq!(statement_terminator_index(braced), 17);
+
+        let bracketing_sections = "my $x = s{a;b}{c};\nmy $y = 2;";
+        assert_eq!(statement_terminator_index(bracketing_sections), 17);
+
+        // A slash-delimited regex's inner brace does not raise the depth
+        // counter (FC5 TERMINATOR_QUOTELIKE_DEPTH fixed for this family).
+        let slashed = "my $x = qr/{/;\nmy $y = 2;";
+        assert_eq!(statement_terminator_index(slashed), 13);
+    }
+
+    #[test]
+    fn file_test_s_operator_stays_comment_for_hash_delimiters() {
+        // `-s#a#b#` is the file-test operator followed by a comment (perl
+        // never lexes `-s#...` as a quote-like substitution), and the spaced
+        // spelling behaves the same.
+        for text in ["-s#a#b#;\nmy $y = 2;", "-s #a#b#;\nmy $y = 2;"] {
+            assert_eq!(statement_terminator_index(text), text.len() - 1);
+        }
+    }
+
+    #[test]
     fn trailing_comment_and_terminator_end_constructor_expression() {
         // After the balanced close, whitespace, `#` comments, and the
         // statement's own `;` still end the expression (FC4
@@ -1321,17 +1365,6 @@ mod tests {
         assert!(call_arguments_end_expression("() ;"));
         assert!(!call_arguments_end_expression("() ->chain"));
         assert!(!call_arguments_end_expression("() # c\n; extra"));
-    }
-
-    #[test]
-    fn terminator_quotelike_bracket_depth_is_known_limit() {
-        // KNOWN LIMIT (FC5 TERMINATOR_QUOTELIKE_DEPTH, owned by #13244): an
-        // unmatched bracketing delimiter inside a `/`-delimited regex
-        // (`qr/{/`) still raises the depth counter and hides the `;`. The
-        // repair must model bracketing quote-like delimiters generally; this
-        // bridge slice only repairs `#` delimiters (FC1).
-        let text = "my $x = qr/{/;\nmy $y = 2;";
-        assert_eq!(statement_terminator_index(text), text.len());
     }
 
     #[test]

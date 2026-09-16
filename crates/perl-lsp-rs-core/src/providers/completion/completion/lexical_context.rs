@@ -1214,38 +1214,20 @@ fn quote_like_closer(opener: u8) -> Option<u8> {
     }
 }
 
-/// End index (exclusive) of a quote-like literal whose opening delimiter is
-/// the `#` byte at `hash_index`, when that `#` belongs to a quote-like
-/// operator (`q#...#`, `s#...#...#`, ...) rather than a line comment.
+/// End index (exclusive) of the quote-like literal starting at the operator
+/// byte `operator_index` (`q`, `qq`, `qw`, `qx`, `qr`, `m`, `s`, `tr`, `y`),
+/// or `None` when no quote-like operator starts there.
 ///
-/// Shares the quote-like operator authority (parameter table and boundary
-/// guards) with the literal scan machines so hand scanners agree with them on
-/// where code resumes. Only non-bracketing `#` delimiters are modeled here;
-/// bracketing delimiters (`qr/{/`) remain owned by the general scan machines.
-pub(super) fn quote_like_hash_literal_span(bytes: &[u8], hash_index: usize) -> Option<usize> {
-    if bytes.get(hash_index) != Some(&b'#') {
-        return None;
-    }
-    // The operator ends at the first non-space before the delimiter; spaces
-    // are allowed between operator and delimiter (`q #...#`), but a newline
-    // puts the `#` on its own comment line, which the operator never sees.
-    let mut operator_end = hash_index;
-    while operator_end > 0 && matches!(bytes.get(operator_end - 1), Some(b' ' | b'\t')) {
-        operator_end -= 1;
-    }
-    if operator_end == 0 {
-        return None;
-    }
-    let two_byte_operator =
-        if operator_end >= 2 { Some(&bytes[operator_end - 2..operator_end]) } else { None };
-    let operator_index = match two_byte_operator {
-        Some(b"qr" | b"qq" | b"qw" | b"qx" | b"tr") => operator_end - 2,
-        _ if matches!(bytes[operator_end - 1], b'q' | b'm' | b's' | b'y') => operator_end - 1,
-        _ => return None,
-    };
+/// Shares the quote-like operator authority (parameter table, boundary and
+/// file-test guards) with the literal scan machines so the hand scanners in
+/// `methods.rs` agree with them on where code resumes. Bracketing delimiters
+/// nest; a whitespace-separated `#` is never a delimiter (measured perl
+/// 5.38/5.42: `q #...#` is a comment and an unterminated `q`).
+pub(super) fn quote_like_literal_span(bytes: &[u8], operator_index: usize) -> Option<usize> {
     if !quote_like_operator_boundary(bytes, operator_index)
         || quote_like_follows_sub_declaration(bytes, operator_index)
         || quote_like_follows_method_or_qualified_name(bytes, operator_index)
+        || quote_like_is_file_test_s_operator(bytes, operator_index)
     {
         return None;
     }
@@ -1253,19 +1235,42 @@ pub(super) fn quote_like_hash_literal_span(bytes: &[u8], hash_index: usize) -> O
         bytes.get(operator_index).copied()?,
         bytes.get(operator_index + 1).copied(),
     )?;
-    let mut delimiter_index = operator_index + delimiter_offset;
+    let raw_delimiter_index = operator_index + delimiter_offset;
+    let mut delimiter_index = raw_delimiter_index;
     if allow_space {
         delimiter_index = skip_ascii_space(bytes, delimiter_index);
     }
-    if delimiter_index != hash_index {
+    if bytes.get(delimiter_index) == Some(&b'#') && raw_delimiter_index != delimiter_index {
+        // A `#` separated from the operator by whitespace starts a line
+        // comment, not a `#`-delimited literal.
         return None;
     }
-    // Scan each `#`-delimited section escape-aware: the delimiter bytes
-    // alternate opener/closer/closer-opener/closer (`s#...#...#`), so each
-    // section runs from the current byte to the next unescaped `#`.
-    let mut cursor = hash_index + 1;
-    for _ in 0..sections {
+    if quote_like_is_braced_bareword_key(bytes, operator_index, delimiter_index) {
+        return None;
+    }
+    if bytes.get(delimiter_index..delimiter_index + 2) == Some(b"=>") {
+        return None;
+    }
+    let opener = bytes.get(delimiter_index).copied()?;
+    let closer = quote_like_closer(opener)?;
+    let bracketing = closer != opener;
+    // Scan each section escape-aware. For non-bracketing delimiters the
+    // closer byte doubles as the next section's opener (`s#a#b#`); for
+    // bracketing delimiters each section opens afresh (`s{...}{...}`) and
+    // matching openers nest.
+    let mut cursor = delimiter_index + 1;
+    for section in 0..sections {
+        if section > 0 {
+            if bracketing {
+                cursor = skip_ascii_space(bytes, cursor);
+                if bytes.get(cursor).copied() != Some(opener) {
+                    return None;
+                }
+                cursor += 1;
+            }
+        }
         let mut escaped = false;
+        let mut nesting = 0usize;
         let closed = loop {
             match bytes.get(cursor) {
                 None => break false,
@@ -1274,7 +1279,15 @@ pub(super) fn quote_like_hash_literal_span(bytes: &[u8], hash_index: usize) -> O
                         escaped = false;
                     } else if *byte == b'\\' {
                         escaped = true;
-                    } else if *byte == b'#' {
+                    } else if bracketing && *byte == opener {
+                        nesting += 1;
+                    } else if bracketing && *byte == closer {
+                        if nesting == 0 {
+                            cursor += 1;
+                            break true;
+                        }
+                        nesting -= 1;
+                    } else if !bracketing && *byte == closer {
                         cursor += 1;
                         break true;
                     }

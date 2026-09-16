@@ -350,4 +350,24 @@ fn undef_named_method_or_sub_call_does_not_clear_evidence() {
         has_label(&spaced_sub_labels, "post"),
         "`& undef($http)` is a subroutine call; evidence must survive: {spaced_sub_labels:?}"
     );
+
+    // `&&` is never the subroutine sigil: `$ok && undef $http` executes the
+    // builtin and must clear the stale constructor evidence.
+    let and_clears =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$done && undef $http;\n$http->po";
+    let and_labels = labels(&completions_at_end(and_clears));
+    assert!(
+        !has_label(&and_labels, "post"),
+        "`$done && undef $http` executes the builtin; evidence must clear: {and_labels:?}"
+    );
+
+    // A single infix `&` after an operand is the bitwise-and operator, not
+    // the sigil; the builtin still executes and must clear.
+    let infix_clears =
+        "use HTTP::Tiny;\nmy $http = HTTP::Tiny->new;\n$done & undef $http;\n$http->po";
+    let infix_labels = labels(&completions_at_end(infix_clears));
+    assert!(
+        !has_label(&infix_labels, "post"),
+        "`$done & undef $http` is the bitwise-and operator; evidence must clear: {infix_labels:?}"
+    );
 }
