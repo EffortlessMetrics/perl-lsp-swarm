@@ -17,8 +17,8 @@ mod route;
 pub use evaluate::evaluate;
 pub use live::{
     DeletionExecutor, LiveCollection, ReadOnlyCommands, RemoteIdentity, SystemCommands,
-    SystemDeletion, collect_request, execute_admitted_deletion, parse_remote_identity,
-    repository_from_remote_url, verify_remote_identity,
+    SystemDeletion, collect_request, collect_request_for_local_alias, execute_admitted_deletion,
+    parse_remote_identity, repository_from_remote_url, verify_remote_identity,
 };
 pub use model::{
     AdmissionOutcome, AdmissionRequest, BRANCH_DELETION_ADMISSION_POLICY_VERSION,
@@ -67,6 +67,12 @@ enum BranchDeletionAdmissionCommand {
         #[arg(long, default_value = "origin")]
         remote: String,
 
+        /// Local branch alias for the terminal PR head. This never emits a
+        /// remote deletion; for example, `--local-ref codex/13178-dancer2-v1-integrated`
+        /// leases `git update-ref --no-deref -d` against that alias.
+        #[arg(long)]
+        local_ref: Option<String>,
+
         /// Emit the complete typed outcome as JSON instead of one human line.
         #[arg(long)]
         json: bool,
@@ -88,6 +94,12 @@ enum BranchDeletionAdmissionCommand {
         /// Git remote the deletion would target.
         #[arg(long, default_value = "origin")]
         remote: String,
+
+        /// Local branch alias for the terminal PR head, such as
+        /// `--local-ref codex/13178-dancer2-v1-integrated`. This selects the
+        /// local-only `git update-ref --no-deref -d` route.
+        #[arg(long)]
+        local_ref: Option<String>,
     },
 
     /// Evaluate one admission request and report the typed outcome.
@@ -110,9 +122,14 @@ pub fn run_from_env() -> Result<()> {
 
 fn run(args: Args) -> Result<()> {
     match args.command {
-        BranchDeletionAdmissionCommand::Plan { pr, remote, json } => {
+        BranchDeletionAdmissionCommand::Plan { pr, remote, local_ref, json } => {
             let commands = SystemCommands;
-            let collected = collect_request(&commands, pr, &remote)?;
+            let collected = match local_ref.as_deref() {
+                Some(local_ref) => {
+                    collect_request_for_local_alias(&commands, pr, &remote, local_ref)?
+                }
+                None => collect_request(&commands, pr, &remote)?,
+            };
             let outcome = evaluate(&collected.request);
 
             // The verification command is not merely named here: for an
@@ -129,12 +146,17 @@ fn run(args: Args) -> Result<()> {
             }
             Ok(())
         }
-        BranchDeletionAdmissionCommand::Cleanup { pr, remote } => {
+        BranchDeletionAdmissionCommand::Cleanup { pr, remote, local_ref } => {
             let commands = SystemCommands;
             // Collect and delete in one process: the window between the graph
             // read and the deletion is as small as this design can make it.
             // It cannot be zero — see the residual on `branch_deletion_command`.
-            let collected = collect_request(&commands, pr, &remote)?;
+            let collected = match local_ref.as_deref() {
+                Some(local_ref) => {
+                    collect_request_for_local_alias(&commands, pr, &remote, local_ref)?
+                }
+                None => collect_request(&commands, pr, &remote)?,
+            };
             let outcome = evaluate(&collected.request);
             emit(&outcome, false)?;
 
@@ -156,7 +178,12 @@ fn run(args: Args) -> Result<()> {
             // The decision between the two reads is `recheck_gate`, kept pure
             // so it is falsifiable without a live graph; this arm only supplies
             // the reads and routes its verdict.
-            let recollected = collect_request(&commands, pr, &remote)?;
+            let recollected = match local_ref.as_deref() {
+                Some(local_ref) => {
+                    collect_request_for_local_alias(&commands, pr, &remote, local_ref)?
+                }
+                None => collect_request(&commands, pr, &remote)?,
+            };
             let recheck = evaluate(&recollected.request);
             if let RecheckGate::Retain { detail } = recheck_gate(&outcome, &recheck) {
                 write_err(&format!("branch-deletion-admission: retaining — {detail}\n"))?;

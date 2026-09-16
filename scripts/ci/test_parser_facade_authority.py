@@ -11,7 +11,12 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from parser_facade_authority import check, load_ledger
+from parser_facade_authority import (
+    check,
+    load_ledger,
+    pull_request_path_pattern_matches,
+    read_pull_request_path_filters,
+)
 
 FIXTURE_LEDGER = Path(__file__).resolve().parents[2] / ".ci/parser-facade"
 
@@ -104,6 +109,23 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
                 consumer,
                 '[package]\nname="consumer"\nversion="0.1.0"\n\n[dependencies]\nperl-parser="1"\n',
             )
+        # The check verifies that Policy Validators fires for every discovered
+        # consumer manifest, so the fixture carries the workflow's manifest
+        # filters in the shape the live file uses (#15580).
+        self.write(
+            ".github/workflows/policy-validators.yml",
+            "on:\n"
+            "  pull_request:\n"
+            "    paths:\n"
+            "      - 'policy/**'\n"
+            "      - '**/Cargo.toml'\n"
+            "      - 'Cargo.toml'\n"
+            "      - 'scripts/ci/parser_facade_authority.py'\n"
+            "  workflow_dispatch: {}\n"
+            "jobs:\n"
+            "  validate:\n"
+            "    runs-on: ubuntu-24.04\n",
+        )
 
     @property
     def ledger_path(self) -> Path:
@@ -221,6 +243,78 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
         self.write_ledger(self.ledger)
         with self.assertRaisesRegex(ValueError, "canonical incremental export marker"):
             check(self.root, self.ledger_path)
+
+    def test_trigger_coverage_fails_when_filter_misses_consumer(self) -> None:
+        # The #15580 falsifier: a filter set that only matches crates/**
+        # leaves top-level consumers (xtask/Cargo.toml) invisible to the
+        # workflow, so consumer drift there passed silently. The check must
+        # reject that filter set while the consumer itself is still ledgered.
+        self.write(
+            ".github/workflows/policy-validators.yml",
+            "on:\n  pull_request:\n    paths:\n      - 'crates/**/Cargo.toml'\n",
+        )
+        with self.assertRaisesRegex(ValueError, "does not fire.*xtask/Cargo.toml"):
+            check(self.root, self.ledger_path)
+
+    def test_trigger_coverage_requires_a_paths_block(self) -> None:
+        # Fail closed: a workflow without a paths list (or a missing file)
+        # must fail the authority check rather than count as coverage.
+        self.write(
+            ".github/workflows/policy-validators.yml",
+            "on:\n  pull_request: {}\njobs: {}\n",
+        )
+        with self.assertRaisesRegex(ValueError, "no paths list"):
+            check(self.root, self.ledger_path)
+        (self.root / ".github/workflows/policy-validators.yml").unlink()
+        with self.assertRaisesRegex(ValueError, "cannot read"):
+            check(self.root, self.ledger_path)
+
+    def test_read_pull_request_path_filters_extracts_and_unquotes(self) -> None:
+        filters = read_pull_request_path_filters(
+            self.root / ".github/workflows/policy-validators.yml"
+        )
+        self.assertEqual(
+            filters,
+            [
+                "policy/**",
+                "**/Cargo.toml",
+                "Cargo.toml",
+                "scripts/ci/parser_facade_authority.py",
+            ],
+        )
+
+    def test_pattern_matching_semantics(self) -> None:
+        # `**/` crosses separators and also matches zero segments, so the
+        # workspace-root manifest is covered by the broadened filter.
+        self.assertTrue(pull_request_path_pattern_matches("**/Cargo.toml", "Cargo.toml"))
+        self.assertTrue(
+            pull_request_path_pattern_matches("**/Cargo.toml", "xtask/Cargo.toml")
+        )
+        self.assertTrue(
+            pull_request_path_pattern_matches(
+                "**/Cargo.toml", "archive/crates/tree-sitter-perl-rs/Cargo.toml"
+            )
+        )
+        self.assertFalse(
+            pull_request_path_pattern_matches("**/Cargo.toml", "xtask/Cargo.toml.bak")
+        )
+        self.assertTrue(
+            pull_request_path_pattern_matches("docs/releases/**", "docs/releases/a/f.md")
+        )
+        self.assertFalse(
+            pull_request_path_pattern_matches("docs/releases/**", "docs/releases-x/f.md")
+        )
+        self.assertTrue(
+            pull_request_path_pattern_matches("crates/*/Cargo.toml", "crates/a/Cargo.toml")
+        )
+        self.assertFalse(
+            pull_request_path_pattern_matches("crates/*/Cargo.toml", "crates/a/b/Cargo.toml")
+        )
+        self.assertTrue(
+            pull_request_path_pattern_matches(
+                "crates/perl-parser/src/lib.rs", "crates/perl-parser/src/lib.rs"
+            )
+        )
 
 
 if __name__ == "__main__":
