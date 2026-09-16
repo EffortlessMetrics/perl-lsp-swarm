@@ -1718,3 +1718,80 @@ impl<'a> Parser<'a> {
         ))
     }
 }
+
+/// Boundary discriminators for the do-while trailing-brace policy (#15649):
+/// `do_while_keep_consuming_brace` must keep consuming inside the
+/// condition's own `(...)`, keep bare/subscript shapes for unparenthesized
+/// conditions, and stop for everything else so `parse_statement_modifier`
+/// can reject the trailing block. (ripr discriminators for the
+/// `inside_condition_group || (unparenthesized_condition && (bare_shape ||
+/// subscript_chain))` seams.)
+#[cfg(test)]
+mod do_while_brace_boundary_tests {
+    use super::*;
+
+    fn variable_node() -> Node {
+        Node::new(
+            NodeKind::Variable { sigil: "$".to_string(), name: "h".to_string() },
+            SourceLocation { start: 0, end: 2 },
+        )
+    }
+
+    fn subscript_node() -> Node {
+        Node::new(
+            NodeKind::Binary {
+                op: "{}".to_string(),
+                left: Box::new(variable_node()),
+                right: Box::new(Node::new(
+                    NodeKind::Number { value: "0".to_string() },
+                    SourceLocation { start: 3, end: 4 },
+                )),
+            },
+            SourceLocation { start: 0, end: 5 },
+        )
+    }
+
+    fn number_node() -> Node {
+        Node::new(
+            NodeKind::Number { value: "0".to_string() },
+            SourceLocation { start: 0, end: 1 },
+        )
+    }
+
+    fn condition_parser(unparenthesized: bool, depth: usize) -> Parser<'static> {
+        let mut parser = Parser::new("while 1 {}");
+        parser.in_do_while_condition = true;
+        parser.do_while_paren_reject = !unparenthesized;
+        parser.do_while_paren_depth = depth;
+        parser
+    }
+
+    #[test]
+    fn inside_condition_group_keeps_consuming() {
+        let parser = condition_parser(false, 1);
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&number_node()), true);
+    }
+
+    #[test]
+    fn closed_condition_group_stops_consuming() {
+        let parser = condition_parser(false, 0);
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), false);
+        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node()), false);
+    }
+
+    #[test]
+    fn unparenthesized_condition_keeps_bare_and_subscript_shapes() {
+        let parser = condition_parser(true, 0);
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node()), true);
+        assert_eq!(parser.do_while_keep_consuming_brace(&number_node()), false);
+    }
+
+    #[test]
+    fn outside_do_while_condition_stops_consuming() {
+        let mut parser = Parser::new("while 1 {}");
+        assert_eq!(parser.do_while_keep_consuming_brace(&variable_node()), false);
+        assert_eq!(parser.do_while_keep_consuming_brace(&subscript_node()), false);
+    }
+}
