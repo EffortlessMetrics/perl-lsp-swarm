@@ -218,9 +218,13 @@ pub struct CaptureAnalysis {
 /// Legacy named-capture projection retained for API compatibility.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureGroup {
-    /// Capture name as written between `(?<` and `>`.
+    /// The capture name as spelled in the source, independent of delimiter
+    /// form: `(?<name>...)`, `(?'name'...)`, and `(?P<name>...)` all
+    /// populate it.
     pub name: String,
-    /// 1-based capture-group index in declaration order.
+    /// The Perl capture number the group binds (the `$1`-style number).
+    /// Branch-reset `(?|...)` groups reuse numbers across alternative
+    /// branches, so this need not be unique per declaration.
     pub index: usize,
     /// The group's body pattern, verbatim.
     pub pattern: String,

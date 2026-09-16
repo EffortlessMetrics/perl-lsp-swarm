@@ -24,7 +24,9 @@ use crate::{analyzer::EffectiveModifiers, error::RegexError};
 /// One located validation finding in a caller-supplied pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexFinding {
-    /// Byte offset of the finding relative to the caller's pattern start.
+    /// Byte offset in the caller's source coordinates: the pattern-local
+    /// match position plus the caller-supplied `start_pos`. Not relative to
+    /// the pattern start alone — do not add `start_pos` again.
     pub offset: usize,
     /// Human-readable description of the finding.
     pub message: &'static str,
@@ -94,7 +96,8 @@ impl RegexValidator {
         Ok(())
     }
 
-    /// Whether the pattern embeds executable code (`(?{...})` / `{{...}}`).
+    /// Whether the pattern embeds executable code: immediate `(?{...})` or
+    /// deferred `(??{...})` constructs.
     pub fn detects_code_execution(&self, pattern: &str) -> bool {
         !self.analyze(pattern).facts.embedded_code.is_empty()
     }
