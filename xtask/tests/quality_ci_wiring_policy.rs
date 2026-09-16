@@ -949,14 +949,9 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     ] {
         assert!(justfile.contains(required), "coverage-proof missing `{required}`");
     }
-    let ci_route_source =
-        must(fs::read_to_string(root.join("xtask/src/tasks/ci_route.rs")));
-    must(cross_check_ci_route_schema_version_literals(
-        &ci_route_source,
-        &codecov_router,
-    ));
-    let mutated_python_receipt =
-        codecov_router.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
+    let ci_route_source = must(fs::read_to_string(root.join("xtask/src/tasks/ci_route.rs")));
+    must(cross_check_ci_route_schema_version_literals(&ci_route_source, &codecov_router));
+    let mutated_python_receipt = codecov_router.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
     assert_ne!(
         mutated_python_receipt, codecov_router,
         "negative control must mutate the Python producer's `schema_version` literal"
@@ -966,8 +961,7 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             .is_err(),
         "ci-route schema_version cross-check must reject Python producer drift"
     );
-    let mutated_rust_receipt =
-        ci_route_source.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
+    let mutated_rust_receipt = ci_route_source.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
     assert_ne!(
         mutated_rust_receipt, ci_route_source,
         "negative control must mutate the Rust producer's `schema_version` literal"
