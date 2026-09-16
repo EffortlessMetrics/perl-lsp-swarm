@@ -94,9 +94,7 @@ fn scenario_05_server_responsive_with_bad_config() {
             let harness = UxHarness::new(config_with_bad_tool_paths())
                 .context("Failed to create UX harness with bad config")?;
 
-            harness
-                .open_file("config_responsive.pl", source)
-                .context("didOpen should succeed")?;
+            harness.open_file("config_responsive.pl", source).context("didOpen should succeed")?;
             harness
                 .hover("config_responsive.pl", 0, 3)
                 .context("server became unresponsive to hover with bad tool paths")?;
@@ -127,9 +125,7 @@ fn scenario_05_format_with_bad_perltidy_path_returns_graceful_error() {
             let harness = UxHarness::new(config_with_bad_tool_paths())
                 .context("Failed to create UX harness with bad config")?;
 
-            harness
-                .open_file("format_bad.pl", source)
-                .context("didOpen should succeed")?;
+            harness.open_file("format_bad.pl", source).context("didOpen should succeed")?;
 
             match harness
                 .format_document("format_bad.pl")
