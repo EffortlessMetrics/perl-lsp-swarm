@@ -1260,14 +1260,12 @@ pub(super) fn quote_like_literal_span(bytes: &[u8], operator_index: usize) -> Op
     // matching openers nest.
     let mut cursor = delimiter_index + 1;
     for section in 0..sections {
-        if section > 0 {
-            if bracketing {
-                cursor = skip_ascii_space(bytes, cursor);
-                if bytes.get(cursor).copied() != Some(opener) {
-                    return None;
-                }
-                cursor += 1;
+        if section > 0 && bracketing {
+            cursor = skip_ascii_space(bytes, cursor);
+            if bytes.get(cursor).copied() != Some(opener) {
+                return None;
             }
+            cursor += 1;
         }
         let mut escaped = false;
         let mut nesting = 0usize;
