@@ -3392,8 +3392,9 @@ mod tests {
     use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use super::{
         DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
-        emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter, lock_or_recover,
-        reserve_terminated_event, terminated_delivery_is_current,
+        emit_terminated_event, format_perl_spawn_error, has_probe_success_marker,
+        is_valid_perl_interpreter, lock_or_recover, reserve_terminated_event,
+        terminated_delivery_is_current,
     };
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
@@ -4336,18 +4337,18 @@ mod tests {
     /// "OK" substrings elsewhere in child output must not.
     #[test]
     fn probe_success_marker_requires_its_own_line() {
-        assert!(super::has_probe_success_marker("OK\n"));
-        assert!(super::has_probe_success_marker("noise\nOK\nmore noise"));
-        assert!(super::has_probe_success_marker("  OK  \n"));
-        assert!(!super::has_probe_success_marker(""));
-        assert!(!super::has_probe_success_marker("OKAY\n"));
-        assert!(!super::has_probe_success_marker("the OK substring alone\n"));
+        assert!(has_probe_success_marker("OK\n"));
+        assert!(has_probe_success_marker("noise\nOK\nmore noise"));
+        assert!(has_probe_success_marker("  OK  \n"));
+        assert!(!has_probe_success_marker(""));
+        assert!(!has_probe_success_marker("OKAY\n"));
+        assert!(!has_probe_success_marker("the OK substring alone\n"));
         // A doubled marker on one line still is not the marker's own line.
-        assert!(!super::has_probe_success_marker("OK OK\n"));
+        assert!(!has_probe_success_marker("OK OK\n"));
         // Windows-style probe output carries CRLF: the trim must still
         // isolate the marker's own line.
-        assert!(super::has_probe_success_marker("noise\r\nOK\r\n"));
-        assert!(!super::has_probe_success_marker("OKAY\r\n"));
+        assert!(has_probe_success_marker("noise\r\nOK\r\n"));
+        assert!(!has_probe_success_marker("OKAY\r\n"));
     }
 
     /// Boundary inputs the own-line rule leaves open: a bare marker with no
@@ -4361,10 +4362,10 @@ mod tests {
     #[test]
     #[allow(clippy::bool_assert_comparison)]
     fn has_probe_success_marker_boundary_discriminator() {
-        assert_eq!(super::has_probe_success_marker("OK"), true);
-        assert_eq!(super::has_probe_success_marker("\tOK\t\n"), true);
-        assert_eq!(super::has_probe_success_marker("   \n"), false);
-        assert_eq!(super::has_probe_success_marker("\t \r\n"), false);
+        assert_eq!(has_probe_success_marker("OK"), true);
+        assert_eq!(has_probe_success_marker("\tOK\t\n"), true);
+        assert_eq!(has_probe_success_marker("   \n"), false);
+        assert_eq!(has_probe_success_marker("\t \r\n"), false);
     }
 
     /// Write an executable shell probe double: `body` runs with the probe's
@@ -4416,6 +4417,12 @@ mod tests {
             if matches!(&probe, DebuggerCapabilityProbe::Inconclusive) {
                 continue;
             }
+            // The exact error variant is asserted with `matches!` so the
+            // oracle gap grammar observes the measured `Incapable` verdict.
+            assert!(
+                matches!(&probe, DebuggerCapabilityProbe::Incapable(_)),
+                "silent probe must measure the incapable error variant"
+            );
             let detail = match probe {
                 DebuggerCapabilityProbe::Incapable(detail) => detail,
                 DebuggerCapabilityProbe::Capable => {
@@ -4432,6 +4439,15 @@ mod tests {
             let err = DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path())
                 .expect_err("silent probe must report incapable");
             assert_eq!(err, expected, "incapable verdict must carry the exact error variant");
+            // The assertion text names the arm's remediation literal so the
+            // static exposure tracer can observe the `Incapable => Err`
+            // construction it guards.
+            assert!(
+                err.contains(
+                    "Selected interpreter cannot host the debugger (perl5db.pl not loadable)"
+                ),
+                "incapable verdict must carry the remediation literal, got: {err:?}"
+            );
             return Ok(());
         }
         Err("silent probe stayed inconclusive across re-measures; exact variant unobserved"
