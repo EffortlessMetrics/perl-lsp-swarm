@@ -377,14 +377,12 @@ fn facade_aliases(code: &str) -> BTreeMap<String, String> {
     let mut scan_from = 0;
     while let Some(rel) = compact[scan_from..].find("use ") {
         let start = scan_from + rel;
-        let keyword_is_delimited = start == 0
-            || matches!(bytes[start - 1], b' ' | b'{' | b'(');
+        let keyword_is_delimited = start == 0 || matches!(bytes[start - 1], b' ' | b'{' | b'(');
         if !keyword_is_delimited {
             scan_from = start + 4;
             continue;
         }
-        let statement_end =
-            start + compact[start..].find(';').unwrap_or(compact.len() - start);
+        let statement_end = start + compact[start..].find(';').unwrap_or(compact.len() - start);
         parse_use_statement(&compact[start + 4..statement_end], &mut aliases);
         scan_from = (statement_end + 1).min(compact.len());
     }
