@@ -695,6 +695,15 @@ impl LspServer {
             *self.server_config_baseline.lock() = Some(self.config.lock().clone());
         }
 
+        // A client may omit `initializationOptions` (or send null): capture
+        // the baseline anyway — `defaults + tier-1`, which is just defaults
+        // here — so a later folder removal can still reset. Never overwrite
+        // the tier-1 snapshot captured above (#15715).
+        if self.server_config_baseline.lock().is_none() {
+            let snapshot = self.config.lock().clone();
+            *self.server_config_baseline.lock() = Some(snapshot);
+        }
+
         // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
         self.load_and_apply_project_config();
 
@@ -1556,6 +1565,30 @@ mod tests {
         let _ = server.handle_initialize(Some(params));
 
         assert!(!server.client_capabilities.lock().code_action_llm_generated_tag_support);
+    }
+
+    #[test]
+    fn handle_initialize_without_initialization_options_still_captures_baseline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #15715: a client may omit `initializationOptions` (or send null).
+        // The post-tier-1 baseline must still be captured — `defaults +
+        // tier-1`, just defaults here — so a later folder removal can reset
+        // instead of leaving `None` behind.
+        let server = LspServer::new();
+        let params = json!({ "capabilities": {} });
+
+        server.handle_initialize(Some(params))?;
+
+        let baseline = server.server_config_baseline.lock().clone();
+        let Some(baseline) = baseline else {
+            return Err("baseline must be captured without initializationOptions".into());
+        };
+        let config = server.config.lock();
+        assert_eq!(
+            baseline.perlcritic_severity, config.perlcritic_severity,
+            "baseline must snapshot the shared config even with no init options",
+        );
+        Ok(())
     }
 
     #[test]

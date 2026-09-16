@@ -1516,6 +1516,61 @@ pub(crate) fn extract_perl_settings(settings: &Value) -> Option<&Value> {
     if settings.is_object() { Some(settings) } else { None }
 }
 
+/// Deep-merge a tier-3 patch into the accumulated client overlay: objects
+/// merge recursively so fields absent from a later notification retain
+/// earlier accepted values; anything else (scalars, arrays, type changes)
+/// replaces, matching patch application order (#15715).
+fn merge_client_settings_patch(base: &mut Value, patch: &Value) {
+    match (base, patch) {
+        (Value::Object(base_map), Value::Object(patch_map)) => {
+            for (key, patch_value) in patch_map {
+                match base_map.get_mut(key) {
+                    Some(base_value) => merge_client_settings_patch(base_value, patch_value),
+                    None => {
+                        base_map.insert(key.clone(), patch_value.clone());
+                    }
+                }
+            }
+        }
+        (base_slot, patch_value) => {
+            *base_slot = patch_value.clone();
+        }
+    }
+}
+
+/// Record one tier-3 notification patch in the replay cache, accumulating
+/// across notifications so a later patch cannot erase earlier accepted
+/// fields (#15715).
+fn record_client_settings(cache: &Arc<Mutex<Option<Value>>>, perl: &Value) {
+    let mut guard = cache.lock();
+    match guard.as_mut() {
+        Some(existing) => merge_client_settings_patch(existing, perl),
+        None => *guard = Some(perl.clone()),
+    }
+}
+
+/// Snapshot the critic-relevant `ServerConfig` fields for before/after
+/// comparison. Shared by `handle_did_change_configuration` and
+/// `load_and_apply_project_config` so both stay in lockstep with the
+/// parser's folding of the legacy `perlcritic.*` and native `critic.*`
+/// keys into the same fields (#15715).
+pub(super) type CriticConfigSnapshot =
+    (bool, u8, Option<String>, Option<String>, String, Vec<String>, Vec<String>);
+
+pub(super) fn critic_config_snapshot(
+    config: &perl_lsp_rs_core::config::ServerConfig,
+) -> CriticConfigSnapshot {
+    (
+        config.perlcritic_enabled,
+        config.perlcritic_severity,
+        config.perlcritic_profile.clone(),
+        config.perlcritic_theme.clone(),
+        config.native_critic_profile.clone(),
+        config.native_critic_include.clone(),
+        config.native_critic_exclude.clone(),
+    )
+}
+
 impl LspServer {
     /// Surface invalid enum values from editor-provided settings without changing
     /// the fail-safe configuration update behavior.
@@ -1589,15 +1644,7 @@ impl LspServer {
                 #[cfg(not(target_arch = "wasm32"))]
                 let critic_snapshot_before = {
                     let cfg = self.config.lock();
-                    (
-                        cfg.perlcritic_enabled,
-                        cfg.perlcritic_severity,
-                        cfg.perlcritic_profile.clone(),
-                        cfg.perlcritic_theme.clone(),
-                        cfg.native_critic_profile.clone(),
-                        cfg.native_critic_include.clone(),
-                        cfg.native_critic_exclude.clone(),
-                    )
+                    critic_config_snapshot(&cfg)
                 };
 
                 // Update server-owned LSP configuration.
@@ -1607,14 +1654,17 @@ impl LspServer {
                     tracing::debug!("Updated server config from perl settings");
                 }
 
-                // Cache the most recent tier-3 (client) perl settings so a
-                // later `load_and_apply_project_config` triggered by
+                // Accumulate tier-3 (client) perl settings so a later
+                // `load_and_apply_project_config` triggered by
                 // `workspace/didChangeWorkspaceFolders` can replay them on
                 // top of the merged TOML after resetting project-owned
                 // fields (issue #15715). Without this, server-global fields
                 // touched only by `didChangeConfiguration` would be erased
-                // every time the merged TOML layer is rebuilt.
-                *self.last_client_settings.lock() = Some(perl.clone());
+                // every time the merged TOML layer is rebuilt. Each
+                // notification is a patch, so the cache merges: fields
+                // absent from a later payload retain earlier accepted
+                // values instead of being forgotten.
+                record_client_settings(&self.last_client_settings, perl);
 
                 // Update the post-tier-1 baseline with the same tier-3
                 // payload so the next `load_and_apply_project_config` reset
@@ -1624,24 +1674,19 @@ impl LspServer {
                 // advance it in lockstep with tier-3 so it represents
                 // `defaults + tier-1 + tier-3` and never includes any tier-2
                 // contribution from a (now removed) folder (#15715).
-                if let Some(mut baseline) = self.server_config_baseline.lock().clone() {
+                //
+                // Single-guard mutation: the scrutinee guard of
+                // `lock().clone()` lives through the whole `if let`, so
+                // re-locking the same non-reentrant mutex in the body hangs
+                // the mutation scheduler on every notification (#15715).
+                if let Some(baseline) = self.server_config_baseline.lock().as_mut() {
                     baseline.update_from_value(perl);
-                    *self.server_config_baseline.lock() = Some(baseline);
                 }
 
                 #[cfg(not(target_arch = "wasm32"))]
                 let critic_config_changed = {
                     let cfg = self.config.lock();
-                    critic_snapshot_before
-                        != (
-                            cfg.perlcritic_enabled,
-                            cfg.perlcritic_severity,
-                            cfg.perlcritic_profile.clone(),
-                            cfg.perlcritic_theme.clone(),
-                            cfg.native_critic_profile.clone(),
-                            cfg.native_critic_include.clone(),
-                            cfg.native_critic_exclude.clone(),
-                        )
+                    critic_snapshot_before != critic_config_snapshot(&cfg)
                 };
 
                 // Reset the shared CriticAnalyzer when any critic-related setting
@@ -6556,5 +6601,46 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn merge_client_settings_patch_deep_merges_objects_and_replaces_scalars() {
+        // #15715: each tier-3 notification is a patch. Objects merge
+        // recursively so fields absent from a later payload retain earlier
+        // accepted values; scalars, arrays, and type changes replace.
+        let mut base = json!({
+            "critic": { "severity": 4, "theme": "core" },
+            "other": 1,
+            "list": [1],
+        });
+        let patch = json!({
+            "critic": { "severity": 2 },
+            "list": [2, 3],
+        });
+        super::merge_client_settings_patch(&mut base, &patch);
+        assert_eq!(
+            base,
+            json!({
+                "critic": { "severity": 2, "theme": "core" },
+                "other": 1,
+                "list": [2, 3],
+            }),
+            "absent object fields must be retained, present scalars and arrays replaced: {base:?}",
+        );
+    }
+
+    #[test]
+    fn record_client_settings_accumulates_across_notifications() {
+        // #15715: a later patch that omits an earlier field must not erase
+        // it from the replay cache.
+        let cache = Arc::new(Mutex::new(None));
+        super::record_client_settings(&cache, &json!({ "critic": { "severity": 4 } }));
+        super::record_client_settings(&cache, &json!({ "diagnostics": { "limit": 10 } }));
+        let cached = cache.lock().clone().expect("cache must hold accumulated settings");
+        assert_eq!(
+            cached,
+            json!({ "critic": { "severity": 4 }, "diagnostics": { "limit": 10 } }),
+            "second patch must accumulate, not overwrite: {cached:?}",
+        );
     }
 }

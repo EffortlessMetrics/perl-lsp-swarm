@@ -163,6 +163,16 @@ impl LspServer {
         // written via direct `ServerConfig` field assignment survive a
         // downstream `did_open` triggering this function via
         // `refresh_single_file_project_config_if_unowned`.
+        // Snapshot the critic-relevant fields before the reset so a project
+        // reload that moves them can drop retained critic warning identities
+        // below. A removed folder's TOML values live in the config until the
+        // reset evicts them, so this must precede the baseline restore.
+        #[cfg(not(target_arch = "wasm32"))]
+        let critic_snapshot_before = {
+            let cfg = self.config.lock();
+            super::super::workspace::critic_config_snapshot(&cfg)
+        };
+
         if let Some(baseline) = self.server_config_baseline.lock().clone() {
             *self.config.lock() = baseline;
         }
@@ -212,6 +222,8 @@ impl LspServer {
             // documented layering (init-options < TOML < client responses)
             // survives the single-file TOML layer and any prior reset.
             self.replay_last_client_settings_on_server_config();
+            #[cfg(not(target_arch = "wasm32"))]
+            self.clear_critic_dedup_if_moved(&critic_snapshot_before);
             return complete;
         }
 
@@ -360,11 +372,34 @@ impl LspServer {
         // survive a folder removal (#15715).
         self.replay_last_client_settings_on_server_config();
 
+        // A reload that moved critic-relevant fields must not keep
+        // suppressing warnings retained under the removed settings.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.clear_critic_dedup_if_moved(&critic_snapshot_before);
+
         // Client-scoped `workspace/configuration` is deliberately deferred to
         // the post-initialize lifecycle. During `initialize` only local project
         // and initialization-option state may be applied; server→client requests
         // are not legal until after InitializeResult has been returned (#7708).
         complete
+    }
+
+    /// Drop retained critic warning identities when a project reload moved
+    /// any critic-relevant field, mirroring `handle_did_change_configuration`.
+    /// There is no shared analyzer to reset (it is constructed per use from
+    /// the current config); the retained dedup identities are the state that
+    /// would otherwise keep suppressing warnings under removed settings
+    /// while diagnostics republish around them (#15715).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn clear_critic_dedup_if_moved(&self, before: &super::super::workspace::CriticConfigSnapshot) {
+        let after = {
+            let cfg = self.config.lock();
+            super::super::workspace::critic_config_snapshot(&cfg)
+        };
+        if before != &after {
+            self.session_warning_dedup
+                .clear_family(super::super::session_warning_dedup::SessionWarningFamily::Critic);
+        }
     }
 
     /// Replay the most recent tier-3 (client `didChangeConfiguration`)
@@ -1242,6 +1277,65 @@ perlcritic_severity = 2
             cfg.perlcritic_severity, 4,
             "tier-3 severity must survive the removed-folder reset (was {})",
             cfg.perlcritic_severity,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_and_apply_project_config_reload_twice_then_remove_leaves_no_stale_tier2()
+    -> anyhow::Result<()> {
+        // #15715 P2 scenario through the real reload path: start from an
+        // init-options state (tier-1 severity 5 captured in the baseline),
+        // add a folder whose TOML contributes severity 2, reload twice, then
+        // remove the folder. The reload must terminate (the pre-fix nested
+        // `config.lock()` inside a live guard hung the single-threaded
+        // scheduler here) and the removal must restore the baseline with no
+        // stale tier-2 contribution leaking back.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder)?;
+
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            r#"
+[diagnostics]
+perlcritic_severity = 2
+"#,
+        )?;
+
+        let uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+
+        // Simulate `handle_initialize` with `initializationOptions` that set
+        // severity 5: the live config and the post-tier-1 baseline agree.
+        server.config.lock().perlcritic_severity = 5;
+        *server.server_config_baseline.lock() = Some(server.config.lock().clone());
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder.clone()),
+        );
+
+        // Two consecutive reloads: each must return. Under the nested-lock
+        // shape the second acquisition of the same non-reentrant mutex never
+        // completed.
+        server.load_and_apply_project_config();
+        server.load_and_apply_project_config();
+        assert_eq!(
+            server.config.lock().perlcritic_severity,
+            2,
+            "folder TOML severity must apply while the folder is present",
+        );
+
+        server.workspace_folders.lock().retain(|f| f.uri != uri);
+        server.load_and_apply_project_config();
+
+        assert_eq!(
+            server.config.lock().perlcritic_severity,
+            5,
+            "removed-folder reset must restore the tier-1 baseline, not retain tier-2 severity",
         );
         Ok(())
     }
