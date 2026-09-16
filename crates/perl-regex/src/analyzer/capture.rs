@@ -218,8 +218,11 @@ pub struct CaptureAnalysis {
 /// Legacy named-capture projection retained for API compatibility.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaptureGroup {
+    /// Capture name as written between `(?<` and `>`.
     pub name: String,
+    /// 1-based capture-group index in declaration order.
     pub index: usize,
+    /// The group's body pattern, verbatim.
     pub pattern: String,
 }
 
