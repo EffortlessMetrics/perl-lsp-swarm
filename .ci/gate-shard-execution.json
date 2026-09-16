@@ -16,7 +16,6 @@
     "release_history_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "source_commit_api_check": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "perl_token_leaf_contract": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
-    "compile_all_targets": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "clippy_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "unit_foundation_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
     "unit_parser_stack_full": {"requires": [], "on_dependency_failure": "blocked_not_proven"},
