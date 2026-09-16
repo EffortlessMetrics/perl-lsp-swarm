@@ -166,5 +166,8 @@ Notes for releases:
 
 - Workspace utility crate, not shipped in releases
 - Use `cargo xtask <task>` to run tasks (not `cargo run -p xtask`)
+- Dedicated bins (`src/bin/*.rs`) are the exception: gates invoke them as
+  `cargo run -p xtask --bin <name>` (e.g. `parser-behavior-proof`,
+  `kubernetes-dap-profiles`), matching the existing gate-policy pattern
 - Gate receipts written to `target/receipts/` by default
 - See `.ci/gate-policy.yaml` for gate definitions

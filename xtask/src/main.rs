@@ -41,11 +41,11 @@ use tasks::{
     ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
     ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
     code_action_generation_ledger, command_evidence, compare, compat_inventory,
-    compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof,
-    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    compiler_lexical_cutline, compiler_upstream_status, corpus_audit, count_ratchet, cpan_corpus,
+    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
+    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
+    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
     ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
     issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
@@ -1169,6 +1169,10 @@ enum Commands {
 
     /// Lint GitHub workflow security policy invariants.
     WorkflowPolicyLint {
+        /// Evaluate this repository instead of the compile-time project root.
+        #[arg(long, conflicts_with = "fixture")]
+        root: Option<PathBuf>,
+
         /// Write a JSON receipt artifact for CI consumption.
         #[arg(long)]
         receipt: Option<PathBuf>,
@@ -1180,7 +1184,7 @@ enum Commands {
         /// Also validate that every workflow has a `[[lane]]` entry in
         /// policy/ci-lane-whitelist.toml. Advisory (warning-level) until the
         /// whitelist has stabilized — see docs/ci/perl-lsp-rollout-plan.md PR 11.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "fixture")]
         check_lane_whitelist: bool,
     },
 
@@ -2280,6 +2284,13 @@ enum Commands {
     CompilerProfile {
         #[command(subcommand)]
         command: CompilerProfileCommand,
+    },
+
+    /// Upstream-derived semantic conformance surfaces (#12532).
+    #[command(name = "compiler")]
+    Compiler {
+        #[command(subcommand)]
+        command: CompilerUpstreamCommand,
     },
 
     /// Publish structured editor UX scorecard artifact/status from harness fixtures.
@@ -4223,6 +4234,26 @@ enum CompilerProfileCommand {
 }
 
 #[derive(Subcommand)]
+enum CompilerUpstreamCommand {
+    /// Upstream-derived conformance operations (#12532).
+    #[command(name = "upstream")]
+    Upstream {
+        #[command(subcommand)]
+        command: CompilerUpstreamStatusGroup,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompilerUpstreamStatusGroup {
+    /// Exact upstream-derived conformance status packets (#12532).
+    #[command(name = "status")]
+    Status {
+        #[command(subcommand)]
+        command: tasks::compiler_upstream_status::CompilerUpstreamStatusSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
 enum MemoryTrendsCommand {
     /// Render memory plateau trends from receipts and baseline files.
     Render {
@@ -4515,8 +4546,17 @@ enum PrLedgerCommand {
         #[arg(long, default_value = "target/reconciliation")]
         out: PathBuf,
         /// Optional fixture JSON (for testing without live gh).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "paginated_fixture")]
         fixture: Option<PathBuf>,
+        /// Optional paginated fixture JSON: array of pages, each page an
+        /// array of PR objects. Used to drive the multi-page code path in
+        /// tests without shelling to gh.
+        #[arg(long, conflicts_with = "fixture")]
+        paginated_fixture: Option<PathBuf>,
+        /// Pin `observed_at` to a deterministic anchor. Receipts are then
+        /// byte-identical across runs over the same canonical input. Test-only.
+        #[arg(long)]
+        deterministic_clock: bool,
     },
 }
 
@@ -5604,9 +5644,19 @@ fn run_cli(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::PrLedger { command } => match command {
-            PrLedgerCommand::Generate { repos, out, fixture } => {
-                tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
-            }
+            PrLedgerCommand::Generate {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            } => tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            }),
         },
         Commands::SyncDivergence { command } => match command {
             SyncDivergenceCommand::Check { source, boundary, target, ledger, receipt } => {
@@ -5945,8 +5995,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)
         }
-        Commands::WorkflowPolicyLint { receipt, fixture, check_lane_whitelist } => {
+        Commands::WorkflowPolicyLint { root, receipt, fixture, check_lane_whitelist } => {
             workflow_policy_lint::run(workflow_policy_lint::WorkflowPolicyLintConfig {
+                root,
                 receipt,
                 fixture,
                 check_lane_whitelist,
@@ -6748,6 +6799,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Compiler { command } => match command {
+            CompilerUpstreamCommand::Upstream { command } => match command {
+                CompilerUpstreamStatusGroup::Status { command } => {
+                    compiler_upstream_status::run(command)
+                }
+            },
+        },
         Commands::Metrics { command } => match command {
             MetricsCommand::ParserStats { input, json } => metrics::parser_stats::run(input, json),
             MetricsCommand::ParserAccuracy {
