@@ -556,7 +556,7 @@ fn test_concurrent_boundary_conditions() {
                     let parse_time = start_time.elapsed();
                     let acceptable = match &result {
                         Ok(_) => true,
-                        Err(error) => is_graceful_boundary_stop(error),
+                        Err(error) => is_graceful_boundary_stop(scenario_name, error),
                     };
 
                     results_clone.lock().unwrap().push((
@@ -978,17 +978,27 @@ fn count_ast_nodes(ast: &perl_parser::ast::Node) -> usize {
 }
 
 /// A boundary-straddling fixture is valid Perl, so the only acceptable
-/// failure is one of the parser's own deterministic resource-limit stops —
-/// `RecursionLimit`, `RecursionDepthExhausted`, `HeredocBudgetExhausted`, or
-/// `NestingTooDeep` — which is exactly the `ErrorCategory::ResourceLimit`
-/// class and the same contract `test_timeout_boundary` asserts. The former
-/// per-scenario string matching fell through to `false` for the
-/// size/complexity scenarios, so on a host slow or loaded enough to trip a
-/// limit honestly (#15432) a graceful stop was scored unacceptable and failed
-/// the >70% acceptable-rate assertion; any `UserError` still fails, so the
-/// discrimination is preserved.
-fn is_graceful_boundary_stop(error: &ParseError) -> bool {
-    error.error_class() == ErrorCategory::ResourceLimit
+/// failure in the recursion/heredoc scenarios is one of the parser's own
+/// deterministic resource-limit stops — `RecursionLimit`,
+/// `RecursionDepthExhausted`, `HeredocBudgetExhausted`, or `NestingTooDeep` —
+/// which is exactly the `ErrorCategory::ResourceLimit` class and the same
+/// contract `test_timeout_boundary` asserts. The former per-scenario string
+/// matching fell through to `false` for those scenarios, so on a host slow or
+/// loaded enough to trip a limit honestly (#15432) a graceful stop was scored
+/// unacceptable and failed the >70% acceptable-rate assertion.
+///
+/// The complexity/size fixtures stay strict (`false` for any error): they are
+/// flat — no heredocs, nesting depth ≤ 2, recursion-free — so none of the
+/// four `ResourceLimit` variants can fire on them honestly. A leaked
+/// recursion counter or a mis-charged heredoc scan would otherwise return
+/// `RecursionDepthExhausted` here and still satisfy the >70% assertion,
+/// masking exactly the regression class this suite exists to catch. Any
+/// `UserError` fails everywhere, so the discrimination is preserved.
+fn is_graceful_boundary_stop(scenario_name: &str, error: &ParseError) -> bool {
+    match scenario_name {
+        "complexity" | "size" => false,
+        _ => error.error_class() == ErrorCategory::ResourceLimit,
+    }
 }
 
 fn max_concurrent_parse_time(scenario_name: &str) -> Duration {
