@@ -5128,6 +5128,11 @@ enum AgentLedgersCommand {
         /// Output format: `human` (default) or `json`.
         #[arg(long, default_value = "human")]
         format: String,
+        /// Require every ledger file to declare this schema id (e.g.
+        /// `workflow-outcome.v1`). Without it, each file is validated against the
+        /// schema it declares.
+        #[arg(long, value_name = "ID")]
+        expected_schema: Option<String>,
     },
 }
 
@@ -6777,15 +6782,18 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             },
             AgentCommand::Ledgers { command } => match command {
-                AgentLedgersCommand::Validate { dir, format } => {
-                    let fmt = if format == "json" {
-                        tasks::agent_ledgers::ValidateFormat::Json
-                    } else {
-                        tasks::agent_ledgers::ValidateFormat::Human
+                AgentLedgersCommand::Validate { dir, format, expected_schema } => {
+                    let fmt = match format.as_str() {
+                        "json" => tasks::agent_ledgers::ValidateFormat::Json,
+                        "human" => tasks::agent_ledgers::ValidateFormat::Human,
+                        other => color_eyre::eyre::bail!(
+                            "unknown --format `{other}`; expected `human` or `json`"
+                        ),
                     };
                     tasks::agent_ledgers::validate(tasks::agent_ledgers::ValidateConfig {
                         ledger_dir: dir,
                         format: fmt,
+                        expected_schema,
                     })
                 }
             },
