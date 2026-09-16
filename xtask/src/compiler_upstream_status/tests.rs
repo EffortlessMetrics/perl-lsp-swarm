@@ -22,6 +22,7 @@ fn base_manifest(series: Vec<SeriesSelectorInput>) -> StatusInputsManifest {
         performance_packet_identity: None,
         compiler_profile_generation_identity: Some("compiler-profile:generation-0".to_string()),
         maintained_series: series,
+        expected_row_ids: Vec::new(),
     }
 }
 
@@ -782,5 +783,119 @@ fn compiler_upstream_conformance_status_build_writes_canonical_file() -> TestRes
     let shown = run_show(&output, Some("perl-5.38"), Some("array-return-shape"))?;
     assert!(shown.iter().any(|line| line.starts_with("row op-file ")));
     assert_eq!(shown.len(), 9);
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_diff_names_status_id_changes() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    write_inputs(dir.path(), &manifest, &[agreement_row("op-status-id", "perl-5.38")])?;
+    let before = project_from(dir.path())?;
+    let mut after = before.clone();
+    after.status_id = "u18-conformance-status-next".to_string();
+    let before_path = dir.path().join("before.json");
+    let after_path = dir.path().join("after.json");
+    fs::write(&before_path, canonical_bytes(&before)?)?;
+    fs::write(&after_path, canonical_bytes(&after)?)?;
+    let message = error_message(run_diff(&before_path, &after_path));
+    assert!(message.contains("status_id"), "{message}");
+    assert!(!message.contains("0 summarized differences"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_retention_requires_removal() -> TestResult {
+    for change in [UpstreamChange::None, UpstreamChange::Added, UpstreamChange::Changed] {
+        let dir = TempDir::new()?;
+        let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+        let mut row = failing_row("op-retained-without-removal", "perl-5.38");
+        row.history.upstream_change = change;
+        row.history.retained_obligation_after_removal = true;
+        write_inputs(dir.path(), &manifest, &[row])?;
+        let message = error_message(project_from(dir.path()));
+        assert!(
+            message.contains("retained_obligation_after_removal"),
+            "non-removed {change:?} must not claim removal retention: {message}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_input_omission_breaks_inventory() -> TestResult {
+    let manifest_with_inventory = || {
+        let mut manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+        manifest.expected_row_ids = vec!["op-good".to_string(), "op-bad".to_string()];
+        manifest
+    };
+    // Realistic failure: a failing obligation is omitted from the inputs
+    // directory before `build`. Counts recomputed from the trimmed rows
+    // would look valid; the declared inventory must reject instead.
+    let dir = TempDir::new()?;
+    write_inputs(dir.path(), &manifest_with_inventory(), &[agreement_row("op-good", "perl-5.38")])?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("op-bad") && message.contains("absent"), "{message}");
+
+    // Extra rows outside the declared inventory reject as well.
+    let dir = TempDir::new()?;
+    write_inputs(
+        dir.path(),
+        &manifest_with_inventory(),
+        &[
+            agreement_row("op-good", "perl-5.38"),
+            failing_row("op-bad", "perl-5.38"),
+            failing_row("op-undeclared", "perl-5.38"),
+        ],
+    )?;
+    let message = error_message(project_from(dir.path()));
+    assert!(message.contains("op-undeclared") && message.contains("outside"), "{message}");
+
+    // The exact declared set still projects.
+    let dir = TempDir::new()?;
+    write_inputs(
+        dir.path(),
+        &manifest_with_inventory(),
+        &[agreement_row("op-good", "perl-5.38"), failing_row("op-bad", "perl-5.38")],
+    )?;
+    let packet = project_from(dir.path())?;
+    assert_eq!(packet.rows.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_row_identities_reject_private_paths() -> TestResult {
+    for leaked in ["/home/alice/run", "C:/Users/alice/run"] {
+        let dir = TempDir::new()?;
+        let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+        let mut row = agreement_row("op-row-leak", "perl-5.38");
+        row.instrument_identity = leaked.to_string();
+        write_inputs(dir.path(), &manifest, &[row])?;
+        let message = error_message(project_from(dir.path()));
+        assert!(
+            message.contains("instrument_identity")
+                && (message.contains("host/private/path")
+                    || message.contains("absolute host path")
+                    || message.contains("absolute POSIX path")),
+            "row identity leak `{leaked}` must be bounded out: {message}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn compiler_upstream_conformance_status_code_spans_pad_edge_backticks() -> TestResult {
+    let dir = TempDir::new()?;
+    let manifest = base_manifest(vec![selector("perl-5.38", Some("upstream:v5.38.0"))]);
+    write_inputs(dir.path(), &manifest, &[agreement_row("op-edge", "perl-5.38")])?;
+    let mut packet = project_from(dir.path())?;
+    packet.rows[0].upstream_case.case_name = "ends-with-backtick`".to_string();
+    let rendered = render_markdown(&packet)?;
+    assert!(rendered.contains("`` ends-with-backtick` ``"), "{rendered}");
+
+    let mut packet = project_from(dir.path())?;
+    packet.rows[0].upstream_case.case_name = "`starts-with-backtick".to_string();
+    let rendered = render_markdown(&packet)?;
+    assert!(rendered.contains("`` `starts-with-backtick ``"), "{rendered}");
     Ok(())
 }

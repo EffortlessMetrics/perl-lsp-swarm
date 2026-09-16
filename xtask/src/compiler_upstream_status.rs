@@ -277,6 +277,13 @@ pub struct StatusInputsManifest {
     pub compiler_profile_generation_identity: Option<String>,
     #[serde(default)]
     pub maintained_series: Vec<SeriesSelectorInput>,
+    /// Independent obligation inventory: when non-empty, the projected row
+    /// set must match exactly. The manifest is maintained independently of
+    /// the populated `rows/` directory, so omitting a failing obligation
+    /// from inputs before `build` rejects instead of publishing a valid but
+    /// falsely optimistic packet with recomputed denominators.
+    #[serde(default)]
+    pub expected_row_ids: Vec<String>,
 }
 
 /// Input-row file schema (`<inputs>/rows/*.json`).
@@ -656,7 +663,16 @@ fn validate_history(
                 "removed upstream case loses its semantic obligation without successor or retained-regression declaration".to_string(),
             );
         }
-        UpstreamChange::Added | UpstreamChange::None | UpstreamChange::Changed => {}
+        UpstreamChange::Added | UpstreamChange::None | UpstreamChange::Changed => {
+            // The retention flag records a removal that happened; a row with
+            // no removal must not claim it, otherwise the packet publishes a
+            // contradictory history.
+            v.reject_unless(
+                !history.retained_obligation_after_removal,
+                "retained_obligation_after_removal without a removed upstream case is contradictory"
+                    .to_string(),
+            );
+        }
     }
     let links = [
         ("history.predecessor_row_id", &history.predecessor_row_id),
@@ -733,7 +749,11 @@ fn validate_row_against_series(
         ("oracle_subject", &row.oracle_subject),
         ("compiler_subject", &row.compiler_subject),
     ] {
-        v.reject_unless(is_identifier_charset(value), format!("{field} has invalid charset"));
+        // Full identity scan, not charset-only: row identities are copied
+        // into the canonical packet and generated Markdown, so host-private
+        // path-shaped values must be bounded out here exactly as they are
+        // for subject-binding identities.
+        v.scan_identity(field, value);
     }
 
     validate_upstream_ref(&mut v, &row.upstream_case);
@@ -909,6 +929,13 @@ fn validate_manifest(v: &mut Violations, manifest: &StatusInputsManifest) {
             );
         } else {
             v.add(format!("duplicate series selector `{}`", series.series_id));
+        }
+    }
+    let mut seen_expected = BTreeSet::new();
+    for expected in &manifest.expected_row_ids {
+        v.scan_identity("expected_row_ids entry", expected);
+        if !seen_expected.insert(expected.as_str()) {
+            v.add(format!("duplicate expected_row_ids entry `{expected}`"));
         }
     }
 }
@@ -1115,6 +1142,7 @@ pub fn project_packet(
     rows: Vec<CaseInputRow>,
 ) -> Result<ConformanceStatusPacket> {
     validate_row_snapshot_bindings(&manifest, &rows)?;
+    validate_expected_inventory(&manifest, &rows)?;
 
     let mut selectors = manifest.maintained_series.clone();
     selectors.sort_by(|left, right| left.series_id.cmp(&right.series_id));
@@ -1205,6 +1233,32 @@ fn validate_row_snapshot_bindings(
     } else {
         bail!(
             "status input rows failed snapshot binding validation:\n{}",
+            bounded_report(violations).join("\n")
+        )
+    }
+}
+
+fn validate_expected_inventory(
+    manifest: &StatusInputsManifest,
+    rows: &[CaseInputRow],
+) -> Result<()> {
+    if manifest.expected_row_ids.is_empty() {
+        return Ok(());
+    }
+    let expected: BTreeSet<&str> = manifest.expected_row_ids.iter().map(String::as_str).collect();
+    let actual: BTreeSet<&str> = rows.iter().map(|row| row.row_id.as_str()).collect();
+    let mut violations = Vec::new();
+    for missing in expected.difference(&actual) {
+        violations.push(format!("expected row `{missing}` is absent from inputs"));
+    }
+    for unexpected in actual.difference(&expected) {
+        violations.push(format!("input row `{unexpected}` is outside the declared inventory"));
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "status inputs diverge from the declared obligation inventory:\n{}",
             bounded_report(violations).join("\n")
         )
     }
@@ -1351,6 +1405,12 @@ pub fn run_diff(before: &Path, after: &Path) -> Result<String> {
     }
 
     let mut lines: Vec<String> = Vec::new();
+    if before_packet.status_id != after_packet.status_id {
+        lines.push(format!(
+            "~ status_id: `{}` -> `{}`",
+            before_packet.status_id, after_packet.status_id
+        ));
+    }
     summarize_binding_diff(
         &before_packet.subject_binding,
         &after_packet.subject_binding,
@@ -1580,7 +1640,18 @@ fn markdown_code_span(value: &str) -> String {
         return format!("`{value}`");
     }
     let delimiter = "`".repeat(longest_run + 1);
-    format!("{delimiter}{value}{delimiter}")
+    // CommonMark cannot match a delimiter run against content that starts or
+    // ends with a backtick (or a space, which the renderer strips), so pad
+    // with one interior space in exactly those edge cases.
+    if value.starts_with('`')
+        || value.ends_with('`')
+        || value.starts_with(' ')
+        || value.ends_with(' ')
+    {
+        format!("{delimiter} {value} {delimiter}")
+    } else {
+        format!("{delimiter}{value}{delimiter}")
+    }
 }
 
 fn markdown_text(value: &str) -> String {
