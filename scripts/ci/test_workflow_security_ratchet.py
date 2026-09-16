@@ -66,6 +66,66 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         args.baseline_root = self.root
         return args
 
+
+
+    def gh_aw_safe_outputs_workflow(
+        self,
+        *,
+        detection_gate: bool = True,
+        push_token: str | None = None,
+    ) -> str:
+        checkout_sha = "a" * 40
+        setup_sha = "b" * 40
+        token = push_token or ratchet.GH_AW_PUSH_TOKEN
+        metadata = json.dumps(
+            {"schema_version": "v4", "strict": True},
+            separators=(",", ":"),
+        )
+        manifest = json.dumps(
+            {
+                "version": 1,
+                "actions": [
+                    {"repo": "actions/checkout", "sha": checkout_sha},
+                    {"repo": "github/gh-aw-actions/setup", "sha": setup_sha},
+                ],
+            },
+            separators=(",", ":"),
+        )
+        condition = "needs.agent.result != 'skipped'"
+        if detection_gate:
+            condition += " && needs.detection.result == 'success'"
+        return (
+            f"# gh-aw-metadata: {metadata}\n"
+            f"# gh-aw-manifest: {manifest}\n"
+            "name: generated\n"
+            "on: [workflow_dispatch]\n"
+            "permissions: {}\n"
+            "jobs:\n"
+            "  safe_outputs:\n"
+            "    needs:\n"
+            "      - activation\n"
+            "      - agent\n"
+            "      - detection\n"
+            f"    if: {condition}\n"
+            "    permissions:\n"
+            "      contents: write\n"
+            "      issues: write\n"
+            "      pull-requests: write\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - name: Checkout repository\n"
+            f"        if: {condition} && contains(needs.agent.outputs.output_types, 'create_pull_request')\n"
+            f"        uses: actions/checkout@{checkout_sha}\n"
+            "        with:\n"
+            "          persist-credentials: true\n"
+            f"          token: {token}\n"
+            "      - name: Configure Git credentials\n"
+            f"        if: {condition} && contains(needs.agent.outputs.output_types, 'create_pull_request')\n"
+            "        env:\n"
+            f"          GIT_TOKEN: {token}\n"
+            f"        run: {ratchet.GH_AW_CONFIGURE_GIT_COMMAND}\n"
+        )
+
     def test_detects_mutable_external_action_in_composite_action(self) -> None:
         self.write(
             ".github/actions/example/action.yml",
@@ -169,6 +229,47 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
             "name: write\non: [workflow_dispatch]\npermissions:\n  contents: write\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "a" * 40 + "\n        with:\n          persist-credentials: false\n",
         )
         self.assertNotIn("checkout_persists_credentials_on_write_surface", self.rules())
+
+
+
+    def test_explicit_empty_permissions_mapping_is_clean(self) -> None:
+        self.write(
+            ".github/workflows/deny-all.yml",
+            "name: deny all\non: [workflow_dispatch]\npermissions: {}\njobs: {}\n",
+        )
+        self.assertNotIn("unsupported_security_yaml_indirection", self.rules())
+
+    def test_nonempty_permissions_flow_map_remains_rejected(self) -> None:
+        self.write(
+            ".github/workflows/flow-permissions.yml",
+            "name: flow\non: [workflow_dispatch]\npermissions: {contents: write}\njobs: {}\n",
+        )
+        self.assertIn("unsupported_security_yaml_indirection", self.rules())
+
+    def test_accepts_strict_gh_aw_safe_output_publisher_checkout(self) -> None:
+        self.write(
+            ".github/workflows/generated.lock.yml",
+            self.gh_aw_safe_outputs_workflow(),
+        )
+        rules = self.rules()
+        self.assertNotIn("unsupported_security_yaml_indirection", rules)
+        self.assertNotIn("checkout_persists_credentials_on_write_surface", rules)
+
+    def test_gh_aw_publisher_checkout_requires_detection_gate(self) -> None:
+        self.write(
+            ".github/workflows/generated.lock.yml",
+            self.gh_aw_safe_outputs_workflow(detection_gate=False),
+        )
+        self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
+
+    def test_gh_aw_publisher_checkout_requires_canonical_push_token(self) -> None:
+        self.write(
+            ".github/workflows/generated.lock.yml",
+            self.gh_aw_safe_outputs_workflow(
+                push_token="$" + "{{ secrets.OTHER_TOKEN }}"
+            ),
+        )
+        self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
 
     def test_detects_floating_cargo_install_in_list_form_run(self) -> None:
         self.write(

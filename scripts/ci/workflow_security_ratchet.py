@@ -32,6 +32,8 @@ CONTROL_SOURCE_PATHS = (
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 EXTERNAL_ACTION_RE = re.compile(r"^(?!\./)(?!docker://)([^/@\s]+/[^@\s]+)@([^\s#]+)$")
 SECRET_RE = re.compile(r"\$\{\{\s*secrets\.")
+GH_AW_PUSH_TOKEN = "${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}"
+GH_AW_CONFIGURE_GIT_COMMAND = r'bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"'
 CARGO_INSTALL_RE = re.compile(r"(?:^|[;&|]\s*|\s)cargo\s+install\s+([^\n]+)")
 PERMISSION_KEYS = {
     "actions",
@@ -229,6 +231,223 @@ def _checkout_persists(lines: Sequence[str], use_index: int, use_indent: int) ->
     return True
 
 
+def _gh_aw_headers(lines: Sequence[str]) -> tuple[dict[str, object], dict[str, object]] | None:
+    metadata: dict[str, object] | None = None
+    manifest: dict[str, object] | None = None
+    for line in lines[:16]:
+        try:
+            if line.startswith("# gh-aw-metadata:"):
+                candidate = json.loads(line.split(":", 1)[1].strip())
+                if isinstance(candidate, dict):
+                    metadata = candidate
+            elif line.startswith("# gh-aw-manifest:"):
+                candidate = json.loads(line.split(":", 1)[1].strip())
+                if isinstance(candidate, dict):
+                    manifest = candidate
+        except json.JSONDecodeError:
+            return None
+    if metadata is None or manifest is None:
+        return None
+    return metadata, manifest
+
+
+def _containing_job(
+    lines: Sequence[str], index: int
+) -> tuple[str, int, int] | None:
+    jobs_start: int | None = None
+    for cursor in range(index, -1, -1):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed and parsed.indent == 0:
+            if parsed.key == "jobs":
+                jobs_start = cursor
+            break
+    if jobs_start is None:
+        return None
+
+    job_name: str | None = None
+    job_start: int | None = None
+    for cursor in range(jobs_start + 1, index + 1):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed and parsed.indent == 0:
+            return None
+        if parsed and parsed.indent == 2 and not parsed.list_item:
+            job_name = parsed.key
+            job_start = cursor
+    if job_name is None or job_start is None:
+        return None
+
+    job_end = len(lines)
+    for cursor in range(job_start + 1, len(lines)):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed and (
+            parsed.indent == 0
+            or (parsed.indent == 2 and not parsed.list_item)
+        ):
+            job_end = cursor
+            break
+    if not (job_start <= index < job_end):
+        return None
+    return job_name, job_start, job_end
+
+
+def _job_permissions(
+    lines: Sequence[str], start: int, end: int
+) -> dict[str, str] | None:
+    for cursor in range(start + 1, end):
+        parsed = _parse_key_line(lines[cursor])
+        if not parsed or parsed.indent != 4 or parsed.key != "permissions":
+            continue
+        if parsed.value:
+            return {"__scalar__": _strip_scalar(parsed.value)}
+        permissions: dict[str, str] = {}
+        for child_index in range(cursor + 1, end):
+            child = _parse_key_line(lines[child_index])
+            if child and child.indent <= 4:
+                break
+            if child and child.indent == 6 and child.key in PERMISSION_KEYS:
+                permissions[child.key] = _strip_scalar(child.value)
+        return permissions
+    return None
+
+
+def _step_bounds(
+    lines: Sequence[str], index: int, limit: int
+) -> tuple[int, int, int] | None:
+    parsed = _parse_key_line(lines[index])
+    if parsed is None:
+        return None
+    step_indent = parsed.indent
+    step_start = index
+    if not parsed.list_item:
+        for cursor in range(index - 1, -1, -1):
+            candidate = _parse_key_line(lines[cursor])
+            if candidate and candidate.indent < step_indent:
+                return None
+            if candidate and candidate.list_item and candidate.indent == step_indent:
+                step_start = cursor
+                break
+        else:
+            return None
+    step_end = limit
+    for cursor in range(step_start + 1, limit):
+        candidate = _parse_key_line(lines[cursor])
+        if candidate and (
+            candidate.indent < step_indent
+            or (candidate.list_item and candidate.indent == step_indent)
+        ):
+            step_end = cursor
+            break
+    return step_start, step_end, step_indent
+
+
+def _step_values(lines: Sequence[str], start: int, end: int) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for cursor in range(start, end):
+        parsed = _parse_key_line(lines[cursor])
+        if parsed:
+            values[parsed.key] = _strip_scalar(parsed.value)
+    return values
+
+
+def _is_gh_aw_safe_outputs_checkout(
+    lines: Sequence[str], relative: str, use_index: int, action: str
+) -> bool:
+    if not relative.endswith(".lock.yml"):
+        return False
+    headers = _gh_aw_headers(lines)
+    if headers is None:
+        return False
+    metadata, manifest = headers
+    if metadata.get("schema_version") != "v4" or metadata.get("strict") is not True:
+        return False
+    if manifest.get("version") != 1:
+        return False
+
+    external = EXTERNAL_ACTION_RE.fullmatch(action)
+    actions = manifest.get("actions")
+    if external is None or not isinstance(actions, list):
+        return False
+    checkout_sha = external.group(2)
+    checkout_manifested = False
+    setup_manifested = False
+    for item in actions:
+        if not isinstance(item, dict):
+            continue
+        repo = item.get("repo")
+        sha = item.get("sha")
+        if repo == "actions/checkout" and sha == checkout_sha:
+            checkout_manifested = True
+        if (
+            repo == "github/gh-aw-actions/setup"
+            and isinstance(sha, str)
+            and FULL_SHA_RE.fullmatch(sha)
+        ):
+            setup_manifested = True
+    if not checkout_manifested or not setup_manifested:
+        return False
+
+    bounds = _containing_job(lines, use_index)
+    if bounds is None:
+        return False
+    job_name, job_start, job_end = bounds
+    if job_name != "safe_outputs":
+        return False
+    if _job_permissions(lines, job_start, job_end) != {
+        "contents": "write",
+        "issues": "write",
+        "pull-requests": "write",
+    }:
+        return False
+    job_lines = {line.strip() for line in lines[job_start:job_end]}
+    if not {"- activation", "- agent", "- detection"}.issubset(job_lines):
+        return False
+    job_gate = any(
+        parsed
+        and parsed.indent == 4
+        and parsed.key == "if"
+        and "needs.agent.result != 'skipped'" in parsed.value
+        and "needs.detection.result == 'success'" in parsed.value
+        for parsed in (
+            _parse_key_line(line) for line in lines[job_start:job_end]
+        )
+    )
+    if not job_gate:
+        return False
+
+    checkout_bounds = _step_bounds(lines, use_index, job_end)
+    if checkout_bounds is None:
+        return False
+    checkout_start, checkout_end, step_indent = checkout_bounds
+    checkout = _step_values(lines, checkout_start, checkout_end)
+    if checkout.get("persist-credentials") != "true":
+        return False
+    if checkout.get("token") != GH_AW_PUSH_TOKEN:
+        return False
+    checkout_gate = checkout.get("if", "")
+    if (
+        "needs.agent.result != 'skipped'" not in checkout_gate
+        or "create_pull_request" not in checkout_gate
+    ):
+        return False
+
+    if checkout_end >= job_end:
+        return False
+    next_parsed = _parse_key_line(lines[checkout_end])
+    if not next_parsed or not next_parsed.list_item or next_parsed.indent != step_indent:
+        return False
+    configure_bounds = _step_bounds(lines, checkout_end, job_end)
+    if configure_bounds is None:
+        return False
+    configure_start, configure_end, _ = configure_bounds
+    configure = _step_values(lines, configure_start, configure_end)
+    return (
+        configure.get("name") == "Configure Git credentials"
+        and configure.get("if") == checkout_gate
+        and configure.get("GIT_TOKEN") == GH_AW_PUSH_TOKEN
+        and configure.get("run") == GH_AW_CONFIGURE_GIT_COMMAND
+    )
+
+
 def _cargo_install_pin_surface(args: str) -> str:
     """Keep pin checks on the cargo install argv, not later shell or comments."""
     without_comment = args.split("#", 1)[0]
@@ -285,6 +504,8 @@ def _security_sensitive_indirection(line: str) -> bool:
     }:
         return False
     value = parsed.value.strip()
+    if parsed.key == "permissions" and value == "{}":
+        return False
     return value.startswith(("*", "&", "{"))
 
 
@@ -439,6 +660,9 @@ def scan(
                     and external
                     and external.group(1) == "actions/checkout"
                     and _checkout_persists(lines, index, parsed.indent)
+                    and not _is_gh_aw_safe_outputs_checkout(
+                        lines, relative, index, action
+                    )
                 ):
                     raw.append(
                         RawFinding(

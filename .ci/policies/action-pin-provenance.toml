@@ -434,3 +434,30 @@ action = 'docker/setup-buildx-action'
 sha = '37fe631027851001ddb9b187196cc803df7f5f0e'
 kind = 'release_tag'
 value = 'v4.3.0'
+
+
+# Verified against upstream on 2026-09-16 via the GitHub refs API:
+#   refs/tags/v7.0.0 -> lightweight tag on commit 820762786026740c76f36085b0efc47a31fe5020
+[[pin]]
+action = 'actions/setup-node'
+sha = '820762786026740c76f36085b0efc47a31fe5020'
+kind = 'release_tag'
+value = 'v7.0.0'
+
+# Verified against upstream on 2026-09-16 via the GitHub refs API:
+#   refs/tags/v9.0.0 -> annotated tag d746ffe35508b1917358783b479e04febd2b8f71
+#   -> commit 3a2844b7e9c422d3c10d287c895573f7108da1b3
+[[pin]]
+action = 'actions/github-script'
+sha = '3a2844b7e9c422d3c10d287c895573f7108da1b3'
+kind = 'release_tag'
+value = 'v9.0.0'
+
+# Verified against upstream on 2026-09-16 via the GitHub refs API:
+#   refs/tags/v0.88.7 -> annotated tag 0c4566ff6a133b81c2b1ecd6559623e1313a1927
+#   -> commit 5e508589e03a7757a7e05b26e834292f5445bfb6
+[[pin]]
+action = 'github/gh-aw-actions/setup'
+sha = '5e508589e03a7757a7e05b26e834292f5445bfb6'
+kind = 'release_tag'
+value = 'v0.88.7'
