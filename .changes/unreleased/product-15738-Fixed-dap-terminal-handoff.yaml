@@ -1,0 +1,9 @@
+project: product
+component: Editor behavior
+kind: Fixed
+body: "DAP disconnect and terminate requests can take over pending asynchronous termination on a full event queue without blocking request dispatch or fabricating no-session terminal events."
+time: 2026-09-16T00:00:00Z
+custom:
+  PR: "15738"
+  Slug: dap-pending-terminal-handoff
+  Breaking: "no"
