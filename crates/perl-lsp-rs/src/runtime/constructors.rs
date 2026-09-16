@@ -64,6 +64,8 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            workspace_topology_stable: Arc::new(AtomicBool::new(true)),
             workspace_identity_generation: Arc::new(AtomicU64::new(0)),
             dependency_facts_generation: Arc::new(AtomicU64::new(0)),
             stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
@@ -115,8 +117,9 @@ impl LspServer {
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            workspace_transition_test_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(all(test, feature = "workspace"))]
@@ -124,16 +127,10 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
+
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
+
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -261,6 +258,8 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            workspace_topology_stable: Arc::new(AtomicBool::new(true)),
             workspace_identity_generation: Arc::new(AtomicU64::new(0)),
             dependency_facts_generation: Arc::new(AtomicU64::new(0)),
             stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
@@ -312,8 +311,9 @@ impl LspServer {
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            workspace_transition_test_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(all(test, feature = "workspace"))]
@@ -321,16 +321,10 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
+
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
+
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -399,6 +393,8 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            workspace_topology_stable: Arc::new(AtomicBool::new(true)),
             workspace_identity_generation: Arc::new(AtomicU64::new(0)),
             dependency_facts_generation: Arc::new(AtomicU64::new(0)),
             stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
@@ -450,8 +446,9 @@ impl LspServer {
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            workspace_transition_test_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
             indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
             #[cfg(all(test, feature = "workspace"))]
@@ -459,16 +456,10 @@ impl LspServer {
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
+
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
+
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),

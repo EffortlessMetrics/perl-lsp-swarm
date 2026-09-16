@@ -18,11 +18,9 @@ use super::{
 };
 use crate::protocol::invalid_params;
 use crate::state::{DegradationTier, FIRST_ACCEPTED_DOCUMENT_GENERATION, ParsedSnapshot};
-#[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{IndexPhase, IndexState};
 use perl_parser_core::source_file::is_binary_content;
 #[cfg(feature = "workspace")]
-use perl_workspace::workspace_index::{SourceCommit, SourceCommitOutcome};
+use perl_workspace::workspace_index::{IndexPhase, IndexState, SourceCommit, SourceCommitOutcome};
 
 mod document_state;
 mod lifecycle;
@@ -962,18 +960,13 @@ impl LspServer {
                     perl_parser::incremental::incremental_edit::IncrementalEditSet,
                 > = None;
 
-                // Invalidate cached diagnostics only for an accepted Full replacement.
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let file_path = url::Url::parse(uri).ok().and_then(|u| u.to_file_path().ok());
-                    if let Some(path) = file_path {
-                        let path_str = path.to_string_lossy().to_string();
-                        if let Some(ref mut analyzer) = *self.critic_analyzer.lock() {
-                            analyzer.invalidate_cache(&path_str);
-                        }
-                        self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
-                    }
-                }
+                // The candidate is private until the line bound passes. Keep the
+                // document lock so validation and these effects use the same
+                // predecessor; rejection must preserve its generation/readiness.
+                // No per-file cache invalidation here: the CriticService is
+                // stateless (freshness is keyed by content/state fingerprint),
+                // and the orchestrator's per-file violation cache was removed
+                // with the old analyzer plumbing (#9062).
 
                 // Keep template documents that were intentionally skipped on didOpen
                 // in no-parse mode across subsequent didChange notifications.
