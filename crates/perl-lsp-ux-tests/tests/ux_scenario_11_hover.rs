@@ -146,12 +146,9 @@ fn position_coordinates(range: &Value, endpoint: &str) -> Result<(u64, u64)> {
         .get("line")
         .and_then(Value::as_u64)
         .with_context(|| format!("hover range.{endpoint}.line must be a non-negative integer"))?;
-    let character = position
-        .get("character")
-        .and_then(Value::as_u64)
-        .with_context(|| {
-            format!("hover range.{endpoint}.character must be a non-negative integer")
-        })?;
+    let character = position.get("character").and_then(Value::as_u64).with_context(|| {
+        format!("hover range.{endpoint}.character must be a non-negative integer")
+    })?;
     Ok((line, character))
 }
 
@@ -174,8 +171,8 @@ fn validate_optional_range_contains_cursor(
 
     let cursor_line = u64::from(cursor_line);
     let cursor_character = u64::from(cursor_character);
-    let starts_before_cursor =
-        start_line < cursor_line || (start_line == cursor_line && start_character <= cursor_character);
+    let starts_before_cursor = start_line < cursor_line
+        || (start_line == cursor_line && start_character <= cursor_character);
     let ends_after_cursor =
         end_line > cursor_line || (end_line == cursor_line && end_character >= cursor_character);
     anyhow::ensure!(
@@ -206,9 +203,7 @@ fn scenario_11_hover_on_variable_does_not_error() {
             )
             .context("Failed to create UX harness")?;
 
-            harness
-                .open_file("calc.pl", HOVER_SOURCE)
-                .context("didOpen should succeed")?;
+            harness.open_file("calc.pl", HOVER_SOURCE).context("didOpen should succeed")?;
             harness
                 .hover("calc.pl", VARIABLE_LINE, VARIABLE_CHARACTER)
                 .context("hover on `$result` must not return a transport error")?;
@@ -240,9 +235,7 @@ fn scenario_11_static_subroutine_call_returns_useful_hover() {
             )
             .context("Failed to create UX harness")?;
 
-            harness
-                .open_file("calc.pl", HOVER_SOURCE)
-                .context("didOpen should succeed")?;
+            harness.open_file("calc.pl", HOVER_SOURCE).context("didOpen should succeed")?;
 
             recorder.mark_request_start("textDocument/hover");
             let result = static_call_hover_with_retry(&harness)?;
@@ -259,9 +252,10 @@ fn scenario_11_static_subroutine_call_returns_useful_hover() {
             // non-empty card. If a bare non-empty check were sufficient, that card would
             // satisfy the assertion above — so prove the subject marker discriminates by
             // position rather than merely detecting that hover returned something.
-            let variable = harness
-                .hover("calc.pl", VARIABLE_LINE, VARIABLE_CHARACTER)?
-                .ok_or_else(|| anyhow::anyhow!("expected a hover card for the `$result` control"))?;
+            let variable =
+                harness.hover("calc.pl", VARIABLE_LINE, VARIABLE_CHARACTER)?.ok_or_else(|| {
+                    anyhow::anyhow!("expected a hover card for the `$result` control")
+                })?;
             let variable_text = useful_hover_text(&variable)?;
             anyhow::ensure!(
                 !variable_text.contains(STATIC_CALL_SUBJECT),
@@ -298,9 +292,7 @@ fn scenario_11_hover_on_sub_name_does_not_crash() {
             )
             .context("Failed to create UX harness")?;
 
-            harness
-                .open_file("calc.pl", HOVER_SOURCE)
-                .context("didOpen should succeed")?;
+            harness.open_file("calc.pl", HOVER_SOURCE).context("didOpen should succeed")?;
             harness
                 .hover("calc.pl", 3, 4)
                 .context("hover on the sub declaration must not return a transport error")?;
@@ -333,9 +325,7 @@ fn scenario_11_hover_range_contains_cursor_when_present() {
             )
             .context("Failed to create UX harness")?;
 
-            harness
-                .open_file("calc.pl", HOVER_SOURCE)
-                .context("didOpen should succeed")?;
+            harness.open_file("calc.pl", HOVER_SOURCE).context("didOpen should succeed")?;
 
             let result = static_call_hover_with_retry(&harness)?;
             validate_optional_range_contains_cursor(
