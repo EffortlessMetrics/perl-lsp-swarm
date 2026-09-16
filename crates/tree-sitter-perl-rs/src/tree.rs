@@ -1,8 +1,8 @@
+#[cfg(feature = "semantic-overlay")]
+use crate::SemanticOverlay;
 use crate::parser::IncrementalState;
 use crate::support::ast_has_error;
-use crate::{
-    IncrementalMetrics, InputEdit, Node, ParseDiagnostic, ReparseMode, SemanticOverlay, TreeCursor,
-};
+use crate::{IncrementalMetrics, InputEdit, Node, ParseDiagnostic, ReparseMode, TreeCursor};
 use perl_ast::Node as AstNode;
 use std::ops::Range;
 
@@ -115,6 +115,7 @@ impl Tree {
     }
 
     /// Returns the experimental semantic overlay query handle for this tree.
+    #[cfg(feature = "semantic-overlay")]
     pub fn semantic_overlay(&self) -> SemanticOverlay<'_> {
         SemanticOverlay { tree: self }
     }

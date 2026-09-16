@@ -71,8 +71,20 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
     let receipt_text = render_json(&evaluation.receipt)?;
 
     if args.check {
-        assert_current(&args.receipt, &receipt_text, "quality gate JSON receipt")?;
-        assert_current(&args.summary, &evaluation.markdown, "quality gate Markdown summary")?;
+        // Collect both staleness findings before failing (#15662): checking
+        // the receipt with `?` first meant a stale receipt masked a stale
+        // summary, and consumers keying on the summary message never saw it.
+        let mut stale = Vec::new();
+        assert_current(&args.receipt, &receipt_text, "quality gate JSON receipt", &mut stale)?;
+        assert_current(
+            &args.summary,
+            &evaluation.markdown,
+            "quality gate Markdown summary",
+            &mut stale,
+        )?;
+        if !stale.is_empty() {
+            bail!("{}", stale.join("\n"));
+        }
     } else {
         write_text(&args.receipt, &receipt_text)?;
         write_text(&args.summary, &evaluation.markdown)?;
@@ -2056,7 +2068,10 @@ fn ripr_review_command(args: &QualityGateArgs, check: bool) -> String {
     command
 }
 
-fn assert_current(path: &Path, expected: &str, label: &str) -> Result<()> {
+/// Record one staleness finding, or fail immediately when the proof file is
+/// unreadable (a missing file is a different failure class — there is no
+/// second condition worth reporting past it).
+fn assert_current(path: &Path, expected: &str, label: &str, stale: &mut Vec<String>) -> Result<()> {
     let existing = match fs::read_to_string(path) {
         Ok(existing) => existing,
         Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -2067,7 +2082,7 @@ fn assert_current(path: &Path, expected: &str, label: &str) -> Result<()> {
         }
     };
     if normalize(&existing) != normalize(expected) {
-        bail!("{label} is stale: {}", path.display());
+        stale.push(format!("{label} is stale: {}", path.display()));
     }
     Ok(())
 }
