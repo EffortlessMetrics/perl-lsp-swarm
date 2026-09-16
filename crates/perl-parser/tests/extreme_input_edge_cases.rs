@@ -97,13 +97,26 @@ fn parse_bounded(code: String) -> BoundedParse {
 
     match receiver.recv_timeout(parse_watchdog_window()) {
         Ok(received) => received,
-        Err(_) => BoundedParse {
+        Err(mpsc::RecvTimeoutError::Timeout) => BoundedParse {
             parse_time: parse_watchdog_window(),
             outcome: Err(format!(
                 "watchdog limit exceeded: the operation did not complete within {:?} \
                  (previously this hung the whole test binary)",
                 parse_watchdog_window()
             )),
+        },
+        // A disconnected channel means the worker died mid-parse — typically
+        // a panic such as an allocation failure on pathological input. That
+        // is its own finding (the parser must fail gracefully, not panic), so
+        // it must not be misreported as a watchdog timeout.
+        Err(mpsc::RecvTimeoutError::Disconnected) => BoundedParse {
+            parse_time: parse_watchdog_window(),
+            outcome: Err(
+                "watchdog worker died mid-parse before delivering a result \
+                 (channel disconnected, typically a worker panic such as an \
+                 allocation failure)"
+                    .to_string(),
+            ),
         },
     }
 }
