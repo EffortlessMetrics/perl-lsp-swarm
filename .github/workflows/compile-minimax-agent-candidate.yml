@@ -24,8 +24,6 @@ jobs:
       github.event.pull_request.user.login == 'EffortlessSteven'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
       - name: Checkout exact candidate head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -50,32 +48,48 @@ jobs:
           "$compiler" --version
           echo "GH_AW_COMPILER=$compiler" >> "$GITHUB_ENV"
 
-      - name: Compile strict workflow lock
+      - name: Compile reviewed strict workflow lock
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          "$GH_AW_COMPILER" compile minimax-coding-agent --strict --verbose
+          "$GH_AW_COMPILER" compile minimax-coding-agent --strict --verbose --approve
           test -s .github/workflows/minimax-coding-agent.lock.yml
+          test -s .github/aw/actions-lock.json
 
-      - name: Commit generated compiler authority
+      - name: Package generated authority and receipt
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          git add \
-            .github/workflows/minimax-coding-agent.lock.yml \
-            .github/aw/actions-lock.json \
-            .github/dependabot.yml
-          if git diff --cached --quiet; then
-            echo 'Compiled lock is already current.'
-            exit 0
+          out="${RUNNER_TEMP:?}/minimax-agent-generated"
+          mkdir -p "$out"
+          files=(
+            .github/workflows/minimax-coding-agent.lock.yml
+            .github/aw/actions-lock.json
+            .gitattributes
+          )
+          if ! git diff --quiet -- .github/dependabot.yml; then
+            files+=(.github/dependabot.yml)
           fi
-          git config user.name 'EffortlessSteven'
-          git config user.email '15812269+EffortlessSteven@users.noreply.github.com'
-          git commit -m 'ci(agent): compile MiniMax workflow lock'
-          gh auth setup-git
-          git push origin "HEAD:${HEAD_REF}"
+          sha256sum "${files[@]}" > "$out/sha256sums.txt"
+          tar --create --gzip --file "$out/generated-authority.tar.gz" "${files[@]}"
+          cat > "$out/receipt.txt" <<RECEIPT
+          source_head=${CANDIDATE_SHA}
+          compiler_version=v0.88.7
+          compiler_sha256=37faaaa95f622b910568bc878452f6036f01e951380fdfc41441944a95da43bf
+          compile_mode=strict-approved
+          generated_lock=.github/workflows/minimax-coding-agent.lock.yml
+          generated_action_cache=.github/aw/actions-lock.json
+          RECEIPT
+
+      - name: Upload generated authority
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: minimax-agent-generated-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/minimax-agent-generated
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
