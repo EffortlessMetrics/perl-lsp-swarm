@@ -897,6 +897,79 @@ pub fn perl_semantic_facts::framework_adapters::mojo_base::detect_mojo_base(inpu
 pub fn perl_semantic_facts::framework_adapters::mojo_base::mojo_base_activation_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, anchor: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseSiteAnchor, evidence: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseImportEvidence) -> perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts
 pub fn perl_semantic_facts::framework_adapters::mojo_base::mojo_base_descriptor() -> perl_semantic_facts::framework::AdapterDescriptor
 pub fn perl_semantic_facts::framework_adapters::mojo_base::parse_mojo_base_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::mojo_base::MojoBaseImportEvidence
+pub mod perl_semantic_facts::framework_adapters::mojo_base_facts
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Absent
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Constant
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Dynamic
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Dynamic::reason: alloc::string::String
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::LazyBuilder
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Unsupported
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::Unsupported::reason: alloc::string::String
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Dynamic
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Dynamic::reason: alloc::string::String
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Literal(alloc::string::String)
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Malformed
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::Malformed::reason: alloc::string::String
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::literal(&self) -> core::option::Option<&str>
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::CompileImmediate
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::PostCompile
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::Run
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::is_order_sensitive(self) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::Collides
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::None
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::declaration_anchor: perl_semantic_facts::SourceAnchor
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::declaration_index: u32
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::default: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDefault
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::execution_phase: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExecutionPhase
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::explicit_method: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::file_id: perl_semantic_facts::FileId
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::name: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeName
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::name_anchor: perl_semantic_facts::SourceAnchor
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::name_index: u32
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::package: core::option::Option<alloc::string::String>
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::source_generation: perl_semantic_facts::SourceGeneration
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::unmodeled_options: alloc::vec::Vec<alloc::string::String>
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::envelope: perl_semantic_facts::SemanticFactEnvelope
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::explicit_method: perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseExplicitMethodState
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::member: perl_semantic_facts::GeneratedMember
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::members: alloc::vec::Vec<perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseGeneratedMemberFact>
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::parents: alloc::vec::Vec<perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact>
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::reader_results: alloc::vec::Vec<perl_semantic_facts::CallableResultFact>
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::setter_results: alloc::vec::Vec<perl_semantic_facts::CallableResultFact>
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::is_empty(&self) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::default() -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::edge: perl_semantic_facts::PackageEdge
+pub perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::envelope: perl_semantic_facts::SemanticFactEnvelope
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::clone(&self) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::eq(&self, other: &perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact) -> bool
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseParentFact::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_member_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, name_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_object_facts(detection: &perl_semantic_facts::framework::AdapterDetectionResult, activation: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts, file_id: perl_semantic_facts::FileId, package: core::option::Option<&str>, declarations: &[perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseAttributeDeclaration]) -> perl_semantic_facts::framework_adapters::mojo_base_facts::MojoBaseObjectFacts
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_parent_identity(file_id: perl_semantic_facts::FileId, import_start_byte: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_reader_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, name_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
+pub fn perl_semantic_facts::framework_adapters::mojo_base_facts::mojo_base_setter_identity(file_id: perl_semantic_facts::FileId, declaration_index: u32, name_index: u32, generation: &perl_semantic_facts::SourceGeneration) -> (perl_semantic_facts::FactId, perl_semantic_facts::EntityId)
 pub mod perl_semantic_facts::framework_adapters::mojolicious
 pub perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationOutcome::AbsentWithCompleteEvidence
 pub perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationOutcome::AbsentWithCompleteEvidence::reason: alloc::string::String
