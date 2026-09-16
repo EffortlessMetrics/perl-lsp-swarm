@@ -769,17 +769,22 @@ gates:
 
   - name: compile_all_targets
     tier: pr_fast
-    description: "Compile all workspace targets (lib/bin/tests/benches) to catch integration and bench bit-rot; also validates all-features paths"
+    description: "Compile workspace targets, example test modules, and wire-free parser profiles without running tests"
     required: true
     # NOTE (#4642): this is a COMPILE-ONLY gate — it never runs tests. It catches
     # build/bit-rot in `tests/` and bench targets but not runtime failures.
     command: just check-all-targets
-    # Two full-workspace cargo check passes (default + all-features) require more time
-    # than the original 180s budget on a fresh CI runner. Aligned with unit_scoped budget.
-    timeout_seconds: 600
+    # The recipe now runs five Cargo commands: default/all-feature workspace
+    # checks, example test compilation, and two wire-free parser checks. Main
+    # receipts from runs 34976694456 and 34992022773 show the first three
+    # stages consuming about 580s; the 600s watchdog then kills a parser-profile
+    # check. Preserve all five commands and allow a bounded 15m cold-build
+    # window. Hosted receipts remain the runtime acceptance evidence.
+    # max_duration_ms is a declarative soft budget, not the enforced watchdog.
+    timeout_seconds: 900
     retry_count: 0
     budgets:
-      max_duration_ms: 540000
+      max_duration_ms: 780000
     quarantine: false
     tags:
       - compile
@@ -931,7 +936,7 @@ gates:
     # Budget: measured ~80s locally with warm dependencies and cold check
     # fingerprints for the 32-crate cohort (~1s fully warm); scaled from the
     # previous 7-crate envelope and kept below the compile_all_targets
-    # ceiling (600s / 540000ms), which compiles strictly more work. The
+    # ceiling (900s / 780000ms), which compiles strictly more work. The
     # 2026-08-25 additions pull in perl-lsp-rs/perl-lsp-rs-core libraries
     # through perllsp; clippy emits metadata only (no linking), and
     # clippy_full already lints those libraries inside its 300s envelope,
@@ -1580,6 +1585,7 @@ gates:
       cargo xtask check-semantic-token-classes &&
       cargo xtask check-workspace-symbol-classes &&
       cargo xtask check-provider-promotion-ledger &&
+      cargo xtask check-code-action-generation-ledger &&
       cargo xtask check-provider-confidence-matrix &&
       cargo xtask check-native-product-surface --strict &&
       bash scripts/check-version-sync.sh &&
@@ -1811,6 +1817,28 @@ gates:
       - policy
       - contract
       - generated
+
+  # Overlay on the #6657/#6689 derived capability state. It does not replace
+  # the concept ledger, proof-policy, or per-class matrix gates: those still
+  # admit or reject individual cells. This gate only rejects marking the
+  # postfix statement-modifier umbrella / capability docs complete while
+  # required non-HIR layers remain missing (#13281).
+  - name: postfix_capability_closure
+    tier: merge_gate
+    description: "Reject HIR-only completion claims for control.postfix_modifier capability docs (#13281)"
+    required: true
+    command: >-
+      cargo test -p xtask --bin postfix-capability-closure --locked &&
+      cargo run --locked -p xtask --bin postfix-capability-closure -- --check
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+      - compiler
 
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before

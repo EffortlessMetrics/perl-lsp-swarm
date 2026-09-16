@@ -20,6 +20,10 @@
       "invocation_sha256": "562d66111ff70e436552bfb60f662804c475f19d5d22beb7227028128cdf9349"
     },
     {
+      "id": "parser.command_line.regex_modifier_matrix",
+      "invocation_sha256": "612c3748f429a49411b0d18af1bf5b576c88442de9639a72500af2abec6850f4"
+    },
+    {
       "id": "parser.concepts.magic_token_arguments",
       "invocation_sha256": "3b687b9c5247a2017313d1c328e3a19bcc0b66e01c9fcce2936cb6b8245dea0c"
     },
@@ -66,6 +70,10 @@
     {
       "id": "parser.pir.loop_body",
       "invocation_sha256": "d2c564eb6c78a731ad3ddfcc882da2b30fa7dc86e660940742d61925526135bf"
+    },
+    {
+      "id": "parser.postfix.dereference_matrix",
+      "invocation_sha256": "f0c3148a2b728538edff1e8210a653c9b9d4b70676860ccf5a52f20ca2d0ecc2"
     },
     {
       "id": "parser.recovery.incomplete_brace",

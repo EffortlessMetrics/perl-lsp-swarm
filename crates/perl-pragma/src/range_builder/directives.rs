@@ -1,7 +1,8 @@
 use crate::{
-    PragmaState, add_disabled_warning_category, apply_builtin_imports_if_changed,
-    apply_feature_state, conditional_pragma_target, enable_effective_version_semantics,
-    normalized_pragma_token, parse_perl_version, pragma_arg_items,
+    PragmaState, add_disabled_warning_category, admitted_vstring_version,
+    apply_builtin_imports_if_changed, apply_feature_state, conditional_pragma_target,
+    enable_effective_version_semantics, looks_like_version_literal, normalized_pragma_token,
+    parse_perl_version, pragma_arg_items,
 };
 use std::ops::Range;
 
@@ -63,11 +64,24 @@ pub(super) fn apply_use_directive(
         }
         _ => {
             if let Some(version) = parse_perl_version(module) {
-                enable_effective_version_semantics(state, version);
+                enable_version_semantics(state, module, version, args.is_empty());
+                push_state(range, state, ranges);
+            } else if looks_like_version_literal(module) {
+                state.perl_version = None;
                 push_state(range, state, ranges);
             }
         }
     }
+}
+
+fn enable_version_semantics(
+    state: &mut PragmaState,
+    module: &str,
+    version: crate::PerlVersion,
+    has_no_args: bool,
+) {
+    enable_effective_version_semantics(state, version);
+    state.perl_version = has_no_args.then(|| admitted_vstring_version(module)).flatten();
 }
 
 pub(super) fn apply_no_directive(
@@ -177,7 +191,17 @@ fn apply_conditional_use_target(
         }
         _ => {
             if let Some(version) = parse_perl_version(module) {
-                enable_effective_version_semantics(state, version);
+                // The condition is not evaluated by this pragma walker, so
+                // retain broad compatibility effects but never claim that
+                // the conditional target established version authority.
+                // A retained dotted recovery tail makes the prefix incomplete;
+                // invalidate admission without replacing prior effective state.
+                if args.is_empty() {
+                    enable_effective_version_semantics(state, version);
+                }
+                state.perl_version = None;
+            } else if looks_like_version_literal(module) {
+                state.perl_version = None;
             } else {
                 return;
             }

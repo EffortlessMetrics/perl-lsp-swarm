@@ -213,3 +213,9 @@ successor = "docs/agents/DEVELOPMENT_METHOD.md"
 historical_source_commit = "4dc745fd3513d1a345cd1d6258bb96a13e284ae2"
 historical_source_blob_sha1 = "5d27670786f80b7274e7e1d9ff357d7ee65bfb3b"
 notes = "Superseded active-rails selector. Current work selection follows provider-native method plus the issue-owned graph; #3949 owns durable change-graph placement."
+
+[[documents]]
+path = "docs/specs/PLSP-SPEC-0037-reload-lifecycle-v1.md"
+status = "current"
+successor = ""
+notes = "Current reload-lifecycle architecture authority (#10874). Registered here so an agent resolving \"which document is current\" finds it centrally; the in-document RELOAD-LIFECYCLE-AUTHORITY marker and tests/test_reload_lifecycle_authority.py remain the mechanical single-authority check, since this registry classifies paths someone added while the marker scan reads every markdown file under docs/."
