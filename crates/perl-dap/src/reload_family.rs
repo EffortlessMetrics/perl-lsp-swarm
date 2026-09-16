@@ -642,7 +642,10 @@ pub struct LoadedModuleReloadRejectionBody {
 }
 
 impl LoadedModuleReloadRejectionBody {
-    fn new(code: WireRejectionCode) -> Self {
+    /// A typed rejection carrying only the code (the wiring composition
+    /// reuses the family's rejection shape for duplicate-operation
+    /// refusals; see `ReloadSessionWiring::evaluate`).
+    pub(crate) fn new(code: WireRejectionCode) -> Self {
         LoadedModuleReloadRejectionBody {
             kind: WireRejectionMarker::RequestRejected,
             code,

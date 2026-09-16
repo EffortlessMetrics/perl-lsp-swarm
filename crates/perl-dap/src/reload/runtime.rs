@@ -665,12 +665,7 @@ impl ReloadExecution {
         outcome: LoadedModuleReloadOutcome,
         generation: GenerationAdvance,
     ) -> Self {
-        let phase_reached = match &outcome {
-            LoadedModuleReloadOutcome::Reloaded => ReloadTransactionPhase::TerminalProjection,
-            LoadedModuleReloadOutcome::Refused { .. } => ReloadTransactionPhase::Admission,
-            LoadedModuleReloadOutcome::FailedBeforeMutation { phase, .. }
-            | LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, .. } => *phase,
-        };
+        let phase_reached = Self::preview_phase_for(&outcome);
         Self {
             operation_id: generation.operation(),
             outcome,
@@ -678,6 +673,22 @@ impl ReloadExecution {
             mutation_issued: generation.advanced(),
             mechanism: ReloadMechanism::IncDeletionAndRequire,
             generation,
+        }
+    }
+
+    /// The phase one terminal outcome settles at on the preview route.
+    ///
+    /// Single-sourced so the R03 composer (`route_terminal`) can validate
+    /// the phase/outcome pairing against `phase_permits_outcome` *before*
+    /// the clock moves (FC-CLOCK-BEFORE-VALIDATE): a malformed pair must
+    /// never advance the generation and then fail projection with pending
+    /// state still installed.
+    pub(crate) fn preview_phase_for(outcome: &LoadedModuleReloadOutcome) -> ReloadTransactionPhase {
+        match outcome {
+            LoadedModuleReloadOutcome::Reloaded => ReloadTransactionPhase::TerminalProjection,
+            LoadedModuleReloadOutcome::Refused { .. } => ReloadTransactionPhase::Admission,
+            LoadedModuleReloadOutcome::FailedBeforeMutation { phase, .. }
+            | LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, .. } => *phase,
         }
     }
 
@@ -699,17 +710,18 @@ impl ReloadExecution {
     /// executions come exclusively from [`execute_reload`]; if a future
     /// consumer publishes `mechanism`, this constructor must grow a real
     /// mechanism parameter instead of reusing the placeholder below.
+    ///
+    /// The caller owns pairing validity: [`ReloadSessionWiring::
+    /// route_terminal`](super::reconciliation::ReloadSessionWiring::route_terminal)
+    /// validates the phase/outcome pair before the clock moves. Calling
+    /// this directly with a contract-invalid pair advances the clock for
+    /// an outcome no projector will publish.
     pub(crate) fn settle_preview_terminal(
         outcome: LoadedModuleReloadOutcome,
         operation_id: u64,
         clock: &mut RuntimeModuleGenerationClock,
     ) -> Self {
-        let phase_reached = match &outcome {
-            LoadedModuleReloadOutcome::Reloaded => ReloadTransactionPhase::TerminalProjection,
-            LoadedModuleReloadOutcome::Refused { .. } => ReloadTransactionPhase::Admission,
-            LoadedModuleReloadOutcome::FailedBeforeMutation { phase, .. }
-            | LoadedModuleReloadOutcome::IndeterminatePossiblyApplied { phase, .. } => *phase,
-        };
+        let phase_reached = Self::preview_phase_for(&outcome);
         let generation = clock.apply(&outcome, operation_id);
         let mutation_issued = generation.advanced();
         Self {

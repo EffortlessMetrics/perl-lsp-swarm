@@ -818,6 +818,20 @@ impl BreakpointStore {
     /// breakpoint path acknowledges it under the new runtime source
     /// identity. Returns the affected records in store order so callers can
     /// emit generation-bound `breakpoint` changed events.
+    ///
+    /// Only an unambiguous subject spelling reconciles anything. When the
+    /// spelling matches more than one stored key (same-basename sources
+    /// under different directories), marking every match would mutate
+    /// unrelated sources, so nothing is marked and the caller must refuse
+    /// the reload before routing its terminal (FC-BP-ALIAS-AMBIGUOUS; see
+    /// [`Self::ambiguous_breakpoint_source`]). An unbound spelling
+    /// likewise marks nothing.
+    ///
+    /// Affected applied engine installations are removed with the records
+    /// (FC-BP-STALE-ENGINE-INSTALL): `has_engine_breakpoint_candidate`
+    /// keys on path, line, and adapter session generation, so a retained
+    /// previous-generation installation would still admit candidates and
+    /// force useless source-digest I/O after the reload.
     pub fn mark_breakpoints_pending_reconciliation(
         &self,
         source_path: &str,
@@ -835,10 +849,20 @@ impl BreakpointStore {
             .filter(|key| file_paths_match(key, source_path))
             .cloned()
             .collect();
+        if matching.len() != 1 {
+            // Zero matches: nothing is bound. Multiple matches: the
+            // spelling is ambiguous across distinct stored sources and
+            // must be refused upstream, never fanned out here.
+            return Vec::new();
+        }
+        // Lock order is breakpoints, then engine_installations — the same
+        // order `adjust_breakpoints_for_edit` and `set_breakpoints` use.
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
         let mut affected = Vec::new();
         for key in matching {
             if let Some(records) = breakpoints_map.get_mut(&key) {
                 for record in records.iter_mut() {
+                    installations.remove(&record.id);
                     record.verified = false;
                     record.message = Some("Pending reconciliation after module reload".to_string());
                 }
@@ -846,6 +870,20 @@ impl BreakpointStore {
             }
         }
         affected
+    }
+
+    /// Whether one reload-subject spelling matches more than one stored
+    /// breakpoint source key (FC-BP-ALIAS-AMBIGUOUS).
+    ///
+    /// `file_paths_match` is a suffix rule, so a bare `main.pl` subject
+    /// spelling matches both `/a/main.pl` and `/b/main.pl`. The reload
+    /// route consults this before routing a mutating terminal: an
+    /// ambiguous spelling refuses inexact/stale identity rather than
+    /// reconciling unrelated sources. A unique match (including an
+    /// exact or alias spelling of one stored key) is not ambiguous.
+    pub fn ambiguous_breakpoint_source(&self, source_path: &str) -> bool {
+        let breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        breakpoints_map.keys().filter(|key| file_paths_match(key, source_path)).take(2).count() > 1
     }
 
     /// AC7.4: Adjust breakpoints for a file edit
@@ -1993,6 +2031,103 @@ EOF
             after.iter().all(|record| !record.verified
                 && record.message.as_deref() == Some("Pending reconciliation after module reload")),
             "aliased records are explicitly pending: {after:?}"
+        );
+    }
+
+    /// Write a valid Perl source under `dir` with file name `name` for
+    /// multi-source reconciliation tests (same basename, different
+    /// directories).
+    fn create_named_test_perl_file(dir: &std::path::Path, name: &str) -> String {
+        let path = dir.join(name);
+        must(std::fs::write(
+            &path,
+            "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nmy $x = 1;\nmy $y = 2;\n",
+        ));
+        path.to_string_lossy().to_string()
+    }
+
+    fn set_one_breakpoint(store: &BreakpointStore, source_path: &str) {
+        store.set_breakpoints(&SetBreakpointsArguments {
+            source: Source { path: Some(source_path.to_string()), name: None },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 5,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        });
+    }
+
+    /// FC-BP-ALIAS-AMBIGUOUS: a subject spelling matching two stored
+    /// sources (same basename, different directories) marks nothing —
+    /// fanning out would mutate an unrelated source — and reports
+    /// ambiguous so the route refuses before routing its terminal. The
+    /// unique spelling still reconciles exactly its own source.
+    #[test]
+    fn ambiguous_source_alias_marks_nothing_and_reports_ambiguous() {
+        let dir_a = must(tempfile::tempdir());
+        let dir_b = must(tempfile::tempdir());
+        let path_a = create_named_test_perl_file(dir_a.path(), "main.pl");
+        let path_b = create_named_test_perl_file(dir_b.path(), "main.pl");
+        let store = BreakpointStore::new();
+        set_one_breakpoint(&store, &path_a);
+        set_one_breakpoint(&store, &path_b);
+
+        assert!(
+            store.ambiguous_breakpoint_source("main.pl"),
+            "a bare basename matching two stored sources is ambiguous"
+        );
+        assert!(!store.ambiguous_breakpoint_source(&path_a), "a unique spelling is not ambiguous");
+
+        let affected = store.mark_breakpoints_pending_reconciliation("main.pl");
+        assert!(affected.is_empty(), "an ambiguous spelling must mark nothing");
+        for path in [&path_a, &path_b] {
+            assert!(
+                store.get_breakpoints(path).iter().all(|record| record.verified),
+                "{path} must stay verified when the alias is ambiguous"
+            );
+        }
+
+        let affected = store.mark_breakpoints_pending_reconciliation(&path_a);
+        assert_eq!(affected.len(), 1, "the unique spelling reconciles its own source");
+        assert!(
+            store.get_breakpoints(&path_a).iter().all(|record| !record.verified),
+            "the matched source becomes pending"
+        );
+        assert!(
+            store.get_breakpoints(&path_b).iter().all(|record| record.verified),
+            "the unrelated same-basename source stays verified"
+        );
+    }
+
+    /// FC-BP-STALE-ENGINE-INSTALL: pending reconciliation removes the
+    /// affected applied engine installations, so
+    /// `has_engine_breakpoint_candidate` no longer admits the
+    /// previous-generation installation and forces no digest I/O for it.
+    #[test]
+    fn pending_reconciliation_removes_stale_engine_installations() {
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+        set_one_breakpoint(&store, &source_path);
+        let records = store.get_breakpoints(&source_path);
+        assert!(!records.is_empty(), "one record must be stored");
+        let id = records[0].id;
+        assert!(
+            store.mark_engine_installed(id, &source_path, 5, 7, "digest".to_string()),
+            "the engine installation must commit before the reload"
+        );
+        assert!(
+            store.has_engine_breakpoint_candidate(&source_path, 5, 7),
+            "the current installation is a hit candidate before the reload"
+        );
+
+        let affected = store.mark_breakpoints_pending_reconciliation(&source_path);
+        assert_eq!(affected.len(), 1, "the affected record is returned for events");
+        assert!(
+            !store.has_engine_breakpoint_candidate(&source_path, 5, 7),
+            "the stale previous-generation installation must not survive pending reconciliation"
         );
     }
 

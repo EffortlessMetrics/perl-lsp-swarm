@@ -35,11 +35,12 @@ use super::invalidation::{
     InvalidationPlanError, ReloadInvalidationPlan, invalidation_plan_for, verify_invalidation_plan,
 };
 use super::runtime::ReloadExecution;
-use super::transaction::LoadedModuleReloadOutcome;
+use super::transaction::{LoadedModuleReloadOutcome, phase_permits_outcome};
 use crate::reload_family::{
-    ClientFamilyDeclaration, FamilyNegotiationRefusal, LoadedModuleReloadWireResponse,
-    ReloadFamilySession, ReloadRequestEvaluation, WireReconciliation,
-    WireReconciliationDisposition, project_execution,
+    ClientFamilyDeclaration, FamilyNegotiationRefusal, LoadedModuleReloadRejectionBody,
+    LoadedModuleReloadResponseBody, LoadedModuleReloadWireResponse, ReloadFamilySession,
+    ReloadRequestEvaluation, WireReconciliation, WireReconciliationDisposition, WireRejectionCode,
+    project_execution,
 };
 use std::collections::VecDeque;
 
@@ -144,12 +145,23 @@ impl ReloadWiringRefusal {
 /// inspection query result) must carry the epoch and runtime-module
 /// generation it was minted under; [`ReloadSessionWiring::
 /// reconcile_observation`] refuses claims the session has moved past.
+///
+/// The claim is also bound to the routed operation that minted it
+/// (FC-OBS-CLAIM-UNBOUND): the session clock is shared across modules,
+/// so epoch and generation alone cannot tell one module's observation
+/// from another's. Only an operation this wiring routed to a terminal
+/// can sponsor an observation, and only at the generation that terminal
+/// produced. Module-identity binding beyond the operation stays the
+/// adapter route's `WireSubjectBinding` gate; this method is the
+/// operation-generation admission gate, not a subject-identity oracle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservationClaim {
     /// Session epoch at which the claim was minted.
     pub epoch: u64,
     /// Runtime-module generation at which the claim was minted.
     pub generation: RuntimeModuleGeneration,
+    /// The routed operation whose terminal minted this observation.
+    pub operation_id: u64,
 }
 
 /// One routed terminal: the wire response plus everything the debug
@@ -312,7 +324,32 @@ impl ReloadSessionWiring {
     /// Evaluate one wire request through the R01B fail-closed gates. An
     /// admitted operation is recorded as pending until it reaches a
     /// terminal kind.
+    ///
+    /// An identity already in flight (`pending`) or already terminal
+    /// (`completed`) is refused as stale before the family registry is
+    /// consulted (FC-OP-ID-REUSE): the registry's retained-operations
+    /// window is bounded, so after enough later admissions it forgets an
+    /// ID that is still pending here. Re-admitting it would duplicate the
+    /// pending entry, and the first terminal would leave the duplicate
+    /// behind for a later replay after the completion record is evicted.
     pub fn evaluate(&mut self, raw: &serde_json::Value) -> ReloadRequestEvaluation {
+        let operation_id = raw
+            .as_object()
+            .and_then(|object| object.get("operationId"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        if operation_id != 0
+            && (self.pending.contains(&operation_id)
+                || self.completed.iter().any(|completed| completed.operation_id == operation_id))
+        {
+            return ReloadRequestEvaluation::Response(LoadedModuleReloadWireResponse {
+                success: false,
+                operation_id,
+                body: LoadedModuleReloadResponseBody::Rejected(
+                    LoadedModuleReloadRejectionBody::new(WireRejectionCode::OperationStale),
+                ),
+            });
+        }
         let evaluation = self.family.evaluate(raw);
         if let ReloadRequestEvaluation::Admitted { operation_id } = evaluation {
             self.pending.push_back(operation_id);
@@ -348,6 +385,21 @@ impl ReloadSessionWiring {
             .ok_or(ReloadWiringRefusal::OperationNotAdmitted { operation_id })?;
         if outcome_is_mutating(outcome) && clock.current().is_exhausted() {
             return Err(ReloadWiringRefusal::GenerationExhausted);
+        }
+
+        // Validate the phase/outcome pairing before the clock moves
+        // (FC-CLOCK-BEFORE-VALIDATE): `settle_preview_terminal` applies
+        // the clock first and `project_execution` refuses a
+        // contract-invalid pair afterwards, so settling first would
+        // advance the generation while the pending operation stays
+        // installed and no invalidation publishes. A refused pair moves
+        // nothing: the clock, the pending entry, and the completion
+        // record are untouched, and the caller may still route the
+        // honest terminal for the still-pending operation.
+        if !phase_permits_outcome(ReloadExecution::preview_phase_for(outcome), outcome) {
+            return Err(ReloadWiringRefusal::ComposedTableViolated(
+                InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied,
+            ));
         }
 
         // Single clock authority: settle the terminal against the
@@ -393,6 +445,12 @@ impl ReloadSessionWiring {
     /// from a previous generation cannot become current, and nothing has
     /// been observed under a generation the session has not reached. Only
     /// claims minted under the current authorities are admitted.
+    ///
+    /// The claim must also name a completed operation at the claimed
+    /// generation: an (operation, generation) pair this wiring never
+    /// routed together admits nothing, so an observation minted under one
+    /// module's reload cannot sponsor another module's refresh merely
+    /// because the session clock is shared.
     pub fn reconcile_observation(
         &self,
         claim: &ObservationClaim,
@@ -414,6 +472,14 @@ impl ReloadSessionWiring {
             return Err(ReloadWiringRefusal::GenerationAhead {
                 claim_generation: claim.generation,
                 current_generation,
+            });
+        }
+        let sponsored = self.completed.iter().any(|completed| {
+            completed.operation_id == claim.operation_id && completed.generation == claim.generation
+        });
+        if !sponsored {
+            return Err(ReloadWiringRefusal::OperationNotAdmitted {
+                operation_id: claim.operation_id,
             });
         }
         Ok(())
@@ -643,7 +709,11 @@ mod tests {
         routed(wiring.route_terminal(1, &reloaded(), &mut clock, &[]), "seed")?;
         // Generation advanced to 1: a claim minted at the previous
         // generation refuses with the typed supersession reason.
-        let stale = ObservationClaim { epoch: 4, generation: RuntimeModuleGeneration::INITIAL };
+        let stale = ObservationClaim {
+            epoch: 4,
+            generation: RuntimeModuleGeneration::INITIAL,
+            operation_id: 1,
+        };
         assert_eq!(
             wiring.reconcile_observation(&stale, clock.current()),
             Err(ReloadWiringRefusal::GenerationSuperseded {
@@ -652,13 +722,14 @@ mod tests {
             })
         );
         // A claim minted under the current generation is admitted.
-        let current = ObservationClaim { epoch: 4, generation: clock.current() };
+        let current = ObservationClaim { epoch: 4, generation: clock.current(), operation_id: 1 };
         assert_eq!(wiring.reconcile_observation(&current, clock.current()), Ok(()));
         // A claim minted under a generation the session has not reached
         // is not current either: nothing has been observed under a future
         // generation, so it refuses typed (review finding: future claims
         // must not pass as current.
-        let ahead = ObservationClaim { epoch: 4, generation: clock.current().next() };
+        let ahead =
+            ObservationClaim { epoch: 4, generation: clock.current().next(), operation_id: 1 };
         assert_eq!(
             wiring.reconcile_observation(&ahead, clock.current()),
             Err(ReloadWiringRefusal::GenerationAhead {
@@ -671,15 +742,19 @@ mod tests {
 
     #[test]
     fn replaced_epoch_reconciliation_refuses_typed() {
-        let old = negotiated_wiring(4);
-        let claim = ObservationClaim { epoch: 4, generation: RuntimeModuleGeneration::INITIAL };
+        let mut old = negotiated_wiring(4);
+        admit(&mut old, 1);
+        let mut clock = RuntimeModuleGenerationClock::new();
+        old.route_terminal(1, &reloaded(), &mut clock, &[])
+            .expect("the old wiring must route its seed terminal");
+        let claim = ObservationClaim { epoch: 4, generation: clock.current(), operation_id: 1 };
         let replaced = ReloadSessionWiring::new(5, true);
         assert_eq!(
-            replaced.reconcile_observation(&claim, RuntimeModuleGeneration::INITIAL),
+            replaced.reconcile_observation(&claim, clock.current()),
             Err(ReloadWiringRefusal::SessionEpochReplaced { claim_epoch: 4, current_epoch: 5 })
         );
         // The old wiring still accepts its own epoch's claims.
-        assert_eq!(old.reconcile_observation(&claim, RuntimeModuleGeneration::INITIAL), Ok(()));
+        assert_eq!(old.reconcile_observation(&claim, clock.current()), Ok(()));
     }
 
     #[test]
@@ -710,6 +785,123 @@ mod tests {
         );
         // The replay advanced nothing.
         assert_eq!(clock.current(), RuntimeModuleGeneration::new(1));
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_operation_admission_refuses_stale_while_in_flight_or_completed() -> TestResult {
+        let mut wiring = negotiated_wiring(1);
+        admit(&mut wiring, 1);
+        // Still pending: a second admission of the same identity refuses
+        // stale instead of duplicating the pending entry.
+        let stale_code =
+            |wiring: &mut ReloadSessionWiring| -> Result<(), Box<dyn std::error::Error>> {
+                match wiring.evaluate(&request_value(1, 1)) {
+                    ReloadRequestEvaluation::Response(response) => {
+                        let crate::reload_family::LoadedModuleReloadResponseBody::Rejected(
+                            rejection,
+                        ) = &response.body
+                        else {
+                            return Err("a duplicate admission must be a typed rejection".into());
+                        };
+                        assert_eq!(rejection.code.as_str(), "operation_stale");
+                        Ok(())
+                    }
+                    admitted => {
+                        Err(format!("a duplicate admission must refuse: {admitted:?}").into())
+                    }
+                }
+            };
+        stale_code(&mut wiring)?;
+        assert_eq!(wiring.pending.len(), 1, "no duplicate pending entry may be recorded");
+        // The refusal survives registry-window eviction pressure: 64+
+        // later admissions evict the ID from the family's bounded
+        // recent-operations window, but the wiring still refuses while
+        // the original operation is pending.
+        for operation in 2..=70 {
+            admit(&mut wiring, operation);
+        }
+        stale_code(&mut wiring)?;
+        assert_eq!(
+            wiring.pending.iter().filter(|pending| **pending == 1).count(),
+            1,
+            "eviction pressure must not duplicate the in-flight entry"
+        );
+        // After the original terminal, reuse still refuses (completed).
+        let mut clock = RuntimeModuleGenerationClock::new();
+        routed(wiring.route_terminal(1, &reloaded(), &mut clock, &[]), "first")?;
+        stale_code(&mut wiring)?;
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_phase_outcome_pair_refuses_before_the_clock_moves() -> TestResult {
+        let mut wiring = negotiated_wiring(1);
+        admit(&mut wiring, 1);
+        let mut clock = RuntimeModuleGenerationClock::new();
+        // A mutating outcome carrying a pre-boundary phase is
+        // contract-invalid: it must refuse before `clock.apply`, not
+        // advance the generation and then fail projection with the
+        // pending operation still installed. The indeterminate kind is
+        // chosen deliberately — a non-advancing malformed pair would
+        // hold the clock even without the guard, so only a mutating
+        // pair discriminates the fix.
+        let malformed = LoadedModuleReloadOutcome::IndeterminatePossiblyApplied {
+            phase: ReloadTransactionPhase::Preflight,
+            cause: IndeterminateCause::TimeoutAfterMutationBegan,
+        };
+        assert_eq!(
+            wiring.route_terminal(1, &malformed, &mut clock, &[]),
+            Err(ReloadWiringRefusal::ComposedTableViolated(
+                InvalidationPlanError::StaleIdentitySurvivesPossiblyApplied
+            ))
+        );
+        assert_eq!(
+            clock.current(),
+            RuntimeModuleGeneration::INITIAL,
+            "a refused pair moves no clock"
+        );
+        // The operation is still pending: the honest terminal still routes.
+        let terminal = routed(wiring.route_terminal(1, &reloaded(), &mut clock, &[]), "honest")?;
+        assert!(terminal.mutated);
+        assert_eq!(clock.current(), RuntimeModuleGeneration::new(1));
+        Ok(())
+    }
+
+    #[test]
+    fn observation_claims_require_a_completed_operation_at_the_claimed_generation() -> TestResult {
+        // Unknown operation at the current generation: epoch and
+        // generation match, but no routed terminal sponsors the claim —
+        // the cross-module shape, where one module's observation is
+        // presented without its own reload under the shared session clock.
+        let mut wiring = negotiated_wiring(4);
+        admit(&mut wiring, 1);
+        let mut clock = RuntimeModuleGenerationClock::new();
+        routed(wiring.route_terminal(1, &reloaded(), &mut clock, &[]), "seed")?;
+        let foreign = ObservationClaim { epoch: 4, generation: clock.current(), operation_id: 2 };
+        assert_eq!(
+            wiring.reconcile_observation(&foreign, clock.current()),
+            Err(ReloadWiringRefusal::OperationNotAdmitted { operation_id: 2 })
+        );
+        // A refused operation sponsors nothing at a later generation: op
+        // 1 refuses at the initial generation while op 2 reloads past it.
+        // Claiming op 1 at the current generation names an (operation,
+        // generation) pair never routed together.
+        let mut wiring = negotiated_wiring(4);
+        admit(&mut wiring, 1);
+        admit(&mut wiring, 2);
+        let mut clock = RuntimeModuleGenerationClock::new();
+        routed(wiring.route_terminal(1, &refused_unsupported(), &mut clock, &[]), "refused")?;
+        routed(wiring.route_terminal(2, &reloaded(), &mut clock, &[]), "reloaded")?;
+        let crossed = ObservationClaim { epoch: 4, generation: clock.current(), operation_id: 1 };
+        assert_eq!(
+            wiring.reconcile_observation(&crossed, clock.current()),
+            Err(ReloadWiringRefusal::OperationNotAdmitted { operation_id: 1 })
+        );
+        // The honest claim — the completed operation at its own terminal
+        // generation — still passes.
+        let honest = ObservationClaim { epoch: 4, generation: clock.current(), operation_id: 2 };
+        assert_eq!(wiring.reconcile_observation(&honest, clock.current()), Ok(()));
         Ok(())
     }
 

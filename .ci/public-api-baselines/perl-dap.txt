@@ -875,6 +875,7 @@ pub fn perl_dap::breakpoints::BreakpointRecord::clone(&self) -> perl_dap::breakp
 pub fn perl_dap::breakpoints::BreakpointRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::breakpoints::BreakpointStore
 pub fn perl_dap::breakpoints::BreakpointStore::adjust_breakpoints_for_edit(&self, source_path: &str, start_line: i64, lines_delta: i64)
+pub fn perl_dap::breakpoints::BreakpointStore::ambiguous_breakpoint_source(&self, source_path: &str) -> bool
 pub fn perl_dap::breakpoints::BreakpointStore::clear_all(&self)
 pub fn perl_dap::breakpoints::BreakpointStore::clear_breakpoints(&self, source_path: &str)
 pub fn perl_dap::breakpoints::BreakpointStore::get_breakpoint_by_id(&self, id: i64) -> core::option::Option<perl_dap::breakpoints::BreakpointRecord>
@@ -2851,6 +2852,7 @@ pub fn perl_dap::reload::MechanismMeasurement::fmt(&self, f: &mut core::fmt::For
 pub struct perl_dap::reload::ObservationClaim
 pub perl_dap::reload::ObservationClaim::epoch: u64
 pub perl_dap::reload::ObservationClaim::generation: perl_dap::reload::RuntimeModuleGeneration
+pub perl_dap::reload::ObservationClaim::operation_id: u64
 pub fn perl_dap::reload::ObservationClaim::clone(&self) -> perl_dap::reload::ObservationClaim
 pub fn perl_dap::reload::ObservationClaim::eq(&self, other: &perl_dap::reload::ObservationClaim) -> bool
 pub fn perl_dap::reload::ObservationClaim::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3905,6 +3907,7 @@ pub fn perl_dap::breakpoints::BreakpointRecord::clone(&self) -> perl_dap::breakp
 pub fn perl_dap::breakpoints::BreakpointRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_dap::BreakpointStore
 pub fn perl_dap::breakpoints::BreakpointStore::adjust_breakpoints_for_edit(&self, source_path: &str, start_line: i64, lines_delta: i64)
+pub fn perl_dap::breakpoints::BreakpointStore::ambiguous_breakpoint_source(&self, source_path: &str) -> bool
 pub fn perl_dap::breakpoints::BreakpointStore::clear_all(&self)
 pub fn perl_dap::breakpoints::BreakpointStore::clear_breakpoints(&self, source_path: &str)
 pub fn perl_dap::breakpoints::BreakpointStore::get_breakpoint_by_id(&self, id: i64) -> core::option::Option<perl_dap::breakpoints::BreakpointRecord>

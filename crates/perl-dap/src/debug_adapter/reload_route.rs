@@ -286,6 +286,22 @@ impl DebugAdapter {
 
         // Terminal routing on the debug session's generation clock. Lock
         // order is reload_route → session everywhere this route runs.
+        //
+        // Ambiguous breakpoint spelling (FC-BP-ALIAS-AMBIGUOUS) is refused
+        // before the terminal routes: when the bound source spelling
+        // matches more than one stored breakpoint source, no single
+        // affected set exists, and routing first would advance the
+        // generation for a reload whose pending set cannot be named. The
+        // ambiguity answer comes from the breakpoint store while the
+        // route lock is held (reload_route, then breakpoints); the store
+        // never acquires the route lock, so no inversion exists.
+        let mut reasons: Vec<String> = Vec::new();
+        let ambiguous_breakpoint_source = subject_source
+            .as_ref()
+            .is_some_and(|source_path| self.breakpoints.ambiguous_breakpoint_source(source_path));
+        if ambiguous_breakpoint_source {
+            reasons.push("ambiguous_breakpoint_source".to_string());
+        }
         let mut session_guard = lock_or_recover(&self.session, "debug_adapter.reload_route");
         let mut scratch_clock = RuntimeModuleGenerationClock::new();
         let has_session = session_guard.is_some();
@@ -304,7 +320,6 @@ impl DebugAdapter {
             None => &mut scratch_clock,
         };
 
-        let mut reasons: Vec<String> = Vec::new();
         let outcome = match seeded {
             // A mutating outcome for a subject this adapter never bound to
             // a source cannot be reconciled (which desired breakpoints
@@ -316,6 +331,20 @@ impl DebugAdapter {
                 if session_ready
                     && crate::reload::outcome_is_mutating(&outcome)
                     && subject_source.is_none() =>
+            {
+                LoadedModuleReloadOutcome::Refused {
+                    disposition: LoadedModuleReloadEligibility::SourceNotExactOrStale,
+                }
+            }
+            // An ambiguous breakpoint spelling names no single affected
+            // source, so the honest terminal is the same frozen
+            // inexact/stale-identity refusal — reached before
+            // `route_terminal`, so the generation cannot advance for a
+            // reload whose pending set is unnameable.
+            Some(outcome)
+                if session_ready
+                    && crate::reload::outcome_is_mutating(&outcome)
+                    && ambiguous_breakpoint_source =>
             {
                 LoadedModuleReloadOutcome::Refused {
                     disposition: LoadedModuleReloadEligibility::SourceNotExactOrStale,
@@ -1068,6 +1097,71 @@ mod tests {
         // Nothing was invalidated and nothing was emitted.
         let (frames, _, _) = session_state_snapshot(&adapter);
         assert_eq!(frames, 2, "an unbound subject never triggers invalidation");
+        assert!(receiver.try_recv().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn ambiguous_breakpoint_spelling_refuses_before_the_terminal_routes() -> TestResult {
+        // FC-BP-ALIAS-AMBIGUOUS: the bound subject spelling is a bare
+        // basename matching two stored breakpoint sources, so no single
+        // affected set exists. The reload refuses inexact/stale identity
+        // before `route_terminal`: the generation never advances, both
+        // sources stay verified, and nothing is emitted.
+        let sources = SeededSources::new();
+        let mut adapter = DebugAdapter::new();
+        let (event_sender, receiver) = sync_channel(64);
+        adapter.set_event_sender(event_sender);
+        adapter.enable_loaded_module_reload_preview_profile(true);
+        adapter.declare_loaded_module_reload_client_for_test(&[1])?;
+        // A second same-basename source under a different directory.
+        let parent = sources.affected.parent().ok_or("fixture dir must have a parent")?;
+        let other_dir = parent.join("other_root");
+        must(std::fs::create_dir_all(&other_dir));
+        let body: String = (0..8).map(|index| format!("my $v{index} = {index};\n")).collect();
+        let other = other_dir.join("affected_module.pl");
+        must(std::fs::write(&other, &body));
+        let other_string = other.to_string_lossy().into_owned();
+        // The issued subject names the bare basename spelling.
+        adapter.seed_loaded_module_reload_subject_for_test(
+            MODULE_IDENTITY,
+            "affected_module.pl",
+            SUBJECT_DIGEST,
+            SUBJECT_URI,
+            SUBJECT_GENERATION,
+        );
+        adapter.seed_loaded_module_reload_outcome_for_test(LoadedModuleReloadOutcome::Reloaded);
+        seed_stopped_session(&adapter, &sources);
+        set_one_breakpoint(&adapter, &sources.path_string(true), 2);
+        set_one_breakpoint(&adapter, &other_string, 2);
+
+        let response = adapter.handle_request(2, LOADED_MODULE_RELOAD_REQUEST, Some(request(1, 1)));
+        let DapMessage::Response { success, body: Some(body), .. } = &response else {
+            return Err("expected a response body".into());
+        };
+        assert!(!success);
+        let wire: LoadedModuleReloadWireResponse = serde_json::from_value(body.clone())?;
+        let outcome = loaded_module_reload_outcome_body(&wire).ok_or("expected an outcome body")?;
+        assert_eq!(outcome.kind.as_str(), "refused");
+        assert_eq!(
+            serde_json::to_value(outcome.disposition)?,
+            serde_json::json!("source_not_exact_or_stale")
+        );
+        assert!(!outcome.generation.ok_or("witness required")?.advanced);
+        assert!(
+            outcome.reasons.contains(&"ambiguous_breakpoint_source".to_string()),
+            "the refusal names the ambiguity: {outcome:?}"
+        );
+        // Nothing was invalidated, both same-basename sources stay
+        // verified, and nothing was emitted.
+        let (frames, _, _) = session_state_snapshot(&adapter);
+        assert_eq!(frames, 2, "an ambiguous spelling never triggers invalidation");
+        for path in [sources.path_string(true), other_string] {
+            assert!(
+                adapter.breakpoints.get_breakpoints(&path).iter().all(|record| record.verified),
+                "{path} must stay verified when the spelling is ambiguous"
+            );
+        }
         assert!(receiver.try_recv().is_err());
         Ok(())
     }
