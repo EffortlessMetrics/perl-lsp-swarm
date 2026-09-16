@@ -1485,11 +1485,9 @@ fn emitted_record_matches_schema_at_every_nested_level() -> Result<()> {
             }
         }
         // Array items: every element must satisfy the declared items schema.
-        if let Some(items) = schema.get("items") {
-            if let Some(array) = value.as_array() {
-                for (index, element) in array.iter().enumerate() {
-                    compare_property_shape(items, element, &format!("{path}[{index}]"))?;
-                }
+        if let (Some(items), Some(array)) = (schema.get("items"), value.as_array()) {
+            for (index, element) in array.iter().enumerate() {
+                compare_property_shape(items, element, &format!("{path}[{index}]"))?;
             }
         }
         Ok(())
@@ -1596,11 +1594,10 @@ fn raw_digest_binds_the_declared_cell_identity() -> Result<()> {
 /// lease at acquisition cannot pass by only checking the post-hoc flag.
 #[test]
 fn lock_lease_is_observed_alive_during_command_execution() -> Result<()> {
-    let (clock, filesystems, _locks, process, _cache, commands) = standard_parts(COMMIT_A);
+    let (clock, filesystems, _locks, process, _cache, _commands) = standard_parts(COMMIT_A);
     let locks = ScriptedLocks::new(true, 500);
     let alive = std::sync::Arc::clone(&locks.lease_alive);
     let observed_during_run = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let observed = std::sync::Arc::clone(&observed_during_run);
 
     struct ProbeRunner {
         inner: ScriptedRunner,
