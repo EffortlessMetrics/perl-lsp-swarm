@@ -24,6 +24,8 @@ jobs:
       github.event.pull_request.user.login == 'EffortlessSteven'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
       - name: Checkout exact candidate head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -84,6 +86,27 @@ jobs:
           generated_lock=.github/workflows/minimax-coding-agent.lock.yml
           generated_action_cache=.github/aw/actions-lock.json
           RECEIPT
+
+      - name: Upload generated text as dangling Git blobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          upload_blob() {
+            local path="$1"
+            jq -Rs '{content: ., encoding: "utf-8"}' "$path" |
+              gh api --method POST "repos/${REPOSITORY}/git/blobs" --input - --jq '.sha'
+          }
+          lock_blob="$(upload_blob .github/workflows/minimax-coding-agent.lock.yml)"
+          action_lock_blob="$(upload_blob .github/aw/actions-lock.json)"
+          attributes_blob="$(upload_blob .gitattributes)"
+          {
+            printf 'lock_blob_sha=%s\n' "$lock_blob"
+            printf 'action_lock_blob_sha=%s\n' "$action_lock_blob"
+            printf 'gitattributes_blob_sha=%s\n' "$attributes_blob"
+          } | tee -a "${RUNNER_TEMP:?}/minimax-agent-generated/receipt.txt"
 
       - name: Upload generated authority
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
