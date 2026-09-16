@@ -1028,8 +1028,8 @@ include_paths = ["stale_lib"]
     }
 
     #[test]
-    fn load_and_apply_project_config_removes_server_global_settings_when_last_folder_is_removed(
-    ) -> anyhow::Result<()> {
+    fn load_and_apply_project_config_removes_server_global_settings_when_last_folder_is_removed()
+    -> anyhow::Result<()> {
         // Regression guard for #15715: bug branch where the removed folder
         // was the only config source. Previously `merged.apply_to_server_config`
         // was skipped entirely, so a server-global value contributed by the
@@ -1084,8 +1084,7 @@ perlcritic_severity = 2
 
         let cfg = server.config.lock();
         assert_eq!(
-            cfg.perlcritic_severity,
-            3,
+            cfg.perlcritic_severity, 3,
             "removed-folder severity must not survive the merge (was {} after removal)",
             cfg.perlcritic_severity,
         );
@@ -1093,8 +1092,8 @@ perlcritic_severity = 2
     }
 
     #[test]
-    fn load_and_apply_project_config_removes_server_global_settings_when_one_of_many_folders_is_removed(
-    ) -> anyhow::Result<()> {
+    fn load_and_apply_project_config_removes_server_global_settings_when_one_of_many_folders_is_removed()
+    -> anyhow::Result<()> {
         // Second regression branch of #15715: a remaining folder's TOML
         // does NOT set the field, so `merged.apply_to_server_config` writes
         // nothing for it, but the value from the removed folder persists
@@ -1146,8 +1145,7 @@ perlcritic_severity = 2
 
         let cfg = server.config.lock();
         assert_eq!(
-            cfg.perlcritic_severity,
-            3,
+            cfg.perlcritic_severity, 3,
             "severity contributed by the removed folder must not persist when remaining folders do not set it (was {})",
             cfg.perlcritic_severity,
         );
@@ -1155,8 +1153,8 @@ perlcritic_severity = 2
     }
 
     #[test]
-    fn load_and_apply_project_config_preserves_tier3_client_settings_across_folder_removal(
-    ) -> anyhow::Result<()> {
+    fn load_and_apply_project_config_preserves_tier3_client_settings_across_folder_removal()
+    -> anyhow::Result<()> {
         // Constraint branch of #15715: `didChangeConfiguration` (tier-3)
         // must survive a folder removal. The documented layering is
         // init-options < TOML < client responses, so a client-only value
@@ -1214,8 +1212,7 @@ perlcritic_severity = 2
 
         let cfg = server.config.lock();
         assert_eq!(
-            cfg.perlcritic_severity,
-            4,
+            cfg.perlcritic_severity, 4,
             "tier-3 severity must survive the removed-folder reset (was {})",
             cfg.perlcritic_severity,
         );
