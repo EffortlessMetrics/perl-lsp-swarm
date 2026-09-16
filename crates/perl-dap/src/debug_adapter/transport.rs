@@ -388,6 +388,7 @@ impl DebugAdapter {
                             )),
                         }
                     } else {
+                        self.retire_pending_terminal_before_request(&request.command);
                         self.dispatch_request(
                             request.request_seq,
                             &request.command,
