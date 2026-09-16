@@ -104,6 +104,8 @@ conflicts with both `--root` and `--check-lane-whitelist`.
 Receipt version `1.0.0` and existing fields are retained. Additive `subject`
 metadata records `mode`, `selection`, `path_identity_sha256`,
 `workflow_file_count`, `scan_completed`, and which repository checks were requested.
+The receipt schema accepts legacy receipts without `subject`; when present, its
+fields are required and strictly typed, and unknown fields remain rejected.
 The count is evaluated files, not validated workflow contracts. The identity hashes
 the canonical selected path's OS-native bytes, not file contents or a source commit;
 it avoids recording an absolute private path and is not a portable artifact digest.

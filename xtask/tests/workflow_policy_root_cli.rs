@@ -18,7 +18,60 @@ fn invoke(binary: &Path, cwd: &Path, root: &Path, receipt: &Path) -> Result<Outp
 }
 
 fn read_receipt(path: &Path) -> Result<Value> {
-    Ok(serde_json::from_slice(&fs::read(path)?)?)
+    let receipt = serde_json::from_slice(&fs::read(path)?)?;
+    let validator = receipt_validator()?;
+    ensure!(validator.is_valid(&receipt), "emitted receipt violates workflow-policy schema");
+    Ok(receipt)
+}
+
+fn receipt_validator() -> Result<jsonschema::Validator> {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../.ci/receipts/schemas/workflow-policy.schema.json"
+    ))?;
+    Ok(jsonschema::validator_for(&schema)?)
+}
+
+fn check_receipt_schema_compatibility(receipt: &Value) -> Result<()> {
+    let validator = receipt_validator()?;
+    let mut legacy = receipt.clone();
+    legacy
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("receipt is not an object"))?
+        .remove("subject");
+    ensure!(validator.is_valid(&legacy), "legacy receipt without subject rejected");
+    for (field, invalid) in [
+        ("mode", serde_json::json!("workspace")),
+        ("selection", serde_json::json!("cwd")),
+        ("path_identity_sha256", serde_json::json!("not-a-digest")),
+        ("workflow_file_count", serde_json::json!(-1)),
+        ("workflow_file_count", serde_json::json!(1.5)),
+        ("scan_completed", serde_json::json!("true")),
+        ("lane_whitelist_requested", serde_json::json!(null)),
+        ("isolation_registry_requested", serde_json::json!(0)),
+        ("unknown", serde_json::json!(true)),
+    ] {
+        let mut malformed = receipt.clone();
+        malformed
+            .get_mut("subject")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| anyhow::anyhow!("subject is not an object"))?
+            .insert(field.to_string(), invalid);
+        ensure!(!validator.is_valid(&malformed), "malformed subject field {field} accepted");
+    }
+    let mut missing = receipt.clone();
+    missing
+        .get_mut("subject")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| anyhow::anyhow!("subject is not an object"))?
+        .remove("mode");
+    ensure!(!validator.is_valid(&missing), "incomplete subject accepted");
+    let mut unknown = receipt.clone();
+    unknown
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("receipt is not an object"))?
+        .insert("unknown".to_string(), serde_json::json!(true));
+    ensure!(!validator.is_valid(&unknown), "unknown outer property accepted");
+    Ok(())
 }
 
 #[test]
@@ -56,6 +109,7 @@ fn copied_workflow_policy_binary_uses_explicit_subject_not_cwd_or_build_root() -
         String::from_utf8_lossy(&output.stderr)
     );
     let passed = read_receipt(&receipt)?;
+    check_receipt_schema_compatibility(&passed)?;
     ensure!(passed["passed"] == true && passed["error_count"] == 0, "clean result missing");
     ensure!(
         passed["subject"]["path_identity_sha256"] == failed["subject"]["path_identity_sha256"],
