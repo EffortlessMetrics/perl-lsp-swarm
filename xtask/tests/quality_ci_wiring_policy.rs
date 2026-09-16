@@ -949,7 +949,8 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
     ] {
         assert!(justfile.contains(required), "coverage-proof missing `{required}`");
     }
-    let ci_route_source = must(fs::read_to_string(root.join("xtask/src/tasks/ci_route.rs")));
+    let ci_route_source =
+        must(fs::read_to_string(root.join("xtask").join("src").join("tasks").join("ci_route.rs")));
     must(cross_check_ci_route_schema_version_literals(&ci_route_source, &codecov_router));
     let mutated_python_receipt = codecov_router.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
     assert_ne!(
