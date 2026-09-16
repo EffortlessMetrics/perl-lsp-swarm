@@ -94,30 +94,46 @@ impl Clone for OutputCapture {
     }
 }
 
+/// Complete the LSP lifecycle handshake: the `initialize` request followed by
+/// the `initialized` notification. The server defers server-to-client
+/// *requests* (window/showMessageRequest, window/showDocument,
+/// window/workDoneProgress/create) until `initialized` arrives (#7708), so
+/// fixtures that exercise those APIs must complete the handshake — sending
+/// only `initialize` encodes a lifecycle the protocol forbids.
+fn initialize_and_confirm(server: &LspServer, capabilities: Value) {
+    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
+        method: "initialize".to_string(),
+        params: Some(json!({ "capabilities": capabilities })),
+    });
+    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
+        _jsonrpc: "2.0".to_string(),
+        id: None,
+        method: "initialized".to_string(),
+        params: Some(json!({})),
+    });
+}
+
 #[test]
 fn lsp_window_show_message_request_format() -> Result<(), Box<dyn std::error::Error>> {
     let output = OutputCapture::new();
     let output_box: Box<dyn Write + Send> = Box::new(output.clone());
     let server = LspServer::with_output(Arc::new(Mutex::new(output_box)));
 
-    // Initialize server to enable capabilities
-    let init_params = json!({
-        "capabilities": {
+    // Initialize server to enable capabilities, completing the lifecycle
+    // handshake so the showMessageRequest server->client request is legal.
+    initialize_and_confirm(
+        &server,
+        json!({
             "window": {
                 "showDocument": {
                     "support": true
                 },
                 "workDoneProgress": true
             }
-        }
-    });
-
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
+        }),
+    );
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
@@ -172,23 +188,18 @@ fn lsp_window_show_document_with_capability() {
     let output_box: Box<dyn Write + Send> = Box::new(output.clone());
     let server = LspServer::with_output(Arc::new(Mutex::new(output_box)));
 
-    // Initialize with showDocument capability
-    let init_params = json!({
-        "capabilities": {
+    // Initialize with showDocument capability, completing the lifecycle
+    // handshake so the showDocument server->client request is legal.
+    initialize_and_confirm(
+        &server,
+        json!({
             "window": {
                 "showDocument": {
                     "support": true
                 }
             }
-        }
-    });
-
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
+        }),
+    );
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
@@ -221,21 +232,16 @@ fn lsp_window_progress_lifecycle() {
     let output_box: Box<dyn Write + Send> = Box::new(output.clone());
     let server = LspServer::with_output(Arc::new(Mutex::new(output_box)));
 
-    // Initialize with workDoneProgress capability
-    let init_params = json!({
-        "capabilities": {
+    // Initialize with workDoneProgress capability, completing the lifecycle
+    // handshake so the workDoneProgress/create server->client request is legal.
+    initialize_and_confirm(
+        &server,
+        json!({
             "window": {
                 "workDoneProgress": true
             }
-        }
-    });
-
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
+        }),
+    );
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
@@ -299,21 +305,17 @@ fn lsp_window_progress_duplicate_token_fails() -> Result<(), Box<dyn std::error:
     let output_box: Box<dyn Write + Send> = Box::new(output.clone());
     let server = LspServer::with_output(Arc::new(Mutex::new(output_box)));
 
-    // Initialize with workDoneProgress capability
-    let init_params = json!({
-        "capabilities": {
+    // Initialize with workDoneProgress capability, completing the lifecycle
+    // handshake so the first workDoneProgress/create is legal (and can
+    // register the token the duplicate check then rejects).
+    initialize_and_confirm(
+        &server,
+        json!({
             "window": {
                 "workDoneProgress": true
             }
-        }
-    });
-
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
+        }),
+    );
 
     // Create first token
     let token = "duplicate-token";
@@ -453,6 +455,10 @@ fn lsp_window_message_types() {
     let output_box: Box<dyn Write + Send> = Box::new(output.clone());
     let server = LspServer::with_output(Arc::new(Mutex::new(output_box)));
 
+    // Complete the lifecycle handshake: showMessageRequest is a
+    // server->client request, deferred until `initialized` (#7708).
+    initialize_and_confirm(&server, json!({}));
+
     // Test all message types
     let types = [
         (MessageType::Error, 1),
@@ -479,6 +485,11 @@ fn lsp_window_debug_message_type_serializes_to_five() -> Result<(), Box<dyn std:
     let output = OutputCapture::new();
     let output_box: Box<dyn Write + Send> = Box::new(output.clone());
     let server = LspServer::with_output(Arc::new(Mutex::new(output_box)));
+
+    // The window/logMessage and window/showMessage legs are notifications and
+    // legal pre-initialization, but the showMessageRequest leg is a
+    // server->client request: complete the lifecycle handshake (#7708).
+    initialize_and_confirm(&server, json!({}));
 
     server.log_message(MessageType::Debug, "debug log")?;
     let log_message = wait_for_method(&output, "window/logMessage")
@@ -529,23 +540,18 @@ fn lsp_window_show_document_external_flag() {
     let output_box: Box<dyn Write + Send> = Box::new(output.clone());
     let server = LspServer::with_output(Arc::new(Mutex::new(output_box)));
 
-    // Initialize with showDocument capability
-    let init_params = json!({
-        "capabilities": {
+    // Initialize with showDocument capability, completing the lifecycle
+    // handshake so the showDocument server->client request is legal.
+    initialize_and_confirm(
+        &server,
+        json!({
             "window": {
                 "showDocument": {
                     "support": true
                 }
             }
-        }
-    });
-
-    let _ = server.handle_request(perl_lsp::JsonRpcRequest {
-        _jsonrpc: "2.0".to_string(),
-        id: Some(perl_lsp::protocol::JsonRpcId::Integer(1_i64)),
-        method: "initialize".to_string(),
-        params: Some(init_params),
-    });
+        }),
+    );
 
     let _ = wait_for_messages(&output, 1);
     output.clear();
