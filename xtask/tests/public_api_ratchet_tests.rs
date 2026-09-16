@@ -136,12 +136,19 @@ fn baseline_files_are_non_empty() -> Result<(), Box<dyn std::error::Error>> {
             crate_name
         );
 
-        // Verify that lines start with "pub " (public API items)
+        // Every line must be a guarded public item (#15634): a plain `pub `
+        // item, or an attribute-fronted item (`#[repr(u8)] pub ...`) —
+        // attributes on public items are part of the public contract and the
+        // ratchet must record them, not silently drop them.
         let non_empty_lines: Vec<_> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         for (line_num, line) in non_empty_lines.iter().enumerate() {
+            let is_plain_pub = line.starts_with("pub ");
+            let is_attribute_fronted = line.starts_with("#[")
+                && line.split("] ").last().is_some_and(|tail| tail.starts_with("pub "));
             assert!(
-                line.starts_with("pub "),
-                "Baseline {} line {} does not start with 'pub ': {}",
+                is_plain_pub || is_attribute_fronted,
+                "Baseline {} line {} is not a guarded public item (expected 'pub ' or \
+                 attribute-fronted 'pub'): {}",
                 crate_name,
                 line_num + 1,
                 line
@@ -314,9 +321,13 @@ fn contributing_md_documents_public_api_workflow() -> Result<(), Box<dyn std::er
 ///
 /// Specifically verifies:
 /// 1. `set -euo pipefail` is present so the script aborts on errors.
-/// 2. The grep pipeline uses `|| true` so that an empty match (e.g., from a compile error
-///    silenced by `2>/dev/null`) does NOT abort the script early via set -e, allowing the
-///    FAILED counter and the final exit-1 to report the real problem instead.
+/// 2. The guarded surface is derived through the shared `_public-api-filter`
+///    helper (#15634), which keeps the `|| true` tolerance so that an empty
+///    match (e.g., from a compile error silenced by `2>/dev/null`) does NOT
+///    abort the script early via set -e, allowing the FAILED counter and the
+///    final exit-1 to report the real problem instead. The helper must admit
+///    attribute-fronted public items (`#[repr(u8)] pub ...`) — the old
+///    `^pub `-only filter silently dropped them from the ratchet.
 /// 3. The `diff -u` comparison runs and FAILED is set on non-zero diff exit.
 #[test]
 fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn std::error::Error>> {
@@ -337,19 +348,45 @@ fn public_api_check_script_has_correct_fail_semantics() -> Result<(), Box<dyn st
         "public-api-check must use 'set -euo pipefail'"
     );
 
-    // The grep invocation must have '|| true' to avoid aborting the loop when
+    // One filter, one owner (#15634): the check recipe must not restate the
+    // surface filter; it delegates to the shared _public-api-filter helper.
+    assert!(
+        check_body.contains(
+            "just _public-api-filter \"/tmp/${crate}-raw.txt\" \"/tmp/${crate}-current.txt\""
+        ),
+        "public-api-check must derive the guarded surface via the shared _public-api-filter helper (#15634)"
+    );
+    assert!(
+        !check_body.contains("grep \"^pub \"") && !check_body.contains("grep '^pub '"),
+        "public-api-check must not restate the surface filter; _public-api-filter owns it (#15634)"
+    );
+
+    // Extract the shared filter recipe body: the signature line opens it and
+    // the next recipe's comment header closes it.
+    let filter_body = justfile
+        .split("_public-api-filter raw out:\n")
+        .nth(1)
+        .ok_or("Could not find _public-api-filter recipe in justfile")?
+        .split("\n# Check public API surface")
+        .next()
+        .ok_or("Could not delimit _public-api-filter recipe body")?;
+
+    // The filter invocation must have '|| true' to avoid aborting the loop when
     // cargo-public-api produces empty output (e.g., due to a compile error silenced
     // by `2>/dev/null`).  Without it, grep exits 1 on zero matches and set -e kills
     // the script before the FAILED counter is evaluated.
     assert!(
-        check_body.contains("grep \"^pub \"") || check_body.contains("grep '^pub '"),
-        "public-api-check must grep for '^pub ' items"
+        filter_body.contains("|| true"),
+        "_public-api-filter must tolerate grep's no-match exit so an empty surface \
+         reaches the caller's INSTRUMENT-FAIL classification"
     );
+
+    // The filter must admit attribute-fronted public items (#15634): a run of
+    // bracketed attributes followed by `pub `, alongside plain `pub ` items.
     assert!(
-        check_body.contains("grep \"^pub \" > \"/tmp/${crate}-current.txt\" || true")
-            || check_body.contains("grep \"^pub \" > \"/tmp/${crate}-current.txt\"  || true")
-            || (check_body.contains("grep \"^pub \"") && check_body.contains("|| true")),
-        "public-api-check grep pipeline must end with '|| true' to prevent set -e abort on empty output"
+        filter_body.contains("^(pub |(#\\[[^]]*\\][[:space:]]*)+pub )"),
+        "_public-api-filter must keep both plain 'pub ' items and attribute-fronted \
+         public items ('#[...] pub ...'), not drop the latter (#15634)"
     );
 
     assert!(
