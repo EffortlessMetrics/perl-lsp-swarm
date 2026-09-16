@@ -893,6 +893,12 @@ gates:
     #     verification on 6ec7242bd: lexer_robustness_tests green twice,
     #     check-panic-test exit 0. Exact extended-cohort rerun PASS on this
     #     branch.
+    #   2026-09-16 batch (measured clean, no fixes needed, PR #15028):
+    #     perl-operation-trace — new Tier-1 leaf crate; passes the exact kernel
+    #     command locally on the integrated candidate head. The partition check
+    #     (msrv_authority_sync / gate-policy) requires every workspace package
+    #     to carry a clippy all-target disposition, so the crate joins the
+    #     cohort in the same PR that adds it to the workspace.
     command: >-
       cargo clippy
       -p perl-token
@@ -931,6 +937,7 @@ gates:
       -p perllsp
       -p perl-lexer
       -p perl-ci-hygiene
+      -p perl-operation-trace
       --all-targets --locked
       -- -D warnings -A missing_docs
     # Budget: measured ~80s locally with warm dependencies and cold check
