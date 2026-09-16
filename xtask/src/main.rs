@@ -4519,8 +4519,17 @@ enum PrLedgerCommand {
         #[arg(long, default_value = "target/reconciliation")]
         out: PathBuf,
         /// Optional fixture JSON (for testing without live gh).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "paginated_fixture")]
         fixture: Option<PathBuf>,
+        /// Optional paginated fixture JSON: array of pages, each page an
+        /// array of PR objects. Used to drive the multi-page code path in
+        /// tests without shelling to gh.
+        #[arg(long, conflicts_with = "fixture")]
+        paginated_fixture: Option<PathBuf>,
+        /// Pin `observed_at` to a deterministic anchor. Receipts are then
+        /// byte-identical across runs over the same canonical input. Test-only.
+        #[arg(long)]
+        deterministic_clock: bool,
     },
 }
 
@@ -5608,9 +5617,19 @@ fn run_cli(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::PrLedger { command } => match command {
-            PrLedgerCommand::Generate { repos, out, fixture } => {
-                tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
-            }
+            PrLedgerCommand::Generate {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            } => tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            }),
         },
         Commands::SyncDivergence { command } => match command {
             SyncDivergenceCommand::Check { source, boundary, target, ledger, receipt } => {
