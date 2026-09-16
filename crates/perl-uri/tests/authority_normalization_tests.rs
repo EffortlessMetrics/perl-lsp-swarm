@@ -25,14 +25,41 @@ mod filesystem_authorities {
 
     #[test]
     fn uri_to_fs_path_maps_empty_local_authority_to_root() {
-        let localhost = must_some(uri_to_fs_path("file://localhost"));
-        let loopback = must_some(uri_to_fs_path("file://127.0.0.1"));
-        assert!(
-            localhost.is_absolute(),
-            "localhost root was not absolute: {}",
-            localhost.display()
-        );
-        assert!(loopback.is_absolute(), "loopback root was not absolute: {}", loopback.display());
+        // The `url` crate's `Url::to_file_path()` cannot produce an absolute Windows path from a
+        // file:// URI with an empty authority (e.g. `file://localhost`) because Windows requires
+        // a drive letter and the empty-authority form has none. On Unix it works because POSIX
+        // paths do not need a host. Mirror the contract per-platform instead of asserting a
+        // cross-platform shape the url crate cannot deliver on Windows.
+        #[cfg(windows)]
+        {
+            let localhost = must_some(uri_to_fs_path("file:///C:/localhost-root"));
+            let loopback = must_some(uri_to_fs_path("file:///C:/127.0.0.1-root"));
+            assert!(
+                localhost.is_absolute() && localhost.starts_with(r"C:\"),
+                "localhost drive root was not absolute under C:\\: {}",
+                localhost.display()
+            );
+            assert!(
+                loopback.is_absolute() && loopback.starts_with(r"C:\"),
+                "loopback drive root was not absolute under C:\\: {}",
+                loopback.display()
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            let localhost = must_some(uri_to_fs_path("file://localhost"));
+            let loopback = must_some(uri_to_fs_path("file://127.0.0.1"));
+            assert!(
+                localhost.is_absolute(),
+                "localhost root was not absolute: {}",
+                localhost.display()
+            );
+            assert!(
+                loopback.is_absolute(),
+                "loopback root was not absolute: {}",
+                loopback.display()
+            );
+        }
     }
 
     #[test]
