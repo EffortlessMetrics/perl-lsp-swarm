@@ -21,6 +21,8 @@ import { BinaryDownloader, parseLocalVersion } from './downloader';
 import {
   isPerlLanguageId,
   isSupportedPerlUriScheme,
+  loadPerlAliasLanguageConfiguration,
+  PERL_ALIAS_LANGUAGE_ID,
   perlDocumentSelector,
 } from './languageIdentity';
 import {
@@ -846,6 +848,26 @@ function isActivationPhase(value: string): value is ActivationPhase {
   return (ACTIVATION_PHASES as readonly string[]).includes(value);
 }
 
+/**
+ * Register the canonical editing rules for the `perl5` alias (#7699).
+ *
+ * Returns the registration disposable, or undefined when the packaged
+ * configuration cannot be read: activation proceeds with editor-default
+ * alias editing rather than failing. Owned by the activation attempt so
+ * rollback disposes it with everything else.
+ */
+function registerPerlAliasLanguageConfiguration(
+  extensionPath: string,
+): vscode.Disposable | undefined {
+  const config = loadPerlAliasLanguageConfiguration(extensionPath, (file) =>
+    fs.readFileSync(file, 'utf-8'),
+  );
+  if (!config) {
+    return undefined;
+  }
+  return vscode.languages.setLanguageConfiguration(PERL_ALIAS_LANGUAGE_ID, config as vscode.LanguageConfiguration);
+}
+
 async function runExtensionActivation(
   context: vscode.ExtensionContext,
   activation: ExtensionActivationOwner,
@@ -885,6 +907,15 @@ async function runExtensionActivation(
     // reported rather than swallowed, and the published state stays empty.
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.error(`[configuration-migration] initial read failed: ${message}`);
+  }
+  // Alias editing parity (#7699): buffers classified `perl5` by another
+  // extension get highlighting from the grammar binding, but comments,
+  // brackets, indentation, and word selection fall back to editor defaults
+  // unless the canonical rules are registered for the alias. Programmatic
+  // registration (no second contributes.languages) disposed with the attempt.
+  const aliasLanguageDisposable = registerPerlAliasLanguageConfiguration(context.extensionPath);
+  if (aliasLanguageDisposable) {
+    activation.own('base', 'optional_degradable', aliasLanguageDisposable);
   }
   // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
   // longer activation-critical: it registers nothing and returns no disposable.

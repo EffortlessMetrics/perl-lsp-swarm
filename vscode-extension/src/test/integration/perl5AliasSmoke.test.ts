@@ -226,6 +226,10 @@ suite('Perl5 alias extension-host smoke (#7699)', function () {
         20_000,
       );
       assert.ok(completionList, 'completion provider must answer for the alias document');
+      assert.ok(
+        completionList.items.length > 0,
+        'completion provider must return items for the alias prefix (empty proves nothing)',
+      );
       const firstCompletion = completionList.items[0];
       completionItemLabel =
         firstCompletion === undefined
@@ -245,6 +249,10 @@ suite('Perl5 alias extension-host smoke (#7699)', function () {
         20_000,
       );
       assert.ok(Array.isArray(hovers), 'hover provider must answer for the alias document');
+      assert.ok(
+        hovers.length > 0,
+        'hover provider must return results for the alias document (empty proves nothing)',
+      );
       hoverCount = hovers.length;
 
       writeReceipt({

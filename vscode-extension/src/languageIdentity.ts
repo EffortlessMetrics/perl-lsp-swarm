@@ -81,3 +81,44 @@ export function perlDocumentSelector(): PerlDocumentSelectorEntry[] {
     SUPPORTED_PERL_LANGUAGE_IDS.map((language) => ({ scheme, language })),
   );
 }
+
+/** The alias language ID that shares the canonical editing rules. */
+export const PERL_ALIAS_LANGUAGE_ID = 'perl5';
+
+/**
+ * Read the canonical language configuration for the alias from the packaged
+ * `language-configuration.json` next to the extension entrypoint. Returns
+ * undefined when the file is missing or unparseable: the alias then keeps
+ * editor-default editing rules rather than failing activation.
+ */
+export function loadPerlAliasLanguageConfiguration(
+  extensionPath: string,
+  readFile: (path: string) => string,
+): Record<string, unknown> | undefined {
+  try {
+    return parsePerlAliasLanguageConfiguration(
+      readFile(`${extensionPath}/language-configuration.json`),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parse raw language-configuration JSON into the shape
+ * `vscode.languages.setLanguageConfiguration` accepts. Pure for unit tests:
+ * file reading stays with the caller.
+ */
+export function parsePerlAliasLanguageConfiguration(
+  raw: string,
+): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}

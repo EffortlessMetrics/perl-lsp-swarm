@@ -2,10 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   CANONICAL_PERL_LANGUAGE_ID,
+  PERL_ALIAS_LANGUAGE_ID,
   SUPPORTED_PERL_LANGUAGE_IDS,
   SUPPORTED_PERL_URI_SCHEMES,
   isPerlLanguageId,
   isSupportedPerlUriScheme,
+  loadPerlAliasLanguageConfiguration,
+  parsePerlAliasLanguageConfiguration,
   perlDocumentSelector,
 } from '../languageIdentity';
 
@@ -83,6 +86,27 @@ describe('Perl language identity authority (#7699)', () => {
       { scheme: 'untitled', language: 'perl' },
       { scheme: 'untitled', language: 'perl5' },
     ]);
+  });
+
+  test('the alias shares the canonical editing rules object', () => {
+    expect(PERL_ALIAS_LANGUAGE_ID).toBe('perl5');
+    const config = loadPerlAliasLanguageConfiguration(EXT_ROOT, (file) =>
+      fs.readFileSync(file, 'utf-8'),
+    );
+    expect(config).toBeDefined();
+    expect((config?.comments as { lineComment?: string } | undefined)?.lineComment).toBe('#');
+    expect(Array.isArray((config as { brackets?: unknown })?.brackets)).toBe(true);
+  });
+
+  test('alias configuration parsing stays total on bad input', () => {
+    expect(parsePerlAliasLanguageConfiguration('not json')).toBeUndefined();
+    expect(parsePerlAliasLanguageConfiguration('[]')).toBeUndefined();
+    expect(parsePerlAliasLanguageConfiguration('null')).toBeUndefined();
+    expect(
+      loadPerlAliasLanguageConfiguration('/nonexistent-root', () => {
+        throw new Error('missing');
+      }),
+    ).toBeUndefined();
   });
 });
 
