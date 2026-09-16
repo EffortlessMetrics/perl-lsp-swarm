@@ -1060,7 +1060,6 @@ mod mock_streaming_completion_tests {
         Ok(())
     }
 
-
     struct MockAuthBackend;
 
     impl perl_lsp_rs_core::providers::inline_completion::InlineCompletionBackend for MockAuthBackend {
