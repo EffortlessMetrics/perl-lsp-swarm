@@ -556,6 +556,166 @@ fn make_adapter_with_rx() -> (DebugAdapter, Receiver<DapMessage>) {
     (adapter, rx)
 }
 
+fn require_terminal_count(rx: &Receiver<DapMessage>, expected: usize, context: &str) -> TestResult {
+    let observed = rx
+        .try_iter()
+        .filter(
+            |message| matches!(message, DapMessage::Event { event, .. } if event == "terminated"),
+        )
+        .count();
+    if observed != expected {
+        return Err(
+            format!("{context}: expected {expected} terminal events, got {observed}").into()
+        );
+    }
+    Ok(())
+}
+
+fn require_lifecycle_response(response: DapMessage, command: &str, success: bool) -> TestResult {
+    match response {
+        DapMessage::Response { command: actual, success: actual_success, .. }
+            if actual == command && actual_success == success =>
+        {
+            Ok(())
+        }
+        other => Err(format!("expected {command} success={success}, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn disconnect_terminal_initial_and_rejected_launch() -> TestResult {
+    for reject_launch in [false, true] {
+        let (mut adapter, rx) = make_adapter_with_rx();
+        require_lifecycle_response(
+            adapter.handle_request(1, "initialize", None),
+            "initialize",
+            true,
+        )?;
+        if reject_launch {
+            let response = adapter.handle_request(2, "launch", Some(json!({"program": ""})));
+            match response {
+                DapMessage::Response { success: false, message: Some(message), .. }
+                    if message.contains("No Perl script was specified") => {}
+                other => {
+                    return Err(format!("expected empty-program refusal, got {other:?}").into());
+                }
+            }
+        }
+        require_terminal_count(&rx, 0, "before first disconnect")?;
+        require_lifecycle_response(
+            adapter.handle_request(3, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "first no-debuggee disconnect")?;
+        require_lifecycle_response(
+            adapter.handle_request(4, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "duplicate disconnect")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn disconnect_terminal_after_terminate_and_rejected_replacement() -> TestResult {
+    for reject_replacement in [false, true] {
+        let (mut adapter, rx) = make_adapter_with_rx();
+        require_lifecycle_response(
+            adapter.handle_request(1, "initialize", None),
+            "initialize",
+            true,
+        )?;
+        require_lifecycle_response(
+            adapter.handle_request(2, "terminate", None),
+            "terminate",
+            true,
+        )?;
+        require_terminal_count(&rx, 1, "initial terminate")?;
+        if reject_replacement {
+            let response = adapter.handle_request(3, "launch", Some(json!({"program": ""})));
+            match response {
+                DapMessage::Response { success: false, message: Some(message), .. }
+                    if message.contains("No Perl script was specified") => {}
+                other => return Err(format!("expected rejected replacement, got {other:?}").into()),
+            }
+            require_terminal_count(&rx, 0, "rejected replacement")?;
+        }
+        require_lifecycle_response(
+            adapter.handle_request(4, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "disconnect after terminated lifecycle")?;
+        require_lifecycle_response(
+            adapter.handle_request(5, "terminate", None),
+            "terminate",
+            true,
+        )?;
+        require_terminal_count(&rx, 1, "repeated explicit terminate remains acknowledged")?;
+        require_lifecycle_response(
+            adapter.handle_request(6, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "disconnect after repeated terminate")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn disconnect_terminal_successful_replacement_reopens_lifecycle() -> TestResult {
+    let Some(_) =
+        debuggee_perl_or_typed_skip("disconnect_terminal_successful_replacement_reopens_lifecycle")
+    else {
+        return Ok(());
+    };
+    let workspace = tempdir()?;
+    let script = workspace.path().join("disconnect_replacement.pl");
+    write(&script, lifecycle_script_content())?;
+    let script_str = script.to_str().ok_or("replacement script path is not valid UTF-8")?;
+    let (mut adapter, rx) = make_adapter_with_rx();
+    require_lifecycle_response(adapter.handle_request(1, "initialize", None), "initialize", true)?;
+    require_lifecycle_response(adapter.handle_request(2, "terminate", None), "terminate", true)?;
+    require_terminal_count(&rx, 1, "close initial lifecycle")?;
+    for request_seq in [10, 20] {
+        let arguments = common::resolved_launch_arguments_for_test(script_str, None, true)?;
+        require_lifecycle_response(
+            adapter.handle_request(request_seq, "launch", Some(arguments)),
+            "launch",
+            true,
+        )?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                    return Err(
+                        "replacement terminated before establishing a stopped debuggee".into()
+                    );
+                }
+                Ok(DapMessage::Event { event, .. }) if event == "stopped" => break,
+                Ok(_) => {}
+                Err(error) => return Err(format!("replacement did not stop: {error}").into()),
+            }
+        }
+        require_terminal_count(&rx, 0, "replacement is live")?;
+        require_lifecycle_response(
+            adapter.handle_request(request_seq + 1, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 1, "replacement disconnect")?;
+        require_lifecycle_response(
+            adapter.handle_request(request_seq + 2, "disconnect", None),
+            "disconnect",
+            true,
+        )?;
+        require_terminal_count(&rx, 0, "duplicate replacement disconnect")?;
+    }
+    Ok(())
+}
+
 /// Drain the event channel looking for an event with the given name, up to
 /// `timeout_ms` total. Returns the event body on match.
 fn wait_cleanup_event(rx: &Receiver<DapMessage>, name: &str, timeout_ms: u64) -> Option<Value> {

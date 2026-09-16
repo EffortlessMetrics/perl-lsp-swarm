@@ -206,6 +206,19 @@ impl RelatedInformation {
     }
 }
 
+/// Collect producer-declared critic overlap observations without mutating
+/// the diagnostic set (#11918).
+///
+/// Non-destructive counterpart of [`take_critic_overlap_observations`]:
+/// consumers evaluate the critic service outcome over the returned
+/// observations first and only surrender the carrier diagnostics through
+/// [`take_critic_overlap_observations`] once a publishable normalized
+/// replacement exists, so an unpublishable run can never lose the ordinary
+/// core rows.
+pub fn critic_overlap_observations(diagnostics: &[Diagnostic]) -> Vec<BuiltInCriticObservation> {
+    diagnostics.iter().filter_map(|d| d.critic_observation.clone()).collect()
+}
+
 /// Remove producer-declared critic overlap observations from a collected
 /// diagnostic set, returning the observations (#11918).
 ///
@@ -213,6 +226,10 @@ impl RelatedInformation {
 /// logical row is produced by the normalized critic seam, which merges the
 /// observation with its native alias and applies policy once. The relative
 /// order of the remaining diagnostics is preserved.
+///
+/// Call this only after the replacement run is known publishable; draining
+/// before that boundary surrenders independent core rows to an outcome that
+/// may never publish (#9062 publication boundary).
 pub fn take_critic_overlap_observations(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<BuiltInCriticObservation> {
@@ -279,6 +296,47 @@ mod tests {
             perl_diagnostics::Diagnostic::try_from(diagnostic),
             Err(DiagnosticConversionError::InvalidRange(_))
         ));
+    }
+
+    #[test]
+    fn critic_overlap_observations_peeks_without_mutating_the_set() {
+        use super::{critic_overlap_observations, take_critic_overlap_observations};
+        use crate::tooling::perl_critic::{BuiltInCriticObservation, Severity};
+
+        let plain =
+            Diagnostic::new((0, 4), DiagnosticSeverity::Warning, "unrelated").with_code("PL403");
+        let carrier = Diagnostic {
+            critic_observation: Some(BuiltInCriticObservation::pl603_system(
+                Severity::Harsh,
+                (10, 20),
+                "system() executes a shell command.".to_string(),
+                None,
+            )),
+            ..Diagnostic::new((10, 20), DiagnosticSeverity::Warning, "system").with_code("PL603")
+        };
+
+        let mut diagnostics = vec![plain, carrier];
+        let peeked = critic_overlap_observations(&diagnostics);
+
+        assert_eq!(peeked.len(), 1, "the carrier's observation is collected");
+        assert_eq!(peeked[0].identity().code(), "PL603");
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "a peeked set keeps every row until a publishable replacement exists"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| matches!(d.critic_observation, Some(_))
+                    == (d.code.as_deref() == Some("PL603"))),
+            "carriers keep their observations through the peek"
+        );
+
+        let drained = take_critic_overlap_observations(&mut diagnostics);
+        assert_eq!(drained.len(), 1, "surrender after the peek drains exactly once");
+        assert_eq!(drained[0].identity().code(), peeked[0].identity().code());
+        assert_eq!(diagnostics.len(), 1);
     }
 
     #[test]
