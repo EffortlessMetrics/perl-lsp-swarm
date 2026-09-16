@@ -10,7 +10,7 @@ Controlling issue #10949. The one live application route is #10229, pure merge/r
 
 The dispositions below were audited against this exact source. A change to any file listed here invalidates the audit and `check` fails until the rows are re-checked.
 
-- Digest: `sha256:f4254e0dd9261a1c3b991add4608bb1b6bca96ebd76f79a1cd6f10aa75f719c3`
+- Digest: `sha256:ed395e7f84b6f6bf2b9fbfddfdf168a1e15343cf4213fd90677d3b45a714e2dc`
 - Files (42):
   - `crates/perl-lsp-rs-core/src/providers/completion/completion.rs`
   - `crates/perl-lsp-rs-core/src/providers/completion/completion/builtins.rs`

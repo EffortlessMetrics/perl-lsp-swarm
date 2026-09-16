@@ -3860,8 +3860,10 @@ mod tests {
     fn refuses_an_append_after_finalization() {
         let (_, mut discovered) = fixture();
         discovered.post_finalizer_appends.push("handle_completion".to_string());
-        assert!(validate_no_post_finalizer_append(&discovered).is_err());
-        let error = format!("{:?}", validate_no_post_finalizer_append(&discovered).unwrap_err());
+        let error = match validate_no_post_finalizer_append(&discovered) {
+            Ok(()) => panic!("post-finalizer append was not refused"),
+            Err(error) => format!("{error:?}"),
+        };
         assert!(error.contains("has not been ranked"), "unexpected message: {error}");
     }
 
