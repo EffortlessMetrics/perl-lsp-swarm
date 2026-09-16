@@ -36,7 +36,6 @@ pub use hover::{AUTOLOAD_DYNAMIC_DISPATCH_DETAIL, HoverInfo};
 pub use model::SemanticModel;
 pub use query_facade::{
     DefinitionLocation, EffectivePragmaState, ParentChain, ResolvedSymbol, SemanticQueryFacade,
-    VisibleImport,
 };
 pub use tokens::{SemanticToken, SemanticTokenModifier, SemanticTokenType};
 
