@@ -99,6 +99,26 @@ review_after = "2026-07-19"
 expires = "2026-09-30"
 
 # -----------------------------------------------------------------------------
+# Completion candidate-producer inventory checker: declaration-anchored probes.
+# The checker's own `every_scan_root_still_matches_tracked_source` test iterates
+# the inventoried constants and fails by name when a scan root is mutated (the
+# rename experiment on the #15015 head), but RIPR cannot statically connect a
+# declaration's consumers to that test oracle, so the probes report
+# no_static_path even though a named test detects the mutation.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-completion-candidates-declaration-probes"
+kind = "predicate_infection_untraceable"
+paths = ["xtask/src/tasks/completion_candidates.rs"]
+classification = ["no_static_path"]
+owner = "tooling-inventory"
+issue = "#15788"
+reason = "PR #15015 adds completion_candidates.rs, the checker behind `cargo xtask completion-candidates check`. RIPR reports 88 no_static_path (info) probes on it: 87 field_construction probes anchored at declarations of module constants and struct fields (SCAN_ROOTS, TEST_SURFACE_FILES, and table shapes) plus one return_value and one call_deletion. The checker's own every_scan_root_still_matches_tracked_source test directly iterates SCAN_ROOTS/TEST_SURFACE_FILES and fails by name when a root is renamed, verified experimentally on the PR head, yet the probes remain no_static_path because the probes anchor at declarations with no static construction site for a test oracle to reach. Echoing 87 declarations in assertions would be tautological proof (the Tautology Detection gate exists to reject it), and a whole-file suppression would discard real signal. This suppression is scoped to one file and only the no_static_path class, keeping every stronger classification (exposed, weakly_exposed, reachable_unrevealed, error_path) live for new findings in the same file. Remove when RIPR's declaration-anchored reachability improves (#15788)."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-16"
+
+# -----------------------------------------------------------------------------
 # Documentation target resolver predicates: centralized string-boundary helpers
 # are covered by focused resolver and virtual-content tests, but RIPR 0.9.x cannot
 # trace the predicate evidence after #1962 moves link parsing behind the canonical
@@ -4233,3 +4253,49 @@ created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-10-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 connects these seams to the named tests, or at expiry. Narrow immediately if a receipt reports a seam in these files outside the six listed finding identities."
+# DAP debugger-capability probe seams (PR #15717): ripr#1429-class tracer
+# limitation — the static tracer cannot connect focused tests through the
+# check→cache→spawn→match indirection, nor link direct boundary unit calls.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-dap-capability-probe-tracer-limitation"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-dap/src/debug_adapter/process.rs"]
+classification = ["weakly_gripped", "activation_unknown"]
+gap_ids = ["81b633d3fa5df1df", "c97d432fdf34e680", "25f58da00de2eca9"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15717 hardens the interpreter capability probe (bounded pipe drains, marker requirement, no caching of non-pass verdicts). Three named seams resist template-aligned proof: the Incapable match arms (process.rs:951) are covered by check_debugger_capability_exact_error_variant (silent double, matches! on DebuggerCapabilityProbe::Incapable, expect_err plus full-literal assert_eq on the exact remediation message); the marker boundary (process.rs:125) by has_probe_success_marker_boundary_discriminator (assert_eq true/false on bare/tab-padded/whitespace-only lines); the spawn activation (process.rs:1005) by run_debugger_capability_probe_call_presence_observer (argv-recording double asserting the perl5db load expression), which demonstrably closed its gap in the local oracle loop. The tracer cannot follow oracles through the spawn/statics/cache indirection (activation_unknown) nor link the direct boundary calls (same ripr#1429 limitation class as #3355/#3397). Scoped to the three stable finding identities so any other seam in this file stays visible."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 connects these seams to the named tests, or at expiry. Narrow immediately if a receipt reports a seam in this file outside the three listed finding identities."
+
+# -----------------------------------------------------------------------------
+# DAP debugger-capability probe declarations (PR #15717): the two
+# gate-blocking no_static_path probes are declaration lines the tracer can
+# never connect to a test — the DEBUGGER_PROBE_SUCCESS_MARKER const
+# (process.rs:71, field_construction) and the Incapable(String) enum variant
+# (process.rs:82, call_deletion). Constructor-only tests would be proof
+# theatre: the marker's behavior is covered by
+# probe_success_marker_requires_its_own_line plus
+# has_probe_success_marker_boundary_discriminator (13 direct_owner_call
+# links), and the variant by check_debugger_capability_exact_error_variant
+# (matches! on DebuggerCapabilityProbe::Incapable plus the exact remediation
+# literal). Same ripr#1429 declaration-line class as the compiler-upstream
+# and framework-DSL declaration entries. Scoped to the two stable probe
+# identities so any other seam in this file stays visible.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-dap-capability-probe-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-dap/src/debug_adapter/process.rs"]
+classification = ["no_static_path"]
+gap_ids = ["probe:crates_perl-dap_src_debug_adapter_process.rs:field_construction:9898b020", "probe:crates_perl-dap_src_debug_adapter_process.rs:call_deletion:933cb207"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15717 hardens the interpreter capability probe. Its two gate-blocking no_static_path probes are declaration lines with no function body to trace into: the DEBUGGER_PROBE_SUCCESS_MARKER const (process.rs:71) and the Incapable(String) variant (process.rs:82). Behavior is covered without them — the marker by probe_success_marker_requires_its_own_line and has_probe_success_marker_boundary_discriminator, the variant by check_debugger_capability_exact_error_variant. Same declaration-line class as the compiler-upstream-status and framework-DSL suppression entries."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports a no_static_path seam in this file outside the two listed probe identities."
