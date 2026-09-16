@@ -362,10 +362,18 @@ impl LspServer {
         // lock, then drop the guard so the expensive scanning, AST walk,
         // and deduplication run off-lock (#4966). This is the same pattern
         // already used by the sibling hover and formatting providers.
+        //
+        // Prefer the generation-current snapshot; fall back to the latest
+        // published one when the current generation has no snapshot yet —
+        // the workspace indexer bumps the generation after didOpen, which
+        // would otherwise make every AST-derived fold vanish behind a
+        // keyword-free empty response (#11858 pattern, #15430).
         let (text, parsed) = {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
-                Some(doc) => (doc.text_arc.to_string(), doc.current_parsed()),
+                Some(doc) => {
+                    (doc.text_arc.to_string(), doc.current_parsed().or_else(|| doc.latest_parsed()))
+                }
                 None => return Ok(Some(json!([]))),
             }
         };
