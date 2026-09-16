@@ -33,7 +33,11 @@ fn do_while_condition_keeps_chained_subscripts() -> Result<(), String> {
 
     // A subscripted variable inside a parenthesized condition is also an
     // ordinary condition shape.
-    parse_clean("do { $s++ } while ($h{k});")
+    parse_clean("do { $s++ } while ($h{k});")?;
+
+    // Nested grouping inside a parenthesized condition: subscripts inside the
+    // groups keep parsing, and the parse stays clean after both groups close.
+    parse_clean("do { $s++ } while (($h{k}));")
 }
 
 #[test]
@@ -45,6 +49,12 @@ fn do_while_rejects_trailing_block() -> Result<(), String> {
         r#"do { $i++; } while ($i < 3) { print "continue\n"; }"#,
         r#"do { $i--; } until ($i == 0) { print "done\n"; }"#,
         r#"do { $i++; } while ($i < 3 && $j > 0) { print "x\n"; }"#,
+        // Parenthesized shapes whose grouping is AST-transparent: the `{`
+        // sits after the condition's own closing `)`, so it can no longer be
+        // a subscript even though the expression node is a bare variable or
+        // bareword (#15649 review).
+        r#"do { $i++; } while ($flag) { $i++; }"#,
+        r#"do { $i++; } while (Foo) { $i++; }"#,
     ] {
         let mut parser = Parser::new(code);
         if parser.parse().is_ok() {

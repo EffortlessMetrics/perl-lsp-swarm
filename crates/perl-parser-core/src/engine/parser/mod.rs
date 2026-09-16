@@ -138,6 +138,19 @@ pub struct Parser<'a> {
     /// silently accepted the input (#15649). The flag lets the brace survive to
     /// `parse_statement_modifier`, which records the rejection.
     in_do_while_condition: bool,
+    /// Whether the armed do-while condition starts with `(`. Only a
+    /// parenthesized condition can be followed by the trailing block real Perl
+    /// rejects: after the condition's closing `)`, a `{` can no longer be a
+    /// subscript. Unparenthesized conditions (`while $h{k}{j}`) never enter
+    /// the reject zone.
+    do_while_paren_reject: bool,
+    /// Nesting depth of grouping parentheses inside an armed, parenthesized
+    /// do-while condition. Depth > 0 means the parser is still inside the
+    /// condition's own `(...)`, where postfix braces are ordinary subscripts;
+    /// depth 0 there means the group closed and a following `{` is the
+    /// trailing block. Maintained by [`Parser::enter_paren_group`] and
+    /// [`Parser::leave_paren_group`].
+    do_while_paren_depth: usize,
     /// Scope-aware class grammar context governing context-sensitive
     /// class-member admission (currently `ADJUST` blocks). Grammar admission
     /// only — never semantic class ownership. See [`class_grammar`].
@@ -234,6 +247,8 @@ impl<'a> Parser<'a> {
             last_end_position: 0,
             in_for_loop_init: false,
             in_do_while_condition: false,
+            do_while_paren_reject: false,
+            do_while_paren_depth: 0,
             class_grammar: ClassGrammarContext::default(),
             at_stmt_start: true,
             pending_heredocs: VecDeque::new(),
