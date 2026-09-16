@@ -73,12 +73,22 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         *,
         detection_gate: bool = True,
         push_token: str | None = None,
+        extra_step: str = "",
     ) -> str:
         checkout_sha = "a" * 40
         setup_sha = "b" * 40
         token = push_token or ratchet.GH_AW_PUSH_TOKEN
         metadata = json.dumps(
-            {"schema_version": "v4", "strict": True},
+            {
+                "schema_version": "v4",
+                "frontmatter_hash": "a9350cf6a6b596635b33a5199de7e5689bc44818394e69d72684e034d307ce08",
+                "body_hash": "cdc940a963151e984eebadb6fbb0b21430c045598de29328b00111d9d29bb577",
+                "compiler_version": "v0.88.7",
+                "strict": True,
+                "agent_id": "claude",
+                "agent_model": "MiniMax-M3",
+                "engine_versions": {"claude": "2.1.247"},
+            },
             separators=(",", ":"),
         )
         manifest = json.dumps(
@@ -124,7 +134,22 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
             "        env:\n"
             f"          GIT_TOKEN: {token}\n"
             f"        run: {ratchet.GH_AW_CONFIGURE_GIT_COMMAND}\n"
+            f"{extra_step}"
         )
+
+    def approve_gh_aw_fixture(self, relative: str, content: str) -> None:
+        previous = ratchet.GH_AW_LOCK_FILE_DIGESTS.get(relative)
+        ratchet.GH_AW_LOCK_FILE_DIGESTS[relative] = ratchet._normalized_lines_digest(
+            content.splitlines()
+        )
+
+        def restore() -> None:
+            if previous is None:
+                ratchet.GH_AW_LOCK_FILE_DIGESTS.pop(relative, None)
+            else:
+                ratchet.GH_AW_LOCK_FILE_DIGESTS[relative] = previous
+
+        self.addCleanup(restore)
 
     def test_detects_mutable_external_action_in_composite_action(self) -> None:
         self.write(
@@ -246,29 +271,58 @@ class WorkflowSecurityRatchetTests(unittest.TestCase):
         )
         self.assertIn("unsupported_security_yaml_indirection", self.rules())
 
-    def test_accepts_strict_gh_aw_safe_output_publisher_checkout(self) -> None:
-        self.write(
-            ".github/workflows/generated.lock.yml",
-            self.gh_aw_safe_outputs_workflow(),
-        )
+    def test_accepts_exact_reviewed_gh_aw_lock(self) -> None:
+        relative = ".github/workflows/generated.lock.yml"
+        content = self.gh_aw_safe_outputs_workflow()
+        self.approve_gh_aw_fixture(relative, content)
+        self.write(relative, content)
         rules = self.rules()
         self.assertNotIn("unsupported_security_yaml_indirection", rules)
         self.assertNotIn("checkout_persists_credentials_on_write_surface", rules)
 
-    def test_gh_aw_publisher_checkout_requires_detection_gate(self) -> None:
-        self.write(
-            ".github/workflows/generated.lock.yml",
-            self.gh_aw_safe_outputs_workflow(detection_gate=False),
+    def test_any_gh_aw_lock_change_restores_persisted_credential_finding(self) -> None:
+        relative = ".github/workflows/generated.lock.yml"
+        reviewed = self.gh_aw_safe_outputs_workflow()
+        self.approve_gh_aw_fixture(relative, reviewed)
+        changed = reviewed.replace("name: generated", "name: changed", 1)
+        self.write(relative, changed)
+        self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
+
+    def test_extra_gh_aw_publisher_step_restores_finding(self) -> None:
+        relative = ".github/workflows/generated.lock.yml"
+        reviewed = self.gh_aw_safe_outputs_workflow()
+        self.approve_gh_aw_fixture(relative, reviewed)
+        changed = self.gh_aw_safe_outputs_workflow(
+            extra_step="      - name: Unreviewed push\n        run: git push origin HEAD\n"
         )
+        self.write(relative, changed)
+        self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
+
+    def test_gh_aw_publisher_checkout_requires_detection_gate(self) -> None:
+        relative = ".github/workflows/generated.lock.yml"
+        reviewed = self.gh_aw_safe_outputs_workflow()
+        self.approve_gh_aw_fixture(relative, reviewed)
+        self.write(relative, self.gh_aw_safe_outputs_workflow(detection_gate=False))
         self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
 
     def test_gh_aw_publisher_checkout_requires_canonical_push_token(self) -> None:
+        relative = ".github/workflows/generated.lock.yml"
+        reviewed = self.gh_aw_safe_outputs_workflow()
+        self.approve_gh_aw_fixture(relative, reviewed)
         self.write(
-            ".github/workflows/generated.lock.yml",
+            relative,
             self.gh_aw_safe_outputs_workflow(
                 push_token="$" + "{{ secrets.OTHER_TOKEN }}"
             ),
         )
+        self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
+
+    def test_gh_aw_lock_allowance_is_path_bound(self) -> None:
+        reviewed_path = ".github/workflows/reviewed.lock.yml"
+        other_path = ".github/workflows/other.lock.yml"
+        content = self.gh_aw_safe_outputs_workflow()
+        self.approve_gh_aw_fixture(reviewed_path, content)
+        self.write(other_path, content)
         self.assertIn("checkout_persists_credentials_on_write_surface", self.rules())
 
     def test_detects_floating_cargo_install_in_list_form_run(self) -> None:

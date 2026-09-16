@@ -1,8 +1,8 @@
 {
   "control_files": {
     ".github/workflows/workflow-security-ratchet.yml": "sha256:88983edbfd6249e56067e5d27c386d2f9f87b4adcb7b63d89ee8f54450ba919c",
-    "scripts/ci/test_workflow_security_ratchet.py": "sha256:fbfba54ed29b30c382bdedd81b28be1debc1ea3e60e6f8a2ad3aca5a85892a17",
-    "scripts/ci/workflow_security_ratchet.py": "sha256:084d01b82118e1c2da4b2655c867561125f6321b684a41742243ab8b9eb89296"
+    "scripts/ci/test_workflow_security_ratchet.py": "sha256:34600f19e641898569ae2adae229695c17d69a6810b9fc7ba535f47196e2568b",
+    "scripts/ci/workflow_security_ratchet.py": "sha256:f7899e2f124d77f7bd8d7873d86a49ba3f210bd6f73fe36ccf11ebc54fc556c0"
   },
   "findings": [
     {
@@ -468,6 +468,14 @@
       "message": "GitHub expression is embedded in interpreter source; pass it through env as data",
       "path": ".github/workflows/flake-detection.yml",
       "rule": "expression_in_run_source"
+    },
+    {
+      "evidence": "contents: write",
+      "fingerprint": "6713ecb1a8a9ac42b410bba53059c63f9e701fbfe0d5e050bcca916d0e56ffcc",
+      "line": 37,
+      "message": "PR-triggered workflow grants write authority",
+      "path": ".github/workflows/minimax-agent-compile-check.yml",
+      "rule": "pr_write_permission"
     },
     {
       "evidence": "--ref \"${{ steps.upstream.outputs.ref }}\" \\",
