@@ -141,6 +141,7 @@ fn validate(root: &Path) -> Result<ValidationStats> {
     let mut violations = Vec::new();
     validate_ledger_shape(&ledger, &mut violations);
     validate_generations(root, &ledger, &orchestrator_text, &mut violations);
+    validate_service_and_finalizer_edges(&ledger, &orchestrator_text, &mut violations);
     validate_routes(&ledger, &mut violations);
     validate_module_coverage(root, &ledger, &mut violations);
     validate_kind_coverage(&ledger, &orchestrator_text, &mut violations);
@@ -564,6 +565,118 @@ fn check_branch(
             "{POLICY_PATH}: generation {id} declares path \"both\" but its anchor occurs on only one side of the no-AST boundary"
         )),
         _ => {}
+    }
+}
+
+/// Owned helper edges the anchor check alone cannot prove (#15744).
+///
+/// Anchors prove a generation is *called* from inside `handle_code_action`.
+/// They cannot prove what the callee *does*: deleting `build_source_fix_all`
+/// inside `finalize_code_action_candidate` while keeping the
+/// `finalize_staged_code_action_response(` call site would leave the
+/// `source_fix_all_aggregate` anchor green while no aggregate is ever built.
+/// Likewise, deleting `NativeCriticService::analyze` inside the staging gate
+/// while keeping the `native_critic_subject` assembly would leave the
+/// `native_critic` anchor green while no service evaluation runs.
+///
+/// These scoped checks close that gap without broadening the anchor range
+/// (which would let helper-only text satisfy rows the handler never calls):
+/// - the native staging gate evaluates through the protocol-neutral service
+///   over an accepted subject, and the handler captures that accepted state;
+/// - the fix-all aggregate is constructed in the owned finalizer helper,
+///   which the staged response invokes and the handler reaches.
+///
+/// All matching runs over comment-blanked source scoped to production (before
+/// the trailing test module), so a retired call surviving only in a comment
+/// or a test-only helper cannot satisfy a row. The literals are the exact
+/// production forms: test helpers use different receivers or borrowed
+/// arguments (`server.` vs `self.`, `&actions` vs `code_actions`), so they
+/// cannot decoy these checks.
+fn validate_service_and_finalizer_edges(
+    ledger: &Ledger,
+    orchestrator_text: &str,
+    violations: &mut Vec<String>,
+) {
+    let executable = blank_comments(orchestrator_text);
+    let production = production_prefix(&executable);
+    // Markers resolve from the raw text: the end marker and the no-AST
+    // boundary ARE comments, so they no longer occur in the blanked copy.
+    // Blanking preserves length, so raw offsets slice the blanked production
+    // prefix directly (the handler precedes the trailing test module).
+    let handler = match (
+        orchestrator_text.find(ledger.handler_start.as_str()),
+        orchestrator_text.find(ledger.handler_end.as_str()),
+    ) {
+        (Some(start), Some(end)) if start < end && end <= production.len() => {
+            &production[start..end]
+        }
+        _ => {
+            // handler_range already reports a missing or inverted range;
+            // without a handler there is no edge to follow.
+            return;
+        }
+    };
+
+    // Native selection authority: the handler captures one accepted critic
+    // snapshot for the requesting document. The staging subject assembled a
+    // few lines later carries that snapshot to the service.
+    if !handler.contains("capture_accepted_critic(") {
+        violations.push(format!(
+            "{POLICY_PATH}: native selection edge missing: `capture_accepted_critic(` no longer occurs inside handle_code_action in {ORCHESTRATOR}; the accepted-state authority (#8253/#9062) is disconnected"
+        ));
+    }
+
+    // Native evaluation edge: the staging gate runs the protocol-neutral
+    // service over an accepted subject. This is the exact production form;
+    // removing or rerouting the service call fails the ledger even when the
+    // call-site anchor above still exists.
+    if !production.contains("NativeCriticService::analyze(NativeCriticSubject::accepted(") {
+        violations.push(format!(
+            "{POLICY_PATH}: native service edge missing: `NativeCriticService::analyze(NativeCriticSubject::accepted(` no longer occurs in production code in {ORCHESTRATOR}; the code-action staging gate is disconnected from the CriticService"
+        ));
+    }
+
+    // Finalizer reachability edge: the handler finalizes through the staged
+    // response. The `source_fix_all_aggregate` TOML anchor proves this call
+    // site; this check keeps the edge honest against synthetic fixtures that
+    // exercise only the helper bodies.
+    if !handler.contains("self.finalize_staged_code_action_response(") {
+        violations.push(format!(
+            "{POLICY_PATH}: finalizer reachability edge missing: `self.finalize_staged_code_action_response(` no longer occurs inside handle_code_action in {ORCHESTRATOR}; the staged-response finalizer is disconnected"
+        ));
+    }
+
+    // Finalizer ownership edge: the staged response invokes the owned
+    // candidate finalizer in production. Disconnecting that link (so the
+    // handler reaches a staged response that never finalizes) fails here
+    // even though the handler call site above still exists.
+    if !production.contains("self.finalize_code_action_candidate(") {
+        violations.push(format!(
+            "{POLICY_PATH}: finalizer ownership edge missing: `self.finalize_code_action_candidate(` no longer occurs in production code in {ORCHESTRATOR}; the staged response no longer reaches the candidate finalizer"
+        ));
+    }
+
+    // Fix-all construction edge: the aggregate is built in the owned
+    // finalizer helper. This is the exact production form
+    // (`code_actions` by value, not the `&actions` borrowed test form), so
+    // deleting the construction while keeping both finalizer links fails
+    // here.
+    if !production.contains("if let Some(fix_all) = build_source_fix_all(code_actions, uri)") {
+        violations.push(format!(
+            "{POLICY_PATH}: fix-all construction edge missing: `build_source_fix_all(code_actions, uri)` is no longer constructed in the owned finalizer in {ORCHESTRATOR}; source.fixAll aggregation is disconnected"
+        ));
+    }
+}
+
+/// Production prefix of the orchestrator: everything before the trailing
+/// test module. Helper-edge checks scope to this so test-only references
+/// (which use different receivers and borrowed arguments) cannot satisfy
+/// production edges.
+fn production_prefix(executable: &str) -> &str {
+    const TEST_MODULE: &str = "#[cfg(test)]\nmod tests";
+    match executable.find(TEST_MODULE) {
+        Some(at) => &executable[..at],
+        None => executable,
     }
 }
 
@@ -1774,6 +1887,135 @@ mod tests {
                 .any(|violation| violation.contains("does not occur inside handle_code_action")
                     && violation.contains("elsewhere in the file")),
             "expected out-of-handler violation, got {violations:?}"
+        );
+    }
+
+    /// Synthetic orchestrator mirroring the #15418 production shape: call
+    /// sites inside the handler, service construction and fix-all assembly
+    /// in owned production helpers before the test module.
+    fn edged_source(handler_calls: &str, helper_bodies: &str) -> String {
+        format!("{helper_bodies}\n{}\n#[cfg(test)]\nmod tests {{}}\n", handler(handler_calls))
+    }
+
+    fn connected_edges() -> String {
+        edged_source(
+            "capture_accepted_critic(\nself.finalize_staged_code_action_response(\n",
+            "fn finalize_code_action_candidate(&self) {\n    self.finalize_code_action_candidate(\n    if let Some(fix_all) = build_source_fix_all(code_actions, uri)\n}\nfn staging_gate() {\n    NativeCriticService::analyze(NativeCriticSubject::accepted(\n}\n",
+        )
+    }
+
+    fn edge_ledger() -> Ledger {
+        ledger(
+            vec![generation("gen", Some("THE_CALL"))],
+            vec![route("gen", "quickfix:diagnostic_routed", "canonical_candidate")],
+        )
+    }
+
+    #[test]
+    fn accepts_connected_service_and_finalizer_edges() {
+        let ledger = edge_ledger();
+        let mut violations = Vec::new();
+        validate_service_and_finalizer_edges(&ledger, &connected_edges(), &mut violations);
+        assert!(violations.is_empty(), "expected no violations, got {violations:?}");
+    }
+
+    #[test]
+    fn rejects_a_disconnected_native_service() {
+        let ledger = edge_ledger();
+        let source = edged_source(
+            "capture_accepted_critic(\nself.finalize_staged_code_action_response(\n",
+            "fn finalize_code_action_candidate(&self) {\n    self.finalize_code_action_candidate(\n    if let Some(fix_all) = build_source_fix_all(code_actions, uri)\n}\n",
+        );
+        let mut violations = Vec::new();
+        validate_service_and_finalizer_edges(&ledger, &source, &mut violations);
+        assert!(
+            violations.iter().any(|violation| violation.contains("native service edge")),
+            "expected native service violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_disconnected_accepted_capture() {
+        let ledger = edge_ledger();
+        let source = edged_source(
+            "self.finalize_staged_code_action_response(\n",
+            "fn finalize_code_action_candidate(&self) {\n    self.finalize_code_action_candidate(\n    if let Some(fix_all) = build_source_fix_all(code_actions, uri)\n}\nfn staging_gate() {\n    NativeCriticService::analyze(NativeCriticSubject::accepted(\n}\n",
+        );
+        let mut violations = Vec::new();
+        validate_service_and_finalizer_edges(&ledger, &source, &mut violations);
+        assert!(
+            violations.iter().any(|violation| violation.contains("native selection edge")),
+            "expected native selection violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_disconnected_finalizer_link() {
+        let ledger = edge_ledger();
+        let source = edged_source(
+            "capture_accepted_critic(\nself.finalize_staged_code_action_response(\n",
+            "fn finalize_code_action_candidate(&self) {\n    if let Some(fix_all) = build_source_fix_all(code_actions, uri)\n}\nfn staging_gate() {\n    NativeCriticService::analyze(NativeCriticSubject::accepted(\n}\n",
+        );
+        let mut violations = Vec::new();
+        validate_service_and_finalizer_edges(&ledger, &source, &mut violations);
+        assert!(
+            violations.iter().any(|violation| violation.contains("finalizer ownership edge")),
+            "expected finalizer ownership violation, got {violations:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_removed_fix_all_construction() {
+        let ledger = edge_ledger();
+        let source = edged_source(
+            "capture_accepted_critic(\nself.finalize_staged_code_action_response(\n",
+            "fn finalize_code_action_candidate(&self) {\n    self.finalize_code_action_candidate(\n}\nfn staging_gate() {\n    NativeCriticService::analyze(NativeCriticSubject::accepted(\n}\n",
+        );
+        let mut violations = Vec::new();
+        validate_service_and_finalizer_edges(&ledger, &source, &mut violations);
+        assert!(
+            violations.iter().any(|violation| violation.contains("fix-all construction edge")),
+            "expected fix-all construction violation, got {violations:?}"
+        );
+    }
+
+    /// A service entry surviving only in a comment must not satisfy the edge.
+    #[test]
+    fn rejects_a_comment_only_service_edge_as_decoy() {
+        let ledger = edge_ledger();
+        let source = edged_source(
+            "capture_accepted_critic(\nself.finalize_staged_code_action_response(\n",
+            "fn finalize_code_action_candidate(&self) {\n    self.finalize_code_action_candidate(\n    if let Some(fix_all) = build_source_fix_all(code_actions, uri)\n}\n// NativeCriticService::analyze(NativeCriticSubject::accepted( was removed here\n",
+        );
+        let mut violations = Vec::new();
+        validate_service_and_finalizer_edges(&ledger, &source, &mut violations);
+        assert!(
+            violations.iter().any(|violation| violation.contains("native service edge")),
+            "expected comment-decoy rejection, got {violations:?}"
+        );
+    }
+
+    /// Edges living only in the test module must not satisfy production edges.
+    #[test]
+    fn rejects_test_only_edges_as_decoy() {
+        let ledger = edge_ledger();
+        let source = format!(
+            "{}\n#[cfg(test)]\nmod tests {{\n    NativeCriticService::analyze(NativeCriticSubject::accepted(\n    self.finalize_code_action_candidate(\n    if let Some(fix_all) = build_source_fix_all(code_actions, uri)\n}}\n",
+            handler("capture_accepted_critic(\nself.finalize_staged_code_action_response(\n")
+        );
+        let mut violations = Vec::new();
+        validate_service_and_finalizer_edges(&ledger, &source, &mut violations);
+        assert!(
+            violations.iter().any(|violation| violation.contains("native service edge")),
+            "expected test-only service rejection, got {violations:?}"
+        );
+        assert!(
+            violations.iter().any(|violation| violation.contains("finalizer ownership edge")),
+            "expected test-only finalizer rejection, got {violations:?}"
+        );
+        assert!(
+            violations.iter().any(|violation| violation.contains("fix-all construction edge")),
+            "expected test-only fix-all rejection, got {violations:?}"
         );
     }
 
