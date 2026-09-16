@@ -1,0 +1,19 @@
+name: fixture-xtask-cli-paths-complete-wiring
+# The corrected shape: both CLI wiring files are enumerated, so a clap-dispatch
+# or module-registration change re-runs this gate.
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
+      - '.github/workflows/xtask-cli-paths-complete-wiring.yml'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo run -p xtask --locked -- example-contract check

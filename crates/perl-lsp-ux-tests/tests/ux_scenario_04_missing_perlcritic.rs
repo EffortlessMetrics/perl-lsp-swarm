@@ -1,6 +1,3 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 //! Scenario 04 — Missing perlcritic.
 //!
 //! Simulates a user who has perl-lsp installed without perlcritic.
@@ -108,12 +105,9 @@ fn scenario_04_server_responsive_without_perlcritic() {
             harness.open_file("responsive.pl", source).context("didOpen should succeed")?;
             std::thread::sleep(Duration::from_millis(500));
 
-            let hover = harness.hover("responsive.pl", 0, 3);
-            assert!(
-                hover.is_ok(),
-                "Server became unresponsive after perlcritic failure — UX regression: {:?}",
-                hover
-            );
+            harness
+                .hover("responsive.pl", 0, 3)
+                .context("Server became unresponsive after perlcritic failure — UX regression")?;
             Ok(())
         },
     );

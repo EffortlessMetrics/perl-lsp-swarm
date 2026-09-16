@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::sync_channel;
 
-use super::sync_utils::{EventSender, GuardedDispatchResult};
+use super::sync_utils::EventSender;
 use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
@@ -42,6 +42,78 @@ fn emit_event_safe(
 }
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
+
+/// Wall-clock budget for one perl5db capability probe. A cold interpreter
+/// start answers well inside this on every supported platform; reaching the
+/// deadline means the probe could not conclude, not that perl5db.pl failed
+/// to load.
+const DEBUGGER_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Poll interval while a capability-probe child is still running.
+const DEBUGGER_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Cached perl5db capability verdicts, keyed by
+/// [`DebugAdapter::capability_probe_cache_key`]. Both verdicts are cached —
+/// a pass skips the probe on every subsequent launch, and a fail avoids
+/// re-paying a doomed slow probe per retry. A poisoned lock only bypasses
+/// the cache (the probe is re-run); it never fails a launch.
+static DEBUGGER_PROBE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Result<(), String>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Read one probe pipe to EOF on a dedicated thread, returning its decoded
+/// contents. Used instead of blocking `Command::output()` so the probe can be
+/// bounded by a deadline rather than waiting indefinitely on the child.
+fn spawn_probe_pipe_drain<R: Read + Send + 'static>(
+    pipe: Option<R>,
+) -> Option<thread::JoinHandle<String>> {
+    pipe.map(|mut pipe| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    })
+}
+
+/// Apply the Windows debugger-console transport environment to a child
+/// command: `EMACS=1` plus a `ReadLine=0` tail on any inherited
+/// `PERLDB_OPTS`.
+///
+/// Strawberry Perl's Windows debugger selects its console transport when
+/// EMACS is absent, even when all three stdio handles are pipes. Marking an
+/// owned pipe launch explicitly keeps the debugger on its pipe transport;
+/// ReadLine must use its dummy interface because its console backend calls
+/// `GetConsoleMode` on a pipe and raises inside an otherwise valid debuggee.
+/// The variables are scoped to the child and do not change the adapter's
+/// process environment or the user's argv/launch configuration. perl5db
+/// parses options left-to-right: the final debugger-only ReadLine switch
+/// wins without changing the program's `PERL_RL`. The effective child
+/// environment is read — including Windows' case-insensitive variable names
+/// — rather than replacing user options.
+///
+/// Neither variable is consulted while `require "perl5db.pl"` resolves and
+/// compiles the module, so applying the same environment to the capability
+/// probe changes launch parity without changing what the probe measures.
+#[cfg(windows)]
+fn apply_windows_debugger_transport_env(cmd: &mut std::process::Command) {
+    cmd.env("EMACS", "1");
+    let mut perl_db_opts = cmd
+        .get_envs()
+        .find_map(|(key, value)| {
+            key.to_str()
+                .is_some_and(|key| key.eq_ignore_ascii_case("PERLDB_OPTS"))
+                .then_some(value)
+                .flatten()
+        })
+        .unwrap_or_default()
+        .to_os_string();
+    perl_db_opts.push(" ReadLine=0");
+    cmd.env("PERLDB_OPTS", perl_db_opts);
+}
+
+/// Non-Windows child commands need no debugger-console transport override.
+#[cfg(not(windows))]
+fn apply_windows_debugger_transport_env(_cmd: &mut std::process::Command) {}
 
 /// Return the authoritative frame id for the current suspension.
 ///
@@ -196,10 +268,10 @@ impl DebugAdapter {
             "supportsDataBreakpoints": supports_watchpoints,
             "supportsReadMemoryRequest": false,
             "supportsDisassembleRequest": false,
-            // Request-scoped cancellation is an internal primitive; concurrent
-            // wire intake and exact-binary acceptance remain unproven.
-            // Gate: #9074 + #8712 + #7568.
-            "supportsCancelRequest": false,
+            // Request-scoped cancellation is advertised only for native stdio,
+            // whose concurrent intake and exact-binary proof own this row.
+            // Peer and direct/in-process surfaces remain fail-closed.
+            "supportsCancelRequest": self.native_stdio_transport,
             // breakpointLocations: canonical geometry/coordinate contract
             // unproven. Gate: #10524 + #2300 + #9021 + #7566.
             "supportsBreakpointLocationsRequest": false,
@@ -489,9 +561,10 @@ impl DebugAdapter {
 
     /// Launch the Perl debugger for the given script.
     ///
-    /// Validates the program path and interpreter, runs a pre-launch `perl -c`
-    /// syntax check, then spawns `perl -d` with the supplied arguments and
-    /// environment overrides. Returns the thread ID on success.
+    /// Validates the program path and interpreter, probes that the interpreter
+    /// can load the core `perl5db.pl` debugger module, runs a pre-launch
+    /// `perl -c` syntax check, then spawns `perl -d` with the supplied
+    /// arguments and environment overrides. Returns the thread ID on success.
     pub(super) fn launch_debugger(
         &mut self,
         program: &str,
@@ -579,25 +652,35 @@ impl DebugAdapter {
             ));
         }
 
+        // Effective debuggee working directory, shared by the capability
+        // probe, the pre-launch syntax check, and the launch itself so all
+        // three see identical `@INC` resolution. User-specified cwd wins;
+        // otherwise the script's parent directory (what `perl -d` would
+        // effectively run in), else the adapter cwd.
+        let prog_cwd = cwd_override.clone().unwrap_or_else(|| {
+            Path::new(program)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        });
+
+        // Debugger capability precondition: the debugger itself is the core
+        // `perl5db.pl` module, so an interpreter that cannot load it can spawn
+        // but never hosts a session. Probe it — from the same effective
+        // debuggee directory — before spawning so such a launch fails with a
+        // typed, actionable error instead of a mid-session pipe failure.
+        Self::check_debugger_capability(perl_interpreter, &env_overrides, &prog_cwd)?;
+
         // Pre-launch syntax check: run `perl -c <script>` before spawning the
         // debugger.  This catches syntax errors early and surfaces a clear,
         // actionable message to the user instead of a generic "Cannot start
         // Perl debugger" failure after `perl -d` exits immediately.
-        Self::check_syntax(perl_interpreter, program, &env_overrides, cwd_override.clone())?;
+        Self::check_syntax(perl_interpreter, program, &env_overrides, Some(prog_cwd.clone()))?;
 
         // Use PerlOracleEnv to deny ambient PERL5LIB/PERL5OPT so the debug
         // session env is controlled entirely by launch.json `env` (#8688).
         // `env_overrides` (explicit launch.json entries) are added via
         // extra_env so they reach the subprocess unconditionally.
-        // Use user-specified cwd if provided; otherwise default to script's parent directory
-        let prog_cwd = if let Some(user_cwd) = cwd_override {
-            user_cwd
-        } else {
-            Path::new(program)
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-        };
         let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
             PathBuf::from(perl_interpreter),
             prog_cwd,
@@ -606,33 +689,10 @@ impl DebugAdapter {
         let mut cmd = oracle.into_command();
         cmd.arg("-d");
 
-        // Strawberry Perl's Windows debugger selects its console transport when
-        // EMACS is absent, even when all three stdio handles are pipes.  Mark
-        // this owned pipe launch explicitly; the variable is scoped to the
-        // child and does not change the adapter's process environment or the
-        // user's argv/launch configuration.  ReadLine must also use its dummy
-        // interface: its console backend otherwise calls GetConsoleMode on a
-        // pipe and raises an exception inside an otherwise valid debuggee.
-        #[cfg(windows)]
-        {
-            cmd.env("EMACS", "1");
-            // Read the effective child environment, including Windows' case-
-            // insensitive variable names, rather than replacing user options.
-            // perl5db parses options left-to-right: the final debugger-only
-            // ReadLine switch wins without changing the program's PERL_RL.
-            let mut perl_db_opts = cmd
-                .get_envs()
-                .find_map(|(key, value)| {
-                    key.to_str()
-                        .is_some_and(|key| key.eq_ignore_ascii_case("PERLDB_OPTS"))
-                        .then_some(value)
-                        .flatten()
-                })
-                .unwrap_or_default()
-                .to_os_string();
-            perl_db_opts.push(" ReadLine=0");
-            cmd.env("PERLDB_OPTS", perl_db_opts);
-        }
+        // Strawberry Perl's Windows debugger transport/ReadLine environment;
+        // see `apply_windows_debugger_transport_env` for the contract. Shared
+        // with the capability probe so both run under launch parity.
+        apply_windows_debugger_transport_env(&mut cmd);
 
         // Perl debugger stops on the first line by default
         let _ = stop_on_entry; // currently unused
@@ -717,6 +777,7 @@ impl DebugAdapter {
                     );
                 }
                 self.operation_broker.open_session();
+                self.admit_terminal_lifecycle();
 
                 // Apply any function breakpoints configured before launch.
                 self.apply_stored_function_breakpoints();
@@ -787,6 +848,193 @@ impl DebugAdapter {
             }
             Err(e) => Err(format_perl_spawn_error(perl_interpreter, &e)),
         }
+    }
+
+    /// Verify the selected interpreter can load the core `perl5db.pl` debugger
+    /// module, returning a typed, actionable error when it cannot.
+    ///
+    /// `perl -d` bootstraps through `perl5db.pl`; an interpreter without it
+    /// spawns but can never host a debugger session — for example a minimal
+    /// Git-for-Windows/MSYS perl whose mount-relative `@INC` entries stop
+    /// resolving once the binary runs outside its installation, or any
+    /// stripped distribution. Without this precondition the launch "succeeded"
+    /// (the child spawned) and only the mid-session control pipe then failed
+    /// with `Can't locate perl5db.pl in @INC`.
+    ///
+    /// The probe belongs to the debuggee launch path, not the resolver:
+    /// resolution picks an interpreter path, the launcher validates that the
+    /// picked interpreter can host the debugger. It runs under the same
+    /// [`perl_lsp_rs_core::config::PerlOracleEnv`] environment the real
+    /// debuggee will see (ambient `PERL5LIB`/`PERL5OPT` denied, #8688;
+    /// launch.json `env` honored) **and from the same effective working
+    /// directory** (`probe_cwd`), so `@INC` entries that depend on where the
+    /// debuggee runs resolve identically in the probe and the launch.
+    ///
+    /// The probe is bounded: the child is polled against
+    /// [`DEBUGGER_PROBE_TIMEOUT`] and killed at the deadline. A probe that
+    /// cannot conclude (spawn failure, `try_wait` failure, or timeout) is an
+    /// instrument failure, not a capability verdict, so it is skipped and the
+    /// real `perl -d` launch surfaces its own canonical error.
+    ///
+    /// The verdict is cached per (interpreter, probe cwd, launch env) for the
+    /// life of the adapter process: a passing interpreter must not pay a
+    /// fresh perl spawn on every launch, and a failing one must not re-pay a
+    /// doomed multi-second probe each retry either.
+    fn check_debugger_capability(
+        perl_interpreter: &str,
+        env_overrides: &HashMap<String, String>,
+        probe_cwd: &Path,
+    ) -> Result<(), String> {
+        let cache_key =
+            Self::capability_probe_cache_key(perl_interpreter, env_overrides, probe_cwd);
+        if let Ok(cache) = DEBUGGER_PROBE_CACHE.lock()
+            && let Some(cached) = cache.get(&cache_key)
+        {
+            return cached.clone();
+        }
+
+        let verdict =
+            Self::run_debugger_capability_probe(perl_interpreter, env_overrides, probe_cwd);
+        if let Ok(mut cache) = DEBUGGER_PROBE_CACHE.lock() {
+            cache.insert(cache_key, verdict.clone());
+        }
+        verdict
+    }
+
+    /// Cache key for one probe verdict: interpreter, effective probe cwd, and
+    /// the launch.json `env` entries that could steer `@INC`/module loading.
+    /// Byte-exact on env values — a conservative key can only cost a re-probe,
+    /// never serve a verdict measured under a different environment.
+    fn capability_probe_cache_key(
+        perl_interpreter: &str,
+        env_overrides: &HashMap<String, String>,
+        probe_cwd: &Path,
+    ) -> String {
+        let mut env_entries: Vec<String> =
+            env_overrides.iter().map(|(key, value)| format!("{key}={value}")).collect();
+        env_entries.sort();
+        format!(
+            "{perl_interpreter}@{cwd}@{env}",
+            cwd = probe_cwd.display(),
+            env = env_entries.join(";")
+        )
+    }
+
+    /// Run one bounded perl5db.pl loadability probe. See
+    /// [`Self::check_debugger_capability`] for the contract.
+    fn run_debugger_capability_probe(
+        perl_interpreter: &str,
+        env_overrides: &HashMap<String, String>,
+        probe_cwd: &Path,
+    ) -> Result<(), String> {
+        let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
+            PathBuf::from(perl_interpreter),
+            probe_cwd.to_path_buf(),
+        );
+        oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let mut cmd = oracle.into_command();
+        cmd.arg("-e")
+            .arg("require \"perl5db.pl\"; print \"OK\\n\";")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Run under the same debugger-transport environment the real `perl -d`
+        // launch uses, so the probe measures perl5db.pl loading under launch
+        // parity. EMACS=1 and PERLDB_OPTS only select the debugger's runtime
+        // console/ReadLine backends; neither is consulted while `require`
+        // resolves and compiles perl5db.pl, so this cannot flip the verdict —
+        // and if that ever stopped being true, the probe would now observe it.
+        apply_windows_debugger_transport_env(&mut cmd);
+
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                // The interpreter could not be spawned at all — skip the probe
+                // and let the real `perl -d` launch produce the canonical
+                // "perl not on PATH" error.
+                tracing::warn!(
+                    "perl5db capability probe could not run '{perl_interpreter}' \
+                     (will attempt the launch anyway): {e}"
+                );
+                return Ok(());
+            }
+        };
+
+        // Drain both pipes on dedicated threads while polling, so a verbose
+        // interpreter (say, an @INC dump longer than the OS pipe buffer)
+        // cannot fill a pipe and deadlock before its own deadline.
+        let stdout_drain = spawn_probe_pipe_drain(child.stdout.take());
+        let stderr_drain = spawn_probe_pipe_drain(child.stderr.take());
+        let deadline = Instant::now() + DEBUGGER_PROBE_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        break None;
+                    }
+                    thread::sleep(DEBUGGER_PROBE_POLL_INTERVAL);
+                }
+                Err(e) => {
+                    // Instrument failure: kill what we spawned and skip.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    tracing::warn!(
+                        "perl5db capability probe of '{perl_interpreter}' could not be \
+                         observed (will attempt the launch anyway): {e}"
+                    );
+                    return Ok(());
+                }
+            }
+        };
+
+        let Some(status) = status else {
+            // Deadline reached with no exit: the probe is inconclusive, not a
+            // capability verdict. Kill the child so nothing outlives the
+            // probe, then keep the launch-continue disposition.
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::warn!(
+                "perl5db capability probe of '{perl_interpreter}' exceeded its \
+                 {} budget (will attempt the launch anyway)",
+                DEBUGGER_PROBE_TIMEOUT.as_secs()
+            );
+            return Ok(());
+        };
+
+        // The child has exited, so both drain threads reach EOF and join
+        // deterministically. A panicked drainer contributes empty text rather
+        // than blocking the verdict.
+        let raw_stdout =
+            stdout_drain.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
+        let raw_stderr =
+            stderr_drain.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
+
+        if status.success() {
+            return Ok(());
+        }
+
+        // The "Can't locate perl5db.pl in @INC" report arrives on stderr, but
+        // a non-perl binary selected as the interpreter may report on either
+        // stream; merge for the diagnostic detail.
+        let detail =
+            if raw_stderr.trim().is_empty() { raw_stdout.trim() } else { raw_stderr.trim() };
+        let detail = if detail.is_empty() {
+            // Report a bare exit code as a number; a child killed by a signal
+            // has no code and says so instead of rendering `Some(...)`/`None`.
+            match status.code() {
+                Some(code) => format!("exit status {code}"),
+                None => "process terminated by a signal (no exit status)".to_string(),
+            }
+        } else {
+            detail.to_string()
+        };
+        Err(format!(
+            "Selected interpreter cannot host the debugger (perl5db.pl not loadable): \
+             {perl_interpreter}. Install a full Perl distribution that ships the core \
+             debugger module, or point launch.json `perlPath` at one (e.g. \
+             {{\"perlPath\": \"/path/to/full/perl\"}}). Detail: {detail}"
+        ))
     }
 
     /// Run `perl -c <script>` and return `Ok(())` if the syntax is valid,
@@ -876,10 +1124,22 @@ impl DebugAdapter {
     }
 
     fn missing_module_name(detail: &str) -> Option<String> {
+        // perl's own diagnostic is `Can't locate X in @INC ...`, but wrapper
+        // shims, fat binaries, and environment layers may re-case the line.
+        // Match the prefix case-insensitively so the typed module remediation
+        // still fires; `str::get` declines non-char boundaries, so slicing
+        // below cannot panic on non-ASCII output.
+        const MISSING_MODULE_PREFIX: &str = "Can't locate ";
         detail.lines().find_map(|line| {
             let trimmed = line.trim();
-            let rest = trimmed.strip_prefix("Can't locate ")?;
-            let module_path = rest.split(" in @INC").next()?.trim_end_matches('.');
+            let head = trimmed.get(..MISSING_MODULE_PREFIX.len())?;
+            if !head.eq_ignore_ascii_case(MISSING_MODULE_PREFIX) {
+                return None;
+            }
+            let module_path = trimmed[MISSING_MODULE_PREFIX.len()..]
+                .split(" in @INC")
+                .next()?
+                .trim_end_matches('.');
             let module_name = module_path_to_name(module_path);
             (!module_name.is_empty()).then_some(module_name)
         })
@@ -1888,11 +2148,13 @@ impl DebugAdapter {
                 && let Some(ref sender) = sender
                 && terminated_delivery_is_current(&termination_state, Some(session_generation))
             {
-                let _ = emit_event_safe(
+                let _ = deliver_reserved_terminated_event(
                     sender,
                     &seq,
-                    "terminated",
+                    &termination_state,
+                    session_generation,
                     Some(json!({"reason": "debuggee_timeout"})),
+                    &|| false,
                 );
             }
         });
@@ -2021,6 +2283,8 @@ impl DebugAdapter {
 
                 if let Ok(mut guard) = self.attached_pid.lock() {
                     *guard = Some(pid);
+                    drop(guard);
+                    self.admit_terminal_lifecycle();
                 }
 
                 let stop_on_entry =
@@ -2174,6 +2438,8 @@ impl DebugAdapter {
                         // Store session
                         if let Ok(mut guard) = self.tcp_session.lock() {
                             *guard = Some(session);
+                            drop(guard);
+                            self.admit_terminal_lifecycle();
                         }
                         self.operation_broker.open_session();
 
@@ -2469,14 +2735,19 @@ impl DebugAdapter {
         // Settle broker waiters before terminating the child so EOF cannot
         // win the race and replace the client-requested disconnect reason.
         self.operation_broker.settle_all("disconnect");
-        // `terminate` closes the active session and already reserves the
-        // terminal event.  VS Code commonly follows it with `disconnect`; do
-        // not emit a second event for that already-closed session.  A plain
-        // disconnect of an active session still owns the terminal event.
+        // No-session disconnect must not fabricate a terminal event. An
+        // admitted session with a reserved but undelivered event transfers
+        // that obligation to this request before sequence allocation.
         let has_active_session = lock_or_recover(&self.session, "debug_adapter.session").is_some()
             || lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid").is_some()
             || lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some();
-        if has_active_session && let Some(ref sender) = self.event_sender {
+        let terminal_committed =
+            lock_or_recover(&self.termination_state, "disconnect.termination_state")
+                .terminal_committed;
+        if has_active_session
+            && !terminal_committed
+            && let Some(ref sender) = self.event_sender
+        {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         let cleanup_succeeded = self.clear_active_session_state();
@@ -2957,19 +3228,45 @@ pub(super) fn emit_terminated_event_guarded(
     body: Option<Value>,
     stale: &dyn Fn() -> bool,
 ) -> bool {
-    if !reserve_terminated_event(termination_state, expected_generation) {
+    let generation = expected_generation
+        .unwrap_or_else(|| lock_or_recover(termination_state, "terminal.generation").generation);
+    if !reserve_terminated_event(termination_state, Some(generation)) {
         return false;
     }
-    if !terminated_delivery_is_current(termination_state, expected_generation) {
-        // The generation was closed or replaced between reservation and
-        // delivery; retire the stale send rather than leak an old session's
-        // terminal event into a newer client conversation (#12092 review).
-        return false;
+    deliver_reserved_terminated_event(sender, seq, termination_state, generation, body, stale)
+}
+
+fn deliver_reserved_terminated_event(
+    sender: &EventSender,
+    seq: &Mutex<i64>,
+    termination_state: &Mutex<TerminationState>,
+    generation: u64,
+    body: Option<Value>,
+    stale: &dyn Fn() -> bool,
+) -> bool {
+    let Some(sender) = sender.admitted_sender() else { return false };
+    let mut sequence = lock_or_recover(seq, "terminal.seq");
+    *sequence += 1;
+    let mut message = DapMessage::Event { seq: *sequence, event: "terminated".to_string(), body };
+    loop {
+        if stale() {
+            return false;
+        }
+        let mut state = lock_or_recover(termination_state, "terminal.commit");
+        if state.generation != generation {
+            return false;
+        }
+        match sender.try_send(message) {
+            Ok(()) => {
+                state.terminal_committed = true;
+                return true;
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
+            Err(std::sync::mpsc::TrySendError::Full(returned)) => message = returned,
+        }
+        drop(state);
+        thread::sleep(super::sync_utils::GENERATION_GUARD_PARK);
     }
-    !matches!(
-        sender.send_event_generation_guarded(seq, "terminated", body, stale),
-        GuardedDispatchResult::Disconnected
-    )
 }
 
 #[cfg(test)]
@@ -3275,7 +3572,7 @@ mod tests {
         let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
-            Arc::new(Mutex::new(super::TerminationState { generation: 1, emitted: false }));
+            Arc::new(Mutex::new(super::TerminationState { generation: 1, ..Default::default() }));
         let first_sender = EventSender::new(sender.clone());
         let first_seq = seq.clone();
         let first_guard = termination_state.clone();
@@ -3319,11 +3616,254 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_terminal_after_async_completion_and_invalidation() -> Result<(), String> {
+        for (invalidate, fail_cleanup) in [(false, false), (true, false), (true, true)] {
+            let (sender, receiver) = sync_channel(64);
+            let mut adapter = DebugAdapter::new();
+            adapter.set_event_sender(sender);
+            if fail_cleanup {
+                adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+            }
+            let event_sender = adapter.event_sender.as_ref().ok_or("missing event sender")?;
+            let generation = adapter.current_session_generation();
+            if !emit_terminated_event(
+                event_sender,
+                &adapter.seq,
+                &adapter.termination_state,
+                Some(generation),
+                Some(json!({"reason": "debugger_eof"})),
+            ) {
+                return Err("current async terminal source did not emit".to_string());
+            }
+            match receiver.try_recv().map_err(|error| error.to_string())? {
+                DapMessage::Event { event, .. } if event == "terminated" => {}
+                other => return Err(format!("expected natural terminal event, got {other:?}")),
+            }
+            if fail_cleanup {
+                if DebugAdapter::clear_active_session_state_with_terminator(
+                    &adapter.session,
+                    &adapter.tcp_session,
+                    &adapter.attached_pid,
+                    |_| false,
+                ) {
+                    return Err("injected cleanup failure unexpectedly succeeded".to_string());
+                }
+                let retained_state = adapter
+                    .session
+                    .lock()
+                    .map_err(|_| "session lock poisoned")?
+                    .as_ref()
+                    .map(|session| session.state.clone());
+                if retained_state != Some(DebugState::Terminated) {
+                    return Err(
+                        "failed cleanup did not retain the terminal child owner".to_string()
+                    );
+                }
+            }
+            if invalidate {
+                let broker_generation = adapter.operation_broker.current_session_generation();
+                if !adapter.invalidate_session_generation_if_current(
+                    generation,
+                    broker_generation,
+                    "test_late_invalidation",
+                ) {
+                    return Err("current generation invalidation did not execute".to_string());
+                }
+                if adapter.current_session_generation() == generation {
+                    return Err("invalidation did not retire the generation".to_string());
+                }
+            }
+            for request_seq in [1, 2] {
+                match adapter.handle_request(request_seq, "disconnect", None) {
+                    DapMessage::Response { success: true, command, .. }
+                        if command == "disconnect" => {}
+                    other => return Err(format!("disconnect failed: {other:?}")),
+                }
+                if let Some(message) = receiver.try_iter().find(|message| {
+                    matches!(message, DapMessage::Event { event, .. } if event == "terminated")
+                }) {
+                    return Err(format!("disconnect duplicated async completion: {message:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn terminal_request_retires_pending_before_drain(
+        command: &'static str,
+        reserved_watchdog: bool,
+    ) -> Result<(), String> {
+        let (outbound, received) = sync_channel(1);
+        outbound
+            .send(DapMessage::Event { seq: 0, event: "queue_filler".to_string(), body: None })
+            .map_err(|error| error.to_string())?;
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(outbound.clone());
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let generation = adapter.current_session_generation();
+        let state = adapter.termination_state.clone();
+        let sequence = adapter.seq.clone();
+        let rescue = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_rescue = rescue.clone();
+        let (parked_sender, parked_receiver) = sync_channel(1);
+        let (finished_sender, finished_receiver) = sync_channel(1);
+        let emitter = thread::spawn(move || {
+            let stale = || {
+                let _ = parked_sender.try_send(());
+                worker_rescue.load(std::sync::atomic::Ordering::SeqCst)
+                    || lock_or_recover(&state, "test.termination_state").generation != generation
+            };
+            let sender = EventSender::new(outbound);
+            let body = Some(json!({"reason": "old_async_completion"}));
+            let emitted = if reserved_watchdog {
+                reserve_terminated_event(&state, Some(generation))
+                    && super::deliver_reserved_terminated_event(
+                        &sender, &sequence, &state, generation, body, &stale,
+                    )
+            } else {
+                super::emit_terminated_event_guarded(
+                    &sender,
+                    &sequence,
+                    &state,
+                    Some(generation),
+                    body,
+                    &stale,
+                )
+            };
+            let _ = finished_sender.send(emitted);
+        });
+        if parked_receiver.recv_timeout(Duration::from_secs(2)).is_err() {
+            rescue.store(true, std::sync::atomic::Ordering::SeqCst);
+            drop(received);
+            emitter.join().map_err(|_| "emitter panicked")?;
+            return Err("async emitter never reached guarded enqueue".to_string());
+        }
+        let (response_sender, response_receiver) = sync_channel(1);
+        let request = thread::spawn(move || {
+            let response = adapter.handle_request(1, command, None);
+            let _ = response_sender.send(response);
+        });
+        let retired_before_drain = finished_receiver.recv_timeout(Duration::from_secs(2));
+        if retired_before_drain.is_err() {
+            rescue.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut terminal_events = Vec::new();
+        let mut response = None;
+        while Instant::now() < deadline {
+            if let Ok(message) = received.recv_timeout(Duration::from_millis(10))
+                && matches!(&message, DapMessage::Event { event, .. } if event == "terminated")
+            {
+                terminal_events.push(message);
+            }
+            if let Ok(message) = response_receiver.try_recv() {
+                response = Some(message);
+                break;
+            }
+        }
+        terminal_events.extend(received.try_iter().filter(
+            |message| matches!(message, DapMessage::Event { event, .. } if event == "terminated"),
+        ));
+        rescue.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(received);
+        emitter.join().map_err(|_| "emitter panicked")?;
+        request.join().map_err(|_| "terminal request panicked")?;
+        let old_emitted = retired_before_drain.map_err(|_| {
+            format!("{command} did not retire the pending async terminal before queue drain")
+        })?;
+        if old_emitted {
+            return Err("retired async send incorrectly reported delivery".to_string());
+        }
+        match response {
+            Some(DapMessage::Response { success: true, command: actual, .. })
+                if actual == command => {}
+            other => return Err(format!("terminal request did not succeed: {other:?}")),
+        }
+        if terminal_events.len() != 1 {
+            return Err(format!("expected exactly one terminal event, got {terminal_events:?}"));
+        }
+        if terminal_events.iter().any(|message| {
+            matches!(message, DapMessage::Event { body: Some(body), .. }
+                if body.get("reason").and_then(Value::as_str) == Some("old_async_completion"))
+        }) {
+            return Err("retired async event escaped into the client terminal response".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn disconnect_terminal_takes_pending_async_reservation_before_queue_drain() -> Result<(), String>
+    {
+        terminal_request_retires_pending_before_drain("disconnect", false)
+    }
+
+    #[test]
+    fn terminate_terminal_takes_pending_async_reservation_before_queue_drain() -> Result<(), String>
+    {
+        terminal_request_retires_pending_before_drain("terminate", false)
+    }
+
+    #[test]
+    fn disconnect_terminal_takes_watchdog_reservation_before_queue_drain() -> Result<(), String> {
+        terminal_request_retires_pending_before_drain("disconnect", true)
+    }
+
+    #[test]
+    fn disconnect_terminal_stale_enqueue_is_not_delivery_or_lifecycle_closure() -> Result<(), String>
+    {
+        let (sender, receiver) = sync_channel(4);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let reported_delivery = super::emit_terminated_event_guarded(
+            adapter.event_sender.as_ref().ok_or("missing event sender")?,
+            &adapter.seq,
+            &adapter.termination_state,
+            Some(adapter.current_session_generation()),
+            None,
+            &|| true,
+        );
+        if receiver.try_recv().is_ok() {
+            return Err("stale emitter published an event".to_string());
+        }
+        let response = adapter.handle_request(1, "disconnect", None);
+        let terminal_count = receiver.try_iter().filter(|message| {
+            matches!(message, DapMessage::Event { event, .. } if event == "terminated")
+        }).count();
+        if reported_delivery {
+            return Err("stale enqueue was reported as delivered".to_string());
+        }
+        if !matches!(response, DapMessage::Response { success: true, .. }) || terminal_count != 1 {
+            return Err(format!(
+                "stale reservation closed lifecycle: {response:?}, events={terminal_count}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn disconnect_terminal_closed_channel_does_not_report_delivery() -> Result<(), String> {
+        let (sender, receiver) = sync_channel(1);
+        drop(receiver);
+        let adapter = DebugAdapter::new();
+        if emit_terminated_event(
+            &EventSender::new(sender),
+            &adapter.seq,
+            &adapter.termination_state,
+            Some(adapter.current_session_generation()),
+            None,
+        ) {
+            return Err("closed channel reported terminal delivery".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn stale_session_generation_cannot_emit_termination() -> Result<(), String> {
         let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
-            Mutex::new(super::TerminationState { generation: 2, emitted: false });
+            Mutex::new(super::TerminationState { generation: 2, ..Default::default() });
 
         if emit_terminated_event(
             &EventSender::new(sender.clone()),
@@ -3356,7 +3896,7 @@ mod tests {
         let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
-            Arc::new(Mutex::new(super::TerminationState { generation: 3, emitted: false }));
+            Arc::new(Mutex::new(super::TerminationState { generation: 3, ..Default::default() }));
 
         // Watchdog-style early reservation: the debuggee watchdog reserves
         // before killing the process and delivers only after, so a client
@@ -3417,7 +3957,7 @@ mod tests {
         let tcp_session = Arc::new(Mutex::new(None));
         let attached_pid = Arc::new(Mutex::new(Some(4242_u32)));
         let termination_state =
-            Mutex::new(super::TerminationState { generation: 2, emitted: false });
+            Mutex::new(super::TerminationState { generation: 2, ..Default::default() });
 
         DebugAdapter::clear_active_session_state_for_generation(
             &session,
