@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
-      group: droid-mention-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      group: droid-mention-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}-${{ github.workflow_sha }}
       cancel-in-progress: false
     permissions:
       contents: read
