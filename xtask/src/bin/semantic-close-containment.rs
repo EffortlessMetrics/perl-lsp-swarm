@@ -574,8 +574,16 @@ fn validate_live_snapshot(
     hasher.update(payload.title.as_bytes());
     hasher.update([0u8]);
     hasher.update(body.as_bytes());
-    let title_body_sha256 =
-        hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let title_body_sha256 = {
+        let digest = hasher.finalize();
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut encoded = String::with_capacity(digest.len() * 2);
+        for &byte in digest.iter() {
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0xf) as usize] as char);
+        }
+        encoded
+    };
 
     let snapshot = SubjectSnapshot {
         source: "pulls_api",
