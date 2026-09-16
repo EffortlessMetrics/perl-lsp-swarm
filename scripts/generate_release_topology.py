@@ -10,6 +10,7 @@ downstream archive contract does not enumerate).
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -22,8 +23,10 @@ from typing import Any
 
 if __package__:
     from .release_topology_json import load_topology_json
+    from .release_subject_projection import topology_subject_projection
 else:
     from release_topology_json import load_topology_json
+    from release_subject_projection import topology_subject_projection
 
 
 SCHEMA = 1
@@ -44,6 +47,7 @@ SOURCE_PATHS = [
     "docs/reference/downstream-dap-integrations.json",
     "vscode-extension/src/downloader.ts",
     "scripts/inject-sha-assets.sh",
+    "scripts/publish-topo.py",
 ]
 TARGET_RE = re.compile(
     r"(?ms)^\s*- target:\s*(?P<target>[A-Za-z0-9_-]+)\s*$"
@@ -55,11 +59,34 @@ class TopologyError(ValueError):
     """A release topology input is missing, stale, or inconsistent."""
 
 
+def publish_dependency_graph(
+    packages: list[dict[str, Any]], root: Path | None = None
+) -> dict[str, set[str]]:
+    """Use the shared publication graph policy rather than a second SCC implementation."""
+    helper_path = (
+        root or Path(__file__).resolve().parents[1]
+    ) / "scripts" / "publish-topo.py"
+    try:
+        source = helper_path.read_bytes()
+    except OSError as error:
+        raise TopologyError(f"cannot read publish graph helper: {helper_path}: {error}") from error
+    try:
+        code = compile(source, str(helper_path), "exec")
+    except (SyntaxError, UnicodeError) as error:
+        raise TopologyError(f"cannot compile publish graph helper: {helper_path}: {error}") from error
+    namespace: dict[str, Any] = {"__name__": "publish_topo", "__file__": str(helper_path)}
+    exec(code, namespace)
+    builder = namespace.get("build_publish_dependency_graph")
+    if not callable(builder):
+        raise TopologyError(f"publish graph helper has no callable builder: {helper_path}")
+    return builder(packages)
+
+
 def topology_schema_version(value: Any) -> int:
     # JSON Schema accepts integral numbers such as 1.0. Preserve that v1
     # behavior, while refusing Python's bool/int equality and unknown versions.
-    if type(value) not in (int, float) or value not in (1, 2):
-        raise TopologyError("release topology schema must be 1 or 2")
+    if type(value) not in (int, float) or value not in (1, 2, 3):
+        raise TopologyError("release topology schema must be 1, 2 or 3")
     return int(value)
 
 
@@ -152,7 +179,7 @@ def cargo_metadata(root: Path) -> dict[str, Any]:
     return value
 
 
-def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+def derive_crates(metadata: dict[str, Any], root: Path | None = None) -> list[dict[str, Any]]:
     packages = {package["id"]: package for package in metadata.get("packages", [])}
     member_ids = metadata.get("workspace_members", [])
     members = [packages[member_id] for member_id in member_ids if member_id in packages]
@@ -182,14 +209,11 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
             f"missing={sorted(publishable - allowed)}, extra={sorted(allowed - publishable)}"
         )
 
-    dependencies: dict[str, set[str]] = {}
-    for name in allowed:
-        package = by_name[name]
-        dependencies[name] = {
-            dependency["name"]
-            for dependency in package.get("dependencies", [])
-            if dependency.get("name") in allowed and dependency.get("source") is None
-        }
+    dependencies = publish_dependency_graph(list(by_name.values()), root)
+    dependencies = {
+        name: deps & allowed for name, deps in dependencies.items() if name in allowed
+    }
+    publish_dependencies = {name: set(deps) for name, deps in dependencies.items()}
     ready = sorted(name for name, deps in dependencies.items() if not deps)
     order: list[str] = []
     while ready:
@@ -219,14 +243,7 @@ def derive_crates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
                 "package_path": package_path,
                 "version": package["version"],
                 "publish_order": publish_order[name],
-                "internal_dependencies": sorted(
-                    dependency
-                    for dependency in (
-                        item["name"]
-                        for item in package.get("dependencies", [])
-                        if item.get("name") in allowed and item.get("source") is None
-                    )
-                ),
+                "internal_dependencies": sorted(publish_dependencies[name]),
             }
         )
     return entries
@@ -442,6 +459,185 @@ def derive_checksum_assets(
     }]
 
 
+def normalized_producer_ast(value: Any) -> Any:
+    """Keep semantic AST fields stable across Python's empty type-parameter addition."""
+    if isinstance(value, ast.AST):
+        return [type(value).__name__, {
+            name: normalized_producer_ast(field)
+            for name, field in ast.iter_fields(value)
+            if not (name == "type_params" and field == [])
+        }]
+    if isinstance(value, list):
+        return [normalized_producer_ast(item) for item in value]
+    if isinstance(value, bytes):
+        return {"bytes": value.hex()}
+    if value is Ellipsis:
+        return {"ellipsis": True}
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TopologyError(f"unsupported producer AST value: {type(value).__name__}")
+
+
+def validate_sbom_release_selection(release_text: str) -> None:
+    """Admit the source asset-selection edge, not publisher execution or authority."""
+    lines = release_text.splitlines()
+    if lines.count("jobs:") != 1:
+        raise TopologyError("subject producer requires one top-level jobs mapping")
+    jobs_start = lines.index("jobs:") + 1
+    jobs_end = next((index for index in range(jobs_start, len(lines))
+                     if lines[index] and not lines[index][0].isspace()
+                     and not lines[index].startswith("#")), len(lines))
+    lines = lines[jobs_start:jobs_end]
+    if lines.count("  publish-release:") != 1:
+        raise TopologyError("subject producer requires one publish-release job")
+    start = lines.index("  publish-release:") + 1
+    end = next((index for index in range(start, len(lines))
+                if lines[index].strip() and not lines[index].lstrip().startswith("#")
+                and len(lines[index]) - len(lines[index].lstrip()) <= 2), len(lines))
+    job = lines[start:end]
+    marker = "      - name: Create GitHub Release from terminal candidate"
+    if job.count("    steps:") != 1 or lines.count(marker) != 1 or marker not in job:
+        raise TopologyError("subject producer requires one GitHub release selection step")
+    steps_start = job.index("    steps:") + 1
+    steps_end = next((index for index in range(steps_start, len(job))
+                      if job[index].strip() and not job[index].lstrip().startswith("#")
+                      and len(job[index]) - len(job[index].lstrip()) <= 4), len(job))
+    job = job[steps_start:steps_end]
+    if marker not in job:
+        raise TopologyError("subject producer release selection must be in the steps list")
+    step_start = job.index(marker)
+    step_end = next((index for index in range(step_start + 1, len(job))
+                     if job[index].strip() and not job[index].lstrip().startswith("#")
+                     and len(job[index]) - len(job[index].lstrip()) <= 6), len(job))
+    expected = '''      - name: Create GitHub Release from terminal candidate
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: candidate/dist/*
+          body_path: candidate/release_notes.md
+          draft: false
+          prerelease: ${{ needs.release-metadata.outputs.prerelease == 'true' }}
+          tag_name: ${{ needs.release-metadata.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+'''
+    actual = [line for line in job[step_start:step_end] if line.strip() and not line.lstrip().startswith("#")]
+    if actual != expected.splitlines():
+        raise TopologyError("subject producer GitHub release asset selection is not recognized")
+
+
+def derive_subject_projection(release_text: str, root: Path) -> dict[str, Any]:
+    """Admit the reviewed producer shape without executing producer code.
+
+    The AST identities cover the shared projection and terminal producer module,
+    not its transitive imports. Unsupported semantic
+    producer changes require review before this selected schema can describe them.
+    """
+    expected_identities = {
+        "release_subject_projection.py": "30d16c63d6ee4e9778c55bbd31a796749d32035cb089711aca8b813e7163952c",
+        "release_terminal_manifest.py": "88c0b127ffd227e8a2d44c2bc12c83fb5162006a53c31d0486f37ba126c250d5",
+    }
+    for name, expected_identity in expected_identities.items():
+        for directory in (root / "scripts", Path(__file__).resolve().parent):
+            try:
+                tree = ast.parse((directory / name).read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, SyntaxError) as error:
+                raise TopologyError(f"cannot inspect subject producer {name}: {error}") from error
+            identity = hashlib.sha256(json.dumps(normalized_producer_ast(tree), sort_keys=True).encode()).hexdigest()
+            if identity != expected_identity:
+                raise TopologyError(f"unsupported subject producer AST: {name}")
+    steps = checksum_candidate_steps(release_text)
+    start = next((index for index, line in enumerate(steps)
+                  if line == "      - name: Verify release archives ship the DAP binary"), None)
+    expected = r'''      - name: Verify release archives ship the DAP binary
+        env:
+          VERSION: ${{ needs.release-metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo xtask release artifact-check \
+            --dist candidate/dist \
+            --version "$VERSION"
+
+      - name: Verify curated release notes exist
+        id: release_notes_preflight
+        env:
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          NOTE_FILE="docs/releases/${TAG}.md"
+          if [ ! -f "$NOTE_FILE" ]; then
+            printf '::error file=%s::Curated release notes missing for %s. See RELEASE.md "Release History Updates" — every release must ship docs/releases/%s.md before tagging.\n' "$NOTE_FILE" "$TAG" "$TAG"
+            exit 1
+          fi
+          printf 'note_file=%s\n' "$NOTE_FILE" >> "$GITHUB_OUTPUT"
+          printf 'Found curated release notes: %s\n' "$NOTE_FILE"
+
+      - name: Generate release notes from docs/releases/<tag>.md
+        id: release_notes
+        env:
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cargo xtask release-notes --tag "$TAG" --output release_notes.md
+          echo "--- release_notes.md ---"
+          cat release_notes.md
+          echo "--- /release_notes.md ---"
+
+      - name: Install cargo-sbom (preflight)
+        run: |
+          set -euo pipefail
+          cargo install cargo-sbom --version 0.9.1 --locked
+
+      - name: Generate and validate nonempty SPDX SBOM
+        run: |
+          set -euo pipefail
+          cargo sbom --output-format spdx_json_2_3 > candidate/dist/sbom-spdx.json
+          test -s candidate/dist/sbom-spdx.json
+
+      - name: Build terminal artifact manifest
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          TAG: ${{ needs.release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cp release_notes.md candidate/release_notes.md
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG"
+          python3 scripts/release_terminal_manifest.py \
+            --candidate candidate \
+            --source-sha "$SOURCE_SHA" \
+            --tag "$TAG" \
+            --check
+
+      - name: Attest exact terminal candidate subjects
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: candidate/attestation-subjects.sha256
+
+      - name: Upload terminal candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-terminal-candidate
+          path: candidate
+          if-no-files-found: error
+          retention-days: 7
+'''
+    meaningful = lambda lines: [line for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    if start is None or meaningful(steps[start:]) != meaningful(expected.splitlines()):
+        raise TopologyError("subject producer candidate suffix is not recognized")
+    checksum_start = steps.index("      - name: Generate consolidated SHA256SUMS")
+    intervening_steps = [line for line in steps[checksum_start:start] if line.startswith("      - ")]
+    if intervening_steps != ["      - name: Generate consolidated SHA256SUMS"]:
+        raise TopologyError("subject producer has unexpected intervening steps")
+    consolidated_checksum_producer(release_text)
+    validate_sbom_release_selection(release_text)
+    return topology_subject_projection()
+
+
 def workspace_member_manifest_paths(
     metadata: dict[str, Any], root: Path
 ) -> list[str]:
@@ -479,6 +675,8 @@ def source_paths(
         schema_relative_path(schema_version) if path == SCHEMA_RELATIVE_PATH else path
         for path in SOURCE_PATHS
     ]
+    if schema_version == 3:
+        paths.extend(["scripts/release_subject_projection.py", "scripts/release_terminal_manifest.py"])
     manifests = workspace_manifests
     if manifests is None:
         manifests = []
@@ -566,7 +764,7 @@ def ensure_committed_topology_inputs(root: Path, paths: list[str]) -> None:
 
 def load_manifest(path: Path) -> dict[str, Any]:
     try:
-        value = load_topology_json(path.read_text(encoding="utf-8"))
+        value = load_topology_json(path.read_text(encoding="utf-8"), supported_versions=(1, 2, 3))
     except (OSError, ValueError) as error:
         raise TopologyError(f"cannot read frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
@@ -591,7 +789,7 @@ def load_frozen_authority(
             "frozen topology digest differs from --frozen-topology-sha256"
         )
     try:
-        value = load_topology_json(raw)
+        value = load_topology_json(raw, supported_versions=(1, 2, 3))
     except ValueError as error:
         raise TopologyError(f"cannot parse frozen topology {path}: {error}") from error
     if not isinstance(value, dict):
@@ -842,6 +1040,20 @@ def validate_prepared_projection(
         )
 
 
+_TYPESCRIPT_NON_CODE = re.compile(
+    r"//[^\r\n]*|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`",
+    re.DOTALL,
+)
+
+
+def _mask_typescript_non_code(source: str) -> str:
+    """Blank TypeScript comments and literals while preserving line positions."""
+    return _TYPESCRIPT_NON_CODE.sub(
+        lambda match: "".join("\n" if char == "\n" else " " for char in match.group()),
+        source,
+    )
+
+
 def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[str]:
     """Derive the release targets reachable through the managed downloader.
 
@@ -852,15 +1064,31 @@ def derive_downloader_targets(source: str, workflow_targets: set[str]) -> set[st
     architecture/libc construction.
     """
     managed: set[str] = set()
+    executable_source = _mask_typescript_non_code(source)
 
     if "aarch64-apple-darwin" in source:
         managed.add("aarch64-apple-darwin")
     if "x86_64-apple-darwin" in source:
         managed.add("x86_64-apple-darwin")
-    if "return 'x86_64-pc-windows-msvc'" in source:
-        managed.add("x86_64-pc-windows-msvc")
-    if "return 'aarch64-pc-windows-msvc'" in source:
-        managed.add("aarch64-pc-windows-msvc")
+    for constant, target in (
+        ("WINDOWS_X64_TARGET", "x86_64-pc-windows-msvc"),
+        ("WINDOWS_ARM64_TARGET", "aarch64-pc-windows-msvc"),
+    ):
+        literal_return = False
+        for match in re.finditer(rf"return\s+(['\"]){re.escape(target)}\1", source):
+            if executable_source[match.start() : match.start() + len("return")] == "return":
+                literal_return = True
+                break
+        constant_return = re.search(rf"return\s+{constant}\b", executable_source) is not None
+        declared_target = False
+        for match in re.finditer(
+            rf"\b{constant}\s*=\s*(['\"]){re.escape(target)}\1", source
+        ):
+            if executable_source[match.start() : match.start() + len(constant)] == constant:
+                declared_target = True
+                break
+        if literal_return or (declared_target and constant_return):
+            managed.add(target)
 
     constructs_linux_targets = (
         "return `${archPrefix}-unknown-linux-${libc}`" in source
@@ -968,7 +1196,7 @@ def build_manifest(
         raise TopologyError(
             f"VSIX version {package.get('version')} does not match {release}"
         )
-    crates = derive_crates(metadata)
+    crates = derive_crates(metadata, root)
     workspace_manifests = workspace_member_manifest_paths(metadata, root)
     for entry in crates:
         entry["package_path"] = (
@@ -1004,8 +1232,10 @@ def build_manifest(
             ).items()
         },
     }
-    if schema_version == 2:
+    if schema_version in (2, 3):
         manifest["checksum_assets"] = derive_checksum_assets(workflow, targets)
+    if schema_version == 3:
+        manifest["subject_projection"] = derive_subject_projection(workflow, root)
     if frozen_topology is not None:
         if frozen_topology_digest is None:
             raise TopologyError("frozen topology digest is missing")
@@ -1101,7 +1331,7 @@ def validate_manifest(
     if not isinstance(release, str):
         raise TopologyError("manifest release is missing")
     metadata = cargo_metadata(root)
-    expected_crates = derive_crates(metadata)
+    expected_crates = derive_crates(metadata, root)
     workspace_manifests = workspace_member_manifest_paths(metadata, root)
     for entry in expected_crates:
         entry["package_path"] = (
@@ -1145,10 +1375,12 @@ def validate_manifest(
     expected_targets = derive_targets(workflow, release)
     if targets != expected_targets:
         raise TopologyError("binary_targets does not match the release workflow")
-    if schema_version == 2 and manifest.get("checksum_assets") != derive_checksum_assets(
+    if schema_version in (2, 3) and manifest.get("checksum_assets") != derive_checksum_assets(
         workflow, expected_targets
     ):
         raise TopologyError("checksum_assets does not match the public archive checksum inventory")
+    if schema_version == 3 and manifest.get("subject_projection") != derive_subject_projection(workflow, root):
+        raise TopologyError("subject_projection does not match the terminal producer")
     downstream = json.loads(
         (root / "docs/reference/downstream-dap-integrations.json").read_text()
     )
@@ -1216,7 +1448,7 @@ def validate_manifest(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--schema-version", type=int, choices=(1, 2), default=SCHEMA,
+        "--schema-version", type=int, choices=(1, 2, 3), default=SCHEMA,
         help="topology contract to generate or check (default: 1; checksums require 2)",
     )
     parser.add_argument(

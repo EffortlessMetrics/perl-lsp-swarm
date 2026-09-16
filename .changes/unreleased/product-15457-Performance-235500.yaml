@@ -1,0 +1,9 @@
+project: product
+component: Performance and reliability
+kind: Performance
+body: Reuse the immutable source digest across lexer checkpoints, removing repeated whole-file hashing during parsing and breakpoint validation while preserving source, configuration, and generation checks.
+time: 2026-09-12T23:54:39Z
+custom:
+  PR: 15457
+  Slug: lexer-checkpoint-source-digest
+  Breaking: "no"

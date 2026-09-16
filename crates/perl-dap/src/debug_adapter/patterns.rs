@@ -25,7 +25,6 @@ const MAX_DEBUGGER_IDENTIFIER_LEN: usize = 512;
 #[derive(Debug, Clone)]
 pub(super) struct RecentOutputLine {
     pub(super) id: u64,
-    pub(super) raw: String,
     pub(super) normalized: String,
 }
 

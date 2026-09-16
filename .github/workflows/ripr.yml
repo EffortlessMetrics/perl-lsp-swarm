@@ -876,7 +876,7 @@ jobs:
           timeout --signal=TERM --kill-after=30s 40m docker run --rm --name "$container_name" \
             --cpus=4 --memory=6g --memory-swap=6g \
             -e RIPR_VERSION -e BASE_REF -e PR_HEAD_SHA \
-            -e RIPR_MAX_DIFF_INDEX_FILES=1000 \
+            -e RIPR_MAX_DIFF_INDEX_FILES=1600 \
             -e RIPR_FRESHNESS_HANDOFF=/freshness -e RIPR_FRESHNESS_TOKEN \
             -e MEASUREMENT_IMAGE_ID="$image_id" -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
             -v "$GITHUB_WORKSPACE:/workspace" -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
