@@ -41,11 +41,11 @@ use tasks::{
     ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
     ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
     code_action_generation_ledger, command_evidence, compare, compat_inventory,
-    compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof,
-    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    compiler_lexical_cutline, compiler_upstream_status, corpus_audit, count_ratchet, cpan_corpus,
+    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
+    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
+    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
     ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
     issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
@@ -1169,6 +1169,10 @@ enum Commands {
 
     /// Lint GitHub workflow security policy invariants.
     WorkflowPolicyLint {
+        /// Evaluate this repository instead of the compile-time project root.
+        #[arg(long, conflicts_with = "fixture")]
+        root: Option<PathBuf>,
+
         /// Write a JSON receipt artifact for CI consumption.
         #[arg(long)]
         receipt: Option<PathBuf>,
@@ -1180,7 +1184,7 @@ enum Commands {
         /// Also validate that every workflow has a `[[lane]]` entry in
         /// policy/ci-lane-whitelist.toml. Advisory (warning-level) until the
         /// whitelist has stabilized — see docs/ci/perl-lsp-rollout-plan.md PR 11.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "fixture")]
         check_lane_whitelist: bool,
     },
 
@@ -1509,6 +1513,13 @@ enum Commands {
         /// Receipt JSON retained for clean and blocking verdicts.
         #[arg(long, default_value = "target/receipts/publication-drift.json")]
         out: PathBuf,
+    },
+
+    /// Enforce source-authority and instruction/data boundaries for the Zed
+    /// agent stage packets.
+    ZedTrain {
+        #[command(subcommand)]
+        command: ZedTrainCommand,
     },
 
     /// Read-only upstream refresh and drift classification for the pinned
@@ -2282,6 +2293,13 @@ enum Commands {
         command: CompilerProfileCommand,
     },
 
+    /// Upstream-derived semantic conformance surfaces (#12532).
+    #[command(name = "compiler")]
+    Compiler {
+        #[command(subcommand)]
+        command: CompilerUpstreamCommand,
+    },
+
     /// Publish structured editor UX scorecard artifact/status from harness fixtures.
     UxScorecard {
         /// Output format for stdout.
@@ -2473,6 +2491,13 @@ enum Commands {
         /// commit` (issue #3786).
         #[arg(long)]
         staged: bool,
+
+        /// Published `ci_route_plan.v1` (#10179) to consume and validate
+        /// before execution; when set, one normalized `routed_gate_result.v1`
+        /// (#9156) is emitted per executed planned `run` row under
+        /// target/receipts/routed-results/.
+        #[arg(long, requires = "subject")]
+        route_plan: Option<PathBuf>,
     },
 
     /// Ergonomic alias for `gates --tier commit --staged` (issue #3786).
@@ -2919,6 +2944,14 @@ enum VimEditorCompatCommand {
     /// reload route, project config through the restart route, client
     /// settings through the live push channel, stale generation rejection,
     /// and provider ownership — against the governed freshness fixture.
+    /// `recovery-generations` (#11398) runs the eight-cell server-generation
+    /// recovery journey — explicit restart through the public stop+reopen
+    /// route, the unexpected-exit disposition (honest manual_restart_required;
+    /// the adverse-exit cell never passes), new-generation
+    /// initialize/readiness, document replay, the current post-recovery
+    /// result, old-generation rejection, the retry/manual disposition, and
+    /// shutdown-during-recovery cleanup — against the governed recovery
+    /// fixture. The canonical variant must reach its honest partial top-line.
     /// `save-format` (#11396) runs the seven-cell format-on-save journey —
     /// the documented BufWritePre autocmd owner over the canonical sync
     /// format action, one-save-one-invocation cardinality, exact applied and
@@ -2932,13 +2965,17 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// freshness-generations, or save-format.
+        /// freshness-generations, recovery-generations, or save-format.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
         /// Fixture variant for the bootstrap-diagnostics,
-        /// freshness-generations, and save-format journeys (canonical must
-        /// pass; the negative controls must fail with their typed reason).
+        /// freshness-generations, recovery-generations, and save-format
+        /// journeys. The canonical variant must reach its journey's honest
+        /// top-line — `pass`, except `recovery-generations`, whose
+        /// adverse-exit cell is never a passing observation, so its honest
+        /// canonical top-line is `partial`. The negative controls must fail
+        /// with their typed reason.
         #[arg(long, default_value = "canonical")]
         fixture_variant: String,
 
@@ -3739,6 +3776,25 @@ enum FreshnessCheckMode {
     Block,
 }
 
+#[derive(Subcommand)]
+enum ZedTrainCommand {
+    /// Verify every stage-packet input is authority-classified, current, and
+    /// data-only, and that every packet generator is declared.
+    #[command(name = "source-check")]
+    SourceCheck {
+        /// Source-authority manifest JSON.
+        fixture: PathBuf,
+
+        /// Repository root used to resolve the packet-relative subjects.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/zed-source-authority.json")]
+        out: PathBuf,
+    },
+}
+
 /// Subcommands of `cargo xtask vim-lsp-subject` (#11411).
 #[derive(Debug, Subcommand)]
 enum VimLspSubjectCommand {
@@ -4211,6 +4267,26 @@ enum CompilerProfileCommand {
 }
 
 #[derive(Subcommand)]
+enum CompilerUpstreamCommand {
+    /// Upstream-derived conformance operations (#12532).
+    #[command(name = "upstream")]
+    Upstream {
+        #[command(subcommand)]
+        command: CompilerUpstreamStatusGroup,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompilerUpstreamStatusGroup {
+    /// Exact upstream-derived conformance status packets (#12532).
+    #[command(name = "status")]
+    Status {
+        #[command(subcommand)]
+        command: tasks::compiler_upstream_status::CompilerUpstreamStatusSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
 enum MemoryTrendsCommand {
     /// Render memory plateau trends from receipts and baseline files.
     Render {
@@ -4503,8 +4579,17 @@ enum PrLedgerCommand {
         #[arg(long, default_value = "target/reconciliation")]
         out: PathBuf,
         /// Optional fixture JSON (for testing without live gh).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "paginated_fixture")]
         fixture: Option<PathBuf>,
+        /// Optional paginated fixture JSON: array of pages, each page an
+        /// array of PR objects. Used to drive the multi-page code path in
+        /// tests without shelling to gh.
+        #[arg(long, conflicts_with = "fixture")]
+        paginated_fixture: Option<PathBuf>,
+        /// Pin `observed_at` to a deterministic anchor. Receipts are then
+        /// byte-identical across runs over the same canonical input. Test-only.
+        #[arg(long)]
+        deterministic_clock: bool,
     },
 }
 
@@ -5050,6 +5135,11 @@ enum AgentLedgersCommand {
         /// Output format: `human` (default) or `json`.
         #[arg(long, default_value = "human")]
         format: String,
+        /// Require every ledger file to declare this schema id (e.g.
+        /// `workflow-outcome.v1`). Without it, each file is validated against the
+        /// schema it declares.
+        #[arg(long, value_name = "ID")]
+        expected_schema: Option<String>,
     },
 }
 
@@ -5284,6 +5374,74 @@ fn run_cli(cli: Cli) -> Result<()> {
                         }
                         return Ok(());
                     }
+                    if journey == "recovery-generations" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_recovery_run::RecoveryFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_recovery_run::host_recovery_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim recovery-generations run complete (variant {}): \
+                             result={:?} cleanup={:?} driver_complete={} \
+                             driver_failure={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.driver_failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.driver_failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with \
+                                         the typed reason {expected}: result={result:?} \
+                                         driver_failure={:?}",
+                                        outcome.driver_failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                // The canonical recovery journey's honest
+                                // top-line is partial by #11386 law: the
+                                // adverse-exit cell never passes, so anything
+                                // else (a forced pass, a fail, or missing
+                                // evidence) is an oracle fault.
+                                if *result
+                                    != xtask::editor_client_compat::ObservationResult::Partial
+                                {
+                                    return Err(eyre!(
+                                        "vim recovery-generations run did not reach its \
+                                         honest partial disposition: {result:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "freshness-generations" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -5405,7 +5563,8 @@ fn run_cli(cli: Cli) -> Result<()> {
                     if journey != "host-lifecycle" {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
-                             bootstrap-diagnostics, freshness-generations, save-format"
+                             bootstrap-diagnostics, freshness-generations, recovery-generations, \
+                             save-format"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
@@ -5523,9 +5682,19 @@ fn run_cli(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::PrLedger { command } => match command {
-            PrLedgerCommand::Generate { repos, out, fixture } => {
-                tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
-            }
+            PrLedgerCommand::Generate {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            } => tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            }),
         },
         Commands::SyncDivergence { command } => match command {
             SyncDivergenceCommand::Check { source, boundary, target, ledger, receipt } => {
@@ -5864,8 +6033,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)
         }
-        Commands::WorkflowPolicyLint { receipt, fixture, check_lane_whitelist } => {
+        Commands::WorkflowPolicyLint { root, receipt, fixture, check_lane_whitelist } => {
             workflow_policy_lint::run(workflow_policy_lint::WorkflowPolicyLintConfig {
+                root,
                 receipt,
                 fixture,
                 check_lane_whitelist,
@@ -6086,6 +6256,11 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
         }
+        Commands::ZedTrain { command } => match command {
+            ZedTrainCommand::SourceCheck { fixture, repo_root, out } => {
+                xtask::source_authority::run_with_paths(fixture, repo_root, out)
+            }
+        },
         Commands::VimLspSubject {
             command:
                 VimLspSubjectCommand::Refresh { check, proposal, observation, allow_network, repo_root },
@@ -6614,15 +6789,18 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             },
             AgentCommand::Ledgers { command } => match command {
-                AgentLedgersCommand::Validate { dir, format } => {
-                    let fmt = if format == "json" {
-                        tasks::agent_ledgers::ValidateFormat::Json
-                    } else {
-                        tasks::agent_ledgers::ValidateFormat::Human
+                AgentLedgersCommand::Validate { dir, format, expected_schema } => {
+                    let fmt = match format.as_str() {
+                        "json" => tasks::agent_ledgers::ValidateFormat::Json,
+                        "human" => tasks::agent_ledgers::ValidateFormat::Human,
+                        other => color_eyre::eyre::bail!(
+                            "unknown --format `{other}`; expected `human` or `json`"
+                        ),
                     };
                     tasks::agent_ledgers::validate(tasks::agent_ledgers::ValidateConfig {
                         ledger_dir: dir,
                         format: fmt,
+                        expected_schema,
                     })
                 }
             },
@@ -6667,6 +6845,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Compiler { command } => match command {
+            CompilerUpstreamCommand::Upstream { command } => match command {
+                CompilerUpstreamStatusGroup::Status { command } => {
+                    compiler_upstream_status::run(command)
+                }
+            },
+        },
         Commands::Metrics { command } => match command {
             MetricsCommand::ParserStats { input, json } => metrics::parser_stats::run(input, json),
             MetricsCommand::ParserAccuracy {
@@ -6784,6 +6969,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             parallel,
             verbose,
             staged,
+            route_plan,
         } => gates::run(gates::GateRunnerConfig {
             tier,
             gate_policy: Some(gate_policy),
@@ -6801,6 +6987,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             parallel,
             verbose,
             staged,
+            route_plan_path: route_plan,
         }),
         Commands::Precommit { format, receipt } => gates::run(gates::GateRunnerConfig {
             tier: GateTier::Commit,

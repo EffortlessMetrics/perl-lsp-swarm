@@ -248,6 +248,7 @@ pub perl_parser_core::engine::error::ParseError::UnexpectedToken::found: alloc::
 pub perl_parser_core::engine::error::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
@@ -726,6 +727,7 @@ pub perl_parser_core::error::ParseError::UnexpectedToken::found: alloc::string::
 pub perl_parser_core::error::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
@@ -1308,6 +1310,8 @@ pub perl_parser_core::hir::HirExpr::Loop::continue_block: core::option::Option<p
 pub perl_parser_core::hir::HirExpr::Loop::init: core::option::Option<perl_parser_core::hir::HirBlockId>
 pub perl_parser_core::hir::HirExpr::Loop::iterator_binding: core::option::Option<perl_parser_core::hir::HirExprId>
 pub perl_parser_core::hir::HirExpr::Loop::kind: perl_parser_core::hir::LoopKind
+pub perl_parser_core::hir::HirExpr::Loop::label: core::option::Option<perl_parser_core::hir::HirLoopLabel>
+pub perl_parser_core::hir::HirExpr::Loop::region_id: perl_parser_core::hir::HirLoopRegionId
 pub perl_parser_core::hir::HirExpr::Loop::update: core::option::Option<perl_parser_core::hir::HirExprId>
 pub perl_parser_core::hir::HirExpr::Match(perl_parser_core::hir::HirRegexMatch)
 pub perl_parser_core::hir::HirExpr::Opaque
@@ -1375,18 +1379,23 @@ pub fn perl_parser_core::hir::HirRegexTarget::clone(&self) -> perl_parser_core::
 pub fn perl_parser_core::hir::HirRegexTarget::eq(&self, other: &perl_parser_core::hir::HirRegexTarget) -> bool
 pub fn perl_parser_core::hir::HirRegexTarget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_parser_core::hir::HirStmt
+pub perl_parser_core::hir::HirStmt::Block(perl_parser_core::hir::HirBlockId)
 pub perl_parser_core::hir::HirStmt::Expr(perl_parser_core::hir::HirExprId)
 pub perl_parser_core::hir::HirStmt::Let
+pub perl_parser_core::hir::HirStmt::Let::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::HirStmt::Let::binding_range: perl_position_tracking::span::SourceLocation
 pub perl_parser_core::hir::HirStmt::Let::init: core::option::Option<perl_parser_core::hir::HirExprId>
 pub perl_parser_core::hir::HirStmt::Let::name: alloc::string::String
 pub perl_parser_core::hir::HirStmt::Let::sigil: perl_parser_core::hir::Sigil
 pub perl_parser_core::hir::HirStmt::Let::storage: perl_parser_core::hir::DeclStorageClass
 pub perl_parser_core::hir::HirStmt::LoopControl
-pub perl_parser_core::hir::HirStmt::LoopControl::target_label: core::option::Option<alloc::string::String>
+pub perl_parser_core::hir::HirStmt::LoopControl::resolution: perl_parser_core::hir::LoopControlResolution
+pub perl_parser_core::hir::HirStmt::LoopControl::resolved_target: core::option::Option<perl_parser_core::hir::HirLoopRegionId>
 pub perl_parser_core::hir::HirStmt::LoopControl::verb: perl_parser_core::hir::LoopControlVerb
+pub perl_parser_core::hir::HirStmt::LoopControl::written_label: core::option::Option<alloc::string::String>
 pub perl_parser_core::hir::HirStmt::PostfixCondition
 pub perl_parser_core::hir::HirStmt::PostfixCondition::condition: perl_parser_core::hir::HirExprId
+pub perl_parser_core::hir::HirStmt::PostfixCondition::postfix_loop_region: core::option::Option<perl_parser_core::hir::HirLoopRegionId>
 pub perl_parser_core::hir::HirStmt::PostfixCondition::statement: perl_parser_core::hir::HirStmtId
 pub perl_parser_core::hir::HirStmt::PostfixCondition::verb: perl_parser_core::hir::StatementModifierKind
 pub fn perl_parser_core::hir::HirStmt::clone(&self) -> perl_parser_core::hir::HirStmt
@@ -1423,6 +1432,15 @@ pub fn perl_parser_core::hir::LiteralKind::clone(&self) -> perl_parser_core::hir
 pub fn perl_parser_core::hir::LiteralKind::eq(&self, other: &perl_parser_core::hir::LiteralKind) -> bool
 pub fn perl_parser_core::hir::LiteralKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::LiteralKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub perl_parser_core::hir::LoopControlResolution::NoEnclosingLoop
+pub perl_parser_core::hir::LoopControlResolution::NonLoopTarget
+pub perl_parser_core::hir::LoopControlResolution::NonLoopTarget::label: alloc::string::String
+pub perl_parser_core::hir::LoopControlResolution::Resolved
+pub perl_parser_core::hir::LoopControlResolution::UnresolvedLabel
+pub perl_parser_core::hir::LoopControlResolution::UnresolvedLabel::label: alloc::string::String
+pub fn perl_parser_core::hir::LoopControlResolution::clone(&self) -> perl_parser_core::hir::LoopControlResolution
+pub fn perl_parser_core::hir::LoopControlResolution::eq(&self, other: &perl_parser_core::hir::LoopControlResolution) -> bool
+pub fn perl_parser_core::hir::LoopControlResolution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub perl_parser_core::hir::LoopKind::CStyleFor
 pub perl_parser_core::hir::LoopKind::Foreach
 pub perl_parser_core::hir::LoopKind::Until
@@ -1929,6 +1947,21 @@ pub perl_parser_core::hir::HirItem::scope_context: core::option::Option<perl_par
 pub fn perl_parser_core::hir::HirItem::clone(&self) -> perl_parser_core::hir::HirItem
 pub fn perl_parser_core::hir::HirItem::eq(&self, other: &perl_parser_core::hir::HirItem) -> bool
 pub fn perl_parser_core::hir::HirItem::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::hir::HirLoopLabel
+pub perl_parser_core::hir::HirLoopLabel::name: alloc::string::String
+pub perl_parser_core::hir::HirLoopLabel::range: perl_position_tracking::span::SourceLocation
+pub fn perl_parser_core::hir::HirLoopLabel::clone(&self) -> perl_parser_core::hir::HirLoopLabel
+pub fn perl_parser_core::hir::HirLoopLabel::eq(&self, other: &perl_parser_core::hir::HirLoopLabel) -> bool
+pub fn perl_parser_core::hir::HirLoopLabel::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_parser_core::hir::HirLoopRegionId(_)
+pub fn perl_parser_core::hir::HirLoopRegionId::as_u32(self) -> u32
+pub fn perl_parser_core::hir::HirLoopRegionId::as_usize(self) -> usize
+pub fn perl_parser_core::hir::HirLoopRegionId::clone(&self) -> perl_parser_core::hir::HirLoopRegionId
+pub fn perl_parser_core::hir::HirLoopRegionId::cmp(&self, other: &perl_parser_core::hir::HirLoopRegionId) -> core::cmp::Ordering
+pub fn perl_parser_core::hir::HirLoopRegionId::eq(&self, other: &perl_parser_core::hir::HirLoopRegionId) -> bool
+pub fn perl_parser_core::hir::HirLoopRegionId::partial_cmp(&self, other: &perl_parser_core::hir::HirLoopRegionId) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_parser_core::hir::HirLoopRegionId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_parser_core::hir::HirLoopRegionId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub perl_parser_core::hir::HirRegex::analysis: perl_parser_core::hir::RegexAnalysisAnchor
 pub perl_parser_core::hir::HirRegex::embedded_code: bool
 pub perl_parser_core::hir::HirRegex::modifiers: alloc::string::String
@@ -1985,6 +2018,7 @@ pub fn perl_parser_core::hir::HirTransliteration::eq(&self, other: &perl_parser_
 pub fn perl_parser_core::hir::HirTransliteration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::hir::HirVariable
 pub perl_parser_core::hir::HirVariable::access: perl_parser_core::hir::AccessMode
+pub perl_parser_core::hir::HirVariable::binding: core::option::Option<perl_parser_core::hir::HirBindingId>
 pub perl_parser_core::hir::HirVariable::kind: perl_parser_core::hir::VariableKind
 pub perl_parser_core::hir::HirVariable::name: alloc::string::String
 pub perl_parser_core::hir::HirVariable::sigil: perl_parser_core::hir::Sigil
@@ -2449,8 +2483,6 @@ pub fn perl_parser_core::path_security::resolve_completion_base_directory(dir_pa
 pub fn perl_parser_core::path_security::sanitize_completion_path_input(path: &str) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::path_security::split_completion_path_components(path: &str) -> (alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::path_security::validate_workspace_path(path: &std::path::Path, workspace_root: &std::path::Path) -> core::result::Result<std::path::PathBuf, perl_parser_core::syntax::path_security::WorkspacePathError>
-pub mod perl_parser_core::percentile
-pub fn perl_parser_core::percentile::nearest_rank_percentile(sorted_values: &[u64], pct: u64) -> u64
 pub mod perl_parser_core::pir
 pub enum perl_parser_core::pir::BuildKind
 pub perl_parser_core::pir::BuildKind::NewBuild
@@ -3331,6 +3363,7 @@ pub perl_parser_core::syntax::error::ParseError::UnexpectedToken::found: alloc::
 pub perl_parser_core::syntax::error::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor
@@ -3526,8 +3559,6 @@ pub fn perl_parser_core::syntax::path_security::resolve_completion_base_director
 pub fn perl_parser_core::syntax::path_security::sanitize_completion_path_input(path: &str) -> core::option::Option<alloc::string::String>
 pub fn perl_parser_core::syntax::path_security::split_completion_path_components(path: &str) -> (alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::syntax::path_security::validate_workspace_path(path: &std::path::Path, workspace_root: &std::path::Path) -> core::result::Result<std::path::PathBuf, perl_parser_core::syntax::path_security::WorkspacePathError>
-pub mod perl_parser_core::syntax::percentile
-pub fn perl_parser_core::syntax::percentile::nearest_rank_percentile(sorted_values: &[u64], pct: u64) -> u64
 pub mod perl_parser_core::syntax::qualified_name
 pub enum perl_parser_core::syntax::qualified_name::QualifiedNameError
 pub perl_parser_core::syntax::qualified_name::QualifiedNameError::EmptyName
@@ -4157,6 +4188,7 @@ pub perl_parser_core::ParseError::UnexpectedToken::found: alloc::string::String
 pub perl_parser_core::ParseError::UnexpectedToken::location: usize
 pub fn perl_parser_core::syntax::error::ParseError::blocks_clean_parse(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::diagnostic_anchor(&self) -> perl_parser_core::syntax::error::ParseDiagnosticAnchor
+pub fn perl_parser_core::syntax::error::ParseError::is_recursion_limit(&self) -> bool
 pub fn perl_parser_core::syntax::error::ParseError::location(&self) -> core::option::Option<usize>
 pub fn perl_parser_core::syntax::error::ParseError::nested_quantifier_advisory(location: usize) -> Self
 pub fn perl_parser_core::syntax::error::ParseError::resolved_diagnostic_anchor(&self, source: &str) -> perl_parser_core::syntax::error::ResolvedParseDiagnosticAnchor

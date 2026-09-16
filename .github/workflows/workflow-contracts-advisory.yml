@@ -30,6 +30,8 @@ on:
       - "xtask/src/tasks/workflow_policy_lint.rs"
       - "policy/workflow-contracts.toml"
       - ".ci/receipts/schemas/workflow-contracts.schema.json"
+      - "xtask/src/main.rs"
+      - "xtask/src/tasks/mod.rs"
   push:
     branches: [main]
     paths:
@@ -37,6 +39,8 @@ on:
       - "scripts/ci/test_codecov_test_results_workflows.py"
       - "xtask/src/tasks/workflows.rs"
       - "policy/workflow-contracts.toml"
+      - "xtask/src/main.rs"
+      - "xtask/src/tasks/mod.rs"
   workflow_dispatch: {}
 
 permissions:

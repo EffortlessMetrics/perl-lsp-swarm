@@ -1054,7 +1054,10 @@ impl BodyLowerer {
             None => return,
         };
         match stmt {
-            HirStmt::Let { name, sigil, storage, init, binding_range } => {
+            // `binding` (#14166) is deliberately not consumed here yet: threading
+            // canonical binding identity and storage class into PIR facts is
+            // #6659 item 2, a separate slice.
+            HirStmt::Let { name, sigil, storage, init, binding_range, binding: _ } => {
                 if *storage == DeclStorageClass::Unknown {
                     // Parser-shaped legacy calls (for example `field $x = 1`)
                     // do not bind a lexical declaration. For `Unknown` storage
@@ -1158,6 +1161,16 @@ impl BodyLowerer {
             HirStmt::Expr(expr_id) => {
                 self.lower_expr(body, *expr_id, file);
             }
+            HirStmt::Block(block_id) => {
+                // A bare block executes its statements in order in the
+                // enclosing flow, so walk them rather than treating the block
+                // as one opaque statement (#13249).
+                if let Some(nested) = body.block(*block_id) {
+                    for nested_stmt in nested.stmts.clone() {
+                        self.lower_stmt(body, nested_stmt, file);
+                    }
+                }
+            }
             HirStmt::LoopControl { .. } => {
                 *self.unsupported.entry("LoopControl").or_insert(0) += 1;
                 // Loop-control transfers (`last`/`next`/`redo`) do not emit a
@@ -1166,7 +1179,7 @@ impl BodyLowerer {
                 // this body inherit a spurious fallthrough predecessor.
                 self.last_in_scope.remove(&None);
             }
-            HirStmt::PostfixCondition { statement, condition, verb } => {
+            HirStmt::PostfixCondition { statement, condition, verb, .. } => {
                 *self.unsupported.entry("PostfixCondition").or_insert(0) += 1;
                 let statement_first_modifier =
                     matches!(verb, StatementModifierKind::While | StatementModifierKind::Until);
