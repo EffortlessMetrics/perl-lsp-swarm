@@ -1,7 +1,8 @@
 name: Droid Tag
 
 # Explicit, authorized PR mentions only. Automatic review/security stay paused.
-# This interactive lane is not the immutable-tool/publisher isolation in #6098.
+# The model runs behind droid-action-safe's isolated review boundary; GitHub
+# publication authority remains deterministic and credential-separated.
 on:
   issue_comment:
     types: [created]
@@ -24,16 +25,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
-      # Keep one current/pending run per PR while separating this hosted generation
-      # from the stale pre-repair self-hosted queue.
-      group: droid-mention-hosted-v1-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      group: droid-mention-hosted-v2-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
       issues: write
-      id-token: write
-      actions: read
     steps:
       - name: Create private Droid runtime
         id: runtime
@@ -43,7 +40,7 @@ jobs:
           umask 077
           droid_home=$(mktemp -d "${RUNNER_TEMP:?}/droid-home.XXXXXXXX")
           echo "home=$droid_home" >> "$GITHUB_OUTPUT"
-          mkdir -p "$droid_home/.factory" "$droid_home/.local/bin"
+          mkdir -p "$droid_home/.local/bin"
           {
             echo "HOME=$droid_home"
             echo "GH_CONFIG_DIR=$droid_home/.config/gh"
@@ -53,8 +50,6 @@ jobs:
             echo "FACTORY_DROID_AUTO_UPDATE_ENABLED=false"
           } >> "$GITHUB_ENV"
           echo "$droid_home/.local/bin" >> "$GITHUB_PATH"
-          # The native action uses this fixed runner-temp directory for both passes.
-          rm -rf -- "${RUNNER_TEMP:?}/droid-prompts"
 
       - name: Install verified GitHub CLI before Droid preparation
         shell: bash
@@ -160,57 +155,16 @@ jobs:
           fi
           echo "path=$binary" >> "$GITHUB_OUTPUT"
 
-      - name: Configure MiniMax M3 BYOK
-        shell: bash
-        env:
-          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
-          FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          for name in ("MINIMAX_API_KEY", "FACTORY_API_KEY"):
-              if not os.environ.get(name, "").strip():
-                  raise SystemExit(f"Required repository/organization secret is missing: {name}")
-          settings = {"customModels": [{
-              "displayName": "MiniMax-M3",
-              "model": "MiniMax-M3",
-              "baseUrl": "https://api.minimax.io/anthropic",
-              "apiKey": os.environ["MINIMAX_API_KEY"],
-              "provider": "anthropic",
-              "maxOutputTokens": 64000,
-              "noImageSupport": True,
-              "extraArgs": {"temperature": 1},
-          }]}
-          path = Path.home() / ".factory" / "settings.local.json"
-          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-          with os.fdopen(fd, "w") as output:
-              json.dump(settings, output)
-              output.write("\n")
-          PY
-
-      - name: Run Droid with MiniMax M3 BYOK
-        uses: EffortlessMetrics/droid-action-safe@22d9c91d516983f637dfee20cb8035a8ba229d35 # dev (2026-09-06)
-        env:
-          ANTHROPIC_API_KEY: ""
-          ANTHROPIC_AUTH_TOKEN: ""
-          ANTHROPIC_BASE_URL: ""
-          FACTORY_DROID_AUTO_UPDATE_ENABLED: "false"
+      - name: Run isolated Droid review with MiniMax M3
+        uses: EffortlessMetrics/droid-action-safe/isolated-review@2e37d0ac790aeca76856628dc8e6ee186abf87cd # dev merge of #7 (2026-09-16)
         with:
+          github_token: ${{ github.token }}
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
+          minimax_api_key: ${{ secrets.MINIMAX_API_KEY }}
           expected_head_sha: ${{ steps.subject.outputs.head }}
           path_to_droid_executable: ${{ steps.droid_cli.outputs.path }}
-          additional_permissions: "actions: read"
-          automatic_review: false
-          automatic_security_review: false
-          upload_debug_artifacts: false
-          review_depth: shallow
-          review_model: "custom:MiniMax-M3-0"
-          security_model: "custom:MiniMax-M3-0"
-          fill_model: "custom:MiniMax-M3-0"
-          show_full_output: false
+          expected_droid_version: "0.219.0"
+          phase_timeout_minutes: "10"
 
       - name: Remove private Droid runtime
         if: always() && steps.runtime.outputs.home != ''
