@@ -793,10 +793,11 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
         },
         DefaultCheck {
             name: "native_formatter_branch_uses_native_provider",
-            passed: formatting_provider_source.contains("FormatterMode::Native =>")
-                && formatting_provider_source.contains("Ok(native_format_document")
-                && formatting_provider_source.contains("Ok(native_format_range"),
-            detail: "the native formatter branch renders through native_format_*".to_string(),
+            passed: formatting_provider_source
+                .contains("FormatterMode::Native =>")
+                && formatting_provider_source.contains("self.native_document_decision(")
+                && formatting_provider_source.contains("self.native_range_decision("),
+            detail: "the native formatter branch renders through native_*_decision".to_string(),
         },
         DefaultCheck {
             name: "external_formatter_requires_external_legacy_mode",
@@ -2124,7 +2125,7 @@ color = 1
             r#"
 match self.mode {
     FormatterMode::Native => {
-        Ok(native_format_document(content, options, self.perltidy_config.as_ref()))
+        self.native_document_decision(content, options, context, counters)
     }
     }
     FormatterMode::ExternalLegacy => self.external_document_decision(
@@ -2145,7 +2146,7 @@ match self.mode {
 }
 match self.mode {
     FormatterMode::Native => {
-        Ok(native_format_range(content, range, options, self.perltidy_config.as_ref()))
+        self.native_range_decision(content, range, options, context, counters)
     }
     }
     FormatterMode::ExternalLegacy if is_whole_document_range(content, range) => {
