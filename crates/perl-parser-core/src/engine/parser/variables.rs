@@ -953,6 +953,72 @@ impl<'a> Parser<'a> {
 
             (name, end)
         } else {
+            // Reject bare double-sigil constructs like `@@`, `%%`, `**`, `&&`
+            // when the first sigil is not `$` (issue #15750). The `$` sigil has
+            // many special-variable forms — $$ PID, $@ eval error, $! system
+            // error, $? / $^X / $# / $0 / $:: / $: — that are dispatched in
+            // the `match self.peek_kind()` arm below. For `@`, `%`, `*`, `&`,
+            // the only valid second tokens are `$` (unbraced dereference
+            // target like `@$ref`, handled in the ScalarSigil arm and at
+            // line 1189) and `{` (braced dereference, handled at line 1134
+            // and 1167). Anything else is a syntax error: surface it via
+            // UnexpectedToken + ERROR node so statement-boundary recovery
+            // can engage instead of silently misparsing garbage.
+            if sigil != "$" {
+                let bad_kind = self.peek_kind();
+                let is_bad_double_sigil = matches!(
+                    bad_kind,
+                    Some(
+                        TokenKind::ArraySigil
+                            | TokenKind::HashSigil
+                            | TokenKind::SubSigil
+                            | TokenKind::GlobSigil
+                            | TokenKind::Percent
+                            | TokenKind::BitwiseAnd
+                            | TokenKind::Star
+                    )
+                );
+                if is_bad_double_sigil {
+                    let bad_token = self.tokens.peek().ok().cloned();
+                    let bad_text = bad_token
+                        .as_ref()
+                        .map(|t| t.text.to_string())
+                        .unwrap_or_default();
+                    let expected = format!(
+                        "identifier, '{{', or '$' after '{}' sigil",
+                        sigil
+                    );
+                    let found = if bad_text.is_empty() {
+                        "end of input".to_string()
+                    } else {
+                        bad_text.clone()
+                    };
+                    // Consume the second sigil so the parser advances and
+                    // does not loop on the same token. Subsequent bad
+                    // sigils or following garbage will surface in their own
+                    // ERROR nodes, which is the honest shape v3 owes its
+                    // callers.
+                    let consumed = self.tokens.next()?;
+                    let end = consumed.end();
+                    let node = self.recover_from_error(
+                        format!(
+                            "bare '{}' sigil followed by another sigil — \
+                             not a valid Perl variable",
+                            sigil
+                        ),
+                        expected,
+                        found,
+                        start,
+                    );
+                    // Tighten the recovered node's span to cover both
+                    // sigils so downstream tooling can localize the error
+                    // to the actual bad region.
+                    let mut node = node;
+                    node.location.end = end;
+                    return Ok(node);
+                }
+            }
+
             // Handle special variables like $$, $@, $!, $?, etc.
             match self.peek_kind() {
                 Some(TokenKind::ScalarSigil) => {

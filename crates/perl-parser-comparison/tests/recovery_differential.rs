@@ -30,7 +30,7 @@
 //!
 //! | Case | v1 (tree-sitter-c) | v2 (Pest) | v3 (recursive-descent) |
 //! |------|-------------------|-----------|------------------------|
-//! | trailing_garbage | NoRecovery | PartialRecovery | PartialRecovery |
+//! | trailing_garbage | NoRecovery | PartialRecovery | FullRecovery |
 //! | unclosed_brace | PartialRecovery | NoRecovery | FullRecovery |
 //! | unclosed_string | NoRecovery | FullRecovery* | NoRecovery |
 //! | unclosed_quote_like | NoRecovery | NoRecovery | FullRecovery |
@@ -193,7 +193,10 @@ fn assert_recovery(
 /// **Observed verdicts:**
 /// - v1 (tree-sitter): NoRecovery - ERROR node absorbs all post-garbage tokens
 /// - v2 (Pest): PartialRecovery - recovers `suffix` but `@@@` disrupts the sub
-/// - v3 (recursive-descent): PartialRecovery - synchronizes but `@@@` disrupts `sub`
+/// - v3 (recursive-descent): FullRecovery - rejects the bare `@` sigil chain
+///   with an UnexpectedToken diagnostic and an ERROR node (issue #15750),
+///   then synchronizes to the next statement boundary and finds both
+///   markers
 #[test]
 fn recovery_01_trailing_garbage_mid_file() {
     let src = r#"
@@ -210,8 +213,10 @@ my $suffix = 3;
     assert_recovery(&v1, &RecoveryVerdict::NoRecovery, "v1", "trailing_garbage_mid_file");
     // v2: partially misparses; finds `suffix` but not `post_error_sub`
     assert_recovery(&v2, &RecoveryVerdict::PartialRecovery, "v2", "trailing_garbage_mid_file");
-    // v3: synchronizes at statement boundaries; partial recovery
-    assert_recovery(&v3, &RecoveryVerdict::PartialRecovery, "v3", "trailing_garbage_mid_file");
+    // v3: rejects bare `@` chains with an ERROR node + UnexpectedToken
+    // diagnostic, then synchronizes to the next statement boundary and
+    // finds both `post_error_sub` and `suffix` (#15750).
+    assert_recovery(&v3, &RecoveryVerdict::FullRecovery, "v3", "trailing_garbage_mid_file");
 }
 
 // --- Recovery Case 2: Unclosed brace -----------------------------------------
