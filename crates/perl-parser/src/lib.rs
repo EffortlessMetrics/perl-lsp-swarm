@@ -179,8 +179,6 @@ pub mod heredoc_anti_patterns;
 pub use perl_parser_core::path_normalize;
 /// Workspace-bound path validation and traversal prevention (previously `perl-path-security`; from perl-parser-core).
 pub use perl_parser_core::path_security;
-/// Nearest-rank percentile helpers for integer latency samples (previously `perl-percentile`; from perl-parser-core).
-pub use perl_parser_core::percentile;
 /// Perl qualified-name parsing, splitting, and validation helpers (previously `perl-qualified-name`; from perl-parser-core).
 pub use perl_parser_core::qualified_name;
 /// Shared Perl source-file classification helpers (previously `perl-source-file`; from perl-parser-core).
