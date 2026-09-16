@@ -18,9 +18,12 @@
 //!
 //! Reachability primitives are reused from [`super::workflow_policy_lint`],
 //! not duplicated: `workflow_on`, `triggers`, `is_pull_request`,
-//! `is_pull_request_target`, `job_is_statically_excluded_from_pr`,
-//! `condition_excludes_pull_request`, `split_top_level`,
-//! `strip_outer_parentheses`.
+//! `is_pull_request_target`, `condition_excludes_pull_request`,
+//! `split_top_level`, `strip_outer_parentheses`. Candidate-event exclusion
+//! is *not* reused from the lint crate: it is re-asked per candidate event
+//! by `condition_statically_excludes_candidate_events` (the lint crate's
+//! answer only proves `pull_request` exclusion, and `merge_group` is a
+//! candidate event here).
 //!
 //! Interpretive choices this deriver makes where the build spec leaves the
 //! exact algorithm unstated (documented here so a reviewer can challenge
@@ -30,15 +33,15 @@
 //!   set, by descending priority: `candidate` (any PR-adjacent trigger) >
 //!   `merge_result` (`merge_group`) > `default_branch` (`push`) >
 //!   `fixed_trusted_ref` (`workflow_dispatch`/`schedule`) > `other`.
-//! - a composite action's cache reference (`setup-rust`, `setup-perl-lsp`)
-//!   always lives in the `dormant` array, never in `families` — the row
-//!   `id` scheme (`<workflow-stem>/<job>/<ordinal>`) has no natural `job`
-//!   for a composite action's own `runs.steps`. "Dormant unless an active
-//!   workflow step uses that composite action" is expressed by that row's
-//!   `writer_disposition`/`notes`, not by array placement: a referenced
-//!   composite (e.g. `main-history-event.yml` uses `setup-rust`) borrows its
-//!   caller's trigger set for reachability and gets `not_candidate_reachable`
-//!   (`main-history-event.yml` is `push`-only); an unreferenced composite
+//! - a composite action's cache reference lives in `families` when the
+//!   composite has an active caller (composite steps run inline within
+//!   their callers, so the site is active behavior and must be in the
+//!   active denominator), and in `dormant` only when the composite has no
+//!   active caller — matching `docs/ci/cache-policy.md`. The row `id`
+//!   scheme (`<composite-action-path>/<ordinal>`) carries the `job:
+//!   composite-action` marker, and a referenced composite (e.g.
+//!   `main-history-event.yml` uses `setup-rust`) borrows its caller's
+//!   trigger set for reachability; an unreferenced composite
 //!   (`setup-perl-lsp`, referenced only from documentation) gets
 //!   `statically_dead` with a note explaining there is no active caller.
 //! - `payload_class` for `Swatinem/rust-cache` is always `cargo_target`
@@ -105,8 +108,8 @@ use serde_json::Value as JsonValue;
 use serde_yaml_ng::{Mapping, Value};
 
 use crate::tasks::workflow_policy_lint::{
-    condition_excludes_pull_request, is_pull_request_target, job_is_statically_excluded_from_pr,
-    split_top_level, strip_outer_parentheses, triggers, workflow_on,
+    condition_excludes_pull_request, is_pull_request_target, split_top_level,
+    strip_outer_parentheses, triggers, workflow_on,
 };
 use crate::utils::project_root;
 
@@ -114,6 +117,20 @@ use crate::utils::project_root;
 pub const SCHEMA: &str = "ci_cache_receipt.v1";
 /// Schema id for the checked-in manifest.
 pub const INVENTORY_SCHEMA: &str = "ci_cache_inventory.v1";
+/// The only schema version this producer knows how to emit and validate.
+pub const SUPPORTED_API_VERSION: &str = "v1";
+
+/// Fail loudly when a caller pins a schema version this producer cannot
+/// emit, instead of silently handing over a shape it does not parse.
+fn ensure_supported_api_version(api_version: &str) -> Result<()> {
+    if api_version != SUPPORTED_API_VERSION {
+        bail!(
+            "unsupported --api-version `{api_version}`: this producer pins \
+             `{SUPPORTED_API_VERSION}` (receipt {SCHEMA}, manifest {INVENTORY_SCHEMA})"
+        );
+    }
+    Ok(())
+}
 /// Checked-in durable inventory this task derives and diffs against.
 pub const MANIFEST: &str = ".ci/ci-cache/cache-inventory.v1.json";
 
@@ -379,6 +396,90 @@ fn is_statically_dead(condition: Option<&str>) -> bool {
     })
 }
 
+/// Inventory-specific exclusion proof: the condition must be provably false
+/// under *every* candidate event present in the workflow's trigger set.
+/// [`super::workflow_policy_lint::condition_excludes_pull_request`] answers
+/// a narrower question — it treats a `merge_group` anchor as trusted because
+/// merge-group content passed review — but `merge_group` is itself a
+/// candidate event in this inventory, so promoting that answer to
+/// `statically_excluded` would drop a merge-group-only cache site from the
+/// candidate denominator. This predicate re-asks the exclusion question per
+/// candidate trigger. When the workflow's trigger set has no candidate event
+/// at all this returns false, so reachability resolves to the more precise
+/// `not_candidate_event` instead of shadowing it with `statically_excluded`.
+fn condition_statically_excludes_candidate_events(
+    condition: Option<&str>,
+    trigger_event_set: &[String],
+) -> bool {
+    let Some(condition) = condition else {
+        return false;
+    };
+    let condition = strip_expr_wrapper(condition);
+    let candidate_triggers: Vec<&String> = trigger_event_set
+        .iter()
+        .filter(|event| CANDIDATE_EVENTS.contains(&event.as_str()))
+        .collect();
+    if candidate_triggers.is_empty() {
+        return false;
+    }
+    candidate_triggers.iter().all(|event| condition_excludes_candidate_event(condition, event))
+}
+
+/// True when the condition cannot hold when `github.event_name == event`.
+/// Sound only for the equality-anchored subset of expressions: any other
+/// term fails the proof and the site stays reachable (conservative).
+fn condition_excludes_candidate_event(condition: &str, event: &str) -> bool {
+    let Some(condition) = strip_outer_parentheses(condition) else {
+        return false;
+    };
+    let Some(branches) = split_top_level(condition, "||") else {
+        return false;
+    };
+    !branches.is_empty()
+        && branches.iter().all(|branch| branch_excludes_candidate_event(branch, event))
+}
+
+fn branch_excludes_candidate_event(branch: &str, event: &str) -> bool {
+    let Some(branch) = strip_outer_parentheses(branch) else {
+        return false;
+    };
+    let Some(or_branches) = split_top_level(branch, "||") else {
+        return false;
+    };
+    if or_branches.len() > 1 {
+        return or_branches.iter().all(|branch| branch_excludes_candidate_event(branch, event));
+    }
+    let Some(terms) = split_top_level(branch, "&&") else {
+        return false;
+    };
+    !terms.is_empty() && terms.iter().any(|term| term_excludes_candidate_event(term, event))
+}
+
+fn term_excludes_candidate_event(term: &str, event: &str) -> bool {
+    let Some(stripped_once) = strip_outer_parentheses(term) else {
+        return false;
+    };
+    let normalized: String = stripped_once.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if let Some(rest) = normalized.strip_prefix("github.event_name==") {
+        // The remainder must be exactly one quoted literal — an `||`/`&&`
+        // chain merely *starting* with an equality is not a single anchor,
+        // so reject any second quote inside the span.
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 2
+            && (bytes[0] == b'\'' || bytes[0] == b'"')
+            && bytes[bytes.len() - 1] == bytes[0]
+            && !rest[1..rest.len() - 1].contains(&rest[0..1])
+        {
+            let anchor = &rest[1..rest.len() - 1];
+            return anchor != event;
+        }
+    }
+    // A parenthesized sub-condition excludes the event when the sub-condition
+    // itself provably cannot hold under it (same recursive shape as the lint
+    // crate's `term_has_trusted_event_anchor`).
+    stripped_once != term && condition_excludes_candidate_event(stripped_once, event)
+}
+
 fn executed_subject_for(trigger_event_set: &[String]) -> ExecutedSubject {
     let has = |name: &str| trigger_event_set.iter().any(|t| t == name);
     if has("pull_request")
@@ -450,13 +551,21 @@ fn indirect_artifact_provenance(doc: &Value, trigger_event_set: &[String]) -> Op
 /// `github.ref == 'refs/heads/main'`/`'refs/heads/master'` (either quote
 /// style, whitespace-insensitive), or
 /// `github.ref_name == github.event.repository.default_branch` — searched
-/// through the condition's `||`/`&&` structure so it still recognizes a
-/// ref-equality term buried alongside an event check (e.g. RIPR's
-/// `seed-cache`). A condition that merely *mentions* a ref (including a
-/// negated check like `github.ref != 'refs/heads/main'`, which saves on
-/// every branch except main — the opposite of a guard) does not count:
-/// `github.ref_name` containing `github.ref` as a substring is exactly why
-/// this matches normalized full comparisons, never a bare substring.
+/// through the condition's `||`/`&&` structure. The connective semantics
+/// are load-bearing:
+/// - a top-level `&&` chain is ref-guarded when *any* term establishes the
+///   equality (all terms must hold, so the equality is forced);
+/// - a top-level `||` expression is ref-guarded only when *every* branch
+///   establishes the equality — one guarded branch cannot constrain its
+///   siblings, since `A || B` is true whenever `B` alone is true (e.g.
+///   `github.ref == 'refs/heads/main' || github.event_name == 'pull_request'`
+///   is true on pull requests with a candidate ref, so it guards nothing).
+///
+/// A condition that merely *mentions* a ref (including a negated check like
+/// `github.ref != 'refs/heads/main'`, which saves on every branch except
+/// main — the opposite of a guard) does not count: `github.ref_name`
+/// containing `github.ref` as a substring is exactly why this matches
+/// normalized full comparisons, never a bare substring.
 fn ref_literal_guard(condition: &str) -> bool {
     has_canonical_ref_equality(condition)
 }
@@ -468,7 +577,7 @@ fn has_canonical_ref_equality(condition: &str) -> bool {
     if let Some(branches) = split_top_level(condition, "||")
         && branches.len() > 1
     {
-        return branches.iter().any(|branch| has_canonical_ref_equality(branch));
+        return branches.iter().all(|branch| has_canonical_ref_equality(branch));
     }
     if let Some(terms) = split_top_level(condition, "&&")
         && terms.len() > 1
@@ -855,8 +964,14 @@ pub fn classify_workflow(name: &str, doc: &Value) -> Vec<CacheFamilyRow> {
         };
         let job_condition = condition_of(job_map);
         let job_statically_dead = is_statically_dead(job_condition.as_deref());
-        let job_statically_excluded =
-            !job_statically_dead && job_is_statically_excluded_from_pr(job_map);
+        // Inventory-specific: exclusion must hold for *every* candidate event
+        // in this workflow's trigger set, not just `pull_request` (see
+        // `condition_statically_excludes_candidate_events`).
+        let job_statically_excluded = !job_statically_dead
+            && condition_statically_excludes_candidate_events(
+                job_condition.as_deref(),
+                &trigger_event_set,
+            );
 
         let Some(steps) = mapping_get(job_map, "steps").and_then(Value::as_sequence) else {
             continue;
@@ -877,7 +992,11 @@ pub fn classify_workflow(name: &str, doc: &Value) -> Vec<CacheFamilyRow> {
             let step_statically_dead =
                 job_statically_dead || is_statically_dead(step_condition.as_deref());
             let step_statically_excluded = !step_statically_dead
-                && (job_statically_excluded || excludes_pull_request(step_condition.as_deref()));
+                && (job_statically_excluded
+                    || condition_statically_excludes_candidate_events(
+                        step_condition.as_deref(),
+                        &trigger_event_set,
+                    ));
 
             let reachability = if step_statically_dead {
                 CandidateEventReachability::StaticallyDead
@@ -1083,20 +1202,31 @@ fn find_active_caller(
     None
 }
 
+/// Classify one composite action's cache steps, split by whether the action
+/// has an active caller: a called composite runs inline inside its caller,
+/// so its rows are active-site (`families`) rows; only an unreferenced
+/// composite is `dormant`. Returns `(active, dormant)`.
 fn classify_composite_action(
     action_dir_name: &str,
     doc: &Value,
     workflow_docs: &[(String, Value)],
-) -> Vec<CacheFamilyRow> {
+) -> (Vec<CacheFamilyRow>, Vec<CacheFamilyRow>) {
     let steps = composite_cache_steps(action_dir_name, doc);
     if steps.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let caller = find_active_caller(action_dir_name, workflow_docs);
-    steps
-        .into_iter()
-        .map(|step| build_composite_row(action_dir_name, &step, caller.as_ref()))
-        .collect()
+    let mut active = Vec::new();
+    let mut dormant = Vec::new();
+    for step in steps {
+        let row = build_composite_row(action_dir_name, &step, caller.as_ref());
+        if caller.is_some() {
+            active.push(row);
+        } else {
+            dormant.push(row);
+        }
+    }
+    (active, dormant)
 }
 
 fn build_composite_row(
@@ -1262,7 +1392,14 @@ pub fn derive_families_in_dirs(
     if let Some(actions_dir) = actions {
         let composite_docs = read_composite_actions(actions_dir)?;
         for (name, doc) in &composite_docs {
-            dormant.extend(classify_composite_action(name, doc, &workflow_docs));
+            let (active, uncalled) = classify_composite_action(name, doc, &workflow_docs);
+            // A composite cache with an active caller IS active behavior:
+            // composite steps run inline within their callers, so the row
+            // belongs in the active denominator (`families`). `dormant` is
+            // reserved for composites with no active caller, per
+            // `docs/ci/cache-policy.md`.
+            families.extend(active);
+            dormant.extend(uncalled);
         }
     }
     dormant.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1415,6 +1552,20 @@ fn save_authority_reason_str(source: SaveAuthoritySource) -> &'static str {
     }
 }
 
+/// `save_eligible` separates "this step's configuration permits a save from
+/// this run" from "a save occurred" (`save_result`). A literal `save-if:
+/// false` proves the former false even without live telemetry — the step
+/// can never enter its save path — so such a row (and any restore-only or
+/// statically dead site) must not advertise eligibility.
+fn save_config_permits_save(row: &CacheFamilyRow) -> bool {
+    row.capability != Capability::RestoreOnly
+        && row.candidate_event_reachability != CandidateEventReachability::StaticallyDead
+        && !row
+            .save_condition
+            .as_deref()
+            .is_some_and(|raw| strip_expr_wrapper(raw).trim() == "false")
+}
+
 /// One observation per family, always defaulted `not_proven`/`unknown`/
 /// `unavailable` — there is no live CI telemetry hook wired to this task, so
 /// nothing here may auto-label a restore/save as work avoided (#9177 negative
@@ -1423,8 +1574,7 @@ fn observation_for(row: &CacheFamilyRow) -> CacheObservation {
     CacheObservation {
         family_id: row.id.clone(),
         restore_class: RestoreClass::Unknown,
-        save_eligible: row.capability != Capability::RestoreOnly
-            && row.candidate_event_reachability != CandidateEventReachability::StaticallyDead,
+        save_eligible: save_config_permits_save(row),
         save_result: SaveResult::Unknown,
         save_authority_reason: save_authority_reason_str(row.save_authority_source).to_string(),
         bytes_restored: None,
@@ -1607,6 +1757,19 @@ pub fn diff_inventory(derived: &[CacheFamilyRow], checked_in: &JsonValue) -> Vec
                         ));
                     }
                 }
+                // The manifest is claimed to *equal* the derived inventory,
+                // not merely contain it: a field the deriver no longer emits
+                // (obsolete or fabricated in the checked-in row) must also
+                // fail the drift gate, or regeneration would silently drop
+                // it while `--check` stayed green.
+                for field in existing_obj.keys() {
+                    if !derived_obj.contains_key(field) {
+                        diffs.push(format!(
+                            "{}: manifest field `{field}` is not part of the derived row (obsolete or fabricated; regenerate the manifest)",
+                            row.id
+                        ));
+                    }
+                }
             }
         }
     }
@@ -1687,7 +1850,17 @@ fn validate_receipt_against_schema(root: &Path, receipt: &CiCacheReceipt) -> Res
 /// - write the receipt to `--receipt <path>` (or stdout by default), and
 ///   (re)write the manifest to `--manifest <path>` (defaults to
 ///   [`MANIFEST`]) when not checking.
-pub fn run(check: bool, receipt: Option<PathBuf>, manifest: Option<PathBuf>) -> Result<()> {
+///
+/// `api_version` (CLI: `--api-version`, default `v1`) pins the schema
+/// version the caller expects; anything other than [`SUPPORTED_API_VERSION`]
+/// fails loudly instead of emitting an unparseable shape.
+pub fn run(
+    check: bool,
+    receipt: Option<PathBuf>,
+    manifest: Option<PathBuf>,
+    api_version: &str,
+) -> Result<()> {
+    ensure_supported_api_version(api_version)?;
     let root = project_root()?;
     let manifest_path = manifest.unwrap_or_else(|| root.join(MANIFEST));
 
@@ -1696,15 +1869,35 @@ pub fn run(check: bool, receipt: Option<PathBuf>, manifest: Option<PathBuf>) -> 
         Err(error) => {
             // An instrument failure must stay representable, not silently
             // read as "no caches": write the failed-instrument receipt shape
-            // before still failing the command.
+            // before still failing the command. Publication is best-effort
+            // (the command is already failing), but a suppressed write
+            // failure must not be silent — a consumer waiting on the
+            // artifact deserves a diagnostic.
             if let Some(path) = &receipt {
                 let failed =
                     build_failed_receipt(&format!("deriving the CI cache inventory: {error}"));
-                if let Ok(failed_json) = serde_json::to_string_pretty(&failed)
-                    && let Some(parent) = path.parent()
-                {
-                    let _ = fs::create_dir_all(parent);
-                    let _ = fs::write(path, &failed_json);
+                match serde_json::to_string_pretty(&failed) {
+                    Ok(failed_json) => {
+                        if let Some(parent) = path.parent() {
+                            if let Err(create_error) = fs::create_dir_all(parent) {
+                                eprintln!(
+                                    "warning: could not create {} for the ci-cache failure receipt: {create_error}",
+                                    parent.display()
+                                );
+                            }
+                        }
+                        if let Err(write_error) = fs::write(path, failed_json) {
+                            eprintln!(
+                                "warning: failed to publish the ci-cache failure receipt to {}: {write_error}",
+                                path.display()
+                            );
+                        }
+                    }
+                    Err(serialize_error) => {
+                        eprintln!(
+                            "warning: failed to serialize the ci-cache failure receipt: {serialize_error}"
+                        );
+                    }
                 }
             }
             return Err(error).with_context(|| "deriving the CI cache inventory");
@@ -2153,7 +2346,9 @@ jobs:
 
     /// 2. The optional `sccache` step inside `setup-rust` must never be counted
     /// as an active (or dormant) cache site, even though the composite action
-    /// that embeds it has an active caller.
+    /// that embeds it has an active caller. The composite's Swatinem step
+    /// itself has an active caller, so it is an active-site row (`families`),
+    /// not dormant.
     #[test]
     fn negative_control_2_dormant_optional_sccache_is_never_a_cache_site() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -2174,9 +2369,15 @@ jobs:
             "sccache must never be classified as a cache site: {all_actions:?}"
         );
         assert_eq!(
-            inventory.dormant.len(),
+            inventory.families.len(),
             1,
-            "exactly the Swatinem step must be classified: {:#?}",
+            "exactly the Swatinem step must be classified, as an active site: {:#?}",
+            inventory.families
+        );
+        assert_eq!(
+            inventory.dormant.len(),
+            0,
+            "a called composite's cache row must not land in dormant: {:#?}",
             inventory.dormant
         );
     }
@@ -2637,5 +2838,222 @@ jobs:
         let row = &inventory.families[0];
         assert_eq!(row.candidate_event_reachability, CandidateEventReachability::NotCandidateEvent);
         assert_eq!(row.key_authority, KeyAuthority::Trusted);
+    }
+
+    // -----------------------------------------------------------------------
+    // Review-repair regressions (#15581 review dispositions)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn or_branch_without_a_ref_guard_does_not_bless_the_expression() {
+        // `A || B` is true whenever B alone is true, so one guarded branch
+        // cannot constrain its siblings: a PR-true branch next to a ref
+        // equality must NOT read as a ref guard, or the row reads
+        // `trusted_guarded` while the candidate saves.
+        assert!(!ref_literal_guard(
+            "github.ref == 'refs/heads/main' || github.event_name == 'pull_request'"
+        ));
+        // Every branch guarding is still a guard.
+        assert!(ref_literal_guard(
+            "github.ref == 'refs/heads/main' || github.ref == format(\"refs/heads/{0}\", \
+             github.event.repository.default_branch)"
+        ));
+        // AND semantics are unchanged: any term establishing the equality
+        // forces it (all terms must hold).
+        assert!(ref_literal_guard(
+            "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+        ));
+    }
+
+    const MERGE_GROUP_ONLY_JOB_WORKFLOW: &str = r#"
+on:
+  pull_request:
+  merge_group:
+jobs:
+  merge-group-cache:
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@abf7c9fde3ce4c7b1f2a2b9a2b8e2b9a2b8e2b9a
+        with:
+          path: target/merge-group
+          key: merge-group-${{ github.sha }}
+"#;
+
+    #[test]
+    fn merge_group_only_job_in_a_mixed_trigger_workflow_is_not_statically_excluded() {
+        // `merge_group` is itself a candidate event: a job gated to it in a
+        // workflow that also runs on pull_request is candidate-reachable and
+        // must not read as `statically_excluded` (the lint crate's PR-only
+        // exclusion answer is narrower than this inventory's question).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflows = fixture_workflows_dir(&tmp, "mixed.yml", MERGE_GROUP_ONLY_JOB_WORKFLOW);
+        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let row = find_row(&inventory.families, "mixed.yml", "merge-group-cache");
+        assert_eq!(row.candidate_event_reachability, CandidateEventReachability::Reachable);
+        assert_eq!(row.writer_disposition, WriterDisposition::CandidateWriterViolation);
+    }
+
+    #[test]
+    fn condition_anchored_off_the_candidate_event_set_is_statically_excluded() {
+        // A `push`-anchored job in a [pull_request, merge_group] workflow is
+        // provably false under every candidate trigger in that set.
+        let workflow = MERGE_GROUP_ONLY_JOB_WORKFLOW
+            .replace("if: github.event_name == 'merge_group'", "if: github.event_name == 'push'");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflows = fixture_workflows_dir(&tmp, "mixed.yml", &workflow);
+        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let row = find_row(&inventory.families, "mixed.yml", "merge-group-cache");
+        assert_eq!(
+            row.candidate_event_reachability,
+            CandidateEventReachability::StaticallyExcluded
+        );
+    }
+
+    #[test]
+    fn or_chain_starting_with_an_event_equality_is_not_one_anchor() {
+        // `(pull_request || merge_group) && outputs...` can hold under BOTH
+        // candidate events, so it excludes nothing: the anchor parser must
+        // reject an `||` chain that merely starts with an equality instead
+        // of reading the whole chain as one quoted literal.
+        assert!(!condition_excludes_candidate_event(
+            "(github.event_name == 'pull_request' || \
+                 github.event_name == 'merge_group') && needs.draft.outputs.run == 'true'",
+            "pull_request"
+        ));
+        assert!(!condition_excludes_candidate_event(
+            "(github.event_name == 'pull_request' || \
+                 github.event_name == 'merge_group') && needs.draft.outputs.run == 'true'",
+            "merge_group"
+        ));
+        // A job anchored to the other candidate event excludes that one
+        // direction only: a PR-anchored condition cannot exclude a PR.
+        assert!(condition_excludes_candidate_event(
+            "github.event_name == 'pull_request' && needs.draft.outputs.run == 'true'",
+            "merge_group"
+        ));
+        assert!(!condition_excludes_candidate_event(
+            "github.event_name == 'pull_request' && needs.draft.outputs.run == 'true'",
+            "pull_request"
+        ));
+    }
+
+    const UNCALLED_COMPOSITE_WITH_CACHE: &str = r#"
+name: 'Uncalled'
+runs:
+  using: 'composite'
+  steps:
+    - name: Cache cargo dependencies
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      with:
+        shared-key: 'perl-lsp'
+"#;
+
+    /// A `push`-only workflow whose single unguarded Swatinem step is a real
+    /// row (never a cache site by text-scan alone), used as filler so fixture
+    /// derivations contain exactly one known active site.
+    const PUSH_ONLY_UNGUARDED: &str = r#"
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: push-only-${{ hashFiles('Cargo.lock') }}
+"#;
+
+    #[test]
+    fn uncalled_composite_cache_row_stays_dormant() {
+        // `dormant` is reserved for composites with no active caller, per
+        // `docs/ci/cache-policy.md`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflows = fixture_workflows_dir(&tmp, "unrelated.yml", PUSH_ONLY_UNGUARDED);
+        let actions_dir = tmp.path().join(".github/actions");
+        write_file(&actions_dir.join("setup-uncalled/action.yml"), UNCALLED_COMPOSITE_WITH_CACHE);
+
+        let inventory =
+            derive_families_in_dirs(&workflows, Some(&actions_dir)).expect("derive inventory");
+        assert_eq!(
+            inventory.families.len(),
+            1,
+            "only the workflow's own site: {:#?}",
+            inventory.families
+        );
+        assert_eq!(
+            inventory.dormant.len(),
+            1,
+            "the uncalled composite row: {:#?}",
+            inventory.dormant
+        );
+        let dormant = &inventory.dormant[0];
+        assert_eq!(dormant.job, "composite-action");
+        assert_eq!(
+            dormant.candidate_event_reachability,
+            CandidateEventReachability::StaticallyDead,
+            "an unreferenced composite cache site never runs: {dormant:#?}"
+        );
+    }
+
+    #[test]
+    fn literal_save_if_false_row_is_not_save_eligible() {
+        // A literal `save-if: false` proves the step can never enter its
+        // save path; advertising `save_eligible: true` for it would let a
+        // consumer count rows that can never save.
+        let workflow = r#"
+on:
+  pull_request:
+jobs:
+  never-saves:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          save-if: ${{ false }}
+"#;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflows = fixture_workflows_dir(&tmp, "never-saves.yml", workflow);
+        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let row = find_row(&inventory.families, "never-saves.yml", "never-saves");
+        let observation = observation_for(row);
+        assert!(
+            !observation.save_eligible,
+            "a literal save-if: false row must not advertise save eligibility: {observation:#?}"
+        );
+        assert_eq!(observation.save_result, SaveResult::Unknown);
+    }
+
+    #[test]
+    fn manifest_extra_field_is_drift() {
+        // The manifest is claimed to *equal* the derived inventory: a field
+        // the deriver no longer emits (obsolete or fabricated) must fail
+        // the drift gate instead of silently surviving regeneration.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflows = fixture_workflows_dir(&tmp, "sample.yml", PUSH_ONLY_UNGUARDED);
+        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let mut fabricated = serde_json::to_value(&inventory.families[0]).expect("serialize row");
+        fabricated["writer_disposition_override"] = json!("trusted_guarded");
+
+        let diffs = diff_inventory(&inventory.families, &json!([fabricated]));
+        assert!(
+            diffs.iter().any(|diff| {
+                diff.contains(
+                    "manifest field `writer_disposition_override` is not part of the derived row",
+                )
+            }),
+            "a fabricated manifest field must be reported as drift, got: {diffs:?}"
+        );
+    }
+
+    #[test]
+    fn api_version_pin_rejects_unknown_versions() {
+        assert!(ensure_supported_api_version("v1").is_ok());
+        let error = ensure_supported_api_version("v2").expect_err("v2 must fail loudly");
+        assert!(
+            error.to_string().contains("unsupported --api-version `v2`"),
+            "the error must name the rejected pin: {error}"
+        );
     }
 }

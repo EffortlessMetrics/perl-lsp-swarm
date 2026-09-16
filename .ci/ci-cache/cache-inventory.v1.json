@@ -1916,6 +1916,37 @@
       "writer_disposition": "candidate_writer_violation",
       "repair_owner": "needs-follow-up-issue",
       "notes": "no save guard on a candidate-reachable writer; recorded honestly, not repaired here (#9177)"
+    },
+    {
+      "id": ".github/actions/setup-rust/action.yml/0",
+      "workflow": ".github/actions/setup-rust/action.yml",
+      "job": "composite-action",
+      "step_name": "Cache cargo dependencies",
+      "action": "Swatinem/rust-cache",
+      "action_ref": "c19371144df3bb44fab255c43d04cbc2ab54d1c4",
+      "capability": "restore_and_save",
+      "trigger_event_set": [
+        "push"
+      ],
+      "candidate_event_reachability": "not_candidate_event",
+      "executed_subject": "default_branch",
+      "job_condition": null,
+      "step_condition": "inputs.cache == 'true'",
+      "save_condition": null,
+      "save_authority_source": "absent",
+      "payload_class": "cargo_target",
+      "cached_paths": [],
+      "key_dimensions": {
+        "key": "${{ runner.os }}-${{ inputs.toolchain }}-${{ inputs.cache-key-suffix }}-${{ hashFiles('Cargo.lock') }}",
+        "shared_key": "perl-lsp",
+        "restore_keys": null
+      },
+      "key_authority": "trusted",
+      "cached_byte_provenance": "trusted_tree",
+      "artifact_provenance": null,
+      "writer_disposition": "not_candidate_reachable",
+      "repair_owner": null,
+      "notes": "reached via composite action .github/actions/setup-rust called by main-history-event.yml/classify"
     }
   ],
   "dormant": [
@@ -1949,37 +1980,6 @@
       "writer_disposition": "statically_dead",
       "repair_owner": null,
       "notes": "unreferenced composite action (setup-perl-lsp); zero active callers found under .github/workflows"
-    },
-    {
-      "id": ".github/actions/setup-rust/action.yml/0",
-      "workflow": ".github/actions/setup-rust/action.yml",
-      "job": "composite-action",
-      "step_name": "Cache cargo dependencies",
-      "action": "Swatinem/rust-cache",
-      "action_ref": "c19371144df3bb44fab255c43d04cbc2ab54d1c4",
-      "capability": "restore_and_save",
-      "trigger_event_set": [
-        "push"
-      ],
-      "candidate_event_reachability": "not_candidate_event",
-      "executed_subject": "default_branch",
-      "job_condition": null,
-      "step_condition": "inputs.cache == 'true'",
-      "save_condition": null,
-      "save_authority_source": "absent",
-      "payload_class": "cargo_target",
-      "cached_paths": [],
-      "key_dimensions": {
-        "key": "${{ runner.os }}-${{ inputs.toolchain }}-${{ inputs.cache-key-suffix }}-${{ hashFiles('Cargo.lock') }}",
-        "shared_key": "perl-lsp",
-        "restore_keys": null
-      },
-      "key_authority": "trusted",
-      "cached_byte_provenance": "trusted_tree",
-      "artifact_provenance": null,
-      "writer_disposition": "not_candidate_reachable",
-      "repair_owner": null,
-      "notes": "reached via composite action .github/actions/setup-rust called by main-history-event.yml/classify"
     }
   ]
 }

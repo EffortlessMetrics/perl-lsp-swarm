@@ -1190,6 +1190,12 @@ enum Commands {
         /// Checked-in manifest path (defaults to `ci_cache_inventory::MANIFEST`).
         #[arg(long)]
         manifest: Option<PathBuf>,
+
+        /// Schema version this producer must emit and validate. Only
+        /// `v1` is supported; anything else fails loudly instead of
+        /// emitting a shape the caller does not parse.
+        #[arg(long, default_value = "v1")]
+        api_version: String,
     },
 
     /// Classify credential derivation kinds in `.github/workflows/*.yml` (#14867).
@@ -6067,8 +6073,8 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::TestEdgeCases { bench, coverage, test } => edge_cases::run(bench, coverage, test),
         Commands::CiAuditWorkflows => ci_audit_workflows::run(),
-        Commands::CiCacheInventory { check, receipt, manifest } => {
-            ci_cache_inventory::run(check, receipt, manifest)
+        Commands::CiCacheInventory { check, receipt, manifest, api_version } => {
+            ci_cache_inventory::run(check, receipt, manifest, &api_version)
         }
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)

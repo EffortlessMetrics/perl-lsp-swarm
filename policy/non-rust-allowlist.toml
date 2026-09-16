@@ -377,6 +377,7 @@ owner = "release/ci"
 reason = "Versioned receipt schema for the derived active CI cache inventory (#9177): cache consumer/writer identity, reachability, and save-authority evidence. Grants no save authority and changes no cache behavior."
 covered_by = [
   "cargo test -p xtask --bin xtask tasks::ci_cache_inventory --locked",
+  "cargo run --locked --package xtask -- ci-cache-inventory --check",
   "cargo xtask check-file-policy",
 ]
 created = "2026-09-14"

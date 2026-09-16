@@ -1743,6 +1743,14 @@ jobs:
       - name: CI cache inventory contract (required merge surface)
         run: cargo test -p xtask --bin xtask tasks::ci_cache_inventory --locked -- --nocapture
 
+      # The unit tests above prove the deriver's logic; this proves the
+      # *producer* against the live workflow tree: the checked-in manifest
+      # `.ci/ci-cache/cache-inventory.v1.json` must equal what
+      # `ci-cache-inventory` derives right now, or the drift gate fails the
+      # merge surface instead of letting the manifest rot silently.
+      - name: CI cache inventory manifest drift gate (required merge surface)
+        run: cargo run --locked --package xtask -- ci-cache-inventory --check
+
       # Same reasoning as the Emacs contract above: the merge gate runs
       # `cargo test --workspace --lib`, so this integration test would otherwise
       # only execute via advisory pr-smoke. It guards the publish path that can
