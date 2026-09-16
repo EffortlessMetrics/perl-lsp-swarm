@@ -1185,18 +1185,19 @@ impl ParseError {
 
     /// Whether this error is one of the parser's recursion/nesting limit stops.
     ///
-    /// # The three-variant taxonomy (#15660)
+    /// # The depth-variant taxonomy (#15660)
     ///
-    /// The parser has exactly three depth-limit variants, and which one fires
-    /// depends on the nesting construct, not on severity — production treats
-    /// all three identically as non-recoverable stops (the same
-    /// `ErrorCategory::ResourceLimit` class):
+    /// Three variants make up the depth-limit contract. Production treats
+    /// them identically — non-recoverable stops in the same
+    /// `ErrorCategory::ResourceLimit` class — and every propagation filter
+    /// (`matches!` guards in statements, control flow, and hash parsing)
+    /// accepts all three together, so they must stay coherent:
     ///
-    /// | Variant | Fired by |
+    /// | Variant | Live producer |
     /// |---|---|
-    /// | [`ParseError::RecursionLimit`] | the expression-recursion budget on block-nesting shapes |
-    /// | [`ParseError::RecursionDepthExhausted`] | the production recursion guard (`check_recursion`) on parenthesized-expression shapes |
-    /// | [`ParseError::NestingTooDeep`] | the structural guards on block nesting and postfix chains |
+    /// | [`ParseError::RecursionDepthExhausted`] | the production recursion guard (`enter_recursion`/`check_recursion`) around statements, calls, hashes, unary/primary expressions, and precedence parsing |
+    /// | [`ParseError::NestingTooDeep`] | the structural guards: block nesting (`check_block_recursion`) and postfix chains |
+    /// | [`ParseError::RecursionLimit`] | **legacy, currently unproduced** — no construction site remains; kept for API compatibility and matched by the propagation filters |
     ///
     /// A fourth resource limit, [`ParseError::HeredocBudgetExhausted`], is
     /// byte-budget rather than depth and stays outside this predicate. Tests
