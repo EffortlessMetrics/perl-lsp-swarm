@@ -9,8 +9,8 @@ on:
     branches: [main, master]
 
 concurrency:
-  group: workflow-trigger-lint-bootstrap-${{ github.event.pull_request.head.sha || github.sha }}
-  cancel-in-progress: false
+  group: workflow-trigger-lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -57,6 +57,14 @@ jobs:
           args=(
             --receipt target/receipts/action-pin-provenance.json
           )
+          # pull_request jobs check out GitHub's simulated merge result, which is
+          # rebuilt whenever either side moves, while the event-time
+          # pull_request.base.sha lags it after intervening merges and charges
+          # other people's pin changes to this candidate (#10194). Resolve the
+          # merge base against the fetched base branch at run time instead;
+          # unresolvable ancestry fails closed inside the tool. The scan is
+          # bound to this subject: HEAD must be the simulated merge of this
+          # candidate head, and origin must name this repository.
           if [[ "$EVENT_NAME" == "pull_request" ]]; then
             args+=(
               --merge-base "origin/$PR_BASE_REF"
@@ -89,73 +97,3 @@ jobs:
             echo "## Workflow trigger lint found violations" >> "$GITHUB_STEP_SUMMARY"
             echo "Required-check policy in .ci/policies/required-checks.toml is enforced. Fix violations before merging." >> "$GITHUB_STEP_SUMMARY"
           fi
-
-  publish-minimax-final-blobs:
-    name: Publish validated MiniMax final blobs
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref == 'feat/gh-aw-minimax-canary' &&
-      github.event.pull_request.user.login == 'EffortlessSteven'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout exact candidate head
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Materialize and verify permanent tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/ci/materialize_minimax_agent_final.py
-          python3 -m py_compile scripts/ci/workflow_security_ratchet.py
-          python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
-          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
-            --root . \
-            --baseline .ci/workflow-security-baseline.json \
-            --baseline-root . \
-            --report "${RUNNER_TEMP:?}/workflow-security-final.json"
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          with Path('.ci/workflow-security-baseline.json').open(encoding='utf-8') as handle:
-              baseline = json.load(handle)
-          findings = baseline.get('findings', baseline.get('allowed_findings', []))
-          if len(findings) != 87:
-              raise SystemExit(f'expected 87 final findings, found {len(findings)}')
-          if any(
-              item.get('path') == '.github/workflows/minimax-agent-compile-check.yml'
-              for item in findings
-          ):
-              raise SystemExit('permanent read-only compile check still has a finding')
-          print('FINAL_TREE_FINDINGS=87')
-          PY
-          git diff --check
-
-      - name: Upload validated files as inert Git blobs
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          upload_blob() {
-            local path="$1"
-            jq -Rs '{content: ., encoding: "utf-8"}' "$path" |
-              gh api --method POST "repos/${REPOSITORY}/git/blobs" --input - --jq '.sha'
-          }
-          baseline_blob="$(upload_blob .ci/workflow-security-baseline.json)"
-          workflow_blob="$(upload_blob .github/workflows/minimax-agent-compile-check.yml)"
-          printf 'BASELINE_BLOB_SHA=%s\n' "$baseline_blob"
-          printf 'WORKFLOW_BLOB_SHA=%s\n' "$workflow_blob"
-          sha256sum \
-            .ci/workflow-security-baseline.json \
-            .github/workflows/minimax-agent-compile-check.yml

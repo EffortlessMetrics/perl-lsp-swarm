@@ -5,191 +5,104 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened]
     paths:
+      - '.github/workflows/minimax-coding-agent.md'
+      - '.github/workflows/minimax-coding-agent.lock.yml'
       - '.github/workflows/minimax-agent-compile-check.yml'
+      - '.github/aw/actions-lock.json'
+      - '.gitattributes'
+      - '.github/dependabot.yml'
+      - '.ci/workflow-security-baseline.json'
+      - '.github/workflows/workflow-security-ratchet.yml'
+      - 'scripts/ci/workflow_security_ratchet.py'
+      - 'scripts/ci/test_workflow_security_ratchet.py'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: minimax-agent-final-blob-${{ github.event.pull_request.number }}
+  group: minimax-agent-compile-check-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: false
 
 jobs:
-  publish-final-blobs:
-    if: >-
-      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref == 'feat/gh-aw-minimax-canary' &&
-      github.event.pull_request.user.login == 'EffortlessSteven'
+  compile-check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
+    timeout-minutes: 10
     steps:
-      - name: Checkout exact candidate head
+      - name: Checkout candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Materialize permanent workflow and exact baseline
+      - name: Install checksum-pinned gh-aw compiler
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
+          compiler="${RUNNER_TEMP:?}/gh-aw-v0.88.7"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            --connect-timeout 15 --max-time 180 \
+            https://github.com/github/gh-aw/releases/download/v0.88.7/linux-amd64 \
+            --output "$compiler"
+          printf '%s  %s\n' \
+            37faaaa95f622b910568bc878452f6036f01e951380fdfc41441944a95da43bf \
+            "$compiler" | sha256sum --check --status
+          chmod 0755 "$compiler"
+          "$compiler" --version
+          echo "GH_AW_COMPILER=$compiler" >> "$GITHUB_ENV"
 
-          workflow_path = Path('.github/workflows/minimax-agent-compile-check.yml')
-          baseline_path = Path('.ci/workflow-security-baseline.json')
-          permanent = '''name: MiniMax Agent Compile Check
+      - name: Verify generated authority is current
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          "$GH_AW_COMPILER" compile minimax-coding-agent \
+            --strict --verbose --approve --no-check-update
+          git diff --exit-code -- \
+            .github/workflows/minimax-coding-agent.lock.yml \
+            .github/aw/actions-lock.json \
+            .gitattributes \
+            .github/dependabot.yml
 
-          on:
-            pull_request:
-              branches: [main]
-              types: [opened, synchronize, reopened]
-              paths:
-                - '.github/workflows/minimax-coding-agent.md'
-                - '.github/workflows/minimax-coding-agent.lock.yml'
-                - '.github/workflows/minimax-agent-compile-check.yml'
-                - '.github/aw/actions-lock.json'
-                - '.gitattributes'
-                - '.github/dependabot.yml'
-            workflow_dispatch:
-
-          permissions:
-            contents: read
-
-          concurrency:
-            group: minimax-agent-compile-check-__GH_OPEN__ github.event.pull_request.number || github.run_id __GH_CLOSE__
-            cancel-in-progress: false
-
-          jobs:
-            compile-check:
-              runs-on: ubuntu-24.04
-              timeout-minutes: 10
-              steps:
-                - name: Checkout candidate
-                  uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-                  with:
-                    fetch-depth: 0
-                    persist-credentials: false
-
-                - name: Install checksum-pinned gh-aw compiler
-                  shell: bash
-                  run: |
-                    set -euo pipefail
-                    compiler="${RUNNER_TEMP:?}/gh-aw-v0.88.7"
-                    curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
-                      --connect-timeout 15 --max-time 180 \
-                      https://github.com/github/gh-aw/releases/download/v0.88.7/linux-amd64 \
-                      --output "$compiler"
-                    printf '%s  %s\\n' \
-                      37faaaa95f622b910568bc878452f6036f01e951380fdfc41441944a95da43bf \
-                      "$compiler" | sha256sum --check --status
-                    chmod 0755 "$compiler"
-                    "$compiler" --version
-                    echo "GH_AW_COMPILER=$compiler" >> "$GITHUB_ENV"
-
-                - name: Verify generated authority is current
-                  shell: bash
-                  env:
-                    GH_TOKEN: __GH_OPEN__ github.token __GH_CLOSE__
-                  run: |
-                    set -euo pipefail
-                    "$GH_AW_COMPILER" compile minimax-coding-agent \
-                      --strict --verbose --approve --no-check-update
-                    git diff --exit-code -- \
-                      .github/workflows/minimax-coding-agent.lock.yml \
-                      .github/aw/actions-lock.json \
-                      .gitattributes \
-                      .github/dependabot.yml
-          '''
-          permanent = permanent.replace('__GH_OPEN__', '${{').replace('__GH_CLOSE__', '}}')
-          lines = permanent.splitlines()
-          indent = min(
-              len(line) - len(line.lstrip())
-              for line in lines
-              if line.strip()
-          )
-          permanent = '\n'.join(line[indent:] if line.strip() else '' for line in lines) + '\n'
-          workflow_path.write_text(permanent, encoding='utf-8')
-
-          with baseline_path.open(encoding='utf-8') as handle:
-              baseline = json.load(handle)
-          findings = baseline.get('findings', baseline.get('allowed_findings'))
-          if not isinstance(findings, list):
-              raise SystemExit('baseline findings are missing')
-          target = {
-              'path': '.github/workflows/minimax-agent-compile-check.yml',
-              'rule': 'pr_write_permission',
-              'evidence': 'contents: write',
-          }
-          matches = [
-              item for item in findings
-              if all(item.get(key) == value for key, value in target.items())
-          ]
-          if len(matches) != 1:
-              raise SystemExit(f'expected one temporary finding, found {len(matches)}')
-          retained = [item for item in findings if item is not matches[0]]
-          if len(retained) != 87:
-              raise SystemExit(f'expected 87 retained findings, found {len(retained)}')
-          if 'findings' in baseline:
-              baseline['findings'] = retained
-          else:
-              baseline['allowed_findings'] = retained
-          baseline_path.write_text(
-              json.dumps(baseline, indent=2, ensure_ascii=False) + '\n',
-              encoding='utf-8',
-          )
-          PY
-
-      - name: Verify exact permanent tree
+      - name: Generate exact canonical workflow-security baseline
         shell: bash
         run: |
           set -euo pipefail
+          report="${RUNNER_TEMP:?}/workflow-security-report.json"
           python3 -m py_compile scripts/ci/workflow_security_ratchet.py
           python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output .ci/workflow-security-baseline.json
           python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
             --root . \
             --baseline .ci/workflow-security-baseline.json \
             --baseline-root . \
-            --report "${RUNNER_TEMP:?}/workflow-security-final.json"
-          python3 - <<'PY'
+            --report "$report"
+          python3 - .ci/workflow-security-baseline.json <<'PY'
           import json
-          from pathlib import Path
+          import sys
 
-          with Path('.ci/workflow-security-baseline.json').open(encoding='utf-8') as handle:
-              baseline = json.load(handle)
-          findings = baseline.get('findings', baseline.get('allowed_findings', []))
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              payload = json.load(handle)
+          findings = payload.get("findings", payload.get("allowed_findings", []))
+          compile_check_findings = [
+              item for item in findings
+              if item.get("path") == ".github/workflows/minimax-agent-compile-check.yml"
+          ]
+          if compile_check_findings:
+              raise SystemExit(
+                  f"permanent read-only compile check produced findings: {compile_check_findings!r}"
+              )
           if len(findings) != 87:
-              raise SystemExit(f'expected 87 final findings, found {len(findings)}')
-          if any(
-              item.get('path') == '.github/workflows/minimax-agent-compile-check.yml'
-              for item in findings
-          ):
-              raise SystemExit('permanent read-only compile check still has a finding')
-          print('FINAL_TREE_FINDINGS=87')
+              raise SystemExit(f"expected 87 workflow-security findings, got {len(findings)}")
+          print("generated_findings=87")
           PY
-          git diff --check
 
-      - name: Upload validated files as inert Git blobs
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          upload_blob() {
-            local path="$1"
-            jq -Rs '{content: ., encoding: "utf-8"}' "$path" |
-              gh api --method POST "repos/${REPOSITORY}/git/blobs" --input - --jq '.sha'
-          }
-          baseline_blob="$(upload_blob .ci/workflow-security-baseline.json)"
-          workflow_blob="$(upload_blob .github/workflows/minimax-agent-compile-check.yml)"
-          printf 'BASELINE_BLOB_SHA=%s\n' "$baseline_blob"
-          printf 'WORKFLOW_BLOB_SHA=%s\n' "$workflow_blob"
-          sha256sum \
-            .ci/workflow-security-baseline.json \
-            .github/workflows/minimax-agent-compile-check.yml
+      - name: Upload exact generated baseline
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: minimax-final-security-baseline-${{ github.run_id }}
+          path: .ci/workflow-security-baseline.json
+          if-no-files-found: error
