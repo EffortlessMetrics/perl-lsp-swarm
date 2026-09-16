@@ -264,11 +264,13 @@ impl<'a> Parser<'a> {
 
         let (name, name_span) = if self.peek_kind() == Some(TokenKind::DoubleColon) {
             // Leading :: qualifier — subroutine in the main package (e.g., sub ::PCDATA { })
-            let dc_token = self.tokens.next()?; // consume '::'
+            // Tracked consumption, like every other name branch: raw stream
+            // reads leave `last_end_position` stale and reverse the decl span.
+            let dc_token = self.consume_token()?;
             let name_start = dc_token.start();
             if self.peek_kind().is_some_and(Self::can_be_sub_name) {
                 // sub ::PCDATA or sub ::DB_File::splice
-                let ident_token = self.tokens.next()?;
+                let ident_token = self.consume_token()?;
                 let full_name = format!("::{}", ident_token.text);
                 (Some(full_name), Some(SourceLocation::new(name_start, ident_token.end())))
             } else {

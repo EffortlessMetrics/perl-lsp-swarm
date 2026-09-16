@@ -307,7 +307,10 @@ fn branch_form_modifier_does_not_capture_label() -> TestResult {
 fn control_flow_items_preserve_source_anchor_and_parse_confidence() -> TestResult {
     let file = lower_source("if ($x) { return 1 } else { return 2 }\n");
     for item in &file.items {
-        assert!(item.range.end() >= item.range.start(), "HIR item range should be ordered: {item:?}");
+        assert!(
+            item.range.end() >= item.range.start(),
+            "HIR item range should be ordered: {item:?}"
+        );
         assert_eq!(item.range, item.anchor.range, "anchor range mirrors item range");
         assert_eq!(item.recovery_confidence, RecoveryConfidence::Parsed);
     }

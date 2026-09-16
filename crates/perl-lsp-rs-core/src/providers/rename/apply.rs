@@ -10,13 +10,30 @@ use perl_semantic_analyzer::symbol::SymbolKind;
 
 use super::types::{RenameOptions, TextEdit};
 
-/// Adjust location to exclude sigil
+/// Adjust location to exclude sigil.
+///
+/// A zero-width (synthetic, e.g. implicit `$_`) location has no sigil to
+/// skip and is returned unchanged: widening it by the sigil length would
+/// fabricate an edit over source text the symbol never covered (with
+/// order-correcting construction, `[s, s]` would become `[s, s+1]` and
+/// rewrite e.g. the `f` in `for`). Callers skip empty spans outright.
 pub fn adjust_location_for_sigil(mut location: SourceLocation, kind: SymbolKind) -> SourceLocation {
+    if location.start() == location.end() {
+        return location;
+    }
     if let Some(sigil) = kind.sigil() {
         // Skip the sigil character
         location = SourceLocation::new(location.start() + sigil.len(), location.end());
     }
     location
+}
+
+/// Whether a symbol/reference span can carry a rename edit. Synthetic
+/// zero-width spans (e.g. implicit `$_`) cover no source text, so they are
+/// skipped at every rename collection site: adjusting them for sigils would
+/// fabricate an edit over text the symbol never covered.
+pub fn is_renamable_span(location: SourceLocation) -> bool {
+    location.start() != location.end()
 }
 
 /// Find occurrences in comments and strings, replacing `old_name` with `new_name`.
@@ -165,6 +182,18 @@ mod tests {
         let adjusted = adjust_location_for_sigil(location, SymbolKind::Variable(VarKind::Scalar));
         assert_eq!(adjusted.start(), 11);
         assert_eq!(adjusted.end(), 14);
+        Ok(())
+    }
+
+    #[test]
+    fn adjust_location_for_sigil_leaves_synthetic_zero_width_spans_untouched()
+    -> Result<(), Box<dyn Error>> {
+        let location = SourceLocation::new(7, 7);
+        let adjusted = adjust_location_for_sigil(location, SymbolKind::Variable(VarKind::Scalar));
+        assert_eq!(adjusted.start(), 7);
+        assert_eq!(adjusted.end(), 7);
+        assert!(!super::is_renamable_span(location));
+        assert!(super::is_renamable_span(SourceLocation::new(7, 9)));
         Ok(())
     }
 

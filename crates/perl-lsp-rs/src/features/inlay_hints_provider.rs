@@ -192,8 +192,11 @@ impl InlayHintsProvider {
 
             // Filter by range if specified
             if let Some(filter_range) = range {
-                let lsp_pos =
-                    LspPosition::new(arg.location.start(), position.line + 1, position.character + 1);
+                let lsp_pos = LspPosition::new(
+                    arg.location.start(),
+                    position.line + 1,
+                    position.character + 1,
+                );
                 if !filter_range.contains(lsp_pos) {
                     continue;
                 }
@@ -260,8 +263,11 @@ impl InlayHintsProvider {
 
             // Filter by range if specified
             if let Some(filter_range) = range {
-                let lsp_pos =
-                    LspPosition::new(expr.location.end(), position.line + 1, position.character + 1);
+                let lsp_pos = LspPosition::new(
+                    expr.location.end(),
+                    position.line + 1,
+                    position.character + 1,
+                );
                 if !filter_range.contains(lsp_pos) {
                     return;
                 }

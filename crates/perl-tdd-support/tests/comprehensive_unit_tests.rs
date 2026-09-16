@@ -627,8 +627,7 @@ fn test_results_default() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn refactoring_suggester_empty_program() -> Result<(), Box<dyn std::error::Error>> {
     let mut suggester = RefactoringSuggester::new();
-    let ast =
-        Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
+    let ast = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
     let suggestions = suggester.analyze(&ast, "");
     assert!(suggestions.is_empty());
     Ok(())
@@ -1070,8 +1069,7 @@ fn test_range_construction() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn node_construction() -> Result<(), Box<dyn std::error::Error>> {
-    let node =
-        Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
+    let node = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
     assert!(matches!(node.kind, NodeKind::Program { .. }));
     assert_eq!(node.location.start(), 0);
     Ok(())

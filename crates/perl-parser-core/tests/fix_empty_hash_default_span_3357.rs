@@ -84,9 +84,9 @@ fn optional_param_empty_hash_default_span_covers_braces() -> Result<(), Box<dyn 
     let loc = &default_node.location;
 
     // Slice the source using the span — must not panic (no reversed/out-of-bounds).
-    let sliced = source
-        .get(loc.start()..loc.end())
-        .ok_or_else(|| format!("span {}..{} is out of bounds for source", loc.start(), loc.end()))?;
+    let sliced = source.get(loc.start()..loc.end()).ok_or_else(|| {
+        format!("span {}..{} is out of bounds for source", loc.start(), loc.end())
+    })?;
 
     assert_eq!(sliced, "{}", "the HashLiteral span should cover exactly `{{}}`");
     Ok(())

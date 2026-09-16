@@ -1354,7 +1354,8 @@ impl LspServer {
                             .iter()
                             .take(cap)
                             .map(|loc| {
-                                let (start_line, start_char) = self.offset_to_pos16(doc, loc.start());
+                                let (start_line, start_char) =
+                                    self.offset_to_pos16(doc, loc.start());
                                 let (end_line, end_char) = self.offset_to_pos16(doc, loc.end());
 
                                 json!({

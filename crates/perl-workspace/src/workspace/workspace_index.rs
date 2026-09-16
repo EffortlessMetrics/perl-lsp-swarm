@@ -6498,9 +6498,10 @@ impl IndexVisitor {
                 // NEW COVERAGE: legacy has no `Goto` arm at all today --
                 // `goto &handler` / `goto LABEL` coderef targets are
                 // invisible. See coverage-delta case 4.
-                if let Some(symbol_ref) =
-                    canonical_coderef_target_ref(target, (node.location.start(), node.location.end()))
-                {
+                if let Some(symbol_ref) = canonical_coderef_target_ref(
+                    target,
+                    (node.location.start(), node.location.end()),
+                ) {
                     let var_name = format!("&{}", symbol_ref.name);
                     file_index.references.entry(var_name).or_default().push(SymbolReference {
                         uri: self.uri.clone(),

@@ -227,6 +227,13 @@ pub fn validate_ast(source: &str, root: &Node, options: AstInvariantOptions) -> 
         report.max_depth_reached = report.max_depth_reached.max(current.depth);
 
         let range = current.node.location;
+        // Safety net for the two shapes constructors cannot produce but the
+        // type system still admits: deserialized trees (validated at the
+        // serde boundary, but a tree may predate it) and struct-literal
+        // `Range { start, end }` through the still-public engine fields.
+        // Well-typed constructor-built trees never trip this; when it fires,
+        // the input bypassed construction, which is exactly what the trace
+        // must say.
         if range.start() > range.end()
             && !push_finding(
                 &mut report,

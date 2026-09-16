@@ -1595,7 +1595,10 @@ mod regex_family_geometry {
         if relative_start > relative_end {
             return None;
         }
-        Some(SourceLocation::new(source_start.checked_add(relative_start)?, source_start.checked_add(relative_end)?,))
+        Some(SourceLocation::new(
+            source_start.checked_add(relative_start)?,
+            source_start.checked_add(relative_end)?,
+        ))
     }
 
     fn closing_delimiter(open: char) -> char {

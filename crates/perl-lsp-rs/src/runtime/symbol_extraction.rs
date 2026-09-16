@@ -237,7 +237,8 @@ impl LspServer {
                             let display_name = format!("{sigil}{name}");
                             let (start_line, start_char) =
                                 byte_to_line_col(source, node.location.start());
-                            let (end_line, end_char) = byte_to_line_col(source, node.location.end());
+                            let (end_line, end_char) =
+                                byte_to_line_col(source, node.location.end());
 
                             symbols.push(LspWorkspaceSymbol {
                                 name: display_name,

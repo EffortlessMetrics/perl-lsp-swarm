@@ -3348,7 +3348,8 @@ impl<'a> BodyBuilder2<'a> {
                     let rhs_id = self.lower_expr(init_node);
 
                     // Assign node spanning from variable to end of initializer.
-                    let assign_range = SourceLocation::new(variable.location.start(), init_node.location.end(),);
+                    let assign_range =
+                        SourceLocation::new(variable.location.start(), init_node.location.end());
                     let assign_expr =
                         HirExpr::Assign { lhs: place_id, rhs: rhs_id, mode: AssignMode::Simple };
                     self.alloc_expr(assign_expr, assign_range)

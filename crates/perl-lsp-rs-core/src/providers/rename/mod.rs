@@ -170,7 +170,7 @@ impl RenameProvider {
 
         if let Some(symbols) = self.symbol_table.symbols.get(&old_name) {
             for symbol in symbols {
-                if symbol.kind.kind_compatible(kind) {
+                if symbol.kind.kind_compatible(kind) && apply::is_renamable_span(symbol.location) {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(symbol.location, kind),
                         new_text: new_name.to_string(),
@@ -181,7 +181,9 @@ impl RenameProvider {
 
         if let Some(references) = self.symbol_table.references.get(&old_name) {
             for reference in references {
-                if reference.kind.kind_compatible(kind) {
+                if reference.kind.kind_compatible(kind)
+                    && apply::is_renamable_span(reference.location)
+                {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(reference.location, kind),
                         new_text: new_name.to_string(),
@@ -263,7 +265,10 @@ impl RenameProvider {
 
         if let Some(symbols) = self.symbol_table.symbols.get(&old_name) {
             for symbol in symbols {
-                if symbol.kind == kind && symbol.scope_id == declaration_scope_id {
+                if symbol.kind == kind
+                    && symbol.scope_id == declaration_scope_id
+                    && apply::is_renamable_span(symbol.location)
+                {
                     edits.push(TextEdit {
                         location: adjust_location_for_sigil(symbol.location, kind),
                         new_text: new_name.to_string(),
@@ -304,6 +309,9 @@ impl RenameProvider {
                     continue;
                 }
                 if self.is_in_shadowed_scope(ref_scope, &shadowing_scopes) {
+                    continue;
+                }
+                if !apply::is_renamable_span(reference.location) {
                     continue;
                 }
                 edits.push(TextEdit {
@@ -488,6 +496,32 @@ mod tests {
     use perl_parser_core::Parser;
     use perl_semantic_analyzer::symbol::SymbolKind;
     use perl_tdd_support::{must, must_some};
+
+    #[test]
+    fn test_rename_implicit_loop_topic_never_rewrites_for_keyword() {
+        // P1 (#14562 review): the implicit `$_` of `for (@items)` is a
+        // synthetic zero-width symbol at the `for` keyword. Sigil adjustment
+        // must not widen it into `[for_start, for_start + 1]` and rewrite
+        // the `f` in `for`.
+        let code = "for (@items) {\n    print $_;\n}\n";
+        let mut parser = Parser::new(code);
+        let ast = must(parser.parse());
+        let provider = RenameProvider::new(&ast, code.to_string());
+        let topic = must_some(code.find("$_"));
+        let result = provider.rename(topic, "item", &RenameOptions::default());
+        let for_offset = must_some(code.find("for"));
+        for edit in &result.edits {
+            assert!(
+                edit.location.start() != for_offset,
+                "rename edit must not start at the `for` keyword: {edit:?}"
+            );
+        }
+        let new_code = apply_rename_edits(code, &result.edits);
+        assert!(
+            new_code.contains("for ("),
+            "the `for` keyword must survive renaming the loop topic: {new_code:?}"
+        );
+    }
 
     #[test]
     fn test_rename_variable() {

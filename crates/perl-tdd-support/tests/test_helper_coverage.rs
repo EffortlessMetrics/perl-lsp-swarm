@@ -327,8 +327,7 @@ fn test_tdd_workflow_repeated_cycles() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 fn test_refactoring_analyzer_empty_program() -> Result<(), Box<dyn std::error::Error>> {
     let analyzer = RefactoringAnalyzer::default();
-    let ast =
-        Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
+    let ast = Node::new(NodeKind::Program { statements: vec![] }, SourceLocation::new(0, 0));
     let suggestions = analyzer.analyze(&ast, "");
     assert!(suggestions.is_empty());
     Ok(())

@@ -40,9 +40,12 @@ fn test_signature_span_covers_parens() -> Result<(), Box<dyn std::error::Error>>
     })?;
 
     assert_eq!(
-        sliced, expected,
+        sliced,
+        expected,
         "Signature span should cover '($x, $y)', got {:?} (span {}..{})",
-        sliced, sig.location.start(), sig.location.end()
+        sliced,
+        sig.location.start(),
+        sig.location.end()
     );
     Ok(())
 }

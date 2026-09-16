@@ -599,8 +599,7 @@ fn find_phase_block_at_offset_returns_none_when_offset_out_of_node_range() {
     use perl_parser::{Node, NodeKind, SourceLocation};
 
     // A PhaseBlock node spanning [10, 30].
-    let block =
-        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(11, 29));
+    let block = Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(11, 29));
     let node = Node::new(
         NodeKind::PhaseBlock {
             phase: "BEGIN".to_string(),
@@ -627,8 +626,7 @@ fn find_phase_block_at_offset_returns_phase_name_when_offset_in_node_and_no_phas
     use perl_parser::{Node, NodeKind, SourceLocation};
 
     // No phase_span: any offset within [10, 30] must return the phase name.
-    let block =
-        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(11, 29));
+    let block = Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(11, 29));
     let node = Node::new(
         NodeKind::PhaseBlock {
             phase: "BEGIN".to_string(),
@@ -660,8 +658,7 @@ fn find_phase_block_at_offset_respects_phase_span_boundary() {
     use perl_parser::{Node, NodeKind, SourceLocation};
 
     // phase_span = [10, 14] (just "BEGIN"), whole node = [10, 30].
-    let block =
-        Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(16, 29));
+    let block = Node::new(NodeKind::Block { statements: vec![] }, SourceLocation::new(16, 29));
     let node = Node::new(
         NodeKind::PhaseBlock {
             phase: "BEGIN".to_string(),
@@ -710,10 +707,8 @@ fn find_phase_block_at_offset_recurses_through_program_to_find_phase_block() {
         },
         SourceLocation::new(40, 50),
     );
-    let program = Node::new(
-        NodeKind::Program { statements: vec![phase_node] },
-        SourceLocation::new(0, 60),
-    );
+    let program =
+        Node::new(NodeKind::Program { statements: vec![phase_node] }, SourceLocation::new(0, 60));
 
     // Offset inside the nested phase block: must find it.
     assert_eq!(

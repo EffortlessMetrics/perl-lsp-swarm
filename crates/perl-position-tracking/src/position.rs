@@ -40,7 +40,7 @@ use std::fmt;
 ///
 /// This is an **engine type** for internal parsing use. It tracks byte offsets
 /// and 1-based line/column for human-friendly display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct Position {
     /// Byte offset in the source (0-based)
     pub byte: usize,
@@ -57,7 +57,12 @@ impl Default for Position {
 }
 
 impl Position {
-    /// Create a new position
+    /// Create a new position.
+    ///
+    /// Total by design: fields stay public for the compatibility rail
+    /// (#8716/#8727), so this cannot enforce the 1-based line/column
+    /// contract. The enforced boundary is deserialization, which rejects
+    /// zero line/column rather than restoring an unrepresentable base.
     pub fn new(byte: usize, line: u32, column: u32) -> Self {
         Position { byte, line, column }
     }
@@ -89,6 +94,30 @@ impl Position {
     }
 }
 
+impl<'de> Deserialize<'de> for Position {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Repr {
+            byte: usize,
+            line: u32,
+            column: u32,
+        }
+        let repr = Repr::deserialize(deserializer)?;
+        // Persisted data must not restore the invalid base the Default
+        // hardening removed: line and column are 1-based, so zero is not a
+        // position. `Position::new` stays total by design (public-field
+        // compatibility rail per #8716/#8727), but the serde boundary — the
+        // path by which external data enters — refuses it.
+        if repr.line == 0 || repr.column == 0 {
+            return Err(serde::de::Error::custom(format!(
+                "position line and column are 1-based; got line {}, column {}",
+                repr.line, repr.column
+            )));
+        }
+        Ok(Position { byte: repr.byte, line: repr.line, column: repr.column })
+    }
+}
+
 impl fmt::Display for Position {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.line, self.column)
@@ -115,9 +144,15 @@ impl std::error::Error for ReversedRange {}
 /// A range in a source file defined by start and end positions
 ///
 /// This is an **engine type**. The interval is half-open and byte-ordered:
-/// [`Range::new`] trusts callers (asserting ordering in debug builds),
-/// [`Range::try_new`] rejects reversed intervals, and deserialization
-/// validates ordering instead of accepting hidden reversal.
+/// [`Range::new`] orders its endpoints, [`Range::try_new`] rejects reversed
+/// intervals, and deserialization validates ordering instead of accepting
+/// hidden reversal.
+///
+/// Serialization is structural while deserialization is contractual: a
+/// struct-literal `Range` with reversed endpoints (admissible through the
+/// still-public fields) serializes as-is but does not deserialize. Only
+/// constructor- or validator-produced values are round-trippable, which is
+/// what lets persisted data stay inside the invariant without a migration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Range {
     /// Start position (inclusive)
@@ -238,6 +273,30 @@ mod tests {
     fn test_position_default_matches_start_origin() {
         assert_eq!(Position::default(), Position::start());
         assert_eq!(Position::default(), Position { byte: 0, line: 1, column: 1 });
+    }
+
+    #[test]
+    fn test_position_deserialization_rejects_zero_line_or_column() {
+        let valid: Position =
+            serde_json::from_str(r#"{"byte":5,"line":2,"column":3}"#).expect("valid position");
+        assert_eq!(valid, Position { byte: 5, line: 2, column: 3 });
+        for raw in [
+            r#"{"byte":0,"line":0,"column":0}"#,
+            r#"{"byte":0,"line":0,"column":1}"#,
+            r#"{"byte":0,"line":1,"column":0}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Position>(raw).is_err(),
+                "persisted data must not restore a zero-based line/column: {raw}"
+            );
+        }
+        // Range deserialization inherits the boundary through its positions.
+        assert!(
+            serde_json::from_str::<Range>(
+                r#"{"start":{"byte":0,"line":0,"column":0},"end":{"byte":1,"line":1,"column":1}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

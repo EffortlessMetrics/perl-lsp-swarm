@@ -303,7 +303,9 @@ impl RegexAnalysisTable {
     pub fn find_at_offset(&self, offset: usize) -> Option<&RegexAnalysisRecord> {
         self.records
             .iter()
-            .filter(|record| record.full_range.start() <= offset && offset < record.full_range.end())
+            .filter(|record| {
+                record.full_range.start() <= offset && offset < record.full_range.end()
+            })
             .min_by_key(|record| record.full_range.end().saturating_sub(record.full_range.start()))
     }
 
@@ -338,9 +340,10 @@ impl RegexAnalysisTable {
 
         let id = RegexAnalysisId(self.records.len());
         let operator = map_operator(geometry.operator);
-        let Some(sequence) =
-            ModifierSequence::new(geometry.modifiers.text.clone(), geometry.modifiers.range.start())
-        else {
+        let Some(sequence) = ModifierSequence::new(
+            geometry.modifiers.text.clone(),
+            geometry.modifiers.range.start(),
+        ) else {
             let record = RegexAnalysisRecord {
                 id,
                 operator: Some(geometry.operator),

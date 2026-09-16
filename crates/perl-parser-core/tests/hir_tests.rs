@@ -570,7 +570,11 @@ fn hir_lowers_first_slice_constructs_with_stable_metadata() -> Result<(), Box<dy
 
     for (index, item) in file.items.iter().enumerate() {
         assert_eq!(item.id.index(), index as u32);
-        assert!(item.range.end() >= item.range.start(), "HIR item range should be ordered: {:?}", item);
+        assert!(
+            item.range.end() >= item.range.start(),
+            "HIR item range should be ordered: {:?}",
+            item
+        );
         assert_eq!(item.range, item.anchor.range);
     }
 
@@ -2115,10 +2119,7 @@ fn hir_marks_items_lowered_from_error_partials_as_recovered()
             prototype: None,
             signature: None,
             attributes: Vec::new(),
-            body: Box::new(Node::new(
-                NodeKind::MissingBlock,
-                SourceLocation::new(11, 11),
-            )),
+            body: Box::new(Node::new(NodeKind::MissingBlock, SourceLocation::new(11, 11))),
         },
         loc,
     );

@@ -37,7 +37,8 @@ fn declaration_span_contains_initializer() -> Result<(), String> {
     if statement.location.end() != initializer.location.end() {
         return Err(format!(
             "declaration ends at {}, initializer ends at {}",
-            statement.location.end(), initializer.location.end()
+            statement.location.end(),
+            initializer.location.end()
         ));
     }
     let text = source_text(source, initializer.location.start(), initializer.location.end())?;
@@ -68,7 +69,8 @@ fn qw_elements_have_individual_source_spans() -> Result<(), String> {
     if first.location.end() > second.location.start() {
         return Err(format!(
             "qw element spans overlap: {} > {}",
-            first.location.end(), second.location.start()
+            first.location.end(),
+            second.location.start()
         ));
     }
     Ok(())
@@ -85,7 +87,8 @@ fn declaration_span_retains_consumed_parenthesized_delimiter() -> Result<(), Str
     if statement.location.end() < initializer.location.end() {
         return Err(format!(
             "declaration ends before initializer: {} < {}",
-            statement.location.end(), initializer.location.end()
+            statement.location.end(),
+            initializer.location.end()
         ));
     }
     let text = source_text(source, statement.location.start(), statement.location.end())?;

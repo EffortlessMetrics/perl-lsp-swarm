@@ -31,10 +31,7 @@ fn unpaired_substitution_replacement_ignores_delimiters_inside_quotes() -> Resul
         assert_eq!(geometry.operator, RegexFamilyOperator::Substitution);
         assert_eq!(geometry.pattern.text, "foo");
         assert_eq!(replacement.text, expected_replacement);
-        assert_eq!(
-            replacement.range,
-            SourceLocation::new(replacement_start, replacement_end)
-        );
+        assert_eq!(replacement.range, SourceLocation::new(replacement_start, replacement_end));
         assert_eq!(
             replacement.opening_delimiter_range,
             SourceLocation::new(replacement_start - 1, replacement_start)
@@ -44,10 +41,7 @@ fn unpaired_substitution_replacement_ignores_delimiters_inside_quotes() -> Resul
             Some(SourceLocation::new(replacement_end, replacement_end + 1))
         );
         assert_eq!(geometry.modifiers.text, expected_modifiers);
-        assert_eq!(
-            geometry.modifiers.range,
-            SourceLocation::new(modifier_start, modifier_end)
-        );
+        assert_eq!(geometry.modifiers.range, SourceLocation::new(modifier_start, modifier_end));
         assert_eq!(geometry.full_range, SourceLocation::new(source_start, modifier_end));
 
         let parsed = extract_substitution_parts_strict(source).map_err(|error| {

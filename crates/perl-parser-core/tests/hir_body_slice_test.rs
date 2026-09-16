@@ -104,11 +104,7 @@ fn hir_body_slice_specimen_structure() -> Result<(), String> {
         .source_map
         .expr_range(init_expr_id)
         .ok_or_else(|| "assign expr range must be present".to_string())?;
-    assert_eq!(
-        assign_range,
-        SourceLocation::new(3, 15),
-        "Assign expr must span bytes 3..15"
-    );
+    assert_eq!(assign_range, SourceLocation::new(3, 15), "Assign expr must span bytes 3..15");
 
     // ── 6. Assign LHS is a Variable($x, Write) at 3..5 ───────────────────
     let lhs_expr = body.expr(assign_lhs).ok_or_else(|| "lhs expr must exist".to_string())?;

@@ -27,7 +27,9 @@ fn source_text(source: &str, node: &Node) -> Option<String> {
 }
 
 fn assert_span_contains(parent: &Node, child: &Node, relationship: &str) -> Result<(), String> {
-    if parent.location.start() <= child.location.start() && child.location.end() <= parent.location.end() {
+    if parent.location.start() <= child.location.start()
+        && child.location.end() <= parent.location.end()
+    {
         Ok(())
     } else {
         Err(format!(
@@ -89,6 +91,50 @@ fn prototype_is_owned_by_the_exact_forward_declaration() -> Result<(), String> {
         return Err("forward declaration must retain its empty body sentinel".to_string());
     };
     assert!(statements.is_empty(), "forward declaration body sentinel must stay empty");
+    Ok(())
+}
+
+#[test]
+fn sequential_forward_declarations_keep_ordered_spans() -> Result<(), String> {
+    // Regression (#8740 hardening): the second declaration in
+    // `sub foo; sub bar;` once inherited a stale end position and reversed
+    // its span behind order-correcting construction. Both decls must stay
+    // ordered, and the leading-qualified form must span its full name.
+    let source = "sub foo; sub bar;";
+    let ast = parse_clean(source)?;
+    let foo = collect_named_subroutines(&ast, "foo");
+    let bar = collect_named_subroutines(&ast, "bar");
+    assert_eq!(foo.len(), 1, "expected one foo declaration");
+    assert_eq!(bar.len(), 1, "expected one bar declaration");
+    for (node, name) in [&foo[0], &bar[0]].iter().zip(["foo", "bar"]) {
+        assert!(
+            node.location.start() <= node.location.end(),
+            "{name} declaration span reversed: {}",
+            node.location
+        );
+    }
+    assert!(
+        foo[0].location.end() <= bar[0].location.start(),
+        "second declaration must follow the first: {} then {}",
+        foo[0].location,
+        bar[0].location
+    );
+    let NodeKind::Subroutine { name_span, .. } = &bar[0].kind else {
+        return Err("bar declaration changed NodeKind".to_string());
+    };
+    assert_eq!(name_span.and_then(|span| source.get(span.start()..span.end())), Some("bar"));
+
+    let qualified = parse_clean("sub ::QFoo;")?;
+    let decls = collect_named_subroutines(&qualified, "::QFoo");
+    assert_eq!(decls.len(), 1, "expected one qualified declaration");
+    let NodeKind::Subroutine { name_span, .. } = &decls[0].kind else {
+        return Err("qualified declaration changed NodeKind".to_string());
+    };
+    assert_eq!(
+        name_span.and_then(|span| "sub ::QFoo;".get(span.start()..span.end())),
+        Some("::QFoo"),
+        "leading-qualified forward declaration must span its full name"
+    );
     Ok(())
 }
 

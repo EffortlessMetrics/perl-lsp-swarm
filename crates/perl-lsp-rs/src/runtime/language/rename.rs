@@ -1822,7 +1822,9 @@ impl LspServer {
                             }
 
                             let narrowed = RenameEdit {
-                                location: perl_parser_core::SourceLocation::new(edit_start, edit_end,),
+                                location: perl_parser_core::SourceLocation::new(
+                                    edit_start, edit_end,
+                                ),
                                 new_text: normalized_name.to_string(),
                             };
                             edits.push(self.rename_edit_to_lsp_text_edit(

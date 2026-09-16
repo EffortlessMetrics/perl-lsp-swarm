@@ -328,7 +328,8 @@ fn parse_indirect_call_call_presence_observer() -> Result<(), String> {
     if object.location.start() != try_start || object.location.end() != try_end {
         return Err(format!(
             "expected consumed object range {try_start}..{try_end}, got {}..{}",
-            object.location.start(), object.location.end()
+            object.location.start(),
+            object.location.end()
         ));
     }
     Ok(())

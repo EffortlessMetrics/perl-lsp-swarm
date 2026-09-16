@@ -288,7 +288,11 @@ fn lexical_declaration_recovery_preserves_following_code_without_normalizing_ele
 
     walk(&output.ast, &mut |node| {
         if is_recovery_node(node) {
-            recovery_nodes.push((node.kind.kind_name(), node.location.start(), node.location.end()));
+            recovery_nodes.push((
+                node.kind.kind_name(),
+                node.location.start(),
+                node.location.end(),
+            ));
         }
         if let NodeKind::VariableDeclaration { variable, .. } = &node.kind
             && let NodeKind::Variable { sigil, name } = &variable.kind

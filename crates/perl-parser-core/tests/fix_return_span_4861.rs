@@ -86,7 +86,8 @@ fn test_toplevel_valueless_return_span() -> Result<(), Box<dyn std::error::Error
         ret.location.start(),
         ret.location.end()
     );
-    let sliced = source.get(ret.location.start()..ret.location.end()).ok_or("span out of bounds")?;
+    let sliced =
+        source.get(ret.location.start()..ret.location.end()).ok_or("span out of bounds")?;
     assert_eq!(sliced, "return", "top-level return span should cover the keyword, got {sliced:?}");
     Ok(())
 }
@@ -104,7 +105,8 @@ fn test_expression_context_valueless_return_span() -> Result<(), Box<dyn std::er
         ret.location.start(),
         ret.location.end()
     );
-    let sliced = source.get(ret.location.start()..ret.location.end()).ok_or("span out of bounds")?;
+    let sliced =
+        source.get(ret.location.start()..ret.location.end()).ok_or("span out of bounds")?;
     assert_eq!(
         sliced, "return",
         "expression-context return span should cover the keyword, got {sliced:?}"

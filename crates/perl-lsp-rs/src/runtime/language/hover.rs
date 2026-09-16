@@ -462,8 +462,7 @@ impl LspServer {
             return HoverExtracted::None;
         };
 
-        if let Some(symbol_info) =
-            analyzer.symbol_at(crate::SourceLocation::new(offset, offset))
+        if let Some(symbol_info) = analyzer.symbol_at(crate::SourceLocation::new(offset, offset))
             && let Some(modifier_kind) =
                 symbol_info.attributes.iter().find_map(|a| a.strip_prefix("modifier="))
         {
@@ -1403,8 +1402,10 @@ impl LspServer {
             // If the parser recorded a precise span for the phase keyword, use it;
             // fall back to the whole node span so hover still works if phase_span
             // is absent (e.g. in hand-constructed test ASTs).
-            let in_phase_span =
-                phase_span.as_ref().map(|s| offset >= s.start() && offset <= s.end()).unwrap_or(true);
+            let in_phase_span = phase_span
+                .as_ref()
+                .map(|s| offset >= s.start() && offset <= s.end())
+                .unwrap_or(true);
             if in_phase_span {
                 return Some(phase.clone());
             }
