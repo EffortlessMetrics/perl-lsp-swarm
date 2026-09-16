@@ -1,25 +1,32 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 //! Scenario 12 — `textDocument/publishDiagnostics` feature grid coverage.
 //!
 //! Verifies that the server emits diagnostics notifications when Perl code has
-//! known issues.  This exercises the `textDocument/publishDiagnostics`
+//! known issues. This exercises the `textDocument/publishDiagnostics`
 //! capability advertised in `features.toml`.
 //!
 //! Acceptance criteria:
 //! - After `didOpen`, the server MUST eventually send a
-//!   `textDocument/publishDiagnostics` notification (possibly empty).
+//!   `textDocument/publishDiagnostics` notification for the exact opened URI.
 //! - The notification MUST NOT crash the server.
-//! - If diagnostics are returned they MUST be well-formed objects with at least
+//! - If diagnostics are returned they MUST be well-formed objects with valid
 //!   `range` and `message` fields.
-//! - A clean file MAY produce zero diagnostics — that is acceptable.
+//! - A present `severity` MUST be an integer in the LSP range 1 through 4.
+//! - A clean file MAY publish an explicit empty diagnostics array; silence is
+//!   not an empty current result.
 
-use perl_lsp_ux_tests::binary_available;
-use perl_lsp_ux_tests::{LspEvent, ScenarioConfig, UxHarness};
+use anyhow::{Context, Result};
+use perl_lsp_ux_tests::{
+    ScenarioConfig, UxCiTier, UxComponent, UxHarness, binary_available, missing_binary_skip,
+    run_ux_scenario,
+};
+use serde_json::Value;
 use std::time::Duration;
 
-/// Source that is syntactically valid Perl — should produce no parse errors.
+const WORKFLOW_ID: &str = "strict_diagnostics";
+const SCENARIO_FILE: &str = "ux_scenario_12_diagnostics_strict.rs";
+const DIAGNOSTICS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Source that is syntactically valid Perl and may publish an empty diagnostics array.
 const CLEAN_SOURCE: &str = "\
 use strict;\n\
 use warnings;\n\
@@ -28,8 +35,9 @@ my $x = 42;\n\
 print \"$x\\n\";\n\
 ";
 
-/// Source with a declared-but-unused-under-strict variable.  Some diagnostics
-/// providers flag this; others do not.  We only verify shape, not count.
+/// Source with a declared-but-unused-under-strict variable. Some diagnostics
+/// providers flag this; others do not. This scenario verifies publication and
+/// payload shape, not a provider-specific diagnostic count.
 const STRICT_SOURCE: &str = "\
 use strict;\n\
 use warnings;\n\
@@ -38,101 +46,144 @@ my $unused_var = 99;\n\
 print \"done\\n\";\n\
 ";
 
-#[test]
-fn scenario_12_server_does_not_crash_after_diagnostics_request() {
-    if !binary_available() {
-        eprintln!("SKIP scenario_12: perl-lsp binary not found");
-        return;
+fn validate_position(value: Option<&Value>, field: &str, diagnostic: &Value) -> Result<()> {
+    let position = value
+        .and_then(Value::as_object)
+        .with_context(|| format!("diagnostic {field} must be an object: {diagnostic:?}"))?;
+    for coordinate in ["line", "character"] {
+        position
+            .get(coordinate)
+            .and_then(Value::as_u64)
+            .with_context(|| {
+                format!(
+                    "diagnostic {field}.{coordinate} must be a non-negative integer: \
+                     {diagnostic:?}"
+                )
+            })?;
     }
-
-    let harness = UxHarness::new(
-        ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
-            .with_file("clean.pl", CLEAN_SOURCE),
-    )
-    .expect("Failed to create UX harness");
-
-    harness.open_file("clean.pl", CLEAN_SOURCE).expect("didOpen should succeed");
-
-    // Allow diagnostics to publish (server-push; no blocking call needed).
-    std::thread::sleep(Duration::from_secs(2));
-
-    harness.assert_no_crash();
+    Ok(())
 }
 
-#[test]
-fn scenario_12_diagnostics_notification_shape_is_valid() {
-    if !binary_available() {
-        eprintln!("SKIP scenario_12: perl-lsp binary not found");
-        return;
-    }
+fn validate_diagnostic(diagnostic: &Value) -> Result<()> {
+    let object = diagnostic
+        .as_object()
+        .with_context(|| format!("diagnostic must be an object: {diagnostic:?}"))?;
+    let range = object
+        .get("range")
+        .and_then(Value::as_object)
+        .with_context(|| format!("diagnostic range must be an object: {diagnostic:?}"))?;
 
-    let harness = UxHarness::new(
-        ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
-            .with_file("strict_test.pl", STRICT_SOURCE),
-    )
-    .expect("Failed to create UX harness");
+    validate_position(range.get("start"), "range.start", diagnostic)?;
+    validate_position(range.get("end"), "range.end", diagnostic)?;
+    object
+        .get("message")
+        .and_then(Value::as_str)
+        .with_context(|| format!("diagnostic message must be a string: {diagnostic:?}"))?;
 
-    harness.open_file("strict_test.pl", STRICT_SOURCE).expect("didOpen should succeed");
-
-    // Wait up to 5 seconds for diagnostics to arrive.
-    let diagnostics = harness.wait_for_diagnostics("strict_test.pl", Duration::from_secs(5));
-
-    // Validate each diagnostic has the required LSP fields.
-    for diag in &diagnostics {
-        assert!(diag.get("range").is_some(), "Diagnostic must have 'range' field, got: {:?}", diag);
-        assert!(
-            diag.get("message").is_some(),
-            "Diagnostic must have 'message' field, got: {:?}",
-            diag
+    if let Some(raw_severity) = object.get("severity") {
+        let severity = raw_severity.as_u64().with_context(|| {
+            format!("diagnostic severity must be an integer from 1 through 4: {diagnostic:?}")
+        })?;
+        anyhow::ensure!(
+            (1..=4).contains(&severity),
+            "diagnostic severity must be in 1 through 4, got {severity}: {diagnostic:?}"
         );
-        // severity is optional but must be 1-4 when present.
-        if let Some(severity) = diag.get("severity") {
-            let s = severity.as_u64().unwrap_or(0);
-            assert!((1..=4).contains(&s), "Diagnostic severity must be 1-4, got: {}", s);
-        }
     }
+    Ok(())
+}
 
-    harness.assert_no_crash();
+fn open_and_wait_for_diagnostics(
+    harness: &UxHarness,
+    relative_path: &str,
+    source: &str,
+) -> Result<Vec<Value>> {
+    let already_seen = harness.diagnostics_event_count(relative_path);
+    harness
+        .open_file(relative_path, source)
+        .with_context(|| format!("didOpen should succeed for {relative_path}"))?;
+    harness
+        .wait_for_diagnostics_after_count(relative_path, already_seen, DIAGNOSTICS_TIMEOUT)
+        .with_context(|| {
+            format!(
+                "no post-open publishDiagnostics notification arrived for {relative_path} \
+                 within {DIAGNOSTICS_TIMEOUT:?}"
+            )
+        })
+}
+
+fn validate_diagnostics(diagnostics: &[Value]) -> Result<()> {
+    for diagnostic in diagnostics {
+        validate_diagnostic(diagnostic)?;
+    }
+    Ok(())
 }
 
 #[test]
-fn scenario_12_publishdiagnostics_notification_was_received() {
-    if !binary_available() {
-        eprintln!("SKIP scenario_12: perl-lsp binary not found");
-        return;
-    }
-
-    let harness = UxHarness::new(
-        ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
-            .with_file("notify_test.pl", CLEAN_SOURCE),
-    )
-    .expect("Failed to create UX harness");
-
-    harness.open_file("notify_test.pl", CLEAN_SOURCE).expect("didOpen should succeed");
-
-    // Poll for up to 5 seconds to see if the server ever fires publishDiagnostics.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut received = false;
-    while std::time::Instant::now() < deadline {
-        let events = harness.peek_notifications();
-        for ev in &events {
-            if let LspEvent::Diagnostics { .. } = ev {
-                received = true;
-                break;
+fn scenario_12_strict_file_publishes_well_formed_diagnostics() {
+    run_ux_scenario(
+        WORKFLOW_ID,
+        SCENARIO_FILE,
+        "scenario_12_strict_file_publishes_well_formed_diagnostics",
+        UxCiTier::Pr,
+        Some(UxComponent::Diagnostics),
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
             }
-        }
-        if received {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
 
-    if !received {
-        eprintln!(
-            "INFO scenario_12: server did not publish diagnostics within 5s \
-             (may require external linter — degraded mode acceptable)"
-        );
-    }
+            let harness = UxHarness::new(
+                ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
+                    .with_file("strict_test.pl", STRICT_SOURCE),
+            )
+            .context("Failed to create UX harness")?;
 
-    harness.assert_no_crash();
+            recorder.mark_request_start("publishDiagnostics");
+            let diagnostics =
+                open_and_wait_for_diagnostics(&harness, "strict_test.pl", STRICT_SOURCE)?;
+            recorder.check("post-open diagnostics publication observed for strict_test.pl", true)?;
+            validate_diagnostics(&diagnostics)?;
+            recorder.check("every returned diagnostic has valid required shape", true)?;
+            recorder.mark_first_useful_result("publishDiagnostics");
+
+            harness.assert_no_crash();
+            recorder.check("no crash signatures in event log", true)?;
+            Ok(())
+        },
+    );
+}
+
+#[test]
+fn scenario_12_clean_file_publishes_current_diagnostics() {
+    run_ux_scenario(
+        WORKFLOW_ID,
+        SCENARIO_FILE,
+        "scenario_12_clean_file_publishes_current_diagnostics",
+        UxCiTier::Pr,
+        Some(UxComponent::Diagnostics),
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+
+            let harness = UxHarness::new(
+                ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
+                    .with_file("clean.pl", CLEAN_SOURCE),
+            )
+            .context("Failed to create UX harness")?;
+
+            recorder.mark_request_start("publishDiagnostics");
+            let diagnostics = open_and_wait_for_diagnostics(&harness, "clean.pl", CLEAN_SOURCE)?;
+            recorder.check("post-open diagnostics publication observed for clean.pl", true)?;
+            validate_diagnostics(&diagnostics)?;
+            recorder.check(
+                "clean-file diagnostics publication is explicit and well formed",
+                true,
+            )?;
+            recorder.mark_first_useful_result("publishDiagnostics");
+
+            harness.assert_no_crash();
+            recorder.check("no crash signatures in event log", true)?;
+            Ok(())
+        },
+    );
 }
