@@ -140,3 +140,44 @@ fn trailing_block_error_anchors_at_the_brace() -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Discriminator 4 — keep-consuming leaves for the closed-group gate
+/// (`postfix.rs`: `inside_condition_group || (unparenthesized_condition &&
+/// (bare_shape || subscript_chain))`). Each leaf gets an input that hits it:
+/// inside-group consume, unparenthesized bare consume, unparenthesized chain
+/// consume, and the all-false unparenthesized reject (#15649 ripr
+/// discriminator).
+#[test]
+fn do_while_discriminates_keep_consuming_leaves() -> Result<(), String> {
+    // `inside_condition_group`: `{` inside the condition's own `(...)`
+    // keeps consuming.
+    parse_clean("do { $s++ } while ($h{k});")?;
+    // `unparenthesized_condition && bare_shape`: a bare `$h` keeps `{k}`.
+    parse_clean("do { $s++ } while $h{k};")?;
+    // `unparenthesized_condition && subscript_chain`: the chain keeps going.
+    parse_clean("do { $s++ } while $h{k}{j};")?;
+    // All false on a parenthesized condition: a brace after the group's own
+    // `)` closed is the trailing block and rejects outright.
+    let code = "do { $s++; } while ($flag) { $s++; }";
+    let mut parser = Parser::new(code);
+    if parser.parse().is_ok() {
+        return Err(format!("expected outright parse failure for `{code}`"));
+    }
+    // All false on an unparenthesized condition with a grouped operand: the
+    // guard consumes through the transparent group and the parse degrades
+    // to recovery (ERROR nodes) rather than the hard `DoWhileTrailingBlock`
+    // of the parenthesized close. Real `perl -c` rejects this outright; the
+    // recovery leniency is residual scope, not #15649's parenthesized
+    // trailing block.
+    {
+        let code = "do { $s++; } while $a eq ($b) { $s++; }";
+        let mut parser = Parser::new(code);
+        let ast = parser
+            .parse()
+            .map_err(|error| format!("expected recovery parse, got hard error: {error:?}"))?;
+        if !ast.to_sexp().contains("ERROR") {
+            return Err(format!("expected recovery ERROR nodes for `{code}`"));
+        }
+    }
+    Ok(())
+}
