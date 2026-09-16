@@ -4,7 +4,7 @@
 //! in `perl-parser-core`'s postfix parser and the `DoWhileTrailingBlock`
 //! error variant is defined here.
 
-use perl_parser_core::Parser;
+use perl_parser_core::{Node, NodeKind, Parser};
 
 fn parse_clean(src: &str) -> Result<(), String> {
     let mut parser = Parser::new(src);
@@ -14,6 +14,17 @@ fn parse_clean(src: &str) -> Result<(), String> {
         return Err(format!("expected clean parse, got ERROR nodes in: {sexp}\nsource: {src}"));
     }
     Ok(())
+}
+
+/// Find the first `{}`-op subscript Binary anywhere under `node`: the
+/// observable effect of the keep-consuming seam taking the consume path.
+fn find_brace_subscript<'a>(node: &'a Node) -> Option<&'a Node> {
+    if let NodeKind::Binary { op, .. } = &node.kind
+        && op == "{}"
+    {
+        return Some(node);
+    }
+    node.children().into_iter().find_map(find_brace_subscript)
 }
 
 #[test]
@@ -177,6 +188,45 @@ fn do_while_discriminates_keep_consuming_leaves() -> Result<(), String> {
             .map_err(|error| format!("expected recovery parse, got hard error: {error:?}"))?;
         if !ast.to_sexp().contains("ERROR") {
             return Err(format!("expected recovery ERROR nodes for `{code}`"));
+        }
+    }
+    Ok(())
+}
+
+/// Discriminator 5 — call-observation proof for the keep-consuming seam
+/// (`postfix.rs`: `inside_condition_group || (unparenthesized_condition &&
+/// (bare_shape || subscript_chain))`). Clean/reject outcomes alone only
+/// weakly grip the seam: a mutant that breaks out early can still produce
+/// a clean parse via the trailing-block path. Observing the `{}`-op
+/// subscript Binary in the AST proves the brace was consumed *as a
+/// subscript through the seam*, which only the true arm combination
+/// produces. Each arm gets its input; all outcomes confirmed with
+/// `perl -c` (#15649 ripr discriminator).
+#[test]
+fn do_while_observes_subscript_binary_per_keep_consuming_arm() -> Result<(), String> {
+    // `inside_condition_group`: `{k}` inside the condition's own `(...)`
+    // is consumed as a subscript Binary.
+    for code in [
+        "do { $s++ } while ($h{k});",
+        "do { $s++ } while (($h{k}{j}));",
+        // `unparenthesized_condition && bare_shape`: a bare `$h` keeps `{k}`.
+        "do { $s++ } while $h{k};",
+        // `unparenthesized_condition && subscript_chain`: the chain keeps going.
+        "do { $s++ } while $h{k}{j};",
+        "do { $s++ } while $a[0]{k};",
+        "do { $s++ } while $self->{a}{b};",
+    ] {
+        let mut parser = Parser::new(code);
+        let ast = parser
+            .parse()
+            .map_err(|error| format!("expected clean parse for `{code}`: {error:?}"))?;
+        if ast.to_sexp().contains("ERROR") {
+            return Err(format!("expected clean parse, got ERROR nodes for `{code}`"));
+        }
+        if find_brace_subscript(&ast).is_none() {
+            return Err(format!(
+                "keep-consuming arm must leave a {{}}-op subscript Binary for `{code}`"
+            ));
         }
     }
     Ok(())
