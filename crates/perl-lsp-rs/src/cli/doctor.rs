@@ -1311,10 +1311,6 @@ fn bash_quote_path(path: &Path) -> String {
     format!("'{}'", spelling.replace('\'', "'\\''"))
 }
 
-fn probe_wsl_cargo() -> CargoToolchainReport {
-    probe_wsl_cargo_in(None)
-}
-
 /// WSL flavor of the checkout-root rule: map the Windows checkout root into
 /// the distribution with `wslpath` and run the probe there. When no root is
 /// located, or the mapping itself fails, the probe keeps its historical
