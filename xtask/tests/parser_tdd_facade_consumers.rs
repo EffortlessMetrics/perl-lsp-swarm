@@ -440,14 +440,16 @@ fn record_member_alias(
             ch if ch.is_ascii_alphabetic() || ch == '_' => {
                 let word_end = skip_to_identifier_end(chars, pos);
                 let word = read_identifier(chars, pos, word_end);
-                if word == "as" && depth == 0 && word_at(chars, pos, "as") {
-                    if let Some(alias) = read_ident_at(chars, word_end) {
-                        if !fresh.iter().any(|known| known.name == alias.name) {
-                            fresh.push(FacadeAlias { name: alias.name, compat });
-                        }
-                        pos = alias.end;
-                        continue;
+                if word == "as"
+                    && depth == 0
+                    && word_at(chars, pos, "as")
+                    && let Some(alias) = read_ident_at(chars, word_end)
+                {
+                    if !fresh.iter().any(|known| known.name == alias.name) {
+                        fresh.push(FacadeAlias { name: alias.name, compat });
                     }
+                    pos = alias.end;
+                    continue;
                 }
                 pos = word_end.max(pos + 1);
             }
@@ -543,13 +545,14 @@ fn record_use_aliases(
             }
             Some(';') => return pos + 1,
             _ => {
-                if word_at(chars, pos, "as") && facade_rooted {
-                    if let Some(alias) = read_ident_at(chars, pos + 2) {
-                        if !is_registered_alias(&alias.name, aliases, fresh) {
-                            fresh.push(FacadeAlias { name: alias.name, compat });
-                        }
-                        return semicolon_end(chars, alias.end);
+                if word_at(chars, pos, "as")
+                    && facade_rooted
+                    && let Some(alias) = read_ident_at(chars, pos + 2)
+                {
+                    if !is_registered_alias(&alias.name, aliases, fresh) {
+                        fresh.push(FacadeAlias { name: alias.name, compat });
                     }
+                    return semicolon_end(chars, alias.end);
                 }
                 return semicolon_end(chars, pos);
             }
