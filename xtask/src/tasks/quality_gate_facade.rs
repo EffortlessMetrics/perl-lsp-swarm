@@ -110,10 +110,23 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
     let original_policy_display = display_path(&args.exception_policy);
     let original_receipt_display = display_path(&args.receipt);
     let original_summary_display = display_path(&args.summary);
+    // The engine embeds raw OS-style paths in its recorded action commands,
+    // while the display renderings above normalize to forward slashes. Both
+    // spellings must be remapped or stale temp paths survive in the caller
+    // artifacts and every write-then-check reads as stale (#15662).
+    let temporary_policy_raw = temporary_policy.to_string_lossy().into_owned();
+    let temporary_receipt_raw = temporary_receipt.to_string_lossy().into_owned();
+    let temporary_summary_raw = temporary_summary.to_string_lossy().into_owned();
+    let original_policy_raw = args.exception_policy.to_string_lossy().into_owned();
+    let original_receipt_raw = args.receipt.to_string_lossy().into_owned();
+    let original_summary_raw = args.summary.to_string_lossy().into_owned();
     let replacements = [
         (temporary_policy_display.as_str(), original_policy_display.as_str()),
         (temporary_receipt_display.as_str(), original_receipt_display.as_str()),
         (temporary_summary_display.as_str(), original_summary_display.as_str()),
+        (temporary_policy_raw.as_str(), original_policy_raw.as_str()),
+        (temporary_receipt_raw.as_str(), original_receipt_raw.as_str()),
+        (temporary_summary_raw.as_str(), original_summary_raw.as_str()),
     ];
 
     let engine_result = implementation::run(engine_args);
@@ -157,8 +170,14 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
     }
 
     if args.check {
-        assert_current(&args.receipt, &receipt_text, "quality gate JSON receipt")?;
-        assert_current(&args.summary, &summary, "quality gate Markdown summary")?;
+        // Collect both staleness findings before failing (#15662): the
+        // receipt-first `?` masked a stale summary behind a stale receipt.
+        let mut stale = Vec::new();
+        assert_current(&args.receipt, &receipt_text, "quality gate JSON receipt", &mut stale)?;
+        assert_current(&args.summary, &summary, "quality gate Markdown summary", &mut stale)?;
+        if !stale.is_empty() {
+            bail!("{}", stale.join("\n"));
+        }
     } else {
         write_text(&args.receipt, &receipt_text)?;
         write_text(&args.summary, &summary)?;
@@ -434,7 +453,10 @@ fn replace_json_strings(value: &mut JsonValue, replacements: &[(&str, &str)]) {
     }
 }
 
-fn assert_current(path: &Path, expected: &str, label: &str) -> Result<()> {
+/// Record one staleness finding, or fail immediately when the proof file is
+/// unreadable (a missing file is a different failure class — there is no
+/// second condition worth reporting past it).
+fn assert_current(path: &Path, expected: &str, label: &str, stale: &mut Vec<String>) -> Result<()> {
     let existing = match fs::read_to_string(path) {
         Ok(existing) => existing,
         Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -445,7 +467,7 @@ fn assert_current(path: &Path, expected: &str, label: &str) -> Result<()> {
         }
     };
     if normalize_output(&existing) != normalize_output(expected) {
-        bail!("{label} is stale: {}", path.display());
+        stale.push(format!("{label} is stale: {}", path.display()));
     }
     Ok(())
 }
