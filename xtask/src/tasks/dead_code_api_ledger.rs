@@ -1424,6 +1424,225 @@ fn references_surface(text: &str, inside_owning_crate: bool) -> std::result::Res
         || scoped_prelude_use(&file, inside_owning_crate))
 }
 
+/// Whether a path that continues past a surface-crate root spells one of this
+/// surface's routes. Shared by the direct spelling (`alias::…`) and the
+/// crate-rooted spelling (`crate::alias::…`) so the two cannot drift.
+fn routes_surface(segments: &[String]) -> bool {
+    match segments {
+        [route, ..] if route == "dead_code" || route == "dead_code_detector" => true,
+        [route, symbol, ..] if route == "prelude" => SURFACE_TYPES.contains(&symbol.as_str()),
+        [route, module, ..] if route == "compat" && module == "dead_code_detector" => true,
+        _ => false,
+    }
+}
+
+/// What a prefix consumed so far resolves to, for crate-root binding detection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RootRoute {
+    /// Nothing rooted yet (before the first segment) or a dead end.
+    None,
+    /// The prefix is the surface crate itself (`perl_parser`, an alias of it).
+    Crate,
+    /// The prefix is a dead-code module route (`dead_code`,
+    /// `dead_code_detector`, `compat::dead_code_detector`).
+    Module,
+    /// The prefix is the surface prelude module.
+    Prelude,
+    /// The prefix is the `compat` shim awaiting `dead_code_detector`.
+    Compat,
+    /// The prefix roots at the crate but names something unrelated.
+    Other,
+}
+
+/// Crate-root bindings through which any module of the file can reach this
+/// surface by spelling the path `crate::<binding>::…`.
+///
+/// `crate::` always resolves at the file's crate root, so only bindings that
+/// actually sit there may root such a path: a `use` binding in an inner scope
+/// is invisible to this spelling, exactly as Rust name resolution hides it.
+/// That is what keeps the child-module scope negatives intact — this is not a
+/// return to inheriting enclosing use bindings.
+///
+/// The binding's own source path must root at the surface crate: the crate
+/// itself, a crate-root rename of it (`pub use perl_parser as alias;`), an
+/// extern-crate alias, or an earlier binding discovered here, so alias chains
+/// (`use perl_parser as a; use a::prelude as p;`) also resolve at a bounded
+/// fixed point. This is explicit source name resolution, not macro expansion;
+/// that limit stays inside the ledger's `compiler-expanded-public-surface`
+/// boundary.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct CrateBindings {
+    /// Bindings of the surface crate itself: `crate::alias::dead_code::…`,
+    /// `crate::alias::prelude::<Type>`, `crate::alias::compat::dead_code_detector`.
+    crate_rebinds: BTreeSet<String>,
+    /// Bindings of a dead-code module route: `crate::dc::…` for
+    /// `use perl_parser::dead_code as dc;` at the crate root.
+    modules: BTreeSet<String>,
+    /// Prelude-module bindings: `crate::p::<SurfaceType>` for
+    /// `use perl_parser::prelude as p;` (including an unrenamed
+    /// `use perl_parser::prelude;`, bound under its own name).
+    preludes: BTreeSet<String>,
+    /// Direct type bindings: `crate::DeadCode` for
+    /// `use perl_parser::prelude::DeadCode;` at the crate root.
+    types: BTreeSet<String>,
+    /// A crate-root prelude glob: `crate::<SurfaceType>`.
+    glob: bool,
+}
+
+impl CrateBindings {
+    /// Whether a `crate::`-rooted path with these segments reaches the surface.
+    /// The first segment is the `crate` keyword itself; the second names the
+    /// crate-root binding, and the rest must continue through a surface route.
+    fn reaches(&self, segments: &[String]) -> bool {
+        let Some(binding) = segments.get(1) else { return false };
+        let rest = segments.get(2..).unwrap_or(&[]);
+        if self.crate_rebinds.contains(binding) {
+            if rest.is_empty() {
+                // A bare `crate::alias` names the whole crate, not this
+                // surface; only a continuing route reaches it.
+                return false;
+            }
+            return routes_surface(rest);
+        }
+        if self.modules.contains(binding) {
+            // The binding *is* a dead-code module route: any use inside it
+            // reaches the surface.
+            return true;
+        }
+        if self.preludes.contains(binding) {
+            return rest.first().is_some_and(|name| SURFACE_TYPES.contains(&name.as_str()));
+        }
+        if self.types.contains(binding) || self.glob && SURFACE_TYPES.contains(&binding.as_str()) {
+            return true;
+        }
+        false
+    }
+}
+
+/// Collect the crate-root surface bindings of one `use` or `extern crate`
+/// item, extending `bindings` in place.
+fn collect_crate_root_bindings(
+    tree: &syn::UseTree,
+    first: bool,
+    route: RootRoute,
+    roots: &BTreeSet<String>,
+    bindings: &mut CrateBindings,
+) {
+    match tree {
+        syn::UseTree::Path(node) => {
+            let name = node.ident.to_string();
+            let next = if first {
+                if roots.contains(&name) { RootRoute::Crate } else { RootRoute::Other }
+            } else {
+                match route {
+                    RootRoute::Crate => match name.as_str() {
+                        "dead_code" | "dead_code_detector" => RootRoute::Module,
+                        "prelude" => RootRoute::Prelude,
+                        "compat" => RootRoute::Compat,
+                        _ => RootRoute::Other,
+                    },
+                    RootRoute::Compat => {
+                        if name == "dead_code_detector" {
+                            RootRoute::Module
+                        } else {
+                            RootRoute::Other
+                        }
+                    }
+                    // Deeper paths inside a module or prelude keep that
+                    // prefix's identity; the leaf decides what binds.
+                    RootRoute::Module | RootRoute::Prelude => route,
+                    RootRoute::None | RootRoute::Other => RootRoute::Other,
+                }
+            };
+            if next == RootRoute::Other && route != RootRoute::None {
+                return;
+            }
+            collect_crate_root_bindings(&node.tree, false, next, roots, bindings);
+        }
+        syn::UseTree::Group(node) => {
+            for item in &node.items {
+                collect_crate_root_bindings(item, first, route, roots, bindings);
+            }
+        }
+        syn::UseTree::Glob(_) => match route {
+            RootRoute::Crate => {
+                // `use perl_parser::*;` binds the known surface modules under
+                // their own names.
+                bindings
+                    .modules
+                    .extend(["dead_code", "dead_code_detector", "compat"].map(str::to_string));
+                bindings.preludes.insert("prelude".to_string());
+            }
+            RootRoute::Prelude => bindings.glob = true,
+            _ => {}
+        },
+        syn::UseTree::Name(node) => {
+            let name = node.ident.to_string();
+            if first {
+                // `use perl_parser;` re-imports the crate under its own name.
+                if roots.contains(&name) {
+                    bindings.crate_rebinds.insert(name);
+                }
+                return;
+            }
+            match route {
+                RootRoute::Crate => match name.as_str() {
+                    "dead_code" | "dead_code_detector" | "compat" => {
+                        bindings.modules.insert(name);
+                    }
+                    "prelude" => {
+                        bindings.preludes.insert(name);
+                    }
+                    _ => {}
+                },
+                // A leaf inside a dead-code module or the prelude binds a
+                // surface type under its own name.
+                RootRoute::Module | RootRoute::Prelude => {
+                    bindings.types.insert(name);
+                }
+                RootRoute::Compat => {
+                    if name == "dead_code_detector" {
+                        bindings.modules.insert(name);
+                    }
+                }
+                RootRoute::None | RootRoute::Other => {}
+            }
+        }
+        syn::UseTree::Rename(node) => {
+            let original = node.ident.to_string();
+            let local = node.rename.to_string();
+            if first {
+                // `use perl_parser as alias;` — a crate-root rename of the
+                // crate itself.
+                if roots.contains(&original) {
+                    bindings.crate_rebinds.insert(local);
+                }
+                return;
+            }
+            match route {
+                RootRoute::Crate => match original.as_str() {
+                    "dead_code" | "dead_code_detector" | "compat" => {
+                        bindings.modules.insert(local);
+                    }
+                    "prelude" => {
+                        bindings.preludes.insert(local);
+                    }
+                    _ => {}
+                },
+                RootRoute::Module | RootRoute::Prelude => {
+                    bindings.types.insert(local);
+                }
+                RootRoute::Compat => {
+                    if original == "dead_code_detector" {
+                        bindings.modules.insert(local);
+                    }
+                }
+                RootRoute::None | RootRoute::Other => {}
+            }
+        }
+    }
+}
+
 /// Resolve explicit prelude paths and bare glob-imported type paths within
 /// source scopes. This is not compiler name resolution: macro expansion and
 /// ambiguous competing glob imports remain outside this source-only check.
@@ -1433,6 +1652,7 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
         roots: BTreeSet<String>,
         preludes: BTreeSet<String>,
         shadowed: BTreeSet<String>,
+        crate_bindings: CrateBindings,
         glob: bool,
         imports_surface: bool,
     }
@@ -1680,23 +1900,16 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
                 let name = first.ident.to_string();
                 let segments: Vec<_> =
                     path.segments.iter().map(|segment| segment.ident.to_string()).collect();
-                let qualified_surface = self.scope.roots.contains(&name)
-                    && match segments.as_slice() {
-                        [_, route, ..] if route == "dead_code" || route == "dead_code_detector" => {
-                            true
-                        }
-                        [_, route, symbol, ..] if route == "prelude" => {
-                            SURFACE_TYPES.contains(&symbol.as_str())
-                        }
-                        [_, route, module, ..]
-                            if route == "compat" && module == "dead_code_detector" =>
-                        {
-                            true
-                        }
-                        _ => false,
-                    };
+                let qualified_surface =
+                    self.scope.roots.contains(&name) && routes_surface(&segments[1..]);
+                // `crate::<binding>::…` resolves at the file's crate root, so
+                // the bindings collected there decide it — never an enclosing
+                // module's scope.
+                let crate_rooted_surface =
+                    name == "crate" && self.scope.crate_bindings.reaches(&segments);
                 if !self.scope.shadowed.contains(&name)
                     && (qualified_surface
+                        || crate_rooted_surface
                         || (self.scope.glob && SURFACE_TYPES.contains(&name.as_str()))
                         || (self.scope.preludes.contains(&name)
                             && path.segments.iter().nth(1).is_some_and(|segment| {
@@ -1726,6 +1939,50 @@ fn scoped_prelude_use(file: &syn::File, inside_owning_crate: bool) -> bool {
             initial.roots.insert(local.to_string());
         }
     }
+    // Crate-root bindings (`crate::<binding>::…` spelled from any module of
+    // the file) are nameable independently of the scoped visitor: `crate::`
+    // always resolves at the file's crate root. Only bindings that actually
+    // sit there count, and alias chains resolve at a bounded fixed point.
+    let mut crate_bindings = CrateBindings::default();
+    let crate_import_count: usize = file
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let syn::Item::Use(node) = item {
+                Some(flatten_use_tree(&node.tree, &mut Vec::new()).len())
+            } else {
+                None
+            }
+        })
+        .sum();
+    for _ in 0..=crate_import_count {
+        let previous = crate_bindings.clone();
+        let mut binding_roots = initial.roots.clone();
+        binding_roots.extend(crate_bindings.crate_rebinds.iter().cloned());
+        for item in &file.items {
+            match item {
+                syn::Item::Use(node) => collect_crate_root_bindings(
+                    &node.tree,
+                    true,
+                    RootRoute::None,
+                    &binding_roots,
+                    &mut crate_bindings,
+                ),
+                syn::Item::ExternCrate(node)
+                    if node.ident == "perl_parser"
+                        || (node.ident == "self" && inside_owning_crate) =>
+                {
+                    let local = node.rename.as_ref().map_or(&node.ident, |(_, alias)| alias);
+                    crate_bindings.crate_rebinds.insert(local.to_string());
+                }
+                _ => {}
+            }
+        }
+        if crate_bindings == previous {
+            break;
+        }
+    }
+    initial.crate_bindings = crate_bindings;
     let scope = with_items(initial.clone(), &file.items.iter().collect::<Vec<_>>());
     let found = scope.imports_surface;
     let mut visitor = Visitor { scope, initial, found };
@@ -1795,7 +2052,16 @@ fn collect_use_items(file: &syn::File) -> Vec<&syn::ItemUse> {
 /// exactly that, an independent dead-code implementation whose `mod dead_code;`
 /// must not be read as consuming this surface.
 fn classify_import_path(path: &[String], roots: &BTreeSet<String>, facts: &mut ImportFacts) {
-    let rooted_at_surface_crate = path.first().is_some_and(|first| roots.contains(first));
+    // `use crate::alias::dead_code::…;` roots at the file's crate root, so the
+    // second segment must be a crate-root binding of the surface crate (the
+    // `use perl_parser as alias;` renames collected above). A file without
+    // such a binding keeps `crate::alias::…` unrelated, which preserves the
+    // local-module negative; `crate::perl_parser::…` without a re-import
+    // cannot compile, so treating it as rooted only ever over-approximates in
+    // the fail-closed direction.
+    let rooted_at_surface_crate = path.first().is_some_and(|first| roots.contains(first))
+        || (path.first().is_some_and(|first| first == "crate")
+            && path.get(1).is_some_and(|second| roots.contains(second)));
     if rooted_at_surface_crate
         && path.iter().any(|seg| seg == "dead_code" || seg == "dead_code_detector")
     {
@@ -2613,6 +2879,73 @@ mod tests {
         if !scoped_prelude_use(&file, false) {
             bail!("nested consumer through crate-root alias escaped");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn crate_root_use_rebind_reaches_child_module_consumers() -> Result<()> {
+        // Review finding, PR #15086: a crate-root `pub use perl_parser as
+        // alias;` rebind is nameable from child modules through
+        // `crate::alias::…`, so that spelling must be detected at the real
+        // scanner seam. Only the explicit crate-root binding resolves it — no
+        // enclosing use binding is inherited into a child scope.
+        for text in [
+            "pub use perl_parser as alias; mod child { use crate::alias::dead_code::DeadCode; fn consume(_: DeadCode) {} }",
+            "pub use perl_parser as alias; mod child { fn consume(_: crate::alias::dead_code::DeadCode) {} }",
+            "pub use perl_parser as alias; mod child { fn consume(_: crate::alias::dead_code_detector::DeadCode) {} }",
+            "pub use perl_parser as alias; mod child { fn consume(_: crate::alias::compat::dead_code_detector::DeadCode) {} }",
+            "pub use perl_parser as alias; mod child { fn consume(_: crate::alias::prelude::DeadCodeStats) {} }",
+            "use perl_parser::dead_code as dc; mod child { fn consume(_: crate::dc::DeadCode) {} }",
+            "use perl_parser::prelude as p; mod child { fn consume(_: crate::p::DeadCode) {} }",
+            "use perl_parser::prelude::DeadCode; mod child { fn consume(_: crate::DeadCode) {} }",
+            "use perl_parser::prelude::*; mod child { fn consume(_: crate::DeadCode) {} }",
+            "use perl_parser as a; use a::prelude as p; mod child { fn consume(_: crate::p::DeadCode) {} }",
+            "extern crate perl_parser as ep; mod child { fn consume(_: crate::ep::dead_code::DeadCode) {} }",
+        ] {
+            if !references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
+                bail!("crate-rooted consumer escaped: {text}");
+            }
+        }
+        for text in [
+            // No crate-root rebind: a local module of the same name is
+            // unrelated, and `crate::dead_code` from another crate is that
+            // crate's own module.
+            "mod alias { pub mod dead_code { pub struct DeadCode; } } mod child { use crate::alias::dead_code::DeadCode; fn consume(_: DeadCode) {} }",
+            "mod child { use crate::dead_code::Thing; fn consume(_: Thing) {} }",
+            // An inner-scope use binding is not a crate-root binding, so it
+            // cannot root a `crate::`-spelled path in a nested module.
+            "mod outer { use perl_parser as alias; mod inner { fn consume(_: crate::alias::dead_code::DeadCode) {} } }",
+        ] {
+            if references_surface(text, false).map_err(|error| color_eyre::eyre::eyre!(error))? {
+                bail!("unrelated crate-rooted path became a consumer: {text}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The rooted-rebind case is caught at the real consumer-validation seam,
+    /// not only by the scanner bodies: an undeclared file using it must come
+    /// back as an L7 violation (review finding, PR #15086).
+    #[test]
+    fn validate_consumers_flags_undeclared_crate_root_rebind_consumer() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        fs::create_dir_all(root.join("crates/some-crate/src"))?;
+        let consumer = "crates/some-crate/src/consumer.rs";
+        fs::write(
+            root.join(consumer),
+            "pub use perl_parser as alias; \
+             mod child { use crate::alias::dead_code::DeadCode; fn consume(_: DeadCode) {} }",
+        )?;
+        let mut ledger = read_ledger(&project_root()?, POLICY_PATH)?;
+        ledger.consumer.clear();
+        ledger.governance_paths.clear();
+        let mut violations = Vec::new();
+        validate_consumers(root, &ledger, &mut violations);
+        assert!(
+            violations.iter().any(|violation| violation.contains(consumer)),
+            "undeclared crate-root rebind consumer must be flagged: {violations:?}"
+        );
         Ok(())
     }
 
