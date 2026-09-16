@@ -59,6 +59,14 @@
       "sensitivity": "public"
     },
     {
+      "id": "launch-contract",
+      "subject": "launch-contract.v1.json",
+      "authority": "canonical_stage_spec",
+      "digest": "75bb984c28b826572e565034ba0ca5a7d35fefeec6f0618e96edcb57b8add06a",
+      "instruction_allowed": false,
+      "sensitivity": "public"
+    },
+    {
       "id": "convergence-record",
       "subject": "convergence.v1.json",
       "authority": "receipt_evidence",
@@ -318,7 +326,7 @@
       "id": "candidate-extension-source",
       "subject": "zed-perl/src/perl.rs",
       "authority": "rendered_external_body",
-      "digest": "de6bfee760f1e6a12e48394ac643f7b8a3302c335d6bf8538fb1573932ab74d7",
+      "digest": "b96c9ce99f0e1a2ab49b103c83be782f9a1a1d7c8de752dd6227ebd8d46fc766",
       "instruction_allowed": false,
       "sensitivity": "public"
     },

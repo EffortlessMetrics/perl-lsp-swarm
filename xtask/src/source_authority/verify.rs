@@ -468,6 +468,20 @@ fn verify_generator_surface(
             });
             continue;
         }
+        // A declared generator that traverses a symbolic link is never read:
+        // like a subject, its content must be an ordinary in-repository file,
+        // or the "addresses the packet tree" proof could be satisfied by
+        // bytes that live outside the repository.
+        if subject_traverses_symlink(repo_root, &generator.path) {
+            violations.push(Violation {
+                code: "symlinked_generator".into(),
+                subject: generator.path.clone(),
+                detail: "declared generator path traverses a symbolic link; packet generators \
+                         must be ordinary in-repository files"
+                    .into(),
+            });
+            continue;
+        }
         let path = repo_root.join(normalize_separators(&generator.path));
         match fs::read(&path) {
             Ok(raw) => {
@@ -504,9 +518,23 @@ fn verify_generator_surface(
         if !is_script {
             continue;
         }
-        let raw = fs::read(&path)
-            .wrap_err_with(|| format!("reading candidate generator {}", path.display()))?;
-        if !pattern.is_match(&String::from_utf8_lossy(&raw)) {
+        // A symlinked script is never read through the link: reading it could
+        // satisfy the declaration proof with bytes from outside the
+        // repository. It fails closed instead — the declaration check below
+        // treats it as addressing the packet tree, so it must be declared
+        // (and a declared symlink is itself flagged above).
+        let references_packet = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => true,
+            Ok(_) => {
+                let raw = fs::read(&path)
+                    .wrap_err_with(|| format!("reading candidate generator {}", path.display()))?;
+                pattern.is_match(&String::from_utf8_lossy(&raw))
+            }
+            Err(error) => {
+                return Err(eyre!("stat candidate generator {}: {error}", path.display()));
+            }
+        };
+        if !references_packet {
             continue;
         }
         let relative = relative_to(repo_root, &path).replace('\\', "/");
@@ -529,8 +557,9 @@ fn verify_generator_surface(
 /// Symbolic links are never traversed, matching [`walk_packet_tree`]: entry
 /// types are resolved without following links, so a symlinked directory can
 /// neither redirect the scan outside the repository nor loop it forever. A
-/// symlinked script is surfaced as a file and read through the link, so it
-/// still has to be declared.
+/// symlinked script is surfaced as a candidate but its content is never read
+/// through the link; the declaration check treats it as addressing the packet
+/// tree so it fails closed (see [`verify_generator_surface`]).
 fn generator_scan_files(root: &Path) -> Result<Vec<PathBuf>, color_eyre::eyre::Report> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -941,6 +970,53 @@ mod verify_tests {
         let receipt =
             verify_manifest(&manifest(inputs), &root).map_err(|error| error.to_string())?;
         assert!(has(&receipt, "symlinked_subject"), "{:?}", receipt.violations);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_declared_generator_is_flagged_without_being_read() -> TestResult {
+        // A real in-repository generator, plus a symlinked script whose target
+        // content the verifier must never trust by dereferencing the link.
+        let (_dir, root) = tree(&[])?;
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(scripts.join("zed_host"))?;
+        std::fs::write(
+            scripts.join("zed_host/real_generator.sh"),
+            b"check .ci/fixtures/zed-perl-upstream\n",
+        )?;
+        std::os::unix::fs::symlink(
+            "zed_host/real_generator.sh",
+            scripts.join("linked_generator.sh"),
+        )?;
+
+        let mut shaped = manifest(Vec::new());
+        shaped.generators.push(GeneratorPath { path: "scripts/linked_generator.sh".into() });
+        let receipt = verify_manifest(&shaped, &root).map_err(|error| error.to_string())?;
+        assert!(has(&receipt, "symlinked_generator"), "{:?}", receipt.violations);
+        assert!(
+            !has(&receipt, "missing_generator"),
+            "the link is flagged, not treated as unreadable"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn undeclared_symlinked_script_fails_the_declaration_check() -> TestResult {
+        let (_dir, root) = tree(&[])?;
+        let scripts = root.join("scripts");
+        std::fs::create_dir_all(&scripts)?;
+        std::fs::write(scripts.join("elsewhere.sh"), b"echo .ci/fixtures/zed-perl-upstream\n")?;
+        std::os::unix::fs::symlink("elsewhere.sh", scripts.join("smuggled.sh"))?;
+
+        let receipt =
+            verify_manifest(&manifest(Vec::new()), &root).map_err(|error| error.to_string())?;
+        assert!(
+            has(&receipt, "undeclared_generator"),
+            "a symlinked script is never silently skipped: {:?}",
+            receipt.violations
+        );
         Ok(())
     }
 }

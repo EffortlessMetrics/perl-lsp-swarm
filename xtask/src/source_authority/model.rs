@@ -100,10 +100,14 @@ impl SourceAuthorityClass {
 }
 
 /// Sensitivity handling required for a packet input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+///
+/// Deliberately has no default: a manifest entry that omits `sensitivity` is
+/// a deserialization error, so sensitivity is always explicitly classified
+/// and the redaction and machine-local checks can never be skipped by an
+/// omitted field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Sensitivity {
-    #[default]
     Public,
     RedactRequired,
     MachineLocalForbidden,
@@ -140,8 +144,8 @@ pub struct PacketInput {
     /// Declared instruction capability; must equal the class capability.
     #[serde(default)]
     pub instruction_allowed: bool,
-    /// Required sensitivity handling.
-    #[serde(default)]
+    /// Required sensitivity handling; the field itself is required and has
+    /// no permissive fallback.
     pub sensitivity: Sensitivity,
     /// Content is referenced by digest only and never rendered inline.
     #[serde(default)]
@@ -288,5 +292,21 @@ mod model_tests {
     #[test]
     fn non_utf8_content_is_rejected_not_lossily_digested() {
         assert!(normalized_digest(&[0xff, 0xfe]).is_err());
+    }
+
+    #[test]
+    fn missing_sensitivity_fails_deserialization_instead_of_defaulting_public() {
+        // An entry that omits sensitivity must be rejected at parse time: a
+        // permissive fallback would silently skip the redaction and
+        // machine-local checks for content nobody classified.
+        let omitted = serde_json::json!({
+            "id": "unclassified-sensitivity",
+            "subject": "a.txt",
+            "authority": "receipt_evidence",
+            "digest": "0".repeat(64),
+            "instruction_allowed": false
+        });
+        let parsed: Result<PacketInput, _> = serde_json::from_value(omitted);
+        assert!(parsed.is_err(), "missing sensitivity must fail closed");
     }
 }

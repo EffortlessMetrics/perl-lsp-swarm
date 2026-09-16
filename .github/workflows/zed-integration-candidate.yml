@@ -13,7 +13,6 @@ on:
       - 'scripts/zed_host/**'
       - 'scripts/tests/test_zed_host_*.py'
       - 'scripts/tests/test_zed_assets.py'
-      - 'scripts/zed_assets/**'
       - 'scripts/zed_public_asset_receipts.py'
       - 'xtask/src/bin/validate-zed-*.rs'
       - 'xtask/src/source_authority/**'
