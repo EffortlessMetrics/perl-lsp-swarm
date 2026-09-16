@@ -85,6 +85,8 @@ return {
         modules = { "init.lua" } },
       { suite = "init_completion_resolve_test.lua",
         modules = { "init.lua" } },
+      { suite = "init_completion_collision_test.lua",
+        modules = { "init.lua" } },
       { suite = "init_command_projection_test.lua",
         modules = { "init.lua", "capability_manifest.lua" } },
     },
