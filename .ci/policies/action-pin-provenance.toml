@@ -10,6 +10,14 @@ sha = '22d9c91d516983f637dfee20cb8035a8ba229d35'
 kind = 'branch_commit'
 value = 'dev (2026-09-06)'
 
+# Verified on 2026-09-16 through the GitHub merge result for droid-action-safe #7.
+# dev merge -> 2e37d0ac790aeca76856628dc8e6ee186abf87cd
+[[pin]]
+action = 'EffortlessMetrics/droid-action-safe/isolated-review'
+sha = '2e37d0ac790aeca76856628dc8e6ee186abf87cd'
+kind = 'branch_commit'
+value = 'dev merge of #7 (2026-09-16)'
+
 [[pin]]
 action = 'Swatinem/rust-cache'
 sha = '6323deb102c322ba6fcbdcafc7e3dddab59af2b6'
