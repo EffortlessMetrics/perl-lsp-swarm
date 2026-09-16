@@ -55,10 +55,11 @@ const WRAPPER_INVOCATION = 'node scripts/governed-tsc.js';
  *   authorityCheck?: (extensionRoot: string) => {ok: boolean, failures: string[], facts: string[]},
  *   spawnChild?: (command: string, argv: string[]) => Promise<ExitResult> | ExitResult,
  * }} input
- * @returns {Promise<{code: number, spawned: boolean, authorityFailures: string[]}>}
+ * @returns {Promise<{code: number, spawned: boolean, authorityFailures: string[], childOutput?: string}>}
  *   Resolves with the process exit code. Never rejects: a red gate or a
  *   launch failure is a result, not an exception, so callers and tests can
- *   assert on the code rather than catch.
+ *   assert on the code rather than catch. `childOutput` carries the compiler's
+ *   combined stdout+stderr when the caller supplied a piped spawnChild.
  */
 async function runGovernedTsc(input) {
   const authorityCheck = input.authorityCheck ?? checkTypeScriptAuthority;
@@ -111,21 +112,28 @@ async function runGovernedTsc(input) {
     );
   }
   // A child killed by a signal or never launched (code null) must not read as
-  // success to npm.
+  // success to npm. The child's captured output (piped mode only) is forwarded
+  // so callers can name the diagnostics without re-reading the streams.
   return {
     code: result.code === null ? 1 : result.code,
     spawned: true,
     authorityFailures: [],
+    childOutput: result.output,
   };
 }
 
 /**
- * Spawns the pinned compiler with inherited stdio and resolves exactly once —
- * on its exit, or on a launch failure.
+ * Spawns the pinned compiler and resolves exactly once — on its exit, or on a
+ * launch failure.
  *
- * `spawn` (not `spawnSync`) keeps watch mode usable: `watch:types` forwards
+ * Default stdio is `inherit`, keeping watch mode usable (`watch:types` forwards
  * incremental output, and SIGINT/SIGTERM are forwarded so Ctrl+C stops the
- * child tsc rather than orphaning it under npm.
+ * child tsc rather than orphaning it under npm). A caller may pass
+ * `{ stdio: 'pipe' }` to capture the compiler's output on the result instead —
+ * used by negative-path tests whose fixture diagnostics must not reach the
+ * runner's `error TS…` problem matcher and become unattributed hosted
+ * annotations (#15609). The child streams are always drained, so a chatty
+ * compiler cannot fill the pipe and block.
  *
  * A failed launch (`error`, e.g. ENOENT) never emits `exit`; settling only on
  * `exit` would leave the promise pending forever and the npm script hanging.
@@ -133,11 +141,25 @@ async function runGovernedTsc(input) {
  *
  * @param {string} command
  * @param {string[]} argv
- * @returns {Promise<ExitResult>}
+ * @param {{stdio?: 'inherit' | 'pipe'}} [options]
+ * @returns {Promise<ExitResult & {output?: string}>}
+ *   `output` is set only for the piped mode: the child's combined stdout+stderr.
  */
-function spawnPinnedTsc(command, argv) {
+function spawnPinnedTsc(command, argv, options) {
+  const pipe = (options?.stdio ?? 'inherit') === 'pipe';
   return new Promise((resolve) => {
-    const child = spawn(command, argv, { stdio: 'inherit' });
+    const child = spawn(command, argv, {
+      stdio: pipe ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+    });
+    let output = '';
+    if (pipe) {
+      child.stdout?.on('data', (chunk) => {
+        output += chunk;
+      });
+      child.stderr?.on('data', (chunk) => {
+        output += chunk;
+      });
+    }
     let settled = false;
     /**
      * @param {NodeJS.Signals} signal
@@ -152,7 +174,7 @@ function spawnPinnedTsc(command, argv) {
       settled = true;
       process.removeListener('SIGINT', forward);
       process.removeListener('SIGTERM', forward);
-      resolve(result);
+      resolve(pipe ? { ...result, output } : result);
     };
     process.once('SIGINT', forward);
     process.once('SIGTERM', forward);
