@@ -96,7 +96,7 @@ fn scenario_19_added_workspace_folder_symbols_appear() -> Result<()> {
     while Instant::now() < before_deadline {
         symbols_before = harness
             .workspace_symbols("CoreModule")
-            .context("workspace/symbol failed before folder addition")?;
+            .context("workspace/symbol failed for CoreModule before folder addition")?;
         if contains_symbol_in_folder(&symbols_before, "CoreModule", "/svc-core/") {
             break;
         }
@@ -111,7 +111,7 @@ fn scenario_19_added_workspace_folder_symbols_appear() -> Result<()> {
 
     let symbols_before_ext = harness
         .workspace_symbols("ExtModule")
-        .context("workspace/symbol failed before folder addition")?;
+        .context("workspace/symbol failed for ExtModule before folder addition")?;
     assert!(
         !contains_symbol_in_folder(&symbols_before_ext, "ExtModule", "/svc-ext/"),
         "Expected ExtModule to be absent before folder addition, got: {:?}",
@@ -130,7 +130,7 @@ fn scenario_19_added_workspace_folder_symbols_appear() -> Result<()> {
     while Instant::now() < after_deadline {
         symbols_after = harness
             .workspace_symbols("ExtModule")
-            .context("workspace/symbol failed after folder addition")?;
+            .context("workspace/symbol failed for ExtModule after folder addition")?;
 
         if contains_symbol_in_folder(&symbols_after, "ExtModule", "/svc-ext/") {
             break;
@@ -146,7 +146,7 @@ fn scenario_19_added_workspace_folder_symbols_appear() -> Result<()> {
 
     let symbols_after_core = harness
         .workspace_symbols("CoreModule")
-        .context("workspace/symbol failed after folder addition")?;
+        .context("workspace/symbol failed for CoreModule after folder addition")?;
     assert!(
         contains_symbol_in_folder(&symbols_after_core, "CoreModule", "/svc-core/"),
         "Expected CoreModule to remain after adding svc-ext, got: {:?}",
