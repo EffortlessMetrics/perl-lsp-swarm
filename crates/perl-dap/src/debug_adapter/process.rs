@@ -4012,6 +4012,21 @@ mod tests {
         assert_eq!(text.as_deref(), Some("OK"));
     }
 
+    /// `spawn_probe_pipe_drain` grips both arms: no pipe yields no drain, and
+    /// a pipe that reaches EOF delivers its decoded contents through the
+    /// drain (ripr discriminator for the spawn seam).
+    #[test]
+    fn probe_pipe_drain_spawns_only_for_a_live_pipe() {
+        use std::io::Cursor;
+
+        assert!(super::spawn_probe_pipe_drain(None::<Cursor<Vec<u8>>>).is_none());
+
+        let drain = super::spawn_probe_pipe_drain(Some(Cursor::new(b"hello".to_vec())));
+        let text = super::join_probe_drain_within(drain, Duration::from_secs(5));
+
+        assert_eq!(text.as_deref(), Some("hello"));
+    }
+
     /// Only the marker's own trimmed line certifies a pass; incidental
     /// "OK" substrings elsewhere in child output must not.
     #[test]
@@ -4022,6 +4037,8 @@ mod tests {
         assert!(!super::has_probe_success_marker(""));
         assert!(!super::has_probe_success_marker("OKAY\n"));
         assert!(!super::has_probe_success_marker("the OK substring alone\n"));
+        // A doubled marker on one line still is not the marker's own line.
+        assert!(!super::has_probe_success_marker("OK OK\n"));
     }
 
     /// A probe that could not run (spawn failure) keeps the launch-continue
@@ -4046,6 +4063,24 @@ mod tests {
                 "an inconclusive probe must not be cached as a pass"
             );
         }
+    }
+
+    /// A cached pass verdict is served without spawning a new probe: the
+    /// cache-hit seam returns the stored verdict for the exact launch key
+    /// (ripr discriminator for the cache-hit seam).
+    #[test]
+    fn cached_pass_verdict_is_served_without_reprobing() {
+        let interpreter = "perl-lsp-cached-probe-interpreter-7c3e9";
+        let env = HashMap::new();
+        let cwd = std::env::temp_dir();
+        let key = DebugAdapter::capability_probe_cache_key(interpreter, &env, &cwd);
+        if let Ok(mut cache) = super::DEBUGGER_PROBE_CACHE.lock() {
+            cache.insert(key, Ok(()));
+        }
+
+        let verdict = DebugAdapter::check_debugger_capability(interpreter, &env, &cwd);
+
+        assert!(verdict.is_ok(), "cached pass must be served, got: {verdict:?}");
     }
 
     /// Verify that `detect_perl_info()` runs without panicking.
