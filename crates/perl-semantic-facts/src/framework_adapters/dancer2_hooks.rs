@@ -192,6 +192,7 @@ pub struct Dancer2HookDeclaration {
     pub file_id: FileId,
     /// Full declaration range (keyword start to last operand end).
     pub declaration_start_byte: u32,
+    /// End of the full declaration range.
     pub declaration_end_byte: u32,
     /// Canonical hook payload (name/handler).
     pub hook: HookDeclaration,
