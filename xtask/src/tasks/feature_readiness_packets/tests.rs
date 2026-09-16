@@ -223,8 +223,13 @@ fn delivery_routing_matches_declared_prerequisites_and_successors() {
         ("fr_1850_semantic_token_geometry", &[][..], &[11250, 11259][..]),
         ("fr_11250_semantic_token_shadow", &[1850][..], &[11259][..]),
         ("fr_11259_semantic_token_live_cutover", &[11250][..], &[][..]),
-        ("fr_8305_import_containment_leaf", &[8277][..], &[8277][..]),
+        // #8277 is 8305's controller, not a blocking dependency: a controller
+        // mention in prose must never route (FC-FALSE-PROSE-DEPS cycle fix).
+        ("fr_8305_import_containment_leaf", &[][..], &[8277][..]),
         ("fr_8277_import_governed_operations_leaf", &[8305][..], &[8336][..]),
+        // The proof child depends on its landed product child even when the
+        // prose names it only descriptively.
+        ("fr_10724_formatting_currentness_proof", &[9349][..], &[][..]),
         ("fr_11261_object_facts_source_anchors", &[11259][..], &[11263][..]),
         ("fr_11263_application_framework_projection", &[11261][..], &[][..]),
     ] {
@@ -250,7 +255,152 @@ fn delivery_dependency_mutations_fail_closed() {
             dependencies.push(Value::from(11259));
         }
     });
-    assert!(codes(&validate::validate_builder(&mutated)).contains(&"dependency_mismatch"));
+    assert!(codes(&validate::validate_builder(&mutated)).contains(&"routing_mismatch"));
+}
+
+// FC-FALSE-PROSE-DEPS: a controller, self-, or reuse mention in
+// `prerequisite_disposition` prose is not a blocking dependency.
+#[test]
+fn prose_mentions_do_not_create_dependencies() {
+    for (node_id, mention) in [
+        // controller mention (#8277 governs; not a dependency)
+        ("fr_8305_import_containment_leaf", 8277usize),
+        // self-reference (decision issue #8301)
+        ("fr_8301_deferred_npm_distribution", 8301),
+        // reuse mention (#10724-style patterns)
+        ("fr_6997_critic_product_child", 10724),
+        // scope constraint (#7278 ruling)
+        ("fr_9415_dap_reliability_leaf", 7278),
+    ] {
+        let (builder, _) = builder_of(node_id);
+        let dependencies = builder
+            .pointer("/delivery/issues/dependencies")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_u64).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            !dependencies.contains(&(mention as u64)),
+            "{node_id} routed a prose mention #{mention} as a dependency: {dependencies:?}"
+        );
+    }
+}
+
+// Typed prerequisites are the only routing source: editing the prose cannot
+// change routing (though it does change packet identity via the registry
+// digest).
+#[test]
+fn prerequisite_prose_edits_do_not_change_routing() {
+    let mut node = node("fr_11261_object_facts_source_anchors").clone();
+    let routing_before = build::delivery_issue_ids(&node, &nodes::all_nodes());
+    node.prerequisite_disposition = "mentions #9999 and fr_11259 in prose only";
+    let (mutated, _) = build::builder_document(&node, None);
+    let dependencies: Vec<u64> = mutated
+        .pointer("/delivery/issues/dependencies")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_u64).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        dependencies,
+        routing_before.1.iter().map(|issue| u64::from(*issue)).collect::<Vec<_>>()
+    );
+    let (pristine, _) = builder_of("fr_11261_object_facts_source_anchors");
+    assert_ne!(
+        pristine["packet_id"], mutated["packet_id"],
+        "prose edits must still change packet identity through the registry digest"
+    );
+}
+
+// FC-EMPTY-NODE-ID: an identity-less packet fails schema and runtime checks.
+#[test]
+fn empty_node_id_fails_closed() {
+    let (builder, _) = builder_of("fr_1850_semantic_token_geometry");
+    let emptied = mutate(&builder, &|doc| {
+        if let Some(work) = doc.get_mut("work").and_then(Value::as_object_mut) {
+            work.insert("node_id".to_owned(), Value::String(String::new()));
+        }
+    });
+    assert!(codes(&validate::validate_builder(&emptied)).contains(&"empty_field"));
+    assert!(
+        !validate::validate_schema_instance(&emptied).is_empty(),
+        "the checked-in schema must reject an empty work.node_id"
+    );
+}
+
+// An unknown node id cannot silently skip registry authority binding.
+#[test]
+fn unknown_node_identity_fails_closed() {
+    let (builder, _) = builder_of("fr_1850_semantic_token_geometry");
+    let forged = mutate(&builder, &|doc| {
+        if let Some(work) = doc.get_mut("work").and_then(Value::as_object_mut) {
+            work.insert("node_id".to_owned(), Value::String("fr_99999_forged".to_owned()));
+        }
+    });
+    assert!(codes(&validate::validate_builder(&forged)).contains(&"unknown_node_identity"));
+}
+
+// FC-SCHEMA-CONTROLLER-OPTIONAL: schema-only consumers require the controller.
+#[test]
+fn builder_schema_requires_controller_identity() -> TestResult {
+    let schema = read_schema_file("schemas/feature_readiness_builder_packet.v1.schema.json")?;
+    let required: Vec<&str> = schema
+        .pointer("/properties/work/required")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    assert!(
+        required.contains(&"controller_issue"),
+        "builder schema must require work.controller_issue"
+    );
+    let (builder, _) = builder_of("fr_5108_navigation_truth_repair");
+    let controllerless = mutate(&builder, &|doc| {
+        if let Some(work) = doc.get_mut("work").and_then(Value::as_object_mut) {
+            work.remove("controller_issue");
+        }
+    });
+    assert!(
+        !validate::validate_schema_instance(&controllerless).is_empty(),
+        "a packet without its controller must fail schema validation"
+    );
+    Ok(())
+}
+
+// FC-SCHEMA-REVIEWER-PROFILE-OPEN: reviewer profiles share the builder's
+// closed vocabulary at the schema and runtime layers.
+#[test]
+fn reviewer_profile_vocabulary_is_closed() -> TestResult {
+    let (builder, _) = builder_of("fr_1850_semantic_token_geometry");
+    let reviewer = reviewer_of("fr_1850_semantic_token_geometry");
+    let foreign = mutate(&reviewer, &|doc| {
+        if let Some(subject) = doc.get_mut("subject").and_then(Value::as_object_mut) {
+            subject.insert("profile".to_owned(), Value::String("unreviewable-prose".to_owned()));
+        }
+    });
+    assert!(codes(&validate::validate_reviewer(&foreign)).contains(&"vocabulary_violation"));
+    assert!(
+        !validate::validate_schema_instance(&foreign).is_empty(),
+        "the checked-in schema must reject an open reviewer profile"
+    );
+    // Pairing still binds the reviewer profile to the builder profile.
+    assert!(
+        codes(&validate::validate_pair(&builder, &foreign)).contains(&"subject_mismatch"),
+        "a foreign reviewer profile must not pair with the builder subject"
+    );
+    Ok(())
+}
+
+// Canonical machine bytes are sorted-key JSON regardless of insertion order.
+#[test]
+fn canonical_json_orders_keys_deterministically() {
+    let mut map = serde_json::Map::new();
+    map.insert("zeta".to_owned(), Value::from(1));
+    map.insert("alpha".to_owned(), Value::from(2));
+    map.insert("middle".to_owned(), Value::from(3));
+    let rendered = render::canonical_json(&Value::Object(map));
+    let lines: Vec<&str> = rendered.lines().filter(|line| line.trim().starts_with('"')).collect();
+    let mut sorted = lines.clone();
+    sorted.sort_unstable();
+    assert_eq!(lines, sorted, "canonical_json must emit sorted keys: {rendered}");
+    assert!(rendered.ends_with('\n'));
 }
 
 #[test]
@@ -659,8 +809,12 @@ fn reviewer_identity_fields_are_bound_to_the_builder_subject() {
     }
 }
 
+// FC-DISPLAY-HEAD-UNBOUND: a packet id must authenticate the head it
+// displays. Two snapshots differing only in the observed main head therefore
+// produce different packet identities, while a change to the semantic
+// writer/candidate/action observations always does.
 #[test]
-fn equivalent_main_movement_preserves_packet_identity() {
+fn observed_heads_bind_packet_identity() {
     let node = node("fr_8305_import_containment_leaf");
     let snapshot = |head: &str| build::LiveSnapshot {
         head_sha: head.to_owned(),
@@ -671,16 +825,21 @@ fn equivalent_main_movement_preserves_packet_identity() {
     };
     let first = build::builder_document(node, Some(&snapshot(&"a".repeat(40))));
     let second = build::builder_document(node, Some(&snapshot(&"b".repeat(40))));
-    assert_eq!(first.0["packet_id"], second.0["packet_id"]);
-    assert_eq!(first.1, second.1);
-    let mut semantic = snapshot(&"b".repeat(40));
+    assert_ne!(
+        first.0["packet_id"], second.0["packet_id"],
+        "a packet id must not be reusable across different displayed heads"
+    );
+    assert_ne!(first.1, second.1);
+    let mut semantic = snapshot(&"a".repeat(40));
     semantic.writer_active = true;
     let changed = build::builder_document(node, Some(&semantic));
     assert_ne!(first.0["packet_id"], changed.0["packet_id"]);
 }
 
+// The observation digest stays scoped to the writer/candidate/action
+// observations; the head is bound directly through the displayed cells.
 #[test]
-fn parsed_snapshot_head_movement_preserves_packet_identity() -> TestResult {
+fn parsed_snapshot_head_movement_binds_identity_but_not_observation_digest() -> TestResult {
     let first = build::LiveSnapshot::parse(
         br#"{"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","candidate_branch":null,"writer_active":false,"required_action":"none"}"#,
     )?;
@@ -696,8 +855,11 @@ fn parsed_snapshot_head_movement_preserves_packet_identity() -> TestResult {
     let first_packet = build::builder_document(node, Some(&first));
     let second_packet = build::builder_document(node, Some(&second));
     assert_eq!(first.source_digest, second.source_digest);
-    assert_eq!(first_packet.0["packet_id"], second_packet.0["packet_id"]);
-    assert_eq!(first_packet.1, second_packet.1);
+    assert_ne!(
+        first_packet.0["packet_id"], second_packet.0["packet_id"],
+        "the displayed head must be authenticated by packet identity"
+    );
+    assert_ne!(first_packet.1, second_packet.1);
     Ok(())
 }
 
@@ -934,6 +1096,7 @@ fn schema_files_match_closed_vocabularies() -> TestResult {
             "schemas/feature_readiness_reviewer_packet.v1.schema.json",
             vec![
                 ("role", v::ROLES),
+                ("profile", v::PROFILES),
                 ("review_lens", v::REVIEW_LENSES),
                 ("example_stage", v::EXAMPLE_STAGES),
                 ("terminal_old_path_disposition", v::TERMINAL_OLD_PATH_DISPOSITIONS),

@@ -380,6 +380,10 @@ pub struct NodeSpec {
     pub establishes: Vec<&'static str>,
     pub cannot_establish: Vec<&'static str>,
     pub prerequisite_disposition: &'static str,
+    /// Typed blocking dependencies. Prose mentions in
+    /// `prerequisite_disposition` are descriptive only (ownership, reuse,
+    /// scope constraints, self-references) and never route delivery.
+    pub prerequisites: Vec<u32>,
     pub successors: Vec<&'static str>,
     pub remaining_not_proven: Vec<&'static str>,
     pub rollback_meaning: &'static str,
@@ -457,6 +461,7 @@ pub fn registry_digest(nodes: &[NodeSpec]) -> String {
             digest_field(&mut text, "establishes", &format!("{:?}", node.establishes));
             digest_field(&mut text, "cannot_establish", &format!("{:?}", node.cannot_establish));
             digest_field(&mut text, "prerequisite_disposition", node.prerequisite_disposition);
+            digest_field(&mut text, "prerequisites", &format!("{:?}", node.prerequisites));
             digest_field(&mut text, "successors", &format!("{:?}", node.successors));
             digest_field(
                 &mut text,

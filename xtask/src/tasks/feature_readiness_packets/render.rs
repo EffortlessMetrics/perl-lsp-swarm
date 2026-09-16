@@ -10,7 +10,13 @@ use serde_json::{Map, Value};
 use super::validate::Violation;
 
 /// Canonical machine bytes: pretty JSON over BTreeMap-ordered keys plus a
-/// trailing newline. Two renders of the same document are byte-identical.
+/// trailing newline. Two renders of the same document are byte-identical
+/// (`canonical_json_orders_keys_deterministically` pins the ordering control;
+/// the workspace never enables serde_json's `preserve_order`, so `Map` is a
+/// BTreeMap by construction). A serialization error is impossible for
+/// `serde_json::Value` (object keys are always strings); should it ever
+/// occur, the empty-object fallback fails closed downstream — validation
+/// rejects the bytes and the digest collapses, never rendering a pass.
 pub fn canonical_json(doc: &Value) -> String {
     let mut text = serde_json::to_string_pretty(doc).unwrap_or_else(|_| {
         // serde_json serialization of a document we built from JSON values

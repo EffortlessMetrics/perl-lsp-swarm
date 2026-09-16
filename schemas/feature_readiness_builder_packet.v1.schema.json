@@ -20,7 +20,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "node_id": { "type": "string" },
+        "node_id": { "type": "string", "minLength": 1 },
         "issues": { "type": "array", "items": { "type": "integer" }, "minItems": 1 },
         "controller_issue": { "type": "integer" },
         "domain": { "$ref": "#/$defs/domain" },
@@ -34,6 +34,7 @@
       "required": [
         "node_id",
         "issues",
+        "controller_issue",
         "domain",
         "role",
         "disposition",

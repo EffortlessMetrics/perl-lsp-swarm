@@ -15,7 +15,7 @@
         "node_id": { "type": "string", "minLength": 1 },
         "issues": { "type": "array", "items": { "type": "integer" }, "minItems": 1 },
         "role": { "$ref": "#/$defs/role" },
-        "profile": { "type": "string", "minLength": 1 },
+        "profile": { "$ref": "#/$defs/profile" },
         "claim_ceiling_sentence": { "type": "string", "minLength": 1 }
       },
       "required": ["node_id", "issues", "role", "profile", "claim_ceiling_sentence"]
@@ -122,6 +122,17 @@
         "installed_client_proof",
         "research_decision",
         "governance_support"
+      ]
+    },
+    "profile": {
+      "enum": [
+        "core_semantic",
+        "optional_framework",
+        "installed_client",
+        "proof_only",
+        "governance",
+        "research",
+        "deferred"
       ]
     },
     "review_lens": {

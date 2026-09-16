@@ -43,9 +43,10 @@ impl LiveSnapshot {
     /// Parse one caller-supplied snapshot document. Missing observations,
     /// mistyped values, and unknown keys all fail closed with a diagnostic
     /// naming the exact cell; the canonical observation digest becomes part of
-    /// packet identity. The observed main head is deliberately excluded from
-    /// that digest because conflict-free main movement is observational, while
-    /// the remaining live observations remain identity-bearing.
+    /// packet identity. That digest covers the writer/candidate/action
+    /// observations; the observed main head is bound separately and directly,
+    /// through the displayed `head_sha`/`base_head` cells that packet identity
+    /// hashes verbatim.
     pub fn parse(bytes: &[u8]) -> color_eyre::eyre::Result<Self> {
         use color_eyre::eyre::{Context, bail};
         let doc: Value =
@@ -167,52 +168,13 @@ fn explicit_dependencies(node: &NodeSpec, nodes: &[NodeSpec]) -> Vec<u32> {
         .collect()
 }
 
+/// Dependencies come from the registry's typed `prerequisites` list, never
+/// from prose: a `#`/`fr_` mention in `prerequisite_disposition` may express
+/// ownership, reuse, a scope constraint, or a self-reference, none of which
+/// is a blocking dependency. Routing that scraped prose emitted false cycles
+/// and self-edges (FC-FALSE-PROSE-DEPS); the typed list is the only source.
 pub(crate) fn declared_prerequisites(node: &NodeSpec) -> Vec<u32> {
-    let mut values = Vec::new();
-    let text = node.prerequisite_disposition.as_bytes();
-    let mut index = 0;
-    while index < text.len() {
-        if text[index] == b'#' {
-            let start = index + 1;
-            let mut end = start;
-            while end < text.len() && text[end].is_ascii_digit() {
-                end += 1;
-            }
-            if end > start
-                && let Ok(issue) = node.prerequisite_disposition[start..end].parse::<u32>()
-                && !values.contains(&issue)
-            {
-                values.push(issue);
-            }
-            index = end;
-        } else {
-            index += 1;
-        }
-    }
-    // Registry prose also names prerequisites by their stable `fr_<issue>`
-    // node identity. Treat both spellings as the same declaration so routing
-    // cannot silently diverge from the claim ceiling.
-    let text = node.prerequisite_disposition.as_bytes();
-    let mut index = 0;
-    while index + 3 < text.len() {
-        if text[index..].starts_with(b"fr_") {
-            let start = index + 3;
-            let mut end = start;
-            while end < text.len() && text[end].is_ascii_digit() {
-                end += 1;
-            }
-            if end > start
-                && let Ok(issue) = node.prerequisite_disposition[start..end].parse::<u32>()
-                && !values.contains(&issue)
-            {
-                values.push(issue);
-            }
-            index = end;
-        } else {
-            index += 1;
-        }
-    }
-    values
+    node.prerequisites.clone()
 }
 
 fn explicit_unblocks(node: &NodeSpec, nodes: &[NodeSpec]) -> Vec<u32> {
@@ -391,7 +353,7 @@ pub fn reviewer_document(node: &NodeSpec, live: Option<&LiveSnapshot>) -> (Value
                 "live writer/review state change",
                 "claim or external/manual boundary change",
             ],
-            "stale_rule": "a review of another head/base/diff/packet/artifact contract is stale for the affected dimensions; unrelated comments, timestamps, or declared-equivalent main movement do not churn the packet",
+            "stale_rule": "a review of another head/base/diff/packet/artifact contract is stale for the affected dimensions; unrelated comments or timestamps do not churn the packet, while an observed head binds packet identity, so main movement re-emits the packet",
         },
         "lenses": lens_values(node),
         "stage_falsification_examples": node
@@ -656,25 +618,20 @@ fn negative_control_audit(node: &NodeSpec) -> Vec<Value> {
 
 /// Canonical bytes of a document with its own id field removed, hashed to
 /// the lowercase hex SHA-256 that content-addresses the packet.
+///
+/// Every displayed observation is bound into the identity: an observed
+/// `main@<sha>` base/head and the live plane's `head_sha` are hashed exactly
+/// as displayed. A packet id therefore authenticates the head it displays;
+/// normalizing those cells away would let an edited head pass
+/// `id_matches_content` and leave a lone displayed `main@sha` unauthenticated
+/// (FC-DISPLAY-HEAD-UNBOUND). The cost is that conflict-free main movement
+/// changes packet identity; packets are cheap runtime outputs, so freshness
+/// is re-emitted rather than reused across head movement.
 pub fn content_digest(doc: &Value) -> String {
     let mut stripped = doc.clone();
     if let Some(object) = stripped.as_object_mut() {
         object.remove("packet_id");
         object.remove("review_id");
-    }
-    // A conflict-free movement of main is observational, not a change to the
-    // candidate subject. Keep the observed semantic live cells and exact source
-    // snapshot digest in the identity. The digest binds the relevant source/
-    // head contents, while the displayed main head remains observational:
-    // equivalent conflict-free main movement does not churn the packet.
-    if let Some(delivery) = stripped.pointer_mut("/delivery").and_then(Value::as_object_mut) {
-        delivery.insert("base_head".to_owned(), Value::String("main@equivalent".to_owned()));
-    }
-    if let Some(currentness) = stripped.pointer_mut("/currentness").and_then(Value::as_object_mut) {
-        currentness.insert("base_head".to_owned(), Value::String("main@equivalent".to_owned()));
-    }
-    if let Some(live) = stripped.pointer_mut("/planes/live").and_then(Value::as_object_mut) {
-        live.insert("head_sha".to_owned(), Value::Null);
     }
     let canonical = render::canonical_json(&stripped);
     crate::tasks::emacs_train_context::digest::sha256_hex(canonical.as_bytes())

@@ -630,6 +630,7 @@ fn validate_plane_honesty(
 
 fn validate_work(node: &serde_json::Map<String, Value>, violations: &mut Vec<Violation>) {
     check_closed_keys(node, WORK_KEYS, "work", violations);
+    check_nonempty_string(node, "node_id", "work", violations);
     check_enum(node, "domain", DOMAINS, "work", violations);
     check_enum(node, "role", ROLES, "work", violations);
     check_enum(node, "disposition", DISPOSITIONS, "work", violations);
@@ -1075,37 +1076,10 @@ fn validate_delivery(object: &serde_json::Map<String, Value>, violations: &mut V
             }
         }
     }
-    let declared = object
-        .get("claim_ceiling")
-        .and_then(|claim| claim.get("prerequisite_disposition"))
-        .and_then(Value::as_str)
-        .map(|text| {
-            text.replace("fr_", "#")
-                .split('#')
-                .skip(1)
-                .filter_map(|part| {
-                    part.chars()
-                        .take_while(char::is_ascii_digit)
-                        .collect::<String>()
-                        .parse::<u32>()
-                        .ok()
-                })
-                .fold(Vec::new(), |mut issues, issue| {
-                    if !issues.contains(&issue) {
-                        issues.push(issue);
-                    }
-                    issues
-                })
-        })
-        .unwrap_or_default();
-    let emitted = issues.get("dependencies").and_then(Value::as_array).cloned().unwrap_or_default();
-    let expected: Vec<Value> = declared.into_iter().map(Value::from).collect();
-    if emitted != expected {
-        violations.push(Violation::new(
-            "dependency_mismatch",
-            "delivery.issues.dependencies must equal issue references declared by claim_ceiling.prerequisite_disposition",
-        ));
-    }
+    // Dependencies are validated against the registry's typed prerequisite
+    // list in `validate_delivery_authority`; prose in
+    // `claim_ceiling.prerequisite_disposition` is descriptive and never
+    // routes delivery (FC-FALSE-PROSE-DEPS).
     check_nonempty_array(delivery, "review_map", 1, "delivery", violations);
     check_nonempty_array(delivery, "stop_before", 1, "delivery", violations);
     let dispositions = delivery.get("old_path_dispositions").and_then(Value::as_array);
@@ -1154,6 +1128,12 @@ fn validate_delivery_authority(
     let Some(work) = object.get("work").and_then(Value::as_object) else { return };
     let Some(node_id) = work.get("node_id").and_then(Value::as_str) else { return };
     let Some(node) = nodes::all_nodes().into_iter().find(|node| node.node_id == node_id) else {
+        // Authority binding is mandatory: a packet naming a node outside the
+        // registry cannot fall back to skipping the registry cross-check.
+        violations.push(Violation::new(
+            "unknown_node_identity",
+            format!("work.node_id {node_id:?} does not match any registry node"),
+        ));
         return;
     };
     let Some(delivery) = object.get("delivery").and_then(Value::as_object) else { return };
@@ -1336,6 +1316,7 @@ fn validate_reviewer_body(
         violations,
     );
     check_enum(subject, "role", ROLES, "subject", violations);
+    check_enum(subject, "profile", PROFILES, "subject", violations);
     check_nonempty_string(subject, "node_id", "subject", violations);
     check_nonempty_string(subject, "claim_ceiling_sentence", "subject", violations);
     let Some(builder_ref) = object.get("builder_ref").and_then(Value::as_object) else {
@@ -1536,10 +1517,11 @@ pub fn validate_pair(builder: &Value, reviewer: &Value) -> Vec<Violation> {
             ));
         }
     }
-    // Packet identity deliberately normalizes conflict-free movement of main,
-    // but a builder/reviewer pair must still describe the same observed
-    // subject.  Treating two valid main heads as interchangeable would allow
-    // a reviewer for a different concrete head to pass pairing.
+    // Packet identity binds the observed head, so two heads already produce
+    // different ids; this check keeps the displayed pair honest even when a
+    // consumer ignores the content address. Treating two valid main heads as
+    // interchangeable would allow a reviewer for a different concrete head to
+    // pass pairing.
     if builder_base != reviewer_base {
         violations.push(Violation::new(
             "stale_head",
