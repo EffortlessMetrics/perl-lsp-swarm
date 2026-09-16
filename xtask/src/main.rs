@@ -65,6 +65,30 @@ use tasks::{
     srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
     sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
     update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    compiler_lexical_cutline, compiler_performance_receipt, compiler_upstream_status, corpus_audit,
+    count_ratchet, cpan_corpus, critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev,
+    devex_docs, devex_doctor, devex_plan, doc, doc_claims, e2e_validate, edge_cases,
+    emacs_train_context, emacs_train_specs, features, finalize_check, fix_forward, fmt,
+    forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files, github,
+    github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
+    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
+    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
+    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
+    metrics, module_train, module_train_live, native_critic, native_format, native_neovim_train,
+    native_product_surface, native_tooling, oneliner_capability_matrix, oracle_fixture_manifest,
+    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
+    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
+    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
+    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
+    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
+    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
     workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
     writer_admission,
@@ -177,6 +201,9 @@ enum Commands {
 
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
+
+    /// Validate the compiler performance receipt schema, its vocabularies, and every committed fixture.
+    CheckCompilerPerformanceReceipt,
 
     /// Validate the shared typed train edge and claim-profile contract
     /// (train_edge_contract.v1), its programme-neutral fixtures, and the
@@ -1525,6 +1552,13 @@ enum Commands {
         out: PathBuf,
     },
 
+    /// Enforce source-authority and instruction/data boundaries for the Zed
+    /// agent stage packets.
+    ZedTrain {
+        #[command(subcommand)]
+        command: ZedTrainCommand,
+    },
+
     /// Read-only upstream refresh and drift classification for the pinned
     /// vim-lsp subject (#11411). Advisory only: never a CI gate, never a pin
     /// update; live observation is gated behind --allow-network.
@@ -2296,6 +2330,13 @@ enum Commands {
         command: CompilerProfileCommand,
     },
 
+    /// Upstream-derived semantic conformance surfaces (#12532).
+    #[command(name = "compiler")]
+    Compiler {
+        #[command(subcommand)]
+        command: CompilerUpstreamCommand,
+    },
+
     /// Publish structured editor UX scorecard artifact/status from harness fixtures.
     UxScorecard {
         /// Output format for stdout.
@@ -2487,6 +2528,13 @@ enum Commands {
         /// commit` (issue #3786).
         #[arg(long)]
         staged: bool,
+
+        /// Published `ci_route_plan.v1` (#10179) to consume and validate
+        /// before execution; when set, one normalized `routed_gate_result.v1`
+        /// (#9156) is emitted per executed planned `run` row under
+        /// target/receipts/routed-results/.
+        #[arg(long, requires = "subject")]
+        route_plan: Option<PathBuf>,
     },
 
     /// Ergonomic alias for `gates --tier commit --staged` (issue #3786).
@@ -3765,6 +3813,25 @@ enum FreshnessCheckMode {
     Block,
 }
 
+#[derive(Subcommand)]
+enum ZedTrainCommand {
+    /// Verify every stage-packet input is authority-classified, current, and
+    /// data-only, and that every packet generator is declared.
+    #[command(name = "source-check")]
+    SourceCheck {
+        /// Source-authority manifest JSON.
+        fixture: PathBuf,
+
+        /// Repository root used to resolve the packet-relative subjects.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/zed-source-authority.json")]
+        out: PathBuf,
+    },
+}
+
 /// Subcommands of `cargo xtask vim-lsp-subject` (#11411).
 #[derive(Debug, Subcommand)]
 enum VimLspSubjectCommand {
@@ -4237,6 +4304,26 @@ enum CompilerProfileCommand {
 }
 
 #[derive(Subcommand)]
+enum CompilerUpstreamCommand {
+    /// Upstream-derived conformance operations (#12532).
+    #[command(name = "upstream")]
+    Upstream {
+        #[command(subcommand)]
+        command: CompilerUpstreamStatusGroup,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompilerUpstreamStatusGroup {
+    /// Exact upstream-derived conformance status packets (#12532).
+    #[command(name = "status")]
+    Status {
+        #[command(subcommand)]
+        command: tasks::compiler_upstream_status::CompilerUpstreamStatusSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
 enum MemoryTrendsCommand {
     /// Render memory plateau trends from receipts and baseline files.
     Render {
@@ -4529,8 +4616,17 @@ enum PrLedgerCommand {
         #[arg(long, default_value = "target/reconciliation")]
         out: PathBuf,
         /// Optional fixture JSON (for testing without live gh).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "paginated_fixture")]
         fixture: Option<PathBuf>,
+        /// Optional paginated fixture JSON: array of pages, each page an
+        /// array of PR objects. Used to drive the multi-page code path in
+        /// tests without shelling to gh.
+        #[arg(long, conflicts_with = "fixture")]
+        paginated_fixture: Option<PathBuf>,
+        /// Pin `observed_at` to a deterministic anchor. Receipts are then
+        /// byte-identical across runs over the same canonical input. Test-only.
+        #[arg(long)]
+        deterministic_clock: bool,
     },
 }
 
@@ -5076,6 +5172,11 @@ enum AgentLedgersCommand {
         /// Output format: `human` (default) or `json`.
         #[arg(long, default_value = "human")]
         format: String,
+        /// Require every ledger file to declare this schema id (e.g.
+        /// `workflow-outcome.v1`). Without it, each file is validated against the
+        /// schema it declares.
+        #[arg(long, value_name = "ID")]
+        expected_schema: Option<String>,
     },
 }
 
@@ -5166,6 +5267,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckCompilerPerformanceReceipt => compiler_performance_receipt::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CandidateSecurityContract { contract } => {
             tasks::candidate_security_contract::run(&contract)
@@ -5619,9 +5721,19 @@ fn run_cli(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::PrLedger { command } => match command {
-            PrLedgerCommand::Generate { repos, out, fixture } => {
-                tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
-            }
+            PrLedgerCommand::Generate {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            } => tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            }),
         },
         Commands::SyncDivergence { command } => match command {
             SyncDivergenceCommand::Check { source, boundary, target, ledger, receipt } => {
@@ -6183,6 +6295,11 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
         }
+        Commands::ZedTrain { command } => match command {
+            ZedTrainCommand::SourceCheck { fixture, repo_root, out } => {
+                xtask::source_authority::run_with_paths(fixture, repo_root, out)
+            }
+        },
         Commands::VimLspSubject {
             command:
                 VimLspSubjectCommand::Refresh { check, proposal, observation, allow_network, repo_root },
@@ -6711,15 +6828,18 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             },
             AgentCommand::Ledgers { command } => match command {
-                AgentLedgersCommand::Validate { dir, format } => {
-                    let fmt = if format == "json" {
-                        tasks::agent_ledgers::ValidateFormat::Json
-                    } else {
-                        tasks::agent_ledgers::ValidateFormat::Human
+                AgentLedgersCommand::Validate { dir, format, expected_schema } => {
+                    let fmt = match format.as_str() {
+                        "json" => tasks::agent_ledgers::ValidateFormat::Json,
+                        "human" => tasks::agent_ledgers::ValidateFormat::Human,
+                        other => color_eyre::eyre::bail!(
+                            "unknown --format `{other}`; expected `human` or `json`"
+                        ),
                     };
                     tasks::agent_ledgers::validate(tasks::agent_ledgers::ValidateConfig {
                         ledger_dir: dir,
                         format: fmt,
+                        expected_schema,
                     })
                 }
             },
@@ -6764,6 +6884,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Compiler { command } => match command {
+            CompilerUpstreamCommand::Upstream { command } => match command {
+                CompilerUpstreamStatusGroup::Status { command } => {
+                    compiler_upstream_status::run(command)
+                }
+            },
+        },
         Commands::Metrics { command } => match command {
             MetricsCommand::ParserStats { input, json } => metrics::parser_stats::run(input, json),
             MetricsCommand::ParserAccuracy {
@@ -6881,6 +7008,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             parallel,
             verbose,
             staged,
+            route_plan,
         } => gates::run(gates::GateRunnerConfig {
             tier,
             gate_policy: Some(gate_policy),
@@ -6898,6 +7026,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             parallel,
             verbose,
             staged,
+            route_plan_path: route_plan,
         }),
         Commands::Precommit { format, receipt } => gates::run(gates::GateRunnerConfig {
             tier: GateTier::Commit,
