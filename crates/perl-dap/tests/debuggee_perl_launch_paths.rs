@@ -176,7 +176,6 @@ impl Drop for EnvGuard {
     }
 }
 
-#[cfg(windows)]
 fn find_configured_or_path_pipe_perl() -> Result<Option<PathBuf>, Box<dyn Error>> {
     if let Some(configured) = env::var_os(DEBUGGEE_PERL_OVERRIDE_ENV) {
         let candidate = PathBuf::from(configured);
