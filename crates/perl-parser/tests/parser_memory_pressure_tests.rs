@@ -553,6 +553,16 @@ fn test_memory_pressure_recovery() {
 fn test_extreme_memory_pressure() {
     println!("Testing extreme memory pressure scenarios...");
 
+    // Total wall-clock ceiling (#15432 review): four scenarios may each take
+    // up to EXTREME_PARSE_WATCHDOG (120 s) individually, so the loop's
+    // worst pass is 480 s — a third of the 1,500 s gate budget that runs
+    // this binary, spent opaquely. Native runs finish in a few seconds and
+    // the documented 10-50x contended-host envelope stays well inside this
+    // ceiling; anything slower fails here with a named assertion instead of
+    // starving the gate.
+    const EXTREME_PRESSURE_TOTAL_WATCHDOG: Duration = Duration::from_secs(180);
+    let suite_start = Instant::now();
+
     let extreme_scenarios = vec![
         ("Massive single file", generate_massive_single_file()),
         ("Thousands of tiny objects", generate_thousands_of_tiny_objects()),
@@ -624,6 +634,16 @@ fn test_extreme_memory_pressure() {
         // Cleanup
         drop(_system_pressure);
     }
+
+    let suite_elapsed = suite_start.elapsed();
+    assert!(
+        suite_elapsed < EXTREME_PRESSURE_TOTAL_WATCHDOG,
+        "Extreme pressure scenarios took {:?} in total, exceeding the {:?} \
+         suite ceiling — individual scenarios passed their own watchdogs but \
+         the accumulated wall clock would starve the enclosing gate budget",
+        suite_elapsed,
+        EXTREME_PRESSURE_TOTAL_WATCHDOG
+    );
 }
 
 // Helper functions for generating test code

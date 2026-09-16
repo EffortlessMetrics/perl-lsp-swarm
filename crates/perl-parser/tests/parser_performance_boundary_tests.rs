@@ -339,6 +339,22 @@ fn test_garbage_collection_pressure() {
         avg_time_per_parse,
         avg_iteration_watchdog
     );
+
+    // Total wall-clock ceiling (#15432 review): the average watchdog alone
+    // lets 1,000 iterations consume ~1,000 s while still passing, and the
+    // gate that runs this binary budgets 1,500 s for the whole `cargo test
+    // --tests` sweep — the loop could starve it opaquely. Native runs finish
+    // in ~2 s; a 60x-slow host still passes this ceiling, and anything
+    // slower fails here with a clear message instead of the gate timeout.
+    const GC_PRESSURE_TOTAL_WATCHDOG: Duration = Duration::from_secs(120);
+    assert!(
+        total_time < GC_PRESSURE_TOTAL_WATCHDOG,
+        "{iterations} GC-pressure iterations took {:?}, exceeding the {:?} \
+         suite ceiling — a hang or pathological slowdown that would otherwise \
+         starve the enclosing gate budget",
+        total_time,
+        GC_PRESSURE_TOTAL_WATCHDOG
+    );
 }
 
 /// Test parser with extreme edge cases that might cause performance issues
