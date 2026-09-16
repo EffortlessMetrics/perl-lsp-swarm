@@ -386,6 +386,25 @@ fn classify_artifact_entry(entry: &str, workspace_root: &Path) -> ArtifactEntryO
 /// process CWD.
 fn lexical_normalize_artifact_path(entry: &str, workspace_root: &Path) -> String {
     let candidate = Path::new(entry);
+    // A POSIX-rooted fact (`/home/dev/...`) is absolute in the Unix
+    // ecosystem that produced MySetup.pm. Windows `Path` would classify it
+    // as relative and splice the current drive onto the join, and its
+    // rendering round-trips through backslashes — both manufacturing host
+    // text the fact never stated. Normalize the fact string lexically over
+    // `/` so it survives verbatim on every host (#15773).
+    if candidate.is_absolute() || entry.starts_with('/') {
+        let mut parts: Vec<&str> = Vec::new();
+        for segment in entry.split('/') {
+            match segment {
+                "" | "." => {}
+                ".." => {
+                    parts.pop();
+                }
+                other => parts.push(other),
+            }
+        }
+        return format!("/{}", parts.join("/"));
+    }
     let resolved = if candidate.is_absolute() {
         lexical_normalize(candidate)
     } else {
