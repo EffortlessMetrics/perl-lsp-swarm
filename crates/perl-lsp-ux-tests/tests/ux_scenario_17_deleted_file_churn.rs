@@ -103,9 +103,7 @@ fn scenario_17_deleted_module_evicted_from_symbols_and_definition() -> Result<()
         .map_err(|error| format!("module delete failed: {error}"))?;
     harness
         .notify_watched_files(&[("lib/ModuleGone.pm", 3)])
-        .map_err(|error| {
-            format!("didChangeWatchedFiles Deleted notification failed: {error}")
-        })?;
+        .map_err(|error| format!("didChangeWatchedFiles Deleted notification failed: {error}"))?;
 
     let after_deadline = Instant::now() + Duration::from_secs(10);
     let mut symbols_after = Vec::new();
