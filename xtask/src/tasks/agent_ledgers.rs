@@ -839,7 +839,7 @@ fn relative_display(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use color_eyre::eyre::{ensure, eyre};
+    use color_eyre::eyre::{Context, ensure, eyre};
 
     // ----- helpers ----------------------------------------------------------
 
@@ -1686,9 +1686,535 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         for id in LedgerSchemaId::ALL {
             ensure!(seen.insert(id.as_str()), "duplicate schema id {}", id.as_str());
-            ensure!(LedgerSchemaId::parse(id.as_str()) == Some(*id), "{id} did not round-trip");
+            ensure!(LedgerSchemaId::parse(id.as_str()) == Some(*id), "{id} did round-trip");
         }
         ensure!(LedgerSchemaId::parse("nope.v1").is_none(), "unregistered id parsed");
         Ok(())
+    }
+
+    // ----- exact-value seam oracles ------------------------------------------
+    //
+    // The probes in this module's changed lines are only `exposed` for ripr when a
+    // related test asserts the exact value the seam produces — a full message
+    // string, an exact line number, or an exact decoded field value — via
+    // `assert_eq!`. The earlier `ensure!(msg.contains(..))` probes reach these
+    // paths but carry no discriminating oracle, so each error value each seam
+    // builds is pinned exactly once here.
+
+    fn resolve_errors(content: &str) -> Vec<LedgerError> {
+        resolve_schema(content, "test.jsonl").unwrap_err()
+    }
+
+    const REGISTERED: &str = "pr-triage.v1, workflow-outcome.v1, ub-review-calibration.v1";
+
+    /// The no-directive error pins the directive syntax, the requirement, every
+    /// registered schema id, and cites the first content line.
+    #[test]
+    fn test_missing_directive_error_value_is_exact() {
+        let errs = resolve_errors("{\"pr\":\"1\"}\n");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].file, "test.jsonl");
+        assert_eq!(errs[0].line, 1);
+        assert_eq!(
+            errs[0].message,
+            format!(
+                "no `#!ledger-schema: <id>` header directive; \
+                 every ledger file must declare its row contract. \
+                 Registered schemas: {REGISTERED}"
+            )
+        );
+    }
+
+    /// A file with no content line at all cites line 1 — the `unwrap_or(1)`
+    /// fallback, not a fabricated line number.
+    #[test]
+    fn test_missing_directive_on_empty_file_cites_line_one() {
+        let errs = resolve_errors("");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, 1);
+    }
+
+    /// `first_content_line` is the 1-based content line, so leading blank lines
+    /// move the cited line exactly that far.
+    #[test]
+    fn test_missing_directive_cites_first_content_line_exactly() {
+        let errs = resolve_errors("\n\n{\"pr\":\"1\"}\n");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, 3);
+    }
+
+    /// A duplicate directive is reported on the second directive's own line.
+    #[test]
+    fn test_duplicate_directive_error_value_is_exact() {
+        let errs = resolve_errors(
+            "#!ledger-schema: pr-triage.v1\n\n#!ledger-schema: workflow-outcome.v1\nrow\n",
+        );
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, 3);
+        assert_eq!(
+            errs[0].message,
+            "duplicate `#!ledger-schema:` directive; a ledger file declares one schema"
+        );
+    }
+
+    /// A directive that is not the first non-blank line cites the directive's own
+    /// line number in the message.
+    #[test]
+    fn test_misplaced_directive_error_value_is_exact() {
+        let errs = resolve_errors("# a note\n#!ledger-schema: pr-triage.v1\nrow\n");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, 2);
+        assert_eq!(
+            errs[0].message,
+            "`#!ledger-schema:` must be the first non-blank line of the file, not line 2"
+        );
+    }
+
+    /// An unregistered schema id is named verbatim, with the registered list.
+    #[test]
+    fn test_unregistered_schema_error_value_is_exact() {
+        let errs = resolve_errors("#!ledger-schema: some-future-ledger.v1\n{}\n");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, 1);
+        assert_eq!(
+            errs[0].message,
+            format!(
+                "unregistered ledger schema `some-future-ledger.v1`; registered schemas: {REGISTERED}"
+            )
+        );
+    }
+
+    /// The Ok path returns the parsed schema and the directive's 1-based line.
+    #[test]
+    fn test_resolve_schema_ok_value_is_exact() {
+        let resolved =
+            resolve_schema("\n#!ledger-schema: ub-review-calibration.v1\nrow\n", "t.jsonl");
+        assert_eq!(resolved.ok(), Some((LedgerSchemaId::UbReviewCalibrationV1, 2)));
+    }
+
+    /// `validate_file` checks no rows when the schema cannot be resolved: the
+    /// row count it returns is exactly 0 and the errors are the resolver's.
+    #[test]
+    fn test_validate_file_checks_zero_rows_when_schema_unresolved() {
+        let (rows, errs) = validate_file("no directive here\n", "a.jsonl", None);
+        assert_eq!(rows, 0);
+        assert_eq!(errs, resolve_schema("no directive here\n", "a.jsonl").unwrap_err());
+    }
+
+    /// A declared ledger with zero rows fails closed on the directive line.
+    #[test]
+    fn test_zero_row_ledger_error_value_is_exact() {
+        let (rows, errs) =
+            validate_file("#!ledger-schema: pr-triage.v1\n\n# only a comment\n", "z.jsonl", None);
+        assert_eq!(rows, 0);
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, 1);
+        assert_eq!(errs[0].message, "ledger declares schema `pr-triage.v1` but contains no rows");
+    }
+
+    /// Row counting is exact: comments and blank lines are not rows.
+    #[test]
+    fn test_validate_file_row_count_is_exact() {
+        let contents =
+            format!("{PR_TRIAGE_HEADER}\n# a comment\n\n{}\n\n{}\n", valid_row(), valid_row());
+        let (rows, errs) = validate_file(&contents, "c.jsonl", None);
+        assert_eq!(rows, 2);
+        assert!(errs.is_empty(), "unexpected errors: {errs:?}");
+    }
+
+    /// The expected-schema pin rejects a declared schema with the exact mismatch
+    /// message, cited on the directive line, checking zero rows.
+    #[test]
+    fn test_expected_schema_mismatch_error_value_is_exact() {
+        let (rows, errs) = validate_file(
+            "#!ledger-schema: ub-review-calibration.v1\n{}\n",
+            "m.jsonl",
+            Some(LedgerSchemaId::WorkflowOutcomeV1),
+        );
+        assert_eq!(rows, 0);
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, 1);
+        assert_eq!(
+            errs[0].message,
+            "declares schema `ub-review-calibration.v1` but `workflow-outcome.v1` was required"
+        );
+    }
+
+    /// Every decoded `WorkflowOutcomeRow` counter lands in its own exact field.
+    #[test]
+    fn test_workflow_outcome_counter_fields_decode_to_exact_values() -> Result<()> {
+        let row: WorkflowOutcomeRow = serde_json::from_str(
+            r#"{"date":"2026-06-05","workflow_type":"issue-triage","repo":"perl-lsp-swarm","agents_used":37,"model_mix":{"haiku":30,"sonnet":7},"items_processed":154,"merged":4,"closed_with_proof":10,"deferred":116,"false_closes_prevented":3,"ci_failures_diagnosed":2,"upstream_gaps_filed":1,"builders_dispatched":5,"known_gaps":[],"cleanup_done":true}"#,
+        )
+        .with_context(|| "counter-field fixture row must decode")?;
+        assert_eq!(row.agents_used, 37);
+        assert_eq!(row.items_processed, 154);
+        assert_eq!(row.merged, 4);
+        assert_eq!(row.closed_with_proof, 10);
+        assert_eq!(row.deferred, 116);
+        assert_eq!(row.false_closes_prevented, 3);
+        assert_eq!(row.ci_failures_diagnosed, 2);
+        assert_eq!(row.upstream_gaps_filed, 1);
+        assert_eq!(row.builders_dispatched, 5);
+        assert!(row.cleanup_done);
+        Ok(())
+    }
+
+    /// `validate_line` stamps each error with the exact row line and file it was
+    /// called with, per schema arm.
+    #[test]
+    fn test_workflow_outcome_line_error_metadata_is_exact() {
+        let errs = validate_line(
+            r#"{"date":"junk","workflow_type":"w","repo":"r","agents_used":1,"model_mix":{},"items_processed":1,"merged":0,"closed_with_proof":0,"deferred":0,"false_closes_prevented":0,"ci_failures_diagnosed":0,"upstream_gaps_filed":0,"builders_dispatched":0,"known_gaps":[],"cleanup_done":true}"#,
+            "w.jsonl",
+            7,
+            LedgerSchemaId::WorkflowOutcomeV1,
+        );
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].file, "w.jsonl");
+        assert_eq!(errs[0].line, 7);
+        assert_eq!(
+            errs[0].message,
+            "field `date` must be an ISO 8601 date (YYYY-MM-DD), got `junk`"
+        );
+    }
+
+    #[test]
+    fn test_ub_review_line_error_metadata_is_exact() {
+        let errs = validate_line(
+            r#"{"date":"2026-06-05","pr":null,"runner":"r","profile":"p","classification":"bogus","category":"c","value":"high","evidence":"e","action_taken":"a"}"#,
+            "u.jsonl",
+            11,
+            LedgerSchemaId::UbReviewCalibrationV1,
+        );
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].file, "u.jsonl");
+        assert_eq!(errs[0].line, 11);
+        assert_eq!(
+            errs[0].message,
+            "unknown classification `bogus`; valid values: true-positive, false-positive, expected-quiet, infra-excluded"
+        );
+    }
+
+    /// A malformed JSON row fails with the exact invalid-JSON prefix.
+    #[test]
+    fn test_invalid_json_row_message_prefix_is_exact() {
+        let errs = line_errors("{not json");
+        assert_eq!(errs.len(), 1);
+        assert_eq!(errs[0].line, 1);
+        assert_eq!(errs[0].message.split(": ").next(), Some("invalid JSON"));
+    }
+
+    /// A non-object row is rejected with the exact message, for arrays, strings,
+    /// and numbers alike.
+    #[test]
+    fn test_non_object_row_message_is_exact() {
+        for line in ["[1,2]", "\"x\"", "42", "null"] {
+            assert_eq!(first_msg(line), "line must be a JSON object", "for {line}");
+        }
+    }
+
+    /// The pr-triage classification and confidence vocabularies are pinned with
+    /// their full valid-value lists in the exact error strings.
+    #[test]
+    fn test_pr_triage_vocabulary_error_values_are_exact() {
+        let errs = line_errors(
+            r#"{"pr":"1","title":"t","classification":"bogus","confidence":"cosmic","evidence":[],"cleanup_done":false,"known_gaps":[]}"#,
+        );
+        assert_eq!(errs.len(), 2);
+        assert_eq!(
+            errs[0].message,
+            "unknown classification `bogus`; valid values: unclassified, builder-ready, in-build, \
+             in-review, merge-ready, close-superseded, duplicate-of-merged, already-fixed, deferred, \
+             needs-plan-review, needs-builder-fix, needs-ci-fix, needs-diff-fix"
+        );
+        assert_eq!(errs[1].message, "unknown confidence `cosmic`; valid values: high, medium, low");
+    }
+
+    /// A gated classification without any `close_proof` is rejected with the exact
+    /// message, for both gated classifications.
+    #[test]
+    fn test_gated_missing_close_proof_error_values_are_exact() {
+        for classification in CLOSE_PROOF_REQUIRED {
+            let mut errors = Vec::new();
+            check_close_proof(None, classification, &mut errors);
+            assert_eq!(
+                errors,
+                vec![format!("classification `{classification}` requires `close_proof` field")]
+            );
+        }
+    }
+
+    /// An explicit null `close_proof` is rejected even on ungated rows.
+    #[test]
+    fn test_null_close_proof_error_values_are_exact() {
+        let mut ungated = Vec::new();
+        check_close_proof(Some(&Value::Null), "unclassified", &mut ungated);
+        assert_eq!(ungated, vec!["`close_proof` must not be null".to_string()]);
+
+        let mut gated = Vec::new();
+        check_close_proof(Some(&Value::Null), "close-superseded", &mut gated);
+        assert_eq!(
+            gated,
+            vec!["classification `close-superseded` requires non-null `close_proof`".to_string()]
+        );
+    }
+
+    /// Prose never authorizes a gated close: the exact policy message is pinned.
+    #[test]
+    fn test_gated_prose_close_proof_error_value_is_exact() {
+        let mut errors = Vec::new();
+        check_close_proof(
+            Some(&Value::String("looks merged".to_string())),
+            "duplicate-of-merged",
+            &mut errors,
+        );
+        assert_eq!(
+            errors,
+            vec!["
+                classification `duplicate-of-merged` requires the structured `close_proof` object of \
+                pr-ledger.schema.json; a prose string carries no landing receipt or \
+                semantic-completion evidence (CLOSE_PROOF_POLICY.md)"
+                .trim()
+                .to_string()]
+        );
+    }
+
+    /// A non-string, non-object `close_proof` (e.g. a number) is rejected with the
+    /// exact form message.
+    #[test]
+    fn test_wrong_json_type_close_proof_error_value_is_exact() {
+        let mut errors = Vec::new();
+        check_close_proof(Some(&Value::Number(42.into())), "unclassified", &mut errors);
+        assert_eq!(
+            errors,
+            vec!["`close_proof` must be a string or a structured close-proof object".to_string()]
+        );
+    }
+
+    /// A structured close proof that fails its own decode carries the exact
+    /// contract-mismatch prefix plus the serde reason.
+    #[test]
+    fn test_structured_close_proof_decode_error_prefix_is_exact() {
+        let mut errors = Vec::new();
+        check_close_proof(Some(&serde_json::json!({})), "close-superseded", &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].get(
+                .."`close_proof` object does not match the structured close-proof contract:".len()
+            ),
+            Some("`close_proof` object does not match the structured close-proof contract:")
+        );
+    }
+
+    fn close_proof_with(mutations: &str) -> Result<StructuredCloseProof> {
+        Ok(serde_json::from_str(&format!(
+            r#"{{"command":"cargo xtask landing-proof --commit abc1234","receipt":{mutations},"semantic_completion_evidence":"packet #1100","verified_date":"2026-06-07"}}"#
+        ))?)
+    }
+
+    /// Each structured close-proof field pins its exact rejection message.
+    #[test]
+    fn test_structured_close_proof_field_messages_are_exact() -> Result<()> {
+        let empty_command = close_proof_with(
+            r#"{"schema_version":"landing_proof.v1","commit_reachable":true,"commit":"abc1234","canonical_main":"","semantic_completion":"not_evaluated"}"#,
+        )?;
+        assert_eq!(
+            check_structured_close_proof(&empty_command),
+            vec!["field `close_proof.receipt.canonical_main` must not be empty".to_string()]
+        );
+
+        let mut bad_date = close_proof_with(
+            r#"{"schema_version":"landing_proof.v1","commit_reachable":true,"commit":"abc1234","canonical_main":"origin/main","semantic_completion":"not_evaluated"}"#,
+        )?;
+        bad_date.verified_date = "2026/06/07".to_string();
+        assert_eq!(
+            check_structured_close_proof(&bad_date),
+            vec![
+                "field `close_proof.verified_date` must be an ISO 8601 date (YYYY-MM-DD), got `2026/06/07`"
+                    .to_string()
+            ]
+        );
+
+        let wrong_version = close_proof_with(
+            r#"{"schema_version":"landing_proof.v2","commit_reachable":true,"commit":"abc1234","canonical_main":"origin/main","semantic_completion":"not_evaluated"}"#,
+        )?;
+        assert_eq!(
+            check_structured_close_proof(&wrong_version),
+            vec![
+                "field `close_proof.receipt.schema_version` must be `landing_proof.v1`, got `landing_proof.v2`"
+                    .to_string()
+            ]
+        );
+
+        let unreachable = close_proof_with(
+            r#"{"schema_version":"landing_proof.v1","commit_reachable":false,"commit":"abc1234","canonical_main":"origin/main","semantic_completion":"not_evaluated"}"#,
+        )?;
+        assert_eq!(
+            check_structured_close_proof(&unreachable),
+            vec![
+                "field `close_proof.receipt.commit_reachable` must be true; an unreachable commit is not landing proof"
+                    .to_string()
+            ]
+        );
+
+        let short_commit = close_proof_with(
+            r#"{"schema_version":"landing_proof.v1","commit_reachable":true,"commit":"abc","canonical_main":"origin/main","semantic_completion":"not_evaluated"}"#,
+        )?;
+        assert_eq!(
+            check_structured_close_proof(&short_commit),
+            vec![
+                "field `close_proof.receipt.commit` must be at least 7 characters, got `abc`"
+                    .to_string()
+            ]
+        );
+
+        let self_asserted = close_proof_with(
+            r#"{"schema_version":"landing_proof.v1","commit_reachable":true,"commit":"abc1234","canonical_main":"origin/main","semantic_completion":"done"}"#,
+        )?;
+        assert_eq!(
+            check_structured_close_proof(&self_asserted),
+            vec![
+                "field `close_proof.receipt.semantic_completion` must be `not_evaluated`, got `done`"
+                    .to_string()
+            ]
+        );
+        Ok(())
+    }
+
+    /// `check_workflow_outcome` pins each semantic rejection exactly.
+    #[test]
+    fn test_workflow_outcome_semantic_messages_are_exact() -> Result<()> {
+        let mut row: WorkflowOutcomeRow =
+            serde_json::from_str(valid_workflow_row()).with_context(|| "fixture must decode")?;
+        assert!(check_workflow_outcome(&row).is_empty());
+
+        row.date = "not-a-date".to_string();
+        assert_eq!(
+            check_workflow_outcome(&row),
+            vec![
+                "field `date` must be an ISO 8601 date (YYYY-MM-DD), got `not-a-date`".to_string()
+            ]
+        );
+
+        row.date = "2026-06-05".to_string();
+        row.workflow_type = "  ".to_string();
+        assert_eq!(
+            check_workflow_outcome(&row),
+            vec!["field `workflow_type` must not be empty".to_string()]
+        );
+
+        row.workflow_type = "issue-triage".to_string();
+        row.repo = String::new();
+        assert_eq!(
+            check_workflow_outcome(&row),
+            vec!["field `repo` must not be empty".to_string()]
+        );
+
+        row.repo = "perl-lsp-swarm".to_string();
+        row.known_gaps = vec![" ".to_string()];
+        assert_eq!(
+            check_workflow_outcome(&row),
+            vec!["`known_gaps` entries must not be empty".to_string()]
+        );
+        Ok(())
+    }
+
+    /// `check_ub_review_calibration` pins each semantic rejection exactly,
+    /// including the null-vs-value `pr` vocabulary and the required text fields.
+    #[test]
+    fn test_ub_review_semantic_messages_are_exact() -> Result<()> {
+        let mut row: UbReviewCalibrationRow =
+            serde_json::from_str(valid_ub_row()).with_context(|| "fixture must decode")?;
+        assert!(check_ub_review_calibration(&row).is_empty());
+
+        for (bad, rendered) in [
+            (serde_json::json!(0), "0"),
+            (serde_json::json!(-5), "-5"),
+            (serde_json::json!("1243"), "\"1243\""),
+        ] {
+            row.pr = bad;
+            assert_eq!(
+                check_ub_review_calibration(&row),
+                vec![format!("field `pr` must be a positive integer or null, got `{rendered}`")]
+            );
+        }
+
+        row.pr = Value::Null;
+        assert!(check_ub_review_calibration(&row).is_empty(), "null pr must be accepted");
+
+        row.pr = serde_json::json!(1243);
+        row.classification = "bogus".to_string();
+        assert_eq!(
+            check_ub_review_calibration(&row),
+            vec![
+                "unknown classification `bogus`; valid values: true-positive, false-positive, expected-quiet, infra-excluded"
+                    .to_string()
+            ]
+        );
+
+        row.classification = "true-positive".to_string();
+        row.value = "bogus".to_string();
+        assert_eq!(
+            check_ub_review_calibration(&row),
+            vec!["unknown value `bogus`; valid values: high, medium, low, n/a".to_string()]
+        );
+
+        row.value = "high".to_string();
+        row.runner = String::new();
+        assert_eq!(
+            check_ub_review_calibration(&row),
+            vec!["field `runner` must not be empty".to_string()]
+        );
+
+        row.runner = "gh-hosted".to_string();
+        row.profile = " ".to_string();
+        assert_eq!(
+            check_ub_review_calibration(&row),
+            vec!["field `profile` must not be empty".to_string()]
+        );
+
+        row.profile = "bun-ub-v0".to_string();
+        row.category = String::new();
+        assert_eq!(
+            check_ub_review_calibration(&row),
+            vec!["field `category` must not be empty".to_string()]
+        );
+
+        row.category = "proof-gap/docs-drift".to_string();
+        row.evidence = String::new();
+        assert_eq!(
+            check_ub_review_calibration(&row),
+            vec!["field `evidence` must not be empty".to_string()]
+        );
+
+        row.evidence = "sensor caught a fabricated breakdown".to_string();
+        row.action_taken = String::new();
+        assert_eq!(
+            check_ub_review_calibration(&row),
+            vec!["field `action_taken` must not be empty".to_string()]
+        );
+        Ok(())
+    }
+
+    /// An ISO date check accepts exactly `YYYY-MM-DD` shapes and rejects plausible
+    /// near-misses.
+    #[test]
+    fn test_iso_date_shape_oracle_is_exact() {
+        for good in ["2026-06-07", "0000-01-01", "9999-12-31"] {
+            assert!(is_iso_date(good), "{good} must parse");
+        }
+        for bad in [
+            "2026-6-07",
+            "2026/06/07",
+            "26-06-07",
+            "2026-06-7",
+            "20260607",
+            "2026-06-07T00:00:00",
+            "202a-06-07",
+            "",
+        ] {
+            assert!(!is_iso_date(bad), "{bad} must not parse");
+        }
     }
 }
