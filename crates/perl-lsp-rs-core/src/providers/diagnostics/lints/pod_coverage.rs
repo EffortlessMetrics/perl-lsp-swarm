@@ -167,7 +167,7 @@ fn collect_typeglob_names(node: &Node) -> Vec<String> {
     let mut names = Vec::new();
     walk_node(node, &mut |n| {
         if let NodeKind::Assignment { lhs, .. } = &n.kind
-            && let NodeKind::Typeglob { name } = &lhs.kind
+            && let NodeKind::Typeglob { name, .. } = &lhs.kind
         {
             names.push(name.clone());
         }
@@ -715,7 +715,7 @@ sub something { 1 }
     }
 
     fn make_typeglob(name: &str, start: usize, end: usize) -> Node {
-        Node::new(NodeKind::Typeglob { name: name.to_string() }, SourceLocation { start, end })
+        Node::new(NodeKind::Typeglob { name: name.to_string(), body: None }, SourceLocation { start, end })
     }
 
     fn make_assignment(lhs: Node, rhs: Node, start: usize, end: usize) -> Node {

@@ -155,7 +155,7 @@ fn build_cases() -> Vec<(Node, &'static str, usize)> {
             0,
         ),
         (Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc()), "Glob", 0),
-        (Node::new(NodeKind::Typeglob { name: "main::foo".to_string() }, loc()), "Typeglob", 0),
+        (Node::new(NodeKind::Typeglob { name: "main::foo".to_string(), body: None }, loc()), "Typeglob", 0),
         (Node::new(NodeKind::Number { value: "42".to_string() }, loc()), "Number", 0),
         (
             Node::new(NodeKind::String { value: "value".to_string(), interpolated: true }, loc()),
