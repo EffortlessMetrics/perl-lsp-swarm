@@ -477,7 +477,7 @@ package main;
     // Verify both bare and package-qualified names surface.
     let mut names: Vec<String> = Vec::new();
     fn walk(n: &Node, out: &mut Vec<String>) {
-        if let NodeKind::Typeglob { name } = &n.kind {
+        if let NodeKind::Typeglob { name, .. } = &n.kind {
             out.push(name.clone());
         }
         n.for_each_child(|c| walk(c, out));

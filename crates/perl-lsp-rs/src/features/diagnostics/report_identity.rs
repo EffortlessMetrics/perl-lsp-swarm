@@ -24,11 +24,9 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
-use perl_lsp_rs_core::config::CriticEngine;
 use perl_lsp_rs_core::tooling::perl_critic::{
-    CRITIC_IDENTITY_SCHEMA_VERSION, CriticPolicyIdentity, CriticPolicyIdentityError,
-    DiagnosticFactIdentity, DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions,
-    DiagnosticSourceIdentity, NativeCriticProfile,
+    AcceptedCriticPolicyIdentity, CRITIC_IDENTITY_SCHEMA_VERSION, DiagnosticFactIdentity,
+    DiagnosticResultIdentityInput, DiagnosticResultSchemaVersions, DiagnosticSourceIdentity,
 };
 use perl_source_identity::{
     ContentDigest, LogicalPathError, LogicalSourceId, ProjectId, RootRelativeLogicalPath,
@@ -40,7 +38,7 @@ use super::PullDiagnosticsContext;
 /// Schema/domain version of this composer. Bump whenever the set of
 /// load-bearing fragments changes so prior client-held IDs stop parsing and
 /// every report degrades honestly to `full`.
-pub const PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16 = 1;
+pub const PULL_REPORT_IDENTITY_SCHEMA_VERSION: u16 = 3;
 
 /// Wire prefix of a composed pull-report result ID.
 const PULL_REPORT_IDENTITY_PREFIX: &str = "diagnostic-pull-report.v";
@@ -58,11 +56,6 @@ const RULE_CATALOG_SCHEMA_VERSION: u32 = 1;
 const SUPPRESSION_CONTRACT_SCHEMA_VERSION: u16 = 1;
 const PROJECTION_WIRE_SCHEMA_VERSION: u16 = 1;
 const REMEDIATION_WIRE_SCHEMA_VERSION: u16 = 1;
-
-/// Domain tag binding the legacy built-in analyzer's effective policy. The
-/// built-in analyzer takes no user configuration beyond the encoded policy
-/// fields, so a stable domain digest is its complete policy identity.
-const LEGACY_BUILTIN_POLICY_DOMAIN: &str = "perl-lsp:pull-legacy-builtin-policy:v1";
 
 /// Behavior-bearing negotiated wire-projection state.
 ///
@@ -113,8 +106,8 @@ pub enum NotReusable {
     /// document, so the logical source identity cannot be formed. A root key the
     /// server never resolved is not substituted by the standalone fallback.
     MissingRootAuthority,
-    /// The accepted critic policy contradicts its engine's requirements.
-    PolicyIncomplete(CriticPolicyIdentityError),
+    /// The accepted Critic snapshot lacks its owning root authority.
+    MissingCriticRootAuthority,
     /// The document URI could not be decoded to a filesystem path, so it cannot
     /// be positioned relative to any root (#15555).
     SourcePathUnavailable,
@@ -147,8 +140,8 @@ impl std::fmt::Display for NotReusable {
             Self::MissingRootAuthority => {
                 f.write_str("no owning workspace/root authority for the document")
             }
-            Self::PolicyIncomplete(error) => {
-                write!(f, "critic policy identity incomplete: {error}")
+            Self::MissingCriticRootAuthority => {
+                f.write_str("accepted critic snapshot has no owning root authority")
             }
             Self::SourcePathUnavailable => {
                 f.write_str("document URI does not decode to a filesystem path")
@@ -217,12 +210,8 @@ pub struct PullReportSubject {
     logical_path: RootRelativeLogicalPath,
     content_digest: ContentDigest,
     document_generation: Option<u64>,
-    engine: CriticEngine,
-    profile: NativeCriticProfile,
-    severity: u8,
-    include: BTreeSet<String>,
-    exclude: BTreeSet<String>,
-    legacy_policy_digest: Option<ContentDigest>,
+    critic_root_id: WorkspaceRootId,
+    accepted_critic_fingerprint: String,
     facts_generation: Option<u64>,
     // Deliberately remains an opaque, normalized string fragment in this
     // bounded PR. Typed provenance for project configuration belongs to the
@@ -231,7 +220,6 @@ pub struct PullReportSubject {
     configuration_generation: Option<u64>,
     resolver_roots: BTreeSet<String>,
     projection: DiagnosticProjectionFragment,
-    critic_enabled: bool,
 }
 
 /// Assemble the complete subject for one document report.
@@ -247,34 +235,25 @@ pub fn pull_report_subject(
     context: &PullDiagnosticsContext,
 ) -> Result<PullReportSubject, NotReusable> {
     let (root_id, logical_path) = root_and_logical_path(uri, context)?;
+    let project = ProjectId::from_canonical_name(PULL_IDENTITY_PROJECT);
 
-    // Mirror `add_native_critic_diagnostics`: the effective native profile is
-    // the configured spelling parsed leniently with the same Strict fallback.
-    // Under the legacy engine the native profile is inert and pinned so
-    // unrelated profile settings cannot churn legacy-engine identities.
-    let (profile, legacy_policy_digest) = match context.critic_engine {
-        CriticEngine::Native => (
-            NativeCriticProfile::parse_legacy(&context.native_critic_profile)
-                .unwrap_or(NativeCriticProfile::Strict),
-            None,
-        ),
-        CriticEngine::Legacy => (
-            NativeCriticProfile::Recommended,
-            Some(ContentDigest::of_bytes(LEGACY_BUILTIN_POLICY_DOMAIN.as_bytes())),
-        ),
+    let Some(critic_root_key) = context.accepted_critic_snapshot.owning_root() else {
+        return Err(NotReusable::MissingCriticRootAuthority);
     };
+    let critic_root_id = WorkspaceRootId::from_project_and_root_key(&project, critic_root_key);
 
     Ok(PullReportSubject {
         content_digest: ContentDigest::of_bytes(content.as_bytes()),
-        severity: context.perlcritic_severity.clamp(1, 5) as u8,
-        include: context.native_critic_include.iter().cloned().collect(),
-        exclude: context.native_critic_exclude.iter().cloned().collect(),
+        critic_root_id,
+        accepted_critic_fingerprint: context
+            .accepted_critic_snapshot
+            .result_identity_fingerprint()
+            .as_wire()
+            .to_string(),
         resolver_roots: context.include_paths.iter().cloned().collect(),
         root_id,
         logical_path,
         document_generation,
-        engine: context.critic_engine,
-        profile,
         facts_generation: context.facts_generation,
         project_version: context
             .project_version
@@ -284,8 +263,6 @@ pub fn pull_report_subject(
             .or_else(|| context.project_version.as_ref().map(|raw| format!("invalid:{raw}"))),
         configuration_generation: context.configuration_generation,
         projection: context.projection,
-        critic_enabled: context.perlcritic_enabled,
-        legacy_policy_digest,
     })
 }
 
@@ -327,21 +304,10 @@ impl PullReportSubject {
     /// through SHA-256 over a length-prefixed canonical encoding that embeds
     /// the core substrate identity (#7201) plus this layer's fragments.
     pub fn compose(&self) -> Result<PullReportResultId, NotReusable> {
-        // Folder-owned configuration generations distinguish accepted config
-        // reloads while the default preserves identities without that context.
-        let configuration_generation = self.configuration_generation.unwrap_or(0);
-
-        let policy = CriticPolicyIdentity::new(
-            self.root_id.clone(),
-            configuration_generation,
-            self.engine,
-            self.profile,
-            self.severity,
-            self.include.clone(),
-            self.exclude.clone(),
-            self.legacy_policy_digest.clone(),
-        )
-        .map_err(NotReusable::PolicyIncomplete)?;
+        let policy = AcceptedCriticPolicyIdentity::new(
+            self.critic_root_id.clone(),
+            self.accepted_critic_fingerprint.clone(),
+        );
 
         let facts = match self.facts_generation {
             Some(generation) => {
@@ -368,11 +334,17 @@ impl PullReportSubject {
         .compose();
 
         let mut canonical = String::new();
-        push_str(&mut canonical, "identity_schema", PULL_REPORT_IDENTITY_V1_TAG);
+        push_str(&mut canonical, "identity_schema", PULL_REPORT_IDENTITY_V3_TAG);
         push_str(&mut canonical, "substrate", inner.as_str());
         push_str(&mut canonical, "position_encoding", self.projection.position_encoding.as_token());
         push_u64(&mut canonical, "markup_messages", u64::from(self.projection.markup_messages));
-        push_u64(&mut canonical, "critic_enabled", u64::from(self.critic_enabled));
+        match self.configuration_generation {
+            Some(generation) => {
+                push_str(&mut canonical, "configuration_generation", "some");
+                push_u64(&mut canonical, "configuration_generation_value", generation);
+            }
+            None => push_str(&mut canonical, "configuration_generation", "none"),
+        }
         push_str(
             &mut canonical,
             "project_version",
@@ -390,7 +362,7 @@ impl PullReportSubject {
 
 /// Domain tag for the outer composition, kept distinct from the substrate's
 /// own schema field so the two layers cannot be confused.
-const PULL_REPORT_IDENTITY_V1_TAG: &str = "perl-lsp:pull-report-identity:v1";
+const PULL_REPORT_IDENTITY_V3_TAG: &str = "perl-lsp:pull-report-identity:v3";
 
 /// Resolve the root authority and the document's path *relative to that root*.
 ///
@@ -552,7 +524,7 @@ mod tests {
 
     use super::{DiagnosticProjectionFragment, PullPositionEncoding, *};
     use crate::features::diagnostics::PullDiagnosticsContext;
-    use perl_lsp_rs_core::config::CriticEngine;
+    use perl_lsp_rs_core::config::{AcceptedCriticSnapshot, CriticEngine, ServerConfig};
 
     fn projection(encoding: PullPositionEncoding, markup: bool) -> DiagnosticProjectionFragment {
         DiagnosticProjectionFragment { position_encoding: encoding, markup_messages: markup }
@@ -563,6 +535,8 @@ mod tests {
     fn context_with(root: Option<&str>) -> PullDiagnosticsContext {
         let mut context = PullDiagnosticsContext::new();
         context.identity_root_key = root.map(str::to_string);
+        let config = ServerConfig::default();
+        context.accepted_critic_snapshot = AcceptedCriticSnapshot::capture(&config, root);
         context.identity_root_path = root.map(std::path::PathBuf::from);
         // Live fact-store state for the baseline subject.
         context.facts_generation = Some(13);
@@ -590,12 +564,30 @@ mod tests {
     /// Root A and a document inside it. The URI must actually sit under
     /// [`ROOT_A`]: the composer now positions the document relative to its
     /// owning root instead of treating the host path as the logical path.
-    const ROOT_A: &str = "/tmp/ws-a";
-    const URI_A: &str = "file:///tmp/ws-a/lib/Mod.pm";
+    const ROOT_A: &str = if cfg!(windows) { "C:/tmp/ws-a" } else { "/tmp/ws-a" };
+    const URI_A: &str = if cfg!(windows) {
+        "file:///C:/tmp/ws-a/lib/Mod.pm"
+    } else {
+        "file:///tmp/ws-a/lib/Mod.pm"
+    };
     /// Root B holding a document at the *same* relative path as [`URI_A`].
-    const ROOT_B: &str = "/tmp/ws-b";
-    const URI_B: &str = "file:///tmp/ws-b/lib/Mod.pm";
+    const ROOT_B: &str = if cfg!(windows) { "C:/tmp/ws-b" } else { "/tmp/ws-b" };
+    const URI_B: &str = if cfg!(windows) {
+        "file:///C:/tmp/ws-b/lib/Mod.pm"
+    } else {
+        "file:///tmp/ws-b/lib/Mod.pm"
+    };
     const CONTENT: &str = "my $x = 1;\n";
+
+    fn native_fixture(path_or_uri: &str) -> String {
+        if cfg!(windows) {
+            if let Some(path) = path_or_uri.strip_prefix("file://") {
+                return format!("file:///C:{path}");
+            }
+            return format!("C:{path_or_uri}");
+        }
+        path_or_uri.to_string()
+    }
 
     #[test]
     fn identical_subjects_compose_identical_ids() {
@@ -640,6 +632,36 @@ mod tests {
     }
 
     #[test]
+    fn old_result_ids_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
+        for legacy in [
+            "diagnostic-pull-report.v1-sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "diagnostic-pull-report.v2-sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ] {
+            if PullReportResultId::from_wire(legacy).is_some() {
+                return Err(format!("old result ID must fail closed to Full: {legacy}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_state_identity_uses_the_snapshot_sha256_fingerprint()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let context = context_with(Some(ROOT_A));
+        let subject = subject_for(&context, URI_A, CONTENT);
+        let expected = context.accepted_critic_snapshot.result_identity_fingerprint();
+        if subject.accepted_critic_fingerprint != expected.as_wire() {
+            return Err("pull identity must consume the snapshot's SHA-256 fingerprint".into());
+        }
+        if subject.accepted_critic_fingerprint == context.accepted_critic_snapshot.fingerprint() {
+            return Err(
+                "the legacy 64-bit observation token must not authorize result reuse".into()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn every_load_bearing_fragment_moves_the_id() {
         let baseline_context = context_with(Some(ROOT_A));
         let baseline = subject_for(&baseline_context, URI_A, CONTENT).compose().ok().unwrap();
@@ -661,24 +683,26 @@ mod tests {
             pull_report_subject(URI_A, CONTENT, Some(4), &baseline_context).ok().unwrap();
         assert_ne!(baseline, later_instance.compose().ok().unwrap());
 
-        // Engine selection.
+        // Raw legacy observations are not accepted authority. Moving all of
+        // them alone must leave the identity unchanged.
         let mut context = baseline_context.clone();
         context.critic_engine = CriticEngine::Legacy;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // Severity.
-        let mut context = baseline_context.clone();
         context.perlcritic_severity = 4;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // Native profile spelling.
-        let mut context = baseline_context.clone();
         context.native_critic_profile = "strict".to_string();
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
-        // Include/exclude rule sets.
-        let mut context = baseline_context.clone();
         context.native_critic_include = vec!["native.testing.require_use_strict".to_string()];
+        context.native_critic_exclude = vec!["native.security.string_eval".to_string()];
+        context.perlcritic_enabled = false;
+        assert_eq!(
+            baseline,
+            subject_for(&context, URI_A, CONTENT).compose().ok().unwrap(),
+            "raw legacy selector movement must not change accepted Critic identity"
+        );
+
+        // Accepted snapshot movement is load-bearing.
+        let mut context = baseline_context.clone();
+        let moved_config = ServerConfig { perlcritic_severity: 4, ..ServerConfig::default() };
+        context.accepted_critic_snapshot =
+            AcceptedCriticSnapshot::capture(&moved_config, Some(ROOT_A));
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
         // Fact-store availability and generation.
@@ -734,17 +758,31 @@ mod tests {
         context.projection = projection(PullPositionEncoding::Utf16, true);
         assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
 
-        // External-critic admission state.
-        let mut context = baseline_context.clone();
-        context.perlcritic_enabled = false;
-        assert_ne!(baseline, subject_for(&context, URI_A, CONTENT).compose().ok().unwrap());
-
         // Logical document identity: equal bytes and counters, different path.
-        let moved = subject_for(&baseline_context, "file:///tmp/ws-a/lib/Other.pm", CONTENT)
-            .compose()
-            .ok()
-            .unwrap();
+        let moved = subject_for(
+            &baseline_context,
+            &native_fixture("file:///tmp/ws-a/lib/Other.pm"),
+            CONTENT,
+        )
+        .compose()
+        .ok()
+        .unwrap();
         assert_ne!(baseline, moved);
+    }
+
+    #[test]
+    fn configuration_generation_presence_moves_identity() -> Result<(), String> {
+        let mut context = context_with(Some(ROOT_A));
+        context.configuration_generation = None;
+        let unavailable =
+            subject_for(&context, URI_A, CONTENT).compose().map_err(|error| error.to_string())?;
+        context.configuration_generation = Some(0);
+        let zero =
+            subject_for(&context, URI_A, CONTENT).compose().map_err(|error| error.to_string())?;
+        if unavailable == zero {
+            return Err("unavailable and zero configuration generations share an ID".to_string());
+        }
+        Ok(())
     }
 
     #[test]
@@ -761,8 +799,8 @@ mod tests {
         // A private-looking root that genuinely contains the document, so the
         // subject composes and the assertions below test leakage rather than
         // accidentally testing a refusal.
-        let context = context_with(Some("/tmp/private-root-name/ws-a"));
-        let uri = "file:///tmp/private-root-name/ws-a/lib/Mod.pm";
+        let context = context_with(Some(&native_fixture("/tmp/private-root-name/ws-a")));
+        let uri = &native_fixture("file:///tmp/private-root-name/ws-a/lib/Mod.pm");
         let id = pull_report_subject(uri, CONTENT, Some(1), &context)
             .ok()
             .unwrap()
@@ -782,23 +820,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_engine_pins_native_profile_but_carries_policy_digest() {
+    fn raw_legacy_selector_is_observation_only() -> Result<(), Box<dyn std::error::Error>> {
         let mut context = context_with(Some(ROOT_A));
         context.critic_engine = CriticEngine::Legacy;
-        let baseline = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
+        let baseline =
+            subject_for(&context, URI_A, CONTENT).compose().map_err(|error| error.to_string())?;
 
         let mut profile_moved = context.clone();
         profile_moved.native_critic_profile = "strict".to_string();
-        assert_eq!(
-            baseline,
-            subject_for(&profile_moved, URI_A, CONTENT).compose().ok().unwrap(),
-            "the native profile is inert under the legacy engine"
-        );
-
-        // The legacy engine composes successfully: its required policy digest
-        // is supplied from the pinned built-in policy domain.
-        let subject = pull_report_subject(URI_A, CONTENT, Some(1), &context);
-        assert!(subject.is_ok(), "legacy engine subject must be complete");
+        let moved = subject_for(&profile_moved, URI_A, CONTENT)
+            .compose()
+            .map_err(|error| error.to_string())?;
+        if baseline != moved {
+            return Err("raw native profile movement must remain observation-only".into());
+        }
+        Ok(())
     }
 
     // ── Root-relative logical path (#15555) ───────────────────────────────────
@@ -811,13 +847,23 @@ mod tests {
     fn identical_logical_source_in_two_checkout_locations_composes_one_id() {
         // Same project, same root authority key, same relative path and bytes —
         // only the host location of the checkout differs.
-        let alice = context_with_split_root(Some("shared-root-key"), Some("/home/alice/proj"));
-        let bob = context_with_split_root(Some("shared-root-key"), Some("/home/bob/proj"));
+        let alice = context_with_split_root(
+            Some("shared-root-key"),
+            Some(&native_fixture("/home/alice/proj")),
+        );
+        let bob = context_with_split_root(
+            Some("shared-root-key"),
+            Some(&native_fixture("/home/bob/proj")),
+        );
 
         let from_alice =
-            subject_for(&alice, "file:///home/alice/proj/lib/App.pm", CONTENT).compose().ok();
+            subject_for(&alice, &native_fixture("file:///home/alice/proj/lib/App.pm"), CONTENT)
+                .compose()
+                .ok();
         let from_bob =
-            subject_for(&bob, "file:///home/bob/proj/lib/App.pm", CONTENT).compose().ok();
+            subject_for(&bob, &native_fixture("file:///home/bob/proj/lib/App.pm"), CONTENT)
+                .compose()
+                .ok();
 
         assert_eq!(
             from_alice, from_bob,
@@ -834,7 +880,10 @@ mod tests {
         let context = context_with(Some(ROOT_A));
         let first = subject_for(&context, URI_A, CONTENT).compose().ok().unwrap();
         let second =
-            subject_for(&context, "file:///tmp/ws-a/lib/Other.pm", CONTENT).compose().ok().unwrap();
+            subject_for(&context, &native_fixture("file:///tmp/ws-a/lib/Other.pm"), CONTENT)
+                .compose()
+                .ok()
+                .unwrap();
         assert_ne!(first, second, "distinct relative paths must not share an ID");
     }
 
@@ -848,15 +897,22 @@ mod tests {
     fn standalone_documents_are_identified_relative_to_their_own_directory() {
         let context = context_with(Some(ROOT_A));
 
-        let outside = subject_for(&context, "file:///elsewhere/lib/Mod.pm", CONTENT).compose().ok();
+        let outside =
+            subject_for(&context, &native_fixture("file:///elsewhere/lib/Mod.pm"), CONTENT)
+                .compose()
+                .ok();
         assert!(outside.is_some(), "a document outside the root must keep a reusable ID");
 
         let sibling =
-            subject_for(&context, "file:///elsewhere/lib/Other.pm", CONTENT).compose().ok();
+            subject_for(&context, &native_fixture("file:///elsewhere/lib/Other.pm"), CONTENT)
+                .compose()
+                .ok();
         assert_ne!(outside, sibling, "two files in one standalone directory must differ");
 
         let same_name_elsewhere =
-            subject_for(&context, "file:///other-place/lib/Mod.pm", CONTENT).compose().ok();
+            subject_for(&context, &native_fixture("file:///other-place/lib/Mod.pm"), CONTENT)
+                .compose()
+                .ok();
         assert_ne!(
             outside, same_name_elsewhere,
             "one file name in two directories must not collapse to one identity"
@@ -886,7 +942,12 @@ mod tests {
     fn standalone_fallback_does_not_manufacture_missing_root_authority() {
         let context = context_with(None);
         assert_eq!(
-            pull_report_subject("file:///elsewhere/lib/Mod.pm", CONTENT, Some(1), &context),
+            pull_report_subject(
+                &native_fixture("file:///elsewhere/lib/Mod.pm"),
+                CONTENT,
+                Some(1),
+                &context
+            ),
             Err(NotReusable::MissingRootAuthority)
         );
     }
@@ -916,9 +977,14 @@ mod tests {
     /// test rather than an assumption about the lower crate.
     #[test]
     fn dot_segments_under_an_established_root_are_refused_not_re_keyed() {
-        let context = context_with(Some("/root"));
+        let context = context_with(Some(&native_fixture("/root")));
         assert_eq!(
-            pull_report_subject("/root/dir/../file.pm", CONTENT, Some(1), &context),
+            pull_report_subject(
+                &native_fixture("/root/dir/../file.pm"),
+                CONTENT,
+                Some(1),
+                &context
+            ),
             Err(NotReusable::SourcePathNotPlainDescent),
             "a document the server knows the root of must not fall back to standalone"
         );
@@ -929,7 +995,7 @@ mod tests {
     fn not_reusable_label(outcome: &NotReusable) -> &'static str {
         match outcome {
             NotReusable::MissingRootAuthority => "MissingRootAuthority",
-            NotReusable::PolicyIncomplete(_) => "PolicyIncomplete",
+            NotReusable::MissingCriticRootAuthority => "MissingCriticRootAuthority",
             NotReusable::SourcePathUnavailable => "SourcePathUnavailable",
             NotReusable::SourcePathHasNoFileName => "SourcePathHasNoFileName",
             NotReusable::SourcePathNotPlainDescent => "SourcePathNotPlainDescent",
@@ -944,7 +1010,7 @@ mod tests {
     /// variants must be distinguishable from each other.
     ///
     /// Covers every variant `not_reusable_label` names, including the wrapping
-    /// `PolicyIncomplete` case, so no refusal's message goes unrendered.
+    /// `MissingCriticRootAuthority` case, so no refusal's message goes unrendered.
     ///
     /// Deliberately does *not* assert the absence of `/`: these messages contain
     /// no input, and separators appear legitimately as prose and punctuation
@@ -955,7 +1021,7 @@ mod tests {
     fn every_not_reusable_variant_renders_a_distinct_message() {
         let all = [
             NotReusable::MissingRootAuthority,
-            NotReusable::PolicyIncomplete(CriticPolicyIdentityError::MissingLegacyPolicyDigest),
+            NotReusable::MissingCriticRootAuthority,
             NotReusable::SourcePathUnavailable,
             NotReusable::SourcePathHasNoFileName,
             NotReusable::SourcePathNotPlainDescent,
@@ -996,8 +1062,10 @@ mod tests {
             "this test is only meaningful for the provider-default key/path shape"
         );
 
-        let first = subject_for(&context, "file:///a/Mod.pm", CONTENT).compose().ok();
-        let second = subject_for(&context, "file:///b/Mod.pm", CONTENT).compose().ok();
+        let first =
+            subject_for(&context, &native_fixture("file:///a/Mod.pm"), CONTENT).compose().ok();
+        let second =
+            subject_for(&context, &native_fixture("file:///b/Mod.pm"), CONTENT).compose().ok();
 
         assert!(first.is_some(), "a path-less document must still compose");
         assert_ne!(
@@ -1014,7 +1082,12 @@ mod tests {
     fn standalone_root_key_rejects_dot_segments() {
         let context = context_with(Some(ROOT_A));
         assert_eq!(
-            pull_report_subject("/outside/dir/../Mod.pm", CONTENT, Some(1), &context),
+            pull_report_subject(
+                &native_fixture("/outside/dir/../Mod.pm"),
+                CONTENT,
+                Some(1),
+                &context
+            ),
             Err(NotReusable::SourcePathNotPlainDescent)
         );
     }
@@ -1026,8 +1099,10 @@ mod tests {
     #[test]
     fn repeated_separators_name_one_file_and_one_identity() {
         let context = context_with(Some(ROOT_A));
-        let doubled = subject_for(&context, "/tmp/ws-a/lib//Mod.pm", CONTENT).compose().ok();
-        let single = subject_for(&context, "/tmp/ws-a/lib/Mod.pm", CONTENT).compose().ok();
+        let doubled =
+            subject_for(&context, &native_fixture("/tmp/ws-a/lib//Mod.pm"), CONTENT).compose().ok();
+        let single =
+            subject_for(&context, &native_fixture("/tmp/ws-a/lib/Mod.pm"), CONTENT).compose().ok();
         assert_eq!(doubled, single, "one file must have one identity");
         assert!(doubled.is_some(), "both spellings must compose");
     }
@@ -1037,7 +1112,7 @@ mod tests {
     fn a_document_path_naming_no_file_is_refused() {
         let context = context_with(Some(ROOT_A));
         assert_eq!(
-            pull_report_subject("file:///", CONTENT, Some(1), &context),
+            pull_report_subject(&native_fixture("file:///"), CONTENT, Some(1), &context),
             Err(NotReusable::SourcePathHasNoFileName)
         );
     }
@@ -1062,17 +1137,32 @@ mod tests {
     #[test]
     fn absolute_document_paths_still_compose() {
         let context = context_with(Some(ROOT_A));
-        for uri in ["/absolute/not/a/uri.pm", "file:///tmp/other/Mod.pm"] {
+        for uri in
+            [&native_fixture("/absolute/not/a/uri.pm"), &native_fixture("file:///tmp/other/Mod.pm")]
+        {
             let outcome = pull_report_subject(uri, CONTENT, Some(1), &context);
             assert!(outcome.is_ok(), "{uri:?} names a real file and must compose, got {outcome:?}");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn driveless_standalone_uri_has_no_absolute_root() -> Result<(), String> {
+        let context = context_with(Some(ROOT_A));
+        let outcome = pull_report_subject("file:///elsewhere/Mod.pm", CONTENT, Some(1), &context);
+        if outcome != Err(NotReusable::SourcePathNotPlainDescent) {
+            return Err(format!(
+                "drive-less standalone URI must have no absolute root: {outcome:?}"
+            ));
+        }
+        Ok(())
     }
 
     /// Refusals must not echo the material they refused — it is exactly the
     /// material most likely to be a host path.
     #[test]
     fn refusal_text_does_not_leak_document_or_root_paths() {
-        let context = context_with(Some("/home/alice/private-root"));
+        let context = context_with(Some(&native_fixture("/home/alice/private-root")));
         // Relative material is refused, and the refusal must not echo it.
         let outcome = pull_report_subject("../alice-secrets/creds.pm", CONTENT, Some(1), &context);
         let error = outcome.expect_err("relative material must be refused");
@@ -1089,9 +1179,13 @@ mod tests {
     fn equivalent_uri_spellings_describe_one_logical_source() {
         let context = context_with(Some(ROOT_A));
         let encoded =
-            subject_for(&context, "file:///tmp/ws-a/lib/My%20File.pm", CONTENT).compose().ok();
+            subject_for(&context, &native_fixture("file:///tmp/ws-a/lib/My%20File.pm"), CONTENT)
+                .compose()
+                .ok();
         let decoded =
-            subject_for(&context, "file:///tmp/ws-a/lib/My File.pm", CONTENT).compose().ok();
+            subject_for(&context, &native_fixture("file:///tmp/ws-a/lib/My File.pm"), CONTENT)
+                .compose()
+                .ok();
         assert_eq!(encoded, decoded, "one document must have one logical source identity");
         assert!(encoded.is_some(), "a space in a filename must still compose");
     }

@@ -297,7 +297,10 @@ impl DebugAdapter {
             arguments.as_ref(),
         ) {
             Some(floored) => floored,
-            None => self.dispatch_request(request_seq, command, arguments),
+            None => {
+                self.retire_pending_terminal_before_request(command);
+                self.dispatch_request(request_seq, command, arguments)
+            }
         };
 
         // Preserve existing direct-call behavior for tests and in-memory usage.
@@ -334,7 +337,10 @@ impl DebugAdapter {
             arguments.as_ref(),
         ) {
             Some(floored) => floored,
-            None => self.dispatch_request(request_seq, command, arguments),
+            None => {
+                self.retire_pending_terminal_before_request(command);
+                self.dispatch_request(request_seq, command, arguments)
+            }
         };
         if command == "initialize" && Self::response_succeeded_for_command(&response, "initialize")
         {

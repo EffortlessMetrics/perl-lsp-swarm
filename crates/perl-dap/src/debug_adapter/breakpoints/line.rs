@@ -487,6 +487,7 @@ mod source_boundary_tests {
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
+            entry_stop_pending: false,
             stopped_generation: 0,
             module_generation: crate::reload::RuntimeModuleGenerationClock::new(),
         });

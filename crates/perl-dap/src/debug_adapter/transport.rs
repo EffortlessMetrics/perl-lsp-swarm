@@ -433,6 +433,7 @@ impl DebugAdapter {
                             request.arguments,
                         )
                     } else {
+                        self.retire_pending_terminal_before_request(&request.command);
                         self.dispatch_request(
                             request.request_seq,
                             &request.command,
@@ -2742,6 +2743,7 @@ mod framing_tests {
                 debuggee_cwd: std::path::PathBuf::from("."),
                 last_resume_mode: ResumeMode::Unknown,
                 initial_stop_pending: false,
+                entry_stop_pending: false,
                 stopped_generation: 1,
                 module_generation: RuntimeModuleGenerationClock::new(),
             });

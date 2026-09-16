@@ -115,7 +115,7 @@ impl EventSender {
         *lock_or_recover(&self.0, "event_sender") = None;
     }
 
-    fn admitted_sender(&self) -> Option<SyncSender<DapMessage>> {
+    pub(super) fn admitted_sender(&self) -> Option<SyncSender<DapMessage>> {
         lock_or_recover(&self.0, "event_sender").as_ref().cloned()
     }
 
