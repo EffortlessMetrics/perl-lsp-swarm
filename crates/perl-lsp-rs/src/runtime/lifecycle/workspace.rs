@@ -145,6 +145,28 @@ impl LspServer {
     /// `window/showMessage` Warning is emitted naming the folders and keys, instead
     /// of silently discarding a folder's configuration.
     pub(crate) fn load_and_apply_project_config(&self) {
+        // Reset the shared ServerConfig back to the post-tier-1 baseline
+        // before any project config is layered on top. The baseline is
+        // captured by `handle_initialize` (`defaults + tier-1`) and updated
+        // by `handle_did_change_configuration` to also include tier-3, so it
+        // always represents `defaults + tier-1 + tier-3` and never includes
+        // any tier-2 contribution. `apply_to_server_config` only writes
+        // fields that are present in the project config, so without this
+        // reset a value contributed by a now-removed folder would persist
+        // on the server-global layer (#15715): merged.apply_to_server_config
+        // is intentionally `does_not_overwrite_unset_values`, but that
+        // semantics also means it cannot evict values set by a previous run.
+        //
+        // When the baseline has not been captured yet (tests that drive
+        // `load_and_apply_project_config` directly without going through
+        // `handle_initialize`), the reset is skipped so test-set values
+        // written via direct `ServerConfig` field assignment survive a
+        // downstream `did_open` triggering this function via
+        // `refresh_single_file_project_config_if_unowned`.
+        if let Some(baseline) = self.server_config_baseline.lock().clone() {
+            *self.config.lock() = baseline;
+        }
+
         // Discover before taking the workspace-folder lock because discovery
         // takes the documents lock. This keeps lock acquisition ordered as
         // documents -> workspace_folders for diagnostic/reload snapshots.
@@ -169,6 +191,10 @@ impl LspServer {
                 let mut server_config = self.config.lock();
                 config.apply_to_server_config(&mut server_config);
             }
+            // Replay cached tier-3 (client) settings on top so the
+            // documented layering (init-options < TOML < client responses)
+            // survives the single-file TOML layer and any prior reset.
+            self.replay_last_client_settings_on_server_config();
             return;
         }
 
@@ -311,10 +337,29 @@ impl LspServer {
             }
         }
 
+        // Replay cached tier-3 (client) settings so they win over the merged
+        // project config on fields they both touch, and so client-only fields
+        // survive a folder removal (#15715).
+        self.replay_last_client_settings_on_server_config();
+
         // Client-scoped `workspace/configuration` is deliberately deferred to
         // the post-initialize lifecycle. During `initialize` only local project
         // and initialization-option state may be applied; server→client requests
         // are not legal until after InitializeResult has been returned (#7708).
+    }
+
+    /// Replay the most recent tier-3 (client `didChangeConfiguration`)
+    /// settings payload on top of the shared `ServerConfig`. Called at the
+    /// end of [`Self::load_and_apply_project_config`] so the documented
+    /// layering (init-options < TOML < client responses) survives the
+    /// per-call reset that clears stale values contributed by a removed
+    /// folder (#15715).
+    fn replay_last_client_settings_on_server_config(&self) {
+        let Some(perl) = self.last_client_settings.lock().clone() else {
+            return;
+        };
+        let mut config = self.config.lock();
+        config.update_from_value(&perl);
     }
 
     /// In single-file mode, try to discover `.perl-lsp.toml` from the
@@ -978,6 +1023,201 @@ include_paths = ["stale_lib"]
                 .effective_workspace_config
                 .include_paths
                 .contains(&"stale_lib".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_and_apply_project_config_removes_server_global_settings_when_last_folder_is_removed(
+    ) -> anyhow::Result<()> {
+        // Regression guard for #15715: bug branch where the removed folder
+        // was the only config source. Previously `merged.apply_to_server_config`
+        // was skipped entirely, so a server-global value contributed by the
+        // now-removed folder persisted unconditionally on the shared
+        // ServerConfig. The fix resets ServerConfig to the post-tier-1
+        // baseline (defaults only in this test) before the (now-empty) merge
+        // and re-applies any cached tier-3 client settings.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder)?;
+
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            r#"
+[diagnostics]
+perlcritic_severity = 2
+"#,
+        )?;
+
+        let uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder.clone()),
+        );
+
+        // Simulate `handle_initialize` having captured the post-tier-1
+        // baseline. In production this happens immediately after the
+        // `init-options.perl.*` apply, before tier-2 (TOML) is layered; we
+        // mirror that snapshot here so the test exercises the same reset
+        // seam the live path uses.
+        *server.server_config_baseline.lock() =
+            Some(perl_lsp_rs_core::config::ServerConfig::default());
+
+        server.load_and_apply_project_config();
+        assert_eq!(
+            server.config.lock().perlcritic_severity,
+            2,
+            "TOML severity must reach ServerConfig while the folder is present",
+        );
+
+        // Simulate `workspace/didChangeWorkspaceFolders` with the folder in
+        // `removed`. The real handler evicts folder state and then re-runs
+        // `load_and_apply_project_config`; we mirror the eviction directly
+        // so the regression targets the same merge/restore seam as the live
+        // path.
+        server.workspace_folders.lock().retain(|f| f.uri != uri);
+        server.load_and_apply_project_config();
+
+        let cfg = server.config.lock();
+        assert_eq!(
+            cfg.perlcritic_severity,
+            3,
+            "removed-folder severity must not survive the merge (was {} after removal)",
+            cfg.perlcritic_severity,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_and_apply_project_config_removes_server_global_settings_when_one_of_many_folders_is_removed(
+    ) -> anyhow::Result<()> {
+        // Second regression branch of #15715: a remaining folder's TOML
+        // does NOT set the field, so `merged.apply_to_server_config` writes
+        // nothing for it, but the value from the removed folder persists
+        // because the loop only sets present values.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder_a = temp.path().join("folder_a");
+        let folder_b = temp.path().join("folder_b");
+        std::fs::create_dir_all(&folder_a)?;
+        std::fs::create_dir_all(&folder_b)?;
+
+        std::fs::write(
+            folder_a.join(".perl-lsp.toml"),
+            r#"
+[diagnostics]
+perlcritic_severity = 2
+"#,
+        )?;
+        // folder_b intentionally has no .perl-lsp.toml: it must not become a
+        // re-entry point for the removed folder's severity.
+
+        let uri_a = url::Url::from_directory_path(&folder_a)
+            .map_err(|()| anyhow::anyhow!("failed to create folder_a URI"))?
+            .to_string();
+        let uri_b = url::Url::from_directory_path(&folder_b)
+            .map_err(|()| anyhow::anyhow!("failed to create folder_b URI"))?
+            .to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri_a.clone())
+                .with_path(folder_a.clone()),
+        );
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri_b.clone())
+                .with_path(folder_b.clone()),
+        );
+
+        *server.server_config_baseline.lock() =
+            Some(perl_lsp_rs_core::config::ServerConfig::default());
+
+        server.load_and_apply_project_config();
+        assert_eq!(server.config.lock().perlcritic_severity, 2);
+
+        // Evict folder_a and re-apply. Folder_b has no critic config, so the
+        // merged result has no severity entry; the field must fall back to
+        // the ServerConfig default rather than retaining folder_a's value.
+        server.workspace_folders.lock().retain(|f| f.uri != uri_a);
+        server.load_and_apply_project_config();
+
+        let cfg = server.config.lock();
+        assert_eq!(
+            cfg.perlcritic_severity,
+            3,
+            "severity contributed by the removed folder must not persist when remaining folders do not set it (was {})",
+            cfg.perlcritic_severity,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_and_apply_project_config_preserves_tier3_client_settings_across_folder_removal(
+    ) -> anyhow::Result<()> {
+        // Constraint branch of #15715: `didChangeConfiguration` (tier-3)
+        // must survive a folder removal. The documented layering is
+        // init-options < TOML < client responses, so a client-only value
+        // must not be erased by the reset that clears the removed
+        // folder's tier-2 contribution.
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder)?;
+
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            r#"
+[diagnostics]
+perlcritic_severity = 2
+"#,
+        )?;
+
+        let uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri.clone())
+                .with_path(folder.clone()),
+        );
+
+        // Simulate `handle_initialize` having captured the post-tier-1
+        // baseline. In production this is the snapshot of the ServerConfig
+        // immediately after `init-options.perl.*` is applied; here we use
+        // defaults because the test does not exercise init options.
+        *server.server_config_baseline.lock() =
+            Some(perl_lsp_rs_core::config::ServerConfig::default());
+
+        // Simulate `workspace/didChangeConfiguration` having arrived with a
+        // client severity of 4. We set the cache directly so the test does
+        // not depend on the request/notification plumbing. The cache stores
+        // the extracted perl settings object (no outer "perl" wrapper) so it
+        // matches what `handle_did_change_configuration` would have written.
+        *server.last_client_settings.lock() =
+            Some(serde_json::json!({ "critic": { "severity": 4 } }));
+
+        server.load_and_apply_project_config();
+        assert_eq!(
+            server.config.lock().perlcritic_severity,
+            4,
+            "tier-3 (client) severity must win over tier-2 (TOML) when both are present",
+        );
+
+        // Remove the folder and re-apply. Tier-3 must still be applied last
+        // and win; the reset that clears the tier-2 contribution must not
+        // erase the tier-3 value.
+        server.workspace_folders.lock().retain(|f| f.uri != uri);
+        server.load_and_apply_project_config();
+
+        let cfg = server.config.lock();
+        assert_eq!(
+            cfg.perlcritic_severity,
+            4,
+            "tier-3 severity must survive the removed-folder reset (was {})",
+            cfg.perlcritic_severity,
         );
         Ok(())
     }
