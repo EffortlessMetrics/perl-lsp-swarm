@@ -1340,6 +1340,70 @@ perlcritic_severity = 2
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn load_and_apply_project_config_clears_critic_dedup_when_critic_fields_move()
+    -> anyhow::Result<()> {
+        // #15715: a reload that moves critic-relevant fields must drop the
+        // retained critic warning identities; otherwise warnings stay
+        // suppressed under removed settings while diagnostics republish
+        // around them.
+        use crate::runtime::session_warning_dedup::{
+            SessionWarningCode, SessionWarningDecision, SessionWarningFamily,
+            SessionWarningIdentity,
+        };
+
+        let server = LspServer::new();
+        let temp = tempfile::tempdir()?;
+        let folder = temp.path().join("folder");
+        std::fs::create_dir_all(&folder)?;
+
+        std::fs::write(
+            folder.join(".perl-lsp.toml"),
+            r#"
+[diagnostics]
+perlcritic_severity = 2
+"#,
+        )?;
+
+        let uri = url::Url::from_directory_path(&folder)
+            .map_err(|()| anyhow::anyhow!("failed to create folder URI"))?
+            .to_string();
+        server.workspace_folders.lock().push(
+            crate::runtime::workspace_folder::WorkspaceFolderState::new(uri).with_path(folder),
+        );
+        *server.server_config_baseline.lock() =
+            Some(perl_lsp_rs_core::config::ServerConfig::default());
+
+        let identity =
+            SessionWarningIdentity::subjectless(SessionWarningCode::AiBackendAuthFailure);
+        assert_eq!(
+            server.session_warning_dedup.note(SessionWarningFamily::Critic, identity),
+            SessionWarningDecision::EmitFirst,
+        );
+        assert_eq!(
+            server.session_warning_dedup.note(SessionWarningFamily::Critic, identity),
+            SessionWarningDecision::Suppress,
+            "test setup must retain the critic identity before the reload",
+        );
+
+        // Default severity is not 2, so applying the folder TOML moves a
+        // critic-relevant field and must clear the family.
+        assert_ne!(
+            server.config.lock().perlcritic_severity,
+            2,
+            "test setup needs the TOML to move the critic snapshot"
+        );
+        server.load_and_apply_project_config();
+
+        assert_eq!(
+            server.session_warning_dedup.note(SessionWarningFamily::Critic, identity),
+            SessionWarningDecision::EmitFirst,
+            "critic-moving reload must drop retained critic identities",
+        );
+        Ok(())
+    }
+
     #[test]
     fn handle_client_response_rejects_hostile_absolute_include_paths() {
         let server = LspServer::new();
