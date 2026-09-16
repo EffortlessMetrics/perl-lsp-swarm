@@ -4155,6 +4155,59 @@ mod tests {
     }
 
     #[test]
+    fn shell_cargo_probe_parser_reports_exact_incomplete_field_variant() -> TestResult {
+        // RIPR enforce-new-ripr gaps 99fe9486/9a169786 (:1386): the odd-field
+        // guard must report exactly the incomplete-field error variant, not
+        // merely any error. The shape checks above only assert is_ok/is_err,
+        // which is why the seam read as weakly gripped.
+        const INCOMPLETE_FIELD: &str =
+            "shell cargo probe emitted an incomplete NUL-delimited field";
+        // Terminated record with an odd NUL-delimited field count reaches :1386.
+        // (The existing odd-shape case lacks the trailing NUL, so it reports
+        // the record-terminator variant instead and never reaches this seam.)
+        let odd_terminated = "cargo_path\0/usr/bin/cargo\0odd\0";
+        let error = parse_shell_cargo_probe_output(odd_terminated)
+            .err()
+            .ok_or("odd terminated NUL record was accepted")?;
+        if error != INCOMPLETE_FIELD {
+            return Err(format!("unexpected :1386 error variant: {error:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shell_cargo_probe_parser_defensive_fallback_keeps_exact_variant() -> TestResult {
+        // RIPR enforce-new-ripr gap 777ae386 (:1399): the chunks_exact
+        // fallback is defensive — the :1386 guard returns early on every odd
+        // field count, so no input reaches it — but it must keep emitting
+        // exactly the incomplete-field variant rather than a divergent text.
+        // Pin the contract at both ends: every malformed field shape reports
+        // the same exact variant, and a well-formed record still parses.
+        const INCOMPLETE_FIELD: &str =
+            "shell cargo probe emitted an incomplete NUL-delimited field";
+        for malformed in [
+            "cargo_path\0/usr/bin/cargo\0odd\0",
+            "cargo_path\0\0cargo_version\0cargo 1.95.0\0stray\0",
+        ] {
+            let error = parse_shell_cargo_probe_output(malformed)
+                .err()
+                .ok_or(format!("malformed record was accepted: {malformed:?}"))?;
+            if error != INCOMPLETE_FIELD {
+                return Err(format!("defensive :1399 variant diverged: {error:?}").into());
+            }
+        }
+        let valid = concat!(
+            "cargo_path\0/usr/bin/cargo\0cargo_version\0cargo 1.95.0\0",
+            "home_state\0set\0home\0/home/dev\0",
+            "cargo_home_state\0unset\0cargo_home\0\0",
+            "cwd_state\0set\0cwd\0/workspace\0",
+        );
+        parse_shell_cargo_probe_output(valid)
+            .map_err(|error| format!("valid record rejected: {error:?}"))?;
+        Ok(())
+    }
+
+    #[test]
     fn cargo_context_classification_resolves_relative_home_and_preserves_posix_case() -> TestResult
     {
         let relative = CargoProbeContext::shell(
