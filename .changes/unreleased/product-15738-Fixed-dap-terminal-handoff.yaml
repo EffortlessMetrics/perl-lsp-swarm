@@ -1,7 +1,7 @@
 project: product
 component: Editor behavior
 kind: Fixed
-body: "DAP disconnect and terminate requests can take over pending asynchronous termination on a full event queue without blocking request dispatch or fabricating no-session terminal events."
+body: "DAP disconnect and terminate requests retire stale pending terminal producers before request dispatch, preventing a queue-handoff deadlock while preserving no-session behavior."
 time: 2026-09-16T00:00:00Z
 custom:
   PR: "15738"
