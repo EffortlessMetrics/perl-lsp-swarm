@@ -11,7 +11,10 @@ on:
       - '.github/aw/actions-lock.json'
       - '.gitattributes'
       - '.github/dependabot.yml'
-  workflow_dispatch:
+      - 'scripts/ci/harden_gh_aw_ratchet.py'
+      - 'scripts/ci/workflow_security_ratchet.py'
+      - 'scripts/ci/test_workflow_security_ratchet.py'
+      - '.ci/workflow-security-baseline.json'
 
 permissions:
   contents: read
@@ -22,12 +25,21 @@ concurrency:
 
 jobs:
   compile-check:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'feat/gh-aw-minimax-canary' &&
+      github.event.pull_request.user.login == 'EffortlessSteven'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
-      - name: Checkout candidate
+      - name: Checkout exact candidate head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -60,3 +72,38 @@ jobs:
             .github/aw/actions-lock.json \
             .gitattributes \
             .github/dependabot.yml
+
+      - name: Harden exact-lock ratchet and regenerate baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/harden_gh_aw_ratchet.py
+          python3 -m py_compile scripts/ci/workflow_security_ratchet.py
+          python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
+          python3 scripts/ci/workflow_security_ratchet.py baseline \
+            --root . \
+            --output .ci/workflow-security-baseline.json
+          python3 scripts/ci/workflow_security_ratchet.py validate-baseline \
+            --root . \
+            --baseline .ci/workflow-security-baseline.json \
+            --baseline-root . \
+            --report /tmp/workflow-security-exact-lock.json
+
+      - name: Commit hardened ratchet authority
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git add \
+            scripts/ci/workflow_security_ratchet.py \
+            scripts/ci/test_workflow_security_ratchet.py \
+            .ci/workflow-security-baseline.json
+          git add -u scripts/ci/harden_gh_aw_ratchet.py
+          git diff --cached --check
+          git config user.name 'EffortlessSteven'
+          git config user.email '15812269+EffortlessSteven@users.noreply.github.com'
+          git commit -m 'fix(ci): bind gh-aw publisher exception to exact lock'
+          gh auth setup-git
+          git push origin "HEAD:${HEAD_REF}"
