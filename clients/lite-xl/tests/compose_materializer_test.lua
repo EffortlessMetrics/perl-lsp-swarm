@@ -626,7 +626,9 @@ do
 
   -- F16: a NESTED stale file from an earlier run must be cleared by the
   -- composer-owned cleanup, not silently kept beside the fresh tree.
-  os.execute('mkdir "' .. tree_dir .. '/subdir" 2>nul')
+  os.execute(IS_WINDOWS
+    and ('mkdir "' .. tree_dir .. '/subdir" 2>nul')
+    or ('mkdir -p "' .. tree_dir .. '/subdir" 2>/dev/null'))
   write_file(tree_dir .. "/subdir/stale.lua", "return 'stale'\n")
   local res2, tree_dir2 = run(m, ad, "empty_p", "f16", base_dir)
   ok(res2.tree_digest == res.tree_digest,

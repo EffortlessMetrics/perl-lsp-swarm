@@ -69,7 +69,10 @@ local function ok(condition, message)
 end
 
 local scratch = portable_temp_root() .. "/compose_integration_scratch"
-os.execute('mkdir "' .. scratch .. '" 2>nul')
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+os.execute(IS_WINDOWS
+  and ('mkdir "' .. scratch .. '" 2>nul')
+  or ('mkdir -p "' .. scratch .. '" 2>/dev/null'))
 
 local function write_file(path, bytes)
   local f = io.open(path, "wb")
