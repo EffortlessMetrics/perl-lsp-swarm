@@ -755,6 +755,19 @@ mod tests {
     }
 
     #[test]
+    fn link_empty_label_escapes_markdown_without_percent_encoding() {
+        // Bracket-injection pin (#15776 review): the empty-label path is plain
+        // text, so `[`/`]` must be escaped to avoid injecting a live markdown
+        // link, while spaces stay readable (percent-encoding is a href
+        // concern, not plain text).
+        assert_eq!(
+            strip_pod_formatting("L<|[click](https://x.test)>"),
+            "\\[click\\](https://x.test)"
+        );
+        assert_eq!(strip_pod_formatting("L<|My Target>"), "My Target");
+    }
+
+    #[test]
     fn link_slash_form_trims_module_display() {
         // L<Module/section> — the module display part is trimmed so no trailing
         // space leaks into the rendered link text (#2482).
