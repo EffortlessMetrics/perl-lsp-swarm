@@ -73,6 +73,26 @@ pub(super) fn handle_variable<'a>(
     false
 }
 
+/// Split a braced typeglob body into a single simple variable use — one sigil
+/// plus a plain identifier (`$x`, `@a`, `%h`) and nothing else.
+///
+/// Compound computed bodies (`*{$x . $y}`, `*{foo()}`, `*{$h{key}}`) have no
+/// single variable name; recording the raw body text as one variable would
+/// fabricate a name like `x . $y` and raise a false undeclared-variable
+/// diagnostic under strict mode (#15712). The fused assignment form keeps no
+/// child expression nodes to walk, so such bodies are conservatively recorded
+/// as nothing.
+fn split_simple_variable_body(body: &str) -> Option<(&str, &str)> {
+    let (sigil, var_name) = split_variable_name(body);
+    if sigil.is_empty()
+        || var_name.is_empty()
+        || !var_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return None;
+    }
+    Some((sigil, var_name))
+}
+
 /// Handle `NodeKind::Typeglob`.
 pub(super) fn handle_typeglob(
     analyzer: &ScopeAnalyzer,
@@ -88,8 +108,10 @@ pub(super) fn handle_typeglob(
     // sigil here so typeglob aliases participate in the same scope/use ledger.
     // Brace-delimited names remain dynamic and must not become literal symbols.
     if let Some(expression) = name.strip_prefix('{').and_then(|name| name.strip_suffix('}')) {
-        let (sigil, var_name) = split_variable_name(expression);
-        if !sigil.is_empty() && !var_name.is_empty() && !var_name.contains("::") {
+        // Only a body that is exactly one simple variable (`*{$x}`) is a single
+        // recorded use; any other computed body must not be recorded as one
+        // fabricated variable name (#15712).
+        if let Some((sigil, var_name)) = split_simple_variable_body(expression) {
             analyzer.record_variable_use(
                 scope,
                 strict_vars_mode,
@@ -152,12 +174,12 @@ pub(super) fn handle_assignment<'a>(
 
     // Optimization: Handle simple scalar assignment directly to avoid double lookup
     // (mark_initialized + analyze_node both perform lookups)
-    if let NodeKind::Variable { sigil, name } = &lhs.kind {
-        if !name.contains("::") && !is_builtin_global(sigil, name) {
-            if analyzer.initialize_and_use_variable_parts_in_context(scope, sigil, name, context) {
-                return true;
-            }
-        }
+    if let NodeKind::Variable { sigil, name } = &lhs.kind
+        && !name.contains("::")
+        && !is_builtin_global(sigil, name)
+        && analyzer.initialize_and_use_variable_parts_in_context(scope, sigil, name, context)
+    {
+        return true;
     }
 
     // Then analyze LHS

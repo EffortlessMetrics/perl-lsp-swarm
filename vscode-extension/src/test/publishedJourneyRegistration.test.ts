@@ -33,7 +33,7 @@ module.exports = {
   bundledServerVersion: async () => ({ status: 'ok', version: '0.17.0', stdout: '0.17.0', stderr: '', outcome: 'completed', output_truncated: false, termination_confirmed: true }),
   pathsEquivalent: () => true,
   platformLabel: () => 'windows',
-  providerPosition: () => ({ line: 0, character: 0 }),
+  providerPosition: () => ({ line: 3, character: 3 }),
   providerResult: async (label, command, ...args) => {
     const result = await vscode.commands.executeCommand(command, ...args);
     return { status: 'ok', label, item_count: Array.isArray(result) ? result.length : 0 };
@@ -68,13 +68,23 @@ function fakeVscode(
   generationStartDelayMs: number,
   initialGeneration: number,
 ): Record<string, unknown> {
-  let edited = false;
   let generation = initialGeneration;
+  let openedPath: string | undefined;
+  let documentText = '\n\n\nmy $value = 42;\nprint $value;\n';
   const document = {
-    uri: { toString: () => 'file:///workspace/packaged_daily_driver.pl' },
-    lineCount: 1,
-    getText: () => (edited ? '# packaged edit' : 'my $value = 42;'),
+    uri: {
+      fsPath: undefined as string | undefined,
+      toString: () => 'file:///workspace/packaged_daily_driver.pl',
+    },
+    get lineCount(): number {
+      return documentText.split('\n').length;
+    },
+    getText: () => documentText,
   };
+  const sameDocumentUri = (
+    uri: { fsPath?: string; toString?: () => string } | undefined,
+  ): boolean =>
+    uri?.fsPath === document.uri.fsPath && uri?.toString?.() === document.uri.toString();
   const configuration = {
     inspect: () => ({ globalValue: undefined }),
     update: async () => undefined,
@@ -108,11 +118,47 @@ function fakeVscode(
     delete (extensionApi as { waitForActiveDocumentReady?: unknown }).waitForActiveDocumentReady;
   }
   class WorkspaceEdit {
-    insert(): void {
-      edited = true;
+    deletePath: string | undefined;
+    readonly inserted: Array<{
+      uri: { toString: () => string };
+      position: { line: number; character: number };
+      newText: string;
+    }> = [];
+    readonly textEdits: Array<{
+      range: {
+        start: { line: number; character: number };
+        end: { line: number; character: number };
+      };
+      newText: string;
+    }> = [];
+
+    insert(
+      uri: { toString: () => string },
+      position: { line: number; character: number },
+      newText: string,
+    ): void {
+      this.inserted.push({ uri, position, newText });
     }
+
+    set(
+      _uri: unknown,
+      edits: Array<{
+        range: {
+          start: { line: number; character: number };
+          end: { line: number; character: number };
+        };
+        newText: string;
+      }>,
+    ): void {
+      this.textEdits.push(...edits);
+    }
+
+    deleteFile(uri: { fsPath: string }): void {
+      this.deletePath = uri.fsPath;
+    }
+
     entries(): Array<[unknown, unknown]> {
-      return [];
+      return this.textEdits.length > 0 ? [[document.uri, this.textEdits]] : [];
     }
   }
   class Position {
@@ -125,10 +171,15 @@ function fakeVscode(
     ConfigurationTarget: { Global: 1 },
     WorkspaceEdit,
     Position,
+    Uri: {
+      file: (fsPath: string) => ({ fsPath, toString: () => `file://${fsPath}` }),
+    },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
       getConfiguration: () => configuration,
-      openTextDocument: async () => {
+      openTextDocument: async (filePath: string) => {
+        openedPath = filePath;
+        document.uri.fsPath = filePath;
         if (generation === 0) {
           setTimeout(() => {
             generation = 1;
@@ -136,8 +187,38 @@ function fakeVscode(
         }
         return document;
       },
-      applyEdit: async () => {
-        edited = true;
+      applyEdit: async (edit?: WorkspaceEdit) => {
+        if (edit?.deletePath) {
+          if (
+            edit.deletePath !== openedPath ||
+            !edit.deletePath.startsWith(`${workspacePath}${path.sep}`)
+          ) {
+            return false;
+          }
+          if (!fs.existsSync(edit.deletePath)) return false;
+          fs.rmSync(edit.deletePath, { force: true });
+        }
+        for (const textEdit of edit?.textEdits ?? []) {
+          const lines = documentText.split('\n');
+          const line = lines[textEdit.range.start.line];
+          if (line === undefined) return false;
+          const start = textEdit.range.start.character;
+          const end = textEdit.range.end.character;
+          if (start < 0 || end < start || end > line.length) return false;
+          lines[textEdit.range.start.line] =
+            line.slice(0, start) + textEdit.newText + line.slice(end);
+          documentText = lines.join('\n');
+        }
+        for (const inserted of edit?.inserted ?? []) {
+          if (
+            !sameDocumentUri(inserted.uri) ||
+            inserted.position.line !== document.lineCount ||
+            inserted.position.character !== 0
+          ) {
+            return false;
+          }
+          documentText += inserted.newText;
+        }
         return true;
       },
       isTrusted: true,
@@ -152,9 +233,42 @@ function fakeVscode(
       }),
     },
     commands: {
-      executeCommand: async (command: string) => {
+      executeCommand: async (command: string, ...args: unknown[]) => {
+        if (command === 'workbench.action.revertAndCloseActiveEditor') return undefined;
         calls.push(command);
         firstProviderCall();
+        if (command === 'vscode.executeDocumentRenameProvider') {
+          const [uri, position, newName] = args as [
+            { toString?: () => string },
+            { line?: number; character?: number },
+            string,
+          ];
+          if (
+            !sameDocumentUri(uri) ||
+            position?.line !== 3 ||
+            position?.character !== 3 ||
+            newName !== 'renamed_value'
+          ) {
+            return undefined;
+          }
+          return {
+            entries: () => [
+              [
+                document.uri,
+                [
+                  {
+                    range: { start: { line: 3, character: 3 }, end: { line: 3, character: 9 } },
+                    newText: '$renamed_value',
+                  },
+                  {
+                    range: { start: { line: 4, character: 6 }, end: { line: 4, character: 12 } },
+                    newText: '$renamed_value',
+                  },
+                ],
+              ],
+            ],
+          };
+        }
         return [];
       },
     },
@@ -409,6 +523,13 @@ describe('registered packaged journey readiness contract', () => {
         { uri: 'file:///workspace/packaged_daily_driver.pl', timeoutMs: 30_000 },
       ]);
       expect(harness.calls).toContain('vscode.executeCompletionItemProvider');
+      const receipt = readReceipt(harness.receiptDirectory);
+      const requests = receipt.requests as {
+        after_edit?: { status?: string };
+        rename?: { status?: string };
+      };
+      expect(requests.after_edit?.status).toBe('ok');
+      expect(requests.rename?.status).toBe('applied_text_edits_verified');
     } finally {
       harness.cleanup();
     }

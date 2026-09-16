@@ -78,16 +78,6 @@ pub(crate) enum SessionWarningFamily {
 /// warning wording and remediation stay owned by the domain call sites.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SessionWarningCode {
-    /// `perlcritic` binary missing from PATH (no variable subject).
-    #[cfg(not(target_arch = "wasm32"))]
-    CriticMissingBinary,
-    /// Configured Perl::Critic profile path does not exist
-    /// (subject: configured profile string fingerprint).
-    #[cfg(not(target_arch = "wasm32"))]
-    CriticMissingProfile,
-    /// Perl::Critic execution failed (subject: error text fingerprint).
-    #[cfg(not(target_arch = "wasm32"))]
-    CriticExecutionFailed,
     /// Invalid enum value in an editor-provided setting
     /// (subject: setting tag + value type + normalized value fingerprint).
     ClientSettingInvalidValue,
