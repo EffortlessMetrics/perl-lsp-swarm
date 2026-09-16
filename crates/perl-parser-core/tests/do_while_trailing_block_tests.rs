@@ -4,7 +4,7 @@
 //! in `perl-parser-core`'s postfix parser and the `DoWhileTrailingBlock`
 //! error variant is defined here.
 
-use perl_parser_core::{Node, NodeKind, Parser};
+use perl_parser_core::{ParseError, Parser};
 
 fn parse_clean(src: &str) -> Result<(), String> {
     let mut parser = Parser::new(src);
@@ -16,15 +16,20 @@ fn parse_clean(src: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Find the first `{}`-op subscript Binary anywhere under `node`: the
-/// observable effect of the keep-consuming seam taking the consume path.
-fn find_brace_subscript(node: &Node) -> Option<&Node> {
-    if let NodeKind::Binary { op, .. } = &node.kind
-        && op == "{}"
-    {
-        return Some(node);
+/// Parse `src` cleanly and count subscript Binary nodes in the serialized
+/// AST as `(total, brace-op)` counts: the observable effect of the
+/// keep-consuming seam taking the consume path. Distinct op spellings
+/// (`{}`, `[]`, `->{}`) serialize distinctly, so the pair pins the exact
+/// chain shape the seam consumed. Counted on the sexp rather than the node
+/// traversal so the observation cannot miss nested operands.
+fn subscript_shape_count(src: &str) -> Result<(usize, usize), String> {
+    let mut parser = Parser::new(src);
+    let ast = parser.parse().map_err(|error| format!("parse error for `{src}`: {error:?}"))?;
+    let sexp = ast.to_sexp();
+    if sexp.contains("ERROR") {
+        return Err(format!("expected clean parse, got ERROR nodes for `{src}`"));
     }
-    node.children().into_iter().find_map(find_brace_subscript)
+    Ok((sexp.matches("(binary_").count(), sexp.matches("(binary_{}").count()))
 }
 
 #[test]
@@ -193,41 +198,64 @@ fn do_while_discriminates_keep_consuming_leaves() -> Result<(), String> {
     Ok(())
 }
 
-/// Discriminator 5 — call-observation proof for the keep-consuming seam
+/// Discriminator 5 — exact return-value proof for the keep-consuming seam
 /// (`postfix.rs`: `inside_condition_group || (unparenthesized_condition &&
 /// (bare_shape || subscript_chain))`). Clean/reject outcomes alone only
 /// weakly grip the seam: a mutant that breaks out early can still produce
-/// a clean parse via the trailing-block path. Observing the `{}`-op
-/// subscript Binary in the AST proves the brace was consumed *as a
+/// a clean parse via the trailing-block path. Asserting the exact `{}`-op
+/// subscript Binary count per arm proves each brace was consumed *as a
 /// subscript through the seam*, which only the true arm combination
 /// produces. Each arm gets its input; all outcomes confirmed with
 /// `perl -c` (#15649 ripr discriminator).
 #[test]
-fn do_while_observes_subscript_binary_per_keep_consuming_arm() -> Result<(), String> {
+fn parse_postfix_chain_boundary_discriminator() -> Result<(), String> {
     // `inside_condition_group`: `{k}` inside the condition's own `(...)`
     // is consumed as a subscript Binary.
-    for code in [
-        "do { $s++ } while ($h{k});",
-        "do { $s++ } while (($h{k}{j}));",
-        // `unparenthesized_condition && bare_shape`: a bare `$h` keeps `{k}`.
-        "do { $s++ } while $h{k};",
-        // `unparenthesized_condition && subscript_chain`: the chain keeps going.
-        "do { $s++ } while $h{k}{j};",
-        "do { $s++ } while $a[0]{k};",
-        "do { $s++ } while $self->{a}{b};",
-    ] {
-        let mut parser = Parser::new(code);
-        let ast = parser
-            .parse()
-            .map_err(|error| format!("expected clean parse for `{code}`: {error:?}"))?;
-        if ast.to_sexp().contains("ERROR") {
-            return Err(format!("expected clean parse, got ERROR nodes for `{code}`"));
-        }
-        if find_brace_subscript(&ast).is_none() {
-            return Err(format!(
-                "keep-consuming arm must leave a {{}}-op subscript Binary for `{code}`"
-            ));
-        }
-    }
+    assert_eq!(subscript_shape_count("do { $s++ } while ($h{k});")?, (1, 1));
+    assert_eq!(subscript_shape_count("do { $s++ } while (($h{k}{j}));")?, (2, 2));
+    // `unparenthesized_condition && bare_shape`: a bare `$h` keeps `{k}`.
+    assert_eq!(subscript_shape_count("do { $s++ } while $h{k};")?, (1, 1));
+    // `unparenthesized_condition && subscript_chain`: the chain keeps going.
+    assert_eq!(subscript_shape_count("do { $s++ } while $h{k}{j};")?, (2, 2));
+    assert_eq!(subscript_shape_count("do { $s++ } while $a[0]{k};")?, (2, 1));
+    assert_eq!(subscript_shape_count("do { $s++ } while $self->{a}{b};")?, (1, 1));
+    Ok(())
+}
+
+/// Discriminator 6 — call-observation proof for the three supporting calls
+/// behind the keep-consuming seam: `consume_balanced_in_interpolated_string`
+/// (balanced `${h{k}}` records no diagnosis while an unclosed `${` records
+/// exactly one `Unclosed { delimiter` diagnosis), plus the paren-group
+/// enter/leave balance (nested `(($flag))` must return the depth to zero so
+/// the trailing block still rejects with the exact `DoWhileTrailingBlock`
+/// variant — a missing `leave_paren_group` would leave the depth elevated
+/// and consume the block instead). Ground truth confirmed with `perl -c`
+/// (#15649 ripr discriminator).
+#[test]
+fn consume_balanced_and_paren_group_call_observation() -> Result<(), String> {
+    let mut balanced = Parser::new("my $s = \"${h{k}}\";");
+    balanced.parse().map_err(|error| format!("balanced interpolation must parse: {error:?}"))?;
+    assert!(
+        balanced.errors().is_empty(),
+        "balanced `${{h{{k}}}}` must record no diagnosis, got: {:?}",
+        balanced.errors()
+    );
+
+    let mut unclosed = Parser::new("my $s = \"${h{k}\";");
+    unclosed.parse().map_err(|error| format!("unclosed interpolation must recover: {error:?}"))?;
+    assert_eq!(unclosed.errors().len(), 1, "unclosed `${{` must record exactly one diagnosis");
+    assert!(
+        format!("{:?}", unclosed.errors()[0]).contains("Unclosed { delimiter"),
+        "diagnosis must name the unclosed delimiter, got: {:?}",
+        unclosed.errors()[0]
+    );
+
+    let err = Parser::new("do { $s++; } while (($flag)) { $s++; };")
+        .parse()
+        .expect_err("nested groups must still reject the trailing block");
+    assert!(
+        matches!(err, ParseError::DoWhileTrailingBlock { .. }),
+        "nested-group trailing block must raise the exact variant, got: {err:?}"
+    );
     Ok(())
 }
