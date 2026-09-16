@@ -846,6 +846,13 @@ export function activateDebugger(context: vscode.ExtensionContext) {
   const factory = new PerlDebugAdapterDescriptorFactory(context);
   context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('perl', factory));
 
+  // Alias debug contract (#7699): a `type: perl5` launch configuration
+  // resolves through the same provider and factory as `type: perl`, so the
+  // onDebugResolve:perl5 activation event has an owner. The alias maps onto
+  // the one canonical debug pipeline; there is no second anything.
+  context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('perl5', provider));
+  context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('perl5', factory));
+
   // Register debug commands
   context.subscriptions.push(
     vscode.commands.registerCommand(VSCODE_DEBUG_TEST_COMMAND, (test: unknown) => {

@@ -609,6 +609,13 @@ function stripCommonIndent(lines: string[]): string[] {
 let podPreviewPanel: vscode.WebviewPanel | undefined;
 
 /**
+ * URI string of the document the panel previewed last. Saving an unrelated
+ * file must not rebuild the panel from that file: the watcher only
+ * refreshes on a URI match.
+ */
+let previewedUri: string | undefined;
+
+/**
  * Open (or reveal) the POD preview panel for the given document.
  */
 export function showPodPreview(
@@ -632,12 +639,14 @@ export function showPodPreview(
     podPreviewPanel.onDidDispose(
       () => {
         podPreviewPanel = undefined;
+        previewedUri = undefined;
       },
       null,
       context.subscriptions,
     );
   }
 
+  previewedUri = document.uri.toString();
   updatePodPreviewContent(document);
 }
 
@@ -740,6 +749,12 @@ export function registerPodPreview(context: vscode.ExtensionContext): vscode.Dis
       return;
     }
     if (!podPreviewPanel) {
+      return;
+    }
+    // Refresh only the previewed document: with the alias widening the
+    // watcher, saving any other perl/perl5 file would otherwise silently
+    // replace the panel's source.
+    if (document.uri.toString() !== previewedUri) {
       return;
     }
     updatePodPreviewContent(document);
