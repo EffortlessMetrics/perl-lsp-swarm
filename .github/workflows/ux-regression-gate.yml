@@ -16,6 +16,8 @@ on:
       - 'vscode-extension/**'
       - 'features.toml'
       - '.github/workflows/ux-regression-gate.yml'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:
