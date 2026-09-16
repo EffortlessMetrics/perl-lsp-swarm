@@ -52,27 +52,77 @@ const DEBUGGER_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Poll interval while a capability-probe child is still running.
 const DEBUGGER_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Cached perl5db capability verdicts, keyed by
-/// [`DebugAdapter::capability_probe_cache_key`]. Both verdicts are cached —
-/// a pass skips the probe on every subsequent launch, and a fail avoids
-/// re-paying a doomed slow probe per retry. A poisoned lock only bypasses
-/// the cache (the probe is re-run); it never fails a launch.
+/// Cached affirmative perl5db capability verdicts, keyed by
+/// [`DebugAdapter::capability_probe_cache_key`]. Only passes are cached —
+/// a pass skips the probe on every subsequent launch. A failure or an
+/// inconclusive probe is not retained: a failure describes mutable
+/// installation state (perl5db.pl can be installed in place between
+/// launches), and an inconclusive probe is no verdict at all. The probe is
+/// deadline-bounded, so a re-probe on the next launch is cheap. A poisoned
+/// lock only bypasses the cache (the probe is re-run); it never fails a
+/// launch.
 static DEBUGGER_PROBE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Result<(), String>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Read one probe pipe to EOF on a dedicated thread, returning its decoded
-/// contents. Used instead of blocking `Command::output()` so the probe can be
-/// bounded by a deadline rather than waiting indefinitely on the child.
+/// The success marker the capability probe's perl expression prints after
+/// `require "perl5db.pl"` resolves and compiles. A clean child exit alone
+/// does not certify capability: an interpreter shim named `perl` may ignore
+/// the `-e` payload and exit 0 without ever loading the module.
+const DEBUGGER_PROBE_SUCCESS_MARKER: &str = "OK";
+
+/// One capability probe conclusion. Only [`Self::Capable`] is a measured,
+/// cacheable verdict; [`Self::Incapable`] is reported but not retained, and
+/// [`Self::Inconclusive`] keeps the launch-continue disposition.
+enum DebuggerCapabilityProbe {
+    /// The child loaded `perl5db.pl`, printed the success marker, and
+    /// exited successfully.
+    Capable,
+    /// The child ran and answered negatively; the payload is the probe's
+    /// diagnostic detail for the user-facing remediation message.
+    Incapable(String),
+    /// Spawn failure, observation failure, or deadline: the probe could not
+    /// measure anything, so there is no verdict to report or cache.
+    Inconclusive,
+}
+
+/// Read one probe pipe to EOF on a dedicated thread, delivering its decoded
+/// contents through a channel. Used instead of blocking `Command::output()`
+/// so the probe can be bounded by a deadline rather than waiting indefinitely
+/// on the child; the caller collects each drain with
+/// [`join_probe_drain_within`] against the remaining probe budget.
 fn spawn_probe_pipe_drain<R: Read + Send + 'static>(
     pipe: Option<R>,
-) -> Option<thread::JoinHandle<String>> {
+) -> Option<std::sync::mpsc::Receiver<String>> {
     pipe.map(|mut pipe| {
+        let (sender, receiver) = std::sync::mpsc::channel();
         thread::spawn(move || {
             let mut bytes = Vec::new();
             let _ = pipe.read_to_end(&mut bytes);
-            String::from_utf8_lossy(&bytes).into_owned()
-        })
+            let _ = sender.send(String::from_utf8_lossy(&bytes).into_owned());
+        });
+        receiver
     })
+}
+
+/// Collect one bounded pipe drain: `Some(decoded text)` when the drainer
+/// reached EOF and delivered within `budget`, `None` when the budget ran out
+/// or the drainer died without delivering. The budget matters after the
+/// direct child exits: a shim that leaves a pipe-inheriting descendant behind
+/// never delivers EOF, so the drain is abandoned (the drainer thread ends
+/// whenever the descendant exits) instead of joined forever.
+fn join_probe_drain_within(
+    drain: Option<std::sync::mpsc::Receiver<String>>,
+    budget: Duration,
+) -> Option<String> {
+    drain.and_then(|receiver| receiver.recv_timeout(budget).ok())
+}
+
+/// Whether the probe's stdout carries the success marker the probe
+/// expression prints on its own line. Matching the whole trimmed line keeps
+/// an incidental "OK" substring in unrelated child output from certifying a
+/// pass.
+fn has_probe_success_marker(stdout: &str) -> bool {
+    stdout.lines().any(|line| line.trim() == DEBUGGER_PROBE_SUCCESS_MARKER)
 }
 
 /// Apply the Windows debugger-console transport environment to a child
@@ -875,10 +925,12 @@ impl DebugAdapter {
     /// instrument failure, not a capability verdict, so it is skipped and the
     /// real `perl -d` launch surfaces its own canonical error.
     ///
-    /// The verdict is cached per (interpreter, probe cwd, launch env) for the
-    /// life of the adapter process: a passing interpreter must not pay a
-    /// fresh perl spawn on every launch, and a failing one must not re-pay a
-    /// doomed multi-second probe each retry either.
+    /// Only an affirmative verdict is cached, keyed per (interpreter, probe
+    /// cwd, launch env) for the life of the adapter process: a passing
+    /// interpreter must not pay a fresh perl spawn on every launch. A
+    /// failure describes mutable installation state — perl5db.pl can be
+    /// installed in place — and an inconclusive probe is no verdict at all,
+    /// so neither is retained and the next launch re-probes.
     fn check_debugger_capability(
         perl_interpreter: &str,
         env_overrides: &HashMap<String, String>,
@@ -892,40 +944,59 @@ impl DebugAdapter {
             return cached.clone();
         }
 
-        let verdict =
-            Self::run_debugger_capability_probe(perl_interpreter, env_overrides, probe_cwd);
-        if let Ok(mut cache) = DEBUGGER_PROBE_CACHE.lock() {
-            cache.insert(cache_key, verdict.clone());
+        match Self::run_debugger_capability_probe(perl_interpreter, env_overrides, probe_cwd) {
+            DebuggerCapabilityProbe::Capable => {
+                if let Ok(mut cache) = DEBUGGER_PROBE_CACHE.lock() {
+                    cache.insert(cache_key, Ok(()));
+                }
+                Ok(())
+            }
+            DebuggerCapabilityProbe::Incapable(detail) => Err(format!(
+                "Selected interpreter cannot host the debugger (perl5db.pl not loadable): \
+                 {perl_interpreter}. Install a full Perl distribution that ships the core \
+                 debugger module, or point launch.json `perlPath` at one (e.g. \
+                 {{\"perlPath\": \"/path/to/full/perl\"}}). Detail: {detail}"
+            )),
+            DebuggerCapabilityProbe::Inconclusive => Ok(()),
         }
-        verdict
     }
 
     /// Cache key for one probe verdict: interpreter, effective probe cwd, and
     /// the launch.json `env` entries that could steer `@INC`/module loading.
-    /// Byte-exact on env values — a conservative key can only cost a re-probe,
-    /// never serve a verdict measured under a different environment.
+    /// Every component is length-prefixed, so no delimiter appearing inside
+    /// an interpreter path, cwd, env name, or env value can splice two
+    /// launches into one key — distinct launches always serialize to
+    /// distinct keys. A conservative key can only cost a re-probe, never
+    /// serve a verdict measured under a different launch configuration.
     fn capability_probe_cache_key(
         perl_interpreter: &str,
         env_overrides: &HashMap<String, String>,
         probe_cwd: &Path,
     ) -> String {
-        let mut env_entries: Vec<String> =
-            env_overrides.iter().map(|(key, value)| format!("{key}={value}")).collect();
+        let length_prefixed = |value: &str| format!("{}:{value}", value.len());
+        let mut env_entries: Vec<String> = env_overrides
+            .iter()
+            .map(|(key, value)| format!("{}={}", length_prefixed(key), length_prefixed(value)))
+            .collect();
         env_entries.sort();
         format!(
-            "{perl_interpreter}@{cwd}@{env}",
-            cwd = probe_cwd.display(),
+            "{interpreter}@{cwd}@{env}",
+            interpreter = length_prefixed(perl_interpreter),
+            cwd = length_prefixed(&probe_cwd.to_string_lossy()),
             env = env_entries.join(";")
         )
     }
 
     /// Run one bounded perl5db.pl loadability probe. See
-    /// [`Self::check_debugger_capability`] for the contract.
+    /// [`Self::check_debugger_capability`] for the contract. A measured
+    /// verdict additionally requires the probe expression's own success
+    /// marker on stdout — exit status alone can be produced by an
+    /// interpreter shim that never evaluated the expression.
     fn run_debugger_capability_probe(
         perl_interpreter: &str,
         env_overrides: &HashMap<String, String>,
         probe_cwd: &Path,
-    ) -> Result<(), String> {
+    ) -> DebuggerCapabilityProbe {
         let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
             PathBuf::from(perl_interpreter),
             probe_cwd.to_path_buf(),
@@ -933,10 +1004,8 @@ impl DebugAdapter {
         oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
         let mut cmd = oracle.into_command();
         cmd.arg("-e")
-            .arg("require \"perl5db.pl\"; print \"OK\\n\";")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .arg(format!("require \"perl5db.pl\"; print \"{DEBUGGER_PROBE_SUCCESS_MARKER}\\n\";"));
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // Run under the same debugger-transport environment the real `perl -d`
         // launch uses, so the probe measures perl5db.pl loading under launch
         // parity. EMACS=1 and PERLDB_OPTS only select the debugger's runtime
@@ -955,7 +1024,7 @@ impl DebugAdapter {
                     "perl5db capability probe could not run '{perl_interpreter}' \
                      (will attempt the launch anyway): {e}"
                 );
-                return Ok(());
+                return DebuggerCapabilityProbe::Inconclusive;
             }
         };
 
@@ -982,7 +1051,7 @@ impl DebugAdapter {
                         "perl5db capability probe of '{perl_interpreter}' could not be \
                          observed (will attempt the launch anyway): {e}"
                     );
-                    return Ok(());
+                    return DebuggerCapabilityProbe::Inconclusive;
                 }
             }
         };
@@ -998,42 +1067,62 @@ impl DebugAdapter {
                  {} budget (will attempt the launch anyway)",
                 DEBUGGER_PROBE_TIMEOUT.as_secs()
             );
-            return Ok(());
+            return DebuggerCapabilityProbe::Inconclusive;
         };
 
-        // The child has exited, so both drain threads reach EOF and join
-        // deterministically. A panicked drainer contributes empty text rather
-        // than blocking the verdict.
-        let raw_stdout =
-            stdout_drain.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
-        let raw_stderr =
-            stderr_drain.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
+        // The child has exited, so both drains usually reach EOF immediately.
+        // But a shim that spawned a pipe-inheriting descendant before exiting
+        // never delivers EOF, so each drain is collected against the
+        // remaining probe deadline instead of being joined forever; the
+        // drainer thread is abandoned (it ends whenever the descendant
+        // exits) and its pipe yields no observation.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let raw_stdout = join_probe_drain_within(stdout_drain, remaining);
+        let raw_stderr = join_probe_drain_within(stderr_drain, remaining);
 
+        // Both drains have been collected before any verdict is decided, so
+        // the join stays deterministic. A measured pass requires the marker
+        // the probe expression prints: a shim that ignores the `-e` payload
+        // and exits 0 never loads perl5db.pl, so exit status alone cannot
+        // certify capability. A stdout drain abandoned to an inheriting
+        // descendant is unobservable rather than marker-free, so it stays
+        // inconclusive instead of failing a possibly capable interpreter.
         if status.success() {
-            return Ok(());
+            return match raw_stdout {
+                Some(stdout) if has_probe_success_marker(&stdout) => {
+                    DebuggerCapabilityProbe::Capable
+                }
+                Some(_) => DebuggerCapabilityProbe::Incapable(
+                    "exited successfully but did not evaluate the probe expression \
+                     (interpreter shim?)"
+                        .to_string(),
+                ),
+                None => DebuggerCapabilityProbe::Inconclusive,
+            };
         }
 
         // The "Can't locate perl5db.pl in @INC" report arrives on stderr, but
         // a non-perl binary selected as the interpreter may report on either
         // stream; merge for the diagnostic detail.
-        let detail =
-            if raw_stderr.trim().is_empty() { raw_stdout.trim() } else { raw_stderr.trim() };
-        let detail = if detail.is_empty() {
-            // Report a bare exit code as a number; a child killed by a signal
-            // has no code and says so instead of rendering `Some(...)`/`None`.
-            match status.code() {
-                Some(code) => format!("exit status {code}"),
-                None => "process terminated by a signal (no exit status)".to_string(),
+        let reported = raw_stderr
+            .as_deref()
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+            .or_else(|| raw_stdout.as_deref().map(str::trim))
+            .filter(|detail| !detail.is_empty());
+        let detail = match reported {
+            Some(detail) => detail.to_string(),
+            None => {
+                // Report a bare exit code as a number; a child killed by a
+                // signal has no code and says so instead of rendering
+                // `Some(...)`/`None`.
+                match status.code() {
+                    Some(code) => format!("exit status {code}"),
+                    None => "process terminated by a signal (no exit status)".to_string(),
+                }
             }
-        } else {
-            detail.to_string()
         };
-        Err(format!(
-            "Selected interpreter cannot host the debugger (perl5db.pl not loadable): \
-             {perl_interpreter}. Install a full Perl distribution that ships the core \
-             debugger module, or point launch.json `perlPath` at one (e.g. \
-             {{\"perlPath\": \"/path/to/full/perl\"}}). Detail: {detail}"
-        ))
+        DebuggerCapabilityProbe::Incapable(detail)
     }
 
     /// Run `perl -c <script>` and return `Ok(())` if the syntax is valid,
@@ -1127,18 +1216,22 @@ impl DebugAdapter {
         // shims, fat binaries, and environment layers may re-case the line.
         // Match the prefix case-insensitively so the typed module remediation
         // still fires; `str::get` declines non-char boundaries, so slicing
-        // below cannot panic on non-ASCII output.
+        // below cannot panic on non-ASCII output. The ` in @INC` separator is
+        // matched case-insensitively for the same reason: a recased
+        // `IN @INC` must still terminate the module path instead of being
+        // swallowed into a corrupted module name.
         const MISSING_MODULE_PREFIX: &str = "Can't locate ";
+        const MISSING_MODULE_SEPARATOR: &str = " in @INC";
         detail.lines().find_map(|line| {
             let trimmed = line.trim();
             let head = trimmed.get(..MISSING_MODULE_PREFIX.len())?;
             if !head.eq_ignore_ascii_case(MISSING_MODULE_PREFIX) {
                 return None;
             }
-            let module_path = trimmed[MISSING_MODULE_PREFIX.len()..]
-                .split(" in @INC")
-                .next()?
-                .trim_end_matches('.');
+            let body = &trimmed[MISSING_MODULE_PREFIX.len()..];
+            let separator_lower = MISSING_MODULE_SEPARATOR.to_ascii_lowercase();
+            let separator_at = body.to_ascii_lowercase().find(separator_lower.as_str())?;
+            let module_path = body[..separator_at].trim_end_matches('.');
             let module_name = module_path_to_name(module_path);
             (!module_name.is_empty()).then_some(module_name)
         })
@@ -3836,6 +3929,123 @@ mod tests {
         assert!(message.contains("Module Some::Missing::Module not found"));
         assert!(message.contains("cpan Some::Missing::Module"));
         assert!(message.contains("metacpan.org/pod/Some::Missing::Module"));
+    }
+
+    /// A wrapper shim may uppercase the whole diagnostic; the recased
+    /// `IN @INC` separator must still terminate the module path so the
+    /// remediation names the module verbatim instead of the diagnostic tail.
+    #[test]
+    fn missing_module_name_preserves_module_when_diagnostic_is_recased() {
+        let detail = "CAN'T LOCATE SOME/MISSING/MODULE IN @INC (@INC CONTAINS: C:/PERL/LIB .)";
+
+        let module = DebugAdapter::missing_module_name(detail);
+
+        assert_eq!(module.as_deref(), Some("SOME::MISSING::MODULE"));
+    }
+
+    /// Mixed recasing keeps the module's own case: only the separators are
+    /// matched case-insensitively, the module name is preserved verbatim.
+    #[test]
+    fn missing_module_name_preserves_module_case_under_partial_recasing() {
+        let detail = "Can't locate Some/Missing/Module.pm IN @INC (you may need to install \
+                      the Some::Missing::Module module)";
+
+        let module = DebugAdapter::missing_module_name(detail);
+
+        assert_eq!(module.as_deref(), Some("Some::Missing::Module"));
+    }
+
+    /// `{"A": "x;B=y"}` and `{"A": "x", "B": "y"}` serialized identically
+    /// under the old delimiter join; the length-prefixed encoding must keep
+    /// them distinct so neither launch inherits the other's verdict.
+    #[test]
+    fn capability_probe_cache_key_distinguishes_env_delimiter_collisions() {
+        let joined = HashMap::from([("A".to_string(), "x;B=y".to_string())]);
+        let split =
+            HashMap::from([("A".to_string(), "x".to_string()), ("B".to_string(), "y".to_string())]);
+        let cwd = PathBuf::from(".");
+
+        let joined_key = DebugAdapter::capability_probe_cache_key("perl", &joined, &cwd);
+        let split_key = DebugAdapter::capability_probe_cache_key("perl", &split, &cwd);
+
+        assert_ne!(joined_key, split_key);
+    }
+
+    /// The same collision class applies to the interpreter/cwd boundary:
+    /// `@` inside a path must not splice two launches into one key.
+    #[test]
+    fn capability_probe_cache_key_distinguishes_delimiters_inside_components() {
+        let env = HashMap::new();
+
+        let spliced = DebugAdapter::capability_probe_cache_key("a@b", &env, &PathBuf::from("c"));
+        let honest = DebugAdapter::capability_probe_cache_key("a", &env, &PathBuf::from("b@c"));
+
+        assert_ne!(spliced, honest);
+    }
+
+    /// A pipe whose write end a descendant inherited never reaches EOF, so
+    /// the drain wait must expire on budget and abandon the pipe instead of
+    /// hanging the launch past the probe deadline.
+    #[test]
+    fn bounded_probe_drain_abandons_pipe_that_never_reaches_eof() {
+        let (_sender, receiver) = std::sync::mpsc::channel::<String>();
+        let started = Instant::now();
+
+        let text = super::join_probe_drain_within(Some(receiver), Duration::from_millis(50));
+
+        assert_eq!(text, None, "an abandoned drain must not deliver text");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "drain collection must stay bounded, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A drain that reaches EOF in time delivers its decoded contents.
+    #[test]
+    fn bounded_probe_drain_delivers_text_when_eof_arrives() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = sender.send("OK".to_string());
+
+        let text = super::join_probe_drain_within(Some(receiver), Duration::from_secs(5));
+
+        assert_eq!(text.as_deref(), Some("OK"));
+    }
+
+    /// Only the marker's own trimmed line certifies a pass; incidental
+    /// "OK" substrings elsewhere in child output must not.
+    #[test]
+    fn probe_success_marker_requires_its_own_line() {
+        assert!(super::has_probe_success_marker("OK\n"));
+        assert!(super::has_probe_success_marker("noise\nOK\nmore noise"));
+        assert!(super::has_probe_success_marker("  OK  \n"));
+        assert!(!super::has_probe_success_marker(""));
+        assert!(!super::has_probe_success_marker("OKAY\n"));
+        assert!(!super::has_probe_success_marker("the OK substring alone\n"));
+    }
+
+    /// A probe that could not run (spawn failure) keeps the launch-continue
+    /// disposition but must not be cached as a pass: the next launch has to
+    /// probe again instead of trusting an instrument failure.
+    #[test]
+    fn inconclusive_probe_spawn_failure_is_not_cached_as_a_pass() {
+        let interpreter = "perl-lsp-missing-probe-interpreter-9e2f1";
+        let env = HashMap::new();
+        let cwd = std::env::temp_dir();
+        let key = DebugAdapter::capability_probe_cache_key(interpreter, &env, &cwd);
+        if let Ok(cache) = super::DEBUGGER_PROBE_CACHE.lock() {
+            assert!(cache.get(&key).is_none(), "precondition: key must start absent");
+        }
+
+        let verdict = DebugAdapter::check_debugger_capability(interpreter, &env, &cwd);
+
+        assert!(verdict.is_ok(), "spawn failure is launch-continue, got: {verdict:?}");
+        if let Ok(cache) = super::DEBUGGER_PROBE_CACHE.lock() {
+            assert!(
+                cache.get(&key).is_none(),
+                "an inconclusive probe must not be cached as a pass"
+            );
+        }
     }
 
     /// Verify that `detect_perl_info()` runs without panicking.
