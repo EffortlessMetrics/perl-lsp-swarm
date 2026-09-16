@@ -851,7 +851,6 @@ fn stdio_transport_pid_attach_refuses_without_session_events() -> Result<()> {
     Ok(())
 }
 
-
 #[test]
 fn stdio_transport_stops_when_client_closes_stdout_while_stdin_remains_open() -> Result<()> {
     let binary = configured_dap_binary_path();
