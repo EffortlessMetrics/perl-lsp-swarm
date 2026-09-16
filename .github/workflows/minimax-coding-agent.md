@@ -13,6 +13,8 @@ permissions:
   actions: read
   issues: read
   pull-requests: read
+concurrency:
+  job-discriminator: ${{ github.run_id }}
 engine:
   id: claude
   version: "2.1.247"
@@ -25,11 +27,8 @@ network:
   allowed:
     - defaults
     - api.minimax.io
-    - crates.io
-    - index.crates.io
-    - static.crates.io
-    - github.com
-    - objects.githubusercontent.com
+    - rust
+    - github
 checkout:
   fetch-depth: 0
 tools:
