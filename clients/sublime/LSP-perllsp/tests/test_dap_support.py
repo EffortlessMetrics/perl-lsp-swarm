@@ -36,6 +36,27 @@ class DapSupportContractTests(unittest.TestCase):
                 [str(binary.resolve()), "--stdio", "--trusted-root", str(root.resolve())],
             )
 
+    def test_dap_command_rejects_missing_and_file_trusted_roots(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "perl-dap"
+            binary.write_text("", encoding="utf-8")
+            with self.assertRaisesRegex(support.DapPathError, "trusted root is missing"):
+                support.dap_command(binary, Path(directory) / "gone")
+            settle_file = Path(directory) / "file.txt"
+            settle_file.write_text("not a dir", encoding="utf-8")
+            with self.assertRaisesRegex(support.DapPathError, "trusted root is missing"):
+                support.dap_command(binary, settle_file)
+
+    def test_editor_workspace_root_uses_first_existing_folder(self):
+        with tempfile.TemporaryDirectory() as directory:
+            present = Path(directory)
+            gone = str(Path(directory) / "gone")
+            self.assertEqual(
+                support.editor_workspace_root([gone, str(present)]), present
+            )
+            self.assertIsNone(support.editor_workspace_root([gone]))
+            self.assertIsNone(support.editor_workspace_root([]))
+
     def test_explicit_bare_name_uses_path_but_relative_path_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / support.DAP_EXECUTABLE

@@ -127,7 +127,11 @@ class DapProcess:
         self.timeout_seconds = timeout_seconds
         command = [str(binary), "--stdio", "--log-level", "error"]
         if trusted_root is not None:
-            command.extend(["--trusted-root", str(trusted_root.resolve())])
+            # Pass the original path through, never the resolved one: the
+            # startup contract rejects symlink roots via symlink_metadata
+            # before canonicalization, and resolving here would hide that
+            # seam from the scorecard instead of testing it.
+            command.extend(["--trusted-root", str(trusted_root)])
         self.process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,

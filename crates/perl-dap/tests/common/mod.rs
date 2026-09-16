@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
+use perl_tdd_support::must_with;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::ffi::OsStr;
@@ -2601,13 +2602,15 @@ pub fn install_unbounded_test_authority(adapter: &DebugAdapter) {
     use perl_dap::{
         LaunchAuthority, LaunchAuthoritySource, LaunchAuthorityStartup, UnboundedAcknowledgement,
     };
-    let authority = LaunchAuthority::resolve(&LaunchAuthorityStartup {
-        trusted_roots: Vec::new(),
-        allow_unbounded: Some(UnboundedAcknowledgement::new(
-            LaunchAuthoritySource::CommandLine,
-            "test: unbounded session",
-        )),
-    })
-    .expect("test authority resolution");
+    let authority = must_with(
+        LaunchAuthority::resolve(&LaunchAuthorityStartup {
+            trusted_roots: Vec::new(),
+            allow_unbounded: Some(UnboundedAcknowledgement::new(
+                LaunchAuthoritySource::CommandLine,
+                "test: unbounded session",
+            )),
+        }),
+        "test authority resolution",
+    );
     adapter.set_launch_authority(authority);
 }

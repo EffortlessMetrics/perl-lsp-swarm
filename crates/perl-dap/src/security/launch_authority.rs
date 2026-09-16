@@ -432,6 +432,26 @@ impl LaunchAuthority {
         }
     }
 
+    /// Canonical of the first current trusted root validating `program`.
+    ///
+    /// Lets the spawner align its defense-in-depth boundary with the root
+    /// that actually admitted the launch, instead of a stale or preset
+    /// legacy root. Unbounded authority admits everything and names no
+    /// root, so this returns `None` for it.
+    pub fn root_for_program(&self, program: &Path) -> Option<PathBuf> {
+        match self.mode {
+            LaunchAuthorityMode::ExplicitUnbounded => None,
+            LaunchAuthorityMode::WorkspaceBound => self
+                .roots
+                .iter()
+                .find(|root| {
+                    trusted_root_is_current(root)
+                        && crate::security::validate_path(program, root.canonical()).is_ok()
+                })
+                .map(|root| root.canonical().to_path_buf()),
+        }
+    }
+
     /// Narrow a launch-args `workspaceRoot` against the authority.
     ///
     /// Returns the validated narrowing root for workspace-bound authority.
@@ -733,6 +753,26 @@ mod tests {
 
         cleanup(&root);
         cleanup(&displaced);
+    }
+
+    #[test]
+    fn workspace_bound_survives_child_writes_after_startup() {
+        // N3 (#14523 review): the f35ad3218 identity (unix device+inode,
+        // Windows creation_time, no mtime) must stay current when children
+        // change while the root object itself is stable — unlike the
+        // rename-and-replace case above, which must stop admitting.
+        let root = make_root("childwrite");
+        let startup =
+            LaunchAuthorityStartup { trusted_roots: vec![root.clone()], allow_unbounded: None };
+        let authority = LaunchAuthority::resolve(&startup).expect("resolution");
+        let child = root.join("later.pl");
+        std::fs::write(&child, b"print 1;").expect("child script");
+        assert!(
+            authority.admits_launch_path(&child).is_ok(),
+            "a child written after startup must still be admitted"
+        );
+        assert!(authority.narrow_launch_root(&root).is_ok());
+        cleanup(&root);
     }
 
     #[test]

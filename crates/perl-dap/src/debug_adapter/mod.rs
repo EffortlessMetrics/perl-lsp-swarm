@@ -183,6 +183,11 @@ pub struct DebugAdapter {
     /// requests are refused in that case rather than falling back to implicit
     /// authority.
     launch_authority: Arc<Mutex<Option<LaunchAuthority>>>,
+    /// Receipt of the most recently begun authority session (mode, root
+    /// count, identities, generation — no paths). Retained so successful
+    /// launches stay auditable instead of discarding the session record.
+    last_authority_receipt:
+        Arc<Mutex<Option<crate::security::launch_authority::LaunchAuthorityReceipt>>>,
     /// Transport broken flag: set by event handler on persistent write failure
     transport_broken: Arc<AtomicBool>,
     /// Tracks whether initialize request has been received (state machine validation)
@@ -288,6 +293,7 @@ impl DebugAdapter {
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
             launch_authority: Arc::new(Mutex::new(None)),
+            last_authority_receipt: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
             initialized: Arc::new(AtomicBool::new(false)),
         }
@@ -337,14 +343,26 @@ impl DebugAdapter {
     /// Begin a new authority session, returning `(generation, receipt)`.
     ///
     /// Returns `None` when no startup authority was installed, which refuses
-    /// the launch.
+    /// the launch. The receipt is retained on the adapter so admitted
+    /// launches stay auditable.
     pub(super) fn begin_authority_session(
         &self,
     ) -> Option<(u64, crate::security::launch_authority::LaunchAuthorityReceipt)> {
         let mut guard = lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority");
         let authority = guard.as_mut()?;
         let generation = authority.begin_session();
-        Some((generation, authority.receipt()))
+        let receipt = authority.receipt();
+        *lock_or_recover(&self.last_authority_receipt, "debug_adapter.last_authority_receipt") =
+            Some(receipt.clone());
+        Some((generation, receipt))
+    }
+
+    /// Receipt of the most recently begun authority session, if any.
+    pub fn last_authority_receipt(
+        &self,
+    ) -> Option<crate::security::launch_authority::LaunchAuthorityReceipt> {
+        lock_or_recover(&self.last_authority_receipt, "debug_adapter.last_authority_receipt")
+            .clone()
     }
 
     /// Admit the launch program path and resolve the launch-args
@@ -369,6 +387,24 @@ impl DebugAdapter {
             Some(root) => authority.narrow_launch_root(root),
             None => Ok(None),
         }
+    }
+
+    /// Whether the installed authority is explicitly unbounded.
+    pub(super) fn launch_authority_is_unbounded(&self) -> bool {
+        lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority")
+            .as_ref()
+            .is_some_and(|authority| {
+                authority.mode()
+                    == crate::security::launch_authority::LaunchAuthorityMode::ExplicitUnbounded
+            })
+    }
+
+    /// Canonical trusted root admitting `program`, if any. Used to align the
+    /// spawner's defense-in-depth boundary with the admission decision.
+    pub(super) fn authority_root_for_program(&self, program: &Path) -> Option<PathBuf> {
+        lock_or_recover(&self.launch_authority, "debug_adapter.launch_authority")
+            .as_ref()
+            .and_then(|authority| authority.root_for_program(program))
     }
 
     /// Start a new session generation and reset its terminal-event gate.

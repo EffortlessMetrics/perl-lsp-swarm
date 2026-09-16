@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import sublime
 
-from .dap_support import DapPathError, dap_command, resolve_dap_path
+from .dap_support import DapPathError, dap_command, editor_workspace_root, resolve_dap_path
 
 _REGISTERED_CLASS: type | None = None
 _IMPORT_FAILURE_REPORTED = False
@@ -157,7 +156,17 @@ def register_debugger_adapter() -> bool:
                 raise core_error(str(error)) from error
 
             cwd = configuration.get("cwd") if hasattr(configuration, "get") else None
-            trusted_root = Path(cwd) if isinstance(cwd, str) and cwd else None
+            # Startup authority comes from editor-owned workspace folders,
+            # never from project-controlled launch data: `cwd` only selects
+            # the debuggee working directory. Without an editor workspace
+            # the server starts without authority and refuses launches
+            # fail-closed rather than inheriting an unrelated directory.
+            try:
+                window = sublime.active_window()
+                folders = window.folders() if window is not None else []
+            except Exception:
+                folders = []
+            trusted_root = editor_workspace_root(folders)
             command = dap_command(binary, trusted_root)
             if hasattr(log, "info"):
                 log.info(f"Using perl-dap `{binary}` over stdio")

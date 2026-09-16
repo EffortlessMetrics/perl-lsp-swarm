@@ -63,12 +63,26 @@ def build_scorecard(
     launch_details: list[dict[str, Any]] = []
     for name in LAUNCH_FIXTURES:
         try:
+            # The caller's trusted root is the boundary under test: deriving
+            # it per-probe from each script's own directory made every
+            # launch self-validating, so out-of-root scripts passed and the
+            # boundary was never exercised. Fixtures outside the configured
+            # root are a caller misconfiguration, reported as such.
+            script = fixtures[name].resolve()
+            if trusted_root is not None:
+                try:
+                    script.relative_to(trusted_root.resolve())
+                except ValueError:
+                    raise ScorecardError(
+                        f"launch fixture {name} ({script}) is outside the configured "
+                        f"trusted root ({trusted_root}); move the fixture or the root"
+                    )
             elapsed = probe_launch(
                 binary,
-                fixtures[name].resolve(),
+                script,
                 timeout_seconds,
                 invocations,
-                fixtures[name].resolve().parent,
+                trusted_root,
             )
             launch_details.append({"name": name, "elapsed_ms": elapsed, "error": None})
         except ScorecardError as exc:

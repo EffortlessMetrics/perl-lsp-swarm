@@ -670,11 +670,23 @@ export function buildDapExecutableArgs(
   }
   // The editor workspace is host-owned startup authority. Supplying it to
   // perl-dap keeps native launches usable without allowing launch.json data to
-  // create or widen authority.
+  // create or widen authority. The root is canonicalized first: the native
+  // adapter rejects symlink roots, so forwarding the link would refuse every
+  // launch in a symlinked workspace instead of debugging it.
   if (hostWorkspaceRoot && hostWorkspaceRoot.trim().length > 0) {
-    return ['--trusted-root', hostWorkspaceRoot];
+    return ['--trusted-root', canonicalizeWorkspaceRoot(hostWorkspaceRoot.trim())];
   }
   return [];
+}
+
+/** Resolve symlinks/aliases in a host workspace root, falling back to the
+ * trimmed input when resolution fails (missing dir, permissions). */
+export function canonicalizeWorkspaceRoot(root: string): string {
+  try {
+    return fs.realpathSync(root);
+  } catch {
+    return root;
+  }
 }
 
 export class PerlDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {

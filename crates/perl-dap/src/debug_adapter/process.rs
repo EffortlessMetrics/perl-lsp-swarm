@@ -305,10 +305,30 @@ impl DebugAdapter {
             };
 
             // Keep the defense-in-depth workspace boundary aligned with the
-            // admitted narrowing root (workspace-bound authority only).
+            // authority decision for the spawn window (restored below, so a
+            // request's narrowing never constrains a later launch):
+            // the narrowed root when launch args narrow one, else the
+            // trusted root that admitted the program. A preset legacy root
+            // must not second-guess an admission it did not make, and an
+            // explicitly unbounded authority sets no boundary at all, so a
+            // stale or preset legacy root is cleared for the window instead
+            // of refusing an admitted program in the spawner below.
             let previous_workspace_root =
                 lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root").clone();
-            if let Some(root) = narrowed_root {
+            if authority_installed {
+                if self.launch_authority_is_unbounded() {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = None;
+                } else if let Some(root) = narrowed_root.or_else(|| {
+                    if program.trim().is_empty() {
+                        None
+                    } else {
+                        self.authority_root_for_program(Path::new(program))
+                    }
+                }) {
+                    *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") =
+                        Some(root);
+                }
+            } else if let Some(root) = narrowed_root {
                 *lock_or_recover(&self.workspace_root, "debug_adapter.workspace_root") = Some(root);
             }
 
