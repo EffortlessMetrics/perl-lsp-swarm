@@ -106,33 +106,29 @@ fn attribute_source_disagreement_and_unclosed_input_refuse_a_name() -> Result<()
     Ok(())
 }
 
-fn untrusted_boundary_error(
-    error: ParseResult<&str>,
-    expected_location: usize,
-    variant: &str,
-) -> Result<(), String> {
-    match error {
-        Err(ParseError::SyntaxError { message, location })
-            if message == "Untrusted attribute argument boundary"
-                && location == expected_location =>
-        {
-            Ok(())
-        }
-        other => Err(format!(
-            "boundary variant {variant:?} produced {other:?}, expected an exact \
-             Untrusted attribute argument boundary error at {expected_location}"
-        )),
-    }
-}
-
 #[test]
 fn attribute_argument_rejects_an_out_of_range_boundary_exactly() -> Result<(), String> {
     // A token-derived end beyond the source bytes cannot name a slice; the
     // validator must refuse it instead of fabricating an attribute name.
     let parser = Parser::new(":param(x);");
-    untrusted_boundary_error(parser.source_attribute_argument(3, 100), 3, "out-of-range end")?;
+    match parser.source_attribute_argument(3, 100) {
+        Err(ParseError::SyntaxError { ref message, location })
+            if message == "Untrusted attribute argument boundary" && location == 3 =>
+        {
+            ()
+        }
+        other => return Err(format!("out-of-range end produced {other:?}")),
+    }
     let parser = Parser::new(":param(x);");
-    untrusted_boundary_error(parser.source_attribute_argument(100, 110), 100, "out-of-range start")
+    match parser.source_attribute_argument(100, 110) {
+        Err(ParseError::SyntaxError { ref message, location })
+            if message == "Untrusted attribute argument boundary" && location == 100 =>
+        {
+            ()
+        }
+        other => return Err(format!("out-of-range start produced {other:?}")),
+    }
+    Ok(())
 }
 
 #[test]
@@ -140,15 +136,36 @@ fn attribute_argument_rejects_a_non_parenthesis_boundary_exactly() -> Result<(),
     // The boundary must begin at the opening parenthesis byte; a start that
     // names any other byte is an untrusted boundary and is refused.
     let parser = Parser::new(":param(x);");
-    untrusted_boundary_error(parser.source_attribute_argument(4, 6), 4, "identifier start byte")
+    match parser.source_attribute_argument(4, 6) {
+        Err(ParseError::SyntaxError { ref message, location })
+            if message == "Untrusted attribute argument boundary" && location == 4 =>
+        {
+            Ok(())
+        }
+        other => Err(format!("identifier start byte produced {other:?}")),
+    }
 }
 
 #[test]
 fn attribute_argument_rejects_split_utf8_and_open_escape_exactly() -> Result<(), String> {
     // A boundary ending mid-UTF-8-character is refused rather than decoded.
     let parser = Parser::new(":param(manĝis);");
-    untrusted_boundary_error(parser.source_attribute_argument(6, 10), 6, "split UTF-8 character")?;
+    match parser.source_attribute_argument(6, 10) {
+        Err(ParseError::SyntaxError { ref message, location })
+            if message == "Untrusted attribute argument boundary" && location == 6 =>
+        {
+            ()
+        }
+        other => return Err(format!("split UTF-8 character produced {other:?}")),
+    }
     // A boundary ending on an open escape has no closing parenthesis byte.
     let parser = Parser::new("(a\\");
-    untrusted_boundary_error(parser.source_attribute_argument(0, 3), 0, "open escape")
+    match parser.source_attribute_argument(0, 3) {
+        Err(ParseError::SyntaxError { ref message, location })
+            if message == "Untrusted attribute argument boundary" && location == 0 =>
+        {
+            Ok(())
+        }
+        other => Err(format!("open escape produced {other:?}")),
+    }
 }
