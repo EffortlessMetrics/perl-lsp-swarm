@@ -51,15 +51,12 @@ fn validate_position(value: Option<&Value>, field: &str, diagnostic: &Value) -> 
         .and_then(Value::as_object)
         .with_context(|| format!("diagnostic {field} must be an object: {diagnostic:?}"))?;
     for coordinate in ["line", "character"] {
-        position
-            .get(coordinate)
-            .and_then(Value::as_u64)
-            .with_context(|| {
-                format!(
-                    "diagnostic {field}.{coordinate} must be a non-negative integer: \
-                     {diagnostic:?}"
-                )
-            })?;
+        position.get(coordinate).and_then(Value::as_u64).with_context(|| {
+            format!(
+                "diagnostic {field}.{coordinate} must be a non-negative integer: \
+                 {diagnostic:?}"
+            )
+        })?;
     }
     Ok(())
 }
@@ -140,7 +137,8 @@ fn scenario_12_strict_file_publishes_well_formed_diagnostics() {
             recorder.mark_request_start("publishDiagnostics");
             let diagnostics =
                 open_and_wait_for_diagnostics(&harness, "strict_test.pl", STRICT_SOURCE)?;
-            recorder.check("post-open diagnostics publication observed for strict_test.pl", true)?;
+            recorder
+                .check("post-open diagnostics publication observed for strict_test.pl", true)?;
             validate_diagnostics(&diagnostics)?;
             recorder.check("every returned diagnostic has valid required shape", true)?;
             recorder.mark_first_useful_result("publishDiagnostics");
@@ -175,10 +173,8 @@ fn scenario_12_clean_file_publishes_current_diagnostics() {
             let diagnostics = open_and_wait_for_diagnostics(&harness, "clean.pl", CLEAN_SOURCE)?;
             recorder.check("post-open diagnostics publication observed for clean.pl", true)?;
             validate_diagnostics(&diagnostics)?;
-            recorder.check(
-                "clean-file diagnostics publication is explicit and well formed",
-                true,
-            )?;
+            recorder
+                .check("clean-file diagnostics publication is explicit and well formed", true)?;
             recorder.mark_first_useful_result("publishDiagnostics");
 
             harness.assert_no_crash();
