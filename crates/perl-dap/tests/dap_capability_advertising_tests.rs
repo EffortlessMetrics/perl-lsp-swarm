@@ -12,10 +12,12 @@
 //! * a capability that is advertised must be backed by the feature catalog, so
 //!   `features.toml` and the wire response can never drift apart.
 //!
-//! Exception (#9581): the seven secondary-capability rows are explicit `false`
-//! wire cells in every mode until each field's own exact-behavior receipt
-//! passes — they are deliberately NOT derived from catalog registration, so a
-//! catalog row advertising one of these families cannot widen the wire claim.
+//! Exception (#9581): the secondary-capability rows remain explicit `false`
+//! wire cells for direct/in-process, TCP, and mirror/peer modes. Native stdio
+//! enables only `supportsCancelRequest` after selecting its concurrent intake
+//! transport; the other rows remain false until their own exact-behavior
+//! receipts pass. These cells are deliberately NOT derived from catalog
+//! registration, so a catalog row cannot widen the wire claim.
 
 #[cfg(feature = "dap-phase2")]
 mod capability_tests {

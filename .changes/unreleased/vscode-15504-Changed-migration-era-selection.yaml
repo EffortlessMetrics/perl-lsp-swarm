@@ -1,0 +1,9 @@
+project: vscode
+component: Compatibility
+kind: Changed
+body: "The public-beta settings migration registry now treats a row's historical era as a comparable window rather than opaque text: bounds accept a strict release or a whole minor series (0.17.x), two rows claiming any release in common for the same setting and scope are rejected as a registry defect, and several legitimate disjoint eras for one setting are resolved by the era covering the registry's own source public release instead of failing closed as ambiguous. A differing value shape no longer licenses two eras a reader cannot separate. No shipped setting changes behavior: today's single-row registry is validated and interpreted exactly as before (#15503)."
+time: 2026-09-13T00:00:00Z
+custom:
+  PR: 15504
+  Slug: migration-era-selection-15503
+  Breaking: "no"
