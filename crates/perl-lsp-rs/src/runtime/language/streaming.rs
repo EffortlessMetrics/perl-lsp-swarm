@@ -321,8 +321,16 @@ impl LspServer {
             // configured the deterministic route owns the final content,
             // otherwise the stream ends with an empty final. The terminal
             // isFinal notification below is still always sent.
-            let provider_failed = matches!(&stream_result, Err(BackendError::Provider(_)));
-            let outcome = if provider_failed || cumulative_text.is_empty() {
+            // A resource-budget refusal repudiates the candidate exactly as a
+            // provider failure does. The accumulated prefix is the part of a
+            // response the server refused to finish reading, so promoting it
+            // here would turn a deliberate refusal into a truncated final
+            // completion — the one outcome the budget exists to prevent.
+            let candidate_repudiated = matches!(
+                &stream_result,
+                Err(BackendError::Provider(_) | BackendError::BudgetExceeded(_))
+            );
+            let outcome = if candidate_repudiated || cumulative_text.is_empty() {
                 None
             } else {
                 Some(evaluate_external_candidates(
@@ -342,8 +350,8 @@ impl LspServer {
                     ai_fallback,
                 ))
             };
-            let final_decision = if provider_failed {
-                // Failed provider output never becomes the candidate: the
+            let final_decision = if candidate_repudiated {
+                // Repudiated output never becomes the candidate: the
                 // deterministic route owns the final when configured.
                 if ai_fallback {
                     Some(ExternalCompletionOutcome::FallbackRequired)
