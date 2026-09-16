@@ -1183,6 +1183,36 @@ impl ParseError {
         self.severity().blocks_clean_parse()
     }
 
+    /// Whether this error is one of the parser's recursion/nesting limit stops.
+    ///
+    /// # The three-variant taxonomy (#15660)
+    ///
+    /// The parser has exactly three depth-limit variants, and which one fires
+    /// depends on the nesting construct, not on severity — production treats
+    /// all three identically as non-recoverable stops (the same
+    /// `ErrorCategory::ResourceLimit` class):
+    ///
+    /// | Variant | Fired by |
+    /// |---|---|
+    /// | [`ParseError::RecursionLimit`] | the expression-recursion budget on block-nesting shapes |
+    /// | [`ParseError::RecursionDepthExhausted`] | the production recursion guard (`check_recursion`) on parenthesized-expression shapes |
+    /// | [`ParseError::NestingTooDeep`] | the structural guards on block nesting and postfix chains |
+    ///
+    /// A fourth resource limit, [`ParseError::HeredocBudgetExhausted`], is
+    /// byte-budget rather than depth and stays outside this predicate. Tests
+    /// asserting a depth-limit stop should match through this helper — the
+    /// hang_risk suite's original variant-contract mismatch (#15432 P1) came
+    /// from matching only two of the three variants.
+    #[must_use]
+    pub fn is_recursion_limit(&self) -> bool {
+        matches!(
+            self,
+            Self::RecursionLimit
+                | Self::RecursionDepthExhausted { .. }
+                | Self::NestingTooDeep { .. }
+        )
+    }
+
     /// Create a new syntax error for Perl parsing workflow failures
     ///
     /// # Arguments
@@ -1388,6 +1418,24 @@ pub fn get_error_contexts(errors: &[ParseError], source: &str) -> Vec<ErrorConte
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recursion_limit_taxonomy_covers_all_three_depth_variants() {
+        // All three depth-limit stops classify as recursion limits (#15660).
+        assert!(ParseError::RecursionLimit.is_recursion_limit());
+        assert!(
+            ParseError::RecursionDepthExhausted { depth: 129, max_depth: 128 }.is_recursion_limit()
+        );
+        assert!(ParseError::NestingTooDeep { depth: 300, max_depth: 256 }.is_recursion_limit());
+
+        // Depth-limit matching must not swallow other resource limits:
+        // heredoc exhaustion is byte-budget, not depth.
+        assert!(
+            !ParseError::HeredocBudgetExhausted { limit: 1024, usage: 2048, location: 0 }
+                .is_recursion_limit()
+        );
+        assert!(!ParseError::UnexpectedEof.is_recursion_limit());
+    }
 
     #[test]
     fn test_parse_budget_defaults() {
