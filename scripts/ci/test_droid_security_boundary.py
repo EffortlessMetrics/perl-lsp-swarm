@@ -263,7 +263,7 @@ class DroidMentionBoundaryTests(unittest.TestCase):
             self.mention, "Run isolated Droid review with MiniMax M3"
         )
         self.assertIn(
-            "EffortlessMetrics/droid-action-safe/isolated-review@2e37d0ac790aeca76856628dc8e6ee186abf87cd",
+            "EffortlessMetrics/droid-action-safe/isolated-review@0c2019dd56a43750a0abf30b6449001707f90807",
             action,
         )
         for key in (
