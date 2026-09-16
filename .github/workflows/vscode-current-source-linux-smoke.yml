@@ -88,6 +88,10 @@ jobs:
           cache-on-failure: true
           cache-all-crates: true
           shared-key: vscode-current-source-smoke-${{ hashFiles('Cargo.lock') }}
+          # Candidate (pull_request) runs restore but never save; only a
+          # canonical main/master ref may publish the shared entry
+          # (docs/ci/cache-policy.md, #15590).
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
 
       - name: Prove exact public perllsp process contracts
         working-directory: .
