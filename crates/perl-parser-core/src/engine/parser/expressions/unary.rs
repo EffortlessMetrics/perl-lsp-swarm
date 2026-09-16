@@ -339,18 +339,17 @@ impl<'a> Parser<'a> {
                                     let brace_expr = self.parse_primary()?;
                                     let direct_assignment =
                                         self.peek_kind() == Some(TokenKind::Assign);
-                                    let body_start = brace_expr.location.start.saturating_add(1);
                                     let body_end = brace_expr.location.end;
                                     let brace_expr = self.parse_postfix_chain(brace_expr)?;
                                     let end = brace_expr.location.end;
                                     if direct_assignment {
-                                        let name = String::from_utf8_lossy(
-                                            &self.src_bytes[body_start..body_end.saturating_sub(1)],
-                                        )
-                                        .trim()
-                                        .trim_end_matches(';')
-                                        .trim()
-                                        .to_string();
+                                        // Slice the braced source text (including the
+                                        // braces) and normalize exactly like the
+                                        // variable-path dynamic typeglob assignment.
+                                        let raw = String::from_utf8_lossy(
+                                            &self.src_bytes[brace_expr.location.start..body_end],
+                                        );
+                                        let name = normalize_dynamic_typeglob_name(&raw);
                                         return Ok(Node::new(
                                             NodeKind::Typeglob { name },
                                             SourceLocation { start, end: body_end },

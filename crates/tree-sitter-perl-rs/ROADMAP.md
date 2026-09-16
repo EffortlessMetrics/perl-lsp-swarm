@@ -40,6 +40,13 @@ through `QueryCursor` as a compatibility probe. Semantic matches for its `commen
 `substitution_regexp`, `heredoc_token`, and `heredoc_content` patterns remain out of scope
 because those node kinds are not exposed by the current native AST.
 
+### Semantic overlay (shipped behind `semantic-overlay`)
+
+The experimental file-local definition, visible-import, and pragma-state queries are opt-in.
+The default and `queries`-only feature graphs remain parser-only; enabling `semantic-overlay`
+adds the `perl-module`, `perl-pragma`, and `perl-semantic-analyzer` dependencies and exposes
+`Tree::semantic_overlay()`, `SemanticOverlay`, `OverlayDefinition`, and `VisibleImport`.
+
 ## Known limitations
 
 - `end_byte()` is clamped to the tree source length for safe slice use.
