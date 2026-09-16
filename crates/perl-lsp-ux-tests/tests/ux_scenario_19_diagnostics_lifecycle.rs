@@ -48,12 +48,7 @@ fn diagnostic_observations_after(
     events
         .iter()
         .filter_map(|event| {
-            let LspEvent::Diagnostics {
-                uri: event_uri,
-                version,
-                diagnostics,
-            } = event
-            else {
+            let LspEvent::Diagnostics { uri: event_uri, version, diagnostics } = event else {
                 return None;
             };
             (event_uri == uri).then(|| DiagnosticObservation {
@@ -69,11 +64,22 @@ fn latest_for_version(
     observations: &[DiagnosticObservation],
     minimum_version: i64,
 ) -> Option<&DiagnosticObservation> {
-    observations.iter().rev().find(|observation| {
-        observation
-            .version
-            .is_some_and(|version| version == minimum_version)
-    })
+    observations
+        .iter()
+        .rev()
+        .find(|observation| observation.version.is_some_and(|version| version == minimum_version))
+}
+
+/// The repaired-generation barrier: the latest exact-version publication
+/// exists and is empty. A transient non-empty frame for the repaired
+/// version does not satisfy the barrier — only its later empty
+/// replacement does — so the waiter must keep polling past it.
+fn latest_cleared_for_version(
+    observations: &[DiagnosticObservation],
+    minimum_version: i64,
+) -> Option<&DiagnosticObservation> {
+    latest_for_version(observations, minimum_version)
+        .filter(|observation| observation.diagnostics.is_empty())
 }
 
 fn wait_for_versioned_diagnostics_after(
@@ -83,19 +89,45 @@ fn wait_for_versioned_diagnostics_after(
     minimum_version: i64,
     timeout: Duration,
 ) -> Result<Vec<DiagnosticObservation>> {
+    wait_for_versioned_diagnostics_matching(
+        harness,
+        uri,
+        already_seen,
+        minimum_version,
+        false,
+        timeout,
+    )
+}
+
+/// Wait until an exact-version publication satisfying `expect_empty`
+/// arrives: repaired generations must clear (latest exact-version frame
+/// empty), while broken generations must report (any exact-version frame).
+/// A first exact-version frame that does not satisfy the barrier is
+/// transient, not terminal — the waiter keeps polling past it, and the
+/// timeout reports the last observed sequence, not just arrival.
+fn wait_for_versioned_diagnostics_matching(
+    harness: &UxHarness,
+    uri: &str,
+    already_seen: usize,
+    minimum_version: i64,
+    expect_empty: bool,
+    timeout: Duration,
+) -> Result<Vec<DiagnosticObservation>> {
     let deadline = Instant::now() + timeout;
     loop {
-        let observations = diagnostic_observations_after(
-            &harness.peek_notifications(),
-            uri,
-            already_seen,
-        );
-        if latest_for_version(&observations, minimum_version).is_some() {
+        let observations =
+            diagnostic_observations_after(&harness.peek_notifications(), uri, already_seen);
+        let satisfied = if expect_empty {
+            latest_cleared_for_version(&observations, minimum_version).is_some()
+        } else {
+            latest_for_version(&observations, minimum_version).is_some()
+        };
+        if satisfied {
             return Ok(observations);
         }
         if Instant::now() >= deadline {
             bail!(
-                "timed out after {}ms waiting for diagnostics for {uri} with version {minimum_version} after {already_seen} prior URI-matched publications; observed: \
+                "timed out after {}ms waiting for diagnostics for {uri} with version {minimum_version} (expect_empty={expect_empty}) after {already_seen} prior URI-matched publications; observed: \
                  {observations:?}",
                 timeout.as_millis()
             );
@@ -160,11 +192,12 @@ fn scenario_19_diagnostics_clear_after_fix() -> Result<()> {
     // The current push-diagnostics sink commits before active-document
     // readiness is projected. Require that explicit post-edit publication
     // rather than treating the absence of a later frame as clean.
-    let repaired_observations = wait_for_versioned_diagnostics_after(
+    let repaired_observations = wait_for_versioned_diagnostics_matching(
         &harness,
         &uri,
         diagnostics_seen_before_fix,
         FIXED_VERSION,
+        true,
         DIAGNOSTICS_TIMEOUT,
     )?;
     let repaired = latest_for_version(&repaired_observations, FIXED_VERSION)
@@ -189,20 +222,14 @@ fn scenario_19_diagnostics_clear_after_fix() -> Result<()> {
 
 #[cfg(test)]
 mod oracle_unit_tests {
-    use super::{DiagnosticObservation, latest_for_version};
+    use super::{DiagnosticObservation, latest_cleared_for_version, latest_for_version};
     use serde_json::json;
 
     #[test]
     fn stale_and_unversioned_publications_cannot_satisfy_repaired_version() {
         let observations = vec![
-            DiagnosticObservation {
-                version: Some(1),
-                diagnostics: Vec::new(),
-            },
-            DiagnosticObservation {
-                version: None,
-                diagnostics: Vec::new(),
-            },
+            DiagnosticObservation { version: Some(1), diagnostics: Vec::new() },
+            DiagnosticObservation { version: None, diagnostics: Vec::new() },
         ];
         assert_eq!(latest_for_version(&observations, 2), None);
     }
@@ -214,10 +241,7 @@ mod oracle_unit_tests {
                 version: Some(1),
                 diagnostics: vec![json!({"message": "stale"})],
             },
-            DiagnosticObservation {
-                version: Some(3),
-                diagnostics: Vec::new(),
-            },
+            DiagnosticObservation { version: Some(3), diagnostics: Vec::new() },
         ];
 
         assert_eq!(latest_for_version(&observations, 2), None);
@@ -226,17 +250,14 @@ mod oracle_unit_tests {
     #[test]
     fn latest_current_publication_is_authoritative() {
         let observations = vec![
-            DiagnosticObservation {
-                version: Some(2),
-                diagnostics: Vec::new(),
-            },
+            DiagnosticObservation { version: Some(2), diagnostics: Vec::new() },
             DiagnosticObservation {
                 version: Some(2),
                 diagnostics: vec![json!({"message": "late current regression"})],
             },
         ];
-        let latest = latest_for_version(&observations, 2)
-            .expect("a current publication should be selected");
+        let latest =
+            latest_for_version(&observations, 2).expect("a current publication should be selected");
         assert_eq!(latest.version, Some(2));
         assert!(!latest.diagnostics.is_empty());
     }
@@ -248,14 +269,34 @@ mod oracle_unit_tests {
                 version: Some(1),
                 diagnostics: vec![json!({"message": "stale"})],
             },
-            DiagnosticObservation {
-                version: Some(2),
-                diagnostics: Vec::new(),
-            },
+            DiagnosticObservation { version: Some(2), diagnostics: Vec::new() },
         ];
         let latest = latest_for_version(&observations, 2)
             .expect("a current empty publication should be selected");
         assert_eq!(latest.version, Some(2));
         assert!(latest.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn transient_non_empty_repaired_frame_does_not_satisfy_the_barrier() {
+        // The repaired-generation barrier requires the LATEST exact-version
+        // publication to be empty: a first non-empty v2 frame is transient
+        // and must not terminate the wait, or the caller asserts on a stale
+        // frame before the clear arrives.
+        let transient_only = vec![DiagnosticObservation {
+            version: Some(2),
+            diagnostics: vec![json!({"message": "residual"})],
+        }];
+        assert_eq!(latest_cleared_for_version(&transient_only, 2), None);
+        let then_cleared = vec![
+            DiagnosticObservation {
+                version: Some(2),
+                diagnostics: vec![json!({"message": "residual"})],
+            },
+            DiagnosticObservation { version: Some(2), diagnostics: Vec::new() },
+        ];
+        let cleared = latest_cleared_for_version(&then_cleared, 2)
+            .expect("the later empty replacement satisfies the barrier");
+        assert!(cleared.diagnostics.is_empty());
     }
 }
