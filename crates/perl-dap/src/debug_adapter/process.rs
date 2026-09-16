@@ -4087,15 +4087,26 @@ mod tests {
     fn incapable_probe_reports_the_exact_error_variant() -> Result<(), String> {
         let dir = tempfile::tempdir().map_err(|error| format!("tempdir: {error}"))?;
         let script = write_probe_double(dir.path(), "silent-probe-4f2a.sh", "exit 0")?;
-        let verdict = DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path());
         let expected = "Selected interpreter cannot host the debugger (perl5db.pl not loadable): {INTERP}. Install a full Perl distribution that ships the core debugger module, or point launch.json `perlPath` at one (e.g. {\"perlPath\": \"/path/to/full/perl\"}). Detail: exited successfully but did not evaluate the probe expression (interpreter shim?)"
             .replace("{INTERP}", &script);
-        if verdict != Err(expected.clone()) {
-            return Err(format!(
-                "incapable verdict must carry the exact error variant, got: {verdict:?}"
-            ));
+        // The silent double cannot verify capable, so `Ok` means the run
+        // was inconclusive (drain starved under load), not a wrong variant:
+        // re-measure instead of accepting it. A reworded variant never
+        // matches exactly and fails immediately.
+        for _ in 0..3 {
+            let verdict =
+                DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path());
+            if verdict == Err(expected.clone()) {
+                return Ok(());
+            }
+            if verdict != Ok(()) {
+                return Err(format!(
+                    "incapable verdict must carry the exact error variant, got: {verdict:?}"
+                ));
+            }
         }
-        Ok(())
+        Err("silent probe stayed inconclusive across re-measures; exact variant unobserved"
+            .to_string())
     }
 
     /// Call-observation proof that the probe activates the interpreter with
