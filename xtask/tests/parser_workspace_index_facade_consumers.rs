@@ -360,39 +360,63 @@ fn forbidden_facade_references(code: &str) -> Vec<String> {
     hits
 }
 
-/// Resolve aliases introduced by `use` statements so renamed facade roots and
+/// Resolve aliases introduced by `use` items so renamed facade roots and
 /// brace members remain inside the recurrence guard's governed population.
+///
+/// The scan is token-aware rather than statement-start-aware: after
+/// whitespace compaction a real `use` keyword always follows a delimiter
+/// (start of input, `{`, `(`, or a space) and precedes a space, so items the
+/// old `strip_prefix("use ")` per-`;`-fragment scan skipped are still found —
+/// block-scoped imports (`fn f() {{ use perl_parser as parser; ... }}`),
+/// visibility-qualified imports (`pub use ...`), and any import following
+/// non-import tokens within one fragment.
 fn facade_aliases(code: &str) -> BTreeMap<String, String> {
     let compact = code.split_whitespace().collect::<Vec<_>>().join(" ");
+    let bytes = compact.as_bytes();
     let mut aliases = BTreeMap::new();
-    for statement in compact.split(';') {
-        let Some(mut path) = statement.trim().strip_prefix("use ") else {
+    let mut scan_from = 0;
+    while let Some(rel) = compact[scan_from..].find("use ") {
+        let start = scan_from + rel;
+        let keyword_is_delimited = start == 0
+            || matches!(bytes[start - 1], b' ' | b'{' | b'(');
+        if !keyword_is_delimited {
+            scan_from = start + 4;
             continue;
-        };
-        if let Some((root, alias)) = path.split_once(" as ") {
-            if root == FACADE_HEAD {
-                aliases.insert(alias.trim().to_string(), FACADE_HEAD.to_string());
-            } else if let Some(target) = resolve_facade_path(root, &aliases) {
+        }
+        let statement_end =
+            start + compact[start..].find(';').unwrap_or(compact.len() - start);
+        parse_use_statement(&compact[start + 4..statement_end], &mut aliases);
+        scan_from = (statement_end + 1).min(compact.len());
+    }
+    aliases
+}
+
+/// Parse the text after a `use` keyword up to its terminating `;` and record
+/// every facade-resolving alias it introduces.
+fn parse_use_statement(path: &str, aliases: &mut BTreeMap<String, String>) {
+    if let Some((root, alias)) = path.split_once(" as ") {
+        if root.trim() == FACADE_HEAD {
+            aliases.insert(alias.trim().to_string(), FACADE_HEAD.to_string());
+        } else if let Some(target) = resolve_facade_path(root.trim(), aliases) {
+            aliases.insert(alias.trim().to_string(), target);
+        }
+        return;
+    }
+    let path = path.trim();
+    if !path.starts_with(FACADE_HEAD) {
+        return;
+    }
+    if let (Some(open), Some(close)) = (path.find('{'), path.rfind('}')) {
+        let path = &path[open + 1..close];
+        for member in path.split(',') {
+            let Some((member_path, alias)) = member.trim().split_once(" as ") else {
+                continue;
+            };
+            if let Some(target) = resolve_facade_path(member_path.trim(), aliases) {
                 aliases.insert(alias.trim().to_string(), target);
-            }
-            continue;
-        }
-        if !path.starts_with(FACADE_HEAD) {
-            continue;
-        }
-        if let (Some(open), Some(close)) = (path.find('{'), path.rfind('}')) {
-            path = &path[open + 1..close];
-            for member in path.split(',') {
-                let Some((member_path, alias)) = member.trim().split_once(" as ") else {
-                    continue;
-                };
-                if let Some(target) = resolve_facade_path(member_path.trim(), &aliases) {
-                    aliases.insert(alias.trim().to_string(), target);
-                }
             }
         }
     }
-    aliases
 }
 
 fn resolve_facade_path(path: &str, aliases: &BTreeMap<String, String>) -> Option<String> {
@@ -697,6 +721,42 @@ use my_perl_parser::workspace_index::Wrong;
 ";
     let hits = forbidden_facade_references(&code_without_comments(source));
     assert!(hits.is_empty(), "unexpected boundary hits: {hits:?}");
+}
+
+#[test]
+fn aliases_are_recognized_in_every_valid_use_item() {
+    // The former per-`;`-fragment scan only saw statements whose fragment
+    // began with `use `, so block-scoped, visibility-qualified, and chained
+    // mid-fragment imports silently bypassed the alias map and escaped the
+    // guard. Every valid `use` item placement must feed the alias map.
+    let block_scoped = "fn wrap() { use perl_parser::{workspace_index as index}; }\n\
+use index::WorkspaceIndex;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(block_scoped)),
+        vec!["perl_parser::workspace_index".to_string()]
+    );
+
+    let visibility_qualified = "pub use perl_parser as parser;\n\
+use parser::workspace_index::WorkspaceIndex;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(visibility_qualified)),
+        vec!["perl_parser::workspace_index".to_string()]
+    );
+
+    let chained_mid_fragment = "mod m { use perl_parser as p; fn f() { use p::{workspace_index as index}; } }\n\
+use index::WorkspaceIndex;\n";
+    assert_eq!(
+        forbidden_facade_references(&code_without_comments(chained_mid_fragment)),
+        vec!["perl_parser::workspace_index".to_string()]
+    );
+
+    // The keyword scan is word-delimited: `use` inside a larger identifier or
+    // after a non-delimiter must not fabricate an alias.
+    let word_boundary = "let rules_engine_use = 1;\nuse index::WorkspaceIndex;\n";
+    assert!(
+        forbidden_facade_references(&code_without_comments(word_boundary)).is_empty(),
+        "a `use` suffix inside an identifier must not fabricate an alias"
+    );
 }
 
 #[test]
