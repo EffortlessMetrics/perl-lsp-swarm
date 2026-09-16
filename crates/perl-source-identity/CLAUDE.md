@@ -24,18 +24,30 @@ Published to crates.io (`publish = true`); public API surface by design.
 - `SourceIdentityEnvelope`: the schema-versioned top-level record answering
   ownership, logical source, content revision, generation, origin, and role,
   plus `SourceIdentitySchemaVersion` with fail-closed serde decoding.
+- `RootRelativeLogicalPath` and `LogicalPathError`: the validated logical-path
+  type whose only constructor is fallible, so holding one *is* the proof that
+  the canonical root-relative form holds. `LogicalSourceId::from_root_and_logical_path`
+  takes it; `from_root_and_path` remains the unchecked primitive over material
+  a caller has already proven canonical (#15555).
 
 ## Does not own
 
 Per the crate doc comment and PLSP-ADR-0006, this crate sits below the whole
 product stack and must not depend on: any parser implementation (AST/HIR/PIR),
 `perl-workspace` or the ProjectModel runtime, LSP/DAP/editor types, async
-runtimes, or Git/release tooling. It also does not normalize paths (callers
-pass canonical forward-slash root-relative paths), does not map origins to
-physical ranges or redact locations, and does not own workspace-local
+runtimes, or Git/release tooling. It does not map origins to physical ranges or
+redact locations, and does not own workspace-local
 `FileId`/`PackageId`/`SymbolId` identity — those stay FNV-1a-minted inside
 `perl-workspace-core` (`fnv64:` wire prefix), a deliberately different
 concern from these `sha256:`-prefixed durable IDs.
+
+It **validates** logical paths but still never **normalizes** them: no separator
+folding, no traversal resolution, no case folding, no Unicode normalization, no
+I/O, no CWD, no symlink resolution. Deciding which physical path a logical source
+resolves to, and under whose authority, belongs to the path-mechanics owners
+above this crate (#7621, #8185, #8198) and to the remaining authority-bound
+constructors in #7655. Percent-encoded material is well-formed here and passes;
+decoding is the caller's job.
 
 ## Invariants
 
@@ -53,7 +65,11 @@ concern from these `sha256:`-prefixed durable IDs.
   unsupported schema versions and semantically inconsistent envelope fields.
 - Canonical callers must exclude host paths, host-specific URIs,
   traversal-order counters, and process-local values from stable identity
-  inputs; constructors do not normalize or reject those inputs.
+  inputs. `RootRelativeLogicalPath::parse` now enforces that for the logical
+  path — absolute, traversal, backslash, drive-qualified, empty-segment and
+  control-character material is refused with a typed, **path-free** error, so
+  rejected host paths cannot leak through log or error text. The project name
+  and root key are still unchecked caller material.
 
 ## Neighbors
 
@@ -66,6 +82,8 @@ concern from these `sha256:`-prefixed durable IDs.
 
 - `src/lib.rs` — the crate-level contract: identity hierarchy, dependency
   bans, quick start.
+- `src/logical_path.rs` — the validated logical-path type, the recorded
+  no-folding policy, and why each rejection is a refusal rather than a repair.
 - `src/digest.rs` — `DomainHasher`, length prefixing, wire validation.
 - `tests/dependency_contract.rs` — the fail-closed `cargo tree` allowlist
   asserting the lower-crate boundary.
@@ -88,6 +106,10 @@ and envelope schema-version rejection.
   anything nobody thought to forbid.
 - A new ID kind must take a unique domain tag and its own wire prefix;
   reusing a domain tag silently merges two identity namespaces.
+- Any new validation rule in `logical_path.rs` must refuse, never rewrite, and
+  its error must not carry the rejected path. `logical_id_constructors_agree_on_canonical_paths`
+  pins that the governed constructor stays a pure narrowing of the primitive, so
+  adding validation can never move the published digest vectors.
 - Envelope changes must preserve `schema_version` semantics: compatible
   additions without a bump; breaking changes require a bump so older builds
   reject.
