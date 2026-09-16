@@ -1337,7 +1337,9 @@ fn named_variable_from_node(node: &Node) -> Option<(&str, String)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
         NodeKind::VariableWithAttributes { variable, .. } => named_variable_from_node(variable),
-        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => Some(("*", name.clone())),
+        NodeKind::Typeglob { name, .. } if is_direct_typeglob_name(name) => {
+            Some(("*", name.clone()))
+        }
         _ => None,
     }
 }
@@ -1370,7 +1372,7 @@ fn is_direct_typeglob_name(name: &str) -> bool {
 fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
-        NodeKind::Typeglob { name } if is_direct_typeglob_name(name) => {
+        NodeKind::Typeglob { name, .. } if is_direct_typeglob_name(name) => {
             Some(("*", name.clone(), node))
         }
         NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
