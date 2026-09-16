@@ -160,6 +160,10 @@ function spawnPinnedTsc(command, argv, options) {
     });
     let output = '';
     if (pipe) {
+      // Explicit utf8 decoding at the stream boundary: 'data' chunks are
+      // Buffers and a multi-byte character can straddle a chunk split.
+      child.stdout?.setEncoding('utf8');
+      child.stderr?.setEncoding('utf8');
       child.stdout?.on('data', (chunk) => {
         output += chunk;
       });
@@ -190,7 +194,11 @@ function spawnPinnedTsc(command, argv, options) {
       // nonzero exit in runGovernedTsc so npm never sees a hang or success.
       settle({ code: null, signal: null, error: error.message });
     });
-    child.once('exit', (code, signal) => {
+    // Settle on `close`, not `exit`: with piped stdio the streams can still
+    // hold buffered output after the process exits, and the captured `output`
+    // must be complete when the caller reads it. `close` fires after the
+    // stdio streams are torn down and passes the same (code, signal).
+    child.once('close', (code, signal) => {
       settle({ code, signal });
     });
   });
