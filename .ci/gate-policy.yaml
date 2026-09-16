@@ -1798,7 +1798,8 @@ gates:
     # 600s/540000ms matches unit_scoped and parser_behavior_proof, the sibling
     # required gates that compile a test harness. Measured at 350s from a clean
     # xtask (both the test harness and the bin built from scratch, deps cached);
-    # the validator and the 55 controls themselves run in well under a second.
+    # the validator and its control suite run in well under a second. The
+    # control count is owned by CONTROL_SUITE_FLOOR in the module, not restated here.
     timeout_seconds: 600
     retry_count: 0
     budgets:
