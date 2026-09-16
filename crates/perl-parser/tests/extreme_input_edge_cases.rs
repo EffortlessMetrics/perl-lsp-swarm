@@ -4,12 +4,29 @@
 //! the parser to its absolute limits. These tests are designed to ensure
 //! the parser remains stable and performs reasonably even with pathological
 //! inputs that might occur in real-world scenarios or adversarial inputs.
+//!
+//! Every heavy operation in this binary is bounded by
+//! [`parse_watchdog_window`]. On a memory-starved Windows host a single
+//! `parse`, `to_sexp`, or AST drop can page-thrash for far longer than any
+//! reasonable time budget; the libtest harness has no per-test timeout, so an
+//! unbounded wait inside one test previously stalled the whole
+//! `cargo test --no-fail-fast` sweep at this binary and lost the results of
+//! every later test binary. The assertions themselves are unchanged: a parse
+//! that completes after the budget already fails the per-case time assertions,
+//! so the watchdog only converts a formerly infinite wait into a finite
+//! failure.
 #![expect(
     clippy::unwrap_used,
     reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
 )]
+#![expect(
+    clippy::print_stdout,
+    reason = "extreme-input progress reporting predates the workspace stdout ban; \
+              this binary is a standalone sweep witness"
+)]
 
 use perl_parser::Parser;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -34,6 +51,74 @@ fn max_parse_time() -> Duration {
     Duration::from_secs(seconds)
 }
 
+/// Watchdog window for one extreme-input parse.
+///
+/// Twice the parse budget: any parse that finishes inside the window but
+/// outside the budget still fails the existing time assertions with their own
+/// messages, so the window never masks a slow parse. It only fires when an
+/// operation would otherwise never finish.
+fn parse_watchdog_window() -> Duration {
+    max_parse_time() * 2
+}
+
+/// One bounded extreme-input parse.
+///
+/// `parse_time` measures `parse` only, matching the original in-test
+/// measurement. `outcome` is `Ok` with the rendered S-expression of a
+/// successful parse, or `Err` with a graceful parse-failure message.
+struct BoundedParse {
+    parse_time: Duration,
+    outcome: Result<String, String>,
+}
+
+/// Parse `code` on a detached worker thread and wait at most
+/// [`parse_watchdog_window`] for it.
+///
+/// The worker performs exactly what these tests performed inline:
+/// `Parser::new` + `parse` (timed), then `to_sexp` on success, then the AST
+/// drop. If the worker does not deliver a result before the window closes —
+/// or dies mid-parse — the operation is reported as a budget failure whose
+/// message names the watchdog, so the test fails finitely instead of hanging
+/// the sweep binary. A stranded worker stays detached and dies with the
+/// process when libtest exits; it never blocks termination.
+fn parse_bounded(code: String) -> BoundedParse {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let start_time = Instant::now();
+        let mut parser = Parser::new(&code);
+        let result = parser.parse();
+        let parse_time = start_time.elapsed();
+        let outcome = match result {
+            Ok(ast) => Ok(ast.to_sexp()),
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = sender.send(BoundedParse { parse_time, outcome });
+    });
+
+    match receiver.recv_timeout(parse_watchdog_window()) {
+        Ok(received) => received,
+        Err(mpsc::RecvTimeoutError::Timeout) => BoundedParse {
+            parse_time: parse_watchdog_window(),
+            outcome: Err(format!(
+                "watchdog limit exceeded: the operation did not complete within {:?} \
+                 (previously this hung the whole test binary)",
+                parse_watchdog_window()
+            )),
+        },
+        // A disconnected channel means the worker died mid-parse — typically
+        // a panic such as an allocation failure on pathological input. That
+        // is its own finding (the parser must fail gracefully, not panic), so
+        // it must not be misreported as a watchdog timeout.
+        Err(mpsc::RecvTimeoutError::Disconnected) => BoundedParse {
+            parse_time: parse_watchdog_window(),
+            outcome: Err("watchdog worker died mid-parse before delivering a result \
+                 (channel disconnected, typically a worker panic such as an \
+                 allocation failure)"
+                .to_string()),
+        },
+    }
+}
+
 /// Maximum reasonable memory usage for extreme inputs (in MB)
 const _MAX_MEMORY_USAGE_MB: usize = 500;
 
@@ -55,26 +140,26 @@ fn test_extremely_large_identifiers() {
 
         let code = format!("my ${} = 42;\nprint \"${{{}}}\\n\"", identifier, identifier);
 
-        let start_time = Instant::now();
-        let mut parser = Parser::new(&code);
-        let result = parser.parse();
-        let parse_time = start_time.elapsed();
+        let parsed = parse_bounded(code);
 
         // Should either parse successfully or fail gracefully
-        match result {
-            Ok(ast) => {
-                println!("  ✓ Parsed successfully in {:?}", parse_time);
-                assert!(parse_time < max_parse_time(), "Parse time exceeded limit for {}", name);
+        match parsed.outcome {
+            Ok(sexp) => {
+                println!("  ✓ Parsed successfully in {:?}", parsed.parse_time);
+                assert!(
+                    parsed.parse_time < max_parse_time(),
+                    "Parse time exceeded limit for {}",
+                    name
+                );
 
                 // Verify the identifier is present in the AST
-                let sexp = ast.to_sexp();
                 assert!(sexp.contains("variable"), "Variable not found in AST for {}", name);
             }
-            Err(e) => {
-                println!("  ✗ Failed to parse: {}", e);
+            Err(message) => {
+                println!("  ✗ Failed to parse: {}", message);
                 // For extremely large identifiers, parsing might fail, but should fail gracefully
                 assert!(
-                    parse_time < max_parse_time(),
+                    parsed.parse_time < max_parse_time(),
                     "Error detection took too long for {}",
                     name
                 );
@@ -99,37 +184,38 @@ fn test_extreme_nesting_depth() {
     for (name, code) in test_cases {
         println!("Testing: {}", name);
 
-        let start_time = Instant::now();
-        let mut parser = Parser::new(&code);
-        let result = parser.parse();
-        let parse_time = start_time.elapsed();
+        let parsed = parse_bounded(code);
 
         // Should either parse successfully or fail gracefully with recursion limit error
-        match result {
-            Ok(ast) => {
-                println!("  ✓ Parsed successfully in {:?}", parse_time);
-                assert!(parse_time < max_parse_time(), "Parse time exceeded limit for {}", name);
+        match parsed.outcome {
+            Ok(sexp) => {
+                println!("  ✓ Parsed successfully in {:?}", parsed.parse_time);
+                assert!(
+                    parsed.parse_time < max_parse_time(),
+                    "Parse time exceeded limit for {}",
+                    name
+                );
 
                 // Verify the AST depth is reasonable
-                let depth = calculate_ast_depth(&ast);
+                let depth = calculate_ast_depth(&sexp);
                 assert!(depth < 1000, "AST depth {} seems unreasonable for {}", depth, name);
             }
-            Err(e) => {
-                println!("  ✗ Failed to parse: {}", e);
+            Err(message) => {
+                println!("  ✗ Failed to parse: {}", message);
                 // For extreme nesting, parsing might fail, but should fail gracefully
                 assert!(
-                    parse_time < max_parse_time(),
+                    parsed.parse_time < max_parse_time(),
                     "Error detection took too long for {}",
                     name
                 );
                 assert!(
-                    e.to_string().contains("recursion")
-                        || e.to_string().contains("depth")
-                        || e.to_string().contains("stack")
-                        || e.to_string().contains("limit"),
+                    message.contains("recursion")
+                        || message.contains("depth")
+                        || message.contains("stack")
+                        || message.contains("limit"),
                     "Error should mention depth/recursion limit for {}: {}",
                     name,
-                    e
+                    message
                 );
             }
         }
@@ -152,29 +238,29 @@ fn test_extremely_large_strings() {
 
         let code = format!("my $large_string = '{}';", string_content);
 
-        let start_time = Instant::now();
-        let mut parser = Parser::new(&code);
-        let result = parser.parse();
-        let parse_time = start_time.elapsed();
+        let parsed = parse_bounded(code);
 
-        match result {
-            Ok(ast) => {
-                println!("  ✓ Parsed successfully in {:?}", parse_time);
-                assert!(parse_time < max_parse_time(), "Parse time exceeded limit for {}", name);
+        match parsed.outcome {
+            Ok(sexp) => {
+                println!("  ✓ Parsed successfully in {:?}", parsed.parse_time);
+                assert!(
+                    parsed.parse_time < max_parse_time(),
+                    "Parse time exceeded limit for {}",
+                    name
+                );
 
                 // Verify the string is present in the AST
-                let sexp = ast.to_sexp();
                 assert!(
                     sexp.contains("string") || sexp.contains("literal"),
                     "String not found in AST for {}",
                     name
                 );
             }
-            Err(e) => {
-                println!("  ✗ Failed to parse: {}", e);
+            Err(message) => {
+                println!("  ✗ Failed to parse: {}", message);
                 // For extremely large strings, parsing might fail, but should fail gracefully
                 assert!(
-                    parse_time < max_parse_time(),
+                    parsed.parse_time < max_parse_time(),
                     "Error detection took too long for {}",
                     name
                 );
@@ -198,18 +284,18 @@ fn test_extremely_large_data_structures() {
     for (name, code) in test_cases {
         println!("Testing: {}", name);
 
-        let start_time = Instant::now();
-        let mut parser = Parser::new(&code);
-        let result = parser.parse();
-        let parse_time = start_time.elapsed();
+        let parsed = parse_bounded(code);
 
-        match result {
-            Ok(ast) => {
-                println!("  ✓ Parsed successfully in {:?}", parse_time);
-                assert!(parse_time < max_parse_time(), "Parse time exceeded limit for {}", name);
+        match parsed.outcome {
+            Ok(sexp) => {
+                println!("  ✓ Parsed successfully in {:?}", parsed.parse_time);
+                assert!(
+                    parsed.parse_time < max_parse_time(),
+                    "Parse time exceeded limit for {}",
+                    name
+                );
 
                 // Verify the structure is present in the AST
-                let sexp = ast.to_sexp();
                 if name.contains("array") {
                     assert!(
                         sexp.contains("array") || sexp.contains("list"),
@@ -224,11 +310,11 @@ fn test_extremely_large_data_structures() {
                     );
                 }
             }
-            Err(e) => {
-                println!("  ✗ Failed to parse: {}", e);
+            Err(message) => {
+                println!("  ✗ Failed to parse: {}", message);
                 // For extremely large structures, parsing might fail, but should fail gracefully
                 assert!(
-                    parse_time < max_parse_time(),
+                    parsed.parse_time < max_parse_time(),
                     "Error detection took too long for {}",
                     name
                 );
@@ -256,30 +342,30 @@ fn test_extremely_complex_regex() {
         ("Backreference hell".to_string(), generate_backreference_hell(50)),
     ];
 
-    for (name, pattern) in &test_cases {
+    for (name, pattern) in test_cases {
         println!("Testing: {}", name);
 
         let code = format!("my $result = 'test' =~ {};", pattern);
 
-        let start_time = Instant::now();
-        let mut parser = Parser::new(&code);
-        let result = parser.parse();
-        let parse_time = start_time.elapsed();
+        let parsed = parse_bounded(code);
 
-        match result {
-            Ok(ast) => {
-                println!("  ✓ Parsed successfully in {:?}", parse_time);
-                assert!(parse_time < max_parse_time(), "Parse time exceeded limit for {}", name);
+        match parsed.outcome {
+            Ok(sexp) => {
+                println!("  ✓ Parsed successfully in {:?}", parsed.parse_time);
+                assert!(
+                    parsed.parse_time < max_parse_time(),
+                    "Parse time exceeded limit for {}",
+                    name
+                );
 
                 // Regex node naming can vary; ensure parse succeeds and AST is populated.
-                let sexp = ast.to_sexp();
                 assert!(!sexp.is_empty(), "AST should not be empty for {}", name);
             }
-            Err(e) => {
-                println!("  ✗ Failed to parse: {}", e);
+            Err(message) => {
+                println!("  ✗ Failed to parse: {}", message);
                 // For complex regex, parsing might fail, but should fail gracefully
                 assert!(
-                    parse_time < max_parse_time(),
+                    parsed.parse_time < max_parse_time(),
                     "Error detection took too long for {}",
                     name
                 );
@@ -302,25 +388,25 @@ fn test_extremely_large_files() {
     for (name, code) in test_cases {
         println!("Testing: {} (size: {} bytes)", name, code.len());
 
-        let start_time = Instant::now();
-        let mut parser = Parser::new(&code);
-        let result = parser.parse();
-        let parse_time = start_time.elapsed();
+        let parsed = parse_bounded(code);
 
-        match result {
-            Ok(ast) => {
-                println!("  ✓ Parsed successfully in {:?}", parse_time);
-                assert!(parse_time < max_parse_time(), "Parse time exceeded limit for {}", name);
+        match parsed.outcome {
+            Ok(sexp) => {
+                println!("  ✓ Parsed successfully in {:?}", parsed.parse_time);
+                assert!(
+                    parsed.parse_time < max_parse_time(),
+                    "Parse time exceeded limit for {}",
+                    name
+                );
 
                 // Verify the AST is reasonable for the input size
-                let sexp = ast.to_sexp();
                 assert!(!sexp.is_empty(), "AST should not be empty for {}", name);
             }
-            Err(e) => {
-                println!("  ✗ Failed to parse: {}", e);
+            Err(message) => {
+                println!("  ✗ Failed to parse: {}", message);
                 // For extremely large files, parsing might fail, but should fail gracefully
                 assert!(
-                    parse_time < max_parse_time(),
+                    parsed.parse_time < max_parse_time(),
                     "Error detection took too long for {}",
                     name
                 );
@@ -344,25 +430,25 @@ fn test_extremely_complex_expressions() {
     for (name, code) in test_cases {
         println!("Testing: {}", name);
 
-        let start_time = Instant::now();
-        let mut parser = Parser::new(&code);
-        let result = parser.parse();
-        let parse_time = start_time.elapsed();
+        let parsed = parse_bounded(code);
 
-        match result {
-            Ok(ast) => {
-                println!("  ✓ Parsed successfully in {:?}", parse_time);
-                assert!(parse_time < max_parse_time(), "Parse time exceeded limit for {}", name);
+        match parsed.outcome {
+            Ok(sexp) => {
+                println!("  ✓ Parsed successfully in {:?}", parsed.parse_time);
+                assert!(
+                    parsed.parse_time < max_parse_time(),
+                    "Parse time exceeded limit for {}",
+                    name
+                );
 
                 // Verify the expression is present in the AST
-                let sexp = ast.to_sexp();
                 assert!(!sexp.is_empty(), "AST should not be empty for {}", name);
             }
-            Err(e) => {
-                println!("  ✗ Failed to parse: {}", e);
+            Err(message) => {
+                println!("  ✗ Failed to parse: {}", message);
                 // For complex expressions, parsing might fail, but should fail gracefully
                 assert!(
-                    parse_time < max_parse_time(),
+                    parsed.parse_time < max_parse_time(),
                     "Error detection took too long for {}",
                     name
                 );
@@ -399,19 +485,18 @@ fn test_concurrent_extreme_inputs() {
             thread::spawn(move || {
                 for iteration in 0..iterations_per_thread {
                     let case_index = (thread_id + iteration) % test_cases.len();
-                    let code = &test_cases[case_index];
+                    let code = test_cases[case_index].clone();
 
-                    let start_time = Instant::now();
-                    let mut parser = Parser::new(code);
-                    let result = parser.parse();
-                    let parse_time = start_time.elapsed();
+                    // Each iteration is bounded, so the join below always
+                    // terminates even when the host is thrashing.
+                    let record = parse_bounded(code);
 
-                    let mut results = results_clone.lock().unwrap();
-                    results.push((thread_id, iteration, case_index, parse_time, result.is_ok()));
-
-                    if result.is_err() {
+                    if record.outcome.is_err() {
                         *error_count_clone.lock().unwrap() += 1;
                     }
+
+                    let mut results = results_clone.lock().unwrap();
+                    results.push((thread_id, iteration, case_index, record));
                 }
             })
         })
@@ -427,19 +512,19 @@ fn test_concurrent_extreme_inputs() {
     println!("Completed {} concurrent parses with {} errors", results.len(), error_count);
 
     // Verify no parse took too long
-    for (thread_id, iteration, case_index, parse_time, _success) in results.iter() {
+    for (thread_id, iteration, case_index, record) in results.iter() {
         assert!(
-            *parse_time < max_parse_time(),
+            record.parse_time < max_parse_time(),
             "Thread {} iteration {} case {} took too long: {:?}",
             thread_id,
             iteration,
             case_index,
-            parse_time
+            record.parse_time
         );
     }
 
     // At least some parses should succeed even with extreme inputs
-    let success_count = results.iter().filter(|(_, _, _, _, success)| *success).count();
+    let success_count = results.iter().filter(|(_, _, _, record)| record.outcome.is_ok()).count();
     assert!(success_count > 0, "At least some parses should succeed");
 }
 
@@ -456,28 +541,28 @@ fn test_memory_pressure_with_extreme_inputs() {
         generate_large_file(25_000),
     ];
 
-    for (i, code) in test_cases.iter().enumerate() {
+    for (i, code) in test_cases.into_iter().enumerate() {
         println!("Testing memory pressure case {} (size: {} bytes)", i, code.len());
 
-        let start_time = Instant::now();
-        let mut parser = Parser::new(code);
-        let result = parser.parse();
-        let parse_time = start_time.elapsed();
+        let parsed = parse_bounded(code);
 
-        match result {
-            Ok(ast) => {
-                println!("  ✓ Parsed successfully in {:?}", parse_time);
-                assert!(parse_time < max_parse_time(), "Parse time exceeded limit for case {}", i);
+        match parsed.outcome {
+            Ok(sexp) => {
+                println!("  ✓ Parsed successfully in {:?}", parsed.parse_time);
+                assert!(
+                    parsed.parse_time < max_parse_time(),
+                    "Parse time exceeded limit for case {}",
+                    i
+                );
 
                 // Verify the AST is reasonable
-                let sexp = ast.to_sexp();
                 assert!(!sexp.is_empty(), "AST should not be empty for case {}", i);
             }
-            Err(e) => {
-                println!("  ✗ Failed to parse: {}", e);
+            Err(message) => {
+                println!("  ✗ Failed to parse: {}", message);
                 // Under memory pressure, parsing might fail, but should fail gracefully
                 assert!(
-                    parse_time < max_parse_time(),
+                    parsed.parse_time < max_parse_time(),
                     "Error detection took too long for case {}",
                     i
                 );
@@ -648,9 +733,8 @@ fn generate_operator_precedence_mess(count: usize) -> String {
     result
 }
 
-fn calculate_ast_depth(node: &perl_parser::Node) -> usize {
+fn calculate_ast_depth(sexp: &str) -> usize {
     // Simple depth calculation - count the maximum nesting level
-    let sexp = node.to_sexp();
     let mut max_depth = 0;
     let mut current_depth = 0;
 
