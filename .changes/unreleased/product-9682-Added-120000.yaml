@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Added
+body: "Mojo::Base classes now produce canonical object facts (#9682): generated read-write accessors anchored at their real `has` declaration, a distinct read result and fluent setter `ReceiverSelf` relation per accessor, and the literal parent inheritance relation. Facts mint only over an exact #9681 activation, so a same-named `has` call in an unactivated package emits nothing. Shadow-only — no provider surface changes."
+time: 2026-09-05T12:00:00Z
+custom:
+  PR: "9682"
+  Slug: mojo-base-object-facts-9682
+  Breaking: "no"
