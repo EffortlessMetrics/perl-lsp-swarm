@@ -8,6 +8,11 @@ on:
       - "policy/release-tag-provenance.toml"
       - "scripts/check_release_history.sh"
       - "scripts/check_release_tag_provenance.py"
+      - "scripts/tests/test_release_channel_actuals.py"
+      - "scripts/test_release_build_identity.py"
+      - "scripts/test_release_package_evidence.py"
+      - "scripts/test_release_tag_authority.py"
+      - "scripts/test_release_topology_json.py"
   push:
     branches: [main]
     paths:
@@ -16,6 +21,11 @@ on:
       - "policy/release-tag-provenance.toml"
       - "scripts/check_release_history.sh"
       - "scripts/check_release_tag_provenance.py"
+      - "scripts/tests/test_release_channel_actuals.py"
+      - "scripts/test_release_build_identity.py"
+      - "scripts/test_release_package_evidence.py"
+      - "scripts/test_release_tag_authority.py"
+      - "scripts/test_release_topology_json.py"
 
 permissions:
   contents: read
