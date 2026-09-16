@@ -273,15 +273,23 @@ fn ci_workflow_includes_compile_all_targets_in_matrix() -> Result<(), Box<dyn st
     // never removes the coverage.
     let job_start = must_some(workflow.find("\n  check-all-targets:"));
     let job_rest = &workflow[job_start..];
-    // A top-level job key sits at exactly two spaces followed by a non-space;
-    // job-body lines are indented at least four, so scan line starts for the
-    // first exact two-space line after the job header.
+    // A top-level job key sits at exactly two spaces followed by a YAML
+    // identifier and a colon; job-body lines are indented at least four, and a
+    // bare `  # comment` or blank line at job level is not a job boundary, so
+    // match the key shape instead of any two-space line.
     let job_end = job_rest[1..]
         .match_indices('\n')
         .map(|(offset, _)| offset + 1)
         .find(|&offset| {
-            let line = &job_rest[1 + offset..];
-            line.starts_with("  ") && !line.starts_with("   ")
+            let line = job_rest[1 + offset..].trim_end();
+            line.starts_with("  ")
+                && !line.starts_with("   ")
+                && !line.trim_start().starts_with('#')
+                && line[2..].ends_with(':')
+                && line[2..]
+                    .trim_end_matches(':')
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
         })
         .unwrap_or(job_rest.len());
     let job_section = &job_rest[..job_end];
