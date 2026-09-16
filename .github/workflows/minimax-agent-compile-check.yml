@@ -77,6 +77,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/ci/workflow_security_ratchet.py')
+          text = path.read_text(encoding='utf-8')
+          if 'GH_AW_LOCK_FILE_DIGESTS' not in text:
+              needle = (
+                  'GH_AW_CONFIGURE_GIT_COMMAND = '
+                  'r\'bash "${RUNNER_TEMP}/gh-aw/actions/configure_git_credentials.sh"\'\n'
+              )
+              addition = (
+                  '# Normalized-LF digest of the complete reviewed strict compiler output.\n'
+                  '# The persisted-credential exception applies only while the entire lock file\n'
+                  '# remains byte-for-byte equivalent after splitlines() normalization.\n'
+                  'GH_AW_LOCK_FILE_DIGESTS = {\n'
+                  '    ".github/workflows/minimax-coding-agent.lock.yml": '
+                  '"e2a2042de450de733abd8b07853fceb5af0167920fde149042c146da185932f1",\n'
+                  '}\n'
+              )
+              if text.count(needle) != 1:
+                  raise SystemExit('expected one gh-aw credential-command anchor')
+              path.write_text(text.replace(needle, needle + addition, 1), encoding='utf-8')
+          PY
           python3 scripts/ci/harden_gh_aw_ratchet.py
           python3 -m py_compile scripts/ci/workflow_security_ratchet.py
           python3 -m unittest scripts/ci/test_workflow_security_ratchet.py
