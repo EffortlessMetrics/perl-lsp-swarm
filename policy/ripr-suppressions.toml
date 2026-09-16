@@ -4357,3 +4357,109 @@ created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-10-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports a no_static_path seam in this file outside the two listed probe identities."
+# emacs_train_packet.rs E06 actor-packet adapter declaration lines: consts,
+# struct/clap-arg field declarations, and the reviewer-question table -
+# activation untraceable by ripr (ripr#1429 declaration-line class).
+#
+# PR #15573 (same-root transplant of #12277) adds the E06 actor-packet
+# adapter: packet / review-packet / reconcile-packet composition projecting
+# the joined E01/E02/E04/E01R train state into the shared
+# agent_implementation_packet.v1 and agent_review_packet.v1 contracts.
+#
+# Decisive receipt facts (ripr 0.10.0 diff-scoped, base origin/main, head
+# 82a3328372, CI run 35105086795 job 104844800697 plus the locally
+# reproduced receipt at the same head with the identical summary):
+# no_static_path = 45 there, plus the 46th below, reachable_unrevealed = 0,
+# all severity info:
+#   - 37 field_construction on declaration lines of the new E06 adapter
+#     (emacs_train_packet.rs): the BUILDER_CONTRACT / REVIEW_CONTRACT /
+#     BUILDER_DISPOSITIONS / BLOCKING_DISPOSITIONS / BOUNDED_ROLES consts,
+#     the LiveObservation and ReviewFacts struct field declarations, and the
+#     clap arg struct fields of the packet commands;
+#   - 8 call_deletion probes on the REVIEWER_CHALLENGE_QUESTIONS tuple
+#     string literals and the pub(crate) mod test_support declaration;
+#   - 1 call_deletion probe on the clap Packet(EmacsTrainPacketCommand)
+#     enum variant declaration in the xtask dispatch enum at main.rs:4696.
+#
+# Declaration lines have no function body for ripr to trace into, and a
+# constructor-only test for a const or struct field is the receipt's own
+# named anti-pattern ("say so in the PR instead of adding proof theatre").
+# The executable behavior is not unproven: the same receipts classify the
+# module's real seams exposed/weakly_exposed with reachable_unrevealed = 0,
+# and the covering proof is the 34-falsifier inline #[cfg(test)] suite
+# (xtask/src/tasks/emacs_train_packet/tests.rs) composing packets from
+# synthetic fixture trees, plus the shared-contract zero-drift checks and
+# the emacs-train-packet-contract lane.
+#
+# Identity key: gap_ids lists the 46 probe identities from those receipts.
+# Path + classification are additional filters, not the selector. A future
+# executable no_static_path seam in these files with a different probe id
+# stays visible. kind remains descriptive metadata, not a declaration
+# selector. Weakly_exposed / reachable_unrevealed / other classes stay
+# visible.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-15573-emacs-train-packet-declaration-probes"
+kind = "declaration_line_no_static_path"
+paths = [
+  "xtask/src/tasks/emacs_train_packet.rs",
+  "xtask/src/tasks/emacs_train_packet/tests.rs",
+  "xtask/src/main.rs",
+]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:5388849d",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:6bb4a355",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:7c050907",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:c678b9e5",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:ce99dc40",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:d5255e55",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:fbe6c54b",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:call_deletion:feb432b4",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:09f94167",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:0a6580bd",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:1a6defb9",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:2a7f7f49",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:3372eed5",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:3cea95a2",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:3cea95a2.2",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:3cea95a2.3",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:4091e3d8",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:6ac74c11",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:6dba0e5f",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:7257c92b",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:760e7dc5",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:760e7dc5.2",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:760e7dc5.3",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:76570b61",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:872bb831",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:876e2ded",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:876e2ded.2",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:8b29c859",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:942570ca",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:a5e124af",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:a83bc6df",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:a84cfd9a",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:a9e15632",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:b31d0c26",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:b485e952",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:ba7f6a61",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:bf8fb9e5",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:c0d8aac7",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:c41eee7f",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:c94bed2d",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:dd717722",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:de698517",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:f1801e65",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:f2ab02fa",
+  "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:f8616cae",
+  "probe:xtask_src_main.rs:call_deletion:21107ffa",
+  "probe:xtask_src_tasks_emacs_train_packet_tests.rs:call_deletion:010a891f",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15573 (same-root transplant of #12277): all 47 no_static_path probes are the enforce-new-ripr gate's entire blocking basis on run 35105086795 (job 104844800697) at head 82a3328372 (45) plus the locally reproduced receipt at the same head (the 46th and 47th, below) - 37 field_construction probes on declaration lines of the new E06 adapter (BUILDER_CONTRACT / REVIEW_CONTRACT / BUILDER_DISPOSITIONS / BLOCKING_DISPOSITIONS / BOUNDED_ROLES consts, LiveObservation and ReviewFacts struct field declarations, clap arg struct fields), 8 call_deletion probes on the REVIEWER_CHALLENGE_QUESTIONS tuple string literals and the pub(crate) mod test_support declaration, 1 call_deletion probe on the clap Packet(EmacsTrainPacketCommand) enum variant declaration in the xtask dispatch enum at main.rs:4696, and 1 call_deletion probe on the tests.rs use-import line at tests.rs:27 (the test file's own import plumbing, never production behavior - same test-scaffolding class as ripr-suppress-goals-next-json-cli-test). All 47 carry severity info. Declaration and import lines have no function body to trace into; constructor-only tests would be proof theatre. Executable behavior is not unproven: the same receipts report the module's real seams exposed/weakly_exposed with reachable_unrevealed = 0, and the focused suite is 34/34 green at that head. Same ripr#1429 declaration-line class as ripr-suppress-15604-compiler-upstream-status-declaration-probes, ripr-suppress-14958-startup-inc-snapshot-declarations, ripr-suppress-compiler-transformation-contract-declarations, and ripr-suppress-quality-baseline-cfg-test-scanner. Selector is the 47 gap_ids from those receipts, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in these files with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable (non-declaration) no_static_path seam in xtask/src/tasks/emacs_train_packet.rs, its tests submodule, or xtask/src/main.rs outside the 47 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
