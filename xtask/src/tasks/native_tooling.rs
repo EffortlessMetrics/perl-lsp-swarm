@@ -859,9 +859,13 @@ fn read_source(root: &Path, relative: &str) -> Result<String> {
 
 /// Comment-blanked copy of Rust source, preserving length and offsets so a
 /// retired route surviving only in a comment cannot satisfy a structural
-/// check. String and char literals are preserved; `//` line comments and
-/// (nestable) `/* */` block comments are blanked. This mirrors the
-/// code-action ledger's scanner so both guards treat comments identically.
+/// check. String literals are preserved; `//` line comments and (nestable)
+/// `/* */` block comments are blanked. Single quotes are deliberately inert:
+/// character literals cannot contain comment initiators, and tracking them
+/// as a state mistakes Rust lifetimes (`'a`, `'static`) for literals — a
+/// lifetime tick with no closing tick would hold the scanner past the next
+/// comment, leaving a retired route unblanked. This mirrors the code-action
+/// ledger's scanner so both guards treat comments identically.
 fn blank_comments(source: &str) -> String {
     #[derive(Clone, Copy, PartialEq)]
     enum State {
@@ -870,8 +874,6 @@ fn blank_comments(source: &str) -> String {
         BlockComment,
         Str,
         StrEscape,
-        Char,
-        CharEscape,
     }
 
     let bytes = source.as_bytes();
@@ -895,7 +897,6 @@ fn blank_comments(source: &str) -> String {
                     out_bytes[index] = b' ';
                 }
                 (b'"', _) => state = State::Str,
-                (b'\'', _) => state = State::Char,
                 _ => {}
             },
             State::LineComment => {
@@ -935,12 +936,6 @@ fn blank_comments(source: &str) -> String {
                 _ => {}
             },
             State::StrEscape => state = State::Str,
-            State::Char => match byte {
-                b'\\' => state = State::CharEscape,
-                b'\'' => state = State::Code,
-                _ => {}
-            },
-            State::CharEscape => state = State::Char,
         }
         index += 1;
     }
@@ -2284,6 +2279,35 @@ fn push_diagnostics(&self, uri: &str) {
             .ok_or_else(|| eyre!("missing native critic guard check"))?;
 
         assert!(!critic_guard.passed, "comment-only service decoy must fail: {critic_guard:?}");
+        Ok(())
+    }
+
+    /// A lifetime tick before a comment decoy must not hold the comment
+    /// scanner open: single quotes are inert, so the retired route stays
+    /// blanked even with an odd tick count above it (#15744 review).
+    #[test]
+    fn native_tooling_default_checks_reject_a_lifetime_before_comment_decoy() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_default_guard_sources(temp.path())?;
+        fs::write(
+            temp.path().join("crates/perl-lsp-rs/src/runtime/diagnostics.rs"),
+            r#"
+fn gate(x: &'a str) {
+    let accepted_critic = self.capture_accepted_critic(x);
+    // NativeCriticService::analyze(NativeCriticSubject::accepted( was removed here
+    if self.finalize_pending_critic(&mut diagnostics, pending) {
+    }
+}
+"#,
+        )?;
+
+        let checks = native_tooling_default_checks(temp.path())?;
+        let critic_guard = checks
+            .iter()
+            .find(|check| check.name == "native_critic_routes_through_accepted_service")
+            .ok_or_else(|| eyre!("missing native critic guard check"))?;
+
+        assert!(!critic_guard.passed, "lifetime-plus-comment decoy must fail: {critic_guard:?}");
         Ok(())
     }
 

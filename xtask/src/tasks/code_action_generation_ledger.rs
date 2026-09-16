@@ -403,6 +403,11 @@ fn validate_generations(
 ///
 /// String literals are deliberately left intact: one production anchor is a
 /// format string (`"Generate test for '{}'"`), which is executable code.
+/// Single quotes are deliberately inert: character literals cannot contain
+/// comment initiators, and tracking them as a state mistakes Rust lifetimes
+/// (`'a`, `'static`) for literals — a lifetime tick with no closing tick
+/// would hold the scanner past the next comment, leaving a retired call
+/// unblanked (#15744 review).
 fn blank_comments(source: &str) -> String {
     #[derive(Clone, Copy, PartialEq)]
     enum State {
@@ -411,8 +416,6 @@ fn blank_comments(source: &str) -> String {
         BlockComment,
         Str,
         StrEscape,
-        Char,
-        CharEscape,
     }
 
     let bytes = source.as_bytes();
@@ -440,7 +443,6 @@ fn blank_comments(source: &str) -> String {
                     out_bytes[index] = b' ';
                 }
                 (b'"', _) => state = State::Str,
-                (b'\'', _) => state = State::Char,
                 _ => {}
             },
             State::LineComment => {
@@ -480,12 +482,6 @@ fn blank_comments(source: &str) -> String {
                 _ => {}
             },
             State::StrEscape => state = State::Str,
-            State::Char => match byte {
-                b'\\' => state = State::CharEscape,
-                b'\'' => state = State::Code,
-                _ => {}
-            },
-            State::CharEscape => state = State::Char,
         }
         index += 1;
     }
@@ -1992,6 +1988,23 @@ mod tests {
         assert!(
             violations.iter().any(|violation| violation.contains("native service edge")),
             "expected comment-decoy rejection, got {violations:?}"
+        );
+    }
+
+    /// A lifetime tick before a comment decoy must not hold the comment
+    /// scanner open: single quotes are inert (#15744 review).
+    #[test]
+    fn rejects_a_lifetime_before_comment_only_edge_as_decoy() {
+        let ledger = edge_ledger();
+        let source = edged_source(
+            "capture_accepted_critic(\nself.finalize_staged_code_action_response(\n",
+            "fn gate(x: &'a str) {\n    // NativeCriticService::analyze(NativeCriticSubject::accepted( was removed here\n}\nfn finalize_code_action_candidate(&self) {\n    self.finalize_code_action_candidate(\n    if let Some(fix_all) = build_source_fix_all(code_actions, uri)\n}\n",
+        );
+        let mut violations = Vec::new();
+        validate_service_and_finalizer_edges(&ledger, &source, &mut violations);
+        assert!(
+            violations.iter().any(|violation| violation.contains("native service edge")),
+            "expected lifetime-plus-comment decoy rejection, got {violations:?}"
         );
     }
 
