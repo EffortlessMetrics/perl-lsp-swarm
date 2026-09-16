@@ -117,6 +117,25 @@ fn baselines_exist_for_every_listed_crate() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// True when the line is a guarded public item (#15634): a plain `pub ` item,
+/// or an attribute-fronted item — any run of leading bracketed attributes
+/// (`#[repr(u8)]`, `#[non_exhaustive] #[repr(i32)]`, ...) followed by `pub `.
+///
+/// The attribute run is stripped iteratively from the front rather than by
+/// splitting on `"] "`: an item whose own signature contains `] ` (for
+/// example a slice in a rendered return type) would otherwise split at the
+/// wrong bracket and produce a false negative.
+fn is_guarded_surface_line(line: &str) -> bool {
+    let mut tail = line;
+    while let Some(rest) = tail.strip_prefix("#[") {
+        match rest.find(']') {
+            Some(end) => tail = rest[end + 1..].trim_start(),
+            None => return false,
+        }
+    }
+    tail.starts_with("pub ")
+}
+
 /// Test B: Each listed crate's baseline file is non-empty
 #[test]
 fn baseline_files_are_non_empty() -> Result<(), Box<dyn std::error::Error>> {
@@ -142,11 +161,8 @@ fn baseline_files_are_non_empty() -> Result<(), Box<dyn std::error::Error>> {
         // ratchet must record them, not silently drop them.
         let non_empty_lines: Vec<_> = content.lines().filter(|l| !l.trim().is_empty()).collect();
         for (line_num, line) in non_empty_lines.iter().enumerate() {
-            let is_plain_pub = line.starts_with("pub ");
-            let is_attribute_fronted = line.starts_with("#[")
-                && line.split("] ").last().is_some_and(|tail| tail.starts_with("pub "));
             assert!(
-                is_plain_pub || is_attribute_fronted,
+                is_guarded_surface_line(line),
                 "Baseline {} line {} is not a guarded public item (expected 'pub ' or \
                  attribute-fronted 'pub'): {}",
                 crate_name,
@@ -157,6 +173,30 @@ fn baseline_files_are_non_empty() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Test B2 (unit): the guarded-surface shape checker admits exactly the lines
+/// the widened `_public-api-filter` regex keeps (#15634).
+#[test]
+fn guarded_surface_line_shape() {
+    // Plain public items.
+    assert!(is_guarded_surface_line("pub struct alpha"));
+    assert!(is_guarded_surface_line("pub fn perl_lsp_rs_core::f"));
+    // Single and repeated attribute fronts (the cases the old `^pub ` filter
+    // dropped).
+    assert!(is_guarded_surface_line("#[repr(u8)] pub enum beta"));
+    assert!(is_guarded_surface_line(
+        "#[repr(i32)] #[non_exhaustive] pub enum perl_lsp_rs_core::protocol::ErrorCode"
+    ));
+    // An item signature containing `] ` must not break the attribute scan.
+    assert!(is_guarded_surface_line("#[some_attr] pub fn foo() -> &[u8] where T: Debug"));
+    // Non-item lines stay out.
+    assert!(!is_guarded_surface_line("// comment line"));
+    assert!(!is_guarded_surface_line(""));
+    // Attributes without a following `pub ` item stay out: the filter must
+    // not admit arbitrary attribute lines.
+    assert!(!is_guarded_surface_line("#[repr(u8)] struct secret"));
+    assert!(!is_guarded_surface_line("#[unterminated"));
 }
 
 /// Test C: Justfile has public-api-check and public-api-update recipes
