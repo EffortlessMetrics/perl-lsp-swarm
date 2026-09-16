@@ -34,6 +34,8 @@ pub mod semantic_identity;
 /// Transport-neutral semantic query outcomes and completeness requirements
 /// (#8911).
 pub mod semantic_query;
+/// Provider-neutral ordered structural access-hop contract (#13619).
+pub mod structural_access;
 
 pub use envelope::*;
 pub use handler::*;
