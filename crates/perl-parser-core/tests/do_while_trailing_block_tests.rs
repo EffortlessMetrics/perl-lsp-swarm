@@ -80,6 +80,48 @@ fn do_while_rejects_trailing_block() -> Result<(), String> {
     parse_clean(r#"do { $i++; } while ($i < 3); { print "once\n"; }"#)
 }
 
+/// Discriminator 1 — op-arm boundary for the closed-group gate: every
+/// subscript op in the chain family (`{}`, `[]`, `->{}`) keeps consuming
+/// while bare but rejects once the condition's own `)` has closed. The
+/// `{}` arm is covered by `do_while_rejects_trailing_block`; these pin the
+/// `[]` and `->{}` arms. All outcomes confirmed with `perl -c` (#15649
+/// ripr discriminator).
+#[test]
+fn do_while_discriminates_closed_group_chain_op_arms() -> Result<(), String> {
+    parse_clean("do { $s++ } while $a[0]{k};")?;
+    parse_clean("do { $s++ } while $self->{a}{b};")?;
+    for code in ["do { $s++; } while ($a[0]){k};", "do { $s++; } while ($self->{a}){b};"] {
+        let mut parser = Parser::new(code);
+        if parser.parse().is_ok() {
+            return Err(format!("expected outright parse failure for `{code}`"));
+        }
+    }
+    Ok(())
+}
+
+/// Discriminator 2 — parenthesization boundary for the same subscript
+/// shape: an attached `{k}` continues a bare chain, but rejects once the
+/// condition's own `)` has closed. Both outcomes confirmed with `perl -c`
+/// (#15649 ripr discriminator).
+#[test]
+fn do_while_discriminates_bare_chain_from_closed_group_chain() -> Result<(), String> {
+    parse_clean("do { $s++ } while $h{k}{j};")?;
+    let code = "do { $s++; } while ($h{k}){k};";
+    let mut parser = Parser::new(code);
+    if parser.parse().is_ok() {
+        return Err(format!("expected outright parse failure for `{code}`"));
+    }
+    Ok(())
+}
+
+/// Discriminator 3 — depth boundary: a subscript chain nested inside the
+/// condition's own parentheses keeps consuming. Confirmed with `perl -c`
+/// (#15649 ripr discriminator).
+#[test]
+fn do_while_chain_inside_nested_condition_group_stays_clean() -> Result<(), String> {
+    parse_clean("do { $s++; } while (($h{k}{j}));")
+}
+
 #[test]
 fn trailing_block_error_anchors_at_the_brace() -> Result<(), String> {
     // The rejected `{` carries its byte position through
