@@ -4045,6 +4045,89 @@ mod tests {
         assert!(!super::has_probe_success_marker("OKAY\r\n"));
     }
 
+    /// Boundary inputs the own-line rule leaves open: a bare marker with no
+    /// trailing newline, tab padding, and whitespace-only lines, which trim
+    /// to empty and must never certify. (ripr discriminator for the
+    /// `line.trim() == DEBUGGER_PROBE_SUCCESS_MARKER` seam.)
+    #[test]
+    fn probe_success_marker_trims_padding_and_rejects_blank_lines() {
+        assert!(super::has_probe_success_marker("OK"));
+        assert!(super::has_probe_success_marker("\tOK\t\n"));
+        assert!(!super::has_probe_success_marker("   \n"));
+        assert!(!super::has_probe_success_marker("\t \r\n"));
+    }
+
+    /// Write an executable shell probe double: `body` runs with the probe's
+    /// argv, so activation tests can observe the exact spawn.
+    #[cfg(unix)]
+    fn write_probe_double(dir: &std::path::Path, name: &str, body: &str) -> Result<String, String> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n"))
+            .map_err(|error| format!("writing probe double: {error}"))?;
+        let mut perms = std::fs::metadata(&path)
+            .map_err(|error| format!("reading probe double metadata: {error}"))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms)
+            .map_err(|error| format!("chmod probe double: {error}"))?;
+        path.to_str()
+            .map(str::to_string)
+            .ok_or_else(|| "probe double path is not UTF-8".to_string())
+    }
+
+    /// Exact error variant for a measured incapable verdict: an interpreter
+    /// that exits 0 without evaluating the probe expression (silent stdout)
+    /// must surface the full incapable message verbatim — interpreter path,
+    /// remediation, and measured detail. Every word is literal in this test
+    /// so a reworded variant fails. (ripr discriminator for the
+    /// `run_debugger_capability_probe` match seam.)
+    #[cfg(unix)]
+    #[test]
+    fn incapable_probe_reports_the_exact_error_variant() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|error| format!("tempdir: {error}"))?;
+        let script = write_probe_double(dir.path(), "silent-probe-4f2a.sh", "exit 0")?;
+        let verdict = DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path());
+        let expected = "Selected interpreter cannot host the debugger (perl5db.pl not loadable): {INTERP}. Install a full Perl distribution that ships the core debugger module, or point launch.json `perlPath` at one (e.g. {\"perlPath\": \"/path/to/full/perl\"}). Detail: exited successfully but did not evaluate the probe expression (interpreter shim?)"
+            .replace("{INTERP}", &script);
+        if verdict != Err(expected.clone()) {
+            return Err(format!(
+                "incapable verdict must carry the exact error variant, got: {verdict:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Call-observation proof that the probe activates the interpreter with
+    /// the perl5db.pl load expression: the double records its argv and
+    /// prints the marker, so a skipped or reworded spawn fails the
+    /// observation even when the verdict stays `Ok`. (ripr discriminator
+    /// for the probe-spawn seam.)
+    #[cfg(unix)]
+    #[test]
+    fn probe_spawn_invokes_the_perl5db_load_expression() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|error| format!("tempdir: {error}"))?;
+        let record = dir.path().join("probe-argv-9d1c.txt");
+        let record_str = record.to_str().ok_or("record path is not UTF-8")?.to_string();
+        let script = write_probe_double(
+            dir.path(),
+            "recording-probe-9d1c.sh",
+            &format!("printf '%s\\n' \"$@\" >> '{record_str}'\nprintf 'OK\\n'"),
+        )?;
+        let verdict = DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path());
+        if verdict != Ok(()) {
+            return Err(format!("recording probe must verify capable, got: {verdict:?}"));
+        }
+        let argv = std::fs::read_to_string(&record)
+            .map_err(|error| format!("reading argv record: {error}"))?;
+        if !argv.contains("-e") || !argv.contains("require \"perl5db.pl\"") {
+            return Err(format!(
+                "probe must spawn the perl5db load expression, recorded argv: {argv:?}"
+            ));
+        }
+        Ok(())
+    }
+
     /// A probe that could not run (spawn failure) keeps the launch-continue
     /// disposition but must not be cached as a pass: the next launch has to
     /// probe again instead of trusting an instrument failure.
