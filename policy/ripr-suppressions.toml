@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-13"
+updated = "2026-09-16"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -3582,3 +3582,27 @@ created = "2026-09-13"
 review_after = "2026-10-13"
 expires = "2026-12-13"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration owners to the tests that construct them and stops probing base-only deleted code for a head-side test path, or when targeted mutation replaces this advisory path per #1289. Narrow immediately if a receipt reports an executable no_static_path seam in class_model.rs, field_trait.rs or analysis/mod.rs outside the declaration and removed-owner shapes enumerated above."
+
+# -----------------------------------------------------------------------------
+# Compiler upstream conformance status packet declaration seams (#12532,
+# PR #15604): RIPR reports no_static_path exclusively on declaration lines of
+# the new serde data contract, its read-only CLI surface, and the test
+# harness type alias — ripr#1429-class field_construction probes on
+# non-executable declarations.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-compiler-upstream-status-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = [
+  "xtask/src/compiler_upstream_status.rs",
+  "xtask/src/compiler_upstream_status/tests.rs",
+  "xtask/src/tasks/compiler_upstream_status.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15604 (fix #12532; same-root transplant of #12860) adds the compiler_upstream_conformance_status.v1 projection: the serde data contract and validators (xtask/src/compiler_upstream_status.rs), its 32-test falsifier suite (xtask/src/compiler_upstream_status/tests.rs), and the read-only CLI surface (xtask/src/tasks/compiler_upstream_status.rs). The ripr 0.10.0 diff-scoped receipt at head 5bcb03b41 (run 35060370095, hosted job 104679235317, artifact ripr-pr-evidence) reports 128 no_static_path probes; the two on xtask/src/main.rs are already covered by the native_product_surface entry, so 126 are the enforce-new-ripr gate's entire blocking basis: 124 field_construction probes on declaration lines (the PACKET_SCHEMA_VERSION / INPUTS_SCHEMA_VERSION / GENERATOR_IDENTITY / NO_SCORE_STATEMENT / MAX_REPORTED_VIOLATIONS / TerminalState::ALL consts, the packet, input-manifest, row, witness, owner, limitation, performance, and history struct field declarations, the private FORBIDDEN_LEAK_SUBSTRINGS and DIFF_MAX_LINES consts, and the clap arg struct fields in the tasks module), 1 return_value probe on the UpstreamChange::None enum variant declaration, and 1 call_deletion probe on the test harness type alias `type TestResult = anyhow::Result<()>`. Declaration lines have no function body for ripr to trace into, and constructor-only tests for a struct field, const, or enum variant would be proof theatre, not proof. The executable behavior in these files is not unproven: the same receipt classifies 1292 probes exposed and 161 weakly_exposed (traced to the test module) with reachable_unrevealed = 0, and the focused suite is 32/32 green at head 5bcb03b41. Same declaration-owner class as ripr-suppress-15469-package-graph-extractor-field-construction, rippr-suppress-13449-field-trait-declaration-and-removed-owner-seams, and the #14650 compiler-transformation-contract entry. Scope is no_static_path only: exposed, weakly_exposed, reachable_unrevealed, infection_unknown, propagation_unknown, and static_unknown stay active in all three files. The matcher has no line or function selector, so any future receipt reporting an executable (non-declaration) no_static_path seam in these files must trigger review and narrowing rather than inherit this entry."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces field_construction probes on const, struct-field, and enum-variant declaration lines through constructor or derive paths, then delete this entry and rerun the enforce-new-ripr gate. Narrow immediately if a receipt reports an executable no_static_path seam in xtask/src/compiler_upstream_status.rs, its tests submodule, or xtask/src/tasks/compiler_upstream_status.rs outside the declaration shapes enumerated above."
