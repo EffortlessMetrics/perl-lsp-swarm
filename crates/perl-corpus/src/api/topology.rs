@@ -849,8 +849,7 @@ mod tests {
         let relative = root.path().strip_prefix(&current).expect("root below current directory");
         let topology =
             topology_with(Vec::new()).with_root(relative).expect("bind relative runtime root");
-        let expected =
-            strip_verbatim_prefix(fs::canonicalize(root.path()).expect("canonical runtime root"));
+        let expected = canonical_runtime_root(root.path()).expect("canonical runtime root");
 
         assert_eq!(topology.root(), Some(expected.as_path()));
     }

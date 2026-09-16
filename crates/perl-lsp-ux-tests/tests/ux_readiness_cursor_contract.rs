@@ -5,8 +5,8 @@
 mod active_document_readiness;
 
 use active_document_readiness::{
-    ACTIVE_DOCUMENT_READY_METHOD, ReadyObservation, generation_after, has_generation_after,
-    ready_generation, ready_generations,
+    ACTIVE_DOCUMENT_READY_METHOD, ReadyObservation, generation_after, ready_generation,
+    ready_generations,
 };
 use perl_lsp_ux_tests::LspEvent;
 use serde_json::json;
@@ -25,31 +25,24 @@ fn readiness_cursor_rejects_historical_delayed_and_cross_uri_evidence() {
     let mut events = vec![ready(uri, json!(1)), ready(uri, json!(2))];
     let cursor = ready_generations(&events, uri).len();
 
-    assert!(!has_generation_after(
-        &ready_generations(&events, uri),
-        cursor,
-        1,
-    ));
+    assert!(generation_after(&ready_generations(&events, uri), cursor, 1).is_none());
 
     events.push(ready(uri, json!(2)));
     assert!(
-        !has_generation_after(&ready_generations(&events, uri), cursor, 1),
+        generation_after(&ready_generations(&events, uri), cursor, 1).is_none(),
         "a delayed wrong generation must not release a generation-1 wait"
     );
 
     events.push(ready(other_uri, json!(1)));
     assert!(
-        !has_generation_after(&ready_generations(&events, uri), cursor, 1),
+        generation_after(&ready_generations(&events, uri), cursor, 1).is_none(),
         "readiness for another URI must not release this document's wait"
     );
 
     events.push(ready(uri, json!(1)));
     assert_eq!(
         generation_after(&ready_generations(&events, uri), cursor, 1),
-        Some(ReadyObservation {
-            generation: 1,
-            matching_ordinal: 4,
-        })
+        Some(ReadyObservation { generation: 1, matching_ordinal: 4 })
     );
 }
 
@@ -68,6 +61,11 @@ fn readiness_decoder_requires_exact_method_uri_and_numeric_generation() {
             params: json!({"generation": 2}),
         },
         ready(uri, json!("2")),
+        ready(uri, json!(2.0)),
+        ready(uri, json!(2.5)),
+        ready(uri, json!(-1)),
+        ready(uri, json!(null)),
+        ready(uri, json!(true)),
         ready("file:///workspace/lib/Other.pm", json!(2)),
     ] {
         assert_eq!(ready_generation(&invalid, uri), None);
@@ -86,10 +84,7 @@ fn numeric_generation_does_not_claim_close_reopen_instance_identity() {
     let after_change = 2;
     assert_eq!(
         generation_after(&generations, after_change, 1),
-        Some(ReadyObservation {
-            generation: 1,
-            matching_ordinal: 3,
-        })
+        Some(ReadyObservation { generation: 1, matching_ordinal: 3 })
     );
     // The helper can prove only that another numeric generation-1 frame was
     // observed. It cannot prove whether that frame belongs to the old or new
