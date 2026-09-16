@@ -599,6 +599,10 @@ mod tests {
     }
 
     impl StubSemanticQueries {
+        fn new(references_result: Vec<OccurrenceFact>) -> Self {
+            Self { references_result, anchor_spans: Vec::new() }
+        }
+
         /// Populate resolvable anchor spans from a real indexed fact shard, so
         /// the stub answers exactly what the production snapshot would.
         fn with_spans_from(mut self, index: &WorkspaceIndex, uri: &str) -> Self {
@@ -774,7 +778,7 @@ mod tests {
     #[test]
     fn shadow_both_empty_yields_same() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { references_result: vec![], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![]);
 
         let result = find_references_shadow(
             index.find_references("No::Such::Symbol"),
@@ -798,8 +802,7 @@ mod tests {
     fn shadow_new_path_has_occurrences_old_empty() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let occ = make_ref_occurrence(1, 10, 20);
-        let queries =
-            StubSemanticQueries { references_result: vec![occ], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![occ]);
 
         let result = find_references_shadow(
             index.find_references("Foo::bar"),
@@ -821,7 +824,7 @@ mod tests {
     #[test]
     fn shadow_returns_legacy_result() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { references_result: vec![], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![]);
 
         let result = find_references_shadow(
             index.find_references("test_symbol"),
@@ -841,7 +844,7 @@ mod tests {
     #[test]
     fn shadow_receipt_uses_find_references_query_name() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { references_result: vec![], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![]);
 
         let result =
             find_references_shadow(index.find_references("test"), &queries, "test", EntityId(1));
@@ -861,10 +864,7 @@ mod tests {
         let occ1 = make_ref_occurrence(1, 10, 20);
         let occ2 = make_ref_occurrence(2, 30, 20);
         let occ3 = make_ref_occurrence(3, 50, 20);
-        let queries = StubSemanticQueries {
-            references_result: vec![occ1, occ2, occ3],
-            anchor_spans: Vec::new(),
-        };
+        let queries = StubSemanticQueries::new(vec![occ1, occ2, occ3]);
 
         let result = find_references_shadow(
             index.find_references("Foo::bar"),
@@ -933,8 +933,7 @@ mod tests {
     fn cutover_exact_typed_references() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let occ = make_ref_occurrence(1, 10, 20);
-        let queries =
-            StubSemanticQueries { references_result: vec![occ.clone()], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![occ.clone()]);
 
         let outcome = find_references_cutover(
             index.find_references("Foo::bar"),
@@ -957,7 +956,7 @@ mod tests {
     #[test]
     fn cutover_fallback_when_no_occurrences() -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
-        let queries = StubSemanticQueries { references_result: vec![], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![]);
 
         let outcome = find_references_cutover(
             index.find_references("No::Such"),
@@ -987,8 +986,7 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::Low,
         );
-        let queries =
-            StubSemanticQueries { references_result: vec![dynamic_occ], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![dynamic_occ]);
 
         let outcome = find_references_cutover(
             index.find_references("Foo::bar"),
@@ -1015,8 +1013,7 @@ mod tests {
             Provenance::NameHeuristic,
             Confidence::Low,
         );
-        let queries =
-            StubSemanticQueries { references_result: vec![low_occ], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![low_occ]);
 
         let outcome = find_references_cutover(
             index.find_references("Foo::bar"),
@@ -1044,10 +1041,7 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::Low,
         );
-        let queries = StubSemanticQueries {
-            references_result: vec![good.clone(), dynamic],
-            anchor_spans: Vec::new(),
-        };
+        let queries = StubSemanticQueries::new(vec![good.clone(), dynamic]);
 
         let outcome = find_references_cutover(
             index.find_references("Foo::bar"),
@@ -1089,10 +1083,7 @@ mod tests {
             Provenance::NameHeuristic,
             Confidence::Medium,
         );
-        let queries = StubSemanticQueries {
-            references_result: vec![exact, heuristic],
-            anchor_spans: Vec::new(),
-        };
+        let queries = StubSemanticQueries::new(vec![exact, heuristic]);
 
         let outcome = find_references_cutover(
             index.find_references("Foo::bar"),
@@ -1122,8 +1113,7 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::Low,
         );
-        let queries =
-            StubSemanticQueries { references_result: vec![occ1, occ2], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![occ1, occ2]);
 
         let outcome = find_references_cutover(
             index.find_references("Foo::bar"),
@@ -1150,8 +1140,7 @@ mod tests {
             Provenance::ImportExportInference,
             Confidence::High,
         );
-        let queries =
-            StubSemanticQueries { references_result: vec![occ], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![occ]);
 
         let result = find_references_shadow(
             index.find_references("imported_func"),
@@ -1183,8 +1172,7 @@ mod tests {
             Provenance::FrameworkSynthesis,
             Confidence::Medium,
         );
-        let queries =
-            StubSemanticQueries { references_result: vec![occ], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![occ]);
 
         let result = find_references_shadow(
             index.find_references("generated_accessor"),
@@ -1214,8 +1202,7 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::High,
         );
-        let queries =
-            StubSemanticQueries { references_result: vec![occ], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![occ]);
 
         let result = find_references_shadow(
             index.find_references("dynamic_symbol"),
@@ -1246,10 +1233,7 @@ mod tests {
             Provenance::NameHeuristic,
             Confidence::Low,
         );
-        let queries = StubSemanticQueries {
-            references_result: vec![exact.clone(), low],
-            anchor_spans: Vec::new(),
-        };
+        let queries = StubSemanticQueries::new(vec![exact.clone(), low]);
 
         let outcome = find_references_cutover(
             index.find_references("Foo::bar"),
@@ -1315,10 +1299,7 @@ mod tests {
             Provenance::NameHeuristic,
             Confidence::Low,
         );
-        let queries = StubSemanticQueries {
-            references_result: vec![imported, generated, dynamic, low_confidence],
-            anchor_spans: Vec::new(),
-        };
+        let queries = StubSemanticQueries::new(vec![imported, generated, dynamic, low_confidence]);
 
         let result = find_references_shadow(
             index.find_references("Real::Nav::legacy_helper"),
@@ -1360,9 +1341,8 @@ mod tests {
     fn references_live_source_backed_accepts_source_backed_exact_ast_occurrences()
     -> Result<(), Box<dyn std::error::Error>> {
         let (index, entity_id, references) = source_backed_exact_references()?;
-        let queries =
-            StubSemanticQueries { references_result: references.clone(), anchor_spans: Vec::new() }
-                .with_spans_from(&index, "file:///lib/LiveRefs.pm");
+        let queries = StubSemanticQueries::new(references.clone())
+            .with_spans_from(&index, "file:///lib/LiveRefs.pm");
 
         let outcome = find_references_live_source_backed(
             index.find_references("LiveRefs::target"),
@@ -1396,8 +1376,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let index = WorkspaceIndex::new();
         let occurrence = make_ref_occurrence(1, 10, 20);
-        let queries =
-            StubSemanticQueries { references_result: vec![occurrence], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![occurrence]);
 
         let outcome = find_references_live_source_backed(
             index.find_references("Foo::bar"),
@@ -1420,11 +1399,8 @@ mod tests {
         let (index, entity_id, references) = source_backed_exact_references()?;
         let mut imported = references.first().ok_or("missing reference")?.clone();
         imported.provenance = Provenance::ImportExportInference;
-        let queries = StubSemanticQueries {
-            references_result: vec![imported.clone()],
-            anchor_spans: Vec::new(),
-        }
-        .with_spans_from(&index, "file:///lib/LiveRefs.pm");
+        let queries = StubSemanticQueries::new(vec![imported.clone()])
+            .with_spans_from(&index, "file:///lib/LiveRefs.pm");
 
         let outcome = find_references_live_source_backed(
             index.find_references("target"),
@@ -1450,11 +1426,8 @@ mod tests {
         let (index, entity_id, references) = source_backed_exact_references()?;
         let mut imported = references.first().ok_or("missing reference")?.clone();
         imported.provenance = Provenance::LiteralRequireImport;
-        let queries = StubSemanticQueries {
-            references_result: vec![imported.clone()],
-            anchor_spans: Vec::new(),
-        }
-        .with_spans_from(&index, "file:///lib/LiveRefs.pm");
+        let queries = StubSemanticQueries::new(vec![imported.clone()])
+            .with_spans_from(&index, "file:///lib/LiveRefs.pm");
 
         let outcome = find_references_live_source_backed(
             index.find_references("target"),
@@ -1486,8 +1459,7 @@ mod tests {
             Provenance::DynamicBoundary,
             Confidence::High,
         );
-        let queries =
-            StubSemanticQueries { references_result: vec![dynamic], anchor_spans: Vec::new() };
+        let queries = StubSemanticQueries::new(vec![dynamic]);
 
         let outcome = find_references_live_source_backed(
             index.find_references("Foo::dynamic"),
@@ -1516,10 +1488,7 @@ mod tests {
             Provenance::SemanticAnalyzer,
             Confidence::Medium,
         );
-        let queries = StubSemanticQueries {
-            references_result: vec![medium.clone()],
-            anchor_spans: Vec::new(),
-        };
+        let queries = StubSemanticQueries::new(vec![medium.clone()]);
 
         let outcome = find_references_cutover(
             index.find_references("Foo::bar"),
