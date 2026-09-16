@@ -17,15 +17,20 @@
 //!
 //! The gate row is the single authority for which packages are enforced; this
 //! check reads the package list back out of the row's own command rather than
-//! keeping a second copy. Three laws follow from it:
+//! keeping a second copy. Four laws follow from it:
 //!
-//! 1. the route still exists, still passes `--doc`, and still selects at
-//!    least one package — deleting it, emptying it, or quietly dropping
-//!    `--doc` disarms every contract at once, so each fails loudly here;
-//! 2. every workspace package whose `src/` carries a `compile_fail` doctest
+//! 1. the route still exists, is still a `tier: merge_gate` row with
+//!    `required: true` and `quarantine: false`, still passes `--doc`, and
+//!    still selects at least one package — demoting it to advisory,
+//!    quarantining it, emptying it, dropping `--doc`, or deleting it each
+//!    disarms every contract at once, so each fails loudly here;
+//! 2. every workspace package whose source carries a `compile_fail` doctest
 //!    fence appears in the route's package list;
 //! 3. every package the route names is a real workspace package, so a rename
-//!    cannot silently drop a crate out of the route.
+//!    cannot silently drop a crate out of the route;
+//! 4. the inventory cannot fail open: an unreadable or unparsable member
+//!    manifest, a wildcard `workspace.members` entry, and an unreadable
+//!    source file are all errors, never an empty pass.
 //!
 //! # `doctest = false` is not an exclusion
 //!
@@ -55,9 +60,21 @@
 //! feature selection reaches a given fence is a per-crate judgement, recorded
 //! in that crate's guidance rather than inferred here.
 //!
-//! Only fences spelled in `///` or `//!` doc comments under a package's
-//! `src/` directory are counted. `#[doc = "…"]` attribute forms and fences in
-//! `tests/` (which rustdoc does not collect as doctests) are out of scope.
+//! Fence forms: the detector counts `///` and `//!` line doc comments and
+//! `/**` and `/*!` block doc comments, each with a fence delimiter of three
+//! or more backticks or tildes — the spellings rustdoc collects. Still out of
+//! scope are `#[doc = "…"]` attribute forms; fences under `tests/` (rustdoc
+//! does not collect them as doctests); and fences in non-library targets such
+//! as `src/bin/**` or a package's `main.rs`, because `cargo test --doc`
+//! collects only the *library's* documentation. A contract written in one of
+//! those places needs a gate-run target of its own, like the migrated
+//! `perl-parser` target.
+//!
+//! The block-comment scanner tracks `/*` and `*/` nesting depth textually, so
+//! doctest source containing comment-looking tokens can skew the depth of one
+//! file. That can hide a fence from the ratchet (the same direction as the
+//! other documented carve-outs); it cannot invent one, because a reported
+//! site is always a literal `compile_fail` fence line.
 
 use color_eyre::eyre::{Result, eyre};
 use std::collections::{BTreeMap, BTreeSet};
@@ -120,15 +137,16 @@ impl Violation {
 /// `command`.
 ///
 /// The gate row is the authority; this reads it back rather than keeping a
-/// second list that could drift. A missing row, a row without a command, or a
-/// command that selects no package is an error, not an empty pass: each of
-/// those disarms every contract at once and must be louder than a silent
-/// green.
+/// second list that could drift. A missing row, a row that is not a required
+/// un-quarantined merge gate, a row without a command, or a command that
+/// selects no package is an error, not an empty pass: each of those disarms
+/// every contract at once and must be louder than a silent green.
 ///
 /// # Errors
 ///
-/// Returns an error when the route is absent from the policy text, no longer
-/// passes `--doc`, or selects no package.
+/// Returns an error when the route is absent from the policy text, is not a
+/// `tier: merge_gate` row with `required: true` and `quarantine: false`, no
+/// longer passes `--doc`, or selects no package.
 pub fn route_packages(policy: &str) -> Result<BTreeSet<String>> {
     let block = gate_block(policy, GATE_NAME).ok_or_else(|| {
         eyre!(
@@ -137,6 +155,28 @@ pub fn route_packages(policy: &str) -> Result<BTreeSet<String>> {
              unenforced (#13774)."
         )
     })?;
+    let tier = gate_field(&block, "tier").unwrap_or_default();
+    if tier != "merge_gate" {
+        return Err(eyre!(
+            "gate `{GATE_NAME}` in {GATE_POLICY_PATH} is `tier: {tier}`, not `merge_gate`. An \
+             advisory route executes no contract on the merge path (#13774); restore \
+             `tier: merge_gate` or migrate the contracts it used to cover."
+        ));
+    }
+    if gate_field(&block, "required").as_deref() != Some("true") {
+        return Err(eyre!(
+            "gate `{GATE_NAME}` in {GATE_POLICY_PATH} is not `required: true`. An optional \
+             route fails no merge, so its doctest run enforces nothing (#13774); restore \
+             `required: true` or migrate the contracts."
+        ));
+    }
+    if gate_field(&block, "quarantine").as_deref() != Some("false") {
+        return Err(eyre!(
+            "gate `{GATE_NAME}` in {GATE_POLICY_PATH} is not `quarantine: false`. A \
+             quarantined route cannot block a merge, so its doctest run enforces nothing \
+             (#13774); restore `quarantine: false` or migrate the contracts."
+        ));
+    }
     let command = gate_command(&block)
         .ok_or_else(|| eyre!("gate `{GATE_NAME}` in {GATE_POLICY_PATH} has no `command:` value"))?;
     if !command.split_whitespace().any(|token| token == "--doc") {
@@ -211,6 +251,16 @@ fn gate_command(block: &str) -> Option<String> {
     (!command.is_empty()).then_some(command)
 }
 
+/// Read one top-level `key: value` field from a gate block, comment-stripped.
+fn gate_field(block: &str, key: &str) -> Option<String> {
+    block.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        let value = trimmed.strip_prefix(key)?.strip_prefix(':')?.trim();
+        let value = value.split('#').next()?.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
+}
+
 /// Collect every `-p <package>` / `--package <package>` selection in a command.
 fn selected_packages(command: &str) -> BTreeSet<String> {
     let mut packages = BTreeSet::new();
@@ -232,24 +282,53 @@ fn selected_packages(command: &str) -> BTreeSet<String> {
     packages
 }
 
-/// Whether a source line opens a `compile_fail` doctest fence in a doc comment.
+/// Whether a source line opens a `compile_fail` doctest fence in a line doc
+/// comment.
 ///
-/// Matches `/// ```compile_fail`, `//! ```rust,compile_fail`, and the other
-/// comma-separated attribute spellings. A bare `compile_fail` string in
-/// ordinary code or a non-doc comment is not a contract and does not match.
+/// Matches `/// ```compile_fail`, `//! ```rust,compile_fail`, four-or-more
+/// backtick and tilde delimiters, and the other comma-separated attribute
+/// spellings — every line-doc fence form rustdoc collects. A bare
+/// `compile_fail` string in ordinary code or a non-doc comment is not a
+/// contract and does not match. Block doc comments (`/**`, `/*!`) are
+/// recognized by [`scan_contracts`], which tracks comment state across lines.
 pub fn is_compile_fail_fence(line: &str) -> bool {
     let trimmed = line.trim_start();
     let Some(rest) = trimmed.strip_prefix("///").or_else(|| trimmed.strip_prefix("//!")) else {
         return false;
     };
-    let rest = rest.trim_start();
-    let Some(attributes) = rest.strip_prefix("```") else {
-        return false;
+    is_compile_fail_fence_body(rest)
+}
+
+/// Whether the text after a doc-comment marker opens a `compile_fail` fence.
+///
+/// A fence delimiter is a run of at least three backticks or at least three
+/// tildes; the info string runs to the end of the line and splits on commas.
+fn is_compile_fail_fence_body(text: &str) -> bool {
+    let text = text.trim_start();
+    let attributes = if let Some(rest) = text.strip_prefix('`') {
+        let info = rest.trim_start_matches('`');
+        let length = 1 + (rest.len() - info.len());
+        (length >= 3).then_some(info)
+    } else if let Some(rest) = text.strip_prefix('~') {
+        let info = rest.trim_start_matches('~');
+        let length = 1 + (rest.len() - info.len());
+        (length >= 3).then_some(info)
+    } else {
+        None
     };
-    attributes.trim().split(',').any(|attribute| attribute.trim() == "compile_fail")
+    attributes.is_some_and(|attributes| {
+        attributes.split(',').any(|attribute| attribute.trim() == "compile_fail")
+    })
 }
 
 /// Read the workspace member paths declared by the root manifest.
+///
+/// # Errors
+///
+/// Returns an error when the root manifest cannot be read or parsed, or when
+/// a member entry is a glob: wildcard members expand at build time, and a
+/// package admitted through one could grow a contract that this inventory
+/// never sees. Failing closed keeps a clean ratchet honest.
 fn workspace_members(root: &Path) -> Result<Vec<PathBuf>> {
     let manifest_path = root.join("Cargo.toml");
     let manifest = fs::read_to_string(&manifest_path)
@@ -264,7 +343,17 @@ fn workspace_members(root: &Path) -> Result<Vec<PathBuf>> {
         .and_then(|workspace| workspace.get("members"))
         .and_then(toml::Value::as_array)
         .ok_or_else(|| eyre!("{} declares no workspace.members", manifest_path.display()))?;
-    Ok(members.iter().filter_map(toml::Value::as_str).map(|member| root.join(member)).collect())
+    let mut paths = Vec::new();
+    for member in members.iter().filter_map(toml::Value::as_str) {
+        if member.contains('*') || member.contains('?') || member.contains('[') {
+            return Err(eyre!(
+                "workspace member `{member}` is a glob; the doctest inventory needs literal \
+                 member paths so every package is accounted for individually"
+            ));
+        }
+        paths.push(root.join(member));
+    }
+    Ok(paths)
 }
 
 /// Gather the doctest facts for every workspace member, plus `xtask`.
@@ -275,7 +364,10 @@ fn workspace_members(root: &Path) -> Result<Vec<PathBuf>> {
 ///
 /// # Errors
 ///
-/// Returns an error when the root manifest cannot be read or parsed.
+/// Returns an error when the root manifest cannot be read or parsed, when any
+/// member manifest cannot be read, or when a member declares no package name.
+/// Each of those would otherwise silently shrink the denominator below the
+/// workspace's real contract surface.
 pub fn package_facts(root: &Path) -> Result<BTreeMap<String, PackageFacts>> {
     let mut directories = workspace_members(root)?;
     let xtask = root.join("xtask");
@@ -286,13 +378,20 @@ pub fn package_facts(root: &Path) -> Result<BTreeMap<String, PackageFacts>> {
     let mut facts = BTreeMap::new();
     for directory in directories {
         let manifest_path = directory.join("Cargo.toml");
-        let Ok(manifest) = fs::read_to_string(&manifest_path) else {
-            continue;
-        };
+        let manifest = fs::read_to_string(&manifest_path).map_err(|error| {
+            eyre!(
+                "failed to read workspace member manifest {}: {error}; the doctest inventory \
+                 cannot account for a package it cannot read",
+                manifest_path.display()
+            )
+        })?;
         let Some(name) = package_name(&manifest) else {
-            continue;
+            return Err(eyre!(
+                "{} declares no `package.name`; the doctest inventory cannot account for it",
+                manifest_path.display()
+            ));
         };
-        let contracts = scan_contracts(root, &directory.join("src"));
+        let contracts = scan_contracts(root, &directory.join("src"))?;
         facts.insert(name.clone(), PackageFacts { name, contracts });
     }
     Ok(facts)
@@ -311,21 +410,160 @@ pub fn package_name(manifest: &str) -> Option<String> {
 }
 
 /// Find every `compile_fail` fence under one `src/` directory.
-fn scan_contracts(root: &Path, src: &Path) -> Vec<ContractSite> {
+///
+/// Recognizes fences in `///`/`//!` line doc comments and in `/**`/`/*!`
+/// block doc comments, with three or more backticks or tildes as the
+/// delimiter — the forms rustdoc collects. The block scanner tracks `/*` and
+/// `*/` nesting depth textually; see the module docs for the known limits of
+/// that.
+///
+/// # Errors
+///
+/// Returns an error when a source file under `src/` cannot be read, so an
+/// instrument failure can never look like an empty contract surface.
+fn scan_contracts(root: &Path, src: &Path) -> Result<Vec<ContractSite>> {
     let mut sites = Vec::new();
     for path in crate::walk_rs_files(src) {
-        let Ok(contents) = fs::read_to_string(&path) else {
-            continue;
-        };
+        let contents = fs::read_to_string(&path).map_err(|error| {
+            eyre!(
+                "failed to read {}: {error}; the doctest inventory cannot fail open here",
+                path.display()
+            )
+        })?;
         let display = path.strip_prefix(root).unwrap_or(&path).display().to_string();
-        for (index, line) in contents.lines().enumerate() {
-            if is_compile_fail_fence(line) {
-                sites.push(ContractSite { file: display.replace('\\', "/"), line: index + 1 });
-            }
+        for line in compile_fail_fence_lines(&contents) {
+            sites.push(ContractSite { file: display.replace('\\', "/"), line });
         }
     }
     sites.sort();
-    sites
+    Ok(sites)
+}
+
+/// Return the 1-based line numbers of `compile_fail` fence openers in one
+/// source file, aware of block doc comments.
+fn compile_fail_fence_lines(contents: &str) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut in_block = false;
+    let mut depth: usize = 0;
+    for (index, line) in contents.lines().enumerate() {
+        let line_number = index + 1;
+        if in_block {
+            scan_block_segment(line, &mut depth, &mut in_block, line_number, &mut found);
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            // A line comment cannot open a block comment, so the block-doc
+            // opener search below must not see through it.
+            if is_compile_fail_fence(trimmed) {
+                found.push(line_number);
+            }
+            continue;
+        }
+        if let Some(position) = find_block_doc_opener(trimmed) {
+            in_block = true;
+            depth = 1;
+            scan_block_segment(
+                &trimmed[position + 3..],
+                &mut depth,
+                &mut in_block,
+                line_number,
+                &mut found,
+            );
+        }
+    }
+    found
+}
+
+/// Scan one line's segment inside a block doc comment for fences and comment
+/// tokens, updating the nesting depth.
+fn scan_block_segment(
+    segment: &str,
+    depth: &mut usize,
+    in_block: &mut bool,
+    line_number: usize,
+    found: &mut Vec<usize>,
+) {
+    let mut rest = segment;
+    loop {
+        match next_comment_token(rest) {
+            None => {
+                if block_interior_is_fence(rest) {
+                    found.push(line_number);
+                }
+                break;
+            }
+            Some((position, token)) => {
+                if block_interior_is_fence(&rest[..position]) {
+                    found.push(line_number);
+                }
+                rest = &rest[position + token.len()..];
+                if token == "/*" {
+                    *depth += 1;
+                } else {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        *in_block = false;
+                        // The remainder of the line is code again; it is not
+                        // scanned for further doc blocks on this line.
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Find the next `/*` or `*/` token in `text`.
+fn next_comment_token(text: &str) -> Option<(usize, &'static str)> {
+    let open = text.find("/*");
+    let close = text.find("*/");
+    match (open, close) {
+        (Some(open), Some(close)) if close < open => Some((close, "*/")),
+        (Some(open), _) => Some((open, "/*")),
+        (None, Some(close)) => Some((close, "*/")),
+        (None, None) => None,
+    }
+}
+
+/// Find a `/**` or `/*!` block-doc opener, skipping the plain-comment
+/// lookalike `/**/`.
+fn find_block_doc_opener(text: &str) -> Option<usize> {
+    let mut offset = 0;
+    let mut search = text;
+    while let Some(position) = search.find("/*") {
+        let after = &search[position + 2..];
+        if after.starts_with('*') {
+            if let Some(rest) = after.strip_prefix("*/") {
+                // `/**/` is an empty plain comment, not a doc block.
+                offset += position + 2 + (after.len() - rest.len());
+                search = rest;
+                continue;
+            }
+            return Some(offset + position);
+        }
+        if after.starts_with('!') {
+            return Some(offset + position);
+        }
+        // A plain `/*`: keep searching past it for a doc opener.
+        let advance = position + 2;
+        offset += advance;
+        search = &search[advance..];
+    }
+    None
+}
+
+/// Whether a segment inside a block doc comment opens a `compile_fail` fence.
+///
+/// Continuation lines are frequently starred (` * ```compile_fail`), so an
+/// optional leading `*` is stripped before the fence check.
+fn block_interior_is_fence(segment: &str) -> bool {
+    let trimmed = segment.trim_start();
+    let trimmed = match trimmed.strip_prefix('*') {
+        Some(rest) => rest.trim_start(),
+        None => trimmed,
+    };
+    is_compile_fail_fence_body(trimmed)
 }
 
 /// Apply the three laws to a gathered inventory.
@@ -359,10 +597,11 @@ mod tests {
     use perl_test_must::must_with;
 
     use super::{
-        ContractSite, PackageFacts, Violation, is_compile_fail_fence, package_name, route_packages,
-        violations,
+        ContractSite, PackageFacts, Violation, compile_fail_fence_lines, is_compile_fail_fence,
+        package_facts, package_name, route_packages, violations,
     };
     use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
 
     fn policy_with(command: &str) -> String {
         [
@@ -374,6 +613,7 @@ mod tests {
             "  - name: doctest_contract_proof",
             "    tier: merge_gate",
             "    required: true",
+            "    quarantine: false",
             &format!("    command: {command}"),
             "    timeout_seconds: 300",
             "",
@@ -383,6 +623,24 @@ mod tests {
             "",
         ]
         .join("\n")
+    }
+
+    /// A policy whose doctest route has one field overridden, for demoting,
+    /// quarantining, or unrequiring the route.
+    fn policy_with_route_field(field: &str, value: &str) -> String {
+        let overridden = format!("    {field}: {value}");
+        let lines: Vec<String> =
+            ["    tier: merge_gate", "    required: true", "    quarantine: false"]
+                .iter()
+                .map(|line| line.to_string())
+                .filter(|line| !line.starts_with(&format!("    {field}:")))
+                .collect();
+        let mut all = vec!["gates:".to_string(), "  - name: doctest_contract_proof".to_string()];
+        all.push(overridden);
+        all.extend(lines);
+        all.push("    command: cargo test --locked --doc -p perl-token".to_string());
+        all.push(String::new());
+        all.join("\n")
     }
 
     #[test]
@@ -402,6 +660,8 @@ mod tests {
             "gates:",
             "  - name: doctest_contract_proof",
             "    tier: merge_gate",
+            "    required: true",
+            "    quarantine: false",
             "    command: >-",
             "      cargo test --locked --doc",
             "      -p perl-token",
@@ -427,6 +687,8 @@ mod tests {
             "gates:",
             "  - name: doctest_contract_proof",
             "    tier: merge_gate",
+            "    required: true",
+            "    quarantine: false",
             "    command: cargo test --locked --doc -p perl-token",
             "",
             "  - name: unit_core",
@@ -487,6 +749,81 @@ mod tests {
         );
     }
 
+    fn temp_repo_dir(label: &str) -> PathBuf {
+        let nanos = must_with(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH),
+            "the system clock is after the epoch",
+        )
+        .as_nanos();
+        let directory = std::env::temp_dir()
+            .join(format!("perl-ci-hygiene-doctest-{label}-{}", std::process::id()))
+            .join(nanos.to_string());
+        must_with(
+            std::fs::create_dir_all(&directory),
+            "the temporary repository directory can be created",
+        );
+        directory
+    }
+
+    #[test]
+    fn a_glob_workspace_member_is_an_error() {
+        // FC2: Cargo expands globs at build time; a hand-rolled inventory
+        // that joins them literally would silently miss every package added
+        // through one. Fail closed instead of under-reporting.
+        let root = temp_repo_dir("glob-member");
+        must_with(
+            std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"crates/*\"]\n"),
+            "the fixture root manifest can be written",
+        );
+        let found = package_facts(&root);
+        assert!(
+            found.is_err(),
+            "a wildcard member must fail the inventory, not shrink the denominator"
+        );
+    }
+
+    #[test]
+    fn a_missing_member_manifest_is_an_error_not_a_skip() {
+        // FC2: `let Ok(manifest) = ... else { continue }` would drop the
+        // package from the denominator and report the ratchet clean.
+        let root = temp_repo_dir("missing-manifest");
+        must_with(
+            std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"a\"]\n"),
+            "the fixture root manifest can be written",
+        );
+        must_with(
+            std::fs::create_dir_all(root.join("a")),
+            "the fixture member directory can be created",
+        );
+        let found = package_facts(&root);
+        assert!(
+            found.is_err(),
+            "an unreadable member manifest must fail the inventory, not pass quietly"
+        );
+    }
+
+    #[test]
+    fn a_member_without_a_package_name_is_an_error() {
+        let root = temp_repo_dir("no-name");
+        must_with(
+            std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = [\"a\"]\n"),
+            "the fixture root manifest can be written",
+        );
+        must_with(
+            std::fs::create_dir_all(root.join("a")),
+            "the fixture member directory can be created",
+        );
+        must_with(
+            std::fs::write(root.join("a").join("Cargo.toml"), "[package]\nversion = \"0.1.0\"\n"),
+            "the fixture member manifest can be written",
+        );
+        let found = package_facts(&root);
+        assert!(
+            found.is_err(),
+            "a member the inventory cannot name must fail, not vanish from the denominator"
+        );
+    }
+
     #[test]
     fn a_route_that_stops_passing_doc_is_an_error() {
         // Dropping `--doc` from the command turns the route into an ordinary
@@ -500,11 +837,49 @@ mod tests {
     }
 
     #[test]
+    fn a_demoted_route_is_an_error() {
+        // FC3: an advisory route executes no contract on the merge path, yet
+        // the ratchet would stay green because the row still exists with a
+        // `--doc` command.
+        let policy = policy_with_route_field("tier", "pr_fast");
+        assert!(
+            route_packages(&policy).is_err(),
+            "a demoted route cannot enforce anything at merge time"
+        );
+    }
+
+    #[test]
+    fn an_unrequired_route_is_an_error() {
+        let policy = policy_with_route_field("required", "false");
+        assert!(
+            route_packages(&policy).is_err(),
+            "an optional route fails no merge, so it enforces nothing"
+        );
+    }
+
+    #[test]
+    fn a_quarantined_route_is_an_error() {
+        let policy = policy_with_route_field("quarantine", "true");
+        assert!(
+            route_packages(&policy).is_err(),
+            "a quarantined route cannot block a merge, so it enforces nothing"
+        );
+    }
+
+    #[test]
     fn only_doc_comment_fences_count_as_contracts() {
         assert!(is_compile_fail_fence("/// ```compile_fail"));
         assert!(is_compile_fail_fence("//! ```compile_fail"));
         assert!(is_compile_fail_fence("    /// ```rust,compile_fail"));
         assert!(is_compile_fail_fence("/// ```compile_fail,edition2024"));
+
+        // Every fence delimiter rustdoc accepts, not just three backticks:
+        // four-or-more backticks and tilde fences are real doctests, and a
+        // detector blind to them would under-report the denominator (FC2).
+        assert!(is_compile_fail_fence("/// ````compile_fail"), "four backticks");
+        assert!(is_compile_fail_fence("/// ~~~compile_fail"), "three tildes");
+        assert!(is_compile_fail_fence("//! ~~~~rust,compile_fail"), "four tildes");
+        assert!(is_compile_fail_fence("/// `````compile_fail"), "five backticks");
 
         // A `compile_fail` mention that is not a doc-comment fence is not a
         // contract: `xtask` carries the string as ordinary data, and counting
@@ -513,6 +888,46 @@ mod tests {
         assert!(!is_compile_fail_fence("// ```compile_fail"), "a plain comment is not a doctest");
         assert!(!is_compile_fail_fence("/// ```compile_failure"), "the attribute must match whole");
         assert!(!is_compile_fail_fence("/// ```"), "an ordinary doctest is not a contract");
+        assert!(
+            !is_compile_fail_fence("/// ``compile_fail"),
+            "two backticks are not a fence delimiter"
+        );
+        assert!(!is_compile_fail_fence("/// ~compile_fail"), "one tilde is not a fence delimiter");
+    }
+
+    #[test]
+    fn block_doc_comment_fences_are_counted() {
+        // Rustdoc collects `/**` and `/*!` blocks as doctests; a scanner that
+        // saw only line-doc comments would let a contract hide in one (FC2).
+        // The inner-doc opener is spelled with a `\u{21}` escape so this test
+        // file itself does not carry a fence-shaped literal the ratchet
+        // would have to report.
+        let contents = [
+            "mod outer {",
+            "/**",
+            " * ```compile_fail",
+            " * let x: u32 = \"no\";",
+            " * ```",
+            " */",
+            "pub struct A;",
+            "/*\u{21} ```compile_fail */",
+            "pub struct B;",
+            "fn code() { /* ```compile_fail */ }",
+            "",
+        ]
+        .join("\n");
+        let lines = compile_fail_fence_lines(&contents);
+        assert_eq!(lines, vec![3, 8], "block doc fences are counted, plain block comments are not");
+    }
+
+    #[test]
+    fn fence_detection_survives_nested_block_comments() {
+        // A nested plain comment inside a block doc must not end the doc
+        // block early.
+        let contents =
+            ["/**", " * ```compile_fail", " * /* nested */", " * ```", " */", "pub struct A;", ""]
+                .join("\n");
+        assert_eq!(compile_fail_fence_lines(&contents), vec![2], "only the fence line is reported");
     }
 
     fn facts(name: &str, contracts: usize) -> PackageFacts {

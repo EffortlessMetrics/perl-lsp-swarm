@@ -106,10 +106,12 @@ impl ResolvedCorpusPaths {
     /// Downgrading discards the retained root authority, so the resulting
     /// [`CorpusPaths`] is no longer evidence that the root was validated.
     ///
-    /// The example is illustrative rather than enforced proof: no gate in this
-    /// repository runs `cargo test --doc` (see issue #13774), so a false
-    /// assertion here would not fail CI. The executed regression lives in
-    /// `tests/root_path_authority.rs`.
+    /// The example below is enforced: the `doctest_contract_proof` merge gate
+    /// selects this crate, so `cargo test --doc -p perl-corpus` compiles and
+    /// runs it on every PR (#13774). The executed regression also lives in
+    /// `tests/root_path_authority.rs`, which does not depend on this crate
+    /// staying selected by the doctest route — the two are deliberately
+    /// redundant.
     ///
     /// ```
     /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
