@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-15"
+updated = "2026-09-16"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -3153,6 +3153,26 @@ expires = "2026-09-23"
 removal_criteria = "Remove when ripr treats mechanical extractions as non-actionable, or narrow immediately if a future receipt reports an executable seam in lib.rs or baseline.rs beyond the moved lines."
 
 # -----------------------------------------------------------------------------
+# Kubernetes DAP workspace-profile validator (PR #12643, #10112): declaration-line
+# no_static_path probes on a new xtask bin. The diff-scoped run reported 184
+# no_static_path and 0 reachable_unrevealed, all in this one new file: consts,
+# required-fact/topology tables, serde field declarations, and the file's own
+# #[cfg(test)] include_str! constants. Same declaration-line ripr#1429 class as
+# ripr-suppress-quickorm-api-reference-registry, with the bin-entry tracing limit
+# of ripr-suppress-perl-dap-cli-entry-point.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-kubernetes-dap-profiles-validator"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/bin/kubernetes-dap-profiles.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #12643 (#10112) adds xtask/src/bin/kubernetes-dap-profiles.rs, the machine-checked Kubernetes DAP workspace-profile contract validator. The diff-scoped ripr run (workflow run 34732565368) reported 184 no_static_path probes and 0 reachable_unrevealed, every one inside this single new bin: 172 field_construction and 12 call_deletion probes on non-executable declarations — the *_SCHEMA_VERSION and DEFAULT_* consts (lines 26-32), the REQUIRED_TOPOLOGY_CODES / REQUIRED_SECURITY_REQUIREMENTS / REQUIRED_AUTHORITIES / INITIAL_ADMITTED_CELLS / FACT_ENFORCEMENT tables, the serde Deserialize field declarations for the contract, profile, and fixture documents (lines ~285-1166 and 1846-1850), and the test module's own include_str! constants at lines 2385-2395 inside #[cfg(test)] mod tests. ripr cannot trace a static path from a bin target's in-crate #[cfg(test)] tests to a declaration line, the same class as ripr-suppress-quickorm-api-reference-registry (declaration-line probes) and ripr-suppress-perl-dap-cli-entry-point (bin entry point). The behavior these declarations carry is proven, not unproven: 50 inline falsifier tests pin every rejection reason, the fact-enforcement mapping, schema parity, fixture-id binding, and status rendering, and the required generated-status lane runs the validator's own --check over the committed contract and 60 fixtures (2 admitting, 58 rejecting, exactly one positive per admitted install mode). HONEST SCOPE NOTE: the matcher is path-scoped and classification-scoped to no_static_path, so a genuinely unproven declaration added to this file during the window would be masked; reachable_unrevealed is not suppressed, and the same run's guidance pass was degraded (ripr timed out after 600s, guidance receipt incomplete), so the per-probe guidance was fallback-named rather than analyzer-confirmed. Remove when ripr#1429 resolves declaration-line probes, when this validator's logic moves into a library target ripr can trace, or when targeted mutation is scheduled per #1289."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-09-27"
+removal_criteria = "Remove when ripr#1429 resolves declaration-line probes for const/struct-field declarations, or when the validator's logic moves from the bin target into a library target whose in-crate tests ripr can trace; narrow immediately if any reachable_unrevealed finding appears in this file."
 # PR #15224 manual-clock notification seam: analyzer-untraceable #[cfg(test)]
 # coverage plus declaration/static-limitation probes. Hosted RIPR run
 # 34339885449 reported 19 new gaps on
@@ -3471,6 +3491,57 @@ expires = "2026-09-23"
 removal_criteria = "Remove when the registry gains a production consumer (re-scope suppression to that consumer's seams) or when ripr#1429 resolves declaration-line probes for data rows; narrow immediately if any executable (non-declaration) code lands in this file."
 
 # -----------------------------------------------------------------------------
+# PR #14758 (#10502) adds the Neovim activation/root envelope validator in
+# xtask/src/neovim_activation_root_envelope.rs. ripr 0.10.0 reports 62
+# no_static_path probes there — 31 field_construction and 31 call_deletion —
+# and every one sits on a declaration line: the `const` census tables
+# (REQUIRED_FILE_FAMILIES, REQUIRED_ROOT_CELLS and their individual rows,
+# ISOLATION_ROOT_CELLS, the accepted-key lists, the disposition sets, the
+# pinned identity constants), the `pub struct EnvelopeValidationError`
+# declaration, the `type Validated` alias, and two RecordedConfig field
+# declarations.
+#
+# The same receipt binds related tests to 1019 of the 1137 findings in this
+# file — every function seam names the integration tests that reach it. Only
+# the declaration probes report related_tests_total = 0, and they report
+# stop_reasons ["no_changed_rust_line"] on lines that are plainly added lines
+# in the analyzed diff. That is the const_data_no_static_path / ripr#1429 class
+# already recorded for INDIRECT_METHOD_EXCLUDED and GIT_READ_ONLY_FIRST: const
+# data has no call path ripr can trace the way a function body does.
+#
+# Adding tests was tried first, not assumed away. Ten co-located #[cfg(test)]
+# tests were added in the same module that name and iterate every flagged
+# table — the sorted/unique censuses, the unique expected-role binding, the
+# observation-cell exemption, the disposition subsets, the pinned identities,
+# the Validated alias, and RecordedConfig's two sets. They pass, and a negative
+# control (pointing marker.dist_ini at marker.build_pl's role) fails exactly
+# one of them. The receipt was regenerated afterwards and no_static_path stayed
+# at 62 with the identical probe set, which is the evidence that these findings
+# are not actionable by adding tests.
+#
+# Coverage evidence: 36 falsifiers in
+# xtask/tests/neovim_activation_root_envelope.rs drive validate_envelope over
+# two captured real-host runs, plus the 10 co-located census tests above.
+#
+# HONEST SCOPE NOTE: read_ripr_suppression_rules is PATH-scoped, so this covers
+# all diff-scoped findings in this file, not only the no_static_path set. Net
+# blocking impact is exactly those 62 probes — this diff reports
+# reachable_unrevealed = 0 and weakly_exposed is advisory-excluded. The
+# accepted, time-boxed residual is that a future reachable_unrevealed gap in
+# this file would be masked for the window below.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-neovim-activation-root-envelope-declarations"
+kind = "const_data_no_static_path"
+paths = ["xtask/src/neovim_activation_root_envelope.rs"]
+classification = ["no_static_path"]
+owner = "devex/editor-hosts"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14758 (#10502): ripr 0.10.0 flags 62 no_static_path probes (31 field_construction, 31 call_deletion) in xtask/src/neovim_activation_root_envelope.rs, all on declaration lines — the const census tables and their rows, the EnvelopeValidationError struct declaration, the Validated type alias, and two RecordedConfig field declarations. The same receipt binds related tests to 1019 of the 1137 findings in this file; only the declaration probes report related_tests_total = 0, with stop_reasons [\"no_changed_rust_line\"] on lines that are added lines in the analyzed diff. Same const_data_no_static_path ripr#1429 class as ripr-suppress-indirect-method-excluded-const-no-static-path and ripr-suppress-module-train-live-readonly-const. Adding tests was tried first: ten co-located #[cfg(test)] tests that name and iterate every flagged table were added in the same module (sorted/unique censuses, unique expected-role binding, observation-cell exemption, disposition subsets, pinned identities, the Validated alias, RecordedConfig's two sets), they pass, a negative control fails exactly one of them, and the regenerated receipt still reported 62 with the identical probe set. Behaviour is covered by 36 falsifiers in xtask/tests/neovim_activation_root_envelope.rs driving validate_envelope over two captured real-host runs. Suppression is narrow (single xtask file, one PR). Remove when ripr traces const-data and declaration-line references or targeted mutation is scheduled per #1289."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-10-13"
+removal_criteria = "Remove when ripr#1429 traces const-data and declaration-line references, or narrow immediately if a future receipt reports an executable no_static_path seam in neovim_activation_root_envelope.rs beyond these declarations."
 # PR #14958 (#13589) startup-@INC snapshot: declaration-line probes and
 # deleted-base probes anchored inside the head file.
 #
@@ -3558,6 +3629,28 @@ created = "2026-09-13"
 review_after = "2026-09-20"
 expires = "2026-09-27"
 removal_criteria = "Remove when #12617 wires the first production consumer (re-scope the suppression to that consumer's seams) or when ripr#1429 resolves declaration-line and newtype-declaration probes; narrow immediately if a future receipt reports an executable (non-declaration) no_static_path seam in this file."
+# Mojo::Base object-fact producer (#9682): a registry-activated fact producer
+# landed ahead of its consumer. The adapter disposition is
+# `AdapterDisposition::Shadow`, so no provider reads these modules and the SDK
+# authority validator refuses the output as publication authority — the
+# not-yet-wired substrate boundary of the PLSP-ADR-0006 workspace-core entry,
+# at declaration-line ripr#1429 class.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-mojo-base-object-facts-not-yet-wired"
+kind = "declaration_line_no_static_path"
+paths = [
+    "crates/perl-semantic-facts/src/framework_adapters/mojo_base_facts.rs",
+    "crates/perl-semantic-analyzer/src/analysis/mojo_base_attributes.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #14807 (#9682): measured with pinned ripr 0.10.0 running CI's producer, 46 no_static_path probes (32 in mojo_base_facts.rs, 14 in mojo_base_attributes.rs), 42 of them family `field_construction` on declaration lines — enum variant and struct field declarations such as `reason: String`, `Literal(String)` and `None,`. Per-declaration probes cannot trace activation because nothing in production calls these modules: the Mojo::Base adapter disposition is Shadow by construction and #9684 is the consumer this producer exists to unblock. TESTS-FIRST OBLIGATION IS MET, not deferred: reachable_unrevealed is 0 in the same run, so ripr found no reachable seam this proof fails to discriminate. The behavior is pinned by 88 tests across the two modules plus the end-to-end seam in crates/perl-semantic-analyzer/tests/mojo_base_object_facts.rs, with 27 guards each proven by a controlled mutation that fails one named test. HONEST SCOPE NOTE, and it differs from the quickorm_api sibling: that entry rests on the registry module's contract forbidding behavior, which is NOT true here — these modules contain real executable extraction and minting logic. The protection is the classification scoping instead: only `no_static_path` is suppressed, so a reachable_unrevealed seam in either file still blocks the gate on its merits, and weakly_exposed stays advisory-visible per #3363. What this window does mask is a future declaration-line probe in these two files. Remove when #9684 wires a production consumer (then re-scope to that consumer's findings), or when ripr#1429 resolves declaration-line probes via constructor-call paths."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-10-13"
+removal_criteria = "Remove when #9684 gives these modules their first production consumer and ripr can trace them for real (re-scope to that consumer's seams), or when ripr#1429 resolves declaration-line probes; narrow immediately if the no_static_path count in these files rises for a reason other than added declarations."
 
 # PR #15458 (#10831) adds xtask/src/install_surface_route_units.rs: the bridge
 # between the install-surface registry's product-unit vocabulary and release-
@@ -3892,3 +3985,196 @@ created = "2026-09-15"
 review_after = "2026-10-15"
 expires = "2026-12-31"
 removal_criteria = "Remove when ripr#1429-class tracing covers fn-pointer call sites on the deletion side of a diff, or when this PR's deletion probes age out of the diff scope. Narrow immediately if any seam unrelated to ParseFailure classification lands in this file."
+
+# -----------------------------------------------------------------------------
+# Compiler upstream conformance status packet declaration probes (#12532,
+# PR #15604): the same declaration-line ripr#1429 class accepted for this
+# crate's siblings (ripr-suppress-14958-startup-inc-snapshot-declarations,
+# ripr-suppress-compiler-transformation-contract-declarations,
+# ripr-suppress-13449-field-trait-declaration-and-removed-owner-seams,
+# ripr-suppress-15615-outbound-settlement-declaration-probes, and the #15469
+# framework-DSL gating state entry), reproduced by ripr 0.10.0 on the new
+# conformance-status packet.
+#
+# PR #15604 (fix #12532; same-root transplant of #12860) adds the
+# compiler_upstream_conformance_status.v1 projection: the serde data contract
+# and validators (xtask/src/compiler_upstream_status.rs), its 32-test
+# falsifier suite (xtask/src/compiler_upstream_status/tests.rs), and the
+# read-only CLI surface (xtask/src/tasks/compiler_upstream_status.rs).
+#
+# Decisive receipt facts (ripr 0.10.0 diff-scoped, base origin/main, head
+# 5bcb03b41, run 35060370095, hosted job 104679235317, artifact
+# ripr-pr-evidence): 128 no_static_path probes, of which the two on
+# xtask/src/main.rs are already covered by the native_product_surface entry,
+# leaving 126 as the enforce-new-ripr gate's entire blocking basis:
+#   - 124 field_construction on declaration lines: the
+#     PACKET_SCHEMA_VERSION / INPUTS_SCHEMA_VERSION / GENERATOR_IDENTITY /
+#     NO_SCORE_STATEMENT / MAX_REPORTED_VIOLATIONS consts, the
+#     TerminalState::ALL array const, the packet, input-manifest, row,
+#     witness, owner, limitation, performance, and history struct field
+#     declarations, the private FORBIDDEN_LEAK_SUBSTRINGS and DIFF_MAX_LINES
+#     consts, and the clap arg struct fields in the tasks module;
+#   - 1 return_value probe on the UpstreamChange::None enum variant
+#     declaration;
+#   - 1 call_deletion probe on the test harness type alias
+#     `type TestResult = anyhow::Result<()>`.
+#
+# Declaration lines have no function body for ripr to trace into, and a
+# constructor-only test for a struct field, const, or enum variant is the
+# receipt's own named anti-pattern ("say so in the PR instead of adding
+# proof theatre"). The executable behavior in these files is not unproven:
+# the same receipt classifies 1292 probes exposed and 161 weakly_exposed
+# (traced to the test module) with reachable_unrevealed = 0, and the focused
+# suite is 32/32 green at head 5bcb03b41.
+#
+# Identity key: `gap_ids` lists the 126 probe identities from that receipt.
+# Path + classification are additional filters, not the selector. A future
+# executable no_static_path seam in these files with a different probe id
+# stays visible. `kind` remains descriptive metadata, not a declaration
+# selector. Weakly_exposed / reachable_unrevealed / other classes stay
+# visible.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-15604-compiler-upstream-status-declaration-probes"
+kind = "declaration_line_no_static_path"
+paths = [
+  "xtask/src/compiler_upstream_status.rs",
+  "xtask/src/compiler_upstream_status/tests.rs",
+  "xtask/src/tasks/compiler_upstream_status.rs",
+]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:xtask_src_compiler_upstream_status_tests.rs:call_deletion:e83175da",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:4643d1b2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:b3c86cbe",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:b64691dc",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:25ecca42",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:90fbbb34",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:d00286e4",
+  "probe:xtask_src_compiler_upstream_status.rs:return_value:8ef30cb8",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:6a98cf2b",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:2762ca4b",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:44b7aa4d",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:f00cc892",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:c37321f2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:db3aa9a2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:5efed389",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:69821ddd",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:9fa878e7",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7a889fc1",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:d64775ea",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:29db9d93",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:364430c8",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:1fb89ffe",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a8049c56",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:50ca214e",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:d90f0d69",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:6779c8af",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:fb13e728",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:2b108349",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a8df5540",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:eb235fa6",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:859fa6ff",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:afe40124",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7045109a",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:814a86b8",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a6bfc6a7",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:29a66876",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7f91dbc6",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:65eafbee",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:6733edf0",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:6de32bc7",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:15d4256a",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:65692a8d",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7f59f296",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:ed25fe94",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:814a86b8.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:f589fa26",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a8df5540.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7cf63c0d",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:e7edff3e",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:78d620ae",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:55fe24a2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:ee0600b1",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:8e114f28",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:3a3394e6",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:213f9ec5",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:8205875e",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:4ca00ff2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a2df1464",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:b534e814",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:0317d497",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:d39aa730",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:1b464944",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a8df5540.3",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:eb235fa6.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:859fa6ff.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:afe40124.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7045109a.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:d841327f",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:29a66876.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7f91dbc6.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:65eafbee.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:6733edf0.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:6de32bc7.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:15d4256a.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:65692a8d.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:48e051b1",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:cbba38e6",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:77675f0a",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:f589fa26.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a8df5540.4",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7cf63c0d.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:e7edff3e.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:78d620ae.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:55fe24a2.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:ee0600b1.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:8e114f28.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:3a3394e6.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:213f9ec5.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:8205875e.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:4ca00ff2.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a2df1464.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:b534e814.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:0317d497.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:d39aa730.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:1b464944.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a8df5540.5",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:03b36113",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:88cda000",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:03b36113.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:88cda000.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:e40f3253",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:814a86b8.3",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a6bfc6a7.2",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:117d4d38",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:a3f6bcb6",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:3aaf1ee4",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:8a528379",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:0d2ee4b5",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:8626e9d0",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:9a7b7c2f",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:bde46dcd",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7fd2747a",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:5be57663",
+  "probe:xtask_src_compiler_upstream_status.rs:field_construction:7667b203",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:18152e74",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:5a14ffa7",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:ab33f29c",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:ab33f29c.2",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:98459b97",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:17d12c2e",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:43f3c81d",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:39368f70",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:96a39d33",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:5a14ffa7.2",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:96a39d33.2",
+  "probe:xtask_src_tasks_compiler_upstream_status.rs:field_construction:ab33f29c.3",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15604 (fix #12532; same-root transplant of #12860): 126 no_static_path probes are the enforce-new-ripr gate's entire blocking basis on run 35060370095 at head 5bcb03b41 — 124 field_construction on const, struct-field, and enum-adjacent declaration lines of the new conformance-status data contract and its read-only CLI surface, 1 return_value probe on the UpstreamChange::None enum variant declaration, and 1 call_deletion probe on the test harness type alias. Declaration lines have no function body to trace into; constructor-only tests would be proof theatre. Executable behavior is not unproven: the same receipt reports 1292 exposed and 161 weakly_exposed probes with reachable_unrevealed = 0, and the focused suite is 32/32 green at that head. Same ripr#1429 declaration-line class as ripr-suppress-14958-startup-inc-snapshot-declarations, ripr-suppress-compiler-transformation-contract-declarations, ripr-suppress-13449-field-trait-declaration-and-removed-owner-seams, ripr-suppress-15615-outbound-settlement-declaration-probes, and the #15469 framework-DSL gating state entry. Selector is the 126 gap_ids from that receipt, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in these files with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in xtask/src/compiler_upstream_status.rs, its tests submodule, or xtask/src/tasks/compiler_upstream_status.rs outside the 126 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
