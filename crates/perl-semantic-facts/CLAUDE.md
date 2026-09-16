@@ -25,7 +25,7 @@ only where this guide describes them.
 - Export/import modeling: `ExportSet`, `ExportTag`, `ImportSpec`,
   `ImportKind`, `ImportSymbols`, `UseLibFact`.
 - Visibility resolution: `VisibleSymbol`, `VisibleSymbolContext`.
-- `structural_access/` -- the ordered structural access-hop contract (#13619):
+- `structural_access/` -- the ordered structural access-hop contract:
   `StructuralAccessChain`, `StructuralAccessHop` and their vocabulary, for
   recording `$config->{groups}{staff}[0]` hop by hop. Validated constructors,
   private fields, deterministic fingerprints. No producer consumes it yet.
@@ -59,7 +59,7 @@ is a types-only vocabulary crate.
 required since these records cross process/cache boundaries as JSON.
 `tests/bdd_semantic_facts.rs` covers behavioral scenarios.
 
-For `structural_access/`: `cargo test -p perl-semantic-facts --lib
+For `src/structural_access/`: `cargo test -p perl-semantic-facts --lib
 structural_access` runs the in-module falsifiers, and
 `tests/structural_access_roundtrip.rs` drives the same public API from
 outside the crate. Each falsifier is named for the wrong implementation it

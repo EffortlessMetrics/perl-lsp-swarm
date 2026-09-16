@@ -141,7 +141,7 @@ mod tests {
     /// A `TerminationState` at generation 1, matching the generation captured
     /// by the forwarder under test.
     fn termination_state_at_generation_one() -> Arc<Mutex<TerminationState>> {
-        Arc::new(Mutex::new(TerminationState { generation: 1, emitted: false }))
+        Arc::new(Mutex::new(TerminationState { generation: 1, ..Default::default() }))
     }
 
     fn current_queue() -> (SyncSender<DapMessage>, Receiver<DapMessage>) {
