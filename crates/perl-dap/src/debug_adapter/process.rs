@@ -4039,6 +4039,10 @@ mod tests {
         assert!(!super::has_probe_success_marker("the OK substring alone\n"));
         // A doubled marker on one line still is not the marker's own line.
         assert!(!super::has_probe_success_marker("OK OK\n"));
+        // Windows-style probe output carries CRLF: the trim must still
+        // isolate the marker's own line.
+        assert!(super::has_probe_success_marker("noise\r\nOK\r\n"));
+        assert!(!super::has_probe_success_marker("OKAY\r\n"));
     }
 
     /// A probe that could not run (spawn failure) keeps the launch-continue
@@ -4065,22 +4069,28 @@ mod tests {
         }
     }
 
-    /// A cached pass verdict is served without spawning a new probe: the
-    /// cache-hit seam returns the stored verdict for the exact launch key
-    /// (ripr discriminator for the cache-hit seam).
+    /// A cached verdict is served without spawning a new probe: the cache-hit
+    /// seam returns the stored verdict for the exact launch key. The sentinel
+    /// is an `Err`, so the test fails if the lookup is skipped and the bogus
+    /// interpreter is re-probed instead (that path yields launch-continue
+    /// `Ok`). (ripr discriminator for the cache-hit seam.)
     #[test]
-    fn cached_pass_verdict_is_served_without_reprobing() {
+    fn cached_verdict_is_served_without_reprobing() {
         let interpreter = "perl-lsp-cached-probe-interpreter-7c3e9";
         let env = HashMap::new();
         let cwd = std::env::temp_dir();
         let key = DebugAdapter::capability_probe_cache_key(interpreter, &env, &cwd);
         if let Ok(mut cache) = super::DEBUGGER_PROBE_CACHE.lock() {
-            cache.insert(key, Ok(()));
+            cache.insert(key, Err("cached probe failure sentinel".to_string()));
         }
 
         let verdict = DebugAdapter::check_debugger_capability(interpreter, &env, &cwd);
 
-        assert!(verdict.is_ok(), "cached pass must be served, got: {verdict:?}");
+        assert_eq!(
+            verdict,
+            Err("cached probe failure sentinel".to_string()),
+            "the stored verdict must come back verbatim, without re-probing"
+        );
     }
 
     /// Verify that `detect_perl_info()` runs without panicking.
