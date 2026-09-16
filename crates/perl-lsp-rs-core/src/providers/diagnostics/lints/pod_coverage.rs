@@ -715,7 +715,10 @@ sub something { 1 }
     }
 
     fn make_typeglob(name: &str, start: usize, end: usize) -> Node {
-        Node::new(NodeKind::Typeglob { name: name.to_string(), body: None }, SourceLocation { start, end })
+        Node::new(
+            NodeKind::Typeglob { name: name.to_string(), body: None },
+            SourceLocation { start, end },
+        )
     }
 
     fn make_assignment(lhs: Node, rhs: Node, start: usize, end: usize) -> Node {
