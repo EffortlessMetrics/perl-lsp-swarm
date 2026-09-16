@@ -1,8 +1,9 @@
 //! Scenario 12 — `textDocument/publishDiagnostics` feature grid coverage.
 //!
-//! Verifies that the server emits diagnostics notifications when Perl code has
-//! known issues. This exercises the `textDocument/publishDiagnostics`
-//! capability advertised in `features.toml`.
+//! Verifies that the server emits a diagnostics notification after opening a
+//! Perl document, including an explicit empty current result when no diagnostics
+//! apply. This exercises the `textDocument/publishDiagnostics` capability
+//! advertised in `features.toml`.
 //!
 //! Acceptance criteria:
 //! - After `didOpen`, the server MUST eventually send a
@@ -182,4 +183,91 @@ fn scenario_12_clean_file_publishes_current_diagnostics() {
             Ok(())
         },
     );
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::{validate_diagnostic, validate_diagnostics};
+    use anyhow::Result;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_empty_and_well_formed_diagnostic_sets() -> Result<()> {
+        validate_diagnostics(&[])?;
+        validate_diagnostic(&json!({
+            "range": {
+                "start": {"line": 0, "character": 1},
+                "end": {"line": 0, "character": 2}
+            },
+            "message": "example"
+        }))?;
+        validate_diagnostic(&json!({
+            "range": {
+                "start": {"line": 1, "character": 0},
+                "end": {"line": 2, "character": 4}
+            },
+            "message": "warning",
+            "severity": 4
+        }))?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_malformed_required_fields_and_severity() {
+        for malformed in [
+            json!(null),
+            json!({}),
+            json!({"range": {}, "message": "missing positions"}),
+            json!({
+                "range": {
+                    "start": {"line": -1, "character": 0},
+                    "end": {"line": 0, "character": 1}
+                },
+                "message": "negative line"
+            }),
+            json!({
+                "range": {
+                    "start": {"line": 0, "character": "zero"},
+                    "end": {"line": 0, "character": 1}
+                },
+                "message": "string character"
+            }),
+            json!({
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 1}
+                },
+                "message": 7
+            }),
+            json!({
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 1}
+                },
+                "message": "zero severity",
+                "severity": 0
+            }),
+            json!({
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 1}
+                },
+                "message": "high severity",
+                "severity": 5
+            }),
+            json!({
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 1}
+                },
+                "message": "string severity",
+                "severity": "1"
+            }),
+        ] {
+            assert!(
+                validate_diagnostic(&malformed).is_err(),
+                "malformed diagnostic must be rejected: {malformed:?}"
+            );
+        }
+    }
 }
