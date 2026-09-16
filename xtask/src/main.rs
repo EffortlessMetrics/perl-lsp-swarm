@@ -1250,7 +1250,12 @@ enum Commands {
         limit: usize,
 
         /// Output directory for ci_baseline artifacts.
-        #[arg(short, long, default_value = ".ci")]
+        ///
+        /// Defaults to `target/metrics` so the consumer in
+        /// `metrics::release_health::read_ci_baseline` finds the file at the
+        /// canonical contract path. Override to a different directory to keep
+        /// historical or per-branch baselines side by side.
+        #[arg(short, long, default_value = metrics::release_health::CI_BASELINE_OUTPUT_DIR)]
         output: PathBuf,
     },
 
