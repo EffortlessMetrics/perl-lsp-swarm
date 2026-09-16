@@ -548,6 +548,12 @@ impl DebugAdapter {
                 // The output reader owns the first debugger context and frame snapshot.
                 // It publishes the entry stop after that snapshot is installed; emitting
                 // here races a client's immediate stackTrace request with the reader.
+                // #15637: at this point the session is still `Running` with no frame
+                // authority, so an eager entry event would announce a stop the very
+                // next `stackTrace` cannot observe (empty frames). The session is
+                // created with `entry_stop_pending` set and the output reader emits
+                // exactly one `stopped(reason=entry)` from the authoritative
+                // suspension instead.
                 Ok(_thread_id) => DapMessage::Response {
                     seq,
                     request_seq,
@@ -2103,8 +2109,6 @@ impl DebugAdapter {
                                     );
                                     let has_source_frame =
                                         !prompt_file.is_empty() && prompt_line > 0;
-                                    let has_authoritative_source_frame =
-                                        prompt_has_native_context && has_source_frame;
                                     let can_admit_source_frame = has_source_frame
                                         && (!s.entry_stop_pending || prompt_has_native_context);
                                     // Create stack frame with enhanced context validation
@@ -2134,8 +2138,13 @@ impl DebugAdapter {
                                         };
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
-                                    } else if !s.entry_stop_pending {
-                                        // Provide a fallback frame for when we don't have perfect context
+                                    } else {
+                                        // Provide a fallback frame for when we don't have perfect
+                                        // context. With a pending entry stop the fallback is
+                                        // admitted too: #15637's prompt-only bootstrap consumes
+                                        // the pending reason so the client is never left
+                                        // waiting, and the prompt stop must remain
+                                        // `stackTrace`-answerable.
                                         let frame = StackFrame {
                                             id: current_frame_id,
                                             name: "main".to_string(),
@@ -2152,13 +2161,9 @@ impl DebugAdapter {
                                         s.stack_frames = vec![frame];
                                         s.stack_frame_arguments.clear();
                                     }
-                                    if s.entry_stop_pending && !has_authoritative_source_frame {
-                                        // A prompt without a source context cannot satisfy
-                                        // stopOnEntry's frame contract. Keep the entry stop
-                                        // pending instead of exposing a synthetic location.
-                                        s.state = DebugState::Running;
-                                    } else if was_running
+                                    if was_running
                                         && matches!(s.last_resume_mode, ResumeMode::RunToBreakpoint)
+                                        && !s.entry_stop_pending
                                     {
                                         // RunToBreakpoint is already driving the debugger with
                                         // the original `c`.  Its implicit context is followed by
@@ -2166,11 +2171,18 @@ impl DebugAdapter {
                                         // is not a new step stop and must not queue another
                                         // resume command.  A real breakpoint context transitions
                                         // the session to Stopped in the context branch, so this
-                                        // guard only covers the implicit prompt.
+                                        // guard only covers the implicit prompt. A pending
+                                        // entry stop takes precedence and is published below.
                                         s.state = DebugState::Running;
                                     } else if was_running || s.entry_stop_pending {
-                                        let entry_stop =
-                                            s.entry_stop_pending && has_authoritative_source_frame;
+                                        // #15637: a prompt can be the first observed authority
+                                        // for the entry suspension (context output may never
+                                        // parse). #15220 orders the entry publication after a
+                                        // fresh native context when one exists; either way the
+                                        // pending reason is consumed exactly once so the client
+                                        // is never left waiting, and later prompts report
+                                        // `step` as before.
+                                        let entry_stop = s.entry_stop_pending;
                                         s.entry_stop_pending = false;
                                         s.state = DebugState::Stopped;
                                         should_emit_stopped = true;
@@ -3124,9 +3136,13 @@ impl DebugAdapter {
                 // The implicit startup pause already corresponds to an
                 // acknowledged breakpoint. Publish it without sending `c`.
             } else if stop_on_entry {
-                // The reader owns entry-stop publication after ordered native
-                // context and prompt evidence. List the current source
-                // location so the IDE can display it.
+                // #15637: the entry stop is emitted by the output reader after
+                // ordered native context and prompt evidence, so by
+                // configurationDone time it may already have been published — or
+                // the reader may still be waiting for the bootstrap output.
+                // List the current source location so the debugger re-reports
+                // it either way and the reader can observe an authoritative
+                // frame for the entry stop.
                 let _ = stdin.write_all(b"l\n");
                 let _ = stdin.flush();
             } else {
@@ -4619,12 +4635,16 @@ mod tests {
         Ok(())
     }
 
-    /// A pending entry stop must wait for a real positive source location. A
-    /// zero line or a prompt without any source context must neither publish a
-    /// stopped event nor fabricate an `<unknown>:1` stack frame.
+    /// A zero line or a prompt without any source context must not fabricate a
+    /// bogus source location. #15637's landed prompt-only bootstrap fallback
+    /// still consumes the pending entry reason exactly once so the client is
+    /// never left waiting; the prompt stop then carries the `<unknown>:1`
+    /// fallback frame instead of the invalid context, and the session is
+    /// `Stopped` and `stackTrace`-answerable.
     #[cfg(unix)]
     #[test]
-    fn output_reader_rejects_zero_line_and_missing_context_for_entry() -> Result<(), String> {
+    fn output_reader_prompt_only_bootstrap_publishes_one_fallback_entry_stop() -> Result<(), String>
+    {
         use super::{DapMessage, DebugSession, ResumeMode, VariableCache, lock_or_recover};
         use std::io::Write;
         use std::path::PathBuf;
@@ -4681,12 +4701,17 @@ mod tests {
                     .last()
                     .ok_or_else(|| format!("{label}: fixture marker is missing"))?;
                 let mut saw_marker = false;
+                let mut stopped_events = Vec::new();
                 while !saw_marker {
                     match receiver.recv_timeout(Duration::from_secs(3)) {
                         Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
-                            return Err(format!(
-                                "{label}: unexpected stopped event before valid source context: {body:?}"
-                            ));
+                            let reason = body
+                                .as_ref()
+                                .and_then(|value| value.get("reason"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string();
+                            stopped_events.push(reason);
                         }
                         Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
                             if body
@@ -4710,6 +4735,15 @@ mod tests {
                     }
                 }
 
+                // #15637's prompt-only fallback: the pending entry reason is
+                // consumed exactly once at the first prompt, even when no valid
+                // source context was observed.
+                if stopped_events.len() != 1 || stopped_events[0] != "entry" {
+                    return Err(format!(
+                        "{label}: prompt-only bootstrap must publish exactly one entry stop, got {stopped_events:?}"
+                    ));
+                }
+
                 let guard = adapter
                     .session
                     .lock()
@@ -4717,16 +4751,19 @@ mod tests {
                 let session = guard
                     .as_ref()
                     .ok_or_else(|| format!("{label}: session cleared before fixture inspection"))?;
-                if !matches!(session.state, DebugState::Running) {
+                if !matches!(session.state, DebugState::Stopped) {
                     return Err(format!(
-                        "{label}: invalid source context changed session state to {:?}",
+                        "{label}: published entry stop left session in state {:?}",
                         session.state
                     ));
                 }
-                if !session.stack_frames.is_empty() {
+                let frame = session.stack_frames.first().ok_or_else(|| {
+                    format!("{label}: entry stop published without any stack frame")
+                })?;
+                if frame.source.path != "<unknown>" || frame.line != 1 {
                     return Err(format!(
-                        "{label}: invalid source context fabricated stack frames: {:?}",
-                        session.stack_frames
+                        "{label}: invalid source context fabricated a bogus frame {:?}:{}",
+                        frame.source.path, frame.line
                     ));
                 }
                 Ok(())
@@ -6148,6 +6185,309 @@ mod tests {
         let _ = old_child.kill();
         old_child.wait().map_err(|error| format!("failed to reap old reader fixture: {error}"))?;
         result
+    }
+
+    /// Spawn a controllable fake debugger for the #15637 entry-stop proofs.
+    ///
+    /// `mode` selects the stderr bootstrap script. After it, the fixture loops
+    /// on stdin answering framed `T` queries exactly like the reader fixture
+    /// above, so an immediate `stackTrace` observes real frame authority.
+    fn spawn_entry_stop_fixture_child(mode: &str) -> Result<super::Child, String> {
+        std::process::Command::new("perl")
+            .arg("-e")
+            .arg(r##"
+                my $mode = shift;
+                select STDERR; $|=1; select STDOUT; $|=1;
+                if ($mode eq 'delayed_context') {
+                    select undef, undef, undef, 0.6;
+                    print STDERR "main::(entry_fixture.pl:2):\tuse strict;\n";
+                    print STDERR "DB<1>\n";
+                    print STDERR "ENTRY_FIXTURE_BOOTSTRAP_DONE\n";
+                } elsif ($mode eq 'prompt_only') {
+                    select undef, undef, undef, 0.2;
+                    print STDERR "DB<1>\n";
+                    print STDERR "ENTRY_FIXTURE_BOOTSTRAP_DONE\n";
+                } elsif ($mode eq 'context_retained') {
+                    print STDERR "main::(entry_fixture.pl:2):\tuse strict;\n";
+                    print STDERR "ENTRY_FIXTURE_BOOTSTRAP_DONE\n";
+                } elsif ($mode eq 'eof_before_stop') {
+                    print STDERR "bootstrap chatter without any debugger context\n";
+                    exit 0;
+                }
+                while (<STDIN>) {
+                    if (/DAP_BEGIN_(\d+)/) {
+                        print STDERR "DAP_BEGIN_$1\n";
+                        print STDERR q{$ = main::entry_fixture called from file `entry_fixture.pl' line 2}, "\n";
+                    } elsif (/DAP_END_(\d+)/) {
+                        print STDERR "DAP_END_$1\nDB<1>\n";
+                    }
+                }
+            "##)
+            .arg(mode)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn entry-stop fixture: {error}"))
+    }
+
+    /// Launch-shaped #15637 fixture: a `Running` session with empty frames —
+    /// exactly what `handle_launch` leaves behind — plus the pending-stop flags
+    /// a `stopOnEntry`/plain launch would install, and a live output reader.
+    fn entry_stop_fixture(
+        mode: &str,
+        entry_stop_pending: bool,
+        initial_stop_pending: bool,
+    ) -> Result<(Arc<DebugAdapter>, std::sync::mpsc::Receiver<DapMessage>), String> {
+        use super::{DebugSession, ResumeMode, VariableCache};
+
+        let child = spawn_entry_stop_fixture_child(mode)?;
+        let (sender, receiver) = sync_channel(64);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        let adapter = Arc::new(adapter);
+        adapter.operation_broker.open_session();
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.entry_fixture");
+            *guard = Some(DebugSession {
+                process: child,
+                state: DebugState::Running,
+                stack_frames: Vec::new(),
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                debuggee_cwd: PathBuf::from("."),
+                last_resume_mode: ResumeMode::Unknown,
+                initial_stop_pending,
+                entry_stop_pending,
+                stopped_generation: 0,
+            });
+        }
+        adapter.start_output_reader(PathBuf::from("."));
+        Ok((adapter, receiver))
+    }
+
+    /// Collect `stopped` reasons until `deadline`, failing if the wait errors.
+    fn stopped_reasons_within(
+        receiver: &std::sync::mpsc::Receiver<DapMessage>,
+        window: Duration,
+    ) -> Result<Vec<String>, String> {
+        let deadline = Instant::now() + window;
+        let mut reasons = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(reasons);
+            }
+            match receiver.recv_timeout(remaining) {
+                Ok(DapMessage::Event { event, body, .. }) => {
+                    if event == "stopped" {
+                        reasons.push(
+                            body.as_ref()
+                                .and_then(|value| value.get("reason"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string(),
+                        );
+                    }
+                }
+                Ok(_) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(reasons),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("event channel disconnected while waiting for stopped".to_string());
+                }
+            }
+        }
+    }
+
+    /// Wait for the first `stopped` event and return its reason.
+    fn first_stopped_reason(
+        receiver: &std::sync::mpsc::Receiver<DapMessage>,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("no stopped event arrived within 5s".to_string());
+            }
+            match receiver.recv_timeout(remaining) {
+                Ok(DapMessage::Event { event, body, .. }) => {
+                    if event == "stopped" {
+                        return Ok(body
+                            .as_ref()
+                            .and_then(|value| value.get("reason"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string());
+                    }
+                }
+                Ok(_) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("no stopped event arrived within 5s".to_string());
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("event channel disconnected while waiting for stopped".to_string());
+                }
+            }
+        }
+    }
+
+    /// #15637 regression: a `stopOnEntry` launch must NOT emit its entry stop
+    /// eagerly. While the debuggee is still booting (session `Running`, no
+    /// frames), no stopped event may exist; the entry stop is published exactly
+    /// once, from the first real debugger suspension whose frames a subsequent
+    /// `stackTrace` can immediately observe.
+    #[test]
+    fn stop_on_entry_launch_defers_entry_stop_to_first_real_suspension() -> Result<(), String> {
+        let (adapter, receiver) = entry_stop_fixture("delayed_context", true, false)?;
+
+        // The fixture stays silent for 600ms after spawn. The old eager launch
+        // emission would have delivered `stopped(reason=entry)` long before any
+        // debugger output existed; it must not appear in that window.
+        let early = stopped_reasons_within(&receiver, Duration::from_millis(250))?;
+        if !early.is_empty() {
+            return Err(format!(
+                "entry stop was published before the first real suspension: {early:?}"
+            ));
+        }
+
+        let reason = first_stopped_reason(&receiver)?;
+        if reason != "entry" {
+            return Err(format!("first real suspension published reason {reason:?}, not entry"));
+        }
+
+        {
+            let guard = lock_or_recover(&adapter.session, "test.entry_stopped");
+            let session = guard.as_ref().ok_or("entry stop lost the session")?;
+            if !matches!(session.state, DebugState::Stopped) {
+                return Err("entry stop published without a Stopped session".to_string());
+            }
+            if session.stopped_generation != 1 {
+                return Err(format!(
+                    "entry stop bound to generation {}, expected 1",
+                    session.stopped_generation
+                ));
+            }
+            let frame = session.stack_frames.first().ok_or("entry stop has no frame")?;
+            if frame.source.path != "entry_fixture.pl" || frame.line != 2 {
+                return Err(format!(
+                    "entry stop frame is not the launched script location: {:?}:{}",
+                    frame.source.path, frame.line
+                ));
+            }
+        }
+
+        // Immediately after the entry event — no retry — the frame authority the
+        // reader just established must answer `stackTrace`.
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("stackTrace failed right after the entry stop: {response:?}"));
+        };
+        let frame = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .and_then(|frames| frames.first())
+            .ok_or("stackTrace returned no frames for the entry stop")?;
+        if frame.get("line").and_then(Value::as_i64) != Some(2) {
+            return Err(format!("entry-stop stackTrace pointed elsewhere: {frame}"));
+        }
+
+        // Exactly one entry stop per session: the fixture's later prompt may
+        // report its own stop, but a second `entry` must never be emitted.
+        wait_for_reader_barrier(&adapter, "ENTRY_FIXTURE_BOOTSTRAP_DONE")?;
+        let later = stopped_reasons_within(&receiver, Duration::from_millis(300))?;
+        if later.iter().any(|reason| reason == "entry") {
+            return Err(format!("a second entry stop was emitted: {later:?}"));
+        }
+        Ok(())
+    }
+
+    /// #15637: when the prompt is the first observed authority (context output
+    /// never parsed), the pending entry reason is still consumed exactly once
+    /// instead of leaving the client waiting for an entry stop forever.
+    #[test]
+    fn stop_on_entry_prompt_only_bootstrap_still_honors_pending_entry() -> Result<(), String> {
+        let (adapter, receiver) = entry_stop_fixture("prompt_only", true, false)?;
+        let reason = first_stopped_reason(&receiver)?;
+        if reason != "entry" {
+            return Err(format!("prompt-first authority published {reason:?}, not entry"));
+        }
+        let guard = lock_or_recover(&adapter.session, "test.entry_prompt");
+        let session = guard.as_ref().ok_or("prompt entry stop lost the session")?;
+        if !matches!(session.state, DebugState::Stopped) {
+            return Err("prompt entry stop published without a Stopped session".to_string());
+        }
+        wait_for_reader_barrier(&adapter, "ENTRY_FIXTURE_BOOTSTRAP_DONE")?;
+        let later = stopped_reasons_within(&receiver, Duration::from_millis(300))?;
+        if later.iter().any(|reason| reason == "entry") {
+            return Err(format!("a second entry stop was emitted: {later:?}"));
+        }
+        Ok(())
+    }
+
+    /// #15637 negative control: `stopOnEntry=false` must keep publishing no stop
+    /// from the implicit first-line pause — that suspension stays reserved for
+    /// the configuration/breakpoint admission route.
+    #[test]
+    fn stop_on_entry_false_launch_publishes_no_stop_from_implicit_first_pause() -> Result<(), String>
+    {
+        let (adapter, receiver) = entry_stop_fixture("context_retained", false, true)?;
+        wait_for_reader_barrier(&adapter, "ENTRY_FIXTURE_BOOTSTRAP_DONE")?;
+        {
+            let guard = lock_or_recover(&adapter.session, "test.retained_stop");
+            let session = guard.as_ref().ok_or("retained stop lost the session")?;
+            if !matches!(session.state, DebugState::Stopped) {
+                return Err("implicit first-line pause was not retained".to_string());
+            }
+        }
+        let published = stopped_reasons_within(&receiver, Duration::from_millis(300))?;
+        if !published.is_empty() {
+            return Err(format!(
+                "stopOnEntry=false published a stop before configuration admitted one: {published:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// #15637: if the debuggee dies before the first real suspension, the client
+    /// observes termination — never a synthetic stopped event for a stop that
+    /// never happened.
+    #[test]
+    fn entry_stop_pending_yields_termination_not_synthetic_stop_on_eof() -> Result<(), String> {
+        // The adapter stays bound for the whole test: it owns the fixture child.
+        let (adapter, receiver) = entry_stop_fixture("eof_before_stop", true, false)?;
+        let _adapter = adapter;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("no terminal event arrived after debugger EOF".to_string());
+            }
+            match receiver.recv_timeout(remaining) {
+                Ok(DapMessage::Event { event, body, .. }) => {
+                    if event == "stopped" {
+                        let reason = body
+                            .as_ref()
+                            .and_then(|value| value.get("reason"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown");
+                        return Err(format!(
+                            "a synthetic stopped event ({reason}) was published for a session that never suspended"
+                        ));
+                    }
+                    if event == "terminated" {
+                        return Ok(());
+                    }
+                }
+                Ok(_) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("no terminal event arrived after debugger EOF".to_string());
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("event channel disconnected before termination".to_string());
+                }
+            }
+        }
     }
 
     /// Regression for issue #5149 / PR #5318 defect 2: the watchdog used to emit the

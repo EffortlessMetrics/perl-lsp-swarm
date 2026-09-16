@@ -21,8 +21,13 @@ pub(super) struct DebugSession {
     pub(super) debuggee_cwd: std::path::PathBuf,
     /// Last resume command issued while running.
     pub(super) last_resume_mode: ResumeMode,
-    /// Whether the first debugger context must publish the DAP entry stop.
-    /// The event is emitted only after that context has populated `stack_frames`.
+    /// Whether a `stopOnEntry` launch still owes the client exactly one
+    /// `stopped(reason=entry)` event (#15637). The launch path no longer emits
+    /// it eagerly: the output reader consumes this flag at the first real
+    /// debugger suspension — after the native source frame and its ordering
+    /// prompt when one is fresh — once stopped-state and frame authority
+    /// exist, so the event can never announce a stop that `stackTrace` cannot
+    /// yet see.
     pub(super) entry_stop_pending: bool,
     /// Whether the debugger's implicit startup pause is still available for
     /// projection onto an acknowledged main-source breakpoint.
