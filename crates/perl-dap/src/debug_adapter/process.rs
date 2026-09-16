@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::sync_channel;
 
-use super::sync_utils::{EventSender, GuardedDispatchResult};
+use super::sync_utils::EventSender;
 use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
@@ -777,6 +777,7 @@ impl DebugAdapter {
                     );
                 }
                 self.operation_broker.open_session();
+                self.admit_terminal_lifecycle();
 
                 // Apply any function breakpoints configured before launch.
                 self.apply_stored_function_breakpoints();
@@ -2147,11 +2148,13 @@ impl DebugAdapter {
                 && let Some(ref sender) = sender
                 && terminated_delivery_is_current(&termination_state, Some(session_generation))
             {
-                let _ = emit_event_safe(
+                let _ = deliver_reserved_terminated_event(
                     sender,
                     &seq,
-                    "terminated",
+                    &termination_state,
+                    session_generation,
                     Some(json!({"reason": "debuggee_timeout"})),
+                    &|| false,
                 );
             }
         });
@@ -2280,6 +2283,8 @@ impl DebugAdapter {
 
                 if let Ok(mut guard) = self.attached_pid.lock() {
                     *guard = Some(pid);
+                    drop(guard);
+                    self.admit_terminal_lifecycle();
                 }
 
                 let stop_on_entry =
@@ -2433,6 +2438,8 @@ impl DebugAdapter {
                         // Store session
                         if let Ok(mut guard) = self.tcp_session.lock() {
                             *guard = Some(session);
+                            drop(guard);
+                            self.admit_terminal_lifecycle();
                         }
                         self.operation_broker.open_session();
 
@@ -2728,14 +2735,19 @@ impl DebugAdapter {
         // Settle broker waiters before terminating the child so EOF cannot
         // win the race and replace the client-requested disconnect reason.
         self.operation_broker.settle_all("disconnect");
-        // `terminate` closes the active session and already reserves the
-        // terminal event.  VS Code commonly follows it with `disconnect`; do
-        // not emit a second event for that already-closed session.  A plain
-        // disconnect of an active session still owns the terminal event.
+        // No-session disconnect must not fabricate a terminal event. An
+        // admitted session with a reserved but undelivered event transfers
+        // that obligation to this request before sequence allocation.
         let has_active_session = lock_or_recover(&self.session, "debug_adapter.session").is_some()
             || lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid").is_some()
             || lock_or_recover(&self.tcp_session, "debug_adapter.tcp_session").is_some();
-        if has_active_session && let Some(ref sender) = self.event_sender {
+        let terminal_committed =
+            lock_or_recover(&self.termination_state, "disconnect.termination_state")
+                .terminal_committed;
+        if has_active_session
+            && !terminal_committed
+            && let Some(ref sender) = self.event_sender
+        {
             emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
         }
         let cleanup_succeeded = self.clear_active_session_state();
@@ -3216,19 +3228,45 @@ pub(super) fn emit_terminated_event_guarded(
     body: Option<Value>,
     stale: &dyn Fn() -> bool,
 ) -> bool {
-    if !reserve_terminated_event(termination_state, expected_generation) {
+    let generation = expected_generation
+        .unwrap_or_else(|| lock_or_recover(termination_state, "terminal.generation").generation);
+    if !reserve_terminated_event(termination_state, Some(generation)) {
         return false;
     }
-    if !terminated_delivery_is_current(termination_state, expected_generation) {
-        // The generation was closed or replaced between reservation and
-        // delivery; retire the stale send rather than leak an old session's
-        // terminal event into a newer client conversation (#12092 review).
-        return false;
+    deliver_reserved_terminated_event(sender, seq, termination_state, generation, body, stale)
+}
+
+fn deliver_reserved_terminated_event(
+    sender: &EventSender,
+    seq: &Mutex<i64>,
+    termination_state: &Mutex<TerminationState>,
+    generation: u64,
+    body: Option<Value>,
+    stale: &dyn Fn() -> bool,
+) -> bool {
+    let Some(sender) = sender.admitted_sender() else { return false };
+    let mut sequence = lock_or_recover(seq, "terminal.seq");
+    *sequence += 1;
+    let mut message = DapMessage::Event { seq: *sequence, event: "terminated".to_string(), body };
+    loop {
+        if stale() {
+            return false;
+        }
+        let mut state = lock_or_recover(termination_state, "terminal.commit");
+        if state.generation != generation {
+            return false;
+        }
+        match sender.try_send(message) {
+            Ok(()) => {
+                state.terminal_committed = true;
+                return true;
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
+            Err(std::sync::mpsc::TrySendError::Full(returned)) => message = returned,
+        }
+        drop(state);
+        thread::sleep(super::sync_utils::GENERATION_GUARD_PARK);
     }
-    !matches!(
-        sender.send_event_generation_guarded(seq, "terminated", body, stale),
-        GuardedDispatchResult::Disconnected
-    )
 }
 
 #[cfg(test)]
@@ -3534,7 +3572,7 @@ mod tests {
         let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
-            Arc::new(Mutex::new(super::TerminationState { generation: 1, emitted: false }));
+            Arc::new(Mutex::new(super::TerminationState { generation: 1, ..Default::default() }));
         let first_sender = EventSender::new(sender.clone());
         let first_seq = seq.clone();
         let first_guard = termination_state.clone();
@@ -3578,11 +3616,254 @@ mod tests {
     }
 
     #[test]
+    fn disconnect_terminal_after_async_completion_and_invalidation() -> Result<(), String> {
+        for (invalidate, fail_cleanup) in [(false, false), (true, false), (true, true)] {
+            let (sender, receiver) = sync_channel(64);
+            let mut adapter = DebugAdapter::new();
+            adapter.set_event_sender(sender);
+            if fail_cleanup {
+                adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+            }
+            let event_sender = adapter.event_sender.as_ref().ok_or("missing event sender")?;
+            let generation = adapter.current_session_generation();
+            if !emit_terminated_event(
+                event_sender,
+                &adapter.seq,
+                &adapter.termination_state,
+                Some(generation),
+                Some(json!({"reason": "debugger_eof"})),
+            ) {
+                return Err("current async terminal source did not emit".to_string());
+            }
+            match receiver.try_recv().map_err(|error| error.to_string())? {
+                DapMessage::Event { event, .. } if event == "terminated" => {}
+                other => return Err(format!("expected natural terminal event, got {other:?}")),
+            }
+            if fail_cleanup {
+                if DebugAdapter::clear_active_session_state_with_terminator(
+                    &adapter.session,
+                    &adapter.tcp_session,
+                    &adapter.attached_pid,
+                    |_| false,
+                ) {
+                    return Err("injected cleanup failure unexpectedly succeeded".to_string());
+                }
+                let retained_state = adapter
+                    .session
+                    .lock()
+                    .map_err(|_| "session lock poisoned")?
+                    .as_ref()
+                    .map(|session| session.state.clone());
+                if retained_state != Some(DebugState::Terminated) {
+                    return Err(
+                        "failed cleanup did not retain the terminal child owner".to_string()
+                    );
+                }
+            }
+            if invalidate {
+                let broker_generation = adapter.operation_broker.current_session_generation();
+                if !adapter.invalidate_session_generation_if_current(
+                    generation,
+                    broker_generation,
+                    "test_late_invalidation",
+                ) {
+                    return Err("current generation invalidation did not execute".to_string());
+                }
+                if adapter.current_session_generation() == generation {
+                    return Err("invalidation did not retire the generation".to_string());
+                }
+            }
+            for request_seq in [1, 2] {
+                match adapter.handle_request(request_seq, "disconnect", None) {
+                    DapMessage::Response { success: true, command, .. }
+                        if command == "disconnect" => {}
+                    other => return Err(format!("disconnect failed: {other:?}")),
+                }
+                if let Some(message) = receiver.try_iter().find(|message| {
+                    matches!(message, DapMessage::Event { event, .. } if event == "terminated")
+                }) {
+                    return Err(format!("disconnect duplicated async completion: {message:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn terminal_request_retires_pending_before_drain(
+        command: &'static str,
+        reserved_watchdog: bool,
+    ) -> Result<(), String> {
+        let (outbound, received) = sync_channel(1);
+        outbound
+            .send(DapMessage::Event { seq: 0, event: "queue_filler".to_string(), body: None })
+            .map_err(|error| error.to_string())?;
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(outbound.clone());
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let generation = adapter.current_session_generation();
+        let state = adapter.termination_state.clone();
+        let sequence = adapter.seq.clone();
+        let rescue = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_rescue = rescue.clone();
+        let (parked_sender, parked_receiver) = sync_channel(1);
+        let (finished_sender, finished_receiver) = sync_channel(1);
+        let emitter = thread::spawn(move || {
+            let stale = || {
+                let _ = parked_sender.try_send(());
+                worker_rescue.load(std::sync::atomic::Ordering::SeqCst)
+                    || lock_or_recover(&state, "test.termination_state").generation != generation
+            };
+            let sender = EventSender::new(outbound);
+            let body = Some(json!({"reason": "old_async_completion"}));
+            let emitted = if reserved_watchdog {
+                reserve_terminated_event(&state, Some(generation))
+                    && super::deliver_reserved_terminated_event(
+                        &sender, &sequence, &state, generation, body, &stale,
+                    )
+            } else {
+                super::emit_terminated_event_guarded(
+                    &sender,
+                    &sequence,
+                    &state,
+                    Some(generation),
+                    body,
+                    &stale,
+                )
+            };
+            let _ = finished_sender.send(emitted);
+        });
+        if parked_receiver.recv_timeout(Duration::from_secs(2)).is_err() {
+            rescue.store(true, std::sync::atomic::Ordering::SeqCst);
+            drop(received);
+            emitter.join().map_err(|_| "emitter panicked")?;
+            return Err("async emitter never reached guarded enqueue".to_string());
+        }
+        let (response_sender, response_receiver) = sync_channel(1);
+        let request = thread::spawn(move || {
+            let response = adapter.handle_request(1, command, None);
+            let _ = response_sender.send(response);
+        });
+        let retired_before_drain = finished_receiver.recv_timeout(Duration::from_secs(2));
+        if retired_before_drain.is_err() {
+            rescue.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut terminal_events = Vec::new();
+        let mut response = None;
+        while Instant::now() < deadline {
+            if let Ok(message) = received.recv_timeout(Duration::from_millis(10))
+                && matches!(&message, DapMessage::Event { event, .. } if event == "terminated")
+            {
+                terminal_events.push(message);
+            }
+            if let Ok(message) = response_receiver.try_recv() {
+                response = Some(message);
+                break;
+            }
+        }
+        terminal_events.extend(received.try_iter().filter(
+            |message| matches!(message, DapMessage::Event { event, .. } if event == "terminated"),
+        ));
+        rescue.store(true, std::sync::atomic::Ordering::SeqCst);
+        drop(received);
+        emitter.join().map_err(|_| "emitter panicked")?;
+        request.join().map_err(|_| "terminal request panicked")?;
+        let old_emitted = retired_before_drain.map_err(|_| {
+            format!("{command} did not retire the pending async terminal before queue drain")
+        })?;
+        if old_emitted {
+            return Err("retired async send incorrectly reported delivery".to_string());
+        }
+        match response {
+            Some(DapMessage::Response { success: true, command: actual, .. })
+                if actual == command => {}
+            other => return Err(format!("terminal request did not succeed: {other:?}")),
+        }
+        if terminal_events.len() != 1 {
+            return Err(format!("expected exactly one terminal event, got {terminal_events:?}"));
+        }
+        if terminal_events.iter().any(|message| {
+            matches!(message, DapMessage::Event { body: Some(body), .. }
+                if body.get("reason").and_then(Value::as_str) == Some("old_async_completion"))
+        }) {
+            return Err("retired async event escaped into the client terminal response".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn disconnect_terminal_takes_pending_async_reservation_before_queue_drain() -> Result<(), String>
+    {
+        terminal_request_retires_pending_before_drain("disconnect", false)
+    }
+
+    #[test]
+    fn terminate_terminal_takes_pending_async_reservation_before_queue_drain() -> Result<(), String>
+    {
+        terminal_request_retires_pending_before_drain("terminate", false)
+    }
+
+    #[test]
+    fn disconnect_terminal_takes_watchdog_reservation_before_queue_drain() -> Result<(), String> {
+        terminal_request_retires_pending_before_drain("disconnect", true)
+    }
+
+    #[test]
+    fn disconnect_terminal_stale_enqueue_is_not_delivery_or_lifecycle_closure() -> Result<(), String>
+    {
+        let (sender, receiver) = sync_channel(4);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        adapter.seed_session_for_test().map_err(|error| error.to_string())?;
+        let reported_delivery = super::emit_terminated_event_guarded(
+            adapter.event_sender.as_ref().ok_or("missing event sender")?,
+            &adapter.seq,
+            &adapter.termination_state,
+            Some(adapter.current_session_generation()),
+            None,
+            &|| true,
+        );
+        if receiver.try_recv().is_ok() {
+            return Err("stale emitter published an event".to_string());
+        }
+        let response = adapter.handle_request(1, "disconnect", None);
+        let terminal_count = receiver.try_iter().filter(|message| {
+            matches!(message, DapMessage::Event { event, .. } if event == "terminated")
+        }).count();
+        if reported_delivery {
+            return Err("stale enqueue was reported as delivered".to_string());
+        }
+        if !matches!(response, DapMessage::Response { success: true, .. }) || terminal_count != 1 {
+            return Err(format!(
+                "stale reservation closed lifecycle: {response:?}, events={terminal_count}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn disconnect_terminal_closed_channel_does_not_report_delivery() -> Result<(), String> {
+        let (sender, receiver) = sync_channel(1);
+        drop(receiver);
+        let adapter = DebugAdapter::new();
+        if emit_terminated_event(
+            &EventSender::new(sender),
+            &adapter.seq,
+            &adapter.termination_state,
+            Some(adapter.current_session_generation()),
+            None,
+        ) {
+            return Err("closed channel reported terminal delivery".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn stale_session_generation_cannot_emit_termination() -> Result<(), String> {
         let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
-            Mutex::new(super::TerminationState { generation: 2, emitted: false });
+            Mutex::new(super::TerminationState { generation: 2, ..Default::default() });
 
         if emit_terminated_event(
             &EventSender::new(sender.clone()),
@@ -3615,7 +3896,7 @@ mod tests {
         let (sender, receiver) = sync_channel(64);
         let seq = Arc::new(Mutex::new(0));
         let termination_state =
-            Arc::new(Mutex::new(super::TerminationState { generation: 3, emitted: false }));
+            Arc::new(Mutex::new(super::TerminationState { generation: 3, ..Default::default() }));
 
         // Watchdog-style early reservation: the debuggee watchdog reserves
         // before killing the process and delivers only after, so a client
@@ -3676,7 +3957,7 @@ mod tests {
         let tcp_session = Arc::new(Mutex::new(None));
         let attached_pid = Arc::new(Mutex::new(Some(4242_u32)));
         let termination_state =
-            Mutex::new(super::TerminationState { generation: 2, emitted: false });
+            Mutex::new(super::TerminationState { generation: 2, ..Default::default() });
 
         DebugAdapter::clear_active_session_state_for_generation(
             &session,
