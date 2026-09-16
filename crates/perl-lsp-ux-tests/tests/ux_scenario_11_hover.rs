@@ -1,6 +1,3 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 //! Scenario 11 — Hover feature grid coverage.
 //!
 //! Verifies that `textDocument/hover` is wired up end-to-end for the LSP
@@ -14,13 +11,19 @@
 //!   protocol shapes (`MarkupContent`, `MarkedString`, or `MarkedString[]`).
 //! - Null remains acceptable only for targets whose exact hover support is not
 //!   established by this scenario.
+//! - A present hover range MUST be well formed and contain the request cursor.
 //! - No crash signatures after the request.
 
-use anyhow::Result;
-use perl_lsp_ux_tests::binary_available;
-use perl_lsp_ux_tests::{ScenarioConfig, UxHarness};
+use anyhow::{Context, Result};
+use perl_lsp_ux_tests::{
+    ScenarioConfig, UxCiTier, UxComponent, UxEvidenceClass, UxHarness, binary_available,
+    missing_binary_skip, run_ux_scenario, run_ux_scenario_with_evidence_class,
+};
 use serde_json::Value;
 use std::time::Duration;
+
+const WORKFLOW_ID: &str = "hover_core";
+const SCENARIO_FILE: &str = "ux_scenario_11_hover.rs";
 
 /// Perl source with a clearly-named sub and variable for hover targets.
 const HOVER_SOURCE: &str = "\
@@ -134,158 +137,219 @@ fn static_call_hover_with_retry(harness: &UxHarness) -> Result<Value> {
     )
 }
 
-#[test]
-fn scenario_11_hover_on_variable_does_not_error() {
-    if !binary_available() {
-        eprintln!("SKIP scenario_11: perl-lsp binary not found");
-        return;
-    }
+fn position_coordinates(range: &Value, endpoint: &str) -> Result<(u64, u64)> {
+    let position = range
+        .get(endpoint)
+        .and_then(Value::as_object)
+        .with_context(|| format!("hover range.{endpoint} must be an object: {range:?}"))?;
+    let line = position
+        .get("line")
+        .and_then(Value::as_u64)
+        .with_context(|| format!("hover range.{endpoint}.line must be a non-negative integer"))?;
+    let character = position
+        .get("character")
+        .and_then(Value::as_u64)
+        .with_context(|| {
+            format!("hover range.{endpoint}.character must be a non-negative integer")
+        })?;
+    Ok((line, character))
+}
 
-    let harness = UxHarness::new(
-        ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
-            .with_file("calc.pl", HOVER_SOURCE),
-    )
-    .expect("Failed to create UX harness");
+fn validate_optional_range_contains_cursor(
+    result: &Value,
+    cursor_line: u32,
+    cursor_character: u32,
+) -> Result<()> {
+    let Some(range) = result.get("range") else {
+        return Ok(());
+    };
+    anyhow::ensure!(range.is_object(), "hover range must be an object when present: {range:?}");
 
-    harness.open_file("calc.pl", HOVER_SOURCE).expect("didOpen should succeed");
-
-    std::thread::sleep(Duration::from_millis(300));
-
-    // Hover on `$result` — line 8, char 3 (inside `$result`).
-    let hover_result = harness.hover("calc.pl", 8, 3);
-    assert!(
-        hover_result.is_ok(),
-        "textDocument/hover must not return a JSON-RPC error — feature grid regression: {:?}",
-        hover_result
+    let (start_line, start_character) = position_coordinates(range, "start")?;
+    let (end_line, end_character) = position_coordinates(range, "end")?;
+    anyhow::ensure!(
+        start_line < end_line || (start_line == end_line && start_character <= end_character),
+        "hover range start must not follow its end: {range:?}"
     );
 
-    harness.assert_no_crash();
+    let cursor_line = u64::from(cursor_line);
+    let cursor_character = u64::from(cursor_character);
+    let starts_before_cursor =
+        start_line < cursor_line || (start_line == cursor_line && start_character <= cursor_character);
+    let ends_after_cursor =
+        end_line > cursor_line || (end_line == cursor_line && end_character >= cursor_character);
+    anyhow::ensure!(
+        starts_before_cursor && ends_after_cursor,
+        "hover range must contain the request cursor: range={range:?}, \
+         cursor=({cursor_line}, {cursor_character})"
+    );
+    Ok(())
 }
 
 #[test]
-fn scenario_11_static_subroutine_call_returns_useful_hover() -> Result<()> {
-    if !binary_available() {
-        eprintln!("SKIP scenario_11: perl-lsp binary not found");
-        return Ok(());
-    }
+fn scenario_11_hover_on_variable_does_not_error() {
+    run_ux_scenario_with_evidence_class(
+        WORKFLOW_ID,
+        SCENARIO_FILE,
+        "scenario_11_hover_on_variable_does_not_error",
+        UxCiTier::Pr,
+        Some(UxComponent::Hover),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
 
-    let harness = UxHarness::new(
-        ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
-            .with_file("calc.pl", HOVER_SOURCE),
-    )?;
+            let harness = UxHarness::new(
+                ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
+                    .with_file("calc.pl", HOVER_SOURCE),
+            )
+            .context("Failed to create UX harness")?;
 
-    harness.open_file("calc.pl", HOVER_SOURCE)?;
+            harness
+                .open_file("calc.pl", HOVER_SOURCE)
+                .context("didOpen should succeed")?;
+            harness
+                .hover("calc.pl", VARIABLE_LINE, VARIABLE_CHARACTER)
+                .context("hover on `$result` must not return a transport error")?;
+            recorder.check("variable hover transport completed", true)?;
 
-    let result = static_call_hover_with_retry(&harness)?;
-    let text = useful_hover_text(&result)?;
-
-    assert!(
-        text.contains(STATIC_CALL_SUBJECT),
-        "static call hover must identify `{STATIC_CALL_SUBJECT}`, but the card was about \
-         something else: {text:?}"
+            harness.assert_no_crash();
+            recorder.check("no crash signatures in event log", true)?;
+            Ok(())
+        },
     );
+}
 
-    // Wrong-symbol falsifier: `$result` on the same line also returns a useful,
-    // non-empty card. If a bare non-empty check were sufficient, that card would
-    // satisfy the assertion above — so prove the subject marker discriminates by
-    // position rather than merely detecting that hover returned something.
-    let variable = harness
-        .hover("calc.pl", VARIABLE_LINE, VARIABLE_CHARACTER)?
-        .ok_or_else(|| anyhow::anyhow!("expected a hover card for the `$result` control"))?;
-    let variable_text = useful_hover_text(&variable)?;
-    assert!(
-        !variable_text.contains(STATIC_CALL_SUBJECT),
-        "the `$result` control must not carry the `{STATIC_CALL_SUBJECT}` marker, otherwise the \
-         call-site assertion cannot distinguish the two subjects: {variable_text:?}"
+#[test]
+fn scenario_11_static_subroutine_call_returns_useful_hover() {
+    run_ux_scenario(
+        WORKFLOW_ID,
+        SCENARIO_FILE,
+        "scenario_11_static_subroutine_call_returns_useful_hover",
+        UxCiTier::Pr,
+        Some(UxComponent::Hover),
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
+
+            let harness = UxHarness::new(
+                ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
+                    .with_file("calc.pl", HOVER_SOURCE),
+            )
+            .context("Failed to create UX harness")?;
+
+            harness
+                .open_file("calc.pl", HOVER_SOURCE)
+                .context("didOpen should succeed")?;
+
+            recorder.mark_request_start("textDocument/hover");
+            let result = static_call_hover_with_retry(&harness)?;
+            let text = useful_hover_text(&result)?;
+            anyhow::ensure!(
+                text.contains(STATIC_CALL_SUBJECT),
+                "static call hover must identify `{STATIC_CALL_SUBJECT}`, but the card was about \
+                 something else: {text:?}"
+            );
+            recorder.check("static call hover identifies calculate_sum", true)?;
+            recorder.mark_first_useful_result("subject-bound hover card");
+
+            // Wrong-symbol falsifier: `$result` on the same line also returns a useful,
+            // non-empty card. If a bare non-empty check were sufficient, that card would
+            // satisfy the assertion above — so prove the subject marker discriminates by
+            // position rather than merely detecting that hover returned something.
+            let variable = harness
+                .hover("calc.pl", VARIABLE_LINE, VARIABLE_CHARACTER)?
+                .ok_or_else(|| anyhow::anyhow!("expected a hover card for the `$result` control"))?;
+            let variable_text = useful_hover_text(&variable)?;
+            anyhow::ensure!(
+                !variable_text.contains(STATIC_CALL_SUBJECT),
+                "the `$result` control must not carry the `{STATIC_CALL_SUBJECT}` marker, \
+                 otherwise the call-site assertion cannot distinguish the two subjects: \
+                 {variable_text:?}"
+            );
+            recorder.check("wrong-symbol control remains discriminating", true)?;
+
+            harness.assert_no_crash();
+            recorder.check("no crash signatures in event log", true)?;
+            Ok(())
+        },
     );
-
-    harness.assert_no_crash();
-    Ok(())
 }
 
 #[test]
 fn scenario_11_hover_on_sub_name_does_not_crash() {
-    if !binary_available() {
-        eprintln!("SKIP scenario_11: perl-lsp binary not found");
-        return;
-    }
+    run_ux_scenario_with_evidence_class(
+        WORKFLOW_ID,
+        SCENARIO_FILE,
+        "scenario_11_hover_on_sub_name_does_not_crash",
+        UxCiTier::Pr,
+        Some(UxComponent::Hover),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
 
-    let harness = UxHarness::new(
-        ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
-            .with_file("calc.pl", HOVER_SOURCE),
-    )
-    .expect("Failed to create UX harness");
+            let harness = UxHarness::new(
+                ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
+                    .with_file("calc.pl", HOVER_SOURCE),
+            )
+            .context("Failed to create UX harness")?;
 
-    harness.open_file("calc.pl", HOVER_SOURCE).expect("didOpen should succeed");
+            harness
+                .open_file("calc.pl", HOVER_SOURCE)
+                .context("didOpen should succeed")?;
+            harness
+                .hover("calc.pl", 3, 4)
+                .context("hover on the sub declaration must not return a transport error")?;
+            recorder.check("sub-declaration hover transport completed", true)?;
 
-    std::thread::sleep(Duration::from_millis(300));
-
-    // Hover on `calculate_sum` sub declaration — line 3, char 4.
-    let hover_result = harness.hover("calc.pl", 3, 4);
-    assert!(hover_result.is_ok(), "Hover on sub declaration must not error: {:?}", hover_result);
-
-    harness.assert_no_crash();
+            harness.assert_no_crash();
+            recorder.check("no crash signatures in event log", true)?;
+            Ok(())
+        },
+    );
 }
 
 #[test]
-fn scenario_11_hover_range_contains_cursor_when_present() -> Result<()> {
-    if !binary_available() {
-        eprintln!("SKIP scenario_11: perl-lsp binary not found");
-        return Ok(());
-    }
+fn scenario_11_hover_range_contains_cursor_when_present() {
+    run_ux_scenario_with_evidence_class(
+        WORKFLOW_ID,
+        SCENARIO_FILE,
+        "scenario_11_hover_range_contains_cursor_when_present",
+        UxCiTier::Pr,
+        Some(UxComponent::Hover),
+        UxEvidenceClass::TransportCharacterization,
+        |recorder| {
+            if !binary_available() {
+                return Err(missing_binary_skip().into());
+            }
 
-    let harness = UxHarness::new(
-        ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
-            .with_file("calc.pl", HOVER_SOURCE),
-    )?;
+            let harness = UxHarness::new(
+                ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
+                    .with_file("calc.pl", HOVER_SOURCE),
+            )
+            .context("Failed to create UX harness")?;
 
-    harness.open_file("calc.pl", HOVER_SOURCE)?;
+            harness
+                .open_file("calc.pl", HOVER_SOURCE)
+                .context("didOpen should succeed")?;
 
-    let result = static_call_hover_with_retry(&harness)?;
-    if let Some(range) = result.get("range") {
-        let start_line = range["start"]["line"].as_u64();
-        let start_char = range["start"]["character"].as_u64();
-        let end_line = range["end"]["line"].as_u64();
-        let end_char = range["end"]["character"].as_u64();
+            let result = static_call_hover_with_retry(&harness)?;
+            validate_optional_range_contains_cursor(
+                &result,
+                STATIC_CALL_LINE,
+                STATIC_CALL_CHARACTER,
+            )?;
+            recorder.check("optional hover range is valid and cursor-bound", true)?;
 
-        assert!(start_line.is_some(), "Hover range.start.line must be numeric");
-        assert!(start_char.is_some(), "Hover range.start.character must be numeric");
-        assert!(end_line.is_some(), "Hover range.end.line must be numeric");
-        assert!(end_char.is_some(), "Hover range.end.character must be numeric");
-
-        let (start_line, start_char, end_line, end_char) = (
-            start_line.unwrap_or_default(),
-            start_char.unwrap_or_default(),
-            end_line.unwrap_or_default(),
-            end_char.unwrap_or_default(),
-        );
-
-        assert!(start_line <= end_line, "Hover range start line must be <= end line: {:?}", range);
-        if start_line == end_line {
-            assert!(
-                start_char <= end_char,
-                "Hover range start char must be <= end char on same line: {:?}",
-                range
-            );
-        }
-
-        let cursor_line = u64::from(STATIC_CALL_LINE);
-        let cursor_char = u64::from(STATIC_CALL_CHARACTER);
-        let starts_before_cursor =
-            start_line < cursor_line || (start_line == cursor_line && start_char <= cursor_char);
-        let ends_after_cursor =
-            end_line > cursor_line || (end_line == cursor_line && end_char >= cursor_char);
-        assert!(
-            starts_before_cursor && ends_after_cursor,
-            "Hover range should contain the cursor when provided: range={:?}, cursor=({}, {})",
-            range,
-            cursor_line,
-            cursor_char
-        );
-    }
-
-    harness.assert_no_crash();
-    Ok(())
+            harness.assert_no_crash();
+            recorder.check("no crash signatures in event log", true)?;
+            Ok(())
+        },
+    );
 }
 
 /// Shape-validation negatives for [`hover_contents_text`].
@@ -349,5 +413,66 @@ mod contents_shape {
     fn helpers_stay_specific() {
         assert!(markup_content_text(&json!({"language": "perl", "value": "code"})).is_none());
         assert!(marked_string_text(&json!({"kind": "markdown", "value": "md"})).is_none());
+    }
+}
+
+#[cfg(test)]
+mod range_shape {
+    use super::validate_optional_range_contains_cursor;
+    use anyhow::Result;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_absent_and_cursor_containing_ranges() -> Result<()> {
+        validate_optional_range_contains_cursor(&json!({"contents": "card"}), 8, 14)?;
+        validate_optional_range_contains_cursor(
+            &json!({
+                "contents": "card",
+                "range": {
+                    "start": {"line": 8, "character": 13},
+                    "end": {"line": 8, "character": 26}
+                }
+            }),
+            8,
+            14,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_malformed_reversed_and_noncontaining_ranges() {
+        for malformed in [
+            json!({"range": null}),
+            json!({"range": {}}),
+            json!({
+                "range": {
+                    "start": {"line": 8, "character": "13"},
+                    "end": {"line": 8, "character": 26}
+                }
+            }),
+            json!({
+                "range": {
+                    "start": {"line": 8, "character": 26},
+                    "end": {"line": 8, "character": 13}
+                }
+            }),
+            json!({
+                "range": {
+                    "start": {"line": 8, "character": 15},
+                    "end": {"line": 8, "character": 26}
+                }
+            }),
+            json!({
+                "range": {
+                    "start": {"line": 7, "character": 0},
+                    "end": {"line": 7, "character": 30}
+                }
+            }),
+        ] {
+            assert!(
+                validate_optional_range_contains_cursor(&malformed, 8, 14).is_err(),
+                "malformed or noncontaining range must be rejected: {malformed:?}"
+            );
+        }
     }
 }
