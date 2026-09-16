@@ -557,7 +557,8 @@ fn signature_parameters_are_not_emitted_as_refs() -> Result<()> {
 fn dynamic_typeglob_brace_name_is_not_emitted_as_static_symbol() -> Result<()> {
     // Simulate the AST shape the parser produces for `*{$var} = \&func;`.
     // The LHS typeglob carries the brace-delimited text as its name.
-    let typeglob = Node::new(NodeKind::Typeglob { name: "{$var}".to_string(), body: None }, loc(0, 8));
+    let typeglob =
+        Node::new(NodeKind::Typeglob { name: "{$var}".to_string(), body: None }, loc(0, 8));
     let program = Node::new(NodeKind::Program { statements: vec![typeglob] }, loc(0, 8));
 
     let refs = extract_symbol_refs(&program);

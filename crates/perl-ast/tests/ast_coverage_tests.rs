@@ -991,7 +991,8 @@ fn sexp_glob_pattern() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn sexp_typeglob() -> Result<(), Box<dyn std::error::Error>> {
-    let node = Node::new(NodeKind::Typeglob { name: "main::foo".to_string(), body: None }, loc(0, 10));
+    let node =
+        Node::new(NodeKind::Typeglob { name: "main::foo".to_string(), body: None }, loc(0, 10));
     let sexp = node.to_sexp();
     assert_eq!(sexp, "(typeglob (name main::foo))");
     Ok(())

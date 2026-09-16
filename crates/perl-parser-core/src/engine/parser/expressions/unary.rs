@@ -497,7 +497,7 @@ impl<'a> Parser<'a> {
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name: ".".to_string(), body: None },
+                                            NodeKind::Typeglob { name: "|".to_string(), body: None },
                                             SourceLocation { start, end: t.end() },
                                         ));
                                     }
@@ -511,7 +511,7 @@ impl<'a> Parser<'a> {
                                     if is_typeglob_punct_terminator(second_kind) {
                                         let t = self.tokens.next()?;
                                         return Ok(Node::new(
-                                            NodeKind::Typeglob { name: ".".to_string(), body: None },
+                                            NodeKind::Typeglob { name: ":".to_string(), body: None },
                                             SourceLocation { start, end: t.end() },
                                         ));
                                     }
