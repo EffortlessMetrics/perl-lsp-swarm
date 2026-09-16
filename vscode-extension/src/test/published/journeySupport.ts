@@ -1,10 +1,11 @@
 import * as assert from 'assert';
+import { suspendOwnedWindowsProcess, resumeOwnedWindowsProcess } from './windowsOwnedSuspension';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { parsePackagedServerVersionStdout } from '../../packagedServerVersion';
-import { runBoundedProcess } from '../../testAdapter';
+import { runBoundedProcess, type BoundedProcessResult } from '../../testAdapter';
 
 /**
  * Shared primitives for the published-smoke journeys (packaged bundle journey
@@ -15,6 +16,21 @@ import { runBoundedProcess } from '../../testAdapter';
  */
 
 export type ReceiptValue = Record<string, unknown>;
+
+/** Preserve bounded probe failures without mistaking them for process absence. */
+export function debuggeeCreationTimeFromProbe(
+  pid: number,
+  result: BoundedProcessResult,
+): string | null {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, 'invalid owned debuggee PID');
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    throw new Error(`owned debuggee scan failed: ${JSON.stringify({ pid, ...result })}`);
+  }
+  const creationTime = result.stdout.trim();
+  if (!creationTime) return null;
+  assert.match(creationTime, /^\d+$/, 'invalid process creation time');
+  return creationTime;
+}
 
 export function platformLabel(): string {
   switch (process.platform) {
@@ -162,6 +178,55 @@ export async function waitForStartupMetrics(
   return metrics;
 }
 
+export async function waitForActiveDocumentGeneration(
+  getReadiness: (() => ReceiptValue) | undefined,
+  initialGeneration: number | undefined,
+  timeoutMs: number,
+): Promise<ReceiptValue | undefined> {
+  if (!getReadiness || initialGeneration === undefined || initialGeneration > 0) {
+    return getReadiness?.();
+  }
+  const deadline = Date.now() + timeoutMs;
+  let snapshot = getReadiness();
+  while (
+    Date.now() < deadline &&
+    (typeof snapshot.generation !== 'number' || snapshot.generation <= initialGeneration)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    snapshot = getReadiness();
+  }
+  if (typeof snapshot.generation === 'number' && snapshot.generation > initialGeneration) {
+    return snapshot;
+  }
+  return {
+    ...snapshot,
+    status: 'not_proven',
+    reason: `startup generation did not advance beyond ${initialGeneration} within ${timeoutMs}ms`,
+  };
+}
+
+export async function observeActiveDocumentReadiness(
+  waitForReady: ((uri: string, timeoutMs?: number) => Promise<void>) | undefined,
+  uri: string,
+  timeoutMs: number,
+): Promise<ReceiptValue> {
+  if (!waitForReady) {
+    return {
+      status: 'not_proven',
+      reason: 'installed extension did not expose waitForActiveDocumentReady',
+    };
+  }
+  try {
+    await withTimeout('active-document readiness', waitForReady(uri, timeoutMs), timeoutMs);
+  } catch (error: unknown) {
+    return {
+      status: 'not_proven',
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return { status: 'ready' };
+}
+
 export function bundledBinaryPath(extensionPath: string): string {
   const directory = path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`);
   const names =
@@ -171,6 +236,12 @@ export function bundledBinaryPath(extensionPath: string): string {
     .find((candidate) => fs.existsSync(candidate));
   assert.ok(binary, `packaged VSIX must contain a bundled server in ${directory}`);
   return binary;
+}
+
+/** Resolve the adapter shipped beside the installed extension. */
+export function bundledDapPath(extensionPath: string): string {
+  const binary = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
+  return path.join(extensionPath, 'bin', `${process.platform}-${process.arch}`, binary);
 }
 
 export function pathsEquivalent(left: unknown, right: string): boolean {
@@ -228,6 +299,34 @@ export function providerPosition(
   const offset = document.getText().indexOf(probe);
   assert.notEqual(offset, -1, `packaged journey fixture must contain the ${probe} probe`);
   return document.positionAt(offset);
+}
+
+/** Independent two-occurrence oracle for the packaged daily-driver fixture. */
+export function assertDailyDriverRenameEdits(
+  source: string,
+  edits: ReadonlyArray<{
+    range: {
+      start: { line: number; character: number };
+      end: { line: number; character: number };
+    };
+    newText: string;
+  }>,
+): void {
+  const lines = source.split('\n');
+  assert.equal(lines[3], 'my $value = 42;', 'rename fixture declaration changed');
+  assert.equal(lines[4], 'print $value;', 'rename fixture use changed');
+  assert.equal(edits.length, 2, 'rename must cover exactly the declaration and use');
+  const ordered = [...edits].sort((left, right) => left.range.start.line - right.range.start.line);
+  for (const [index, edit] of ordered.entries()) {
+    const line = index + 3;
+    const sigilStart = index === 0 ? 3 : 6;
+    assert.equal(edit.range.start.line, line, 'rename changed the wrong occurrence');
+    assert.equal(edit.range.end.line, line, 'rename crosses a line boundary');
+    assert.equal(edit.range.end.character, sigilStart + 6, 'rename changed the wrong span');
+    const includesSigil = edit.range.start.character === sigilStart;
+    assert.ok(includesSigil || edit.range.start.character === sigilStart + 1, 'wrong rename start');
+    assert.equal(edit.newText, includesSigil ? '$renamed_value' : 'renamed_value');
+  }
 }
 
 export function assertProviderSucceeded(label: string, result: ReceiptValue): void {
@@ -288,6 +387,140 @@ const PROCESS_SCAN_OUTPUT_MAX_BYTES = 4 * 1024 * 1024;
 export interface BundledServerProcessIdentity {
   pid: number;
   path: string;
+  creationTimeFileTime?: string;
+  /** Linux boot ID plus process start ticks; Windows retains FILETIME above. */
+  creationIdentity?: string;
+}
+
+/** Parse the Linux process start identity from one `/proc/<pid>/stat` row. */
+export function parseLinuxProcessStat(
+  stat: string,
+  pid: number,
+  bootId: string,
+): { pid: number; creationIdentity: string } {
+  const statPid = /^\s*(\d+)\s+\(/.exec(stat)?.[1];
+  if (statPid !== String(pid))
+    throw new Error('Linux process stat PID does not match the observed PID');
+  const closingParen = stat.lastIndexOf(')');
+  if (closingParen < 0) throw new Error('Linux process stat has no closing command delimiter');
+  const fields = stat
+    .slice(closingParen + 1)
+    .trim()
+    .split(/\s+/);
+  const startTicks = fields[19];
+  if (!startTicks || !/^\d+$/.test(startTicks)) {
+    throw new Error('Linux process stat has no numeric start time');
+  }
+  if (!/^\w[\w.-]*$/.test(bootId)) throw new Error('Linux process boot identity is malformed');
+  return { pid, creationIdentity: `${bootId}:${startTicks}` };
+}
+
+export function isLinuxProcessGoneError(error: unknown): boolean {
+  if (error === null || (typeof error !== 'object' && typeof error !== 'function')) {
+    return false;
+  }
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ESRCH';
+}
+
+/** Enumerate perl-dap children rooted in the installed bundled-adapter directory. */
+export async function scanBundledDapProcessIdentities(
+  directory: string,
+): Promise<BundledServerProcessIdentity[]> {
+  const resolved = path.resolve(directory);
+  if (process.platform !== 'win32' && process.platform !== 'linux') return [];
+  const windows = process.platform === 'win32';
+  const bootId = windows
+    ? undefined
+    : fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+  if (!windows && !bootId)
+    throw new Error('Linux bundled DAP scan could not read the boot identity');
+  const result = await runBoundedProcess(
+    windows ? 'powershell.exe' : 'ps',
+    windows
+      ? [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          '(Get-Process -Name perl-dap -ErrorAction SilentlyContinue) | ' +
+            'ForEach-Object { if ($_.Path) { "$($_.Id)`t$($_.Path)`t$($_.StartTime.ToFileTimeUtc())" } }',
+        ]
+      : ['-eo', 'pid=,args='],
+    {
+      shell: false,
+      timeoutMs: PROCESS_SCAN_TIMEOUT_MS,
+      maxOutputBytes: PROCESS_SCAN_OUTPUT_MAX_BYTES,
+      terminationGraceMs: 1_000,
+      terminationWatchdogMs: 5_000,
+      windowsHide: true,
+    },
+  );
+  if (result.outcome !== 'completed' || result.exitCode !== 0) {
+    throw new Error(
+      `bundled DAP pid scan failed (${result.outcome}, exit ${String(result.exitCode)}): ${(result.stderr || result.diagnostic || '').slice(0, 300)}`,
+    );
+  }
+  const prefix = resolved.endsWith(path.sep) ? resolved : resolved + path.sep;
+  const needle = prefix.toLowerCase();
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      const match = windows
+        ? /^(\d+)\t(.+)\t(\d+)$/.exec(trimmed)
+        : /^(\d+)[ \t]+(.+)$/.exec(trimmed);
+      if (!match) return null;
+      const pid = Number.parseInt(match[1] ?? '', 10);
+      const rawCommand = (match[2] ?? '').trim();
+      const rawPath = windows ? match[2] : rawCommand.split(/[ \t]/, 1)[0];
+      if (!Number.isInteger(pid) || !rawPath) return null;
+      if (windows) {
+        return { pid, executable: rawPath.trim(), creationTimeFileTime: match[3] };
+      }
+      const expectedPrefix = `${prefix}perl-dap`;
+      if (rawCommand !== expectedPrefix && !rawCommand.startsWith(`${expectedPrefix} `))
+        return null;
+      let executable: string;
+      let identity: BundledServerProcessIdentity;
+      try {
+        executable = fs.readlinkSync(`/proc/${pid}/exe`);
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        identity = { ...parseLinuxProcessStat(stat, pid, bootId ?? ''), path: executable };
+      } catch (error: unknown) {
+        if (isLinuxProcessGoneError(error)) return null;
+        throw error;
+      }
+      if (!identity.path) return null;
+      return {
+        pid: identity.pid,
+        executable: identity.path,
+        creationIdentity: identity.creationIdentity,
+      };
+    })
+    .map((match) => {
+      if (!match) return null;
+      const { pid, executable, creationTimeFileTime, creationIdentity } = match;
+      return {
+        pid,
+        path: executable,
+        ...(creationTimeFileTime === undefined ? {} : { creationTimeFileTime }),
+        ...(creationIdentity === undefined ? {} : { creationIdentity }),
+      };
+    })
+    .filter(
+      (
+        entry,
+      ): entry is {
+        pid: number;
+        path: string;
+        creationTimeFileTime?: string;
+        creationIdentity?: string;
+      } => entry !== null,
+    )
+    .filter((entry) => {
+      const candidate = process.platform === 'win32' ? entry.path.toLowerCase() : entry.path;
+      return candidate.startsWith(process.platform === 'win32' ? needle : prefix);
+    });
 }
 
 /**
@@ -311,7 +544,7 @@ export async function scanServerProcessIdentities(
       '-NonInteractive',
       '-Command',
       '(Get-Process -Name perllsp,perl-lsp -ErrorAction SilentlyContinue) | ' +
-        'ForEach-Object { if ($_.Path) { "$($_.Id)`t$($_.Path)" } }',
+        'ForEach-Object { if ($_.Path) { "$($_.Id)`t$($_.Path)`t$($_.StartTime.ToFileTimeUtc())" } }',
     ];
   } else {
     command = 'ps';
@@ -350,8 +583,9 @@ export async function scanServerProcessIdentities(
     .filter((line) => line.length > 0)
     .map((line) => {
       const match = /^(\d+)[ \t]+(.+)$/.exec(line);
-      const pidText = match?.[1];
-      const executable = match?.[2]?.trim();
+      const windowsMatch = process.platform === 'win32' ? /^(\d+)\t(.+)\t(\d+)$/.exec(line) : null;
+      const pidText = windowsMatch?.[1] ?? match?.[1];
+      const executable = (windowsMatch?.[2] ?? match?.[2])?.trim();
       if (pidText === undefined || executable === undefined) {
         return null;
       }
@@ -368,7 +602,10 @@ export async function scanServerProcessIdentities(
       // and digest checks need the real file, so reduce the POSIX row to the
       // invoked binary — the scanned directory plus the binary name.
       if (process.platform === 'win32') {
-        return { pid, path: executable };
+        const creationTimeFileTime = windowsMatch?.[3];
+        return creationTimeFileTime === undefined
+          ? { pid, path: executable }
+          : { pid, path: executable, creationTimeFileTime };
       }
       const remainder = executable.slice(resolved.length);
       const binaryName = remainder.split(/[ \t]/, 1)[0];
@@ -390,44 +627,20 @@ export interface BoundedTerminationResult {
  * Running→Stopped crash path. This is deliberately NOT the extension's user
  * restart command and not the activation API's stop seam — the issue's
  * negative controls forbid substituting either for the crash.
+ * Node emulates SIGKILL on Windows as unconditional single-process termination.
+ * Delivery is not an exit/recovery oracle: callers must still observe process
+ * disappearance, replacement generation, overlap and cleanup independently.
  */
 export async function terminateServerProcess(pid: number): Promise<BoundedTerminationResult> {
   if (!Number.isInteger(pid) || pid <= 0) {
     return { outcome: 'error', detail: `invalid pid ${JSON.stringify(pid)}` };
-  }
-  if (process.platform === 'win32') {
-    const result = await runBoundedProcess('taskkill', ['/PID', String(pid), '/F'], {
-      shell: false,
-      timeoutMs: 15_000,
-      maxOutputBytes: 64 * 1024,
-      terminationGraceMs: 2_000,
-      terminationWatchdogMs: 10_000,
-      windowsHide: true,
-    });
-    if (result.outcome === 'completed' && result.exitCode === 0) {
-      return { outcome: 'terminated', detail: `taskkill /F pid ${pid}` };
-    }
-    if (
-      result.outcome === 'completed' &&
-      /not found|no such/i.test(result.stdout + result.stderr)
-    ) {
-      return { outcome: 'already_gone', detail: `taskkill reported pid ${pid} already gone` };
-    }
-    return {
-      outcome: 'error',
-      detail: `taskkill pid ${pid} ended ${result.outcome} exit ${String(result.exitCode)}: ${(
-        result.stderr ||
-        result.stdout ||
-        ''
-      ).slice(0, 300)}`,
-    };
   }
   try {
     process.kill(pid, 'SIGKILL');
     return { outcome: 'terminated', detail: `SIGKILL pid ${pid}` };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/ESRCH/i.test(message)) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ESRCH') {
       return { outcome: 'already_gone', detail: `pid ${pid} already gone (ESRCH)` };
     }
     return { outcome: 'error', detail: message };
@@ -435,27 +648,36 @@ export async function terminateServerProcess(pid: number): Promise<BoundedTermin
 }
 
 /**
- * Whether this host can suspend an external process at all. Only POSIX hosts
- * expose SIGSTOP through Node; Windows has no equivalent without native
- * helpers, so the watchdog row honestly degrades to `not_proven` there
- * instead of fabricating a hang (#7848: typed limitation, never a silent
- * skip; #7846 owns the deterministic watchdog mechanism proof).
+ * Whether this host can suspend an external process at all. Windows uses the
+ * checked-in owned-child PowerShell helper; if the helper is absent, retain
+ * the typed `not_proven` limitation rather than fabricating a hang.
  */
 export function canSuspendServerProcesses(): boolean {
-  return process.platform !== 'win32';
+  return (
+    process.platform !== 'win32' ||
+    fs.existsSync(path.resolve(__dirname, '../../../../scripts/tests/windows-owned-suspend.ps1'))
+  );
 }
 
 export interface SuspendResult {
-  outcome: 'suspended' | 'resumed' | 'error';
+  outcome: 'suspended' | 'resumed' | 'already_gone' | 'error';
   detail: string;
 }
 
-/** Suspend the exact server process (SIGSTOP) so it hangs without exiting. */
-export function suspendServerProcess(pid: number): SuspendResult {
+/** Suspend the exact server process, using a pinned Windows helper when needed. */
+export async function suspendServerProcess(
+  pid: number,
+  creationTimeFileTime?: string,
+): Promise<SuspendResult> {
   // process.kill(0, ...) would signal the whole process group — including the
   // extension host. Guard every caller, not just the current scan-filtered one.
   if (!Number.isInteger(pid) || pid <= 0) {
     return { outcome: 'error', detail: `invalid server pid: ${pid}` };
+  }
+  if (process.platform === 'win32') {
+    return creationTimeFileTime === undefined
+      ? { outcome: 'error', detail: 'Missing Windows process creation identity' }
+      : await suspendOwnedWindowsProcess(pid, creationTimeFileTime);
   }
   try {
     process.kill(pid, 'SIGSTOP');
@@ -468,15 +690,25 @@ export function suspendServerProcess(pid: number): SuspendResult {
   }
 }
 
-/** Resume a suspended server process (SIGCONT). */
-export function resumeServerProcess(pid: number): SuspendResult {
+/** Resume a suspended server process, releasing only its helper-owned handles. */
+export async function resumeServerProcess(pid: number): Promise<SuspendResult> {
   if (!Number.isInteger(pid) || pid <= 0) {
     return { outcome: 'error', detail: `invalid server pid: ${pid}` };
+  }
+  if (process.platform === 'win32') {
+    return await resumeOwnedWindowsProcess(pid);
   }
   try {
     process.kill(pid, 'SIGCONT');
     return { outcome: 'resumed', detail: `SIGCONT pid ${pid}` };
   } catch (error: unknown) {
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error
+        ? (error as { code?: unknown }).code
+        : undefined;
+    if (code === 'ESRCH') {
+      return { outcome: 'already_gone', detail: `pid ${pid} already gone (ESRCH)` };
+    }
     return {
       outcome: 'error',
       detail: error instanceof Error ? error.message : String(error),

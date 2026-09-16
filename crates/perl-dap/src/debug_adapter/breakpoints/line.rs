@@ -1,6 +1,95 @@
 use super::{DapMessage, DebugAdapter, HashMap, Value, Write, json};
+use crate::breakpoints::BreakpointRecord;
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 impl DebugAdapter {
+    pub(in crate::debug_adapter) fn invalidate_ambiguous_breakpoint_session(
+        &self,
+        adapter_generation: u64,
+        broker_generation: crate::debug_adapter::operation_broker::SessionGeneration,
+    ) -> bool {
+        self.invalidate_session_generation_if_current(
+            adapter_generation,
+            broker_generation,
+            "breakpoint_ack_ambiguous",
+        )
+    }
+
+    /// Install source breakpoints retained before launch once the debugger
+    /// reader is live. The same acknowledgement and identity checks are used
+    /// by an in-session setBreakpoints request and by launch replay.
+    pub(in crate::debug_adapter) fn install_stored_source_breakpoints(
+        &self,
+        source_path: &str,
+        records: &[BreakpointRecord],
+    ) -> SourceBreakpointInstallation {
+        let source_digest = std::fs::read(source_path)
+            .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
+            .unwrap_or_default();
+        let session_generation = self.current_session_generation();
+        let broker_generation = self.operation_broker.current_session_generation();
+        let active_session = self.session.lock().map(|guard| guard.is_some()).unwrap_or(false);
+        if !active_session || !self.launch_source_revision_matches(source_path, &source_digest) {
+            return SourceBreakpointInstallation::default();
+        }
+
+        let mut installed = HashSet::new();
+        let mut ambiguous = false;
+        let mut cleanup_succeeded = true;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for record in records {
+            if !record.verified
+                || record.condition.is_some()
+                || record.hit_condition.is_some()
+                || record.log_message.is_some()
+            {
+                continue;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let acknowledged = match self.acknowledge_engine_breakpoint(
+                source_path,
+                record.line,
+                remaining,
+            ) {
+                Ok(()) => true,
+                Err(crate::debug_adapter::EngineBreakpointAcknowledgeError::Rejected(error)) => {
+                    tracing::debug!(%error, "debugger rejected source breakpoint acknowledgement");
+                    false
+                }
+                Err(crate::debug_adapter::EngineBreakpointAcknowledgeError::Ambiguous(error)) => {
+                    tracing::warn!(%error, "source breakpoint acknowledgement became ambiguous");
+                    ambiguous = true;
+                    cleanup_succeeded = self.invalidate_ambiguous_breakpoint_session(
+                        session_generation,
+                        broker_generation,
+                    );
+                    break;
+                }
+            };
+            let current_revision = std::fs::read(source_path)
+                .map(|bytes| perl_source_identity::ContentDigest::of_bytes(&bytes).to_string())
+                .is_ok_and(|digest| digest == source_digest);
+            if acknowledged
+                && current_revision
+                && self.current_session_generation() == session_generation
+                && self.breakpoints.mark_engine_installed(
+                    record.id,
+                    source_path,
+                    record.line,
+                    session_generation,
+                    source_digest.clone(),
+                )
+            {
+                installed.insert(record.id);
+            }
+        }
+        SourceBreakpointInstallation { installed, ambiguous, cleanup_succeeded }
+    }
+
     /// Handle setBreakpoints request
     ///
     /// #9578: entries carrying floored optional fields (`condition`,
@@ -83,7 +172,7 @@ impl DebugAdapter {
         // breakpoints; the store and engine stay untouched.
         let all_entries_rejected = input_len > 0 && plain_entries.is_empty();
 
-        let args = if input_len > 0 {
+        let mut args = if input_len > 0 {
             crate::protocol::SetBreakpointsArguments {
                 source: parsed.source,
                 breakpoints: Some(plain_entries),
@@ -92,6 +181,32 @@ impl DebugAdapter {
         } else {
             parsed
         };
+
+        // #14593: the store reads source before validating breakpoint lines.
+        // Admit the path before any store access, including empty replacements.
+        // Consume the returned path: checking a workspace-relative spelling but
+        // reading that spelling against the process cwd would authorize one
+        // file and read another. All-rejected requests retain their no-I/O path.
+        if !all_entries_rejected && let Some(source_path) = args.source.path.as_deref() {
+            let admitted_path = self.validate_source_path(source_path).and_then(|path| {
+                path.into_os_string().into_string().map_err(|_| {
+                    "Path validation failed: resolved source path is not valid UTF-8".to_string()
+                })
+            });
+            match admitted_path {
+                Ok(path) => args.source.path = Some(path),
+                Err(message) => {
+                    return DapMessage::Response {
+                        seq,
+                        request_seq,
+                        success: false,
+                        command: "setBreakpoints".to_string(),
+                        body: Some(json!({ "breakpoints": [] })),
+                        message: Some(message),
+                    };
+                }
+            }
+        }
 
         // Snapshot old breakpoints for this file before replacing them,
         // so we can clear only per-file breakpoints instead of global `B *`.
@@ -103,7 +218,8 @@ impl DebugAdapter {
             Vec::new()
         };
 
-        // AC7: AST-based breakpoint validation via BreakpointStore
+        // AC7: AST-based breakpoint validation via BreakpointStore. Replacement
+        // also clears prior engine acknowledgements under the store boundary.
         let verified_breakpoints =
             if all_entries_rejected { Vec::new() } else { self.breakpoints.set_breakpoints(&args) };
         let new_breakpoint_records = if all_entries_rejected {
@@ -152,6 +268,37 @@ impl DebugAdapter {
             }
         }
 
+        let engine_installation = if all_entries_rejected {
+            SourceBreakpointInstallation::default()
+        } else {
+            args.source
+                .path
+                .as_deref()
+                .map(|source_path| {
+                    let records = self.breakpoints.get_breakpoints(source_path);
+                    self.install_stored_source_breakpoints(source_path, &records)
+                })
+                .unwrap_or_default()
+        };
+
+        if engine_installation.ambiguous {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setBreakpoints".to_string(),
+                body: Some(json!({ "breakpoints": [] })),
+                message: Some(
+                    if engine_installation.cleanup_succeeded {
+                        "Breakpoint acknowledgement was ambiguous; the debugger session was invalidated"
+                    } else {
+                        "Breakpoint acknowledgement was ambiguous; the session was invalidated but cleanup was not confirmed"
+                    }
+                        .to_string(),
+                ),
+            };
+        }
+
         // Keep function breakpoints active after line-breakpoint synchronization.
         if !all_entries_rejected {
             self.apply_stored_function_breakpoints();
@@ -182,9 +329,23 @@ impl DebugAdapter {
                 }
                 body_breakpoints.push(entry);
             } else if let Some(bp) = plain_results.next() {
-                body_breakpoints.push(
-                    serde_json::to_value(bp).unwrap_or_else(|_| json!({ "verified": false })),
-                );
+                let mut value =
+                    serde_json::to_value(&bp).unwrap_or_else(|_| json!({ "verified": false }));
+                // Static AST validity is a pending state.  A client-visible
+                // verified breakpoint requires the current debugger engine's
+                // acknowledgement for this session and source digest.
+                let engine_verified = engine_installation.installed.contains(&bp.id);
+                value["verified"] = Value::Bool(engine_verified);
+                if bp.verified && !engine_verified {
+                    let active = self.session.lock().map(|guard| guard.is_some()).unwrap_or(false);
+                    value["message"] = Value::String(if active {
+                        "Breakpoint is pending acknowledgement by the current debugger engine"
+                            .to_string()
+                    } else {
+                        "Breakpoint is pending debugger launch".to_string()
+                    });
+                }
+                body_breakpoints.push(value);
             } else if let Some((_, line)) = plain_slots.next_if(|(i, _)| *i == index) {
                 body_breakpoints.push(json!({ "verified": false, "line": line }));
             }
@@ -200,5 +361,580 @@ impl DebugAdapter {
             })),
             message: None,
         }
+    }
+}
+
+#[derive(Default)]
+pub(in crate::debug_adapter) struct SourceBreakpointInstallation {
+    pub(in crate::debug_adapter) installed: HashSet<i64>,
+    pub(in crate::debug_adapter) ambiguous: bool,
+    pub(in crate::debug_adapter) cleanup_succeeded: bool,
+}
+
+#[cfg(test)]
+mod source_boundary_tests {
+    use super::{DapMessage, DebugAdapter, Value, json};
+    use crate::breakpoints::BreakpointRecord;
+    use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
+    use crate::debug_adapter::variable_cache::VariableCache;
+    use std::collections::HashMap;
+    use std::error::Error;
+    use std::fs;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    fn require(condition: bool, context: &str) -> Result<(), Box<dyn Error>> {
+        if condition { Ok(()) } else { Err(context.to_string().into()) }
+    }
+
+    fn require_equal<T: std::fmt::Debug + PartialEq>(
+        actual: T,
+        expected: T,
+        context: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(format!("{context}: expected {expected:?}, got {actual:?}").into())
+        }
+    }
+
+    fn single_breakpoint(body: &Value) -> Result<&Value, Box<dyn Error>> {
+        let entries = body
+            .get("breakpoints")
+            .and_then(Value::as_array)
+            .ok_or("response must contain a breakpoint array")?;
+        require_equal(entries.len(), 1, "response must contain exactly one breakpoint")?;
+        entries.first().ok_or_else(|| "response breakpoint is missing".into())
+    }
+
+    fn bounded_adapter(root: &Path) -> Result<DebugAdapter, Box<dyn Error>> {
+        let adapter = DebugAdapter::new();
+        adapter.set_workspace_root(root.canonicalize()?);
+        Ok(adapter)
+    }
+
+    fn source_text(path: &Path) -> Result<&str, Box<dyn Error>> {
+        path.to_str().ok_or_else(|| "test fixture path is not UTF-8".into())
+    }
+
+    fn request(adapter: &mut DebugAdapter, path: &str, entries: Value) -> DapMessage {
+        adapter.handle_set_breakpoints(
+            2,
+            1,
+            Some(json!({ "source": { "path": path }, "breakpoints": entries })),
+        )
+    }
+
+    fn successful_body(response: DapMessage) -> Result<Value, Box<dyn Error>> {
+        match response {
+            DapMessage::Response { success: true, body: Some(body), .. } => Ok(body),
+            other => Err(format!("expected successful breakpoint response, got {other:?}").into()),
+        }
+    }
+
+    fn require_refused(response: DapMessage) -> Result<(), Box<dyn Error>> {
+        match response {
+            DapMessage::Response { success, command, body, message, .. } => {
+                require(!success, "a disallowed source path must be refused")?;
+                require_equal(
+                    command.as_str(),
+                    "setBreakpoints",
+                    "refusal command must identify setBreakpoints",
+                )?;
+                require_equal(
+                    body,
+                    Some(json!({ "breakpoints": [] })),
+                    "refusal must contain an empty breakpoint array",
+                )?;
+                require(message.is_some_and(|text| !text.is_empty()), "refusal needs a reason")?;
+                Ok(())
+            }
+            other => Err(format!("expected refused breakpoint response, got {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn source_breakpoint_installation_uses_one_aggregate_timeout() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("aggregate_timeout.pl");
+        let source_contents =
+            (1..=20).map(|line| format!("my $v{line} = {line};\n")).collect::<String>();
+        fs::write(&source, source_contents.as_bytes())?;
+        let source_path = source.canonicalize()?;
+        let source_text = source_path.to_str().ok_or("source path is not UTF-8")?;
+
+        let child = Command::new("perl")
+            .args(["-e", "sleep 30"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let adapter = DebugAdapter::new();
+        adapter.set_workspace_root(root.path().canonicalize()?);
+        let digest =
+            perl_source_identity::ContentDigest::of_bytes(source_contents.as_bytes()).to_string();
+        *adapter.launch_source_identity.lock().map_err(|_| "launch identity lock poisoned")? =
+            Some((source_path.clone(), digest));
+        *adapter.session.lock().map_err(|_| "session lock poisoned")? = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: Vec::new(),
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
+            last_resume_mode: ResumeMode::Unknown,
+            initial_stop_pending: false,
+            entry_stop_pending: false,
+            stopped_generation: 0,
+        });
+        adapter.operation_broker.open_session();
+
+        let records = (1..=20)
+            .map(|line| BreakpointRecord {
+                id: line,
+                line,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+                hit_count: 0,
+                verified: true,
+                message: None,
+            })
+            .collect::<Vec<_>>();
+        let started = Instant::now();
+        let installed = adapter.install_stored_source_breakpoints(source_text, &records);
+        let elapsed = started.elapsed();
+        require(
+            installed.installed.is_empty(),
+            "a nonresponding engine must not install breakpoints",
+        )?;
+        require(installed.ambiguous, "a nonresponding engine must invalidate the session")?;
+        require(
+            elapsed < Duration::from_secs(8),
+            &format!("aggregate installation exceeded one budget: {elapsed:?}"),
+        )?;
+        let state = adapter
+            .session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .as_ref()
+            .map(|session| session.state.clone());
+        require_equal(state, None, "an ambiguous installation must clear the active session")?;
+        Ok(())
+    }
+
+    #[test]
+    fn unconfigured_relative_admission_uses_stable_store_identity() -> Result<(), Box<dyn Error>> {
+        let mut adapter = DebugAdapter::new();
+        let body = successful_body(request(&mut adapter, "Cargo.toml", json!([{ "line": 1 }])))?;
+        require_equal(
+            single_breakpoint(&body)?.get("verified").and_then(Value::as_bool),
+            Some(false),
+            "relative source admission remains pending before launch",
+        )?;
+        let stable = DebugAdapter::validate_source_path_at("Cargo.toml", None)?
+            .to_string_lossy()
+            .into_owned();
+        require(
+            adapter.breakpoints.get_breakpoints("Cargo.toml").is_empty(),
+            "relative source must not remain keyed by its unstable spelling",
+        )?;
+        require_equal(
+            adapter.breakpoints.get_breakpoints(&stable).len(),
+            1,
+            "relative source must be keyed by its stable absolute identity",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn contained_source_and_relative_alias_share_one_store_key() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("boundary_fixture.pl");
+        fs::write(&source, "my $value = 1;\nprint $value;\n")?;
+        let canonical = source.canonicalize()?;
+        let absolute_spelling = source_text(&canonical)?;
+        // Windows canonicalize adds a verbatim drive prefix; the shared path
+        // boundary intentionally returns a normal filesystem spelling. Keep the
+        // verbatim request as an alias control, but query the admitted store key.
+        let canonical_key = absolute_spelling.strip_prefix(r"\\?\").unwrap_or(absolute_spelling);
+        let mut adapter = bounded_adapter(root.path())?;
+
+        let absolute =
+            successful_body(request(&mut adapter, absolute_spelling, json!([{ "line": 1 }])))?;
+        require_equal(
+            absolute.get("breakpoints").and_then(Value::as_array).map(Vec::len),
+            Some(1),
+            "absolute request must return one breakpoint",
+        )?;
+        require_equal(
+            single_breakpoint(&absolute)?.get("verified").and_then(Value::as_bool),
+            Some(false),
+            "pre-launch absolute source breakpoint remains pending engine acknowledgement",
+        )?;
+
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            1,
+            "contained absolute control must reach the source read boundary",
+        )?;
+
+        let relative =
+            successful_body(request(&mut adapter, "boundary_fixture.pl", json!([{ "line": 2 }])))?;
+        require_equal(
+            relative.get("breakpoints").and_then(Value::as_array).map(Vec::len),
+            Some(1),
+            "relative request must return one breakpoint",
+        )?;
+        require_equal(
+            single_breakpoint(&relative)?.get("verified").and_then(Value::as_bool),
+            Some(false),
+            "pre-launch relative source breakpoint remains pending engine acknowledgement",
+        )?;
+        let records = adapter.breakpoints.get_breakpoints(canonical_key);
+        require_equal(
+            records.len(),
+            1,
+            "relative request replaces rather than duplicates the file",
+        )?;
+        require_equal(
+            records.first().map(|record| record.line),
+            Some(2),
+            "relative request must replace the old line",
+        )?;
+        require(
+            adapter.breakpoints.get_breakpoints("boundary_fixture.pl").is_empty(),
+            "relative spelling must not create a separate store key",
+        )?;
+
+        successful_body(request(&mut adapter, "boundary_fixture.pl", json!([])))?;
+        require(
+            adapter.breakpoints.get_breakpoints(canonical_key).is_empty(),
+            "empty relative replacement must clear the canonical key",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn outside_source_is_refused_before_launch() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let source = outside.path().join("outside.pl");
+        fs::write(&source, "print 'fixture';\n")?;
+        let mut adapter = bounded_adapter(root.path())?;
+        require_refused(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            0,
+            "outside refusal must precede the source read boundary",
+        )?;
+        require(
+            adapter.breakpoints.get_breakpoints(source_text(&source)?).is_empty(),
+            "outside request must not create records",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn prefix_collision_and_parent_traversal_are_refused() -> Result<(), Box<dyn Error>> {
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("workspace");
+        let sibling = parent.path().join("workspace-other");
+        fs::create_dir(&root)?;
+        fs::create_dir(&sibling)?;
+        let source = sibling.join("outside.pl");
+        fs::write(&source, "print 'fixture';\n")?;
+        let mut adapter = bounded_adapter(&root)?;
+        require_refused(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
+        require_refused(request(
+            &mut adapter,
+            "../workspace-other/outside.pl",
+            json!([{ "line": 1 }]),
+        ))?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_replacement_preserves_existing_records() -> Result<(), Box<dyn Error>> {
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("workspace");
+        fs::create_dir(&root)?;
+        let source = parent.path().join("outside.pl");
+        fs::write(&source, "print 'fixture';\n")?;
+        let canonical = source.canonicalize()?;
+        let key = source_text(&canonical)?;
+        let mut adapter = DebugAdapter::new();
+        successful_body(request(&mut adapter, key, json!([{ "line": 1 }])))?;
+        let before = adapter.breakpoints.get_breakpoints(key);
+        require_equal(before.len(), 1, "control must seed one existing breakpoint")?;
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            1,
+            "seeded-record control must read the source exactly once",
+        )?;
+        adapter.set_workspace_root(root.canonicalize()?);
+
+        require_refused(request(&mut adapter, key, json!([])))?;
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            1,
+            "refused empty replacement must not read source again",
+        )?;
+        let after = adapter.breakpoints.get_breakpoints(key);
+        require_equal(
+            after.len(),
+            before.len(),
+            "refused empty replacement must not clear the store",
+        )?;
+        require_equal(
+            after.first().map(|record| record.id),
+            before.first().map(|record| record.id),
+            "refused replacement must preserve the existing breakpoint ID",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn uncreated_contained_source_remains_an_admitted_request() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("not_created_yet.pl");
+        let mut adapter = bounded_adapter(root.path())?;
+        let body =
+            successful_body(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
+        require_equal(
+            body.get("breakpoints").and_then(Value::as_array).map(Vec::len),
+            Some(1),
+            "admitted request must return one breakpoint",
+        )?;
+        require(!source.exists(), "breakpoint admission must not create source files")?;
+        Ok(())
+    }
+
+    #[test]
+    fn unconfigured_adapter_still_accepts_an_ordinary_absolute_source() -> Result<(), Box<dyn Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let source = root.path().join("ordinary.pl");
+        fs::write(&source, "print 'fixture';\n")?;
+        let mut adapter = DebugAdapter::new();
+        let body =
+            successful_body(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
+        require_equal(
+            body.get("breakpoints").and_then(Value::as_array).map(Vec::len),
+            Some(1),
+            "admitted request must return one breakpoint",
+        )?;
+        require_equal(
+            single_breakpoint(&body)?.get("verified").and_then(Value::as_bool),
+            Some(false),
+            "pre-launch ordinary absolute source breakpoint remains pending engine acknowledgement",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn unconfigured_adapter_refuses_parent_components_before_read() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let child = root.path().join("child");
+        fs::create_dir(&child)?;
+        fs::write(root.path().join("ordinary.pl"), "print 'fixture';\n")?;
+        let source = child.join("..").join("ordinary.pl");
+        let mut adapter = DebugAdapter::new();
+        // The file exists: this is the existing shape-only validator's policy,
+        // not a missing-file refusal or a configured workspace boundary.
+        require(source.is_file(), "parent-component fixture must resolve to a real file")?;
+        require_refused(request(&mut adapter, source_text(&source)?, json!([{ "line": 1 }])))?;
+        require_equal(
+            adapter.breakpoints.source_read_attempts(),
+            0,
+            "unconfigured parent-component refusal must precede source reads",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn relative_debugger_logpoint_uses_debuggee_cwd_before_containment()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let cwd = root.path().join("subdir");
+        fs::create_dir_all(cwd.join("lib"))?;
+        fs::create_dir(root.path().join("lib"))?;
+        fs::create_dir(outside.path().join("lib"))?;
+        // Seed native filesystem spellings, matching admitted store keys even
+        // when the debugger uses forward slashes on Windows.
+        let source = cwd.join("lib").join("module.pl");
+        let decoy = root.path().join("lib").join("module.pl");
+        let outside_source = outside.path().join("lib").join("module.pl");
+        for path in [&source, &decoy, &outside_source] {
+            fs::write(path, "print 'fixture';\n")?;
+        }
+        let adapter = bounded_adapter(root.path())?;
+        // Trusted store fixtures exercise retained hit/logpoint semantics without
+        // promoting the handler's currently floored optional capabilities.
+        let logpoint = serde_json::from_value(json!({
+            "source": { "path": source_text(&source)? },
+            "breakpoints": [{ "line": 1, "hitCondition": "2", "logMessage": "relative hit" }],
+        }))?;
+        adapter.breakpoints.set_breakpoints(&logpoint);
+        for path in [&decoy, &outside_source] {
+            let ordinary = serde_json::from_value(json!({
+                "source": { "path": source_text(path)? }, "breakpoints": [{ "line": 1 }],
+            }))?;
+            adapter.breakpoints.set_breakpoints(&ordinary);
+            require(
+                adapter.breakpoints.register_breakpoint_hit(source_text(path)?, 1).should_stop,
+                "wrong-directory controls must contain verified stopping breakpoints",
+            )?;
+        }
+        let authority = root.path().canonicalize()?;
+        let first = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            "lib/module.pl",
+            1,
+            Some(&authority),
+            &cwd,
+        );
+        require(
+            first.matched && !first.should_stop && first.log_messages.is_empty(),
+            "first relative hit must reach the cwd logpoint's hit condition, not the root decoy",
+        )?;
+        let second = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            "lib/module.pl",
+            1,
+            Some(&authority),
+            &cwd,
+        );
+        require(
+            second.matched && !second.should_stop,
+            "second relative logpoint hit must remain a non-stopping match",
+        )?;
+        require_equal(
+            second.log_messages,
+            vec!["relative hit".to_string()],
+            "second hit must emit the cwd logpoint message",
+        )?;
+        let refused = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            "lib/module.pl",
+            1,
+            Some(&authority),
+            outside.path(),
+        );
+        require(
+            !refused.matched && !refused.should_stop && refused.log_messages.is_empty(),
+            "outside debuggee cwd must not widen workspace authority",
+        )?;
+        Ok(())
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn admitted_debugger_alias_correlates_but_outside_alias_does_not() -> Result<(), Box<dyn Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let source = root.path().join("canonical_target.pl");
+        let alias = root.path().join("debugger_alias.pl");
+        fs::write(&source, "print 'fixture';\n")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source, &alias)?;
+        #[cfg(windows)]
+        {
+            // Symlink creation on Windows needs SeCreateSymbolicLinkPrivilege
+            // (admin or Developer Mode). The correlation control below depends
+            // on true symlink resolution — a hard link would collapse the
+            // alias/target distinction this test exists to prove — so the
+            // repo's typed-skip convention reports a visible skip on
+            // unprivileged hosts instead of failing (#15403). Privileged
+            // hosts and Unix always exercise the law.
+            if perl_tdd_support::symlink_test_decision().skip_visibly() {
+                return Ok(());
+            }
+            std::os::windows::fs::symlink_file(&source, &alias)?;
+        }
+        let mut adapter = bounded_adapter(root.path())?;
+        let body =
+            successful_body(request(&mut adapter, source_text(&alias)?, json!([{ "line": 1 }])))?;
+        require_equal(
+            single_breakpoint(&body)?.get("verified").and_then(Value::as_bool),
+            Some(false),
+            "pre-launch admitted symlink breakpoint remains pending engine acknowledgement",
+        )?;
+
+        // Raw suffix matching cannot correlate different basenames. The output
+        // reader uses this same boundary decision before registering a runtime hit.
+        require(
+            !adapter.breakpoints.register_breakpoint_hit(source_text(&alias)?, 1).matched,
+            "control must distinguish raw alias spelling from its canonical target",
+        )?;
+        let authority = root.path().canonicalize()?;
+        let outcome = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            source_text(&alias)?,
+            1,
+            Some(&authority),
+            root.path(),
+        );
+        require(
+            outcome.matched && outcome.should_stop,
+            "validated debugger alias must produce the breakpoint stop outcome",
+        )?;
+
+        // A symlink that resolves outside the workspace must not participate in
+        // hit correlation, even though it has an in-workspace spelling.
+        let outside_target = outside.path().join("other_target.pl");
+        let escaping_alias = root.path().join("escaping_alias.pl");
+        fs::write(&outside_target, "print 'outside';\n")?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_target, &escaping_alias)?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&outside_target, &escaping_alias)?;
+        // Simulate records retained from an earlier unbounded session. The
+        // refusal must come from current admission, not from an empty store.
+        let outside_args = serde_json::from_value(json!({
+            "source": { "path": source_text(&outside_target)? },
+            "breakpoints": [{ "line": 1 }],
+        }))?;
+        adapter.breakpoints.set_breakpoints(&outside_args);
+        require(
+            adapter.breakpoints.register_breakpoint_hit(source_text(&outside_target)?, 1).matched,
+            "outside control must have a matching stored breakpoint before admission",
+        )?;
+        let outside_outcome = DebugAdapter::register_observed_breakpoint_hit(
+            &adapter.breakpoints,
+            "escaping_alias.pl",
+            1,
+            Some(&authority),
+            root.path(),
+        );
+        require(
+            !outside_outcome.matched && !outside_outcome.should_stop,
+            "observed escaping alias must not claim a breakpoint stop",
+        )?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_outside_source_is_refused() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let source = outside.path().join("outside.pl");
+        fs::write(&source, "print 'fixture';\n")?;
+        let link = root.path().join("linked.pl");
+        std::os::unix::fs::symlink(&source, &link)?;
+        let mut adapter = bounded_adapter(root.path())?;
+        require_refused(request(&mut adapter, source_text(&link)?, json!([{ "line": 1 }])))?;
+        require(
+            adapter.breakpoints.get_breakpoints(source_text(&link)?).is_empty(),
+            "symlink escape must not create records",
+        )?;
+        Ok(())
     }
 }

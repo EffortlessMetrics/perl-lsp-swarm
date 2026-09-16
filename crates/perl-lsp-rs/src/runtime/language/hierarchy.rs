@@ -947,8 +947,11 @@ mod tests {
     #[cfg(feature = "workspace")]
     #[test]
     fn test_wait_guard_fires_in_incoming_calls_when_indexing_in_progress() {
+        // `LspServer::new()` starts Building; with indexing in progress this
+        // handler enters the wait path and notifies the process-global slot
+        // (#15016). Serialize with other notify-capable tests.
+        let _serial = crate::runtime::readiness::readiness_wait_path_test_lock();
         let server = LspServer::new();
-        // Simulate the race window; coordinator is Ready so the wait returns instantly.
         server.test_simulate_indexing_start();
         let result = server.handle_incoming_calls(Some(json!({
             "item": {
@@ -1237,8 +1240,11 @@ mod tests {
     #[cfg(feature = "workspace")]
     #[test]
     fn test_wait_guard_fires_in_outgoing_calls_when_indexing_in_progress() {
+        // `LspServer::new()` starts Building; with indexing in progress this
+        // handler enters the wait path and notifies the process-global slot
+        // (#15016). Serialize with other notify-capable tests.
+        let _serial = crate::runtime::readiness::readiness_wait_path_test_lock();
         let server = LspServer::new();
-        // Simulate the race window; coordinator is Ready so the wait returns instantly.
         server.test_simulate_indexing_start();
         let result = server.handle_outgoing_calls(Some(json!({
             "item": {

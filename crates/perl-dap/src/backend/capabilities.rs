@@ -382,12 +382,14 @@ pub(crate) const MIRROR_ADVERTISES_EVALUATE_FOR_HOVERS: bool = false;
 /// The #9581 secondary-capability floor: one explicit unsupported disposition
 /// per floored request.
 ///
-/// Seven `initialize` capability fields — `supportsCompletionsRequest`,
+/// The floored `initialize` capability fields — `supportsCompletionsRequest`,
 /// `supportsModulesRequest`, `supportsLoadedSourcesRequest`,
 /// `supportsRestartRequest`, `supportsValueFormattingOptions`,
 /// `supportsBreakpointLocationsRequest`, and `supportsCancelRequest` — are
-/// forced `false` in every mode (native launch, TCP attach, and both mirror
-/// peer surfaces) until that field's own exact-behavior receipt passes (#9581).
+/// kept false for direct/in-process, TCP, and mirror/peer surfaces until each
+/// field's own exact-behavior receipt passes (#9581). Native stdio enables only
+/// `supportsCancelRequest` after selecting its concurrent intake transport; the
+/// other listed fields remain false.
 /// Each row is independent: one field's gate evidence never widens another, and
 /// no row is derived from `supports_core`, catalog maturity, handler presence,
 /// or another mode's support.
@@ -483,6 +485,23 @@ pub(crate) fn value_format_unsupported_message(command: &str) -> String {
 /// its own sanctioned seam and constructs only its own refusal response from
 /// it, so the two families cannot drift apart between surfaces.
 pub(crate) fn capability_floor_message(command: &str, arguments: Option<&Value>) -> Option<String> {
+    capability_floor_message_for_native_stdio(command, arguments, false)
+}
+
+/// Apply the secondary capability floor for a selected transport profile.
+///
+/// Native stdio is the only profile that may admit request-scoped cancellation:
+/// its transport owns concurrent wire intake and the broker operation registry.
+/// Direct adapter calls and external-peer frontends remain fail-closed until
+/// their own cancellation proof exists.
+pub(crate) fn capability_floor_message_for_native_stdio(
+    command: &str,
+    arguments: Option<&Value>,
+    native_stdio: bool,
+) -> Option<String> {
+    if command == "cancel" && native_stdio {
+        return None;
+    }
     if let Some(message) = secondary_capability_floor_message(command) {
         return Some(message);
     }
@@ -777,6 +796,7 @@ pub fn intersect_dap_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_some_with;
 
     /// Authority-binding contract (#9578 review): each `advertises_*`
     /// accessor reads exactly its own per-capability proof authority, and the
@@ -792,10 +812,10 @@ mod tests {
         // the removed authority in its own assertions.
         let source =
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
-        let source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("module source always has a production half");
+        let source = must_some_with(
+            source.split("#[cfg(test)]").next(),
+            "module source always has a production half",
+        );
 
         let bindings = [
             ("advertises_function_breakpoints", "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN"),
@@ -831,10 +851,10 @@ mod tests {
     fn every_optional_breakpoint_authority_floors_at_false() {
         let source =
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/backend/capabilities.rs"));
-        let source = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("module source always has a production half");
+        let source = must_some_with(
+            source.split("#[cfg(test)]").next(),
+            "module source always has a production half",
+        );
         for authority in [
             "OPTIONAL_FUNCTION_BREAKPOINTS_PROVEN",
             "OPTIONAL_CONDITIONAL_BREAKPOINTS_PROVEN",
@@ -855,15 +875,15 @@ mod tests {
     /// body breaks the exact-atom equality.
     fn accessor_return_atom(source: &str, accessor: &str) -> String {
         let signature = format!("fn {accessor}()");
-        let start = source
-            .find(&signature)
-            .unwrap_or_else(|| panic!("{accessor} must stay defined in capabilities.rs"));
-        let open = source[start..].find('{').expect("accessor body brace") + start;
-        let close = source[open..].find('}').expect("accessor body close") + open;
+        let start = must_some_with(
+            source.find(&signature),
+            format!("{accessor} must stay defined in capabilities.rs"),
+        );
+        let open = must_some_with(source[start..].find('{'), "accessor body brace") + start;
+        let close = must_some_with(source[open..].find('}'), "accessor body close") + open;
         let body = &source[open + 1..close];
 
         let mut stripped = String::with_capacity(body.len());
-        let mut in_block_comment = false;
         for line in body.lines() {
             let mut rest = line;
             while !rest.is_empty() {
@@ -878,7 +898,6 @@ mod tests {
                         let block_comment = block_comment.unwrap_or_default();
                         stripped.push_str(&rest[..block_comment]);
                         rest = &rest[block_comment + 2..];
-                        in_block_comment = true;
                     }
                     // A line comment (or a line comment preceding a block
                     // comment start): the rest of the line is commentary.
@@ -1258,8 +1277,10 @@ mod tests {
             "expression": "$x",
             "format": { "hex": true, "radix": 16 }
         });
-        let message = capability_floor_message("evaluate", Some(&args))
-            .expect("unknown ValueFormat fields must be rejected");
+        let message = must_some_with(
+            capability_floor_message("evaluate", Some(&args)),
+            "unknown ValueFormat fields must be rejected",
+        );
         assert!(message.contains("Invalid arguments"), "unexpected message: {message}");
         assert!(message.contains("radix"), "unexpected message: {message}");
         assert!(!message.contains("non-default `format` option"));
@@ -1399,6 +1420,24 @@ mod tests {
         assert!(
             peer_bridge_set_expression_admission(false, true),
             "an open peer gate opens on its own authority, not the native one"
+        );
+    }
+
+    #[test]
+    fn native_stdio_only_admits_cancel() {
+        assert!(
+            capability_floor_message_for_native_stdio("cancel", None, true).is_none(),
+            "native stdio cancellation must reach the request-scoped broker"
+        );
+        let refusal = capability_floor_message_for_native_stdio("cancel", None, false)
+            .unwrap_or_else(|| "missing direct/peer refusal".to_string());
+        assert!(
+            refusal.contains("supportsCancelRequest") && refusal.contains("#9581"),
+            "non-stdio cancellation must remain fail-closed: {refusal}"
+        );
+        assert!(
+            capability_floor_message_for_native_stdio("restart", None, true).is_some(),
+            "native cancellation promotion must not widen unrelated floor rows"
         );
     }
 

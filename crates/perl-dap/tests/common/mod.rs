@@ -181,7 +181,8 @@ impl DapWorkflowSession {
     /// Launch a script with explicit `stopOnEntry` control.
     ///
     /// When `stop_on_entry` is `true`, the adapter emits a `stopped(reason=entry)` event
-    /// immediately after launch, before any `configurationDone` is sent.
+    /// at the first real debugger suspension — once stopped-state and frame authority
+    /// exist — so the event never precedes a `stackTrace`-answerable stop (#15637).
     /// When `false`, callers must call `set_breakpoints` and `configuration_done` before
     /// `wait_stopped` to follow the DAP ordering requirement.
     pub fn launch_with_stop_on_entry(
@@ -302,7 +303,7 @@ impl DapWorkflowSession {
         Ok(resolved)
     }
 
-    /// Block until a `stopped` event arrives, then immediately issue a `stackTrace`
+    /// Block until a `stopped` event arrives, then issue a `stackTrace`
     /// request to obtain the current source location.
     ///
     /// Returns a [`StoppedFrameInfo`] combining the stopped reason/thread with
@@ -310,16 +311,40 @@ impl DapWorkflowSession {
     ///
     /// Use this helper when the test must assert BOTH the stop reason AND the
     /// current source line, without the latency of a separate `stack_trace()` call.
+    ///
+    /// The entry stop is announced by the adapter the moment the debuggee
+    /// spawns, so an immediate `stackTrace` can race the perl5db bootstrap —
+    /// a freshly staged interpreter pays first-touch library-scan costs
+    /// before it answers the framed `T` query, and the ambient-output
+    /// fallback has no context lines yet. A real DAP client re-requests the
+    /// snapshot in that window, so the helper retries an empty-frame answer
+    /// on the same stop until the debugger responds or the bounded budget
+    /// expires. A persistent empty answer still fails with the same error.
     pub fn wait_stopped_with_frame(&mut self) -> Result<StoppedFrameInfo, String> {
         let stopped = self.wait_stopped()?;
-        let (frame_id, source_path, line) = self.stack_trace(stopped.thread_id)?;
-        Ok(StoppedFrameInfo {
-            reason: stopped.reason,
-            thread_id: stopped.thread_id,
-            frame_id,
-            source_path,
-            line,
-        })
+        const EMPTY_FRAME_RACE_BUDGET: Duration = Duration::from_secs(5);
+        const EMPTY_FRAME_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+        let deadline = Instant::now() + EMPTY_FRAME_RACE_BUDGET;
+        loop {
+            match self.stack_trace(stopped.thread_id) {
+                Ok((frame_id, source_path, line)) => {
+                    return Ok(StoppedFrameInfo {
+                        reason: stopped.reason,
+                        thread_id: stopped.thread_id,
+                        frame_id,
+                        source_path,
+                        line,
+                    });
+                }
+                Err(error) => {
+                    if error == "stackTrace returned empty frames" && Instant::now() < deadline {
+                        std::thread::sleep(EMPTY_FRAME_RETRY_INTERVAL);
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+        }
     }
 
     /// Send `configurationDone`.
@@ -757,6 +782,60 @@ pub(crate) fn normalize_explicit_debuggee_pin(path: &Path) -> Result<PathBuf, St
     Ok(canonical)
 }
 
+/// Decode the display form returned by DAP `evaluate` for the debuggee path.
+///
+/// The adapter deliberately renders scalar strings with quotes and escaped
+/// characters, and perl5db prefixes an evaluated scalar with its result
+/// ordinal.  A path identity assertion must compare the represented path,
+/// rather than treating display decoration as filesystem-path content.
+#[cfg(test)]
+fn decode_evaluate_path(reported: &str) -> Result<String, String> {
+    let trimmed = reported.trim();
+    let decoded = if trimmed.starts_with('"') {
+        serde_json::from_str::<String>(trimmed)
+            .map_err(|error| format!("invalid quoted DAP string {trimmed:?}: {error}"))
+    } else {
+        Ok(trimmed.to_string())
+    }?;
+
+    if let Some((prefix, payload)) = decoded.split_once(" '")
+        && prefix.trim().parse::<u64>().is_ok()
+    {
+        let mut path = String::with_capacity(payload.len());
+        let mut characters = payload.chars();
+        let mut closed = false;
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => match characters.next() {
+                    Some('\\') => path.push('\\'),
+                    Some('\'') => path.push('\''),
+                    Some(other) => {
+                        return Err(format!(
+                            "unsupported perl5db ordinal escape \\{other} in {decoded:?}"
+                        ));
+                    }
+                    None => {
+                        return Err(format!("trailing perl5db ordinal escape in {decoded:?}"));
+                    }
+                },
+                '\'' => {
+                    closed = true;
+                    break;
+                }
+                other => path.push(other),
+            }
+        }
+        if !closed || characters.any(|character| !character.is_whitespace()) {
+            return Err(format!("unclosed perl5db ordinal path {decoded:?}"));
+        }
+        if path.is_empty() {
+            return Err(format!("empty perl5db ordinal path {decoded:?}"));
+        }
+        return Ok(path);
+    }
+    Ok(decoded)
+}
+
 #[cfg(test)]
 pub(crate) fn assert_pinned_identity(
     reported: &str,
@@ -768,8 +847,14 @@ pub(crate) fn assert_pinned_identity(
         .map_err(|error| format!("{label} pinned path did not normalize: {error}"))?;
     let expected_ambient = normalize_explicit_debuggee_pin(ambient)
         .map_err(|error| format!("{label} ambient path did not normalize: {error}"))?;
-    let actual = normalize_explicit_debuggee_pin(Path::new(reported.trim()))
-        .map_err(|error| format!("{label} reported path did not normalize: {error}"))?;
+    let decoded = decode_evaluate_path(reported).map_err(|error| {
+        format!("{label} reported path did not decode (raw DAP result {reported:?}): {error}")
+    })?;
+    let actual = normalize_explicit_debuggee_pin(Path::new(&decoded)).map_err(|error| {
+        format!(
+            "{label} reported path did not normalize (raw DAP result {reported:?}, decoded {decoded:?}): {error}"
+        )
+    })?;
     if actual != expected_pinned {
         return Err(format!(
             "{label} evaluated $^X from {actual:?}, expected pinned {expected_pinned:?}"
@@ -797,9 +882,171 @@ fn normalize_windows_path_prefix(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod explicit_pin_tests {
-    use super::{launch_arguments, normalize_explicit_debuggee_pin, resolve_debuggee_candidate};
+    use super::{
+        assert_pinned_identity, launch_arguments, normalize_explicit_debuggee_pin,
+        resolve_debuggee_candidate,
+    };
+    use perl_dap::variables::{PerlValue, PerlVariableRenderer, VariableRenderer};
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn pinned_identity_decodes_rendered_dap_string() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("perl with spaces");
+        let ambient = controls.path().join("ambient-perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let rendered = PerlVariableRenderer::new()
+            .render("$^X", &PerlValue::Scalar(pinned.to_string_lossy().to_string()))
+            .value;
+        assert_pinned_identity(&rendered, &pinned, &ambient, "rendered")?;
+        let plain =
+            pinned.to_str().ok_or_else(|| "the test pin should be valid UTF-8".to_string())?;
+        assert_pinned_identity(plain, &pinned, &ambient, "plain")
+    }
+
+    #[test]
+    fn pinned_identity_decodes_perl_debugger_ordinal() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("perl5");
+        let ambient = controls.path().join("perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let perl_quote =
+            |path: &Path| path.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let rendered = serde_json::to_string(&format!("0  '{}'", perl_quote(&pinned)))
+            .map_err(|error| error.to_string())?;
+        assert_pinned_identity(&rendered, &pinned, &ambient, "ordinal")?;
+
+        let ambient_rendered = format!("0  '{}'", perl_quote(&ambient));
+        let error = assert_pinned_identity(&ambient_rendered, &pinned, &ambient, "ambient ordinal")
+            .err()
+            .ok_or_else(|| "the ordinal ambient path was accepted".to_string())?;
+        if !error.contains("expected pinned") {
+            return Err(format!("ordinal ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_identity_decodes_raw_perl_debugger_escapes() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        let pinned = controls.path().join("nested").join("pinned\\'perl");
+        #[cfg(not(unix))]
+        let pinned = controls.path().join("nested").join("pinned'perl");
+        let ambient = controls.path().join("ambient").join("perl'with spaces");
+        fs::create_dir_all(
+            pinned.parent().ok_or_else(|| "the pinned path should have a parent".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::create_dir_all(
+            ambient.parent().ok_or_else(|| "the ambient path should have a parent".to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let perl_quote =
+            |path: &Path| path.to_string_lossy().replace('\\', "\\\\").replace('\'', "\\'");
+        let raw_perl5db = format!("0  '{}'", perl_quote(&pinned));
+        assert_pinned_identity(&raw_perl5db, &pinned, &ambient, "raw perl5db")?;
+        let rendered = serde_json::to_string(&raw_perl5db).map_err(|error| error.to_string())?;
+        assert_pinned_identity(&rendered, &pinned, &ambient, "JSON-wrapped perl5db")?;
+
+        let ambient_rendered = format!("0  '{}'", perl_quote(&ambient));
+        let error = assert_pinned_identity(&ambient_rendered, &pinned, &ambient, "raw ambient")
+            .err()
+            .ok_or_else(|| "the escaped ambient path was accepted".to_string())?;
+        if !error.contains("expected pinned") {
+            return Err(format!("escaped ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plain_path_ending_in_double_quote_is_not_json_decoded() -> Result<(), String> {
+        let path = "/tmp/perl-lsp-15217-plain-quote\"";
+        if super::decode_evaluate_path(path)? != path {
+            return Err("plain path ending in a double quote was changed".to_string());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_identity_rejects_rendered_ambient_path() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("pinned-perl");
+        let ambient = controls.path().join("ambient-perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let rendered_ambient = PerlVariableRenderer::new()
+            .render("$^X", &PerlValue::Scalar(ambient.to_string_lossy().to_string()))
+            .value;
+        let error = assert_pinned_identity(&rendered_ambient, &pinned, &ambient, "ambient")
+            .err()
+            .ok_or_else(|| "the rendered ambient path was accepted".to_string())?;
+        if !error.contains("expected pinned") {
+            return Err(format!("ambient rejection lost its reason: {error}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_identity_rejects_ambiguous_unclosed_rendered_string() -> Result<(), String> {
+        let controls = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let pinned = controls.path().join("pinned-perl");
+        let ambient = controls.path().join("ambient-perl");
+        fs::write(&pinned, b"pinned").map_err(|error| error.to_string())?;
+        fs::write(&ambient, b"ambient").map_err(|error| error.to_string())?;
+
+        let error = assert_pinned_identity("\"unclosed", &pinned, &ambient, "malformed")
+            .err()
+            .ok_or_else(|| "malformed rendered output was accepted".to_string())?;
+        if !error.contains("raw DAP result") || !error.contains("invalid quoted DAP string") {
+            return Err(format!("malformed rendered output lost diagnostic context: {error}"));
+        }
+
+        let ordinal_error = assert_pinned_identity("0  '", &pinned, &ambient, "ordinal")
+            .err()
+            .ok_or_else(|| "an empty ordinal payload was accepted".to_string())?;
+        if !ordinal_error.contains("raw DAP result") || !ordinal_error.contains("unclosed") {
+            return Err(format!("malformed ordinal lost diagnostic context: {ordinal_error}"));
+        }
+
+        let empty_ordinal_error = assert_pinned_identity("0  ''", &pinned, &ambient, "ordinal")
+            .err()
+            .ok_or_else(|| "an empty quoted ordinal payload was accepted".to_string())?;
+        if !empty_ordinal_error.contains("raw DAP result") || !empty_ordinal_error.contains("empty")
+        {
+            return Err(format!("empty ordinal lost diagnostic context: {empty_ordinal_error}"));
+        }
+
+        let unsupported_escape = assert_pinned_identity("0  'C:\\q'", &pinned, &ambient, "ordinal")
+            .err()
+            .ok_or_else(|| "an unsupported ordinal escape was accepted".to_string())?;
+        if !unsupported_escape.contains("unsupported perl5db ordinal escape") {
+            return Err(format!(
+                "unsupported ordinal escape lost its reason: {unsupported_escape}"
+            ));
+        }
+
+        let escaped_quote_without_close =
+            assert_pinned_identity("0  'C:\\'", &pinned, &ambient, "ordinal")
+                .err()
+                .ok_or_else(|| "an ordinal with no closing quote was accepted".to_string())?;
+        if !escaped_quote_without_close.contains("unclosed") {
+            return Err(format!(
+                "unclosed escaped ordinal lost its reason: {escaped_quote_without_close}"
+            ));
+        }
+        Ok(())
+    }
 
     #[test]
     fn nested_relative_pin_is_frozen_before_different_launch_cwd() -> Result<(), String> {
@@ -1259,9 +1506,9 @@ pub const DEBUGGEE_PERL_OVERRIDE_ENV: &str = "PERL_LSP_DAP_DEBUGGEE_PERL";
 
 /// Wall-clock budget for one [`probe_debuggee_perl`] attempt.
 ///
-/// A working perl5db emits its banner well inside a second; a broken one
-/// (native MSWin32 builds at piped bootstrap) hangs forever, so the budget is
-/// what bounds the probe.
+/// A working perl5db emits its banner well inside a second; an interpreter
+/// that cannot bootstrap its debugger over pipes may hang, so the budget
+/// bounds the probe.
 const DEBUGGEE_PROBE_BUDGET: Duration = Duration::from_secs(10);
 
 /// A debuggee interpreter proven able to run a real debugger session over
@@ -1303,11 +1550,10 @@ fn debuggee_perl_candidates() -> Vec<PathBuf> {
 
     let mut candidates = vec![PathBuf::from("perl")];
 
-    // Windows: add well-known MSYS-family perl locations. The cataloged root
-    // cause (#12594 item 6b) is that native MSWin32 perl5db builds cannot run
-    // over piped stdio, while MSYS/cygwin-flavored builds can; these paths are
+    // Windows: add well-known MSYS-family perl locations. These paths are
     // only PROPOSALS — every candidate still has to pass the conformance
-    // probe before it is trusted. Environments with other layouts should set
+    // probe, including the native piped-stdio bootstrap, before it is
+    // trusted. Environments with other layouts should set
     // [`DEBUGGEE_PERL_OVERRIDE_ENV`].
     if cfg!(windows) {
         if let Some(system_drive) = std::env::var_os("SystemDrive") {
@@ -1739,6 +1985,19 @@ fn probe_debuggee_perl_with_options_and_barrier(
             .env_remove("PERL5OPT")
             .env("LC_ALL", "C")
             .env("TZ", "UTC");
+        // Keep the resolver probe on the same native Windows stdio path as a
+        // real adapter launch. Strawberry's perl5db selects its console
+        // transport unless EMACS is set, and ReadLine must not query console
+        // handles when the child is attached to pipes. Preserve caller
+        // PERLDB_OPTS and append the debugger-only override, matching the
+        // production launcher in debug_adapter/process.rs.
+        #[cfg(windows)]
+        {
+            command.env("EMACS", "1");
+            let mut perl_db_opts = std::env::var_os("PERLDB_OPTS").unwrap_or_default();
+            perl_db_opts.push(" ReadLine=0");
+            command.env("PERLDB_OPTS", perl_db_opts);
+        }
         if let Some(descendant_pid_file) = descendant_pid_file {
             command.env("PERL_LSP_DAP_TEST_DESCENDANT_PID_FILE", descendant_pid_file);
             command.env(
@@ -1764,17 +2023,15 @@ fn probe_debuggee_perl_with_options_and_barrier(
         }
         let mut child = command.spawn().map_err(|e| fail(format!("cannot spawn: {e}")))?;
         #[cfg(all(test, windows))]
-        if publication_barrier {
-            if let Err(error) = resume_suspended_probe_process(&child) {
-                let cleanup =
-                    terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
-                return Err(fail(format!(
-                    "cannot resume probe process for publication barrier: {error}{}",
-                    cleanup
-                        .err()
-                        .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
-                )));
-            }
+        if publication_barrier && let Err(error) = resume_suspended_probe_process(&child) {
+            let cleanup =
+                terminate_probe_process_tree(&mut child, descendant_pid_file, cleanup_fault);
+            return Err(fail(format!(
+                "cannot resume probe process for publication barrier: {error}{}",
+                cleanup
+                    .err()
+                    .map_or_else(String::new, |error| format!("; cleanup failed: {error}"))
+            )));
         }
         #[cfg(test)]
         if let Some(descendant_pid_file) = descendant_pid_file {
@@ -2192,6 +2449,14 @@ pub(crate) fn run_cleanup_command_for_test(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn run_bounded_command_for_test(
+    command: Command,
+    budget: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    run_cleanup_command(command, budget)
+}
+
 fn run_cleanup_command_inner(
     mut command: Command,
     budget: Duration,
@@ -2513,8 +2778,6 @@ fn probe_pipe_has_data<T>(pipe: &T) -> Option<bool>
 where
     T: std::os::fd::AsRawFd,
 {
-    use std::os::fd::AsRawFd;
-
     let mut descriptor = libc::pollfd { fd: pipe.as_raw_fd(), events: libc::POLLIN, revents: 0 };
     let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
     if result < 0 { None } else { Some(result > 0) }
@@ -2710,6 +2973,21 @@ fn identity_from_probe_output(stderr: &str, stdout: &str) -> String {
     identity_line.chars().take(120).collect()
 }
 
+/// Whether a probe failure is the "interpreter cannot load perl5db.pl" class.
+///
+/// A copied or staged interpreter can pass its in-place probe and still be
+/// unusable: relocation breaks mount-relative `@INC` resolution, so a
+/// Git-Bash/MSYS perl copy reports `Can't locate perl5db.pl in @INC`. That is
+/// a property of the environment (no candidate survives staging), not a
+/// candidate bug, so live proofs use this to distinguish a typed skip from a
+/// hard failure.
+// Shared helper: each integration-test binary compiles `common` separately, so
+// binaries that do not call it would otherwise trip per-target dead_code.
+#[allow(dead_code)]
+pub(crate) fn staged_copy_cannot_load_perl5db(reason: &str) -> bool {
+    reason.to_ascii_lowercase().contains("perl5db")
+}
+
 /// Resolve and cache a pipe-capable debuggee interpreter for live sessions.
 ///
 /// Candidate order: [`DEBUGGEE_PERL_OVERRIDE_ENV`] (exclusive when set),
@@ -2765,6 +3043,45 @@ fn candidate_is_executable(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn candidate_is_executable(_path: &Path) -> bool {
     true
+}
+
+/// Every `perl` executable visible on the platform search path, in PATH
+/// order, deduplicated by first appearance and checked for existence.
+///
+/// Unix `which` resolves a bare program name to only its first PATH hit, so a
+/// proof that rejects one candidate (for example a staged copy whose
+/// mount-relative `@INC` cannot load perl5db.pl) could not continue with a
+/// later PATH interpreter — it would never even see one. Enumerate the search
+/// path directly instead. Windows keeps `where.exe`, which already reports
+/// every PATH match (including PATHEXT variants such as `perl.bat`) in PATH
+/// order.
+pub(crate) fn search_path_perl_candidates() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    let raw: Vec<PathBuf> = {
+        let output = match Command::new("where.exe").arg("perl").output() {
+            Ok(output) if output.status.success() => output,
+            _ => return Vec::new(),
+        };
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| PathBuf::from(line.trim()))
+            .collect()
+    };
+    #[cfg(not(windows))]
+    let raw: Vec<PathBuf> = match std::env::var_os("PATH") {
+        Some(path) => std::env::split_paths(&path)
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .map(|directory| directory.join("perl"))
+            .collect(),
+        None => Vec::new(),
+    };
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for candidate in raw {
+        if candidate.is_file() && !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
 }
 
 /// Resolve one ambient candidate to the absolute interpreter path the probe

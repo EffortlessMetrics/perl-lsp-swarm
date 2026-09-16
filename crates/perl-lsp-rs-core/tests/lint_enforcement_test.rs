@@ -11,7 +11,7 @@
 //! These tests read the actual source files via `CARGO_MANIFEST_DIR` so they would
 //! catch any future accidental removal of the directives.
 
-use perl_tdd_support::{must, must_some};
+use perl_tdd_support::{must, must_some, must_some_with};
 use std::fs;
 
 /// Returns the path to perl-lsp-rs-core's `lib.rs`.
@@ -112,10 +112,12 @@ fn test_startup_banner_has_allow_annotation() {
          #[expect(...)] not #[allow(...)]. Update startup_banner annotation."
     );
 
-    let allow = allow_line.expect("clippy::print_stderr occurrence must be present");
-    let func = fn_line.expect("startup_banner_with_quiet must be present");
-    let annotation =
-        annotation.expect("startup_banner_with_quiet must have an immediately preceding attribute");
+    let allow = must_some_with(allow_line, "clippy::print_stderr occurrence must be present");
+    let func = must_some_with(fn_line, "startup_banner_with_quiet must be present");
+    let annotation = must_some_with(
+        annotation,
+        "startup_banner_with_quiet must have an immediately preceding attribute",
+    );
     assert!(
         allow < func,
         "The clippy::print_stderr annotation (line {allow}) must appear \

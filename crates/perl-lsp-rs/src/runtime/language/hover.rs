@@ -491,19 +491,48 @@ impl LspServer {
         let token_candidate_is_proven =
             Self::token_fallback_is_proven_code(source_region, text, offset);
 
-        if token_candidate_is_proven
+        // Method-modifier target island (#15425). The synthetic modifier
+        // symbol spans the whole `before 'save' => sub { … };` statement, and
+        // its target name is a quoted string, so the proven-Code gate can
+        // never see a cursor on the target — the region index proves
+        // StringLiteral there (#4967). The declaration head is still precise
+        // evidence: allow the modifier card when the whole token range is
+        // proven StringLiteral and the hovered token text matches the
+        // symbol's target name (multi-target disambiguation). Body strings,
+        // comments, POD, and heredocs keep failing closed because their
+        // text won't match any modifier target name.
+        let modifier_target_island = !token_candidate_is_proven
+            && Self::token_range_is_proven_kind(
+                source_region,
+                text,
+                offset,
+                SourceRegionKind::StringLiteral,
+            );
+
+        if (token_candidate_is_proven || modifier_target_island)
             && let Some(symbol_info) =
                 analyzer.symbol_at(crate::SourceLocation { start: offset, end: offset })
             && let Some(modifier_kind) =
                 symbol_info.attributes.iter().find_map(|a| a.strip_prefix("modifier="))
         {
-            let method_name = &symbol_info.name;
-            let doc = symbol_info.documentation.as_deref().unwrap_or("");
-            return HoverExtracted::Complete(hover_cards::method_modifier_hover(
-                modifier_kind,
-                method_name,
-                doc,
-            ));
+            // Multi-target disambiguation (#15425 review): when several
+            // modifier symbols share the same statement span, `symbol_at` may
+            // return any of them. Verify the hovered token text matches this
+            // symbol's name (the modifier target). Non-target tokens (body
+            // strings, comments) don't match any modifier name and fail
+            // closed naturally.
+            let token_text = Self::get_token_at_position_static(text, offset);
+            let target_matches = token_text == symbol_info.name;
+            let _ = modifier_target_island; // island gate already applied above
+            if target_matches || token_candidate_is_proven {
+                let method_name = &symbol_info.name;
+                let doc = symbol_info.documentation.as_deref().unwrap_or("");
+                return HoverExtracted::Complete(hover_cards::method_modifier_hover(
+                    modifier_kind,
+                    method_name,
+                    doc,
+                ));
+            }
         }
 
         // Detect early when the cursor is on a `->method` call: defer to the
@@ -841,6 +870,93 @@ impl LspServer {
         )
     }
 
+    /// Whether the whole token range at `offset` is proven to be exactly
+    /// `kind` by the generation-bound source-region index (#5003/#4967).
+    ///
+    /// Empty token ranges (cursor on punctuation) never qualify: there is no
+    /// identifier evidence to prove. Missing evidence fails closed.
+    fn token_range_is_proven_kind(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+        kind: SourceRegionKind,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        let (start, end) = Self::token_byte_bounds_of(text, offset);
+        if start >= end {
+            return false;
+        }
+        matches!(
+            index.classify_range(start, end),
+            RangeClassification::Proven { kind: proven } if proven == kind
+        )
+    }
+
+    /// Whether the token candidate at `offset` is an unescaped `$`/`@` variable
+    /// interpolated inside a double-quoted string literal (#14860).
+    ///
+    /// The region index records both `"…"` and `'…'` spans as
+    /// [`SourceRegionKind::StringLiteral`] without interpolation awareness, so
+    /// the opener byte decides: `'…'` never interpolates. Backticks and other
+    /// quote-likes are separate region kinds and stay outside this island. `%`
+    /// never interpolates, and an odd run of preceding backslashes escapes the
+    /// sigil. Missing evidence fails closed.
+    fn token_is_interpolated_string_variable(
+        region_index: Option<&SourceRegionIndex>,
+        text: &str,
+        offset: usize,
+    ) -> bool {
+        let Some(index) = region_index else {
+            return false;
+        };
+        // Punctuation variables (`$!`, `$^W`, `@+`) have no word-token bounds,
+        // so the candidate span comes from the same extractor that names them;
+        // sigiled identifiers fall back to word bounds.
+        let (start, end) = Self::special_variable_byte_bounds_of(text, offset)
+            .unwrap_or_else(|| Self::token_byte_bounds_of(text, offset));
+        if start >= end || !matches!(text.as_bytes().get(start), Some(b'$' | b'@')) {
+            return false;
+        }
+        let Some(region) = index.regions().iter().find(|region| {
+            region.kind == SourceRegionKind::StringLiteral && region.contains_range(start, end)
+        }) else {
+            return false;
+        };
+        let bytes = text.as_bytes();
+        let interpolating = matches!(bytes.get(region.start), Some(b'"'));
+        if !interpolating || start <= region.start {
+            return false;
+        }
+        let escaping_backslashes =
+            bytes[region.start..start].iter().rev().take_while(|b| **b == b'\\').count();
+        escaping_backslashes % 2 == 0
+    }
+
+    /// Byte span of the punctuation or caret special variable that
+    /// [`Self::extract_special_variable`] names at `offset`, anchored at the
+    /// sigil it found (cursor on the sigil or on the punctuation).
+    fn special_variable_byte_bounds_of(text: &str, offset: usize) -> Option<(usize, usize)> {
+        let name = Self::extract_special_variable(text, offset)?;
+        let start = [Some(offset), offset.checked_sub(1), offset.checked_sub(2)]
+            .into_iter()
+            .flatten()
+            .find(|pos| text.get(*pos..).is_some_and(|rest| rest.starts_with(name.as_str())))?;
+        let end = start + name.len();
+        // Preserve punctuation-boundary hover, but never claim identifier text
+        // immediately following a punctuation variable inside the string.
+        if offset >= end
+            && text
+                .get(offset..)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+        {
+            return None;
+        }
+        Some((start, end))
+    }
+
     /// Extract hover information from the token fallback path.
     fn extract_token_hover(
         uri: &str,
@@ -863,7 +979,25 @@ impl LspServer {
         // Generic symbol/token/builtin fallback: proven code only. Comments,
         // POD, literals, quote-likes, regex bodies, heredocs, `__DATA__`, and
         // recovery-ambiguous input fail closed to `None` (#4967).
+        //
+        // One island survives inside a string: an unescaped sigil variable in
+        // a double-quoted literal is a live variable reference, so its
+        // variable card stays answerable. Builtin, keyword,
+        // and bare-token cards remain suppressed there (#14860).
         if !Self::token_fallback_is_proven_code(region_index, text, offset) {
+            if Self::token_is_interpolated_string_variable(region_index, text, offset) {
+                if let Some(special_var) = Self::extract_special_variable(text, offset)
+                    && let Some(hover) = Self::get_special_variable_hover(&special_var)
+                {
+                    return HoverExtracted::Complete(hover);
+                }
+                let token = Self::get_token_at_position_static(text, offset);
+                if token.starts_with(['$', '@'])
+                    && let Some(hover) = Self::get_special_variable_hover(&token)
+                {
+                    return HoverExtracted::Complete(hover);
+                }
+            }
             return HoverExtracted::None;
         }
 

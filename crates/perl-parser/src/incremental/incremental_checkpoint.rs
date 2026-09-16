@@ -488,30 +488,32 @@ impl CheckpointedIncrementalParser {
         // Adjust token cache segment positions for the edit
         self.token_cache.adjust_positions(edit.start, old_len, new_len);
 
-        // Find nearest checkpoints before and after the edit for two-sided window
-        let left_checkpoint = self.checkpoint_cache.find_before(edit.start);
-        let right_checkpoint = self.checkpoint_cache.find_after(edit.start + new_len);
+        // Find nearest checkpoints before and after the edit for two-sided window.
+        // Right-side entries are geometry only: a shifted suffix checkpoint is
+        // not a restore authority after fail-closed invalidation.
+        let mut left_checkpoint = self.checkpoint_cache.find_before(edit.start).cloned();
+        let right_checkpoint = self.checkpoint_cache.find_after(edit.start + new_len).cloned();
 
-        // CheckpointCache deliberately retains shifted checkpoints as
-        // compatibility entries, but an invalidated entry must never be
-        // restored into the lexer. Fail closed to a full reparse when either
-        // side of the candidate window is not valid for the edited source.
+        if let Some(checkpoint) = left_checkpoint.as_mut()
+            && checkpoint
+                .rebind_to_source(&self.source, perl_source_identity::SourceGeneration::Unknown)
+                .is_err()
+        {
+            self.stats.cache_misses += 1;
+            return self.parse_with_checkpoints();
+        }
+
+        // An unrestorable left checkpoint must never be restored. Fail closed
+        // to a full reparse instead of synthesizing default lexer state.
         let probe = PerlLexer::new(&self.source);
-        let checkpoints_are_restorable =
-            left_checkpoint.as_ref().is_none_or(|checkpoint| probe.can_restore(checkpoint))
-                && right_checkpoint.as_ref().is_none_or(|checkpoint| probe.can_restore(checkpoint));
-        if !checkpoints_are_restorable {
+        if left_checkpoint.as_ref().is_some_and(|checkpoint| !probe.can_restore(checkpoint)) {
             self.stats.cache_misses += 1;
             return self.parse_with_checkpoints();
         }
 
         if left_checkpoint.is_some() || right_checkpoint.is_some() {
             self.stats.checkpoints_used += 1;
-            self.reparse_from_checkpoint_two_sided(
-                left_checkpoint.cloned(),
-                right_checkpoint.cloned(),
-                edit,
-            )
+            self.reparse_from_checkpoint_two_sided(left_checkpoint, right_checkpoint, edit)
         } else {
             // No checkpoint found, full reparse
             self.parse_with_checkpoints()
@@ -678,9 +680,9 @@ impl CheckpointedIncrementalParser {
         edit: &SimpleEdit,
     ) -> ParseResult<Node> {
         // Calculate relex bounds using checkpoint positions
-        let relex_start = left_checkpoint.as_ref().map(|cp| cp.position).unwrap_or(0);
+        let relex_start = left_checkpoint.as_ref().map(|cp| cp.position()).unwrap_or(0);
         let relex_end =
-            right_checkpoint.as_ref().map(|cp| cp.position).unwrap_or(self.source.len());
+            right_checkpoint.as_ref().map(|cp| cp.position()).unwrap_or(self.source.len());
 
         // Track checkpoint distances for statistics
         let edit_end = edit.start + edit.new_text.len();
@@ -716,12 +718,11 @@ impl CheckpointedIncrementalParser {
         // --- Phase 2: re-lex the region between checkpoints ---
         // Restore lexer at left checkpoint position (or start of source)
         let mut lexer = PerlLexer::new(&self.source);
-        if let Some(ref cp) = left_checkpoint {
-            if !lexer.can_restore(cp) {
-                self.stats.cache_misses += 1;
-                return self.parse_with_checkpoints();
-            }
-            lexer.restore(cp);
+        if let Some(cp) = left_checkpoint.as_ref()
+            && lexer.restore(cp).is_err()
+        {
+            self.stats.cache_misses += 1;
+            return self.parse_with_checkpoints();
         }
 
         let mut raw_relexed: Vec<perl_lexer::Token> = Vec::new();
@@ -977,13 +978,13 @@ mod tests {
 
         for query in (0..=edited_source.len()).step_by(17) {
             let incremental_before =
-                incremental.checkpoint_cache.find_before(query).map(|cp| cp.position);
-            let full_before = full.checkpoint_cache.find_before(query).map(|cp| cp.position);
+                incremental.checkpoint_cache.find_before(query).map(|cp| cp.position());
+            let full_before = full.checkpoint_cache.find_before(query).map(|cp| cp.position());
             assert_eq!(incremental_before, full_before, "mismatched left checkpoint at {query}");
 
             let incremental_after =
-                incremental.checkpoint_cache.find_after(query).map(|cp| cp.position);
-            let full_after = full.checkpoint_cache.find_after(query).map(|cp| cp.position);
+                incremental.checkpoint_cache.find_after(query).map(|cp| cp.position());
+            let full_after = full.checkpoint_cache.find_after(query).map(|cp| cp.position());
             assert_eq!(incremental_after, full_after, "mismatched right checkpoint at {query}");
         }
     }
@@ -996,9 +997,11 @@ mod tests {
         let mut parser = CheckpointedIncrementalParser::new();
         must(parser.parse(source.clone()));
 
-        // Force a checkpoint into the edit so CheckpointCache retains an
-        // explicitly invalidated entry at the edit boundary.
-        parser.checkpoint_cache.add(LexerCheckpoint::at_position(100));
+        // Force an unrestorable position label to be the left restore
+        // candidate. Production restore must fail closed rather than treat
+        // `at_position` as a live boundary.
+        #[expect(deprecated, reason = "test-only unrestorable cache key, not a live boundary")]
+        parser.checkpoint_cache.add(LexerCheckpoint::at_position(90));
         let tree = must(parser.apply_edit(&edit));
 
         let mut expected_source = source;

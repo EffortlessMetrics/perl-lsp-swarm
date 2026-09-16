@@ -45,6 +45,9 @@ import {
   _setUserInitiatedStopPendingForTest,
   _setLastStartupDiagnosisForTest,
   _watchdogFailureForTest,
+  _startWatchdogForTest,
+  _stopWatchdogForTest,
+  _setOutputChannelForTest,
   _spawnReplacementCrashGenerationForTest,
   _setLanguageClientLifecycleForTest,
   _handleLifecycleClientStateChangeForTest,
@@ -186,6 +189,31 @@ function makeCleanupBlockingLifecycle(): ExtensionLanguageClientLifecycle<
   return new ExtensionLanguageClientLifecycle(hooks);
 }
 
+function makeLateProcessCleanupLifecycle(): {
+  lifecycle: ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>;
+  subject: { terminal: boolean };
+  createdClients: () => number;
+} {
+  let created = 0;
+  const firstSubject = { terminal: false };
+  let subject = firstSubject;
+  const hooks: LifecycleHooks<FakeLifecycleClient, FakeLifecycleEvent> = {
+    resolveServerPath: async () => '/server/perllsp',
+    createClient: () => {
+      created += 1;
+      subject = created === 1 ? firstSubject : { terminal: false };
+      return new FakeLifecycleClient(Promise.resolve(), created);
+    },
+    captureStopWitness: () => subject,
+    isClientTerminal: (_client, witness) => (witness as { terminal: boolean }).terminal,
+  };
+  return {
+    lifecycle: new ExtensionLanguageClientLifecycle(hooks),
+    subject: firstSubject,
+    createdClients: () => created,
+  };
+}
+
 function makeFinalizationFailingLifecycle(finalizationDelayMs: number): {
   lifecycle: ExtensionLanguageClientLifecycle<FakeLifecycleClient, FakeLifecycleEvent>;
   trace: string[];
@@ -254,6 +282,7 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     _setLastStartupDiagnosisForTest(undefined);
     _setExtensionContextForTest(makeContext());
     _setLanguageClientLifecycleForTest(undefined);
+    _setOutputChannelForTest({ warn: jest.fn(), info: jest.fn(), error: jest.fn() } as never);
     showErrorMessage.mockReset();
     showErrorMessage.mockResolvedValue(undefined);
     showWarningMessage.mockReset();
@@ -414,6 +443,76 @@ describe('mid-session silent server crash recovery (#4625)', () => {
     // Watchdog and process exit must not increment the budget twice.
     expect(_autoRestartAttemptsForTest()).toBe(1);
     expect(showErrorMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test('stopping watchdog drops an in-flight timeout from the stopped generation', async () => {
+    jest.useFakeTimers();
+    const sendRequest = jest.fn(() => new Promise<never>(() => undefined));
+    _setLanguageClientLifecycleForTest({
+      snapshot: { state: 'running', generation: 0 },
+      client: { sendRequest },
+    } as never);
+    try {
+      _startWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(sendRequest).toHaveBeenCalledWith('$/perl-lsp/watchdog');
+
+      _stopWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(10_000);
+
+      expect(showErrorMessage).not.toHaveBeenCalled();
+      expect(_autoRestartAttemptsForTest()).toBe(0);
+    } finally {
+      _stopWatchdogForTest();
+      jest.useRealTimers();
+    }
+  });
+
+  test('a fresh watchdog timeout still starts one recovery episode', async () => {
+    jest.useFakeTimers();
+    const sendRequest = jest.fn(() => new Promise<never>(() => undefined));
+    _setLanguageClientLifecycleForTest({
+      snapshot: { state: 'running', generation: 0 },
+      client: { sendRequest },
+      restart: async () => undefined,
+    } as never);
+    try {
+      _startWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(30_000);
+      await jest.advanceTimersByTimeAsync(10_000);
+
+      expect(sendRequest).toHaveBeenCalledWith('$/perl-lsp/watchdog');
+      expect(_autoRestartAttemptsForTest()).toBe(1);
+      expect(showErrorMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      _stopWatchdogForTest();
+      jest.useRealTimers();
+    }
+  });
+
+  test('a restarted watchdog accepts the current timeout but suppresses the old one', async () => {
+    jest.useFakeTimers();
+    const sendRequest = jest.fn(() => new Promise<never>(() => undefined));
+    _setLanguageClientLifecycleForTest({
+      snapshot: { state: 'running', generation: 0 },
+      client: { sendRequest },
+      restart: async () => undefined,
+    } as never);
+    try {
+      _startWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(30_000);
+      _stopWatchdogForTest();
+      _startWatchdogForTest();
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(_autoRestartAttemptsForTest()).toBe(0);
+
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(_autoRestartAttemptsForTest()).toBe(1);
+      expect(showErrorMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      _stopWatchdogForTest();
+      jest.useRealTimers();
+    }
   });
 
   test('a process exit followed by an in-flight watchdog observation deduplicates', async () => {
@@ -659,6 +758,7 @@ describe('mid-session silent server crash recovery (#4625)', () => {
         /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
     );
     expect(reloadToasts).toHaveLength(1);
+    expect(String(reloadToasts[0]?.[0])).not.toContain('Try Restart Server again');
   });
 
   test('explicit restart blocked by incomplete cleanup offers window reload instead of a generic failure (#14448)', async () => {
@@ -676,9 +776,28 @@ describe('mid-session silent server crash recovery (#4625)', () => {
         /did not finish cleaning up/i.test(String(call[0])) && call.includes('Reload Window'),
     );
     expect(reloadToasts).toHaveLength(1);
+    expect(String(reloadToasts[0]?.[0])).not.toContain('Try Restart Server again');
     const genericFailures = showErrorMessage.mock.calls.filter((call) =>
       /^Failed to restart Perl Language Server/i.test(String(call[0])),
     );
     expect(genericFailures).toHaveLength(0);
+  });
+
+  test('restart handler retries a retained late process subject after it becomes terminal', async () => {
+    const { lifecycle, subject, createdClients } = makeLateProcessCleanupLifecycle();
+    _setLanguageClientLifecycleForTest(injectedLifecycle(lifecycle));
+    await lifecycle.start();
+
+    const blocked = await _restartServerForTest(makeContext());
+
+    expect(blocked).toBe(true);
+    expect(createdClients()).toBe(1);
+    expect(String(showErrorMessage.mock.calls[0]?.[0])).toContain('Try Restart Server again');
+
+    subject.terminal = true;
+    const recovered = await _restartServerForTest(makeContext());
+
+    expect(recovered).toBe(false);
+    expect(createdClients()).toBe(2);
   });
 });

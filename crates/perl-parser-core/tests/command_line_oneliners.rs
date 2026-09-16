@@ -5,23 +5,62 @@
 //! the body Perl wraps at runtime rather than a standalone execution context.
 //! Autosplit switches such as `-a` and `-F` alter interpreter setup without
 //! inserting source text, so `@F` cases test the unchanged command body.
+//!
+//! Each named idiom asserts AST kind, compact source range, parent/child anchors,
+//! and the HIR fact that would survive a structurally wrong but error-free parse.
 
 use std::error::Error;
+use std::fmt::Write as _;
 
 mod cpan_test_helpers;
 
 use cpan_test_helpers::{assert_clean_parse, assert_no_blocking_diagnostics};
-use perl_parser_core::hir::{CompilePhase, HirFile, HirKind, lower_ast};
-use perl_parser_core::{Node, Parser};
-
-fn collect_ast_shapes(node: &Node, shapes: &mut Vec<(&'static str, usize, usize)>) {
-    shapes.push((node.kind.kind_name(), node.location.start, node.location.end));
-    for child in node.children() {
-        collect_ast_shapes(child, shapes);
-    }
-}
+use perl_parser_core::hir::{
+    BinaryOp, CompilePhase, HirExpr, HirExprId, HirFile, HirKind, HirStmt, Sigil,
+    StatementModifierKind, SubscriptKind, lower_ast,
+};
+use perl_parser_core::{Node, NodeKind, Parser};
 
 type TestResult = Result<(), Box<dyn Error>>;
+
+#[derive(Debug, Clone, Copy)]
+struct AstFact {
+    kind: &'static str,
+    exact: &'static str,
+    payload: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AnchorFact {
+    parent_kind: &'static str,
+    parent_exact: &'static str,
+    parent_payload: Option<&'static str>,
+    child_kind: &'static str,
+    child_exact: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HirFact {
+    Item { kind: &'static str, anchor: &'static str, exact: &'static str },
+    Modifier { verb: StatementModifierKind, exact: &'static str, condition: &'static str },
+    ArrayElement { exact: &'static str, container: &'static str, selector: &'static str },
+    Variable { exact: &'static str, sigil: &'static str, name: &'static str },
+    Readline { exact: &'static str },
+    Postfix { verb: StatementModifierKind, exact: &'static str },
+    IndexBinary { lhs: &'static str, rhs: &'static str },
+    Call { exact: &'static str },
+    Phase { phase: CompilePhase, exact: &'static str },
+    Loop { exact: &'static str },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NamedIdiom {
+    switches: &'static str,
+    source: &'static str,
+    nodes: &'static [AstFact],
+    anchors: &'static [AnchorFact],
+    hir: &'static [HirFact],
+}
 
 fn parse_clean_with_hir(source: &str) -> Result<(Node, HirFile), Box<dyn Error>> {
     assert_clean_parse(source);
@@ -31,47 +70,6 @@ fn parse_clean_with_hir(source: &str) -> Result<(Node, HirFile), Box<dyn Error>>
     let ast = parser.parse().map_err(|error| format!("clean parse failed: {error:?}"))?;
     let hir = lower_ast(&ast);
     Ok((ast, hir))
-}
-
-fn assert_ast_range_contains(source: &str, ast: &Node, kind: &str, fragment: &str) {
-    let mut shapes = Vec::new();
-    collect_ast_shapes(ast, &mut shapes);
-    let found = shapes.iter().any(|(node_kind, start, end)| {
-        *node_kind == kind && source.get(*start..*end).is_some_and(|range| range.contains(fragment))
-    });
-    assert!(
-        found,
-        "expected AST {kind} range containing {fragment:?} in {source:?}; shapes: {shapes:?}"
-    );
-}
-
-fn assert_hir_range_contains(source: &str, hir: &HirFile, anchor_kind: &str, fragment: &str) {
-    let found = hir.items.iter().any(|item| {
-        item.anchor.node_kind == anchor_kind
-            && source
-                .get(item.range.start..item.range.end)
-                .is_some_and(|range| range.contains(fragment))
-    });
-    assert!(
-        found,
-        "expected HIR {anchor_kind} range containing {fragment:?} in {source:?}; items: {:?}",
-        hir.items.iter().map(|item| (item.anchor.node_kind, item.range)).collect::<Vec<_>>()
-    );
-}
-
-fn assert_hir_kind(hir: &HirFile, expected: &str, source: &str) {
-    let found = hir.items.iter().any(|item| {
-        matches!(
-            (&item.kind, expected),
-            (HirKind::RegexExpr(_), "RegexExpr")
-                | (HirKind::MatchExpr(_), "MatchExpr")
-                | (HirKind::SubstitutionExpr(_), "SubstitutionExpr")
-                | (HirKind::TransliterationExpr(_), "TransliterationExpr")
-                | (HirKind::LiteralExpr(_), "LiteralExpr")
-                | (HirKind::ReadlineMigrationAdapter(_), "ReadlineMigrationAdapter")
-        )
-    });
-    assert!(found, "expected HIR {expected} for {source:?}");
 }
 
 fn assert_single_line_source(source: &str) {
@@ -88,101 +86,1233 @@ fn assert_not_single_line_source(source: &str) {
     );
 }
 
+fn node_text<'a>(source: &'a str, node: &Node) -> &'a str {
+    source.get(node.location.start..node.location.end).unwrap_or("<invalid-range>")
+}
+
+/// Current leaky Binary text for `+(split)[0]` and the balanced correction.
+/// Matching either is the range contract; matching every span is not.
+const SPLIT_INDEX_BINARY_SPANS: &[&str] = &["split)[0]", "(split)[0]"];
+
+fn span_matches(text: &str, exact: &str) -> bool {
+    if SPLIT_INDEX_BINARY_SPANS.contains(&exact) {
+        return SPLIT_INDEX_BINARY_SPANS.contains(&text);
+    }
+    text == exact
+}
+
+fn node_payload(node: &Node) -> Option<&str> {
+    match &node.kind {
+        NodeKind::Binary { op, .. } | NodeKind::Unary { op, .. } => Some(op.as_str()),
+        NodeKind::StatementModifier { modifier, .. } => Some(modifier.as_str()),
+        NodeKind::PhaseBlock { phase, .. } => Some(phase.as_str()),
+        NodeKind::FunctionCall { name, .. } => Some(name.as_str()),
+        NodeKind::Variable { name, .. } => Some(name.as_str()),
+        NodeKind::LoopControl { op, .. } => Some(op.as_str()),
+        _ => None,
+    }
+}
+
+fn node_matches(source: &str, node: &Node, kind: &str, exact: &str, payload: Option<&str>) -> bool {
+    node.kind.kind_name() == kind
+        && span_matches(node_text(source, node), exact)
+        && payload.is_none_or(|expected| node_payload(node) == Some(expected))
+}
+
+fn walk_with_parent<'a>(
+    node: &'a Node,
+    parent: Option<&'a Node>,
+    out: &mut Vec<(&'a Node, Option<&'a Node>)>,
+) {
+    out.push((node, parent));
+    for child in node.children() {
+        walk_with_parent(child, Some(node), out);
+    }
+}
+
+fn local_ast_facts(source: &str, ast: &Node) -> String {
+    let mut pairs = Vec::new();
+    walk_with_parent(ast, None, &mut pairs);
+    let mut out = String::new();
+    for (node, parent) in pairs {
+        let kind = node.kind.kind_name();
+        if matches!(kind, "Program" | "Identifier") {
+            continue;
+        }
+        let payload = node_payload(node).unwrap_or("-");
+        let parent_kind = parent.map(|node| node.kind.kind_name()).unwrap_or("root");
+        let children: Vec<_> = node
+            .children()
+            .into_iter()
+            .map(|child| format!("{}:{:?}", child.kind.kind_name(), node_text(source, child)))
+            .collect();
+        let _ = writeln!(
+            out,
+            "  {kind} payload={payload} parent={parent_kind} text={:?} children={children:?}",
+            node_text(source, node)
+        );
+    }
+    out
+}
+
+fn hir_item_kind_name(kind: &HirKind) -> &'static str {
+    match kind {
+        HirKind::CallExpr(_) => "CallExpr",
+        HirKind::LiteralExpr(_) => "LiteralExpr",
+        HirKind::RegexExpr(_) => "RegexExpr",
+        HirKind::MatchExpr(_) => "MatchExpr",
+        HirKind::SubstitutionExpr(_) => "SubstitutionExpr",
+        HirKind::TransliterationExpr(_) => "TransliterationExpr",
+        HirKind::ReadlineMigrationAdapter(_) => "ReadlineMigrationAdapter",
+        HirKind::StatementModifierShell(_) => "StatementModifierShell",
+        HirKind::LoopShell(_) => "LoopShell",
+        HirKind::ControlTransfer(_) => "ControlTransfer",
+        HirKind::BranchShell(_) => "BranchShell",
+        HirKind::BlockShell(_) => "BlockShell",
+        _ => "other",
+    }
+}
+
+fn slice(source: &str, start: usize, end: usize) -> &str {
+    source.get(start..end).unwrap_or("<invalid-range>")
+}
+
+fn expr_text<'a>(source: &'a str, body: &perl_parser_core::hir::HirBody, id: HirExprId) -> &'a str {
+    body.source_map
+        .expr_range(id)
+        .map_or("<missing-range>", |range| slice(source, range.start, range.end))
+}
+
+fn local_hir_facts(source: &str, hir: &HirFile) -> String {
+    let mut out = String::new();
+    for item in &hir.items {
+        let _ = writeln!(
+            out,
+            "  item {} anchor={} text={:?}",
+            hir_item_kind_name(&item.kind),
+            item.anchor.node_kind,
+            slice(source, item.range.start, item.range.end)
+        );
+        if let HirKind::StatementModifierShell(shell) = &item.kind {
+            let _ = writeln!(
+                out,
+                "    modifier={:?} condition={:?}",
+                shell.modifier,
+                slice(source, shell.condition_range.start, shell.condition_range.end)
+            );
+        }
+    }
+    for phase in &hir.compile_environment.phase_blocks {
+        let _ = writeln!(
+            out,
+            "  phase {:?} text={:?}",
+            phase.phase,
+            slice(source, phase.range.start, phase.range.end)
+        );
+    }
+    if let Some(body) = hir.root_body() {
+        for index in 0..body.source_map.expr_ranges.len() {
+            let id = HirExprId(index as u32);
+            let text = expr_text(source, body, id);
+            let summary = match body.expr(id) {
+                Some(HirExpr::Variable(variable)) => {
+                    format!("Variable {}{}", sigil_text(&variable.sigil), variable.name)
+                }
+                Some(HirExpr::Subscript(subscript)) => format!(
+                    "Subscript {:?} container={:?} selector={:?}",
+                    subscript.kind,
+                    expr_text(source, body, subscript.container),
+                    expr_text(source, body, subscript.subscript)
+                ),
+                Some(HirExpr::Readline { .. }) => "Readline".to_string(),
+                Some(HirExpr::Call { ast_kind, .. }) => format!("Call {ast_kind}"),
+                Some(HirExpr::Binary { op, lhs, rhs, .. }) => {
+                    format!(
+                        "Binary {op:?} lhs={:?} rhs={:?}",
+                        expr_text(source, body, *lhs),
+                        expr_text(source, body, *rhs)
+                    )
+                }
+                Some(HirExpr::Unary { op, .. }) => format!("Unary {op}"),
+                Some(HirExpr::Loop { kind, .. }) => format!("Loop {kind:?}"),
+                Some(HirExpr::Opaque { ast_kind }) => format!("Opaque {ast_kind}"),
+                other => format!("{other:?}"),
+            };
+            let _ = writeln!(out, "  expr {summary} text={text:?}");
+        }
+        for index in 0..body.source_map.stmt_ranges.len() {
+            let id = perl_parser_core::hir::HirStmtId(index as u32);
+            if let Some(HirStmt::PostfixCondition { verb, .. }) = body.stmt(id) {
+                let text = body
+                    .source_map
+                    .stmt_range(id)
+                    .map_or("<missing-range>", |range| slice(source, range.start, range.end));
+                let _ = writeln!(out, "  postfix {verb:?} text={text:?}");
+            }
+        }
+    }
+    out
+}
+
+fn sigil_text(sigil: &Sigil) -> &'static str {
+    match sigil {
+        Sigil::Scalar => "$",
+        Sigil::Array => "@",
+        Sigil::Hash => "%",
+        Sigil::Code => "&",
+        Sigil::Glob => "*",
+    }
+}
+
+fn failure(source: &str, ast: &Node, hir: &HirFile, message: String) -> String {
+    format!(
+        "{message}\nsource: {source:?}\nlocal AST:\n{}local HIR:\n{}",
+        local_ast_facts(source, ast),
+        local_hir_facts(source, hir)
+    )
+}
+
+fn prove_ast_node(source: &str, ast: &Node, hir: &HirFile, fact: AstFact) -> Result<(), String> {
+    let mut pairs = Vec::new();
+    walk_with_parent(ast, None, &mut pairs);
+    if pairs.iter().any(|(node, _)| node_matches(source, node, fact.kind, fact.exact, fact.payload))
+    {
+        return Ok(());
+    }
+    Err(failure(
+        source,
+        ast,
+        hir,
+        format!("missing AST {} exact={:?} payload={:?}", fact.kind, fact.exact, fact.payload),
+    ))
+}
+
+fn prove_anchor(source: &str, ast: &Node, hir: &HirFile, fact: AnchorFact) -> Result<(), String> {
+    let mut pairs = Vec::new();
+    walk_with_parent(ast, None, &mut pairs);
+    let found = pairs.iter().any(|(node, _)| {
+        node_matches(source, node, fact.parent_kind, fact.parent_exact, fact.parent_payload)
+            && node.children().into_iter().any(|child| {
+                child.kind.kind_name() == fact.child_kind
+                    && span_matches(node_text(source, child), fact.child_exact)
+            })
+    });
+    if found {
+        return Ok(());
+    }
+    Err(failure(
+        source,
+        ast,
+        hir,
+        format!(
+            "missing parent/child {}:{:?} -> {}:{:?}",
+            fact.parent_kind, fact.parent_exact, fact.child_kind, fact.child_exact
+        ),
+    ))
+}
+
+fn prove_hir_fact(source: &str, ast: &Node, hir: &HirFile, fact: HirFact) -> Result<(), String> {
+    let ok = match fact {
+        HirFact::Item { kind, anchor, exact } => hir.items.iter().any(|item| {
+            hir_item_kind_name(&item.kind) == kind
+                && item.anchor.node_kind == anchor
+                && slice(source, item.range.start, item.range.end) == exact
+        }),
+        HirFact::Modifier { verb, exact, condition } => hir.items.iter().any(|item| {
+            let HirKind::StatementModifierShell(shell) = &item.kind else {
+                return false;
+            };
+            shell.modifier == verb
+                && item.anchor.node_kind == "StatementModifier"
+                && slice(source, item.range.start, item.range.end) == exact
+                && slice(source, shell.condition_range.start, shell.condition_range.end)
+                    == condition
+        }),
+        HirFact::ArrayElement { exact, container, selector } => {
+            hir.root_body().is_some_and(|body| {
+                (0..body.source_map.expr_ranges.len()).any(|index| {
+                    let id = HirExprId(index as u32);
+                    matches!(
+                        body.expr(id),
+                        Some(HirExpr::Subscript(subscript))
+                            if subscript.kind == SubscriptKind::Array
+                                && expr_text(source, body, id) == exact
+                                && expr_text(source, body, subscript.container) == container
+                                && expr_text(source, body, subscript.subscript) == selector
+                    )
+                })
+            })
+        }
+        HirFact::Variable { exact, sigil, name } => hir.root_body().is_some_and(|body| {
+            (0..body.source_map.expr_ranges.len()).any(|index| {
+                let id = HirExprId(index as u32);
+                matches!(
+                    body.expr(id),
+                    Some(HirExpr::Variable(variable))
+                        if sigil_text(&variable.sigil) == sigil
+                            && variable.name == name
+                            && expr_text(source, body, id) == exact
+                )
+            })
+        }),
+        HirFact::Readline { exact } => {
+            hir.items.iter().any(|item| {
+                matches!(item.kind, HirKind::ReadlineMigrationAdapter(_))
+                    && item.anchor.node_kind == "Diamond"
+                    && slice(source, item.range.start, item.range.end) == exact
+            }) && hir.root_body().is_some_and(|body| {
+                (0..body.source_map.expr_ranges.len()).any(|index| {
+                    let id = HirExprId(index as u32);
+                    matches!(body.expr(id), Some(HirExpr::Readline { .. }))
+                        && expr_text(source, body, id) == exact
+                })
+            })
+        }
+        HirFact::Postfix { verb, exact } => hir.root_body().is_some_and(|body| {
+            (0..body.source_map.stmt_ranges.len()).any(|index| {
+                let id = perl_parser_core::hir::HirStmtId(index as u32);
+                matches!(
+                    body.stmt(id),
+                    Some(HirStmt::PostfixCondition { verb: found, .. }) if *found == verb
+                ) && body
+                    .source_map
+                    .stmt_range(id)
+                    .is_some_and(|range| slice(source, range.start, range.end) == exact)
+            })
+        }),
+        HirFact::IndexBinary { lhs, rhs } => hir.root_body().is_some_and(|body| {
+            (0..body.source_map.expr_ranges.len()).any(|index| {
+                let id = HirExprId(index as u32);
+                matches!(
+                    body.expr(id),
+                    Some(HirExpr::Binary { op, lhs: left, rhs: right, .. })
+                        if matches!(op, BinaryOp::Other(text) if text == "[]")
+                            && expr_text(source, body, *left) == lhs
+                            && expr_text(source, body, *right) == rhs
+                )
+            })
+        }),
+        HirFact::Call { exact } => hir.root_body().is_some_and(|body| {
+            (0..body.source_map.expr_ranges.len()).any(|index| {
+                let id = HirExprId(index as u32);
+                matches!(body.expr(id), Some(HirExpr::Call { .. }))
+                    && expr_text(source, body, id) == exact
+            })
+        }),
+        HirFact::Phase { phase, exact } => {
+            hir.compile_environment.phase_blocks.iter().any(|fact| {
+                fact.phase == phase && slice(source, fact.range.start, fact.range.end) == exact
+            })
+        }
+        HirFact::Loop { exact } => {
+            hir.items.iter().any(|item| {
+                matches!(item.kind, HirKind::LoopShell(_))
+                    && slice(source, item.range.start, item.range.end) == exact
+            }) && hir.root_body().is_some_and(|body| {
+                (0..body.source_map.expr_ranges.len()).any(|index| {
+                    let id = HirExprId(index as u32);
+                    matches!(body.expr(id), Some(HirExpr::Loop { .. }))
+                        && expr_text(source, body, id) == exact
+                })
+            })
+        }
+    };
+    if ok { Ok(()) } else { Err(failure(source, ast, hir, format!("missing HIR fact {fact:?}"))) }
+}
+
+fn prove_idiom(idiom: NamedIdiom) -> Result<(), String> {
+    assert_single_line_source(idiom.source);
+    let (ast, hir) = parse_clean_with_hir(idiom.source).map_err(|error| error.to_string())?;
+    for node in idiom.nodes {
+        prove_ast_node(idiom.source, &ast, &hir, *node)?;
+    }
+    for anchor in idiom.anchors {
+        prove_anchor(idiom.source, &ast, &hir, *anchor)?;
+    }
+    for fact in idiom.hir {
+        prove_hir_fact(idiom.source, &ast, &hir, *fact)?;
+    }
+    Ok(())
+}
+
+fn prove_named_idiom(idiom: NamedIdiom) -> TestResult {
+    prove_idiom(idiom).map_err(Into::into)
+}
+
+fn prove_must_fail(result: Result<(), String>, why: &str) -> Result<String, Box<dyn Error>> {
+    match result {
+        Err(error) => Ok(error),
+        Ok(()) => Err(format!("expected structural proof to fail: {why}").into()),
+    }
+}
+
+const E_PRINT_LITERAL: NamedIdiom = NamedIdiom {
+    switches: "-e",
+    source: r#"print "hello\n";"#,
+    nodes: &[
+        AstFact { kind: "FunctionCall", exact: r#"print "hello\n""#, payload: Some("print") },
+        AstFact { kind: "String", exact: r#""hello\n""#, payload: None },
+    ],
+    anchors: &[AnchorFact {
+        parent_kind: "FunctionCall",
+        parent_exact: r#"print "hello\n""#,
+        parent_payload: Some("print"),
+        child_kind: "String",
+        child_exact: r#""hello\n""#,
+    }],
+    hir: &[
+        HirFact::Item { kind: "CallExpr", anchor: "FunctionCall", exact: r#"print "hello\n""# },
+        HirFact::Item { kind: "LiteralExpr", anchor: "String", exact: r#""hello\n""# },
+    ],
+};
+
+const NE_IMPLICIT_TOPIC_MATCH: NamedIdiom = NamedIdiom {
+    switches: "-ne",
+    source: r#"print if /needle/;"#,
+    nodes: &[
+        AstFact { kind: "StatementModifier", exact: r#"print if /needle/"#, payload: Some("if") },
+        AstFact { kind: "Regex", exact: "/needle/", payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "StatementModifier",
+            parent_exact: r#"print if /needle/"#,
+            parent_payload: Some("if"),
+            child_kind: "Regex",
+            child_exact: "/needle/",
+        },
+        AnchorFact {
+            parent_kind: "StatementModifier",
+            parent_exact: r#"print if /needle/"#,
+            parent_payload: Some("if"),
+            child_kind: "ExpressionStatement",
+            child_exact: "print",
+        },
+    ],
+    hir: &[
+        HirFact::Modifier {
+            verb: StatementModifierKind::If,
+            exact: r#"print if /needle/"#,
+            condition: "/needle/",
+        },
+        HirFact::Item { kind: "RegexExpr", anchor: "Regex", exact: "/needle/" },
+        HirFact::Postfix { verb: StatementModifierKind::If, exact: r#"print if /needle/"# },
+    ],
+};
+
+const PE_IMPLICIT_TOPIC_SUBSTITUTION: NamedIdiom = NamedIdiom {
+    switches: "-pe",
+    source: r#"s/foo/bar/g;"#,
+    nodes: &[AstFact { kind: "Substitution", exact: "s/foo/bar/g", payload: None }],
+    anchors: &[AnchorFact {
+        parent_kind: "ExpressionStatement",
+        parent_exact: "s/foo/bar/g",
+        parent_payload: None,
+        child_kind: "Substitution",
+        child_exact: "s/foo/bar/g",
+    }],
+    hir: &[HirFact::Item {
+        kind: "SubstitutionExpr",
+        anchor: "Substitution",
+        exact: "s/foo/bar/g",
+    }],
+};
+
+const PE_IMPLICIT_TOPIC_TRANSLITERATION: NamedIdiom = NamedIdiom {
+    switches: "-pe",
+    source: r#"tr/a-z/A-Z/;"#,
+    nodes: &[AstFact { kind: "Transliteration", exact: "tr/a-z/A-Z/", payload: None }],
+    anchors: &[AnchorFact {
+        parent_kind: "ExpressionStatement",
+        parent_exact: "tr/a-z/A-Z/",
+        parent_payload: None,
+        child_kind: "Transliteration",
+        child_exact: "tr/a-z/A-Z/",
+    }],
+    hir: &[HirFact::Item {
+        kind: "TransliterationExpr",
+        anchor: "Transliteration",
+        exact: "tr/a-z/A-Z/",
+    }],
+};
+
+const NE_SKIP_BLANK_LINES: NamedIdiom = NamedIdiom {
+    switches: "-ne",
+    source: r#"next unless /\S/; print;"#,
+    nodes: &[
+        AstFact {
+            kind: "StatementModifier",
+            exact: r#"next unless /\S/"#,
+            payload: Some("unless"),
+        },
+        AstFact { kind: "LoopControl", exact: "next", payload: Some("next") },
+        AstFact { kind: "Regex", exact: r#"/\S/"#, payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "StatementModifier",
+            parent_exact: r#"next unless /\S/"#,
+            parent_payload: Some("unless"),
+            child_kind: "LoopControl",
+            child_exact: "next",
+        },
+        AnchorFact {
+            parent_kind: "StatementModifier",
+            parent_exact: r#"next unless /\S/"#,
+            parent_payload: Some("unless"),
+            child_kind: "Regex",
+            child_exact: r#"/\S/"#,
+        },
+    ],
+    hir: &[
+        HirFact::Modifier {
+            verb: StatementModifierKind::Unless,
+            exact: r#"next unless /\S/"#,
+            condition: r#"/\S/"#,
+        },
+        HirFact::Postfix { verb: StatementModifierKind::Unless, exact: r#"next unless /\S/"# },
+        HirFact::Item { kind: "ControlTransfer", anchor: "LoopControl", exact: "next" },
+    ],
+};
+
+const LANE_FIRST_AUTOSPLIT_FIELD: NamedIdiom = NamedIdiom {
+    switches: "-lane",
+    source: r#"print $F[0];"#,
+    nodes: &[
+        AstFact { kind: "Binary", exact: "$F[0]", payload: Some("[]") },
+        AstFact { kind: "Variable", exact: "$F", payload: Some("F") },
+        AstFact { kind: "Number", exact: "0", payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "Binary",
+            parent_exact: "$F[0]",
+            parent_payload: Some("[]"),
+            child_kind: "Variable",
+            child_exact: "$F",
+        },
+        AnchorFact {
+            parent_kind: "Binary",
+            parent_exact: "$F[0]",
+            parent_payload: Some("[]"),
+            child_kind: "Number",
+            child_exact: "0",
+        },
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: r#"print $F[0]"#,
+            parent_payload: Some("print"),
+            child_kind: "Binary",
+            child_exact: "$F[0]",
+        },
+    ],
+    hir: &[HirFact::ArrayElement { exact: "$F[0]", container: "$F", selector: "0" }],
+};
+
+const LANE_JOIN_AUTOSPLIT_FIELDS: NamedIdiom = NamedIdiom {
+    switches: "-lane",
+    source: r#"print join "\t", @F;"#,
+    nodes: &[
+        AstFact { kind: "Variable", exact: "@F", payload: Some("F") },
+        AstFact { kind: "FunctionCall", exact: r#"join "\t", @F"#, payload: Some("join") },
+    ],
+    anchors: &[AnchorFact {
+        parent_kind: "FunctionCall",
+        parent_exact: r#"join "\t", @F"#,
+        parent_payload: Some("join"),
+        child_kind: "Variable",
+        child_exact: "@F",
+    }],
+    hir: &[
+        HirFact::Variable { exact: "@F", sigil: "@", name: "F" },
+        HirFact::Call { exact: r#"join "\t", @F"# },
+    ],
+};
+
+const E_GREP_DIAMOND_INPUT: NamedIdiom = NamedIdiom {
+    switches: "-e",
+    source: r#"print grep /needle/, <>;"#,
+    nodes: &[
+        AstFact { kind: "FunctionCall", exact: "grep /needle/, <>", payload: Some("grep") },
+        AstFact { kind: "Diamond", exact: "<>", payload: None },
+        AstFact { kind: "Regex", exact: "/needle/", payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: "grep /needle/, <>",
+            parent_payload: Some("grep"),
+            child_kind: "Diamond",
+            child_exact: "<>",
+        },
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: "grep /needle/, <>",
+            parent_payload: Some("grep"),
+            child_kind: "Regex",
+            child_exact: "/needle/",
+        },
+    ],
+    hir: &[HirFact::Readline { exact: "<>" }, HirFact::Call { exact: "grep /needle/, <>" }],
+};
+
+const E_MAP_DIAMOND_INPUT: NamedIdiom = NamedIdiom {
+    switches: "-e",
+    source: r#"print map { chomp; "$_\n" } <>;"#,
+    nodes: &[
+        AstFact {
+            kind: "FunctionCall",
+            exact: r#"map { chomp; "$_\n" } <>"#,
+            payload: Some("map"),
+        },
+        AstFact { kind: "Diamond", exact: "<>", payload: None },
+        AstFact { kind: "Block", exact: r#"{ chomp; "$_\n" }"#, payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: r#"map { chomp; "$_\n" } <>"#,
+            parent_payload: Some("map"),
+            child_kind: "Diamond",
+            child_exact: "<>",
+        },
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: r#"map { chomp; "$_\n" } <>"#,
+            parent_payload: Some("map"),
+            child_kind: "Block",
+            child_exact: r#"{ chomp; "$_\n" }"#,
+        },
+    ],
+    hir: &[
+        HirFact::Readline { exact: "<>" },
+        HirFact::Call { exact: r#"map { chomp; "$_\n" } <>"# },
+    ],
+};
+
+const NE_END_PHASE_COUNTER: NamedIdiom = NamedIdiom {
+    switches: "-ne",
+    source: r#"$count++ if /needle/; END { print "$count\n"; }"#,
+    nodes: &[
+        AstFact {
+            kind: "StatementModifier",
+            exact: r#"$count++ if /needle/"#,
+            payload: Some("if"),
+        },
+        AstFact { kind: "PhaseBlock", exact: r#"END { print "$count\n"; }"#, payload: Some("END") },
+        AstFact { kind: "Regex", exact: "/needle/", payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "StatementModifier",
+            parent_exact: r#"$count++ if /needle/"#,
+            parent_payload: Some("if"),
+            child_kind: "Regex",
+            child_exact: "/needle/",
+        },
+        AnchorFact {
+            parent_kind: "PhaseBlock",
+            parent_exact: r#"END { print "$count\n"; }"#,
+            parent_payload: Some("END"),
+            child_kind: "Block",
+            child_exact: r#"{ print "$count\n"; }"#,
+        },
+    ],
+    hir: &[
+        HirFact::Modifier {
+            verb: StatementModifierKind::If,
+            exact: r#"$count++ if /needle/"#,
+            condition: "/needle/",
+        },
+        HirFact::Phase { phase: CompilePhase::End, exact: r#"END { print "$count\n"; }"# },
+    ],
+};
+
+const NE_ARGV_AND_INPUT_LINE_NUMBER: NamedIdiom = NamedIdiom {
+    switches: "-ne",
+    source: r#"print "$ARGV:$.:$_" if /needle/;"#,
+    nodes: &[
+        AstFact {
+            kind: "StatementModifier",
+            exact: r#"print "$ARGV:$.:$_" if /needle/"#,
+            payload: Some("if"),
+        },
+        AstFact { kind: "String", exact: r#""$ARGV:$.:$_""#, payload: None },
+        AstFact { kind: "Regex", exact: "/needle/", payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: r#"print "$ARGV:$.:$_""#,
+            parent_payload: Some("print"),
+            child_kind: "String",
+            child_exact: r#""$ARGV:$.:$_""#,
+        },
+        AnchorFact {
+            parent_kind: "StatementModifier",
+            parent_exact: r#"print "$ARGV:$.:$_" if /needle/"#,
+            parent_payload: Some("if"),
+            child_kind: "Regex",
+            child_exact: "/needle/",
+        },
+    ],
+    hir: &[HirFact::Modifier {
+        verb: StatementModifierKind::If,
+        exact: r#"print "$ARGV:$.:$_" if /needle/"#,
+        condition: "/needle/",
+    }],
+};
+
+const NE_BEGIN_PHASE_INPUT_RECORD_SEPARATOR: NamedIdiom = NamedIdiom {
+    switches: "-ne",
+    source: r#"BEGIN { $/ = undef; } print length;"#,
+    nodes: &[
+        AstFact { kind: "PhaseBlock", exact: "BEGIN { $/ = undef; }", payload: Some("BEGIN") },
+        AstFact { kind: "Variable", exact: "$/", payload: Some("/") },
+        AstFact { kind: "Assignment", exact: "$/ = undef", payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "PhaseBlock",
+            parent_exact: "BEGIN { $/ = undef; }",
+            parent_payload: Some("BEGIN"),
+            child_kind: "Block",
+            child_exact: "{ $/ = undef; }",
+        },
+        AnchorFact {
+            parent_kind: "Assignment",
+            parent_exact: "$/ = undef",
+            parent_payload: None,
+            child_kind: "Variable",
+            child_exact: "$/",
+        },
+    ],
+    hir: &[
+        HirFact::Phase { phase: CompilePhase::Begin, exact: "BEGIN { $/ = undef; }" },
+        HirFact::Call { exact: "print length" },
+    ],
+};
+
+const E_EXPLICIT_DIAMOND_LOOP: NamedIdiom = NamedIdiom {
+    switches: "-e",
+    source: r#"while (<>) { print if /needle/; }"#,
+    nodes: &[
+        AstFact { kind: "While", exact: r#"while (<>) { print if /needle/; }"#, payload: None },
+        AstFact { kind: "Diamond", exact: "<>", payload: None },
+        AstFact { kind: "StatementModifier", exact: r#"print if /needle/"#, payload: Some("if") },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "While",
+            parent_exact: r#"while (<>) { print if /needle/; }"#,
+            parent_payload: None,
+            child_kind: "Diamond",
+            child_exact: "<>",
+        },
+        AnchorFact {
+            parent_kind: "While",
+            parent_exact: r#"while (<>) { print if /needle/; }"#,
+            parent_payload: None,
+            child_kind: "Block",
+            child_exact: "{ print if /needle/; }",
+        },
+    ],
+    hir: &[
+        HirFact::Loop { exact: r#"while (<>) { print if /needle/; }"# },
+        HirFact::Readline { exact: "<>" },
+        HirFact::Postfix { verb: StatementModifierKind::If, exact: r#"print if /needle/"# },
+    ],
+};
+
+const E_SORT_DIAMOND_WITH_FOR_MODIFIER: NamedIdiom = NamedIdiom {
+    switches: "-e",
+    source: r#"print for sort <>;"#,
+    nodes: &[
+        AstFact { kind: "StatementModifier", exact: "print for sort <>", payload: Some("for") },
+        AstFact { kind: "FunctionCall", exact: "sort <>", payload: Some("sort") },
+        AstFact { kind: "Diamond", exact: "<>", payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "StatementModifier",
+            parent_exact: "print for sort <>",
+            parent_payload: Some("for"),
+            child_kind: "FunctionCall",
+            child_exact: "sort <>",
+        },
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: "sort <>",
+            parent_payload: Some("sort"),
+            child_kind: "Diamond",
+            child_exact: "<>",
+        },
+    ],
+    hir: &[
+        HirFact::Modifier {
+            verb: StatementModifierKind::Foreach,
+            exact: "print for sort <>",
+            condition: "sort <>",
+        },
+        HirFact::Readline { exact: "<>" },
+        HirFact::Call { exact: "sort <>" },
+    ],
+};
+
+const E_PARENTHESIZED_SPLIT_SLICE: NamedIdiom = NamedIdiom {
+    switches: "-e",
+    source: r#"print +(split)[0];"#,
+    nodes: &[
+        AstFact { kind: "Unary", exact: "+(split)[0]", payload: Some("+") },
+        // Allowlisted current leaky span and the balanced `(split)[0]` correction.
+        AstFact { kind: "Binary", exact: "split)[0]", payload: Some("[]") },
+        AstFact { kind: "FunctionCall", exact: "split", payload: Some("split") },
+        AstFact { kind: "Number", exact: "0", payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "Unary",
+            parent_exact: "+(split)[0]",
+            parent_payload: Some("+"),
+            child_kind: "Binary",
+            child_exact: "split)[0]",
+        },
+        AnchorFact {
+            parent_kind: "Binary",
+            parent_exact: "split)[0]",
+            parent_payload: Some("[]"),
+            child_kind: "FunctionCall",
+            child_exact: "split",
+        },
+        AnchorFact {
+            parent_kind: "Binary",
+            parent_exact: "split)[0]",
+            parent_payload: Some("[]"),
+            child_kind: "Number",
+            child_exact: "0",
+        },
+    ],
+    hir: &[HirFact::IndexBinary { lhs: "split", rhs: "0" }],
+};
+
+const NE_CAPTURE_GROUP: NamedIdiom = NamedIdiom {
+    switches: "-ne",
+    source: r#"print "$1\n" if /^(\w+)/;"#,
+    nodes: &[
+        AstFact {
+            kind: "StatementModifier",
+            exact: r#"print "$1\n" if /^(\w+)/"#,
+            payload: Some("if"),
+        },
+        AstFact { kind: "String", exact: r#""$1\n""#, payload: None },
+        AstFact { kind: "Regex", exact: r#"/^(\w+)/"#, payload: None },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: r#"print "$1\n""#,
+            parent_payload: Some("print"),
+            child_kind: "String",
+            child_exact: r#""$1\n""#,
+        },
+        AnchorFact {
+            parent_kind: "StatementModifier",
+            parent_exact: r#"print "$1\n" if /^(\w+)/"#,
+            parent_payload: Some("if"),
+            child_kind: "Regex",
+            child_exact: r#"/^(\w+)/"#,
+        },
+    ],
+    hir: &[
+        HirFact::Modifier {
+            verb: StatementModifierKind::If,
+            exact: r#"print "$1\n" if /^(\w+)/"#,
+            condition: r#"/^(\w+)/"#,
+        },
+        HirFact::Item { kind: "RegexExpr", anchor: "Regex", exact: r#"/^(\w+)/"# },
+    ],
+};
+
+const PE_TRIM_WHITESPACE: NamedIdiom = NamedIdiom {
+    switches: "-pe",
+    source: r#"s/^\s+|\s+$//g;"#,
+    nodes: &[AstFact { kind: "Substitution", exact: r#"s/^\s+|\s+$//g"#, payload: None }],
+    anchors: &[AnchorFact {
+        parent_kind: "ExpressionStatement",
+        parent_exact: r#"s/^\s+|\s+$//g"#,
+        parent_payload: None,
+        child_kind: "Substitution",
+        child_exact: r#"s/^\s+|\s+$//g"#,
+    }],
+    hir: &[HirFact::Item {
+        kind: "SubstitutionExpr",
+        anchor: "Substitution",
+        exact: r#"s/^\s+|\s+$//g"#,
+    }],
+};
+
+const E_PRINTF_SPECIAL_VARIABLES: NamedIdiom = NamedIdiom {
+    switches: "-e",
+    source: r#"printf "%s:%d\n", $ARGV, $.;"#,
+    nodes: &[
+        AstFact { kind: "Variable", exact: "$ARGV", payload: Some("ARGV") },
+        AstFact { kind: "Variable", exact: "$.", payload: Some(".") },
+        AstFact {
+            kind: "FunctionCall",
+            exact: r#"printf "%s:%d\n", $ARGV, $."#,
+            payload: Some("printf"),
+        },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: r#"printf "%s:%d\n", $ARGV, $."#,
+            parent_payload: Some("printf"),
+            child_kind: "Variable",
+            child_exact: "$ARGV",
+        },
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: r#"printf "%s:%d\n", $ARGV, $."#,
+            parent_payload: Some("printf"),
+            child_kind: "Variable",
+            child_exact: "$.",
+        },
+    ],
+    hir: &[
+        HirFact::Variable { exact: "$ARGV", sigil: "$", name: "ARGV" },
+        HirFact::Variable { exact: "$.", sigil: "$", name: "." },
+    ],
+};
+
+const E_WHILE_DIAMOND_MODIFIER: NamedIdiom = NamedIdiom {
+    switches: "-e",
+    source: r#"print while <>;"#,
+    nodes: &[
+        AstFact { kind: "StatementModifier", exact: "print while <>", payload: Some("while") },
+        AstFact { kind: "Diamond", exact: "<>", payload: None },
+    ],
+    anchors: &[AnchorFact {
+        parent_kind: "StatementModifier",
+        parent_exact: "print while <>",
+        parent_payload: Some("while"),
+        child_kind: "Diamond",
+        child_exact: "<>",
+    }],
+    hir: &[
+        HirFact::Modifier {
+            verb: StatementModifierKind::While,
+            exact: "print while <>",
+            condition: "<>",
+        },
+        HirFact::Readline { exact: "<>" },
+        HirFact::Postfix { verb: StatementModifierKind::While, exact: "print while <>" },
+    ],
+};
+
+const NE_BARE_CAPTURE_VARIABLE: NamedIdiom = NamedIdiom {
+    switches: "-ne",
+    source: r#"print($1) if /^(\w+)/;"#,
+    nodes: &[
+        AstFact { kind: "Variable", exact: "$1", payload: Some("1") },
+        AstFact { kind: "Regex", exact: r#"/^(\w+)/"#, payload: None },
+        AstFact {
+            kind: "StatementModifier",
+            exact: r#"print($1) if /^(\w+)/"#,
+            payload: Some("if"),
+        },
+    ],
+    anchors: &[
+        AnchorFact {
+            parent_kind: "FunctionCall",
+            parent_exact: "print($1)",
+            parent_payload: Some("print"),
+            child_kind: "Variable",
+            child_exact: "$1",
+        },
+        AnchorFact {
+            parent_kind: "StatementModifier",
+            parent_exact: r#"print($1) if /^(\w+)/"#,
+            parent_payload: Some("if"),
+            child_kind: "Regex",
+            child_exact: r#"/^(\w+)/"#,
+        },
+    ],
+    hir: &[
+        HirFact::Variable { exact: "$1", sigil: "$", name: "1" },
+        HirFact::Modifier {
+            verb: StatementModifierKind::If,
+            exact: r#"print($1) if /^(\w+)/"#,
+            condition: r#"/^(\w+)/"#,
+        },
+        HirFact::Item { kind: "RegexExpr", anchor: "Regex", exact: r#"/^(\w+)/"# },
+    ],
+};
+
+const NAMED_IDIOMS: &[NamedIdiom] = &[
+    E_PRINT_LITERAL,
+    NE_IMPLICIT_TOPIC_MATCH,
+    PE_IMPLICIT_TOPIC_SUBSTITUTION,
+    PE_IMPLICIT_TOPIC_TRANSLITERATION,
+    NE_SKIP_BLANK_LINES,
+    LANE_FIRST_AUTOSPLIT_FIELD,
+    LANE_JOIN_AUTOSPLIT_FIELDS,
+    E_GREP_DIAMOND_INPUT,
+    E_MAP_DIAMOND_INPUT,
+    NE_END_PHASE_COUNTER,
+    NE_ARGV_AND_INPUT_LINE_NUMBER,
+    NE_BEGIN_PHASE_INPUT_RECORD_SEPARATOR,
+    E_EXPLICIT_DIAMOND_LOOP,
+    E_SORT_DIAMOND_WITH_FOR_MODIFIER,
+    E_PARENTHESIZED_SPLIT_SLICE,
+    NE_CAPTURE_GROUP,
+    PE_TRIM_WHITESPACE,
+    E_PRINTF_SPECIAL_VARIABLES,
+    E_WHILE_DIAMOND_MODIFIER,
+    NE_BARE_CAPTURE_VARIABLE,
+];
+
 // Test-name prefixes encode the represented switch bundle:
 // `e` = `-e`, `ne` = `-n -e`, `pe` = `-p -e`, and `lane` = `-l -a -n -e`.
 macro_rules! command_line_oneliner {
-    ($name:ident, $switches:literal, $source:literal) => {
+    ($name:ident, $switches:literal, $case:expr) => {
         #[doc = concat!("Parses the source body used by a `perl ", $switches, " '...'` one-liner.")]
         #[test]
-        fn $name() {
-            let source = $source;
-            assert_clean_parse(source);
-            assert_no_blocking_diagnostics(source);
+        fn $name() -> TestResult {
+            prove_named_idiom($case)
         }
     };
 }
 
-command_line_oneliner!(e_print_literal, "-e", r#"print "hello\n";"#);
-
-command_line_oneliner!(ne_implicit_topic_match, "-ne", r#"print if /needle/;"#);
-
-command_line_oneliner!(pe_implicit_topic_substitution, "-pe", r#"s/foo/bar/g;"#);
-
-command_line_oneliner!(pe_implicit_topic_transliteration, "-pe", r#"tr/a-z/A-Z/;"#);
-
-command_line_oneliner!(ne_skip_blank_lines, "-ne", r#"next unless /\S/; print;"#);
-
-command_line_oneliner!(lane_first_autosplit_field, "-lane", r#"print $F[0];"#);
-
-command_line_oneliner!(lane_join_autosplit_fields, "-lane", r#"print join "\t", @F;"#);
-
-command_line_oneliner!(e_grep_diamond_input, "-e", r#"print grep /needle/, <>;"#);
-
-command_line_oneliner!(e_map_diamond_input, "-e", r#"print map { chomp; "$_\n" } <>;"#);
-
-command_line_oneliner!(
-    ne_end_phase_counter,
-    "-ne",
-    r#"$count++ if /needle/; END { print "$count\n"; }"#
-);
-
-command_line_oneliner!(ne_argv_and_input_line_number, "-ne", r#"print "$ARGV:$.:$_" if /needle/;"#);
-
+command_line_oneliner!(e_print_literal, "-e", E_PRINT_LITERAL);
+command_line_oneliner!(ne_implicit_topic_match, "-ne", NE_IMPLICIT_TOPIC_MATCH);
+command_line_oneliner!(pe_implicit_topic_substitution, "-pe", PE_IMPLICIT_TOPIC_SUBSTITUTION);
+command_line_oneliner!(pe_implicit_topic_transliteration, "-pe", PE_IMPLICIT_TOPIC_TRANSLITERATION);
+command_line_oneliner!(ne_skip_blank_lines, "-ne", NE_SKIP_BLANK_LINES);
+command_line_oneliner!(lane_first_autosplit_field, "-lane", LANE_FIRST_AUTOSPLIT_FIELD);
+command_line_oneliner!(lane_join_autosplit_fields, "-lane", LANE_JOIN_AUTOSPLIT_FIELDS);
+command_line_oneliner!(e_grep_diamond_input, "-e", E_GREP_DIAMOND_INPUT);
+command_line_oneliner!(e_map_diamond_input, "-e", E_MAP_DIAMOND_INPUT);
+command_line_oneliner!(ne_end_phase_counter, "-ne", NE_END_PHASE_COUNTER);
+command_line_oneliner!(ne_argv_and_input_line_number, "-ne", NE_ARGV_AND_INPUT_LINE_NUMBER);
 command_line_oneliner!(
     ne_begin_phase_input_record_separator,
     "-ne",
-    r#"BEGIN { $/ = undef; } print length;"#
+    NE_BEGIN_PHASE_INPUT_RECORD_SEPARATOR
 );
-
-command_line_oneliner!(e_explicit_diamond_loop, "-e", r#"while (<>) { print if /needle/; }"#);
-
-command_line_oneliner!(e_sort_diamond_with_for_modifier, "-e", r#"print for sort <>;"#);
-
-command_line_oneliner!(e_parenthesized_split_slice, "-e", r#"print +(split)[0];"#);
-
-command_line_oneliner!(ne_capture_group, "-ne", r#"print "$1\n" if /^(\w+)/;"#);
-
-command_line_oneliner!(pe_trim_whitespace, "-pe", r#"s/^\s+|\s+$//g;"#);
-
-command_line_oneliner!(e_printf_special_variables, "-e", r#"printf "%s:%d\n", $ARGV, $.;"#);
+command_line_oneliner!(e_explicit_diamond_loop, "-e", E_EXPLICIT_DIAMOND_LOOP);
+command_line_oneliner!(e_sort_diamond_with_for_modifier, "-e", E_SORT_DIAMOND_WITH_FOR_MODIFIER);
+command_line_oneliner!(e_parenthesized_split_slice, "-e", E_PARENTHESIZED_SPLIT_SLICE);
+command_line_oneliner!(ne_capture_group, "-ne", NE_CAPTURE_GROUP);
+command_line_oneliner!(pe_trim_whitespace, "-pe", PE_TRIM_WHITESPACE);
+command_line_oneliner!(e_printf_special_variables, "-e", E_PRINTF_SPECIAL_VARIABLES);
+command_line_oneliner!(e_while_diamond_modifier, "-e", E_WHILE_DIAMOND_MODIFIER);
+command_line_oneliner!(ne_bare_capture_variable, "-ne", NE_BARE_CAPTURE_VARIABLE);
 
 #[test]
-fn positive_idioms_have_typed_ast_hir_and_source_range_proof() -> TestResult {
-    let cases = [
-        (r#"print if /needle/;"#, "Regex", "RegexExpr", "/needle/"),
-        (r#"s/foo/bar/g;"#, "Substitution", "SubstitutionExpr", "s/foo/bar/g"),
-        (r#"tr/a-z/A-Z/;"#, "Transliteration", "TransliterationExpr", "tr/a-z/A-Z/"),
-        (r#"print while <>;"#, "Diamond", "ReadlineMigrationAdapter", "<>"),
-        (r#"print "quoted \"value\"";"#, "String", "LiteralExpr", "quoted"),
-    ];
-
-    for (source, ast_kind, hir_kind, fragment) in cases {
-        assert_single_line_source(source);
-        let (ast, hir) = parse_clean_with_hir(source)?;
-        assert_ast_range_contains(source, &ast, ast_kind, fragment);
-        assert_hir_kind(&hir, hir_kind, source);
-        assert_hir_range_contains(source, &hir, ast_kind, fragment);
+fn named_idioms_share_one_structural_table() -> TestResult {
+    for idiom in NAMED_IDIOMS {
+        prove_idiom(*idiom).map_err(|error| format!("{}: {error}", idiom.switches))?;
     }
+    Ok(())
+}
 
-    let phase_source = r#"BEGIN { $/ = undef; } END { print $.; }"#;
-    assert_single_line_source(phase_source);
-    let (phase_ast, phase_hir) = parse_clean_with_hir(phase_source)?;
-    assert_ast_range_contains(phase_source, &phase_ast, "PhaseBlock", "BEGIN");
-    assert_ast_range_contains(phase_source, &phase_ast, "PhaseBlock", "END");
-    assert_eq!(phase_hir.compile_environment.phase_blocks.len(), 2);
-    for (phase, fragment) in [(CompilePhase::Begin, "BEGIN"), (CompilePhase::End, "END")] {
-        let fact = phase_hir
-            .compile_environment
-            .phase_blocks
-            .iter()
-            .find(|fact| fact.phase == phase)
-            .ok_or_else(|| format!("missing {phase:?} HIR phase block"))?;
-        let range = phase_source
-            .get(fact.range.start..fact.range.end)
-            .ok_or("phase HIR range is not a source boundary")?;
-        assert!(range.contains(fragment), "phase range {range:?} must contain {fragment:?}");
+#[test]
+fn parenthesized_split_index_keeps_kind_payload_and_children_not_leaky_span() -> TestResult {
+    let binary = E_PARENTHESIZED_SPLIT_SLICE
+        .nodes
+        .iter()
+        .find(|node| node.kind == "Binary")
+        .ok_or("split-index idiom must name a Binary node")?;
+    if binary.payload != Some("[]") {
+        return Err(format!("Binary payload must be []; got {:?}", binary.payload).into());
     }
+    if !SPLIT_INDEX_BINARY_SPANS.contains(&binary.exact) {
+        return Err(format!(
+            "Binary exact must be one of {SPLIT_INDEX_BINARY_SPANS:?}; got {:?}",
+            binary.exact
+        )
+        .into());
+    }
+    if !span_matches("split)[0]", binary.exact) || !span_matches("(split)[0]", binary.exact) {
+        return Err("grouped-index Binary must accept both the leaky and balanced spans".into());
+    }
+    if span_matches("split[0]", binary.exact) || span_matches("", binary.exact) {
+        return Err("grouped-index Binary must reject unrelated or empty spans".into());
+    }
+    if !E_PARENTHESIZED_SPLIT_SLICE
+        .hir
+        .iter()
+        .any(|fact| matches!(fact, HirFact::IndexBinary { lhs: "split", rhs: "0" }))
+    {
+        return Err("split-index idiom must keep IndexBinary lhs=split rhs=0".into());
+    }
+    Ok(())
+}
 
+#[test]
+fn structurally_wrong_array_slice_fails_element_assertion() -> TestResult {
+    let neighbor = r#"print @F[0];"#;
+    assert_clean_parse(neighbor);
+    assert_no_blocking_diagnostics(neighbor);
+    let (ast, hir) = parse_clean_with_hir(neighbor)?;
+    let error = prove_must_fail(
+        prove_ast_node(
+            neighbor,
+            &ast,
+            &hir,
+            AstFact { kind: "Binary", exact: "$F[0]", payload: Some("[]") },
+        ),
+        "clean ArraySlice parse must fail the $F[0] Binary[] assertion",
+    )?;
+    assert!(
+        error.contains("missing AST Binary"),
+        "falsifier must name the missing Binary[] node, got: {error}"
+    );
+    prove_ast_node(
+        neighbor,
+        &ast,
+        &hir,
+        AstFact { kind: "ArraySlice", exact: "@F[0]", payload: None },
+    )?;
+    prove_must_fail(
+        prove_hir_fact(
+            neighbor,
+            &ast,
+            &hir,
+            HirFact::ArrayElement { exact: "$F[0]", container: "$F", selector: "0" },
+        ),
+        "ArraySlice must not lower to an array-element Subscript",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn hash_subscript_neighbor_does_not_satisfy_array_element() -> TestResult {
+    let neighbor = r#"print $F{0};"#;
+    assert_clean_parse(neighbor);
+    let (ast, hir) = parse_clean_with_hir(neighbor)?;
+    prove_must_fail(
+        prove_ast_node(
+            neighbor,
+            &ast,
+            &hir,
+            AstFact { kind: "Binary", exact: "$F[0]", payload: Some("[]") },
+        ),
+        "hash subscript must not satisfy Binary[]",
+    )?;
+    prove_must_fail(
+        prove_hir_fact(
+            neighbor,
+            &ast,
+            &hir,
+            HirFact::ArrayElement { exact: "$F[0]", container: "$F", selector: "0" },
+        ),
+        "hash subscript must not satisfy array-element HIR",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn unrelated_subscript_does_not_satisfy_autosplit_field() -> TestResult {
+    let neighbor = r#"print $x[1];"#;
+    assert_clean_parse(neighbor);
+    let (ast, hir) = parse_clean_with_hir(neighbor)?;
+    prove_must_fail(
+        prove_idiom(NamedIdiom {
+            switches: "-lane",
+            source: neighbor,
+            nodes: LANE_FIRST_AUTOSPLIT_FIELD.nodes,
+            anchors: LANE_FIRST_AUTOSPLIT_FIELD.anchors,
+            hir: LANE_FIRST_AUTOSPLIT_FIELD.hir,
+        }),
+        "unrelated $x[1] must not satisfy the $F[0] idiom",
+    )?;
+    prove_ast_node(
+        neighbor,
+        &ast,
+        &hir,
+        AstFact { kind: "Binary", exact: "$x[1]", payload: Some("[]") },
+    )?;
+    Ok(())
+}
+
+#[test]
+fn block_if_neighbor_does_not_satisfy_postfix_match() -> TestResult {
+    let neighbor = r#"if (/needle/) { print; }"#;
+    assert_clean_parse(neighbor);
+    let (ast, hir) = parse_clean_with_hir(neighbor)?;
+    prove_must_fail(
+        prove_ast_node(
+            neighbor,
+            &ast,
+            &hir,
+            AstFact {
+                kind: "StatementModifier",
+                exact: r#"print if /needle/"#,
+                payload: Some("if"),
+            },
+        ),
+        "block if must not satisfy postfix StatementModifier",
+    )?;
+    prove_ast_node(
+        neighbor,
+        &ast,
+        &hir,
+        AstFact { kind: "If", exact: r#"if (/needle/) { print; }"#, payload: None },
+    )?;
+    Ok(())
+}
+
+#[test]
+fn grep_list_neighbor_does_not_satisfy_diamond_input() -> TestResult {
+    let neighbor = r#"print grep /needle/, @lines;"#;
+    assert_clean_parse(neighbor);
+    let (ast, hir) = parse_clean_with_hir(neighbor)?;
+    prove_must_fail(
+        prove_anchor(
+            neighbor,
+            &ast,
+            &hir,
+            AnchorFact {
+                parent_kind: "FunctionCall",
+                parent_exact: "grep /needle/, <>",
+                parent_payload: Some("grep"),
+                child_kind: "Diamond",
+                child_exact: "<>",
+            },
+        ),
+        "grep @lines must not satisfy grep diamond attachment",
+    )?;
+    prove_ast_node(
+        neighbor,
+        &ast,
+        &hir,
+        AstFact { kind: "FunctionCall", exact: "grep /needle/, @lines", payload: Some("grep") },
+    )?;
+    Ok(())
+}
+
+#[test]
+fn y_transliteration_neighbor_does_not_satisfy_tr_exact_span() -> TestResult {
+    let neighbor = r#"y/a-z/A-Z/;"#;
+    assert_clean_parse(neighbor);
+    let (ast, hir) = parse_clean_with_hir(neighbor)?;
+    prove_must_fail(
+        prove_ast_node(
+            neighbor,
+            &ast,
+            &hir,
+            AstFact { kind: "Transliteration", exact: "tr/a-z/A-Z/", payload: None },
+        ),
+        "y/// must not satisfy the exact tr/// span",
+    )?;
+    prove_ast_node(
+        neighbor,
+        &ast,
+        &hir,
+        AstFact { kind: "Transliteration", exact: "y/a-z/A-Z/", payload: None },
+    )?;
     Ok(())
 }
 
@@ -199,33 +1329,50 @@ fn negative_controls_keep_context_errors_and_boundaries_visible() -> TestResult 
     }
 
     // An explicit loop is a wrong-context control for the implicit `-n`/`-p`
-    // claim. It must remain visible as a real loop in both layers, rather than
-    // being silently treated as a command-line wrapper.
-    let explicit_loop = r#"for (<>) { next if /needle/; }"#;
-    let (loop_ast, loop_hir) = parse_clean_with_hir(explicit_loop)?;
-    assert_ast_range_contains(explicit_loop, &loop_ast, "Foreach", "for");
-    assert_ast_range_contains(explicit_loop, &loop_ast, "Diamond", "<>");
-    assert_hir_range_contains(explicit_loop, &loop_hir, "Foreach", "for");
-    assert!(
-        loop_hir.items.iter().any(|item| matches!(item.kind, HirKind::LoopShell(_))),
-        "explicit loop must lower to a typed LoopShell"
-    );
+    // claim. It must remain visible as a real loop rather than a postfix while.
+    let explicit = E_EXPLICIT_DIAMOND_LOOP.source;
+    let (loop_ast, loop_hir) = parse_clean_with_hir(explicit)?;
+    prove_ast_node(
+        explicit,
+        &loop_ast,
+        &loop_hir,
+        AstFact { kind: "While", exact: explicit, payload: None },
+    )?;
+    prove_must_fail(
+        prove_ast_node(
+            explicit,
+            &loop_ast,
+            &loop_hir,
+            AstFact { kind: "StatementModifier", exact: "print while <>", payload: Some("while") },
+        ),
+        "explicit while (<>) must not collapse to postfix while",
+    )?;
 
     // Option-order and shell-quoting are CLI concerns, not parser-body syntax.
     // If either leaks into this target, the AST range makes the contamination
     // explicit instead of allowing it to masquerade as a one-liner idiom.
     let option_contaminated = r#"-ne print;"#;
     let (option_ast, option_hir) = parse_clean_with_hir(option_contaminated)?;
-    assert_ast_range_contains(option_contaminated, &option_ast, "Unary", "-ne");
+    let mut option_nodes = Vec::new();
+    walk_with_parent(&option_ast, None, &mut option_nodes);
+    assert!(
+        option_nodes.iter().any(|(node, _)| {
+            node.kind.kind_name() == "Unary" && node_text(option_contaminated, node).contains("-ne")
+        }),
+        "option-contaminated source must remain a Unary containing -ne; local AST:\n{}",
+        local_ast_facts(option_contaminated, &option_ast)
+    );
     assert!(!option_hir.items.iter().any(|item| item.anchor.node_kind == "Match"));
 
-    // A multiline source can be a valid Perl program, but it is outside this
-    // one-liner fixture contract. Keep its AST/HIR ranges checked while making
-    // the excluded boundary explicit.
     let multiline = "print if /needle/;\nprint;";
     assert_not_single_line_source(multiline);
     let (multiline_ast, multiline_hir) = parse_clean_with_hir(multiline)?;
-    assert_ast_range_contains(multiline, &multiline_ast, "Program", "\n");
+    prove_ast_node(
+        multiline,
+        &multiline_ast,
+        &multiline_hir,
+        AstFact { kind: "Program", exact: multiline, payload: None },
+    )?;
     assert!(multiline_hir.items.iter().all(|item| item.range.end <= multiline.len()));
 
     Ok(())

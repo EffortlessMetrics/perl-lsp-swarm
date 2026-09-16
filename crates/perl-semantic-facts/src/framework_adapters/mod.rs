@@ -11,11 +11,18 @@ pub mod dancer2;
 pub mod dancer2_hooks;
 /// Registry-activated Dancer2 route fact minting (#8918).
 pub mod dancer2_routes;
+/// Dancer2 2.x activation, import, and core-DSL registry facts (#13616).
+pub mod dancer2_two_x;
 /// DBIx::Class result-class/result-source identity adapter (#9736).
 pub mod dbix_class;
 
 /// Mojo::Base framework adapter (#9681).
 pub mod mojo_base;
+/// Registry-activated Mojo::Base object-fact minting (#9682).
+pub mod mojo_base_facts;
 
 /// Mojolicious application/controller identity adapter (#9688).
 pub mod mojolicious;
+
+/// Version-bound DBIx::QuickORM API return and preserving-method contract (#13374).
+pub mod quickorm_api;
