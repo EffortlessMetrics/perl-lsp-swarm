@@ -323,10 +323,38 @@ impl TextSyncSessionContract {
 pub(crate) fn classify_position_encoding_offer(
     params: Option<&Value>,
 ) -> Result<PositionEncodingOffer, SessionContractRejection> {
-    let Some(raw) =
-        params.and_then(|params| params.pointer("/capabilities/general/positionEncodings"))
-    else {
+    // Explicit parent traversal (FC-MALFORMED-PARENT-ABSENT): `Value::pointer`
+    // collapses a wrong-typed intermediate parent into key absence, which
+    // would install an accepted session for structurally invalid params.
+    // Only a genuinely missing (or explicitly null) key maps to `Absent`;
+    // a present-but-wrong-typed parent is a malformed offer.
+    let Some(params) = params else {
         return Ok(PositionEncodingOffer::Absent);
+    };
+    let Some(capabilities) = params.get("capabilities") else {
+        return Ok(PositionEncodingOffer::Absent);
+    };
+    let Some(general) = capabilities.get("general") else {
+        if capabilities.is_null() || capabilities.is_object() {
+            return Ok(PositionEncodingOffer::Absent);
+        }
+        return Err(SessionContractRejection::MalformedOffer {
+            detail: format!(
+                "capabilities must be an object carrying general.positionEncodings, got {}",
+                json_type_name(capabilities)
+            ),
+        });
+    };
+    let Some(raw) = general.get("positionEncodings") else {
+        if general.is_null() || general.is_object() {
+            return Ok(PositionEncodingOffer::Absent);
+        }
+        return Err(SessionContractRejection::MalformedOffer {
+            detail: format!(
+                "capabilities.general must be an object carrying positionEncodings, got {}",
+                json_type_name(general)
+            ),
+        });
     };
     if raw.is_null() {
         return Ok(PositionEncodingOffer::Null);

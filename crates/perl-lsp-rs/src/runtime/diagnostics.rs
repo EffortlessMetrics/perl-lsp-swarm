@@ -1574,7 +1574,6 @@ impl LspServer {
         let mut items = Vec::new();
         let markup_message_support = self.client_capabilities.lock().markup_message_support;
 
-
         // Collect document snapshots without holding lock.
         // Also capture each document's generation Arc and the generation value
         // observed at snapshot time so we can guard against stale results below

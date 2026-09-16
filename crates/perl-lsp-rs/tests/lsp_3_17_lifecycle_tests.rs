@@ -552,6 +552,54 @@ fn initialize_malformed_first_then_valid_second_is_invalid_request() -> TestResu
     Ok(())
 }
 
+/// FC-MALFORMED-PARENT-ABSENT (wire): a wrong-typed `capabilities` or
+/// `general` parent fails initialize as typed InvalidParams, installs no
+/// accepted session, and consumes one-shot attempt authority.
+#[test]
+fn initialize_malformed_parent_first_then_valid_second_is_invalid_request() -> TestResult {
+    for malformed_capabilities in [json!("bad"), json!({ "general": [] })] {
+        let mut harness = LspHarness::new();
+        let first = harness
+            .request(
+                "initialize",
+                json!({
+                    "processId": std::process::id(),
+                    "capabilities": malformed_capabilities,
+                    "rootUri": "file:///workspace"
+                }),
+            )
+            .err()
+            .ok_or("malformed parent capabilities must fail initialize over the wire")?;
+        assert!(
+            first.contains("-32602") && first.contains("malformed-offer"),
+            "wrong-typed parent must retain its malformed InvalidParams result: {first}"
+        );
+
+        let second = harness
+            .initialize(Some(json!({
+                "general": { "positionEncodings": ["utf-16"] }
+            })))
+            .err()
+            .ok_or("valid second initialize must still fail one-shot authority")?;
+        assert!(
+            second.contains("-32600"),
+            "second initialize must be InvalidRequest before offer classification: {second}"
+        );
+
+        let served = harness.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": { "uri": "file:///test.pl" },
+                "position": { "line": 0, "character": 0 }
+            }),
+        );
+        let error =
+            served.err().ok_or("rejected malformed-parent initialize must remain non-serving")?;
+        assert!(error.contains("-32002"), "connection must remain non-serving: {error}");
+    }
+    Ok(())
+}
+
 #[test]
 fn test_initialized_notification() -> TestResult {
     let mut harness = LspHarness::new();

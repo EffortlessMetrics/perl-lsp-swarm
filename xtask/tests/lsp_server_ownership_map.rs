@@ -482,6 +482,33 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8385"
     ),
     row!(
+        "workspace_topology_generation",
+        WorkspaceServices,
+        "Arc<AtomicU32>",
+        "server instance drop",
+        "workspace-topology generation",
+        false,
+        "#9062"
+    ),
+    row!(
+        "workspace_topology_stable",
+        WorkspaceServices,
+        "Arc<AtomicBool>",
+        "server instance drop",
+        "workspace-topology publication stability",
+        false,
+        "#9062"
+    ),
+    row!(
+        "workspace_transition_test_gate",
+        WorkspaceServices,
+        "Arc<Mutex<Option>>",
+        "test gate release / server drop",
+        "workspace-transition race proof gate",
+        true,
+        "#9062"
+    ),
+    row!(
         "single_file_project_config",
         WorkspaceServices,
         "Arc<Mutex>",
@@ -644,24 +671,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8386"
     ),
     row!(
-        "critic_analyzer",
-        AnalysisServices,
-        "Mutex<Option>",
-        "critic config transition / analysis shutdown",
-        "configuration + document generation",
-        true,
-        "#7410"
-    ),
-    row!(
-        "critic_runtime_override",
-        ProductComposition,
-        "Mutex<Option<Arc>>",
-        "test/product composition reset",
-        "process/test subject",
-        true,
-        "#8400"
-    ),
-    row!(
         "formatter_runtime_override",
         ProductComposition,
         "Mutex<Option<Arc>>",
@@ -669,24 +678,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "process/test subject",
         true,
         "#5001"
-    ),
-    row!(
-        "skip_perlcritic_command_check",
-        ProductComposition,
-        "AtomicBool",
-        "test server drop",
-        "test subject",
-        false,
-        "#8400"
-    ),
-    row!(
-        "force_perlcritic_command_unavailable",
-        ProductComposition,
-        "AtomicBool",
-        "test server drop",
-        "test subject",
-        false,
-        "#8400"
     ),
     row!(
         "session_warning_dedup",

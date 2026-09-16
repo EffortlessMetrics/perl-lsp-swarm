@@ -145,6 +145,48 @@ fn malformed_offers_fail_typed() {
     }
 }
 
+/// FC-MALFORMED-PARENT-ABSENT: a wrong-typed intermediate parent is a
+/// malformed offer, not key absence. Only a genuinely missing (or explicitly
+/// null) parent maps to `Absent`.
+#[test]
+fn wrong_typed_capability_parents_are_malformed_not_absent() {
+    for params in [
+        json!({ "capabilities": "bad" }),
+        json!({ "capabilities": 7 }),
+        json!({ "capabilities": ["utf-16"] }),
+        json!({ "capabilities": { "general": "bad" } }),
+        json!({ "capabilities": { "general": ["utf-16"] } }),
+        json!({ "capabilities": { "general": 7 } }),
+    ] {
+        let rejection = TextSyncSessionContract::accept(Some(&params), "s-parent".to_string())
+            .err()
+            .unwrap_or_else(|| unreachable!("wrong-typed parent must fail: {params}"));
+        assert!(
+            matches!(rejection, SessionContractRejection::MalformedOffer { .. }),
+            "params {params} must fail as malformed, got {rejection:?}"
+        );
+        let error = rejection.to_jsonrpc_error();
+        assert_eq!(error.code, -32602, "malformed parent must be typed InvalidParams");
+    }
+}
+
+/// Explicit null (and missing) parents keep the established absent spelling:
+/// null is the JSON absent marker, not a wrong type.
+#[test]
+fn null_or_missing_capability_parents_stay_absent() {
+    for params in [
+        json!({}),
+        json!({ "capabilities": null }),
+        json!({ "capabilities": {} }),
+        json!({ "capabilities": { "general": null } }),
+        json!({ "capabilities": { "general": {} } }),
+    ] {
+        let classified = classify_position_encoding_offer(Some(&params))
+            .unwrap_or_else(|rejection| unreachable!("null parent must classify: {rejection:?}"));
+        assert_eq!(classified, PositionEncodingOffer::Absent, "params {params} must stay absent");
+    }
+}
+
 #[test]
 fn malformed_rejection_maps_to_typed_invalid_params_error() {
     let params = json!({ "capabilities": { "general": { "positionEncodings": ["utf-16", 7] } } });
