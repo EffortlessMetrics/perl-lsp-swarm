@@ -296,6 +296,23 @@ pub struct LspServer {
     /// Perl settings extracted from `initializationOptions` during initialize.
     /// Kept as a base config layer below `.perl-lsp.toml` and `workspace/configuration`.
     initialization_options_perl_settings: Arc<Mutex<Option<Value>>>,
+    /// Most recent perl settings payload received via `workspace/didChangeConfiguration`.
+    /// Replayed on top of merged project config by
+    /// [`crate::runtime::lifecycle::workspace::load_and_apply_project_config`] so that
+    /// tier-3 client values (documented as layered above TOML) survive a folder
+    /// removal when the remaining folders have no `.perl-lsp.toml` to re-apply
+    /// them, and so that project-owned fields are reset back to defaults before
+    /// the merged TOML is applied (issue #15715).
+    last_client_settings: Arc<Mutex<Option<Value>>>,
+    /// Snapshot of `ServerConfig` captured after tier-1 (`initializationOptions`)
+    /// is applied in [`super::workspace::handle_initialize`] and updated whenever
+    /// tier-3 (`didChangeConfiguration`) arrives. Represents the
+    /// `defaults + tier-1 + tier-3` baseline that survives
+    /// `load_and_apply_project_config`'s per-call reset; without it, a
+    /// removed folder's tier-2 contribution would persist on the server-global
+    /// layer because `merged.apply_to_server_config` only writes present
+    /// fields (issue #15715).
+    server_config_baseline: Arc<Mutex<Option<perl_lsp_rs_core::config::ServerConfig>>>,
     /// Atomic counter for generating unique request IDs
     next_request_id: Arc<AtomicI32>,
     /// Pending workspace/configuration reverse requests keyed by request ID.
