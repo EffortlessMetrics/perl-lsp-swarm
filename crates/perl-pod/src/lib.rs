@@ -535,12 +535,22 @@ fn escape_markdown_link_text(text: &str) -> String {
 /// - `L<text|Module::Name>` → `[text](perldoc://Module::Name)`
 /// - `L<Module::Name/section>` → `[Module::Name](perldoc://Module::Name/section)`
 /// - `L<text|Module::Name/section>` → `[text](perldoc://Module::Name/section)`
+///
+/// The empty-label form `L<|Target>` renders the bare target as plain text:
+/// an empty display label would otherwise produce a dead `[](perldoc://...)`
+/// link with nothing to click.
 fn extract_link_display(link: &str, depth: usize) -> String {
     // L<text|target> — explicit display text before the pipe
     if let Some(pipe_pos) = link.find('|') {
         let display =
             escape_markdown_link_text(&strip_pod_formatting_depth(link[..pipe_pos].trim(), depth));
         let target = encode_pod_link_target(link[pipe_pos + 1..].trim());
+        // `L<|Target>` with an empty display label has no link text to show;
+        // emit the bare target as plain text instead of a dead
+        // `[](perldoc://target)` empty-label link.
+        if display.is_empty() {
+            return target;
+        }
         return format!("[{display}](perldoc://{target})");
     }
     // L<Module/section> — module + section, display is just the module part
@@ -731,6 +741,14 @@ mod tests {
         // L<text|target> — leading/trailing whitespace on both sides is trimmed
         // so neither the display text nor the target leaks padding (#2480).
         assert_eq!(strip_pod_formatting("L<  text  |  target  >"), "[text](perldoc://target)");
+    }
+
+    #[test]
+    fn link_empty_label_renders_plain_target() {
+        // `L<|Target>` has no display text; rendering the target as plain text
+        // keeps the reference readable without publishing a dead
+        // `[](perldoc://Target)` empty-label link.
+        assert_eq!(strip_pod_formatting("L<|Local::EmptyLabel>"), "Local::EmptyLabel");
     }
 
     #[test]
