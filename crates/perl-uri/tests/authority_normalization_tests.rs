@@ -25,30 +25,16 @@ mod filesystem_authorities {
 
     #[test]
     fn uri_to_fs_path_maps_empty_local_authority_to_root() {
-        // The `url` crate's `Url::to_file_path()` cannot produce an absolute Windows path from a
-        // file:// URI with an empty authority (e.g. `file://localhost`) because Windows requires
-        // a drive letter and the empty-authority form has none. On Unix it works because POSIX
-        // paths do not need a host. Mirror the contract per-platform instead of asserting a
-        // cross-platform shape the url crate cannot deliver on Windows.
-        #[cfg(windows)]
-        {
-            let localhost = must_some(uri_to_fs_path("file:///C:/localhost-root"));
-            let loopback = must_some(uri_to_fs_path("file:///C:/127.0.0.1-root"));
-            assert!(
-                localhost.is_absolute() && localhost.starts_with(r"C:\"),
-                "localhost drive root was not absolute under C:\\: {}",
-                localhost.display()
-            );
-            assert!(
-                loopback.is_absolute() && loopback.starts_with(r"C:\"),
-                "loopback drive root was not absolute under C:\\: {}",
-                loopback.display()
-            );
-        }
+        // Regression inputs for #15722: the authority-bearing forms must keep resolving
+        // without panic on every platform, so they stay in the test on all platforms.
+        // A rooted Windows path without a drive prefix is not absolute there, so the
+        // Windows leg asserts resolution (the non-panicking result) while the Unix leg
+        // asserts the absolute-root contract. Drive-letter controls supplement — they do
+        // not replace — these authority-bearing inputs.
+        let localhost = must_some(uri_to_fs_path("file://localhost"));
+        let loopback = must_some(uri_to_fs_path("file://127.0.0.1"));
         #[cfg(not(windows))]
         {
-            let localhost = must_some(uri_to_fs_path("file://localhost"));
-            let loopback = must_some(uri_to_fs_path("file://127.0.0.1"));
             assert!(
                 localhost.is_absolute(),
                 "localhost root was not absolute: {}",
@@ -58,6 +44,30 @@ mod filesystem_authorities {
                 loopback.is_absolute(),
                 "loopback root was not absolute: {}",
                 loopback.display()
+            );
+        }
+        #[cfg(windows)]
+        {
+            // Documented non-panicking result: root-only authorities resolve (to a
+            // rooted-but-driveless path); absoluteness is asserted on the drive
+            // controls below.
+            assert!(
+                !localhost.as_os_str().is_empty() && !loopback.as_os_str().is_empty(),
+                "empty-authority roots did not resolve: {} / {}",
+                localhost.display(),
+                loopback.display()
+            );
+            let drive_localhost = must_some(uri_to_fs_path("file:///C:/localhost-root"));
+            let drive_loopback = must_some(uri_to_fs_path("file:///C:/127.0.0.1-root"));
+            assert!(
+                drive_localhost.is_absolute() && drive_localhost.starts_with(r"C:\"),
+                "localhost drive root was not absolute under C:\\: {}",
+                drive_localhost.display()
+            );
+            assert!(
+                drive_loopback.is_absolute() && drive_loopback.starts_with(r"C:\"),
+                "loopback drive root was not absolute under C:\\: {}",
+                drive_loopback.display()
             );
         }
     }

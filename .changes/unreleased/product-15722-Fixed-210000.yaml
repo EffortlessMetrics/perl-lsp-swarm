@@ -1,7 +1,7 @@
 project: product
 component: Developer experience
 kind: Fixed
-body: "`perl-uri` `uri_to_fs_path_maps_empty_local_authority_to_root` no longer panics on Windows. The empty-authority `file://localhost` form cannot yield an absolute Windows path through the `url` crate (Windows requires a drive letter); the test now uses a drive-letter URI under `C:\` on Windows and keeps the empty-authority form on Unix."
+body: "`perl-uri` `uri_to_fs_path_maps_empty_local_authority_to_root` no longer panics on Windows. The empty-authority `file://localhost` form cannot yield an absolute Windows path through the `url` crate (Windows requires a drive letter); the test keeps the authority-bearing inputs on all platforms (asserting resolution on Windows, where a rooted path without a drive prefix is not absolute) and supplements them with absolute drive-letter controls under `C:\` on Windows."
 time: 2026-09-16T01:00:00Z
 custom:
   PR: "15722"
