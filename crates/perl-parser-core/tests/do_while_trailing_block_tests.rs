@@ -18,7 +18,7 @@ fn parse_clean(src: &str) -> Result<(), String> {
 
 /// Find the first `{}`-op subscript Binary anywhere under `node`: the
 /// observable effect of the keep-consuming seam taking the consume path.
-fn find_brace_subscript<'a>(node: &'a Node) -> Option<&'a Node> {
+fn find_brace_subscript(node: &Node) -> Option<&Node> {
     if let NodeKind::Binary { op, .. } = &node.kind
         && op == "{}"
     {
