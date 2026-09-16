@@ -1166,7 +1166,7 @@ fn proof_level_is_explicitly_excluded(
 /// surface was covered still armed CP00 whenever a sibling sentence said
 /// "Not claimed: foo.". See #15627.
 fn proof_level_term_is_excluded(text: &str, term: &str) -> bool {
-    requirement_units(text).iter().any(|unit| {
+    requirement_units(text).iter().flat_map(|unit| split_coordinated_clauses(unit)).any(|unit| {
         let lower = unit.to_ascii_lowercase();
         contains_explicit_exclusion(&lower) && contains_proof_level_term(&lower, term)
     })
@@ -2597,6 +2597,24 @@ mod tests {
         assert!(
             proof_level_from_bodies(issue, pr)?,
             "a clause that excludes the term must still arm even when another clause asserts a different term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_different_coordinate_clause_does_not_arm() -> Result<()> {
+        // Coordinate-clause scoping (#15627 review): the exclusion marker
+        // lives in one coordinate ("Not claimed: the legacy shim") while the
+        // term is asserted in the other ("the public formatter surface is
+        // covered"). The marker must not leak across the "but" boundary.
+        // Inverse of proof_level_pr_term_in_exclusion_clause_of_split_sentence_arms.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  Not claimed: the legacy shim, but the public formatter surface is covered.\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in a different coordinate clause from the exclusion marker must not arm"
         );
         Ok(())
     }
