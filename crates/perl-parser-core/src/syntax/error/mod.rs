@@ -1649,6 +1649,7 @@ mod tests {
             RecoveryKind::MissingOperand,
             RecoveryKind::TruncatedChain,
             RecoveryKind::InferredSemicolon,
+            RecoveryKind::UnexpectedSameLineResidue,
         ];
         // Each site and kind is debug-formattable and clone-able.
         for s in &sites {

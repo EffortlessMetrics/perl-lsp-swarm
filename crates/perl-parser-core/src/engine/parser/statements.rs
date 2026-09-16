@@ -395,7 +395,10 @@ impl<'a> Parser<'a> {
                         .map(|t| t.kind() == TokenKind::Colon)
                         .unwrap_or(false) =>
                 {
-                    self.parse_keyword_as_label()
+                    // The labeled body owns its own terminator (as in
+                    // `parse_labeled_statement`); falling through would
+                    // re-check the following statement as residue (#13489).
+                    return self.parse_keyword_as_label();
                 }
                 TokenKind::Begin
                 | TokenKind::End
@@ -430,7 +433,8 @@ impl<'a> Parser<'a> {
                         .map(|t| t.kind() == TokenKind::Colon)
                         .unwrap_or(false) =>
                 {
-                    self.parse_keyword_as_label()
+                    // Same terminator ownership as above (#13489).
+                    return self.parse_keyword_as_label();
                 }
 
                 // Data sections
@@ -682,6 +686,19 @@ impl<'a> Parser<'a> {
                 // Ordinary body line: skip it.
                 return Ok(());
             }
+        }
+
+        // A contextual repetition `x` after an expression is a potential infix
+        // continuation, not unexpected residue: `$value x` may still form
+        // repetition, and the repetition tests pin the split-statement
+        // silence for trivia-separated `x =` (`whitespace_does_not_form_`
+        // `repetition_assignment`, #13179). The statement loop resolves the
+        // leftover exactly as before. (The lexer keeps `x` contextual, so it
+        // arrives here as `Identifier("x")`; see `consume_assignment_operator`.)
+        if self.peek_kind() == Some(TokenKind::Identifier)
+            && self.tokens.peek().is_ok_and(|token| token.text.as_ref() == "x")
+        {
+            return Ok(());
         }
 
         // All legal-continuation and known-unsupported boundaries return

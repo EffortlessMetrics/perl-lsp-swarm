@@ -79,20 +79,31 @@ fn same_line_residue_reaches_lsp_pull_and_push_reports() -> TestResult {
     let mut push_harness = LspHarness::new();
     push_harness.initialize(None)?;
     push_harness.open(uri, source)?;
-    let notifications =
-        push_harness.drain_notifications(Some("textDocument/publishDiagnostics"), 800);
-    let push_diagnostic = notifications
-        .iter()
-        .filter(|notification| notification["params"]["uri"].as_str() == Some(uri))
-        .flat_map(|notification| {
-            notification["params"]["diagnostics"].as_array().into_iter().flatten()
-        })
-        .find(|item| {
-            item.get("message")
-                .and_then(|message| message.as_str())
-                .is_some_and(|message| message.contains("Unexpected same-line residue"))
-        })
-        .ok_or("push report did not contain the parser recovery diagnostic")?;
+    // Diagnostic publication is debounced on a worker: poll the drain until
+    // the residue notification arrives or a longer deadline expires, instead
+    // of relying on one fixed window (#13489 review).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let push_diagnostic = loop {
+        let notifications =
+            push_harness.drain_notifications(Some("textDocument/publishDiagnostics"), 800);
+        let found = notifications
+            .iter()
+            .filter(|notification| notification["params"]["uri"].as_str() == Some(uri))
+            .flat_map(|notification| {
+                notification["params"]["diagnostics"].as_array().into_iter().flatten()
+            })
+            .find(|item| {
+                item.get("message")
+                    .and_then(|message| message.as_str())
+                    .is_some_and(|message| message.contains("Unexpected same-line residue"))
+            });
+        if let Some(diagnostic) = found {
+            break diagnostic.clone();
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("push report did not contain the parser recovery diagnostic".into());
+        }
+    };
     assert_eq!(push_diagnostic["range"]["start"]["line"], 0);
     assert_eq!(push_diagnostic["range"]["start"]["character"], expected_start);
     assert_eq!(push_diagnostic["range"]["end"]["line"], 0);

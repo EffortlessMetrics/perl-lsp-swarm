@@ -96,7 +96,10 @@ fn same_line_residue_maps_to_the_residual_token_range() -> Result<(), Box<dyn st
     let diagnostics = provider.get_diagnostics(&ast, &parse_errors, source, None);
     let diagnostic = diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.range.0 == location)
+        .find(|diagnostic| {
+            diagnostic.range.0 == location
+                && diagnostic.message == "Unexpected same-line residue after the statement"
+        })
         .ok_or("same-line residual diagnostic was not emitted")?;
 
     assert_eq!(location, source.find("print").ok_or("missing residual token")?);

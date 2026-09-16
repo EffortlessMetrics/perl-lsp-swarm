@@ -624,10 +624,15 @@ impl<'a> Parser<'a> {
         let starts_with_ampersand = self.peek_kind() == Some(TokenKind::BitwiseAnd);
 
         // Parse the target as an assignment-level expression (not full comma
-        // expression) to avoid consuming surrounding list separators.  Perl
-        // permits a bare `goto` in a short-circuit expression, so preserve the
-        // control-flow node when a statement boundary immediately follows it.
-        let target = if let Some(missing) = self.recover_missing_infix_rhs(start) {
+        // expression) to avoid consuming surrounding list separators.  A
+        // targetless `goto` (`goto;`, `foo and goto;`, `goto if $x;`) is
+        // valid Perl: the omission is legal, not a broken operand, so it
+        // yields a `MissingExpression` target with no diagnostic.
+        // Genuinely missing operands elsewhere keep the blocking recovery
+        // via `recover_missing_infix_rhs` (#13489 review).
+        let target = if self.is_infix_rhs_absent() {
+            Node::new(NodeKind::MissingExpression, SourceLocation { start, end: start })
+        } else if let Some(missing) = self.recover_missing_infix_rhs(start) {
             missing
         } else {
             self.parse_assignment()?
