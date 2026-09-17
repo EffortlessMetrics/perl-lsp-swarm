@@ -70,7 +70,7 @@
     },
     "live_observation": {
       "observation_digest": null,
-      "candidate_state": "observed"
+      "candidate_state": "not_observed"
     },
     "packet_subject": {
       "current_main_sha": "2222222222222222222222222222222222222222222222222222222222222222",
@@ -133,7 +133,7 @@
       "controller fan-in completion is owned by #11696 and is not established here"
     ],
     "digest_binds": {
-      "proof_profile_sha256": "5e963a9a12a022faba7391ce893a172191aa1a863a3cff7cdc9611929b2421e7",
+      "proof_profile_sha256": "14af0484d99125271026cae7c8b5cec94331147e4ce7f975761ef300aeb3dae0",
       "probe_observation_sha256": "274ee680c343ff897c99e0059cf70926bb12c2e37f021ef426db97aa4137f44a",
       "issue_ruling_revision": "ruling.r1",
       "reviewer_packet_sha256": "45063b7ba0ce0ade09f3d698e07398104a670695e5d87c5a5c03cc1298a3d8a2",
@@ -190,7 +190,7 @@
       },
       {
         "path": "target/closeout/proof_profile.json",
-        "contents": "{\"schema\":\"proof_profile.v1\",\"profile\":\"leaf.default\"}\n",
+        "contents": "{\"selected\":[\"cargo.test.xtask.authority_transfer_closeout\",\"cargo.clippy.xtask.scoped\"],\"claims_installed_behavior\":false,\"executed\":{\"cargo.clippy.xtask.scoped\":\"passed\",\"cargo.test.xtask.authority_transfer_closeout\":\"passed\"},\"installed_observation_sha256\":null,\"generated_identities\":[\"generation.g1\"],\"first_falsifier_id\":\"falsifier.first.stale_head\",\"generated_outputs_current\":true,\"negative_controls\":[{\"control_id\":\"falsifier.first.stale_head\",\"subject_matches_candidate\":false,\"passes_only_intended_implementation\":true,\"red_before_evidence\":true},{\"control_id\":\"falsifier.zero_work_proof\",\"subject_matches_candidate\":true,\"passes_only_intended_implementation\":true,\"red_before_evidence\":true},{\"control_id\":\"falsifier.controller_close\",\"subject_matches_candidate\":true,\"passes_only_intended_implementation\":true,\"red_before_evidence\":true}]}\n",
         "role": "proof_profile"
       }
     ]

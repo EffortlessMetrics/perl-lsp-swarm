@@ -159,6 +159,7 @@ pub enum LiveCandidateState {
 
 /// Repository-local issue reference.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct IssueRef {
     pub repository: String,
     pub number: u64,
@@ -166,6 +167,7 @@ pub struct IssueRef {
 
 /// Identity of the bounded leaf being closed out.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LeafIdentity {
     pub node_id: String,
     pub issue: IssueRef,
@@ -176,6 +178,7 @@ pub struct LeafIdentity {
 
 /// Exact candidate subject under closeout.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateSubject {
     pub base_sha: String,
     pub head_sha: String,
@@ -183,6 +186,7 @@ pub struct CandidateSubject {
 
 /// Currentness binds carried by the packets.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PacketSubject {
     /// Repository current-main subject the packets were composed against.
     pub current_main_sha: String,
@@ -192,6 +196,7 @@ pub struct PacketSubject {
 
 /// Declared digest binds of the closeout.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestBinds {
     pub programme_manifest_sha256: String,
     pub probe_observation_sha256: String,
@@ -205,6 +210,7 @@ pub struct DigestBinds {
 
 /// One externally supplied artifact body bound by a digest.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactInput {
     pub role: ArtifactRole,
     /// Repository-relative path the artifact was read from.
@@ -215,6 +221,7 @@ pub struct ArtifactInput {
 
 /// Durable surface changes the leaf is required to contain.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequiredChanges {
     #[serde(default)]
     pub specs: Vec<String>,
@@ -250,6 +257,7 @@ impl RequiredChanges {
 
 /// Selected proof work with its execution results and negative controls.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProofProfile {
     pub selected: Vec<String>,
     pub executed: BTreeMap<String, ProofStatus>,
@@ -268,6 +276,7 @@ pub struct ProofProfile {
 
 /// One load-bearing negative control.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct NegativeControl {
     pub control_id: String,
     /// The control demonstrably failed before the intended implementation.
@@ -280,6 +289,7 @@ pub struct NegativeControl {
 
 /// Satisfied predecessor or compatibility exit.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct PredecessorExit {
     pub mode: PredecessorExitMode,
     pub predecessor_ids: Vec<String>,
@@ -291,6 +301,7 @@ pub struct PredecessorExit {
 
 /// Optional read-only live observation; absence stays offline-valid.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveObservation {
     pub candidate_state: LiveCandidateState,
     pub observation_digest: Option<String>,
@@ -327,6 +338,7 @@ pub struct CloseoutRequest {
 
 /// Git observations backing one closeout evaluation.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitFacts {
     pub base_resolved: Option<String>,
     pub head_resolved: Option<String>,
@@ -495,6 +507,37 @@ fn validate_request(request: &CloseoutRequest) -> Vec<Violation> {
             ));
         }
     }
+    if let Some(observation) = &request.live_observation {
+        match (&observation.candidate_state, &observation.observation_digest) {
+            (LiveCandidateState::Observed, None) => violations.push(Violation::new(
+                CloseoutResult::ContractDrift,
+                "live observation claims an observed candidate without an observation digest",
+            )),
+            (LiveCandidateState::NotObserved, Some(digest)) => violations.push(Violation::new(
+                CloseoutResult::ContractDrift,
+                format!(
+                    "live observation claims the candidate was not observed yet supplies digest {digest}"
+                ),
+            )),
+            (LiveCandidateState::Observed, Some(digest)) if !is_sha_hex(digest) => {
+                violations.push(Violation::new(
+                    CloseoutResult::ContractDrift,
+                    "live observation digest is not a SHA-256 digest",
+                ));
+            }
+            _ => {}
+        }
+    }
+    if let Some(digest) = &request.proof_profile.installed_observation_sha256
+        && !is_sha_hex(digest)
+    {
+        violations.push(Violation::new(
+            CloseoutResult::ProofNotProven,
+            format!(
+                "installed observation `{digest}` is not a SHA-256 digest; presence alone never proves installed behavior"
+            ),
+        ));
+    }
     violations
 }
 
@@ -541,30 +584,80 @@ fn bind_artifacts(request: &CloseoutRequest) -> Vec<Violation> {
     violations
 }
 
+/// The evaluated proof profile must be the digest-bound `ProofProfile`
+/// artifact itself, not merely a sibling field that shares its name.
+fn bind_proof_profile_artifact(request: &CloseoutRequest) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let artifact =
+        match request.artifacts.iter().find(|artifact| artifact.role == ArtifactRole::ProofProfile)
+        {
+            Some(artifact) => artifact,
+            // A missing body is already reported by `bind_artifacts`.
+            None => return violations,
+        };
+    let bound: ProofProfile = match serde_json::from_str(&artifact.contents) {
+        Ok(bound) => bound,
+        Err(error) => {
+            violations.push(Violation::new(
+                CloseoutResult::ContractDrift,
+                format!(
+                    "digest-bound proof profile artifact {} does not parse as a proof profile: {error}",
+                    artifact.path
+                ),
+            ));
+            return violations;
+        }
+    };
+    if bound != request.proof_profile {
+        violations.push(Violation::new(
+            CloseoutResult::StalePacket,
+            format!(
+                "the evaluated proof profile is not the digest-bound artifact {}; failed or zero proof can never accompany a claiming request",
+                artifact.path
+            ),
+        ));
+    }
+    violations
+}
+
 fn bind_subject(request: &CloseoutRequest, facts: &GitFacts) -> Vec<Violation> {
     let mut violations = Vec::new();
     for limitation in &facts.limitations {
         violations.push(Violation::new(CloseoutResult::InstrumentFailure, limitation.clone()));
     }
     match (&facts.base_resolved, &facts.head_resolved) {
-        (Some(base), Some(head)) if base == head => violations.push(Violation::new(
-            CloseoutResult::LeafIncomplete,
-            "cumulative diff of base..head is empty; no leaf candidate exists",
-        )),
-        (Some(base), Some(head)) => match &facts.merge_base {
-            Some(merge_base) if merge_base == base => {}
-            Some(_) => violations.push(Violation::new(
-                CloseoutResult::WrongSubject,
-                format!(
-                    "requested base {} is not an ancestor of requested head {}; common ancestry fails",
-                    base, head
-                ),
-            )),
-            None => violations.push(Violation::new(
-                CloseoutResult::WrongSubject,
-                "base and head share no common ancestor; the exact-head bind cannot hold",
-            )),
-        },
+        (Some(base), Some(head)) => {
+            if base != &request.candidate.base_sha || head != &request.candidate.head_sha {
+                violations.push(Violation::new(
+                    CloseoutResult::WrongSubject,
+                    format!(
+                        "supplied facts describe base {base} and head {head}, not the requested candidate {}..{}",
+                        request.candidate.base_sha, request.candidate.head_sha
+                    ),
+                ));
+            }
+            if base == head {
+                violations.push(Violation::new(
+                    CloseoutResult::LeafIncomplete,
+                    "cumulative diff of base..head is empty; no leaf candidate exists",
+                ));
+            } else {
+                match &facts.merge_base {
+                    Some(merge_base) if merge_base == base => {}
+                    Some(_) => violations.push(Violation::new(
+                        CloseoutResult::WrongSubject,
+                        format!(
+                            "requested base {} is not an ancestor of requested head {}; common ancestry fails",
+                            base, head
+                        ),
+                    )),
+                    None => violations.push(Violation::new(
+                        CloseoutResult::WrongSubject,
+                        "base and head share no common ancestor; the exact-head bind cannot hold",
+                    )),
+                }
+            }
+        }
         _ => violations.push(Violation::new(
             CloseoutResult::WrongSubject,
             "the requested base or head does not resolve locally; the exact-head bind is unestablished",
@@ -829,6 +922,7 @@ fn bind_handoff_inputs(request: &CloseoutRequest) -> Vec<Violation> {
 pub fn evaluate(request: &CloseoutRequest, facts: &GitFacts) -> CloseoutOutcome {
     let mut violations = validate_request(request);
     violations.extend(bind_artifacts(request));
+    violations.extend(bind_proof_profile_artifact(request));
     violations.extend(bind_subject(request, facts));
     violations.extend(bind_scope(request, facts));
     violations.extend(bind_ceiling_and_relations(request));
@@ -968,22 +1062,51 @@ fn run_git(repository: &Path, arguments: &[&str]) -> Result<Option<String>, Stri
 }
 
 /// Parse and evaluate one request document against one real repository.
+///
+/// Collection and parsing failures are typed domain results, never a generic
+/// error: the exit contract (0/2/3) stays meaningful for shell and workflow
+/// consumers.
 pub fn evaluate_request_file(
     repository: &Path,
     request_path: &Path,
     main_ref: &str,
-) -> Result<CloseoutOutcome, String> {
-    let raw = fs::read_to_string(request_path)
-        .map_err(|error| format!("could not read request {}: {error}", request_path.display()))?;
-    let request: CloseoutRequest = serde_json::from_str(&raw)
-        .map_err(|error| format!("closeout request is not a valid document: {error}"))?;
-    let facts = collect_git_facts(
+) -> CloseoutOutcome {
+    let raw = match fs::read_to_string(request_path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            return instrument_failure(format!(
+                "could not read request {}: {error}",
+                request_path.display()
+            ));
+        }
+    };
+    let request: CloseoutRequest = match serde_json::from_str(&raw) {
+        Ok(request) => request,
+        Err(error) => {
+            return typed_outcome(
+                CloseoutResult::ContractDrift,
+                format!("closeout request is not a valid document: {error}"),
+            );
+        }
+    };
+    let facts = match collect_git_facts(
         repository,
         &request.candidate.base_sha,
         &request.candidate.head_sha,
         main_ref,
-    )?;
-    Ok(evaluate(&request, &facts))
+    ) {
+        Ok(facts) => facts,
+        Err(error) => return instrument_failure(error),
+    };
+    evaluate(&request, &facts)
+}
+
+fn typed_outcome(result: CloseoutResult, reason: String) -> CloseoutOutcome {
+    CloseoutOutcome { result, reasons: vec![reason], handoff: None }
+}
+
+fn instrument_failure(reason: String) -> CloseoutOutcome {
+    typed_outcome(CloseoutResult::InstrumentFailure, reason)
 }
 
 /// Canonical serialization of one handoff for golden comparison and output.
@@ -1158,6 +1281,7 @@ mod tests {
         let (mut request, value) = load_document(VALID_FIXTURES[0])?;
         let mut facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
         request.proof_profile.selected.clear();
+        rebind_profile_artifact(&mut request);
         request.forbidden_surfaces.push("specs/".to_string());
         facts.changed_paths.insert("specs/forbidden.md".to_string());
         let outcome = evaluate(&request, &facts);
@@ -1173,6 +1297,85 @@ mod tests {
         let raw = r#"{"schema":"authority_transfer_leaf_closeout_request.v1","schema_version":1,"surprise":true}"#;
         let parsed: Result<CloseoutRequest, _> = serde_json::from_str(raw);
         assert!(parsed.is_err(), "unknown fields must fail closed");
+    }
+
+    #[test]
+    fn unknown_nested_fields_are_contract_drift() -> Result<()> {
+        let (request, _) = load_document(VALID_FIXTURES[0])?;
+        // A nested producer addition must fail closed, not be silently
+        // discarded while the verifier evaluates an older projection.
+        let mut identity = serde_json::to_value(&request.identity)?;
+        identity["authority_owner"] = serde_json::Value::String("controller".to_string());
+        let identity_parse: Result<LeafIdentity, _> = serde_json::from_value(identity);
+        assert!(identity_parse.is_err(), "nested identity unknown fields must fail closed");
+        let mut profile_value = serde_json::to_value(&request.proof_profile)?;
+        profile_value["surprise"] = serde_json::Value::Bool(true);
+        let profile_parse: Result<ProofProfile, _> = serde_json::from_value(profile_value);
+        assert!(profile_parse.is_err(), "nested profile unknown fields must fail closed");
+        Ok(())
+    }
+
+    #[test]
+    fn evaluated_profile_must_be_the_digest_bound_artifact() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        // A failed profile that still matches every sibling digest bind must
+        // never stay green: the bound artifact is the evaluated profile.
+        request.proof_profile.executed.clear();
+        let outcome = evaluate(&request, &facts);
+        assert!(
+            outcome.result != CloseoutResult::LeafReady,
+            "unbound profile drift must stay non-green: {:?}",
+            outcome.result
+        );
+        assert!(outcome.handoff.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn foreign_facts_never_certify_the_requested_candidate() -> Result<()> {
+        let (request, value) = load_document(VALID_FIXTURES[0])?;
+        let mut facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        facts.base_resolved = Some("9".repeat(64));
+        facts.head_resolved = Some("8".repeat(64));
+        facts.merge_base = Some("9".repeat(64));
+        facts.changed_paths.clear();
+        let outcome = evaluate(&request, &facts);
+        assert_eq!(outcome.result, CloseoutResult::WrongSubject);
+        assert!(outcome.handoff.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn fabricated_installed_observations_stay_non_green() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        request.proof_profile.claims_installed_behavior = true;
+        request.proof_profile.installed_observation_sha256 = Some(String::new());
+        rebind_profile_artifact(&mut request);
+        let outcome = evaluate(&request, &facts);
+        assert_eq!(outcome.result, CloseoutResult::ProofNotProven);
+        assert!(outcome.handoff.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn inconsistent_live_observations_are_contract_drift() -> Result<()> {
+        let (mut request, value) = load_document(VALID_FIXTURES[0])?;
+        let facts: GitFacts = serde_json::from_value(value["git_facts"].clone())?;
+        request.live_observation = Some(LiveObservation {
+            candidate_state: LiveCandidateState::Observed,
+            observation_digest: None,
+        });
+        let observed_without_digest = evaluate(&request, &facts);
+        assert_eq!(observed_without_digest.result, CloseoutResult::ContractDrift);
+        request.live_observation = Some(LiveObservation {
+            candidate_state: LiveCandidateState::NotObserved,
+            observation_digest: Some(sha256_hex("observation")),
+        });
+        let unobserved_with_digest = evaluate(&request, &facts);
+        assert_eq!(unobserved_with_digest.result, CloseoutResult::ContractDrift);
+        Ok(())
     }
 
     #[test]
@@ -1207,6 +1410,23 @@ mod tests {
     }
 
     fn round_trip_request(base: &str, head: &str, manifest_body: &str) -> CloseoutRequest {
+        let proof_profile = ProofProfile {
+            selected: vec!["cargo.test.leaf".to_string()],
+            executed: BTreeMap::from([("cargo.test.leaf".to_string(), ProofStatus::Passed)]),
+            negative_controls: vec![NegativeControl {
+                control_id: "falsifier.first".to_string(),
+                red_before_evidence: true,
+                passes_only_intended_implementation: true,
+                subject_matches_candidate: true,
+            }],
+            first_falsifier_id: "falsifier.first".to_string(),
+            generated_outputs_current: true,
+            generated_identities: vec!["generation.g1".to_string()],
+            claims_installed_behavior: false,
+            installed_observation_sha256: None,
+        };
+        let profile_body =
+            serde_json::to_string(&proof_profile).expect("profile serializes in test fixtures");
         CloseoutRequest {
             schema: CLOSEOUT_REQUEST_SCHEMA_V1.to_string(),
             schema_version: 1,
@@ -1230,7 +1450,7 @@ mod tests {
                 frontier_sha256: sha256_hex("frontier\n"),
                 builder_packet_sha256: sha256_hex("builder\n"),
                 reviewer_packet_sha256: sha256_hex("reviewer\n"),
-                proof_profile_sha256: sha256_hex("profile\n"),
+                proof_profile_sha256: sha256_hex(&profile_body),
                 issue_ruling_revision: "ruling.r1".to_string(),
             },
             artifacts: vec![
@@ -1239,7 +1459,7 @@ mod tests {
                 artifact(ArtifactRole::Frontier, "artifacts/frontier.json", "frontier\n"),
                 artifact(ArtifactRole::BuilderPacket, "artifacts/builder.json", "builder\n"),
                 artifact(ArtifactRole::ReviewerPacket, "artifacts/reviewer.json", "reviewer\n"),
-                artifact(ArtifactRole::ProofProfile, "artifacts/profile.json", "profile\n"),
+                artifact(ArtifactRole::ProofProfile, "artifacts/profile.json", &profile_body),
             ],
             claimed_closes: vec![IssueRef { repository: "owner/name".to_string(), number: 11703 }],
             forbidden_terminal_issues: vec![IssueRef {
@@ -1253,21 +1473,7 @@ mod tests {
                 tests: vec!["tests/leaf.rs".to_string()],
                 ..RequiredChanges::default()
             },
-            proof_profile: ProofProfile {
-                selected: vec!["cargo.test.leaf".to_string()],
-                executed: BTreeMap::from([("cargo.test.leaf".to_string(), ProofStatus::Passed)]),
-                negative_controls: vec![NegativeControl {
-                    control_id: "falsifier.first".to_string(),
-                    red_before_evidence: true,
-                    passes_only_intended_implementation: true,
-                    subject_matches_candidate: true,
-                }],
-                first_falsifier_id: "falsifier.first".to_string(),
-                generated_outputs_current: true,
-                generated_identities: vec!["generation.g1".to_string()],
-                claims_installed_behavior: false,
-                installed_observation_sha256: None,
-            },
+            proof_profile,
             predecessor_exit: PredecessorExit {
                 mode: PredecessorExitMode::Retired,
                 predecessor_ids: vec!["pred.p1".to_string()],
@@ -1281,6 +1487,20 @@ mod tests {
 
     fn artifact(role: ArtifactRole, path: &str, contents: &str) -> ArtifactInput {
         ArtifactInput { role, path: path.to_string(), contents: contents.to_string() }
+    }
+
+    /// Re-bind the digest-bound profile artifact after mutating the profile,
+    /// so a test injects exactly one typed drift at a time.
+    fn rebind_profile_artifact(request: &mut CloseoutRequest) {
+        let body = serde_json::to_string(&request.proof_profile)
+            .expect("mutated profile serializes in test fixtures");
+        let digest = sha256_hex(&body);
+        for artifact in &mut request.artifacts {
+            if artifact.role == ArtifactRole::ProofProfile {
+                artifact.contents = body.clone();
+            }
+        }
+        request.digest_binds.proof_profile_sha256 = digest;
     }
 
     fn sha256_hex(body: &str) -> String {

@@ -55,16 +55,12 @@ fn main() -> color_eyre::Result<()> {
             .as_deref()
             .ok_or_else(|| eyre!("a closeout request document is required"))?;
         closeout::evaluate_request_file(&args.repo, request, &args.main_ref)
-            .map_err(|error| eyre!(error))?
     };
     match args.format {
         OutputFormat::Human => println!("{}", closeout::render_outcome_human(&outcome)),
-        OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&outcome)?);
-            if let Some(handoff) = outcome.handoff.as_ref() {
-                println!("{}", closeout::render_handoff_json(handoff)?);
-            }
-        }
+        // One JSON envelope: the handoff is carried inside the outcome, so
+        // standard JSON consumers never see trailing data.
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&outcome)?),
     }
     std::process::exit(outcome.result.exit_code());
 }
