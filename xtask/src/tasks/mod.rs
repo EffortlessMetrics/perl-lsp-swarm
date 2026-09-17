@@ -40,6 +40,7 @@ pub mod ci_policy;
 pub mod ci_pr_summary;
 pub mod ci_route;
 pub mod ci_scope;
+pub mod ci_stack_increment;
 pub mod ci_subject;
 pub mod clean;
 pub mod clippy_cost_measure;
@@ -53,7 +54,10 @@ pub mod compare_parsers;
 pub mod compat_inventory;
 pub mod compiler_lexical_cutline;
 pub mod compiler_oracle;
+pub mod compiler_performance_receipt;
 pub mod compiler_profile;
+pub mod compiler_upstream_status;
+pub mod completion_candidates;
 #[cfg(feature = "legacy")]
 pub mod corpus;
 pub mod corpus_audit;
