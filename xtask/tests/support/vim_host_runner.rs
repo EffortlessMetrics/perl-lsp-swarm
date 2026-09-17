@@ -800,6 +800,14 @@ pub enum DriverEventKind {
     PendingActionStarted,
     PendingActionCancelled,
     LateResultRejected,
+    /// The #11401 exit-boundary in-flight observation: emitted once by the
+    /// full-lifecycle session, immediately before the shutdown barriers, when
+    /// the client's own delivery counters (read synchronously — no event-loop
+    /// yield can deliver the in-flight response between its wire-bound send
+    /// and the read) still show the pending action unanswered. A response the
+    /// client processes during the orderly teardown after this boundary cannot
+    /// retroactively make the request answered at the boundary.
+    PendingInflightAtBoundary,
     /// One #11401 host session settled its own product result (the repeated
     /// denominator's per-iteration observation) and is about to exit through
     /// its designed exit path.
@@ -873,6 +881,7 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     let mut lifecycle_pending_index = 0_u32;
     let mut lifecycle_pending_cancel_index = 0_u32;
     let mut lifecycle_late_result_index = 0_u32;
+    let mut lifecycle_pending_boundary_index = 0_u32;
 
     for (index, event) in events.iter().enumerate() {
         ensure!(event.schema_version == DRIVER_SCHEMA_VERSION, "unexpected driver event schema");
@@ -1546,6 +1555,12 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                      arrived); an uncompleted observation is not a late result"
                 );
                 ensure!(
+                    event.details.get("held_notification_count") == Some(&"1".to_string()),
+                    "late_result_rejected must hold the old subscription's admission count at \
+                     exactly the one late delivery across the bounded window; a state the \
+                     delivery can move must actually be observed, never a vacuous watch"
+                );
+                ensure!(
                     event.details.get("replacement_state_unchanged") == Some(&"1".to_string()),
                     "late_result_rejected must prove the replacement instance stayed unchanged \
                      across the bounded observation window"
@@ -1566,6 +1581,43 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                         .and_then(|value| value.parse::<u32>().ok())
                         .is_some_and(|id| id > 0),
                     "late_result_rejected must bind the late request identity"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::PendingInflightAtBoundary => {
+                ensure!(
+                    singleton.insert(DriverEventKind::PendingInflightAtBoundary),
+                    "duplicate singleton driver event"
+                );
+                validate_referencing_lifecycle_event(
+                    event,
+                    "boundary_index",
+                    "pending_index",
+                    PENDING_INFLIGHT_BOUNDARY_CAP,
+                    &mut lifecycle_pending_boundary_index,
+                    lifecycle_pending_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("request_id")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0),
+                    "pending_inflight_at_boundary must bind the in-flight request identity"
+                );
+                ensure!(
+                    event.details.get("pending_done") == Some(&"0".to_string()),
+                    "pending_inflight_at_boundary must observe the request still unsettled at \
+                     the exit boundary; a done context is not an in-flight request"
+                );
+                ensure!(
+                    event.details.get("notification_count") == Some(&"0".to_string()),
+                    "pending_inflight_at_boundary must observe zero admissions at the exit \
+                     boundary; a delivered result was never in flight across the boundary"
+                );
+                ensure!(
+                    event.details.get("boundary") == Some(&"shutdown_started".to_string()),
+                    "pending_inflight_at_boundary must bind the shutdown boundary it observed"
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
@@ -1694,8 +1746,12 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         | DriverEventKind::ShutdownDuringPendingObserved => 44,
         // The session's own product result settles strictly before its
         // terminal path (orderly stop, forced failure, or the indefinite
-        // barrier of the timeout shape).
-        DriverEventKind::SessionIterationSettled => 49,
+        // barrier of the timeout shape). The #11401 exit-boundary in-flight
+        // observation shares this tier: it is the last synchronous read before
+        // the shutdown barriers, and the referencing law binds it to its
+        // already-started pending action, so either order within the tier is
+        // the same boundary claim.
+        DriverEventKind::SessionIterationSettled | DriverEventKind::PendingInflightAtBoundary => 49,
         DriverEventKind::ShutdownStarted => 50,
         DriverEventKind::ShutdownCompleted => 51,
         DriverEventKind::DriverFailed => 51,
@@ -1742,6 +1798,10 @@ pub const BUFFER_REOPEN_CAP: u32 = 2;
 pub const PENDING_ACTION_CAP: u32 = 3;
 pub const PENDING_CANCEL_CAP: u32 = 2;
 pub const LATE_RESULT_CAP: u32 = 2;
+/// The exit-boundary in-flight observation is emitted exactly once per
+/// journey shape (the full-lifecycle session's single pending action left in
+/// flight); more than one is an instrument fault, never evidence.
+pub const PENDING_INFLIGHT_BOUNDARY_CAP: u32 = 1;
 /// The minimum honest absence-observation window for a stale-generation hold:
 /// below this the "no spontaneous republish" claim carries no observation.
 pub const MIN_STALE_WINDOW_MS: u64 = 2000;

@@ -18,7 +18,7 @@
 //!
 //! | host | role | proves |
 //! | --- | --- | --- |
-//! | 1 | `full_lifecycle_session` | defect state, identity-bound cancellation (`$/cancelRequest` by request id), buffer wipe/reopen with a changed document instance on an unchanged server generation, late old-document result rejection, one pending action left in flight at the user-equivalent exit |
+//! | 1 | `full_lifecycle_session` | defect state, identity-bound cancellation (`$/cancelRequest` by request id), buffer wipe/reopen with a changed document instance on an unchanged server generation, late old-document result rejection, one pending action still in flight at the user-equivalent exit boundary (the driver's synchronous delivery-counter read — a response the client processes during the orderly teardown after that boundary cannot retroactively make the request answered at it, and the replacement host's own wire must never answer the in-flight identity) |
 //! | 2 | `replacement_host_session` | full host replacement: new process/host/document generations through the complete initialize sequence, disk-current (not stale) opening state, its own edit-cycle product result, and no response to host 1's in-flight request identity |
 //! | 3 | `assertion_failure_session` | a typed forced assertion failure with evidence preserved before the nonzero exit |
 //! | 4 | `timeout_interruption_session` | a deliberate indefinite hang bounded by the supervisor's hard deadline kill |
@@ -53,7 +53,12 @@
 //!   itself rejects a nonzero admission count);
 //! - the late old-document result must have completed (the response is mined
 //!   from the client's own log) while the replacement instance stayed
-//!   unchanged across a bounded window;
+//!   unchanged and the old subscription's admission count stayed at exactly
+//!   the one late delivery across a bounded window; the in-flight request at
+//!   the user-equivalent exit boundary is proven by the driver's synchronous
+//!   delivery-counter read (a response processed during the orderly teardown
+//!   after that boundary cannot retroactively make the request answered at
+//!   it), and the replacement host's own wire must never answer the identity;
 //! - the replacement host's opening state must equal the disk generation the
 //!   supervisor itself wrote — a prior session's in-memory state appearing as
 //!   the new session's opening state fails the run (stale-state falsifier);
@@ -1216,9 +1221,30 @@ pub fn evaluate_lifecycle_observation(
             .and_then(|event| event.details.get("request_id").cloned())
             .and_then(|id| id.parse::<u64>().ok())
     });
-    let pending3_unresolved_at_exit = pending3_id
-        .zip(host1)
-        .is_some_and(|(id, session)| session.lifecycle_wire.response_line_of(id).is_none());
+    // The host route: pending action 3 must be bound to its wire request
+    // identity and still pending at the user-equivalent exit boundary. The
+    // driver reads the client's own delivery counters synchronously at the
+    // shutdown boundary — no event-loop yield can deliver the response between
+    // the wire-bound send and the read, so the boundary observation is
+    // deterministic — and a response the client processes during the orderly
+    // teardown after that boundary cannot retroactively make the request
+    // answered at the boundary. The cross-host law stays on the wire: the
+    // replacement host's own log must never carry a response for host 1's
+    // in-flight identity.
+    let pending3_boundary = host1.and_then(|session| {
+        events_of_kind(&session.observation.events, DriverEventKind::PendingInflightAtBoundary)
+            .first()
+            .copied()
+    });
+    let pending3_pending_at_boundary =
+        pending3_id.zip(pending3_boundary).is_some_and(|(id, event)| {
+            event.details.get("request_id").map(String::as_str) == Some(&id.to_string())
+                && event.details.get("pending_done") == Some(&"0".to_string())
+                && event.details.get("notification_count") == Some(&"0".to_string())
+        });
+    let pending3_unanswered_on_replacement = pending3_id.is_none_or(|id| {
+        host2.is_none_or(|session| session.lifecycle_wire.response_line_of(id).is_none())
+    });
     let replacement_chain_own = host2.is_some_and(|session| {
         session_attach_ok(session)
             && session.lifecycle_wire.initialize_count == 1
@@ -1232,10 +1258,11 @@ pub fn evaluate_lifecycle_observation(
                     && event.details.get("errors") == Some(&"0".to_string())
             })
     });
-    let late_result_observed = late_event.is_some() || pending3_unresolved_at_exit;
+    let late_result_observed = late_event.is_some() || pending3_pending_at_boundary;
     let late_result_ok = late_event.is_some()
         && response_mined_after_close
-        && pending3_unresolved_at_exit
+        && pending3_pending_at_boundary
+        && pending3_unanswered_on_replacement
         && replacement_chain_own;
     cells.insert(CELL_LATE_RESULT.to_string(), cell_result(late_result_observed, late_result_ok));
 
@@ -1298,7 +1325,10 @@ pub fn evaluate_lifecycle_observation(
             })
     });
     let repeated_observed = iterations >= 2;
-    let repeated_ok = iterations >= CANONICAL_HOST_COUNT.min(2)
+    // The declared denominator is the authored journey shape itself (four
+    // independently bound host sessions); a floor below it would let future
+    // edits silently shrink the coverage the receipt declares.
+    let repeated_ok = iterations >= CANONICAL_HOST_COUNT
         && transitions >= 2
         && all_hosts_distinct
         && per_iteration_result
@@ -1503,8 +1533,9 @@ pub fn lifecycle_journey(
         (
             CELL_LATE_RESULT,
             "the late old result completed on the wire and the replacement instance stayed \
-             unchanged through its own didOpen-settled state; the in-flight request at host exit \
-             cannot reach the replacement host's fresh channel",
+             unchanged through its own didOpen-settled state; the request still in flight at \
+             the user-equivalent exit boundary cannot reach the replacement host's fresh \
+             channel",
         ),
         (
             CELL_REPEATED_SESSIONS,

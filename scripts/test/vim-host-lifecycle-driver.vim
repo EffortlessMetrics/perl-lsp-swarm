@@ -52,8 +52,9 @@
 "   generation -> reopen the same path (new document instance, unchanged
 "   server generation) -> instance settles clean through its own push ->
 "   late result rejected (replacement unchanged across the bounded window)
-"   -> pending documentSymbol #3 started and left in flight -> orderly stop
-"   -> session settled -> user-equivalent exit (:qa!).
+"   -> pending documentSymbol #3 started and left in flight -> the
+"   exit-boundary in-flight observation (synchronous delivery-counter read) ->
+"   orderly stop -> session settled -> user-equivalent exit (:qa!).
 "
 " The replacement_host_session journey: bootstrap -> open the same governed
 "   path at the disk generation the supervisor wrote -> settles clean through
@@ -435,12 +436,16 @@ endif
 
 if empty(s:failures) && s:role ==# 'full_lifecycle_session'
   " Late-result rejection: across the bounded window the replacement
-  " instance's state stays exactly its own settled generation and no further
-  " delivery occurs (the old request already completed; nothing new may
-  " arrive for it).
+  " instance's state stays exactly its own settled generation, the old
+  " subscription's admission count stays at exactly the one late delivery
+  " (a state the document-symbol delivery can move — a re-delivered or
+  " re-applied late result moves it, so the watch is never vacuous), and no
+  " further delivery occurs (the old request already completed; nothing new
+  " may arrive for it).
   if !VimLspHostStableStateWindow(
         \   "VimLspHostBufferDiagnosticsCounts()['error'] == 0"
-        \   . " && VimLspHostBufferDiagnosticsCounts()['warning'] == 0",
+        \   . " && VimLspHostBufferDiagnosticsCounts()['warning'] == 0"
+        \   . " && VimLspHostPendingNotificationCount() == 1",
         \   s:late_window)
     call s:Fail('replacement_instance_changed')
   else
@@ -449,12 +454,14 @@ if empty(s:failures) && s:role ==# 'full_lifecycle_session'
           \ 'pending_index': '2',
           \ 'request_id': string(s:late_request_id),
           \ 'response_delivered': '1',
+          \ 'held_notification_count': string(VimLspHostPendingNotificationCount()),
           \ 'replacement_state_unchanged': '1',
           \ 'window_ms': string(s:late_window),
           \ })
   endif
 endif
 
+let s:pending3_started = 0
 if empty(s:failures) && s:role ==# 'full_lifecycle_session'
   " Pending action #3 (the host route): started and left in flight — the
   " session exits with the old request unresolved, and the replacement host
@@ -466,6 +473,7 @@ if empty(s:failures) && s:role ==# 'full_lifecycle_session'
   elseif !VimLspHostWaitForWireMarker('textDocument/documentSymbol', s:budget)
     call s:Fail('inflight_request_never_on_wire')
   else
+    let s:pending3_started = 1
     call s:Emit('pending_action_started', {
           \ 'pending_index': '3',
           \ 'method': 'textDocument/documentSymbol',
@@ -618,6 +626,27 @@ elseif empty(s:failures)
         \ 'session_role': s:role,
         \ 'product_result': s:product,
         \ })
+  if s:pending3_started
+    " The exit-boundary in-flight law: the client's own delivery counters are
+    " read synchronously at the shutdown boundary. No event-loop yield can
+    " deliver the in-flight response between its wire-bound send and this
+    " read, so a nonzero counter here is a genuine pre-boundary admission and
+    " fails typed; a response the client processes during the orderly teardown
+    " after this boundary cannot retroactively make the request answered at
+    " the boundary.
+    if VimLspHostPendingDone() != 0 || VimLspHostPendingNotificationCount() != 0
+      call s:Fail('inflight_request_settled_before_exit_boundary')
+    else
+      call s:Emit('pending_inflight_at_boundary', {
+            \ 'boundary_index': '1',
+            \ 'pending_index': '3',
+            \ 'request_id': string(VimLspHostPendingRequestId()),
+            \ 'pending_done': '0',
+            \ 'notification_count': '0',
+            \ 'boundary': 'shutdown_started',
+            \ })
+    endif
+  endif
   call s:Emit('shutdown_started', {'server_stopping': '1'})
   let s:server_exited = VimLspHostStopServerAndWait()
   if s:server_exited

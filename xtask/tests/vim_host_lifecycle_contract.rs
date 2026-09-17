@@ -266,6 +266,7 @@ fn complete_host1_events(digest: &str) -> Vec<DriverEvent> {
             ("pending_index", "2"),
             ("request_id", "3"),
             ("response_delivered", "1"),
+            ("held_notification_count", "1"),
             ("replacement_state_unchanged", "1"),
             ("window_ms", "3000"),
         ],
@@ -289,9 +290,21 @@ fn complete_host1_events(digest: &str) -> Vec<DriverEvent> {
             ("product_result", "defect_to_current"),
         ],
     ));
-    events.push(detail_event(21, DriverEventKind::ShutdownStarted, &[("server_stopping", "1")]));
-    events.push(detail_event(22, DriverEventKind::ShutdownCompleted, &[("server_exited", "1")]));
-    events.push(detail_event(23, DriverEventKind::HostExitInitiated, &[("exit_path", "user_qa")]));
+    events.push(detail_event(
+        21,
+        DriverEventKind::PendingInflightAtBoundary,
+        &[
+            ("boundary_index", "1"),
+            ("pending_index", "3"),
+            ("request_id", "4"),
+            ("pending_done", "0"),
+            ("notification_count", "0"),
+            ("boundary", "shutdown_started"),
+        ],
+    ));
+    events.push(detail_event(22, DriverEventKind::ShutdownStarted, &[("server_stopping", "1")]));
+    events.push(detail_event(23, DriverEventKind::ShutdownCompleted, &[("server_exited", "1")]));
+    events.push(detail_event(24, DriverEventKind::HostExitInitiated, &[("exit_path", "user_qa")]));
     events
 }
 
@@ -421,9 +434,10 @@ fn host1_wire() -> LifecycleWire {
         did_close_lines: vec![(13, "main.pl".to_string())],
         // Pending #2 (request 3) is answered AFTER the governed didClose at
         // line 13 (the late document route); pending #3 (request 4) stays
-        // UNANSWERED through host 1's exit (the in-flight host route). A wire
-        // that answers request 4 before exit is the negative control in
-        // `a_response_for_the_in_flight_request_defeats_the_host_route`.
+        // unanswered on host 1's own wire at the exit boundary, and the
+        // replacement host's wire must never answer it (the negative controls
+        // live in `a_delivery_at_the_exit_boundary_defeats_the_host_route`
+        // and `the_replacement_host_never_answers_host_1s_inflight_identity`).
         document_symbol_responses: vec![PendingResponse { line_index: 14, request_id: 3 }],
         cancel_request_ids: vec![2],
     }
@@ -676,7 +690,7 @@ fn lifecycle_event_repetition_laws_reject_disorder_and_forgeries() -> Result<()>
 
     // The exit initiation must bind the user-equivalent path.
     let mut forged_exit = complete_host1_events(&digest);
-    forged_exit[22].details.insert("exit_path".to_string(), "force_kill".to_string());
+    forged_exit[23].details.insert("exit_path".to_string(), "force_kill".to_string());
     renumber(&mut forged_exit);
     ensure!(
         validate_driver_events(&forged_exit, true).is_err(),
@@ -690,6 +704,53 @@ fn lifecycle_event_repetition_laws_reject_disorder_and_forgeries() -> Result<()>
     ensure!(
         validate_driver_events(&forged_role, true).is_err(),
         "an invented session role cannot settle an iteration"
+    );
+
+    // The exit-boundary in-flight observation must show the request still
+    // unsettled: a done context is not an in-flight request.
+    let mut settled_boundary = complete_host1_events(&digest);
+    settled_boundary[20].details.insert("pending_done".to_string(), "1".to_string());
+    renumber(&mut settled_boundary);
+    ensure!(
+        validate_driver_events(&settled_boundary, true).is_err(),
+        "a boundary observation of a settled request is not an in-flight request"
+    );
+
+    // The boundary observation must show zero admissions: a delivered result
+    // was never in flight across the boundary.
+    let mut delivered_boundary = complete_host1_events(&digest);
+    delivered_boundary[20].details.insert("notification_count".to_string(), "1".to_string());
+    renumber(&mut delivered_boundary);
+    ensure!(
+        validate_driver_events(&delivered_boundary, true).is_err(),
+        "a boundary observation with an admission is not an in-flight request"
+    );
+
+    // The boundary observation must reference an already-started pending
+    // action and bind the shutdown boundary it observed.
+    let mut unstarted_boundary = complete_host1_events(&digest);
+    unstarted_boundary[20].details.insert("pending_index".to_string(), "4".to_string());
+    renumber(&mut unstarted_boundary);
+    ensure!(
+        validate_driver_events(&unstarted_boundary, true).is_err(),
+        "a boundary observation for an unstarted pending action is a forgery"
+    );
+    let mut unbound_boundary = complete_host1_events(&digest);
+    unbound_boundary[20].details.insert("boundary".to_string(), "host_exit_initiated".to_string());
+    renumber(&mut unbound_boundary);
+    ensure!(
+        validate_driver_events(&unbound_boundary, true).is_err(),
+        "a boundary observation must bind the shutdown boundary it observed"
+    );
+
+    // A second boundary observation is an instrument fault (singleton).
+    let mut double_boundary = complete_host1_events(&digest);
+    let copied = double_boundary[20].clone();
+    double_boundary.insert(21, copied);
+    renumber(&mut double_boundary);
+    ensure!(
+        validate_driver_events(&double_boundary, true).is_err(),
+        "a second exit-boundary observation is an instrument fault, never evidence"
     );
     Ok(())
 }
@@ -951,24 +1012,95 @@ fn a_response_before_the_document_close_is_not_a_late_result() -> Result<()> {
 }
 
 #[test]
-fn a_response_for_the_in_flight_request_defeats_the_host_route() -> Result<()> {
+fn a_delivery_at_the_exit_boundary_defeats_the_host_route() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
     let digest = plan.identity.candidate_artifact_sha256.clone();
     let mut sessions = canonical_sessions(&plan, &digest);
-    // Pending #3 (request 4) receives its response before host 1 exits: no
-    // work was ever in flight across the host boundary, so the host route of
-    // the late-result cell must fail.
-    sessions[0]
-        .lifecycle_wire
-        .document_symbol_responses
-        .push(PendingResponse { line_index: 20, request_id: 4 });
+    // The scheduling falsifier: the fast server's response was delivered
+    // before the user-equivalent exit boundary (the boundary read observes one
+    // admission). No work was in flight across the boundary, so the host
+    // route of the late-result cell must fail even though the driver's other
+    // claims all hold.
+    let mut boundary_observed = false;
+    for event in sessions[0].observation.events.iter_mut() {
+        if event.kind == DriverEventKind::PendingInflightAtBoundary {
+            event.details.insert("notification_count".to_string(), "1".to_string());
+            boundary_observed = true;
+        }
+    }
+    ensure!(boundary_observed, "the canonical host-1 stream carries the boundary observation");
     let judgment = evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
     ensure!(
         judgment.cells.get(CELL_LATE_RESULT) == Some(&ObservationResult::Fail),
-        "a request answered before host exit was never in flight: {:?}",
+        "a request answered at the boundary was never in flight: {:?}",
         judgment.cells
     );
+    Ok(())
+}
+
+#[test]
+fn a_missing_boundary_observation_is_not_an_inflight_route() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    let mut sessions = canonical_sessions(&plan, &digest);
+    // The driver never observed the boundary: the host-route claim is
+    // unproven, so the cell cannot pass on the document route alone.
+    sessions[0]
+        .observation
+        .events
+        .retain(|event| event.kind != DriverEventKind::PendingInflightAtBoundary);
+    let judgment = evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
+    ensure!(
+        judgment.cells.get(CELL_LATE_RESULT) == Some(&ObservationResult::Fail),
+        "the boundary observation is load-bearing for the host route: {:?}",
+        judgment.cells
+    );
+    Ok(())
+}
+
+#[test]
+fn the_replacement_host_never_answers_host_1s_inflight_identity() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    let mut sessions = canonical_sessions(&plan, &digest);
+    // The replacement host's own wire carries a response for host 1's
+    // in-flight request identity: a cross-host answer reuse, never a fresh
+    // channel.
+    sessions[1]
+        .lifecycle_wire
+        .document_symbol_responses
+        .push(PendingResponse { line_index: 5, request_id: 4 });
+    let judgment = evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
+    ensure!(
+        judgment.cells.get(CELL_LATE_RESULT) == Some(&ObservationResult::Fail),
+        "an in-flight identity answered on the replacement's channel is a cross-host reuse: \
+         {:?}",
+        judgment.cells
+    );
+    Ok(())
+}
+
+#[test]
+fn a_shrunken_session_count_fails_the_declared_denominator() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let plan = scratch_lifecycle_plan(&dir.path().join("scratch"))?;
+    let digest = plan.identity.candidate_artifact_sha256.clone();
+    // Three fully distinct passing sessions: a count below the declared
+    // four-host denominator must fail repeated use even though every other
+    // repeated-session law holds.
+    let mut sessions = canonical_sessions(&plan, &digest);
+    sessions.truncate(3);
+    let judgment = evaluate_lifecycle_observation(&sessions, LifecycleFixtureVariant::Canonical);
+    ensure!(
+        judgment.cells.get(CELL_REPEATED_SESSIONS) == Some(&ObservationResult::Fail),
+        "the repeated-session denominator is the declared host count, not a floor of two: \
+         {:?}",
+        judgment.cells
+    );
+    ensure!(judgment.result != ObservationResult::Pass);
     Ok(())
 }
 
