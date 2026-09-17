@@ -1349,6 +1349,7 @@ mod tests {
     use super::*;
     use perl_parser::Parser;
     use perl_tdd_support::must;
+    use perl_test_must::must_some_with;
 
     fn security_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
@@ -1591,8 +1592,10 @@ mod tests {
             ("my $out = qx(ls);", "PL601", CriticFindingShape::Qx),
         ] {
             let diags = security_diags(source);
-            let observation = observation_of(&diags, code)
-                .unwrap_or_else(|| panic!("{code} must carry a critic observation: {diags:?}"));
+            let observation = must_some_with(
+                observation_of(&diags, code),
+                format!("{code} must carry a critic observation: {diags:?}"),
+            );
 
             assert_eq!(observation.identity().origin(), CriticFindingOrigin::BuiltInDiagnostic);
             assert_eq!(observation.identity().code(), code);
@@ -1619,16 +1622,18 @@ mod tests {
             ("my $out = qx(ls);", "PL601"),
         ] {
             let diags = security_diags(source);
-            let diagnostic = diags
-                .iter()
-                .find(|d| d.code.as_deref() == Some(code))
-                .unwrap_or_else(|| panic!("{code} must be emitted for {source}"));
-            let suggestion = diagnostic
-                .suggestion
-                .as_deref()
-                .unwrap_or_else(|| panic!("{code} must carry an ordinary suggestion"));
-            let observation = observation_of(&diags, code)
-                .unwrap_or_else(|| panic!("{code} must carry a critic observation: {diags:?}"));
+            let diagnostic = must_some_with(
+                diags.iter().find(|d| d.code.as_deref() == Some(code)),
+                format!("{code} must be emitted for {source}"),
+            );
+            let suggestion = must_some_with(
+                diagnostic.suggestion.as_deref(),
+                format!("{code} must carry an ordinary suggestion"),
+            );
+            let observation = must_some_with(
+                observation_of(&diags, code),
+                format!("{code} must carry a critic observation: {diags:?}"),
+            );
 
             assert_eq!(
                 observation.suggestion(),
@@ -1669,8 +1674,10 @@ mod tests {
     fn command_execution_observations_cover_exact_emitter_ranges() {
         let source = "my $out = `ls`;";
         let diags = security_diags(source);
-        let observation = observation_of(&diags, "PL601")
-            .unwrap_or_else(|| panic!("backtick must carry an observation: {diags:?}"));
+        let observation = must_some_with(
+            observation_of(&diags, "PL601"),
+            format!("backtick must carry an observation: {diags:?}"),
+        );
         let (start, end) = observation.byte_range();
         assert_eq!(&source[start..end], "`ls`", "byte range is the exact observed syntax");
     }
@@ -1694,7 +1701,7 @@ mod tests {
         r#"my $dbh = DBI->connect("dbi:Pg:dbname=x", "u", "p");"#
     }
 
-    fn pl607<'a>(diags: &'a [Diagnostic]) -> Option<&'a Diagnostic> {
+    fn pl607(diags: &[Diagnostic]) -> Option<&Diagnostic> {
         diags.iter().find(|d| d.code.as_deref() == Some("PL607"))
     }
 
@@ -1705,8 +1712,10 @@ mod tests {
             dbh_connect()
         );
         let diags = sql_diags(&source);
-        let diagnostic = pl607(&diags)
-            .unwrap_or_else(|| panic!("interpolated prepare must be flagged as PL607: {diags:?}"));
+        let diagnostic = must_some_with(
+            pl607(&diags),
+            format!("interpolated prepare must be flagged as PL607: {diags:?}"),
+        );
         let (start, end) = diagnostic.range;
         assert_eq!(
             &source[start..end],
@@ -2006,9 +2015,10 @@ mod tests {
             dbh_connect()
         );
         let diags = sql_diags(&source);
-        let diagnostic = pl607(&diags).unwrap_or_else(|| {
-            panic!("`$&` match text in SQL must be flagged as PL607: {diags:?}")
-        });
+        let diagnostic = must_some_with(
+            pl607(&diags),
+            format!("`$&` match text in SQL must be flagged as PL607: {diags:?}"),
+        );
         let (start, end) = diagnostic.range;
         assert_eq!(
             &source[start..end],
@@ -2026,9 +2036,10 @@ mod tests {
             dbh_connect()
         );
         let diags = sql_diags(&source);
-        let diagnostic = pl607(&diags).unwrap_or_else(|| {
-            panic!("`` $` `` pre-match text in SQL must be flagged as PL607: {diags:?}")
-        });
+        let diagnostic = must_some_with(
+            pl607(&diags),
+            format!("`` $` `` pre-match text in SQL must be flagged as PL607: {diags:?}"),
+        );
         let (start, end) = diagnostic.range;
         assert_eq!(
             &source[start..end],
@@ -2046,9 +2057,10 @@ mod tests {
             dbh_connect()
         );
         let diags = sql_diags(&source);
-        let diagnostic = pl607(&diags).unwrap_or_else(|| {
-            panic!("`$'` post-match text in SQL must be flagged as PL607: {diags:?}")
-        });
+        let diagnostic = must_some_with(
+            pl607(&diags),
+            format!("`$'` post-match text in SQL must be flagged as PL607: {diags:?}"),
+        );
         let (start, end) = diagnostic.range;
         assert_eq!(
             &source[start..end],
@@ -2067,9 +2079,10 @@ mod tests {
             dbh_connect()
         );
         let diags = sql_diags(&source);
-        let diagnostic = pl607(&diags).unwrap_or_else(|| {
-            panic!("`$+` capture text in SQL must be flagged as PL607: {diags:?}")
-        });
+        let diagnostic = must_some_with(
+            pl607(&diags),
+            format!("`$+` capture text in SQL must be flagged as PL607: {diags:?}"),
+        );
         let (start, end) = diagnostic.range;
         assert_eq!(
             &source[start..end],

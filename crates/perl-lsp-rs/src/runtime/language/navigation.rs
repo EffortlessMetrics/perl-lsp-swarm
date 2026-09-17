@@ -2223,9 +2223,13 @@ impl LspServer {
         if !snapshot_is_current() {
             return None;
         }
+        // Resolve the legacy location BEFORE entering the callback: the cutover
+        // path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_location = index.find_definition(&symbol);
         let receipt = index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             let context = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(index.as_ref(), &queries, &symbol, &context)
+            goto_definition_live_exact_or_imported(legacy_location, &queries, &symbol, &context)
                 .receipt
         })?;
         if !snapshot_is_current() || self.workspace_index_stale_for_any_open_document() {
@@ -2289,10 +2293,15 @@ impl LspServer {
                 match route_index_access(self.coordinator()) {
                     IndexAccessMode::Full(coordinator) => {
                         let index = coordinator.index();
+                        // Resolve the legacy location BEFORE entering the
+                        // callback: the cutover path must not re-enter
+                        // `WorkspaceIndex` while `with_semantic_queries_for_uri`
+                        // holds its read guards (#15644).
+                        let legacy_location = index.find_definition(&symbol);
                         index.with_semantic_queries_for_uri(uri, |file_id, queries| {
                         let ctx = QueryContext::new(file_id, None, Some(byte_offset));
                         let mut receipt = goto_definition_live_exact_or_imported(
-                            index.as_ref(),
+                            legacy_location,
                             &queries,
                             &symbol,
                             &ctx,
@@ -2394,9 +2403,13 @@ impl LspServer {
             return None;
         }
         let workspace_index = self.workspace_index()?;
+        // Resolve the legacy location BEFORE entering the callback: the cutover
+        // path must not re-enter `WorkspaceIndex` while
+        // `with_semantic_queries_for_uri` holds its read guards (#15644).
+        let legacy_location = workspace_index.find_definition(symbol);
         let outcome = workspace_index.with_semantic_queries_for_uri(uri, |file_id, queries| {
             let ctx = QueryContext::new(file_id, None, Some(byte_offset));
-            goto_definition_live_exact_or_imported(workspace_index.as_ref(), &queries, symbol, &ctx)
+            goto_definition_live_exact_or_imported(legacy_location, &queries, symbol, &ctx)
         })?;
 
         if self.workspace_index_stale_for_any_open_document() {
