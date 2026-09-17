@@ -350,11 +350,9 @@ fn statement_label_colon_keeps_statement_keywords() {
         "after `LABEL:` prefix `wh` must still reach statement-only `while`; keyword labels ({}) {labels:?}",
         labels.len()
     );
-    assert!(
-        has_keyword(&completions, "package"),
-        "after `LABEL:` statement-only `package` must still be offered; keyword labels ({}) {labels:?}",
-        labels.len()
-    );
+    // NOTE: `package` does not match the `wh` prefix, so prefix filtering
+    // legitimately excludes it here; the empty-prefix test below covers the
+    // full statement-only set after `LABEL:`.
 }
 
 /// Empty prefix after `LABEL:` exposes the full statement-only set, mirroring

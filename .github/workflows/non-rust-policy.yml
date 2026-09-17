@@ -1,4 +1,4 @@
-# contract-version: 7
+# contract-version: 8
 name: Non-Rust policy
 
 on:
@@ -45,11 +45,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          # Every binding phase records its failure reason through fail_bind.
+          # Outputs are emitted only on success; on failure the same GITHUB_OUTPUT
+          # line is rewritten with an empty subject_sha and a non-empty
+          # bind_failure_stage plus a stable artifact_id so downstream steps and
+          # the receipt writer can distinguish failure stages from each other.
+
+          fail_bind() {
+            local stage="$1"; shift
+            local artifact_id="bind-failure-${stage}-pr-${PR_NUMBER:-manual}-head-${PR_HEAD_SHA:-none}"
+            printf '::error::bind-%s: %s\n' "$stage" "$*" >&2
+            {
+              echo "subject_sha="
+              echo "bind_failure_stage=$stage"
+              echo "artifact_id=$artifact_id"
+            } >> "$GITHUB_OUTPUT"
+            echo "BIND_FAILURE_STAGE=$stage" >> "$GITHUB_ENV"
+            exit 1
+          }
+
+          PR_REF="refs/remotes/origin/non-rust-policy-pr-head"
           if [ -n "$PR_HEAD_SHA" ]; then
-            git fetch --no-tags origin "+refs/pull/$PR_NUMBER/head:refs/remotes/origin/non-rust-policy-pr-head"
-            test "$(git rev-parse refs/remotes/origin/non-rust-policy-pr-head^{commit})" = "$PR_HEAD_SHA"
-            merge_tree="$(git merge-tree --write-tree "$BASE_SHA" "$PR_HEAD_SHA")"
-            test "$(git rev-parse "$merge_tree^{tree}")" = "$merge_tree"
+            git fetch --no-tags origin "+refs/pull/$PR_NUMBER/head:$PR_REF" \
+              || fail_bind "pr-ref-fetch" "fetch refs/pull/$PR_NUMBER/head failed for PR head=$PR_HEAD_SHA"
+            [ "$(git rev-parse "$PR_REF^{commit}")" = "$PR_HEAD_SHA" ] \
+              || fail_bind "event-head-mismatch" "fetched $PR_REF disagrees with event PR head=$PR_HEAD_SHA"
+
+            if ! merge_tree="$(git merge-tree --write-tree "$BASE_SHA" "$PR_HEAD_SHA" 2>&1)"; then
+              fail_bind "merge-tree-construction" "git merge-tree --write-tree failed for base=$BASE_SHA head=$PR_HEAD_SHA"
+            fi
+            [ "$(git rev-parse "$merge_tree^{tree}")" = "$merge_tree" ] \
+              || fail_bind "merge-tree-tree-parse" "merge-tree OID=$merge_tree did not resolve to a tree"
+            if unmerged="$(git ls-files --unmerged 2>/dev/null || true)" && [ -n "$unmerged" ]; then
+              fail_bind "subject-merge-conflict" "exact subject base=$BASE_SHA and head=$PR_HEAD_SHA conflict on paths: $(echo "$unmerged" | tr '\n' ' ')"
+            fi
+
             SUBJECT_SHA="$(
               GIT_AUTHOR_NAME=non-rust-policy \
               GIT_AUTHOR_EMAIL=non-rust-policy@localhost \
@@ -59,25 +90,39 @@ jobs:
               GIT_COMMITTER_DATE=2000-01-01T00:00:00Z \
               git commit-tree "$merge_tree" -p "$BASE_SHA" -p "$PR_HEAD_SHA" \
                 -m "non-rust policy exact subject"
-            )"
+            )" || fail_bind "synthetic-commit-creation" "commit-tree failed for merge_tree=$merge_tree base=$BASE_SHA head=$PR_HEAD_SHA"
           else
-            git fetch --no-tags origin "$SUBJECT_SHA"
+            git fetch --no-tags origin "$SUBJECT_SHA" \
+              || fail_bind "subject-fetch" "fetch of workflow_dispatch subject=$SUBJECT_SHA failed"
           fi
-          git update-ref refs/heads/non-rust-policy-subject "$SUBJECT_SHA"
-          test "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
-          test "$(git rev-parse "$SUBJECT_SHA^{commit}")" = "$SUBJECT_SHA"
-          test "$(git rev-parse refs/heads/non-rust-policy-subject^{commit})" = "$SUBJECT_SHA"
+          git update-ref refs/heads/non-rust-policy-subject "$SUBJECT_SHA" \
+            || fail_bind "ref-update" "update-ref failed for subject=$SUBJECT_SHA"
+          [ "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA" ] \
+            || fail_bind "parent-verification" "BASE_SHA=$BASE_SHA is not a commit"
+          [ "$(git rev-parse "$SUBJECT_SHA^{commit}")" = "$SUBJECT_SHA" ] \
+            || fail_bind "subject-verification" "SUBJECT_SHA=$SUBJECT_SHA is not a commit"
+          [ "$(git rev-parse refs/heads/non-rust-policy-subject^{commit})" = "$SUBJECT_SHA" ] \
+            || fail_bind "ref-verification" "non-rust-policy-subject ref does not point to subject=$SUBJECT_SHA"
           if [ -n "$PR_HEAD_SHA" ]; then
-            git merge-base --is-ancestor "$PR_HEAD_SHA" "$SUBJECT_SHA"
-            test "$(git rev-parse "$SUBJECT_SHA^1")" = "$BASE_SHA"
-            test "$(git rev-parse "$SUBJECT_SHA^2")" = "$PR_HEAD_SHA"
-            test "$(git rev-parse "$SUBJECT_SHA^{tree}")" = "$merge_tree"
+            git merge-base --is-ancestor "$PR_HEAD_SHA" "$SUBJECT_SHA" \
+              || fail_bind "ancestor-verification" "PR head=$PR_HEAD_SHA is not an ancestor of subject=$SUBJECT_SHA"
+            [ "$(git rev-parse "$SUBJECT_SHA^1")" = "$BASE_SHA" ] \
+              || fail_bind "parent-verification" "subject first parent != BASE_SHA=$BASE_SHA"
+            [ "$(git rev-parse "$SUBJECT_SHA^2")" = "$PR_HEAD_SHA" ] \
+              || fail_bind "parent-verification" "subject second parent != PR_HEAD_SHA=$PR_HEAD_SHA"
+            [ "$(git rev-parse "$SUBJECT_SHA^{tree}")" = "$merge_tree" ] \
+              || fail_bind "tree-verification" "subject tree != merge_tree=$merge_tree"
           fi
-          echo "subject_sha=$SUBJECT_SHA" >> "$GITHUB_OUTPUT"
+          {
+            echo "subject_sha=$SUBJECT_SHA"
+            echo "bind_failure_stage="
+            echo "artifact_id=$SUBJECT_SHA"
+          } >> "$GITHUB_OUTPUT"
           echo "SUBJECT_SHA=$SUBJECT_SHA" >> "$GITHUB_ENV"
 
       - name: Verify trusted workflow contract
         id: verify-trusted-workflow-contract
+        if: steps.bind.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
@@ -178,14 +223,24 @@ jobs:
         shell: bash
         env:
           BIND_ERROR: ${{ steps.bind.outcome }}
+          BIND_FAILURE_STAGE: ${{ steps.bind.outputs.bind_failure_stage }}
           GUARD_FAILURE_STAGE: ${{ steps.verify-trusted-workflow-contract.outputs.failure_stage }}
         run: |
           set -euo pipefail
           mkdir -p target/policy
           python3 - <<'PY'
           import json, os
-          stage = ("identity-binding" if os.environ.get("BIND_ERROR") == "failure"
-                   else os.environ.get("GUARD_FAILURE_STAGE") or "trusted-workflow-contract")
+          if os.environ.get("BIND_ERROR") == "failure":
+              bind_stage = os.environ.get("BIND_FAILURE_STAGE") or ""
+              stage = f"identity-binding-{bind_stage}" if bind_stage else "identity-binding"
+              error = (
+                  f"subject/base Git-object binding failed during phase {bind_stage}; inventory was not evaluated"
+                  if bind_stage
+                  else "subject/base Git-object binding failed; inventory was not evaluated"
+              )
+          else:
+              stage = os.environ.get("GUARD_FAILURE_STAGE") or "trusted-workflow-contract"
+              error = "trusted evaluator unavailable or invalid; inventory was not evaluated"
           receipt = {
               "schema_version": 2,
               "event_name": os.environ.get("GITHUB_EVENT_NAME"),
@@ -202,8 +257,7 @@ jobs:
               "new_unclassified_paths": [],
               "outcome": "fail",
               "failure_stage": stage,
-              "error": ("subject/base Git-object binding failed" if stage == "identity-binding"
-                        else "trusted evaluator unavailable or invalid; inventory was not evaluated"),
+              "error": error,
               "evaluation_date": "",
               "evaluator_commit": os.environ.get("EVALUATOR_SHA") or None,
               "evaluator_tree": None,
@@ -226,7 +280,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: non-rust-policy-${{ steps.bind.outputs.subject_sha || env.SUBJECT_SHA }}
+          name: non-rust-policy-${{ steps.bind.outputs.artifact_id || env.SUBJECT_SHA || 'no-subject' }}
           path: target/policy/
           if-no-files-found: warn
           retention-days: 14

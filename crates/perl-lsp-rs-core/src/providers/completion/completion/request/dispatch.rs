@@ -262,6 +262,164 @@ fn parse_indirect_receiver(source: &str, from: usize) -> Option<String> {
     None
 }
 
+/// Heuristic: detect if the cursor is in a value/expression position.
+/// Statement-only keywords (`package`, `use`, compound openers) are invalid
+/// there; expression-capable keywords (anonymous `sub`, `do`, `eval`) remain
+/// admissible. Returns true if the text immediately before the prefix suggests
+/// an expression context. (UX_GAP_02 / #14844)
+///
+/// A trailing `:` is treated as a statement-label colon (`LABEL:`) when the
+/// identifier preceding it sits at statement-start, and as an expression
+/// position otherwise (ternary `? :`, package separator `::`). The same
+/// trailing character therefore splits into two syntactic roles (#15806).
+fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
+    if prefix_start == 0 {
+        return false; // start of file — statement position
+    }
+    // Walk backward past whitespace to find the last non-whitespace char
+    let before = &source[..prefix_start];
+    let trimmed = before.trim_end();
+    let Some(last_char) = trimmed.chars().next_back() else {
+        return false; // blank line — statement position
+    };
+    // Expression indicators: assignment, list, operator contexts.
+    // Multi-character value operators (`=>`, `==`, `=~`, `//`, …) already end
+    // in one of these characters; they must stay expression positions even
+    // when the prefix is flush against the operator (#14844).
+    // `;` ends a statement unless it separates C-style `for (;;)` clauses,
+    // which are still term positions.
+    if last_char == ';' {
+        return c_style_for_header_owns_semicolon(trimmed);
+    }
+    if last_char == ':' {
+        // Distinguish statement-label `LABEL:` from ternary `? :` and the
+        // package separator `Foo::`. Only the label form sits at
+        // statement-start; the others are expression positions.
+        return !is_statement_label_colon(trimmed);
+    }
+    matches!(
+        last_char,
+        '=' | ','
+            | '('
+            | '['
+            | '{'
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '.'
+            | '&'
+            | '|'
+            | '!'
+            | '<'
+            | '>'
+            | '?'
+            | ':'
+            | '~'
+            | '\\'
+    )
+}
+
+/// True when a prefix ending in `:` is a statement label (`LABEL:`) rather
+/// than a ternary else (`? :`) or the package separator (`Foo::`).
+///
+/// Statement labels are an identifier followed by exactly one colon, sitting
+/// at statement-start. The trailing `::` form is always the package separator
+/// and stays in expression position. For a single-colon suffix we walk back
+/// over the trailing identifier, then over any separating whitespace, and
+/// check whether the character before it is a statement boundary (`;`, `{`,
+/// `}`, or another label's `:`). Anything else — operator, operand, comment
+/// ending, etc. — means the `:` is part of a larger expression, not a label.
+///
+/// This is intentionally a prefix heuristic. Labels that appear inside an
+/// argument list (`foo(\n  LABEL: ...)`) are still surfaced here; if that
+/// ever matters the caller can layer a real parser classification on top.
+fn is_statement_label_colon(trimmed: &str) -> bool {
+    // Trailing `::` is always the package separator, never a label.
+    if trimmed.ends_with("::") {
+        return false;
+    }
+    let bytes = trimmed.as_bytes();
+    // Walk back over the trailing identifier (the label name).
+    let mut ident_end = bytes.len().saturating_sub(1); // skip the trailing `:`
+    while ident_end > 0
+        && (bytes[ident_end - 1].is_ascii_alphanumeric() || bytes[ident_end - 1] == b'_')
+    {
+        ident_end -= 1;
+    }
+    let before_ident = &trimmed[..ident_end];
+    let before_trimmed = before_ident.trim_end();
+    let Some(prev) = before_trimmed.chars().next_back() else {
+        // Nothing before the label — start of line/statement.
+        return true;
+    };
+    matches!(prev, ';' | '{' | '}' | ':')
+}
+
+/// True when `trimmed` ends at a `;` that separates C-style `for`/`foreach`
+/// header clauses rather than a completed statement.
+///
+/// Walks lexer tokens of the whole prefix so `for`/`foreach` inside strings or
+/// comments cannot open a header, parentheses inside literals are not
+/// delimiters, and `{` / `}` nesting keeps `do { foo; ` as a statement. Still a
+/// prefix heuristic: unusual `q()`/`qq()` delimiters and heredocs are not claimed.
+fn c_style_for_header_owns_semicolon(trimmed: &str) -> bool {
+    let Some(before_semi) = trimmed.strip_suffix(';') else {
+        return false;
+    };
+
+    let mut lexer = PerlLexer::new(before_semi);
+    let mut paren_depth: u32 = 0;
+    let mut brace_depth: u32 = 0;
+    let mut after_for_keyword = false;
+    // (paren depth of the header `(`, brace depth when that `(` opened)
+    let mut headers: Vec<(u32, u32)> = Vec::new();
+
+    while let Some(token) = lexer.next_token() {
+        if token.token_type.is_trivia() {
+            continue;
+        }
+        match &token.token_type {
+            TokenType::EOF => break,
+            TokenType::Keyword(name) if is_for_or_foreach(name) => {
+                after_for_keyword = true;
+            }
+            TokenType::LeftParen => {
+                paren_depth = paren_depth.saturating_add(1);
+                if after_for_keyword {
+                    headers.push((paren_depth, brace_depth));
+                }
+                after_for_keyword = false;
+            }
+            TokenType::RightParen => {
+                after_for_keyword = false;
+                paren_depth = paren_depth.saturating_sub(1);
+                while headers.last().is_some_and(|&(paren_open, _)| paren_open > paren_depth) {
+                    headers.pop();
+                }
+            }
+            TokenType::LeftBrace => {
+                after_for_keyword = false;
+                brace_depth = brace_depth.saturating_add(1);
+            }
+            TokenType::RightBrace => {
+                after_for_keyword = false;
+                brace_depth = brace_depth.saturating_sub(1);
+            }
+            _ => {
+                after_for_keyword = false;
+            }
+        }
+    }
+
+    headers.last().is_some_and(|&(_, brace_open)| brace_depth == brace_open)
+}
+
+fn is_for_or_foreach(name: &str) -> bool {
+    name == "for" || name == "foreach"
+}
+
 /// Route Perl indirect-object method calls (`method $obj @args`, `new Class`)
 /// through the same method-completion providers as the arrow form (#1758).
 ///
@@ -579,35 +737,29 @@ mod indirect_helper_tests {
 
     #[test]
     fn is_indirect_method_word_call_presence_observer() {
-        assert_eq!(is_indirect_method_word("new"), true, "input that reaches call word.chars()");
-        assert_eq!(
-            is_indirect_method_word(""),
-            false,
+        assert!(is_indirect_method_word("new"), "input that reaches call word.chars()");
+        assert!(
+            !is_indirect_method_word(""),
             "input that reaches call chars.next() and takes the empty-word branch"
         );
-        assert_eq!(
-            is_indirect_method_word("Foo"),
-            false,
+        assert!(
+            !is_indirect_method_word("Foo"),
             "input that reaches call first.is_ascii_lowercase() and rejects uppercase receivers"
         );
-        assert_eq!(
+        assert!(
             is_indirect_method_word("_private"),
-            true,
             "input that reaches call first.is_ascii_lowercase() and accepts underscore methods"
         );
-        assert_eq!(
-            is_indirect_method_word("new::Child"),
-            false,
+        assert!(
+            !is_indirect_method_word("new::Child"),
             "input that reaches call word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')"
         );
-        assert_eq!(
-            is_indirect_method_word("print"),
-            false,
+        assert!(
+            !is_indirect_method_word("print"),
             "input that reaches call INDIRECT_METHOD_EXCLUDED.contains(&word)"
         );
-        assert_eq!(
-            is_indirect_method_word("length"),
-            false,
+        assert!(
+            !is_indirect_method_word("length"),
             "input that reaches call perl_lexer::builtins::builtin_signatures_phf::is_builtin(word)"
         );
     }
@@ -836,164 +988,6 @@ mod indirect_helper_tests {
     fn package_separator_stays_an_expression_position() {
         // The `::` in `Foo::bar` must still be an expression position.
         assert!(is_in_expression_position("Foo::", 5));
-        assert!(is_in_expression_position("my $x = Foo::", 14));
+        assert!(is_in_expression_position("my $x = Foo::", 13));
     }
-}
-
-/// Heuristic: detect if the cursor is in a value/expression position.
-/// Statement-only keywords (`package`, `use`, compound openers) are invalid
-/// there; expression-capable keywords (anonymous `sub`, `do`, `eval`) remain
-/// admissible. Returns true if the text immediately before the prefix suggests
-/// an expression context. (UX_GAP_02 / #14844)
-///
-/// A trailing `:` is treated as a statement-label colon (`LABEL:`) when the
-/// identifier preceding it sits at statement-start, and as an expression
-/// position otherwise (ternary `? :`, package separator `::`). The same
-/// trailing character therefore splits into two syntactic roles (#15806).
-fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
-    if prefix_start == 0 {
-        return false; // start of file — statement position
-    }
-    // Walk backward past whitespace to find the last non-whitespace char
-    let before = &source[..prefix_start];
-    let trimmed = before.trim_end();
-    let Some(last_char) = trimmed.chars().next_back() else {
-        return false; // blank line — statement position
-    };
-    // Expression indicators: assignment, list, operator contexts.
-    // Multi-character value operators (`=>`, `==`, `=~`, `//`, …) already end
-    // in one of these characters; they must stay expression positions even
-    // when the prefix is flush against the operator (#14844).
-    // `;` ends a statement unless it separates C-style `for (;;)` clauses,
-    // which are still term positions.
-    if last_char == ';' {
-        return c_style_for_header_owns_semicolon(trimmed);
-    }
-    if last_char == ':' {
-        // Distinguish statement-label `LABEL:` from ternary `? :` and the
-        // package separator `Foo::`. Only the label form sits at
-        // statement-start; the others are expression positions.
-        return !is_statement_label_colon(trimmed);
-    }
-    matches!(
-        last_char,
-        '=' | ','
-            | '('
-            | '['
-            | '{'
-            | '+'
-            | '-'
-            | '*'
-            | '/'
-            | '%'
-            | '.'
-            | '&'
-            | '|'
-            | '!'
-            | '<'
-            | '>'
-            | '?'
-            | ':'
-            | '~'
-            | '\\'
-    )
-}
-
-/// True when a prefix ending in `:` is a statement label (`LABEL:`) rather
-/// than a ternary else (`? :`) or the package separator (`Foo::`).
-///
-/// Statement labels are an identifier followed by exactly one colon, sitting
-/// at statement-start. The trailing `::` form is always the package separator
-/// and stays in expression position. For a single-colon suffix we walk back
-/// over the trailing identifier, then over any separating whitespace, and
-/// check whether the character before it is a statement boundary (`;`, `{`,
-/// `}`, or another label's `:`). Anything else — operator, operand, comment
-/// ending, etc. — means the `:` is part of a larger expression, not a label.
-///
-/// This is intentionally a prefix heuristic. Labels that appear inside an
-/// argument list (`foo(\n  LABEL: ...)`) are still surfaced here; if that
-/// ever matters the caller can layer a real parser classification on top.
-fn is_statement_label_colon(trimmed: &str) -> bool {
-    // Trailing `::` is always the package separator, never a label.
-    if trimmed.ends_with("::") {
-        return false;
-    }
-    let bytes = trimmed.as_bytes();
-    // Walk back over the trailing identifier (the label name).
-    let mut ident_end = bytes.len().saturating_sub(1); // skip the trailing `:`
-    while ident_end > 0
-        && (bytes[ident_end - 1].is_ascii_alphanumeric() || bytes[ident_end - 1] == b'_')
-    {
-        ident_end -= 1;
-    }
-    let before_ident = &trimmed[..ident_end];
-    let before_trimmed = before_ident.trim_end();
-    let Some(prev) = before_trimmed.chars().next_back() else {
-        // Nothing before the label — start of line/statement.
-        return true;
-    };
-    matches!(prev, ';' | '{' | '}' | ':')
-}
-
-/// True when `trimmed` ends at a `;` that separates C-style `for`/`foreach`
-/// header clauses rather than a completed statement.
-///
-/// Walks lexer tokens of the whole prefix so `for`/`foreach` inside strings or
-/// comments cannot open a header, parentheses inside literals are not
-/// delimiters, and `{` / `}` nesting keeps `do { foo; ` as a statement. Still a
-/// prefix heuristic: unusual `q()`/`qq()` delimiters and heredocs are not claimed.
-fn c_style_for_header_owns_semicolon(trimmed: &str) -> bool {
-    let Some(before_semi) = trimmed.strip_suffix(';') else {
-        return false;
-    };
-
-    let mut lexer = PerlLexer::new(before_semi);
-    let mut paren_depth: u32 = 0;
-    let mut brace_depth: u32 = 0;
-    let mut after_for_keyword = false;
-    // (paren depth of the header `(`, brace depth when that `(` opened)
-    let mut headers: Vec<(u32, u32)> = Vec::new();
-
-    while let Some(token) = lexer.next_token() {
-        if token.token_type.is_trivia() {
-            continue;
-        }
-        match &token.token_type {
-            TokenType::EOF => break,
-            TokenType::Keyword(name) if is_for_or_foreach(name) => {
-                after_for_keyword = true;
-            }
-            TokenType::LeftParen => {
-                paren_depth = paren_depth.saturating_add(1);
-                if after_for_keyword {
-                    headers.push((paren_depth, brace_depth));
-                }
-                after_for_keyword = false;
-            }
-            TokenType::RightParen => {
-                after_for_keyword = false;
-                paren_depth = paren_depth.saturating_sub(1);
-                while headers.last().is_some_and(|&(paren_open, _)| paren_open > paren_depth) {
-                    headers.pop();
-                }
-            }
-            TokenType::LeftBrace => {
-                after_for_keyword = false;
-                brace_depth = brace_depth.saturating_add(1);
-            }
-            TokenType::RightBrace => {
-                after_for_keyword = false;
-                brace_depth = brace_depth.saturating_sub(1);
-            }
-            _ => {
-                after_for_keyword = false;
-            }
-        }
-    }
-
-    headers.last().is_some_and(|&(_, brace_open)| brace_depth == brace_open)
-}
-
-fn is_for_or_foreach(name: &str) -> bool {
-    name == "for" || name == "foreach"
 }

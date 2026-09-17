@@ -40,6 +40,7 @@ fn cpan_word_operator_continuation_line_stays_clean() {
     assert_no_blocking_diagnostics("copy($from, $to)\n    or goto fail_inner;\nprint \"ok\";\n");
     assert_no_blocking_diagnostics("open(my $fh, '<', $f)\n    || die \"no\";\nprint \"ok\";\n");
     assert_no_blocking_diagnostics("my $x = f()\n    and g();\nprint \"ok\";\n");
+    assert_blocking_diagnostic("copy($from, $to) print \"ok\";\n");
 }
 
 /// Arithmetic continuation across a line break. `perl` reads `1\n- 2;` as one
