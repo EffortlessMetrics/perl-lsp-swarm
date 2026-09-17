@@ -21,7 +21,8 @@ use super::subject::{
     HostWorkSubject, ObservationScope, ProviderFamily, ProviderId, WorktreeIdentity,
 };
 use crate::tasks::writer_admission::{
-    AdmissionReport, AdmissionVerdict, CheckResult, CheckStatus, PrStatus, WriterAdmissionSnapshot,
+    AdmissionReport, AdmissionVerdict, CheckResult, CheckStatus, PrStatus, TargetBranchState,
+    WriterAdmissionSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use xtask::worktree_cleanup::{
@@ -49,8 +50,20 @@ impl SubjectObservations {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AdapterError {
-    WrongScope { expected: ObservationScope },
-    SubjectMismatch { expected: String, actual: String },
+    WrongScope {
+        expected: ObservationScope,
+    },
+    SubjectMismatch {
+        expected: String,
+        actual: String,
+    },
+    /// The optional snapshot describes a different target than the report it
+    /// was paired with. Independent results are never combined across
+    /// candidates.
+    SnapshotTargetMismatch {
+        report_target: String,
+        snapshot_target: String,
+    },
 }
 
 impl std::fmt::Display for AdapterError {
@@ -61,6 +74,12 @@ impl std::fmt::Display for AdapterError {
             }
             AdapterError::SubjectMismatch { expected, actual } => {
                 write!(f, "subject mismatch: expected {expected}, got {actual}")
+            }
+            AdapterError::SnapshotTargetMismatch { report_target, snapshot_target } => {
+                write!(
+                    f,
+                    "snapshot target {snapshot_target:?} does not match report target {report_target:?}"
+                )
             }
         }
     }
@@ -146,6 +165,10 @@ pub fn adapt_worktree_cleanup_plan(
             subject_key: key.clone(),
             provider: provider.clone(),
             observed_at: plan.observed_at.clone(),
+            // The worktree-plan provider emits current typed observations;
+            // staleness of a consumed plan is the consuming command's
+            // obligation (#11666), carried through `observed_at` verbatim.
+            freshness: Freshness::Current,
             ownership: MutationOwnership::Unowned,
             index_state,
             push_state,
@@ -197,6 +220,7 @@ pub fn adapt_worktree_cleanup_plan(
             subject_key: key.clone(),
             provider: filesystem_storage_provider(&plan.schema_version),
             observed_at: plan.observed_at.clone(),
+            freshness: Freshness::Current,
             root_class: RootClass::CandidatePrivate,
             volume_identity: VolumeIdentity::Unknown,
             free_capacity: CapacityFact::Unknown,
@@ -297,14 +321,18 @@ pub struct AdmissionAdapterOutcome {
 }
 
 const ADMISSION_SCHEMA_VERSION: &str = "admission_report.v1";
-const KNOWN_ADMISSION_CHECKS: [&str; 7] = [
+/// Exhaustive over `run_checks` in `tasks/writer_admission.rs`. Adding a
+/// check there without extending this list makes live reports visible as
+/// unknown-variant rows rather than silently classified.
+const KNOWN_ADMISSION_CHECKS: [&str; 8] = [
     "canonical-base",
     "shadow-ref",
     "symbolic-head",
     "branch-worktree-mapping",
     "dirty-unpushed",
     "disk-capacity",
-    "writer-collision",
+    "remote-branch-identity",
+    "candidate-presence",
 ];
 
 fn admission_provider() -> ProviderId {
@@ -328,23 +356,43 @@ pub fn adapt_admission_report(
     if repository_subject.scope != ObservationScope::Repository {
         return Err(AdapterError::WrongScope { expected: ObservationScope::Repository });
     }
+    // A snapshot describes exactly one target. Pairing a snapshot gathered
+    // for a different target (branch or detached state) would reattribute
+    // its dirty/PR/remote facts under this report's subject, so it is
+    // rejected instead of merged.
+    if let Some(snapshot) = snapshot
+        && (snapshot.target_branch != report.target_branch
+            || snapshot.target_branch_state != report.target_branch_state)
+    {
+        return Err(AdapterError::SnapshotTargetMismatch {
+            report_target: report.target_branch.clone(),
+            snapshot_target: snapshot.target_branch.clone(),
+        });
+    }
     let mut subject = repository_subject.clone();
     subject.worktree = Some(WorktreeIdentity {
         path: repository_subject.repository_root.clone(),
-        branch: Some(report.target_branch.clone()),
+        // Branch identity is bound from the report's typed state: a detached
+        // checkout carries no branch, so it can never share a subject key
+        // with a named branch (including one literally named "(detached)").
+        branch: match report.target_branch_state {
+            TargetBranchState::Named => Some(report.target_branch.clone()),
+            TargetBranchState::Detached => None,
+        },
     });
     let mut observations = SubjectObservations::new(subject);
     let key = observations.subject.subject_key();
     let provider = admission_provider();
     let observed_at = String::from("admission-report");
 
-    let writer_collision_block = report
-        .checks
-        .iter()
-        .any(|check| check.name == "writer-collision" && check.status == CheckStatus::Block);
-    // Only a proven blocking capacity result may claim the below-floor fact;
-    // a NotProven probe stays instrument-unavailable and never becomes a
-    // concrete LOW_DISK claim.
+    // The current provider vocabulary (#3957/#11617 `run_checks`) defines no
+    // writer-collision check: PR existence is explicitly not live-writer
+    // evidence. A contested-ownership classification requires a provider
+    // collision fact; check names are never parsed for meaning, so no
+    // `Contested` ownership is inferred here. Only a proven blocking
+    // capacity result may claim the below-floor fact; a NotProven probe
+    // stays instrument-unavailable and never becomes a concrete LOW_DISK
+    // claim.
     let disk_below_floor = report
         .checks
         .iter()
@@ -357,9 +405,7 @@ pub fn adapt_admission_report(
         report.checks.iter().any(|check| check.status == CheckStatus::NotProven);
     let verdict_not_proven = report.verdict == AdmissionVerdict::NotProven;
 
-    let ownership = if writer_collision_block {
-        MutationOwnership::Contested
-    } else if any_check_not_proven || verdict_not_proven {
+    let ownership = if any_check_not_proven || verdict_not_proven {
         MutationOwnership::NotProven
     } else {
         MutationOwnership::Unowned
@@ -387,6 +433,10 @@ pub fn adapt_admission_report(
         subject_key: key.clone(),
         provider: provider.clone(),
         observed_at: observed_at.clone(),
+        // The admission report family carries no machine-readable freshness;
+        // it is consumed as a current observation, with unprovable
+        // currentness surfacing through the NotProven ownership path above.
+        freshness: Freshness::Current,
         ownership,
         index_state,
         push_state,
@@ -402,18 +452,30 @@ pub fn adapt_admission_report(
     };
 
     let (claim_relationship, pr_lookup_failed) = match snapshot.map(|s| &s.pr_ownership) {
-        Some(ownership_info) => match ownership_info.status {
-            PrStatus::Open => (
-                ClaimRelationship::LinkedToOpenPr { number: ownership_info.pr_number.unwrap_or(0) },
-                false,
-            ),
-            PrStatus::None => (ClaimRelationship::Unlinked, false),
-            // gh absent or query failed: stays unknown, never none.
-            PrStatus::Unknown => (ClaimRelationship::Unknown, true),
+        Some(ownership_info) => match &ownership_info.status {
+            // A definite open-PR link requires a proven number and a
+            // provider observation without error; an incomplete ownership
+            // record stays unknown and never fabricates an identity (no
+            // synthetic PR #0).
+            PrStatus::Open if ownership_info.error.is_none() => match ownership_info.pr_number {
+                Some(number) => (ClaimRelationship::LinkedToOpenPr { number }, false),
+                None => (ClaimRelationship::Unknown, true),
+            },
+            PrStatus::None if ownership_info.error.is_none() => {
+                (ClaimRelationship::Unlinked, false)
+            }
+            // gh absent, lookup failed, or incomplete ownership evidence:
+            // stays unknown, never none.
+            _ => (ClaimRelationship::Unknown, true),
         },
         None => (ClaimRelationship::Unknown, true),
     };
-    let remote_lookup_failed = snapshot.map(|s| s.remote_branch.error.is_some()).unwrap_or(false);
+    // An unobserved remote branch is a missing observation, not a confirmed
+    // absence: only a completed lookup without error can establish that no
+    // remote residue exists.
+    let remote_lookup_failed = snapshot
+        .map(|s| !s.remote_branch.observed || s.remote_branch.error.is_some())
+        .unwrap_or(true);
     let logical = LogicalWorkObservation {
         subject_key: key.clone(),
         provider,
@@ -459,6 +521,7 @@ pub fn adapt_admission_report(
             source: "writer_admission".to_string(),
         },
         observed_at: String::from("admission-report"),
+        freshness: Freshness::Current,
         root_class: RootClass::SharedCache,
         volume_identity,
         free_capacity,
@@ -618,6 +681,7 @@ pub fn storage_scope_observation(
         subject_key: subject_key.into(),
         provider,
         observed_at: observed_at.into(),
+        freshness: Freshness::Current,
         root_class,
         volume_identity: VolumeIdentity::Unknown,
         free_capacity: CapacityFact::Unknown,

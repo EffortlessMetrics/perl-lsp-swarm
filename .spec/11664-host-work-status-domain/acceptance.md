@@ -38,9 +38,15 @@ Negative laws (each has a falsifier test):
 12. Adapters consume typed structs only; no prose parsing surface exists. (F12)
 13. Unknown provider variants surface as visible rows (`UNKNOWN_PROVIDER_VARIANT`,
     lifecycle `AMBIGUOUS`), never dropped. (F13)
+14. Subject identity is exact: `subject_key()` encodes every identity field
+    including `host_profile`, length-delimited (F14, F14b); a snapshot bound to a
+    different target is rejected, never merged (F14d); a detached target never
+    shares a key with a named branch (F14e); incomplete PR-ownership evidence stays
+    `Unknown` and never fabricates a PR identity (F14c).
 15. Any ambiguous/not-proven required dimension forces the aggregate to carry
     `AMBIGUOUS`/`NOT_PROVEN`; `HEALTHY` requires every dimension decided and benign.
-    (F15)
+    Currentness is symmetric: every dimension row carries `Freshness`, and stale
+    evidence is incomplete on all four dimensions (F15, F15c, F15d).
 16. Cleanup-readiness fields are descriptive; no field implies authorization to run a
     plan. (F16)
 17. Canonical ordering: status identity is independent of input insertion order
@@ -55,7 +61,10 @@ Adapters shipped over landed typed owners:
 
 - `worktree_plan_v1` (#10256/#10263 `WorktreeCleanupPlan`) → logical/mutation/storage;
 - `admission_report_v1` (#3957/#11617 writer-admission report) → logical/mutation/
-  storage incl. collision + disk floor;
+  storage, exhaustive over the eight checks `run_checks` emits today; the PR-ownership
+  tri-state is preserved exactly (`unknown` never becomes `none`, an open link requires
+  a proven number); no collision verdict is inferred from check names (the provider
+  defines no writer-collision check).
 - generic typed inputs for future #11650/#11653/#11659 owners (reservation/process/
   executor-storage) whose providers are declared `Missing` until they land.
 

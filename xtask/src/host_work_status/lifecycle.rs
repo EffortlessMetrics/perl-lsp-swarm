@@ -90,6 +90,7 @@ pub enum DimensionEvidence {
 pub enum HostWorkReason {
     // logical
     ClaimLinked,
+    ClaimUnlinked,
     RemoteIntegrationWait,
     ReconstructibleLocal,
     UniqueLocalState,
@@ -138,6 +139,7 @@ impl HostWorkReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ClaimLinked => "CLAIM_LINKED",
+            Self::ClaimUnlinked => "CLAIM_UNLINKED",
             Self::RemoteIntegrationWait => "REMOTE_INTEGRATION_WAIT",
             Self::ReconstructibleLocal => "RECONSTRUCTIBLE_LOCAL",
             Self::UniqueLocalState => "UNIQUE_LOCAL_STATE",
@@ -271,7 +273,10 @@ fn instrument_incomplete(instrument: &Instrument) -> (bool, Vec<HostWorkReason>)
 fn freshness_incomplete(freshness: Freshness) -> (bool, Vec<HostWorkReason>) {
     match freshness {
         Freshness::Current => (false, Vec::new()),
-        Freshness::Stale => (false, vec![HostWorkReason::CurrentnessNotProven]),
+        // A stale observation is not current enough to classify cleanly:
+        // currentness uncertainty is contagious (F15), so stale evidence is
+        // incomplete exactly like unproven evidence.
+        Freshness::Stale => (true, vec![HostWorkReason::CurrentnessNotProven]),
         Freshness::NotProven => (
             true,
             vec![HostWorkReason::CurrentnessNotProven, HostWorkReason::InstrumentUnavailable],
@@ -295,7 +300,13 @@ pub fn classify_logical(observation: &LogicalWorkObservation) -> HostWorkClassif
             reasons.push(HostWorkReason::RelationshipUnknown);
             incomplete = true;
         }
-        _ => reasons.push(HostWorkReason::ClaimLinked),
+        ClaimRelationship::Unlinked => reasons.push(HostWorkReason::ClaimUnlinked),
+        ClaimRelationship::LinkedToOpenPr { .. }
+        | ClaimRelationship::LinkedToMergedPr { .. }
+        | ClaimRelationship::LinkedToOpenIssue { .. }
+        | ClaimRelationship::LinkedToClosedIssue { .. } => {
+            reasons.push(HostWorkReason::ClaimLinked);
+        }
     }
 
     let (lifecycle, residue_reasons): (HostWorkLifecycle, Vec<HostWorkReason>) = match observation
@@ -346,6 +357,9 @@ pub fn classify_mutation(observation: &MutationWorkObservation) -> HostWorkClass
 
     let (bad_instrument, mut add) = instrument_incomplete(&observation.instrument);
     incomplete |= bad_instrument;
+    reasons.append(&mut add);
+    let (stale, mut add) = freshness_incomplete(observation.freshness);
+    incomplete |= stale;
     reasons.append(&mut add);
 
     match observation.index_state {
@@ -529,7 +543,7 @@ pub fn classify_compute(observation: &ComputeWorkObservation) -> HostWorkClassif
         (HostWorkLifecycle::Ambiguous, Vec::new())
     } else if initiator_returned && anything_unsettled {
         let mut stop = vec![HostWorkReason::InitiatorReturnedButDescendantsUnsettled];
-        if reservation_unsettled || descendants_unsettled || output_unsettled {
+        if descendants_unsettled {
             stop.push(HostWorkReason::DescendantsUnsettled);
         }
         (HostWorkLifecycle::Stopping, stop)
@@ -566,6 +580,9 @@ pub fn classify_storage(observation: &StorageWorkObservation) -> HostWorkClassif
 
     let (bad_instrument, mut add) = instrument_incomplete(&observation.instrument);
     incomplete |= bad_instrument;
+    reasons.append(&mut add);
+    let (stale, mut add) = freshness_incomplete(observation.freshness);
+    incomplete |= stale;
     reasons.append(&mut add);
 
     match observation.free_capacity {

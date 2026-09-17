@@ -69,6 +69,7 @@ impl HostWorkSubject {
             self.repository_root.display().to_string(),
             self.common_dir.display().to_string(),
             self.canonical_remote.clone().unwrap_or_default(),
+            self.host_profile.clone(),
             worktree_path,
             worktree_branch,
             self.candidate_id.clone().unwrap_or_default(),

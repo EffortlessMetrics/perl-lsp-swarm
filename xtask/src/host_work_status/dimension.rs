@@ -121,6 +121,10 @@ pub struct MutationWorkObservation {
     pub subject_key: String,
     pub provider: ProviderId,
     pub observed_at: String,
+    /// Provider-stated currentness of this observation. Kept symmetric with
+    /// the logical/compute dimensions so stale provider facts can never
+    /// masquerade as clean current evidence (F15).
+    pub freshness: Freshness,
     pub ownership: MutationOwnership,
     pub index_state: IndexState,
     pub push_state: PushState,
@@ -267,6 +271,9 @@ pub struct StorageWorkObservation {
     pub subject_key: String,
     pub provider: ProviderId,
     pub observed_at: String,
+    /// Provider-stated currentness of this observation; symmetric with the
+    /// other dimensions so stale probes cannot classify as current (F15).
+    pub freshness: Freshness,
     pub root_class: RootClass,
     pub volume_identity: VolumeIdentity,
     pub free_capacity: CapacityFact,
@@ -295,6 +302,14 @@ pub struct SubjectMismatch {
     pub expected: String,
     pub actual: String,
 }
+
+impl std::fmt::Display for SubjectMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "subject mismatch: expected {}, got {}", self.expected, self.actual)
+    }
+}
+
+impl std::error::Error for SubjectMismatch {}
 
 /// An unknown provider variant surfaced through the set's visibility rows.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
