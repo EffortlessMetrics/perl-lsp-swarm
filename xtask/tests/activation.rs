@@ -69,7 +69,7 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
     ("lab", 21),
     ("oracle", 1),
     ("benchmark", 15),
-    ("gate", 85),
+    ("gate", 87),
 ];
 
 /// Pin derivation receipts independently of class counts so a rule that
@@ -77,9 +77,9 @@ const EXPECTED_CLASS_COUNTS: &[(&str, usize)] = &[
 const EXPECTED_DERIVATION: &[(&str, usize, usize)] = &[
     ("features-product", 129, 16),
     ("features-preview", 129, 2),
-    ("gate-policy-gates", 85, 85),
+    ("gate-policy-gates", 87, 87),
     ("cargo-bench-targets", 15, 15),
-    ("cargo-test-features", 78, 26),
+    ("cargo-test-features", 79, 26),
     ("fuzz-targets", 21, 21),
     ("override", 2, 2),
 ];
