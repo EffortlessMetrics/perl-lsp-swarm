@@ -126,3 +126,4 @@ fn test_backward_compatible_public_api() {
     // workspace.rs would have two imports to handle. Since we're here
     // testing the new path, we know the migration was clean.
 }
+

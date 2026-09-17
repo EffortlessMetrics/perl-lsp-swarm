@@ -563,3 +563,4 @@ fn test_eval_ref_never_misinterpreted_as_scope_in_protocol() -> TestResult {
 
     Ok(())
 }
+

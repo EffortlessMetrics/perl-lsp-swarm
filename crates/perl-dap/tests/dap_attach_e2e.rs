@@ -421,7 +421,7 @@ fn dap_attach_e2e_tcp_stop_on_entry_is_rejected_before_connect() -> TestResult {
     }
 
     while let Ok(message) = rx.try_recv() {
-        if let DapMessage::Event { event, .. } = message {
+        if let (DapMessage::Event { event, .. }, _) = message {
             return Err(
                 format!("refused attach must not publish postinitialize event `{event}`").into()
             );
@@ -507,3 +507,5 @@ fn dap_attach_validation_errors_reach_the_request_response() -> TestResult {
 
     Ok(())
 }
+
+

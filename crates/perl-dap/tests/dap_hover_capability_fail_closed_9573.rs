@@ -314,3 +314,4 @@ async fn session_remains_usable_after_a_refused_hover() -> Result<()> {
     );
     Ok(())
 }
+

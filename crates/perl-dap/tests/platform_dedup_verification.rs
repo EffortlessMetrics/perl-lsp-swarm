@@ -79,3 +79,4 @@ fn dap_platform_re_exports_are_function_identical_not_just_name_identical() {
         "re-export should point to the same function, not a wrapper"
     );
 }
+

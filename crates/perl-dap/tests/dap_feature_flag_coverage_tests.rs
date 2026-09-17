@@ -1373,3 +1373,4 @@ fn test_initialize_does_not_advertise_disabled_features() -> TestResult {
     }
     Ok(())
 }
+

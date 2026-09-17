@@ -222,3 +222,4 @@ fn repeated_refusals_are_identical() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(first, second, "repeated refusals must be byte-identical");
     Ok(())
 }
+

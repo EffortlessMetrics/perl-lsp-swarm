@@ -58,7 +58,7 @@ fn assert_response(
 fn drain_events(rx: &Receiver<DapMessage>, timeout_ms: u64) -> Vec<String> {
     let mut events = Vec::new();
     while let Ok(msg) = rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-        if let DapMessage::Event { event, .. } = msg {
+        if let (DapMessage::Event { event, .. }, _) = msg {
             events.push(event);
         }
     }
@@ -885,3 +885,5 @@ fn test_many_consecutive_step_operations() -> Result<(), Box<dyn std::error::Err
     }
     Ok(())
 }
+
+

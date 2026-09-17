@@ -386,3 +386,4 @@ fn reference_child_count_is_none() {
     let val = PerlValue::Reference(Box::new(PerlValue::Array(vec![PerlValue::Undef])));
     assert_eq!(val.child_count(), None);
 }
+

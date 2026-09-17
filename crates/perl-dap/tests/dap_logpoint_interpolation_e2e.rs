@@ -329,3 +329,4 @@ fn plain_breakpoint_positive_control_still_stops_on_live_session() -> TestResult
     session.disconnect()?;
     Ok(())
 }
+

@@ -400,3 +400,4 @@ fn exact_decimal_construction_is_checked() -> TestResult {
     }
     Ok(())
 }
+

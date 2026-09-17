@@ -202,3 +202,4 @@ fn restart_request_without_session_fails_cleanly() -> TestResult {
 
     Ok(())
 }
+

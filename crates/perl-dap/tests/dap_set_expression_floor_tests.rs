@@ -228,3 +228,4 @@ fn sibling_capability_cells_are_independent() -> Result<(), Box<dyn std::error::
     );
     Ok(())
 }
+

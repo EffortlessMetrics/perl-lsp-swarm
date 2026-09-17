@@ -143,3 +143,4 @@ fn test_no_external_satellite_dependencies() -> Result<()> {
     // If those dependencies still exist, they will conflict with internal modules
     Ok(())
 }
+

@@ -641,3 +641,4 @@ fn dap_external_peer_launch_terminate_does_not_duplicate_terminated_after_peer_c
     assert!(ok, "terminate itself must still succeed");
     Ok(())
 }
+

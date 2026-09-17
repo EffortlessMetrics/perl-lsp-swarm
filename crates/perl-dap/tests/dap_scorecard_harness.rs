@@ -665,3 +665,4 @@ fn scorecard_launch_success_rate() -> TestResult {
 
     Ok(())
 }
+

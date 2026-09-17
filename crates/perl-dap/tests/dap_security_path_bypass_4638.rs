@@ -195,3 +195,4 @@ fn test_traversal_error_message_mentions_path_validation() -> TestResult {
     );
     Ok(())
 }
+

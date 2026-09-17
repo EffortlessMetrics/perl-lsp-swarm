@@ -247,3 +247,4 @@ fn resource_limit_normal_timeouts_accepted_unchanged() -> R {
 fn resource_limit_cap_is_five_minutes() {
     assert_eq!(MAX_TIMEOUT_MS, 300_000, "Security cap must be 5 minutes (300,000ms)");
 }
+

@@ -784,3 +784,4 @@ fn breakpoint_locations_response_body_round_trip() -> Result<(), Box<dyn std::er
     assert_eq!(back.breakpoints.len(), 2);
     Ok(())
 }
+

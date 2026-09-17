@@ -89,3 +89,4 @@ fn set_breakpoints_response_fixture_preserves_order() -> Result<()> {
     assert!(!body.breakpoints[1].verified);
     Ok(())
 }
+

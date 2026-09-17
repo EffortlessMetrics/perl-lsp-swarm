@@ -225,3 +225,4 @@ fn runtime_inline_values_returns_empty_when_lines_collapse_to_nothing() {
 fn runtime_inline_values_returns_empty_for_empty_source() {
     assert!(collect_inline_values_with_runtime("", 1, 10, None).is_empty());
 }
+

@@ -621,7 +621,7 @@ impl DapWorkflowSession {
             let remaining = deadline.saturating_duration_since(now);
             match self.rx.recv_timeout(remaining) {
                 Ok(msg) => {
-                    if let DapMessage::Event { event, body, .. } = &msg {
+                    if let (DapMessage::Event { event, body, .. }, _) = &msg {
                         if event == event_name {
                             return Ok(msg);
                         }
@@ -3358,3 +3358,5 @@ pub fn wait_for_event(
         }
     }
 }
+
+

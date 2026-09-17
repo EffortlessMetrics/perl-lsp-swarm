@@ -407,3 +407,4 @@ fn test_fallback_scope_variables_package_and_globals_kinds()
 
     Ok(())
 }
+

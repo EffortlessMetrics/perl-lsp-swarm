@@ -866,3 +866,4 @@ fn test_e2e_locals_scope_returns_user_lexicals_not_db_internals() -> TestResult 
     session.disconnect()?;
     Ok(())
 }
+

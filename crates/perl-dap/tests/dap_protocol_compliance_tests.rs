@@ -718,3 +718,4 @@ fn test_stack_trace_without_session_returns_frames() -> Result<(), Box<dyn std::
     assert!(body.get("stackFrames").is_some(), "stackTrace body must include 'stackFrames'");
     Ok(())
 }
+

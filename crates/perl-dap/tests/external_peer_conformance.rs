@@ -1201,3 +1201,4 @@ fn a_rejected_crossed_reply_leaves_the_session_correctly_correlated() {
     drop(backend);
     let _ = peer.handle.join();
 }
+

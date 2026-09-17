@@ -42,7 +42,7 @@ fn collect_events(rx: &Receiver<DapMessage>, timeout_ms: u64) -> Vec<(String, Op
         events.push((event, body));
     }
     while let Ok(message) = rx.try_recv() {
-        if let DapMessage::Event { event, body, .. } = message {
+        if let (DapMessage::Event { event, body, .. }, _) = message {
             events.push((event, body));
         }
     }
@@ -260,3 +260,5 @@ fn vscode_mock_debug_surface_conformance() -> Result<()> {
     }
     Ok(())
 }
+
+

@@ -152,3 +152,4 @@ fn test_crate_structure_is_flat_not_hierarchical() {
         assert!(colon_count <= 4, "module structure should not be deeply nested: {}", name);
     }
 }
+

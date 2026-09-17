@@ -3434,13 +3434,13 @@ fn deliver_reserved_terminated_event(
         if state.generation != generation {
             return false;
         }
-        match sender.try_send(message) {
+        match sender.try_send((message, super::sync_utils::current_drain_epoch())) {
             Ok(()) => {
                 state.terminal_committed = true;
                 return true;
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
-            Err(std::sync::mpsc::TrySendError::Full(returned)) => message = returned,
+            Err(std::sync::mpsc::TrySendError::Full(returned)) => message = returned.0,
         }
         drop(state);
         thread::sleep(super::sync_utils::GENERATION_GUARD_PARK);
