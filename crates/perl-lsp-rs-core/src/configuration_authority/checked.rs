@@ -75,17 +75,16 @@ pub(crate) fn validate_row(field: &FieldAuthority) -> Result<(), AuthorityViolat
     {
         return Err(AuthorityViolation::ServerFieldClaimsFolderPull { id: field.id });
     }
-    if !matches!(field.scope, ConfigScope::DerivedGlobal | ConfigScope::DerivedWorkspaceFolder) {
-        if let Some(source) =
+    if !matches!(field.scope, ConfigScope::DerivedGlobal | ConfigScope::DerivedWorkspaceFolder)
+        && let Some(source) =
             field.sources.iter().copied().find(|source| {
                 matches!(source, ConfigSource::Environment | ConfigSource::SystemProbe)
             })
-        {
-            return Err(AuthorityViolation::PolicyFieldAdmitsObservationWriter {
-                id: field.id,
-                source,
-            });
-        }
+    {
+        return Err(AuthorityViolation::PolicyFieldAdmitsObservationWriter {
+            id: field.id,
+            source,
+        });
     }
     Ok(())
 }
