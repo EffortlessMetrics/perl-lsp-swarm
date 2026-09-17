@@ -4384,6 +4384,35 @@ review_after = "2026-10-16"
 expires = "2026-12-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in report_identity.rs, perl-lsp-rs-core diagnostics.rs, or regex_retention.rs outside the 13 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
 # -----------------------------------------------------------------------------
+# do-while keep-consuming and paren-tracking seams (PR #15719): the static
+# tracer cannot connect focused tests to inline boolean boundaries whose arms
+# (`bare_shape`, `subscript_chain`, paren depth) are only decidable by
+# running the parser, nor to supporting calls linked through multi-hop
+# parse paths. Same instrument-limitation class as #3355/#3397.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-do-while-seam-tracer-limitation"
+kind = "predicate_infection_untraceable"
+paths = [
+  "crates/perl-parser-core/src/engine/parser/expressions/postfix.rs",
+  "crates/perl-parser-core/src/engine/parser/expressions/primary.rs",
+]
+classification = ["weakly_gripped", "activation_unknown"]
+gap_ids = [
+  "47e6d7c5970fd3c5",
+  "47d5d6c597015edf",
+  "4801e6c59726b4fa",
+  "7094eba0a2aa14cb",
+  "ca50ce5d0b9b7584",
+  "ec90e25d1ee500f6",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #15719 gates the do-while subscript-chain continuation behind inside_condition_group || (unparenthesized_condition && (bare_shape || subscript_chain)) with paren-group enter/leave tracking. The arms are only decidable by running the parser, so no static input matcher can link a test to a boundary: discriminators 1-4 pin every leaf outcome, parse_postfix_chain_boundary_discriminator asserts exact (total, brace-op) AST shape counts per arm, and consume_balanced_and_paren_group_call_observation pins the supporting calls (balanced/unclosed interpolation diagnoses plus nested-group depth balance with the exact DoWhileTrailingBlock variant), all in crates/perl-parser-core/tests/do_while_trailing_block_tests.rs. Scoped to six stable finding identities so any other seam in these files stays visible."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 connects these seams to the named tests, or at expiry. Narrow immediately if a receipt reports a seam in these files outside the six listed finding identities."
 # DAP debugger-capability probe seams (PR #15717): ripr#1429-class tracer
 # limitation — the static tracer cannot connect focused tests through the
 # check→cache→spawn→match indirection, nor link direct boundary unit calls.

@@ -1756,6 +1756,62 @@ tests::gamma: test
         dir
     }
 
+    /// RAII guard for the dirty-signal probe written into the working tree.
+    ///
+    /// The C-quotable probe name (`rsp probe<sep><pid>.txt`, with a literal
+    /// tab on non-Windows) is load-bearing for the test that proves
+    /// NUL-delimited porcelain parsing, so the probe must live in the real
+    /// checkout. Without a `Drop` guard, a panic, unwind, or external kill
+    /// between `write` and `remove_file` leaks the path. A leaked probe is
+    /// untracked and non-ignored, so every later `capture_worktree_dirty`
+    /// reads it as a phantom dirty signal — corrupting the very test whose
+    /// job is to prove that signal (#15532).
+    struct DirtySignalProbe {
+        path: PathBuf,
+    }
+
+    impl DirtySignalProbe {
+        /// Write `b"x"` to `path` and return a guard that removes it on
+        /// drop. Returns an error so callers can propagate a write failure
+        /// before the guard exists; cleanup is best-effort and silent.
+        fn write(path: PathBuf) -> Result<Self> {
+            fs::write(&path, b"x").wrap_err_with(|| format!("writing probe {}", path.display()))?;
+            Ok(Self { path })
+        }
+    }
+
+    impl Drop for DirtySignalProbe {
+        fn drop(&mut self) {
+            // Best-effort: a previous kill, a manual cleanup, or a missing
+            // parent directory can all surface here. None of those is the
+            // test's subject, so we do not let cleanup add a new failure
+            // surface. The sweep at test start covers the residual risk
+            // that a `SIGKILL` between `write` and the process exit left a
+            // file on disk that the guard never had a chance to remove.
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    /// Remove any `rsp probe*.txt` files already present in the working
+    /// tree at test start. This bounds the risk of `SIGKILL` (which no
+    /// user-space guard can survive) by ensuring the next run sees a clean
+    /// slate regardless of what the previous run left behind (#15532).
+    fn sweep_dirty_signal_probes() {
+        let Ok(root) = std::env::current_dir() else { return };
+        let Ok(entries) = fs::read_dir(&root) else { return };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            // Match the exact prefix and suffix used by `DirtySignalProbe::write`.
+            // The non-Windows separator is a literal tab character, which is
+            // a valid filename byte on POSIX filesystems, so a plain
+            // `starts_with` covers both platforms.
+            if name.starts_with("rsp probe") && name.ends_with(".txt") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Review round 2 (Devin Review on #13882).
     // ---------------------------------------------------------------------
@@ -1796,6 +1852,11 @@ tests::gamma: test
     fn the_dirty_signal_reads_this_checkout_and_ignores_the_receipt_itself() -> Result<()> {
         let _tree = lock_worktree();
         let receipt = PathBuf::from(DEFAULT_RECEIPT_PATH);
+
+        // Sweep any probe files left behind by a previously killed run so
+        // a stale leak cannot poison this run's dirty-signal read (#15532).
+        sweep_dirty_signal_probes();
+
         let before = capture_worktree_dirty(&receipt).wrap_err("initial dirty capture")?;
 
         // A genuinely untracked, non-ignored path with a C-quotable name:
@@ -1803,10 +1864,10 @@ tests::gamma: test
         // reading it unquoted is what the NUL-delimited form avoids.
         let root = std::env::current_dir().wrap_err("resolving fixture cwd")?;
         let separator = if cfg!(windows) { " " } else { "\t" };
-        let probe = root.join(format!("rsp probe{separator}{}.txt", std::process::id()));
-        fs::write(&probe, b"x").wrap_err_with(|| format!("writing probe {}", probe.display()))?;
+        let probe_path = root.join(format!("rsp probe{separator}{}.txt", std::process::id()));
+        let probe = DirtySignalProbe::write(probe_path).wrap_err("creating dirty-signal probe")?;
         let during = capture_worktree_dirty(&receipt);
-        fs::remove_file(&probe).wrap_err("removing owned dirty-signal probe")?;
+        drop(probe); // explicit; Drop also runs on panic/unwind (#15532).
 
         if !during.wrap_err("dirty capture with untracked probe")? {
             bail!("an untracked file must mark the tree dirty");
@@ -1815,6 +1876,44 @@ tests::gamma: test
         // controlled (a developer tree is legitimately dirty), so only the
         // implication "untracked file present => dirty" is testable here.
         let _ = before;
+        Ok(())
+    }
+
+    #[test]
+    fn dirty_signal_probe_drop_removes_the_owned_file() -> Result<()> {
+        // The Drop guard must clean up even when the test forgets the probe
+        // explicitly (the realistic analogue of a panic/unwind in callers
+        // that own the guard): a leaked probe would be read as an untracked
+        // path by every later dirty-signal capture (#15532).
+        let root = std::env::current_dir().wrap_err("resolving fixture cwd")?;
+        let separator = if cfg!(windows) { " " } else { "\t" };
+        let probe_path = root.join(format!("rsp probe{separator}drop-{}.txt", std::process::id()));
+        let probe =
+            DirtySignalProbe::write(probe_path.clone()).wrap_err("writing drop-guard probe")?;
+        assert!(
+            probe_path.exists(),
+            "probe must exist on disk after write: {}",
+            probe_path.display()
+        );
+        drop(probe);
+        assert!(!probe_path.exists(), "Drop must remove the owned probe: {}", probe_path.display());
+        Ok(())
+    }
+
+    #[test]
+    fn dirty_signal_probe_drop_is_silent_on_already_removed_files() -> Result<()> {
+        // Manual cleanup followed by an implicit Drop (e.g. via let _binding
+        // going out of scope) must not surface a NotFound error and abort the
+        // process — the leak guard's job is to be best-effort, not to add a
+        // new failure surface (#15532).
+        let root = std::env::current_dir().wrap_err("resolving fixture cwd")?;
+        let separator = if cfg!(windows) { " " } else { "\t" };
+        let probe_path =
+            root.join(format!("rsp probe{separator}silent-{}.txt", std::process::id()));
+        let probe =
+            DirtySignalProbe::write(probe_path.clone()).wrap_err("writing drop-guard probe")?;
+        fs::remove_file(&probe_path).wrap_err("manual pre-Drop removal")?;
+        drop(probe); // must not panic or otherwise propagate the NotFound.
         Ok(())
     }
 
