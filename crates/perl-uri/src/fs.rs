@@ -219,3 +219,47 @@ fn windows_rooted_file_uri_to_path(url: &Url) -> Option<PathBuf> {
 fn windows_rooted_file_uri_to_path(_url: &Url) -> Option<PathBuf> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `fs.rs:184-185` discriminator (#15722): a local-authority file URL
+    // whose canonical re-parse lacks a Windows drive letter must hit the
+    // `!windows_to_file_path_wont_panic(&canonical)` guard. On Windows that
+    // guard returns `None` instead of letting `canonical.to_file_path()`
+    // panic inside the url crate ("expected an absolute path"); elsewhere
+    // the canonical form resolves normally.
+    //
+    // `127.0.0.1` (not `localhost`) is the discriminator host: the url
+    // crate normalizes a `file://localhost` host away to empty, so only a
+    // preserved local authority such as `127.0.0.1` reaches the canonical
+    // re-parse at all.
+    #[test]
+    fn local_authority_driveless_canonical_hits_wont_panic_guard() -> Result<(), String> {
+        let url = Url::parse("file://127.0.0.1/tmp/no-drive.pl")
+            .map_err(|e| format!("test URL parses: {e}"))?;
+        let result = local_authority_file_uri_to_path(&url);
+        #[cfg(windows)]
+        if result.is_some() {
+            return Err(format!(
+                "driveless canonical must take the guard's None path, got {result:?}"
+            ));
+        }
+        #[cfg(not(windows))]
+        if result.is_none() {
+            return Err(format!("driveless canonical resolves off Windows, got {result:?}"));
+        }
+        Ok(())
+    }
+
+    // `fs.rs:78` call observation through the public entry point: a
+    // drive-letter file URL passes `windows_to_file_path_wont_panic` on
+    // every platform, so `uri_to_fs_path` resolves it instead of routing
+    // to a fallback.
+    #[test]
+    fn uri_to_fs_path_drive_letter_passes_wont_panic_guard() {
+        let result = uri_to_fs_path("file://localhost/C:/dir/guard-pass.pl");
+        assert!(result.is_some(), "drive-letter URL must pass the guard, got {result:?}");
+    }
+}
