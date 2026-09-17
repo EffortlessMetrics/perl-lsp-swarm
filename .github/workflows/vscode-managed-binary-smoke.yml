@@ -106,7 +106,7 @@ jobs:
 
       - name: Upload smoke artifacts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c47aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: vscode-smoke-source-${{ matrix.os }}
           path: target/receipts/vscode-smoke/**
@@ -152,7 +152,7 @@ jobs:
 
       - name: Upload alias smoke artifacts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c47aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: vscode-smoke-perl5-alias-ubuntu
           path: target/receipts/vscode-smoke/perl5-alias/**
