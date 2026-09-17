@@ -71,6 +71,15 @@ pub(super) fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
     })
 }
 
+/// Render a repo-relative path with `/` separators.
+///
+/// `Path::display` emits `\` on Windows, but matrix `path#symbol` references
+/// are written with `/`; without normalization every emitter join misses on
+/// Windows while passing on Linux.
+fn relative_display(path: &Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
+
 /// The file a `#[path = ".."]` attribute names, relative to the declaring
 /// file's own directory, which is where Rust resolves it for a module that is
 /// not inside an inline block.
@@ -560,7 +569,7 @@ pub(super) fn scan_emission(
     for path in &unresolvable {
         let relative = path
             .strip_prefix(repo_root)
-            .map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
+            .map_or_else(|_| relative_display(path), |p| relative_display(p));
         violations.push(Violation::new(
             "emission-module-path-unresolvable",
             relative.clone(),
@@ -586,7 +595,7 @@ pub(super) fn scan_emission(
         }
         let relative = path
             .strip_prefix(repo_root)
-            .map_or_else(|_| path.display().to_string(), |p| p.display().to_string());
+            .map_or_else(|_| relative_display(path.as_path()), |p| relative_display(p));
         let source = std::fs::read_to_string(&path)
             .wrap_err_with(|| format!("reading emission source {relative}"))?;
 
