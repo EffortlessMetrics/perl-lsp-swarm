@@ -1,5 +1,6 @@
 //! Task implementations for xtask automation
 
+pub mod activation;
 pub mod active_goal_manifest;
 pub mod agent_capability_policy;
 pub mod agent_flow;
@@ -41,6 +42,7 @@ pub mod ci_policy;
 pub mod ci_pr_summary;
 pub mod ci_route;
 pub mod ci_scope;
+pub mod ci_stack_increment;
 pub mod ci_subject;
 pub mod clean;
 pub mod clippy_cost_measure;
