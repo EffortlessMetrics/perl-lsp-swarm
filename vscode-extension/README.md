@@ -239,6 +239,22 @@ Use `Ctrl+Shift+P` (Command Palette) and search "Perl" to see all available comm
 - Built-in function signatures with parameter documentation
 - XS interface files (`.xs`) and SWIG interface files (`.i`) are associated with Perl for bundled syntax highlighting, including common SWIG directives and embedded C/C++ blocks
 
+### Language IDs
+
+- `perl` is the one language ID this extension contributes. Files classified as
+  `perl` (by extension, shebang, or filename) attach to the language client.
+- `perl5` is a **supported alias**, not a second language. This extension does
+  not contribute or assign `perl5`; the ID only appears when another extension
+  contributes it or you classify a file that way explicitly
+  (`files.associations`, _Change Language Mode_). Such buffers activate the
+  extension, attach to the same single language client, grammar, settings, and
+  server process, and receive the same commands as `perl` buffers: the bundled
+  TextMate grammar (`source.perl`) is declaratively bound to the `perl5`
+  language ID too, and every menu, keybinding, snippet, breakpoint, and
+  debug-resolution gate enumerates both IDs. There is no second server, dialect
+  mode, or configuration namespace for the alias
+  (see `src/languageIdentity.ts` and issue #7699).
+
 ## Commands
 
 Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and search for

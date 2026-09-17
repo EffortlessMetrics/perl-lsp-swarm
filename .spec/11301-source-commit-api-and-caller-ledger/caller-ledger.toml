@@ -65,7 +65,17 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # migrated to a canonical API: the calls are gone because the behaviour they
 # set up is gone. The `crates/perl-semantic-analyzer` owner row stays -- it
 # still anchors `analysis/index.rs` and the ripr seam proof.
-compatibility_baseline = 693
+# Burndown 693 -> 694 by #15761 (#15644 navigation-reindex-deadlock cutover):
+# one added `.index_file(url, ...)` call in the already-ledgered caller file
+#   crates/perl-lsp-rs-core/src/providers/navigation/references_shadow.rs
+# inside `mod tests` (`live_references_cutover_completes_inside_callback_while_
+# reindex_is_queued`), the #15644 regression control mirroring the definition
+# deadlock test. Fixture-only: it pre-seeds a WorkspaceIndex to exercise the
+# cutover inside a `with_semantic_queries_for_uri` callback, matching the
+# pre-existing `index_file` fixtures in the same test module. Outside the
+# #11305 banned prefix (`crates/perl-lsp-rs/src/runtime/text_sync`).
+# By API: index_file +1.
+compatibility_baseline = 694
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
