@@ -44,16 +44,6 @@
       "retention": "retain_required"
     },
     {
-      "role": "candidate_manifest",
-      "relative_path": "candidates/v0.18.0-x86_64-unknown-linux-gnu/manifest.json",
-      "observed": "present",
-      "ownership_class": "owned_required",
-      "identity": { "kind": "sha256_content", "sha256": "d0a2000000000000000000000000000000000000000000000000000000000000" },
-      "process_refs": [],
-      "user_modified": false,
-      "retention": "retain_required"
-    },
-    {
       "role": "immutable_candidate_dir",
       "relative_path": "candidates/v0.17.2-x86_64-unknown-linux-gnu",
       "observed": "present",

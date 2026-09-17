@@ -3,10 +3,9 @@
   "result": "partial_failure",
   "claim_boundary": "Reports one uninstall attempt against one plan (#11470). Owned binaries and receipts were removed; the PATH marker could not be cleaned, so it stays in failed_entries only. Nothing is claimed clean that was not proven.",
   "plan_id": "plan-full-removal-canonical",
-  "bound_manifest_sha256": "4cd21c03b8bcf7b2ad65d7ecda67695e419dfceb0dfa3197429bfce56b013da4",
+  "bound_manifest_sha256": "4bcbd2ef71e9d461c7ed64211bb0b1fe038fc74a3aad8706a599e23eddbf497e",
   "removed_entries": [
     "candidates/v0.18.0-x86_64-unknown-linux-gnu",
-    "candidates/v0.18.0-x86_64-unknown-linux-gnu/manifest.json",
     "candidates/v0.17.2-x86_64-unknown-linux-gnu",
     "current",
     "receipts/current.json",

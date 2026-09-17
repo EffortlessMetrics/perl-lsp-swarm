@@ -79,23 +79,57 @@
       "type": "string",
       "minLength": 1,
       "pattern": "^(?!/)(?!\\.{1,2}(/|$))[^\\\\/:*?\"<>|]+(/(?!\\.{1,2}(/|$))[^\\\\/:*?\"<>|]+)*$",
-      "description": "Exact path relative to the install root with forward slashes; absolute paths, drive letters, backslashes, empty segments, dot and parent segments, and glob metacharacters are structurally invalid because a removal target must be one exact entry."
+      "allOf": [
+        {
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f]"
+          }
+        },
+        {
+          "not": {
+            "pattern": "[. ](/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(^|/)([Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(\\.[^/]*(/|$)|(/|$))"
+          }
+        }
+      ],
+      "description": "Exact path relative to the install root with forward slashes; absolute paths, drive letters, backslashes, colons (drive or alternate-data-stream syntax), empty segments, dot and parent segments, glob metacharacters, control characters, trailing dot/space elidable spellings, and DOS reserved device basenames are structurally invalid because a removal target must be one exact unambiguous entry."
     },
     "absolute_path": {
       "type": "string",
       "minLength": 2,
       "anyOf": [
         {
-          "pattern": "^/(?!\\.{1,2}(/|$))[^/\\\\*?\"<>|]+(/(?!\\.{1,2}(/|$))[^/\\\\*?\"<>|]+)*$"
+          "pattern": "^/(?!\\.{1,2}(/|$))[^/\\\\:*?\"<>|]+(/(?!\\.{1,2}(/|$))[^/\\\\:*?\"<>|]+)*$"
         },
         {
-          "pattern": "^[A-Za-z]:\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\*?\"<>|]+(\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\*?\"<>|]+)*$"
+          "pattern": "^[A-Za-z]:\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\:*?\"<>|]+(\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\:*?\"<>|]+)*$"
         },
         {
-          "pattern": "^\\\\\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\*?\"<>|]+(\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\*?\"<>|]+)*$"
+          "pattern": "^\\\\\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\:*?\"<>|]+(\\\\(?!\\.{1,2}(\\\\|$))[^/\\\\:*?\"<>|]+)*$"
         }
       ],
-      "description": "One canonical normalized physical absolute identity: exactly one form per family — POSIX (`/seg`+), drive (`X:\\seg`+, backslash separator only), or UNC (`\\\\host\\share`+). No dot or parent segments, no empty segments or trailing separators, no mixed separators, no glob/device metacharacters; equivalent spellings of the same physical root are invalid so one digest binds one representation."
+      "allOf": [
+        {
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f]"
+          }
+        },
+        {
+          "not": {
+            "pattern": "[. ]([/\\\\]|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(^|[/\\\\])([Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(\\.[^/\\\\]*([/\\\\]|$)|([/\\\\]|$))"
+          }
+        }
+      ],
+      "description": "One canonical normalized physical absolute identity: exactly one form per family — POSIX (`/seg`+), drive (`X:\\seg`+, backslash separator only), or UNC (`\\\\host\\share`+). No dot or parent segments, no empty segments or trailing separators, no mixed separators, no glob/device metacharacters, no colons outside the drive prefix (alternate-data-stream syntax aliases one physical entry), no control characters, no trailing dot/space elidable spellings, no DOS reserved device basenames; equivalent spellings of the same physical root are invalid so one digest binds one representation."
     },
     "link_policy": {
       "enum": ["resolved_physical", "refused_substitution"]
@@ -380,7 +414,34 @@
             "$ref": "#/$defs/non_empty_string"
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "policy": { "const": "none" } },
+            "required": ["policy"]
+          },
+          "then": {
+            "properties": {
+              "redacted_fields": { "maxItems": 0 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "policy": { "enum": ["secrets_and_environment", "paths_redacted"] }
+            },
+            "required": ["policy"]
+          },
+          "then": {
+            "properties": {
+              "redacted_fields": { "minItems": 1 }
+            }
+          }
+        }
+      ],
+      "description": "The policy and its named surfaces must agree: `none` claims no redaction and names no surfaces; a redacting policy must name the redacted surfaces, because claiming redaction while naming none is ambiguous."
     }
   }
 }

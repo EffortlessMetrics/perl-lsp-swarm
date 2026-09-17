@@ -137,6 +137,38 @@ fn reject_root_segment(segment: &str, path: &str, field: &str) -> ContractResult
     Ok(())
 }
 
+const DOS_DEVICE_BASENAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+fn reject_windows_alias_segments(segments: &[&str], path: &str, field: &str) -> ContractResult<()> {
+    for segment in segments {
+        if segment.chars().any(|character| character.is_ascii_control() || character == '\u{7f}') {
+            return err(format!(
+                "{field}: ASCII control characters make the identity spelling ambiguous; one exact representation only (`{path}`)"
+            ));
+        }
+        if segment.ends_with('.') || segment.ends_with(' ') {
+            return err(format!(
+                "{field}: trailing dot or space is an elidable Windows spelling of a different name; one exact representation only (`{path}`)"
+            ));
+        }
+        if segment.contains(':') {
+            return err(format!(
+                "{field}: colon inside a segment is alternate-data-stream syntax and aliases one physical entry; one exact representation only (`{path}`)"
+            ));
+        }
+        let basename = segment.split('.').next().unwrap_or(segment).to_ascii_uppercase();
+        if DOS_DEVICE_BASENAMES.contains(&basename.as_str()) {
+            return err(format!(
+                "{field}: DOS device basename `{basename}` names a reserved device, not a deletable file; one exact representation only (`{path}`)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_absolute_path(path: &str, field: &str) -> ContractResult<()> {
     require_nonempty(path, field)?;
     for metacharacter in ROOT_METACHARACTERS {
@@ -155,6 +187,7 @@ fn validate_absolute_path(path: &str, field: &str) -> ContractResult<()> {
         for segment in rest.split('/') {
             reject_root_segment(segment, path, field)?;
         }
+        reject_windows_alias_segments(rest.split('/').collect::<Vec<_>>().as_slice(), path, field)?;
         return Ok(());
     }
     let bytes = path.as_bytes();
@@ -168,6 +201,11 @@ fn validate_absolute_path(path: &str, field: &str) -> ContractResult<()> {
         for segment in rest.split('\\') {
             reject_root_segment(segment, path, field)?;
         }
+        reject_windows_alias_segments(
+            rest.split('\\').collect::<Vec<_>>().as_slice(),
+            path,
+            field,
+        )?;
         return Ok(());
     }
     if path.starts_with("\\\\") && path.len() > 2 {
@@ -183,9 +221,10 @@ fn validate_absolute_path(path: &str, field: &str) -> ContractResult<()> {
                 "{field}: unc form requires host and share segments; found `{path}`"
             ));
         }
-        for segment in segments {
+        for segment in &segments {
             reject_root_segment(segment, path, field)?;
         }
+        reject_windows_alias_segments(segments.as_slice(), path, field)?;
         return Ok(());
     }
     err(format!(
@@ -205,10 +244,14 @@ fn validate_relative_path(path: &str, field: &str) -> ContractResult<()> {
     if path.starts_with('/') {
         return err(format!("{field}: must be relative to the install root; found `{path}`"));
     }
-    let bytes = path.as_bytes();
-    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+    if path.contains(':') {
         return err(format!(
-            "{field}: drive-qualified path escapes the bounded root; found `{path}`"
+            "{field}: colon is drive or alternate-data-stream syntax and escapes or aliases the bounded root; found `{path}`"
+        ));
+    }
+    if path.chars().any(|character| character.is_ascii_control() || character == '\u{7f}') {
+        return err(format!(
+            "{field}: ASCII control characters make the target spelling ambiguous; exact entries only; found `{path}`"
         ));
     }
     for forbidden in ['*', '?', '[', ']', '{', '}', '"', '<', '>', '|'] {
@@ -218,10 +261,22 @@ fn validate_relative_path(path: &str, field: &str) -> ContractResult<()> {
             ));
         }
     }
-    for segment in path.split('/') {
-        if segment.trim().is_empty() || segment == "." || segment == ".." {
+    let segments: Vec<&str> = path.split('/').collect();
+    for segment in &segments {
+        if segment.trim().is_empty() || *segment == "." || *segment == ".." {
             return err(format!(
                 "{field}: empty, `.`, or `..` segment escapes the exact-entry boundary; found `{path}`"
+            ));
+        }
+        if segment.ends_with('.') || segment.ends_with(' ') {
+            return err(format!(
+                "{field}: trailing dot or space is an elidable Windows spelling of a different name; exact entries only; found `{path}`"
+            ));
+        }
+        let basename = segment.split('.').next().unwrap_or(segment).to_ascii_uppercase();
+        if DOS_DEVICE_BASENAMES.contains(&basename.as_str()) {
+            return err(format!(
+                "{field}: DOS device basename `{basename}` names a reserved device, not a deletable file; found `{path}`"
             ));
         }
     }
@@ -487,6 +542,19 @@ pub fn validate_manifest(manifest: &OwnedStateManifest) -> ContractResult<()> {
         }
     }
 
+    for entry in &manifest.entries {
+        let prefix = format!("{}/", entry.relative_path);
+        if let Some(parent) = manifest.entries.iter().find(|other| {
+            other.relative_path.as_str() != entry.relative_path.as_str()
+                && other.relative_path.as_str().starts_with(&prefix)
+        }) {
+            return err(format!(
+                "manifest.entries: `{}` is inside enumerated row `{}`; a directory row's digest already covers its subtree, so an interior row is a double count",
+                entry.relative_path, parent.relative_path
+            ));
+        }
+    }
+
     let mut attempt_ids: BTreeSet<&str> = BTreeSet::new();
     for transaction in &manifest.transactions {
         require_nonempty(&transaction.attempt_id, "manifest.transactions[].attempt_id")?;
@@ -508,12 +576,19 @@ pub fn validate_manifest(manifest: &OwnedStateManifest) -> ContractResult<()> {
         );
     }
 
-    if manifest.redaction.policy == RedactionPolicy::PathsRedacted
-        && manifest.redaction.redacted_fields.is_empty()
-    {
-        return err(
-            "manifest.redaction.redacted_fields: paths_redacted policy must name the redacted surfaces",
-        );
+    match manifest.redaction.policy {
+        RedactionPolicy::None if !manifest.redaction.redacted_fields.is_empty() => {
+            return err(
+                "manifest.redaction: policy `none` claims no redaction but names redacted surfaces; the policy and its surfaces disagree",
+            );
+        }
+        RedactionPolicy::None => {}
+        _ if manifest.redaction.redacted_fields.is_empty() => {
+            return err(
+                "manifest.redaction.redacted_fields: a redaction policy must name the redacted surfaces; claiming redaction while naming none is ambiguous",
+            );
+        }
+        _ => {}
     }
     for field in &manifest.redaction.redacted_fields {
         require_nonempty(field, "manifest.redaction.redacted_fields[]")?;
@@ -545,6 +620,9 @@ fn validate_entry(entry: &Entry) -> ContractResult<()> {
     validate_relative_path(&entry.relative_path, "entry.relative_path")?;
 
     let running_refs_empty = entry.process_refs.is_empty();
+    for reference in &entry.process_refs {
+        require_nonempty(&reference.value, "entry.process_refs[].value")?;
+    }
     match entry.ownership_class {
         OwnershipClass::RunningOrActive if running_refs_empty => {
             return err(format!(
@@ -685,9 +763,22 @@ pub fn validate_plan_against_current_manifest(
                 destructive_paths.insert(action.relative_path.as_str());
             }
             ActionKind::Preserve => {
+                if action.verified_identity_sha256.is_some() {
+                    return err(format!(
+                        "plan.actions: `{}` carries verified_identity_sha256 on a preserve disposition; exact-currentness evidence binds destructive work only",
+                        action.relative_path
+                    ));
+                }
                 preserved_paths.insert(action.relative_path.as_str());
             }
-            ActionKind::Revalidate => {}
+            ActionKind::Revalidate => {
+                if action.verified_identity_sha256.is_some() {
+                    return err(format!(
+                        "plan.actions: `{}` carries verified_identity_sha256 on a revalidate disposition; exact-currentness evidence binds destructive work only",
+                        action.relative_path
+                    ));
+                }
+            }
         }
     }
 
@@ -940,6 +1031,11 @@ pub fn validate_result(outcome: &UninstallResult) -> ContractResult<()> {
                     "result: not_applicable requires #11417 conditional activation selection; issue existence alone never activates the lifecycle claim",
                 );
             }
+            if !outcome.removed_entries.is_empty() || failures_present {
+                return err(
+                    "result: not_applicable ran nothing; it must not report removed entries or failures",
+                );
+            }
             if !outcome.preserved_entries.is_empty() {
                 return err("result: not_applicable ran nothing; it must not claim preserved rows");
             }
@@ -1053,11 +1149,15 @@ pub fn validate_result_against_plan(
     }
 
     let mut destructive: BTreeMap<&str, ActionKind> = BTreeMap::new();
+    let mut marker_actions: BTreeSet<&str> = BTreeSet::new();
     let mut preserve_dispositions: BTreeSet<&str> = BTreeSet::new();
     for action in &plan.actions {
         match action.action {
             ActionKind::RemoveExact | ActionKind::RemoveMarker => {
                 destructive.insert(action.relative_path.as_str(), action.action);
+                if action.action == ActionKind::RemoveMarker {
+                    marker_actions.insert(action.relative_path.as_str());
+                }
             }
             ActionKind::Preserve => {
                 preserve_dispositions.insert(action.relative_path.as_str());
@@ -1105,6 +1205,16 @@ pub fn validate_result_against_plan(
             }
         }
         _ => {}
+    }
+
+    if outcome.result == UninstallOutcome::PathCleanupFailed {
+        for path in &failed_paths {
+            if !marker_actions.contains(path) {
+                return err(format!(
+                    "result.failed_entries: path_cleanup_failed failure `{path}` is not a planned remove_marker action; marker-cleanup failures name planned marker work only"
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -2253,6 +2363,206 @@ mod tests {
             ),
             "root_or_manifest_mismatch",
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn nested_rows_are_double_counts_fail_closed() -> Result<()> {
+        let nested_child = mutated_canonical(|value| {
+            value["entries"].as_array_mut().map(|entries| {
+                entries.push(serde_json::json!({
+                    "role": "unowned_file_observed",
+                    "relative_path": "current/inner",
+                    "observed": "present",
+                    "ownership_class": "foreign_or_user_owned",
+                    "identity": { "kind": "sha256_content", "sha256": D_A1 },
+                    "process_refs": [],
+                    "user_modified": true,
+                    "retention": "foreign_preserve"
+                }));
+            });
+        })?;
+        expect_rejected(validate_manifest(&nested_child), "double count")?;
+        Ok(())
+    }
+
+    #[test]
+    fn redaction_policy_and_surfaces_must_agree() -> Result<()> {
+        let none_with_surfaces = mutated_canonical(|value| {
+            value["redaction"]["policy"] = serde_json::json!("none");
+            value["redaction"]["redacted_fields"] = serde_json::json!(["entries[].relative_path"]);
+        })?;
+        expect_rejected(
+            validate_manifest(&none_with_surfaces),
+            "the policy and its surfaces disagree",
+        )?;
+
+        let secrets_without_surfaces = mutated_canonical(|value| {
+            value["redaction"]["policy"] = serde_json::json!("secrets_and_environment");
+            value["redaction"]["redacted_fields"] = serde_json::json!([]);
+        })?;
+        expect_rejected(
+            validate_manifest(&secrets_without_surfaces),
+            "must name the redacted surfaces",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn process_ref_values_fail_closed_on_ambiguity() -> Result<()> {
+        let empty_value = mutated_canonical(|value| {
+            if let Some(entry) = entry_mut(value, "candidates/v0.18.0-x86_64-unknown-linux-gnu") {
+                entry["ownership_class"] = serde_json::json!("running_or_active");
+                entry["retention"] = serde_json::json!("blocked_pending_revalidation");
+                entry["process_refs"] = serde_json::json!([{ "kind": "pid", "value": "" }]);
+            }
+        })?;
+        expect_rejected(validate_manifest(&empty_value), "process_refs[].value")?;
+        Ok(())
+    }
+
+    #[test]
+    fn verified_identity_binds_destructive_work_only() -> Result<()> {
+        let running = parse_manifest(&fixture_text("manifest_running_current.json")?)?;
+
+        let preserve_with_digest: RemovalPlan =
+            mutated_document("plan_blocked_running_all_preserve.json", |value| {
+                if let Some(actions) = value["actions"].as_array_mut() {
+                    actions[1]["verified_identity_sha256"] = serde_json::json!(D_A1);
+                }
+            })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(
+                &preserve_with_digest,
+                &running,
+                &running_digest()?,
+            ),
+            "binds destructive work only",
+        )?;
+
+        let revalidate_with_digest: RemovalPlan =
+            mutated_document("plan_blocked_running_all_preserve.json", |value| {
+                if let Some(actions) = value["actions"].as_array_mut() {
+                    actions[0]["verified_identity_sha256"] = serde_json::json!(D_A1);
+                }
+            })?;
+        expect_rejected(
+            validate_plan_against_current_manifest(
+                &revalidate_with_digest,
+                &running,
+                &running_digest()?,
+            ),
+            "binds destructive work only",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn not_applicable_reports_nothing() -> Result<()> {
+        let base_text = fixture_text("result_already_absent_complete_evidence.json")?;
+
+        let removed_anyway: UninstallResult = {
+            let mut value: Value = serde_json::from_str(&base_text)
+                .map_err(|error| super::ContractError::new(format!("parse error: {error}")))?;
+            value["result"] = serde_json::json!("not_applicable");
+            value["activation_state"] = serde_json::json!("conditional_activation_selected");
+            value["removed_entries"] = serde_json::json!(["current"]);
+            serde_json::from_value(value)
+                .map_err(|error| super::ContractError::new(format!("parse error: {error}")))?
+        };
+        expect_rejected(validate_result(&removed_anyway), "must not report removed entries")?;
+
+        let failed_anyway: UninstallResult = {
+            let mut value: Value = serde_json::from_str(&base_text)
+                .map_err(|error| super::ContractError::new(format!("parse error: {error}")))?;
+            value["result"] = serde_json::json!("not_applicable");
+            value["activation_state"] = serde_json::json!("conditional_activation_selected");
+            value["failed_entries"] = serde_json::json!([
+                { "relative_path": "current", "stage": "verify", "detail": "probe" }
+            ]);
+            serde_json::from_value(value)
+                .map_err(|error| super::ContractError::new(format!("parse error: {error}")))?
+        };
+        expect_rejected(validate_result(&failed_anyway), "must not report removed entries")?;
+        Ok(())
+    }
+
+    #[test]
+    fn path_cleanup_failures_bind_planned_marker_work() -> Result<()> {
+        let manifest = parse_manifest(canonical_manifest_text())?;
+        let digest = canonical_digest()?;
+        let plan = parse_plan(&fixture_text("plan_full_removal.json")?)?;
+        let outcome = parse_result(&fixture_text("result_partial_failure_retryable.json")?)?;
+
+        let non_marker_failure: UninstallResult = {
+            let mut outcome = outcome.clone();
+            outcome.result = UninstallOutcome::PathCleanupFailed;
+            let mut extra = outcome.failed_entries[0].clone();
+            extra.relative_path = "current".into();
+            outcome.failed_entries.push(extra);
+            outcome
+        };
+        expect_rejected(
+            validate_result_against_plan(&non_marker_failure, &plan, &manifest, &digest),
+            "not a planned remove_marker action",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn windows_identity_aliases_fail_closed() -> Result<()> {
+        let ads_relative = mutated_canonical(|value| {
+            if let Some(entry) = entry_mut(value, "notes.txt") {
+                entry["relative_path"] = serde_json::json!("bin/perllsp:ads");
+            }
+        })?;
+        expect_rejected(validate_manifest(&ads_relative), "alternate-data-stream")?;
+
+        let trailing_dot = mutated_canonical(|value| {
+            if let Some(entry) = entry_mut(value, "notes.txt") {
+                entry["relative_path"] = serde_json::json!("notes.txt.");
+            }
+        })?;
+        expect_rejected(validate_manifest(&trailing_dot), "trailing dot or space")?;
+
+        let trailing_space = mutated_canonical(|value| {
+            if let Some(entry) = entry_mut(value, "notes.txt") {
+                entry["relative_path"] = serde_json::json!("sub/notes.txt ");
+            }
+        })?;
+        expect_rejected(validate_manifest(&trailing_space), "trailing dot or space")?;
+
+        for device_path in ["COM1", "sub/CON.txt", "LPT9", "Nul.TXT"] {
+            let device = mutated_canonical(|value| {
+                if let Some(entry) = entry_mut(value, "notes.txt") {
+                    entry["relative_path"] = serde_json::json!(device_path);
+                }
+            })?;
+            expect_rejected(validate_manifest(&device), "reserved device")?;
+        }
+
+        let control_character = mutated_canonical(|value| {
+            if let Some(entry) = entry_mut(value, "notes.txt") {
+                entry["relative_path"] = serde_json::json!("bin/\u{1}x");
+            }
+        })?;
+        expect_rejected(validate_manifest(&control_character), "control characters")?;
+
+        let ads_absolute = mutated_canonical(|value| {
+            value["install_root"]["absolute_path"] = serde_json::json!("C:\\foo:bar");
+        })?;
+        expect_rejected(validate_manifest(&ads_absolute), "alternate-data-stream")?;
+
+        let unc_device = mutated_canonical(|value| {
+            value["install_root"]["absolute_path"] = serde_json::json!("\\\\host\\share\\CON");
+        })?;
+        expect_rejected(validate_manifest(&unc_device), "reserved device")?;
+
+        let del_character = mutated_canonical(|value| {
+            value["install_root"]["absolute_path"] = serde_json::json!("/tmp/a\u{7f}b");
+        })?;
+        expect_rejected(validate_manifest(&del_character), "control characters")?;
+
         Ok(())
     }
 }

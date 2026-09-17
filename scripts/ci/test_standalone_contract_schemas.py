@@ -373,6 +373,132 @@ class StandaloneContractSchemaTests(unittest.TestCase):
         )
         self._expect_rejected(duplicate_preserved, "duplicate preserved_entries")
 
+        duplicate_failed = self._result_case(
+            failed_entries=[
+                {
+                    "relative_path": "current",
+                    "stage": "verify",
+                    "detail": "probe failure entry",
+                },
+                {
+                    "relative_path": "current",
+                    "stage": "verify",
+                    "detail": "probe failure entry",
+                },
+            ]
+        )
+        self._expect_rejected(duplicate_failed, "duplicate failed_entries")
+
+    # ── owned_state: redaction policy and surfaces agree ──────────────────────
+
+    def test_redaction_policy_and_surfaces_must_agree(self):
+        def none_with_surfaces(doc):
+            doc["redaction"]["policy"] = "none"
+            doc["redaction"]["redacted_fields"] = ["entries[].relative_path"]
+
+        self._mutated(
+            self.manifest_validator,
+            "manifest_canonical_full_install.json",
+            none_with_surfaces,
+            "policy none with redacted surfaces must be schema-invalid",
+        )
+
+        def redacting_without_surfaces(doc, policy="paths_redacted"):
+            doc["redaction"]["policy"] = policy
+            doc["redaction"]["redacted_fields"] = []
+
+        self._mutated(
+            self.manifest_validator,
+            "manifest_canonical_full_install.json",
+            redacting_without_surfaces,
+            "paths_redacted without surfaces must be schema-invalid",
+        )
+
+        self._mutated(
+            self.manifest_validator,
+            "manifest_canonical_full_install.json",
+            lambda doc: redacting_without_surfaces(
+                doc, policy="secrets_and_environment"
+            ),
+            "secrets_and_environment without surfaces must be schema-invalid",
+        )
+
+    # ── owned_state: bounded Windows identity law parity ─────────────────────
+
+    def test_windows_identity_aliases_are_schema_invalid(self):
+        relative_cases = [
+            ("bin/perllsp:ads", "alternate-data-stream colon"),
+            ("notes.txt.", "trailing dot"),
+            ("sub/notes.txt ", "trailing space"),
+            ("COM1", "reserved device basename"),
+            ("sub/CON.txt", "reserved device with extension"),
+            ("bin/\u0001x", "control character"),
+        ]
+        for path, description in relative_cases:
+            with self.subTest(relative=path):
+
+                def set_entry_path(doc, value=path):
+                    for entry in doc["entries"]:
+                        if entry["relative_path"] == "notes.txt":
+                            entry["relative_path"] = value
+                            return
+                    raise AssertionError("fixture has no notes.txt entry")
+
+                self._mutated(
+                    self.manifest_validator,
+                    "manifest_canonical_full_install.json",
+                    set_entry_path,
+                    f"{description} must be schema-invalid",
+                )
+
+        absolute_cases = [
+            ("C:\\foo:bar", "drive-form alternate-data-stream colon"),
+            ("/tmp/a\u007fb", "delete control character"),
+            ("\\\\host\\share\\CON", "unc reserved device basename"),
+        ]
+        for path, description in absolute_cases:
+            with self.subTest(absolute=path):
+
+                def set_root(doc, value=path):
+                    doc["install_root"]["absolute_path"] = value
+
+                self._mutated(
+                    self.manifest_validator,
+                    "manifest_canonical_full_install.json",
+                    set_root,
+                    f"{description} must be schema-invalid",
+                )
+
+    def test_windows_identity_aliases_negative_controls_stay_valid(self):
+        for path in ("v0.18.0/notes.txt", ".perllsp-path-marker"):
+            with self.subTest(relative=path):
+                document = _load(FIXTURE_DIR / "manifest_canonical_full_install.json")
+                for entry in document["entries"]:
+                    if entry["relative_path"] == "notes.txt":
+                        entry["relative_path"] = path
+                self._expect_accepted(
+                    self.manifest_validator,
+                    document,
+                    f"plain relative path {path} must stay valid",
+                )
+
+    # ── owned_state: process references are unambiguous ───────────────────────
+
+    def test_process_ref_value_must_not_be_empty(self):
+        def empty_process_ref(doc):
+            for entry in doc["entries"]:
+                if entry["process_refs"]:
+                    entry["process_refs"][0]["value"] = ""
+                    return
+            raise AssertionError("fixture has no process_refs row")
+
+        self._mutated(
+            self.manifest_validator,
+            "manifest_running_current.json",
+            empty_process_ref,
+            "empty process-ref value must be schema-invalid",
+        )
+
     def test_partial_failure_stays_explicit(self):
         silent = self._result_case(result="partial_failure", failed_entries=[])
         self._expect_rejected(silent, "partial_failure without failed_entries")
@@ -406,6 +532,7 @@ class StandaloneContractSchemaTests(unittest.TestCase):
         selected = self._result_case(
             result="not_applicable",
             activation_state="conditional_activation_selected",
+            removed_entries=[],
         )
         self._expect_accepted(
             self.result_validator, selected, "gated not_applicable result"

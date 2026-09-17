@@ -1,45 +1,60 @@
 # Context: #11470 — standalone owned-state manifests and safe removal plans
 
+## Claim authority: #11470 is closed; canonical leaf is #11527
+
+Issue #11470 was closed `not_planned` on 2026-08-31 as a duplicate, under the
+programme's integrity ruling, of **#11527** (same title, same contract claim;
+parent/controller #8372). This packet therefore **advances #11527**; it cannot
+close #11470. The `.spec/11470-*` directory name is the historical claim
+number this contract was authored against and is retained for provenance.
+
 ## Problem
 
-Issue #11470 (uninstall programme #8372/#10703) requires one versioned,
+Issue #11470/#11527 (uninstall programme #8372/#10703) requires one versioned,
 closed installer-owned-state manifest (`standalone_owned_state.v1`), a pure
 removal plan/result contract, running/unknown-state rules, the PATH ownership
 relationship to #11467/#11468/#11469, and deterministic fixtures for
 standalone uninstall. The claim deletes nothing and mutates no
-PATH/profile/registry/current selection; platform successors (#11471/#11472)
-own execution.
+PATH/profile/registry/current selection; removal-execution successors own
+execution.
 
 ## Status: contract packet + checked validator this lane; live cut gated
 
-Verified live on 2026-08-24 against `origin/main@cce85d167` (current head at
-lane start) and live GitHub state:
+Re-verified live on 2026-09-17 against `origin/main@9b7d333170e5` (current
+head at repair time) and live GitHub state:
 
-| Sibling | Role for #11470 | State when verified | Open PR claiming it |
-|---|---|---|---|
-| #8372 | parent uninstall controller | **open** | none |
-| #10703 | distribution train programme | **open** | none |
-| #11179 | immutable candidate/current-selection records | **open** | none |
-| #11425–#11430 | POSIX/Windows mutation ownership, candidates, health+rollback | **open** (all six) | none |
-| #11467/#11468/#11469 | PATH persistence semantics and implementations | **open** (all three) | none |
-| #11417 | conditional activation gate (`not_applicable` requires it) | **open** | none |
-| #11471/#11472 | removal executors consuming this contract | **open** | none |
+| Sibling | Role for this contract | State when verified (2026-09-17) |
+|---|---|---|
+| #11470 | original claim number | **closed `not_planned`** — duplicate of #11527 |
+| #11527 | canonical leaf (same title) | **open**, acceptance unchecked; this PR advances it |
+| #8372 | parent uninstall controller | **open** |
+| #10703 | distribution train programme | **open** |
+| #11869 | umbrella | **open** |
+| #11179 | immutable candidate/current-selection records | **closed `completed`** (PR #12213 merged; `standalone_candidate.v1` + `standalone_current_selection.v1` landed on main) |
+| #11425–#11430 | POSIX/Windows mutation ownership, candidates, health+rollback | **open** (all six) |
+| #11467/#11468/#11469 | PATH persistence semantics and implementations | **closed `not_planned`** (consolidated by the programme; PATH marker ownership semantics remain represented by the marker roles here) |
+| #11417 | conditional activation gate (`not_applicable` requires it) | **open** |
+| #11471/#11472 | removal executors (original numbering) | **closed `not_planned`** (consolidated; executor successors are tracked under #11527's plan) |
 
-Searches performed: `gh pr list --state all` (incl. drafts) contains no PR
-referencing #11470 or standalone owned-state manifests; repository-wide
-searches find no `standalone_owned_state` symbol or schema. No rival
-candidate exists.
+Searches performed at repair time: the contract trio
+(`standalone_owned_state`, `standalone_removal_plan`,
+`standalone_uninstall_result`) exists on no other branch PR and nowhere on
+`origin/main`; sibling standalone schemas
+(`standalone_candidate.v1`, `standalone_current_selection.v1`,
+`standalone_install_transition.v1`, `standalone_source_build.v1`) landed
+around it without absorbing this claim. No rival candidate exists.
 
 Unlike the deferred-cut shape of `.spec/11661-*`, the CONTRACT itself has no
 unlanded prerequisite: it is pure document validation over closed vocabularies
 the issue itself fixes (roles, classes, retention, plan fields, result words).
 The manifest references current/previous candidate identities by digest and
-path only; it does not define the selection model (#11179's owned claim), and
+path only; it does not define the selection model (#11179's landed
+`standalone_candidate.v1`/`standalone_current_selection.v1` packets), and
 marker rows reference PATH ownership semantics without implementing them
-(#11467–#11469). Validation therefore lands now as executable, discriminating
-proof; production scanning/removal binds later.
+(successor claims under #11527). Validation therefore lands now as
+executable, discriminating proof; production scanning/removal binds later.
 
-## Current-main facts the future builder consumes (`main@cce85d167`)
+## Current-main facts the future builder consumes (`main@cce85d167` at first verification; shapes unchanged at `main@9b7d333170e5`)
 
 ### What the standalone installer writes today (no owned-state manifest)
 
@@ -101,12 +116,13 @@ contracts only".
 
 ## Links
 
-- Issue: [#11470](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11470)
+- Original claim: [#11470](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11470) — closed `not_planned` (duplicate)
+- Canonical leaf: [#11527](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/11527) — this PR advances it
 - Parent controller: #8372; programme: #10703; umbrella: #11869
-- State siblings: #11179, #11425–#11430
-- PATH ownership: #11467 / #11468 / #11469
+- State siblings: #11179 (landed), #11425–#11430 (open)
+- PATH ownership: #11467 / #11468 / #11469 (closed, consolidated)
 - Activation gate: #11417; filesystem hardening: #10755
-- Removal executors: #11471 (POSIX), #11472 (Windows)
+- Removal executors: successor claims under #11527 (original #11471/#11472 closed, consolidated)
 - Hosted removal proof lineage: #11144 / #11149 / #11156
 
 ## Scope boundary

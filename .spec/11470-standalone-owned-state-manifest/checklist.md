@@ -6,8 +6,8 @@
 
 - **Check:** this lane never deletes, moves, or mutates PATH/profile/registry/
   current-selection state. The validator parses documents only. Removal
-  execution belongs to #11471/#11472; activation to #11417; scanning to
-  #11425–#11430.
+  execution belongs to the successor claims under #11527; activation to
+  #11417; scanning to #11425–#11430.
 - **If violated:** stop and revert the offending change; the contract claim
   does not authorize filesystem effects.
 
@@ -23,21 +23,26 @@
    lifecycle policy, one all-preserve blocked plan, one stale-binding
    negative), two coherent results.
 4. `xtask/examples/standalone_owned_state.rs` — checked validator: closed
-   typed structs, manifest coherence rules (canonical absolute roots,
-   identity bounds, running-state both-direction rule, total class→retention
-   function), plan totality with enforced canonical order_index sequence and
-   destructive-legality matrix with exact-currentness digests, exact
-   postcondition populations, result vocabulary coherence plus exact
-   result⇔plan⇔manifest binding reconciliation, canonical serialization.
+   typed structs, manifest coherence rules (canonical absolute roots with
+   Windows alias exclusions, identity bounds, running-state both-direction
+   rule, total class→retention function, nested-row double-count rejection,
+   redaction policy/surface agreement), plan totality with enforced canonical
+   order_index sequence, destructive-legality matrix with exact-currentness
+   digests (evidence binds destructive work only), exact postcondition
+   populations, result vocabulary coherence plus exact result⇔plan⇔manifest
+   binding reconciliation (marker-cleanup failures bind planned marker work),
+   canonical serialization.
 5. Non-Rust registration for every new file plus regenerated inventory.
+6. `.github/workflows/standalone-contract-tests.yml` — hosted CI runs for
+   the validator battery and the schema-only parity harness.
 
-## Successor change order (platform lanes #11471/#11472)
+## Successor change order (removal-executor successors under #11527)
 
 ### Step S1: Reconcile against landed prerequisites
 
-- Replace reference-only fields once #11179/#11425–#11430 land real
-  candidate/selection identities and #11467–#11469 define marker formats;
-  re-map rows if role spellings changed there.
+- Replace reference-only fields once #11425–#11430 land real
+  candidate/selection identities and the PATH/marker persistence successors
+  define marker formats; re-map rows if role spellings changed there.
 
 ### Step S2: Bind the scanner
 
@@ -58,9 +63,9 @@
 for f in context.md acceptance.md checklist.md; do [ -f ".spec/11470-standalone-owned-state-manifest/$f" ] || exit 1; done
 rg -c "SOS-C(0[1-9]|1[0-6])" .spec/11470-standalone-owned-state-manifest/acceptance.md   # expect >= 16 contract rows
 rg -c "^\| [0-9]+ \| " .spec/11470-standalone-owned-state-manifest/acceptance.md        # expect exactly 10 falsifier rows
-rg -n "main@cce85d167" .spec/11470-standalone-owned-state-manifest/context.md            # pinned evidence base
-cargo test -p xtask --example standalone_owned_state --locked                            # 21 focused tests
-python -m unittest scripts/ci/test_standalone_contract_schemas.py                        # 18 schema-law checks
+rg -n "main@9b7d333170e5" .spec/11470-standalone-owned-state-manifest/context.md          # pinned evidence base
+cargo test -p xtask --example standalone_owned_state --locked                            # 28 focused tests
+python -m unittest scripts/ci/test_standalone_contract_schemas.py                        # 22 schema-law checks
 cargo run -q -p xtask --example standalone_owned_state --locked -- \
   --manifest fixtures/experience/install_owned_state/manifest_canonical_full_install.json \
   --plan fixtures/experience/install_owned_state/plan_full_removal.json \
@@ -80,8 +85,8 @@ determinism proof.
 
 ## Callers and consumers
 
-- #11471 (POSIX) and #11472 (Windows) consume manifest+plan+result documents;
-  they own process handling, permissions, and marker mutation.
+- Removal-executor successors under #11527 consume manifest+plan+result
+  documents; they own process handling, permissions, and marker mutation.
 - #11417 gates any `not_applicable`; until selected, results use
   `conditional_activation_not_selected`.
 

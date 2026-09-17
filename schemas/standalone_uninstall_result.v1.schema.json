@@ -67,6 +67,7 @@
     },
     "failed_entries": {
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/failed_entry"
       }
@@ -150,7 +151,9 @@
       "then": {
         "properties": {
           "activation_state": { "const": "conditional_activation_selected" },
-          "preserved_entries": { "maxItems": 0 }
+          "removed_entries": { "maxItems": 0 },
+          "preserved_entries": { "maxItems": 0 },
+          "failed_entries": { "maxItems": 0 }
         }
       }
     },
