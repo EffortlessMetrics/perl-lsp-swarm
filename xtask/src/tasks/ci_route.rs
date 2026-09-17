@@ -1900,7 +1900,8 @@ mod tests {
             "xtask/tests/product_topology_cli.rs",
             "policy/product-topology.toml",
         ] {
-            let receipt = route_receipt("origin/main", "HEAD", vec![file.to_string()])?;
+            let receipt =
+                route_receipt("origin/main", "HEAD", vec![file.to_string()], "ci-route.v1")?;
             assert_eq!(
                 receipt.changed_surfaces,
                 vec!["xtask-product-topology"],
