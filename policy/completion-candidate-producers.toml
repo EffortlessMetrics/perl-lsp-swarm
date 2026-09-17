@@ -54,6 +54,10 @@ outcome_owner = "#10230"
 # current main (surface digest a1182c1c... at both trees, 42 files), every
 # producer row validated unchanged against the discovered population, and
 # `graph` reproduced the projection byte-identically apart from the digest.
+# Re-anchor 2026-09-17: post-merge wave drifted the surface to 96ba9c0c...
+# (modifications only under the scan roots, no producer add/remove/re-channel,
+# scanned set unchanged at 42 files); projection diff is digest-only, `check`
+# passes.
 source_digest = "sha256:96ba9c0c88436e280a6be6e5eeefce9f8fd5ecc9e3a27f83343907496c316b54"
 
 [[delegations]]

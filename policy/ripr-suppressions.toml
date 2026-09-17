@@ -4094,6 +4094,57 @@ expires = "2026-12-31"
 removal_criteria = "Remove when ripr#1429-class tracing covers fn-pointer call sites on the deletion side of a diff, or when this PR's deletion probes age out of the diff scope. Narrow immediately if any seam unrelated to ParseFailure classification lands in this file."
 
 # -----------------------------------------------------------------------------
+# issue_controllers train validator (PR #15416, T02 of #11765): new-module
+# declarations with no static test path (ripr#1429 class).
+#
+# PR #15416 adds the independent static validator for the stable
+# issue_controller_train.v1 manifest: five production files plus an inline
+# cfg(test) falsifier suite. Diff-scoped RIPR 0.10.x reports 219
+# no_static_path seams across the module. The flagged seams are non-executable
+# declarations and fixture plumbing the analyzer cannot trace to a covering
+# test: frozen contract constants (SCHEMA_NAME, EXPECTED_NODES, LAW_EDGES,
+# vocabularies), clap-derived subcommand/field definitions in mod.rs (the same
+# proc-macro-opaque class as the xtask CLI and native_product_surface
+# suppressions), the internal Sha256Digest wrapper struct, and the cfg(test)
+# mutation-fixture builders in tests.rs.
+#
+# HONEST PROOF NOTE: the module's behavior proof is not declaration-level. It
+# is the 55-test falsifier suite that mutates the real stable manifest and
+# requires every law to reject it (cargo test -p xtask --bin xtask
+# issue_controllers), four command-level fail-closed tests (non-static refusal,
+# projection drift detection, refuse-to-project, explain-static), the
+# git_ancestry inventory contract test, and the fused CI gate
+# (issue-controller-train-contract.yml) that runs the suite, `train check
+# --static`, and `train graph --check` on every PR touching the module.
+# reachable_unrevealed findings are NOT suppressed and still block.
+#
+# HONEST SCOPE NOTE: the matcher is path-scoped, so a future no_static_path
+# seam in these files is masked for this window. That is a real cost; it is
+# accepted because every executable law in the module is falsifier-covered and
+# the fused CI gate re-proves the manifest on every touch. Narrow immediately
+# if any seam unrelated to the train validator lands in these files.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-issue-controllers-train-validator"
+kind = "predicate_infection_untraceable"
+paths = [
+  "xtask/src/tasks/issue_controllers/mod.rs",
+  "xtask/src/tasks/issue_controllers/model.rs",
+  "xtask/src/tasks/issue_controllers/validate.rs",
+  "xtask/src/tasks/issue_controllers/digest.rs",
+  "xtask/src/tasks/issue_controllers/projection.rs",
+  "xtask/src/tasks/issue_controllers/tests.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#11765"
+reason = "PR #15416 (T02 of the issue-controller train, epic #11765) adds the independent static validator for the stable issue_controller_train.v1 manifest. Diff-scoped RIPR 0.10.x reports 219 no_static_path seams on the new module; they are non-executable declarations (frozen contract constants and vocabularies), clap-derived subcommand and field definitions, the internal Sha256Digest wrapper, and cfg(test) mutation-fixture builders — the analyzer cannot trace any of them to a static test path (ripr#1429 class, same as the xtask CLI, native_product_surface, quality_baseline, and agent_ledgers suppressions). The module's executable proof is the 55-test falsifier suite over the real stable manifest plus four command-level fail-closed tests, and the fused issue-controller-train-contract workflow re-runs the suite, `train check --static`, and `train graph --check` on every PR touching the module. Remove when ripr#1429 is fixed upstream or the module gains a registered static test mapping."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1429-class tracing maps new-module declarations to their covering falsifier suites, or when the module is deleted. Narrow immediately if any seam unrelated to the train validator lands in these files."
+
+# -----------------------------------------------------------------------------
 # xtask automation: compiler performance receipt gate module — no production
 # caller by design (#9311, PR #15569).
 #
