@@ -4383,7 +4383,6 @@ created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-12-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in report_identity.rs, perl-lsp-rs-core diagnostics.rs, or regex_retention.rs outside the 13 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
-=======
 # -----------------------------------------------------------------------------
 # DAP debugger-capability probe seams (PR #15717): ripr#1429-class tracer
 # limitation — the static tracer cannot connect focused tests through the
