@@ -16,6 +16,33 @@
     "ok",
     "errors"
   ],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "ok": { "const": true } },
+        "required": ["ok"]
+      },
+      "then": {
+        "properties": {
+          "instrument": {
+            "properties": { "status": { "const": "ok" } }
+          },
+          "errors": { "maxItems": 0 }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "ok": { "const": false } },
+        "required": ["ok"]
+      },
+      "then": {
+        "properties": {
+          "errors": { "minItems": 1 }
+        }
+      }
+    }
+  ],
   "properties": {
     "schema_version": {
       "const": "ci_cache_receipt.v1"

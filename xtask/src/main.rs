@@ -1184,6 +1184,7 @@ enum Commands {
         check: bool,
 
         /// Write the receipt JSON to this path instead of stdout.
+        /// Rejected alongside `--check`, which never writes a receipt.
         #[arg(long)]
         receipt: Option<PathBuf>,
 

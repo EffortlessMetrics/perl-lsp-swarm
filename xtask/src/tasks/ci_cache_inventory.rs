@@ -1843,7 +1843,8 @@ fn validate_receipt_against_schema(root: &Path, receipt: &CiCacheReceipt) -> Res
 
 /// Derive the repository's cache inventory, and either:
 /// - `--check`: diff the derived truth against the checked-in manifest and
-///   fail on any drift;
+///   fail on any drift (never writes a receipt: combining `--check` with
+///   `--receipt` fails loudly instead of silently ignoring the receipt);
 /// - write the receipt to `--receipt <path>` (or stdout by default), and
 ///   (re)write the manifest to `--manifest <path>` (defaults to
 ///   [`MANIFEST`]) when not checking.
@@ -1857,6 +1858,11 @@ pub fn run(
     manifest: Option<PathBuf>,
     api_version: &str,
 ) -> Result<()> {
+    if check && receipt.is_some() {
+        bail!(
+            "--receipt <path> is not honored in --check mode: run without --check to emit the receipt"
+        );
+    }
     ensure_supported_api_version(api_version)?;
     let root = project_root()?;
     let manifest_path = manifest.unwrap_or_else(|| root.join(MANIFEST));
@@ -2130,6 +2136,50 @@ mod tests {
         let errors: Vec<String> =
             validator.iter_errors(&receipt_json).map(|error| error.to_string()).collect();
         assert!(errors.is_empty(), "failed-instrument receipt violates its own schema: {errors:?}");
+    }
+
+    #[test]
+    fn contradictory_ok_errors_shapes_fail_schema() {
+        let root = project_root();
+        let schema_raw = fs::read_to_string(root.join("schemas/ci_cache_receipt.v1.schema.json"))
+            .expect("read ci_cache_receipt schema");
+        let schema: JsonValue = serde_json::from_str(&schema_raw).expect("parse schema JSON");
+        let validator =
+            jsonschema::validator_for(&schema).expect("compile ci_cache_receipt schema");
+        let is_valid = |value: &JsonValue| {
+            validator.iter_errors(value).map(|error| error.to_string()).collect::<Vec<_>>()
+        };
+
+        let receipt_json = serde_json::to_value(&build_failed_receipt("fixture: parser failure"))
+            .expect("serialize failed receipt");
+        assert!(
+            is_valid(&receipt_json).is_empty(),
+            "producer failed receipt must stay schema-valid"
+        );
+
+        let mut ok_with_errors = receipt_json.clone();
+        ok_with_errors["ok"] = json!(true);
+        assert!(
+            !is_valid(&ok_with_errors).is_empty(),
+            "`ok: true` with a non-empty `errors` array must fail the schema"
+        );
+
+        let mut failed_without_errors = receipt_json;
+        failed_without_errors["errors"] = json!([]);
+        assert!(
+            !is_valid(&failed_without_errors).is_empty(),
+            "`ok: false` with an empty `errors` array must fail the schema"
+        );
+    }
+
+    #[test]
+    fn check_mode_rejects_receipt_combination() {
+        let error = run(true, Some(PathBuf::from("fixture-receipt.json")), None, "v1")
+            .expect_err("--check combined with --receipt must fail loudly");
+        assert!(
+            error.to_string().contains("--receipt"),
+            "the rejection must name the ignored option: {error:#}"
+        );
     }
 
     #[test]
