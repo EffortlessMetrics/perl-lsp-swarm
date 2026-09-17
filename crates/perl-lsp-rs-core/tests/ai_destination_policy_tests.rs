@@ -182,6 +182,7 @@ fn redirect_response_is_not_followed_and_does_not_reach_secondary_host()
             api_key_prefix: Some("Bearer".to_string()),
             timeout_ms: 2_000,
             local_model_mode: true,
+            max_inflight: 1,
         },
         Arc::new(RateLimiter::new(10.0, 10)),
     );
@@ -218,6 +219,7 @@ fn stream_rejects_disallowed_endpoint_before_network_io() {
             api_key_prefix: Some("Bearer".to_string()),
             timeout_ms: 2_000,
             local_model_mode: false,
+            max_inflight: 1,
         },
         Arc::new(RateLimiter::new(10.0, 10)),
     );
@@ -328,6 +330,7 @@ fn stream_pins_validated_loopback_ips_for_connect() -> Result<(), Box<dyn std::e
             api_key_prefix: Some("Bearer".to_string()),
             timeout_ms: 2_000,
             local_model_mode: true,
+            max_inflight: 1,
         },
         Arc::new(RateLimiter::new(10.0, 10)),
     );
@@ -356,6 +359,7 @@ fn transport_errors_do_not_echo_api_key() {
             api_key_prefix: Some("Bearer".to_string()),
             timeout_ms: 200,
             local_model_mode: true,
+            max_inflight: 1,
         },
         Arc::new(RateLimiter::new(10.0, 10)),
     );
