@@ -773,6 +773,7 @@ while (my $line = <STDIN>) {
             initial_stop_pending: false,
             entry_stop_pending: false,
             stopped_generation: 1,
+            module_generation: crate::reload::RuntimeModuleGenerationClock::new(),
         });
         adapter.operation_broker.open_session();
         adapter.start_output_reader(std::path::PathBuf::from("."));

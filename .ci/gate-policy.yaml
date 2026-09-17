@@ -2473,6 +2473,11 @@ workflow_integration:
         - v2_bundle_sync
         - nested_lock_check
         - published_crate_count_pr_fast
+      # `compile_all_targets` is not listed here since #15638: the meta shard
+      # no longer executes it (the required `Compile All Targets (bit-rot
+      # guard)` job owns the property), and this mapping must not claim
+      # matrix execution that no longer exists. The gate row itself remains
+      # in tier pr_fast for local pr-fast and advisory pr-smoke shift-left.
       # Note: PR Smoke owns clippy_core/unit_core/parser stack. Parser audit,
       # v2 parity, workflow audit, and full policy closeout remain defined but
       # are too long for the bounded merge-blocking workflow shard.

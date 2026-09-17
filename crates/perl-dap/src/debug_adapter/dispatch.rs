@@ -274,6 +274,21 @@ impl DebugAdapter {
     ) -> DapMessage {
         tracing::debug!(command, arguments = ?arguments, "DAP request");
 
+        // R03 reload-family route (#10102), ahead of the table-owned
+        // dispatch: under the exact preview/test profile the family
+        // request routes to the typed handler; otherwise it falls through
+        // to the ordinary unknown-command response, so the family stays
+        // unavailable without general advertisement and remains absent
+        // from `SUPPORTED_COMMANDS` (the standard-command authority).
+        // Placed beside the #9581 floor rather than in the table body,
+        // which must stay the fixed table-owned shape the
+        // protocol-authority gate pins.
+        if command == crate::reload_family::LOADED_MODULE_RELOAD_REQUEST
+            && self.loaded_module_reload_route_enabled()
+        {
+            return self.handle_loaded_module_reload(self.next_seq(), request_seq, arguments);
+        }
+
         // #9581 secondary-capability floor, ahead of the table-owned dispatch:
         // a floored request is refused before any handler can run.
         let response = match self.secondary_capability_floor_response(
@@ -305,6 +320,14 @@ impl DebugAdapter {
         arguments: Option<Value>,
     ) -> DapMessage {
         tracing::debug!(command, arguments = ?arguments, "DAP request (mock)");
+
+        // R03 reload-family route (#10102), mirrored from `handle_request`
+        // so the mock surface routes the profiled family identically.
+        if command == crate::reload_family::LOADED_MODULE_RELOAD_REQUEST
+            && self.loaded_module_reload_route_enabled()
+        {
+            return self.handle_loaded_module_reload(self.next_seq(), request_seq, arguments);
+        }
 
         // #9581 secondary-capability floor, ahead of the table-owned dispatch:
         // the mock surface must not route floored requests either.
