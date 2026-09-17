@@ -3900,6 +3900,21 @@ impl WorkspaceIndex {
     /// [`WorkspaceSemanticQueries`] facade that borrows from read-locked
     /// semantic indexes. Locks are released when `f` returns.
     ///
+    /// # Re-entrancy contract (#15644)
+    ///
+    /// The callback runs while this method holds read guards on `fact_shards`
+    /// and all three semantic indexes. The callback must NOT re-enter
+    /// `WorkspaceIndex` — not via `find_definition`/`find_references`, not via
+    /// `semantic_anchor_wire_location`, and not via any other shard/symbol
+    /// accessor. `parking_lot`'s `RwLock` is neither reentrant nor
+    /// reader-preferring: once a concurrent `index_*` call queues its write
+    /// locks on those same maps, a nested read inside the callback blocks
+    /// behind the writer while the writer blocks behind the callback's outer
+    /// read — a guaranteed deadlock. Resolve legacy locations before entering
+    /// the callback, and serve anchor lookups from the snapshot the borrowed
+    /// `WorkspaceSemanticQueries` already provides (for example
+    /// `SemanticQueries::anchor_source_span`).
+    ///
     /// Returns `Some(result)` if the URI is indexed and semantic data is
     /// available, `None` if the URI has not been indexed or its fact shard is
     /// absent (the caller should fall back to legacy diagnostics).
@@ -3941,6 +3956,9 @@ impl WorkspaceIndex {
     /// Lock order is identical to [`Self::with_semantic_queries_for_uri`]:
     /// shards → reference_index → import_export_index (no package-graph lock
     /// — the caller owns the graph).
+    ///
+    /// Like [`Self::with_semantic_queries_for_uri`], the callback must not
+    /// re-enter `WorkspaceIndex` while these read guards are held (#15644).
     ///
     /// Returns `Some(result)` if the URI is indexed and semantic data is
     /// available, `None` if the URI has not been indexed or its fact shard is
@@ -6682,7 +6700,7 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
                 anchor_span: Some((node.location.start, node.location.end)),
             })
         }
-        NodeKind::Typeglob { name } => {
+        NodeKind::Typeglob { name, .. } => {
             if name.starts_with('{') {
                 return None;
             }

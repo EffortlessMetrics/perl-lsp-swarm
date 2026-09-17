@@ -1,4 +1,5 @@
 pub mod perl_source_identity
+#[non_exhaustive] pub enum perl_source_identity::LogicalPathError
 pub perl_source_identity::LogicalPathError::BackslashSeparator
 pub perl_source_identity::LogicalPathError::ControlCharacter
 pub perl_source_identity::LogicalPathError::CurrentDirectorySegment
@@ -14,6 +15,7 @@ pub fn perl_source_identity::LogicalPathError::partial_cmp(&self, other: &perl_s
 pub fn perl_source_identity::LogicalPathError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_source_identity::LogicalPathError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_source_identity::LogicalPathError::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_source_identity::PhysicalSourceRole
 pub perl_source_identity::PhysicalSourceRole::Generated
 pub perl_source_identity::PhysicalSourceRole::Primary
 pub perl_source_identity::PhysicalSourceRole::RuntimeDerived
@@ -31,6 +33,7 @@ pub fn perl_source_identity::PhysicalSourceRole::fmt(&self, f: &mut core::fmt::F
 pub fn perl_source_identity::PhysicalSourceRole::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_source_identity::PhysicalSourceRole::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_source_identity::PhysicalSourceRole::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_source_identity::SourceGeneration
 pub perl_source_identity::SourceGeneration::Known(alloc::string::String)
 pub perl_source_identity::SourceGeneration::Unknown
 pub fn perl_source_identity::SourceGeneration::as_label(&self) -> core::option::Option<&str>
@@ -47,6 +50,7 @@ pub fn perl_source_identity::SourceGeneration::fmt(&self, f: &mut core::fmt::For
 pub fn perl_source_identity::SourceGeneration::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
 pub fn perl_source_identity::SourceGeneration::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 pub fn perl_source_identity::SourceGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+#[non_exhaustive] pub enum perl_source_identity::SourceOrigin
 pub perl_source_identity::SourceOrigin::Generated
 pub perl_source_identity::SourceOrigin::RuntimeDerived
 pub perl_source_identity::SourceOrigin::Staged

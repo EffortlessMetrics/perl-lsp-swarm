@@ -489,6 +489,7 @@ mod source_boundary_tests {
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: crate::reload::RuntimeModuleGenerationClock::new(),
         });
         adapter.operation_broker.open_session();
 
