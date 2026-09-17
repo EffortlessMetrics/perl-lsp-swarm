@@ -38,9 +38,9 @@ use tasks::{
     agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
     aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
     check, check_agent_context, check_lint_policy, check_tautology, check_test_wiring,
-    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor,
-    ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope,
-    clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
+    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_cache_inventory, ci_contract,
+    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
+    ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
     compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
     compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
     critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
@@ -1191,6 +1191,34 @@ enum Commands {
 
     /// Audit CI workflows for PR-safety and spend-risk controls.
     CiAuditWorkflows,
+
+    /// Derive the active CI cache inventory + `ci_cache_receipt.v1` (#9177).
+    ///
+    /// Diagnostic: classifies reachability, save authority, and byte
+    /// provenance for every `Swatinem/rust-cache`/`actions/cache` step
+    /// already in source. Changes no cache behavior and grants no save
+    /// authority.
+    CiCacheInventory {
+        /// Diff the derived inventory against the checked-in manifest and
+        /// fail on drift, instead of (re)writing it.
+        #[arg(long)]
+        check: bool,
+
+        /// Write the receipt JSON to this path instead of stdout.
+        /// Rejected alongside `--check`, which never writes a receipt.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+
+        /// Checked-in manifest path (defaults to `ci_cache_inventory::MANIFEST`).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Schema version this producer must emit and validate. Only
+        /// `v1` is supported; anything else fails loudly instead of
+        /// emitting a shape the caller does not parse.
+        #[arg(long, default_value = "v1")]
+        api_version: String,
+    },
 
     /// Classify credential derivation kinds in `.github/workflows/*.yml` (#14867).
     ///
@@ -6081,6 +6109,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::TestEdgeCases { bench, coverage, test } => edge_cases::run(bench, coverage, test),
         Commands::CiAuditWorkflows => ci_audit_workflows::run(),
+        Commands::CiCacheInventory { check, receipt, manifest, api_version } => {
+            ci_cache_inventory::run(check, receipt, manifest, &api_version)
+        }
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)
         }
