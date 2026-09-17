@@ -30,7 +30,7 @@
 //!
 //! | Case | v1 (tree-sitter-c) | v2 (Pest) | v3 (recursive-descent) |
 //! |------|-------------------|-----------|------------------------|
-//! | trailing_garbage | NoRecovery | PartialRecovery | FullRecovery* |
+//! | trailing_garbage | NoRecovery | PartialRecovery | FullRecovery |
 //! | unclosed_brace | PartialRecovery | NoRecovery | FullRecovery |
 //! | unclosed_string | NoRecovery | FullRecovery* | FullRecovery |
 //! | unclosed_quote_like | NoRecovery | NoRecovery | FullRecovery |
@@ -44,8 +44,7 @@
 //! | error_inside_block | PartialRecovery | FullRecovery* | FullRecovery |
 //!
 //! `*` marks a misleading signal: the markers are found as part of a wrong
-//! parse, not because the parser visibly recovered (see the v2 note below and
-//! the v3 trailing-garbage note in recovery_01).
+//! parse, not because the parser visibly recovered (see the v2 note below).
 //!
 //! # Surprising findings
 //!
@@ -64,12 +63,13 @@
 //! dangerous failure mode for an LSP parser: the client sees a "full" parse
 //! that is subtly wrong, not a visible error it can degrade gracefully.
 //!
-//! **v3 (recursive-descent) is the most reliable recoverer - with one known
-//! honesty gap.**  It finds post-error code in most cases by explicitly
-//! synchronizing at statement boundaries, and unlike v2 it correctly surfaces
-//! broken regions as `ERROR` nodes rather than silently misparsing them.  The
-//! known gap is `@@@`-style trailing garbage, which v3 currently accepts as
-//! bare-@/bareword expressions with no diagnostic (see recovery_01).
+//! **v3 (recursive-descent) is the most reliable recoverer.**  It finds
+//! post-error code by explicitly synchronizing at statement boundaries, and
+//! unlike v2 it correctly surfaces broken regions as `ERROR` nodes rather
+//! than silently misparsing them.  Bare double-sigil garbage like `@@@` is
+//! rejected with an UnexpectedToken diagnostic and an explicit ERROR node
+//! before synchronization (issue #15750), so its `FullRecovery` verdicts are
+//! honest recovery, not silent misparses.
 #![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use std::panic;
@@ -199,9 +199,10 @@ fn assert_recovery(
 /// **Observed verdicts:**
 /// - v1 (tree-sitter): NoRecovery - ERROR node absorbs all post-garbage tokens
 /// - v2 (Pest): PartialRecovery - recovers `suffix` but `@@@` disrupts the sub
-/// - v3 (recursive-descent): FullRecovery* - silently accepts `@@@` as bare-@/
-///   bareword expressions with no diagnostic and no ERROR node, then parses
-///   the suffix cleanly (misleading signal, same failure shape as v2)
+/// - v3 (recursive-descent): FullRecovery - rejects the bare `@` sigil chain
+///   with an UnexpectedToken diagnostic and an ERROR node (issue #15750),
+///   then synchronizes to the next statement boundary and finds both
+///   markers
 #[test]
 fn recovery_01_trailing_garbage_mid_file() {
     let src = r#"
@@ -215,15 +216,17 @@ my $suffix = 3;
     let (v1, v2, v3) = measure_recovery(src, post_error);
     print_recovery_row("trailing_garbage_mid_file", &v1, &v2, &v3);
     println!(
-        "    NOTE: v3=FullRecovery is a misleading signal - v3 silently accepts \
-         @@@ garbage as bare-@ and bareword expressions without any diagnostic, \
-         the same failure shape the suite condemns in v2"
+        "    NOTE: v3 rejects the @@@ garbage with an UnexpectedToken diagnostic \
+         and an ERROR node (#15750), then synchronizes - this FullRecovery is \
+         honest recovery, unlike the misleading v2 signals elsewhere in the suite"
     );
     // v1: ERROR node swallows all post-garbage tokens including the sub and suffix
     assert_recovery(&v1, &RecoveryVerdict::NoRecovery, "v1", "trailing_garbage_mid_file");
     // v2: partially misparses; finds `suffix` but not `post_error_sub`
     assert_recovery(&v2, &RecoveryVerdict::PartialRecovery, "v2", "trailing_garbage_mid_file");
-    // v3: observed FullRecovery via silent misparse of the garbage (tracked defect)
+    // v3: rejects bare `@` chains with an ERROR node + UnexpectedToken
+    // diagnostic, then synchronizes to the next statement boundary and
+    // finds both `post_error_sub` and `suffix` (#15750).
     assert_recovery(&v3, &RecoveryVerdict::FullRecovery, "v3", "trailing_garbage_mid_file");
 }
 

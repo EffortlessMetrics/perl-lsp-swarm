@@ -1,0 +1,55 @@
+# Activation inventory override ledger (#9204)
+#
+# Hand-maintained, narrow, typed exceptions for activation surfaces that no
+# derivation rule in `xtask/src/activation/derive.rs` settles today. Every
+# row is verified against current `main` before being added: no invented
+# surface, owner, consumer, or authority path. `oracle` and
+# `compatibility_shim` have no deriving authority, so both rows below exist
+# only because of this ledger — that is the intended demonstration that
+# overrides stay narrow and owner/expiry-bound rather than becoming a second
+# derivation mechanism.
+#
+# `cargo xtask activation validate` fails closed if a row here targets a
+# surface no rule could ever produce, reclassifies a surface without actually
+# changing its derived class (a no-op), or omits owner, review_after, or
+# reason. `crate:<name>` is the only surface-id kind an override may
+# introduce rather than reclassify, and `crates/<name>/Cargo.toml` must
+# exist: an override may name a surface no rule classifies, never a surface
+# that is not in the repository at all.
+
+schema_version = 1
+policy = "activation-overrides"
+owner = "architecture/activation"
+status = "advisory"
+updated = "2026-09-02"
+
+[[override]]
+surface_id = "crate:perl-tree-sitter-compat"
+class = "compatibility_shim"
+semantic_authority = "policy/tree-sitter-compat-inventory.toml"
+consumers = []
+# No Cargo dependent and no feature gates this crate on: nothing in the
+# workspace compiles it as part of another surface's profile, so there is no
+# compile profile to claim.
+compile_profiles = []
+publication_state = "private_workspace_member"
+publication_authority = "crates/perl-tree-sitter-compat/Cargo.toml#package.publish"
+retirement_owner = "#8890"
+retirement_boundary = "Removal tracked by controlling issue #8880 (train #8877 row PR-09); migration #8889 must land before removal #8890 executes, per policy/tree-sitter-compat-inventory.toml (migration_owner = \"#8889\", removal_owner = \"#8890\")."
+owner = "parser/tree-sitter"
+reason = "No #9204 derivation rule classifies a private, currently-unconsumed compatibility-adapter crate. policy/tree-sitter-compat-inventory.toml (controlling issue #8880) establishes perl-tree-sitter-compat as the Tier-A tree-sitter compatibility surface (parse_to_tree, to_ts_node, highlights, to_sexp, per docs/explanation/TREE_SITTER_COMPATIBILITY.md), records zero current Cargo dependents, and crates/perl-tree-sitter-compat/Cargo.toml sets publish = false. Scheduled for removal (#8890) once migration #8889 completes."
+created = "2026-09-02"
+review_after = "2026-12-01"
+
+[[override]]
+surface_id = "crate:tree-sitter-perl-c"
+class = "oracle"
+semantic_authority = "crates/tree-sitter-perl-c/Cargo.toml#package.description"
+consumers = ["crates/perl-parser-comparison", "xtask"]
+compile_profiles = ["historical", "parser-tasks"]
+publication_state = "publish_allowed"
+publication_authority = "Cargo.toml#workspace.metadata.publish.allow"
+owner = "parser/tree-sitter"
+reason = "No #9204 derivation rule classifies a differential test-oracle crate. crates/tree-sitter-perl-c/Cargo.toml describes the crate as a \"Tree-sitter Perl C FFI snapshot for testing, experimentation, accuracy comparison, and baseline benchmarking\". It has two in-tree Cargo dependents, both optional and both oracle uses: crates/perl-parser-comparison gates it behind `historical = [\"dep:tree-sitter-perl-c\"]` to compare native-parser output against the legacy C grammar, and xtask gates it behind `parser-tasks = [\"legacy\", \"tree-sitter-perl-c\"]`, calling `tree_sitter_perl_c::language()` in xtask/src/tasks/compare_parsers.rs. The root Cargo.toml `[workspace.metadata.publish] allow` list names this crate, which establishes that publication is permitted, not that any version was actually published — only a registry lookup could show that, and this ledger stays checkable from the repository alone. The row therefore claims `publish_allowed` rather than `published`."
+created = "2026-09-02"
+review_after = "2026-12-01"
