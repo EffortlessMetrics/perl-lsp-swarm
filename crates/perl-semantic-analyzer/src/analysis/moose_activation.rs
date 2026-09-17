@@ -5,6 +5,15 @@
 //! `require` wrappers, and unrelated DSL imports never activate this
 //! detector. Each site retains package, statement interval, file, source
 //! generation, requested version spelling, and any unmodeled import boundary.
+//!
+//! Version spelling boundary: a version argument whose characters are digits,
+//! `.`, or `_` (including CPAN dev-release spellings such as `2.4000_001`) is
+//! retained as `requested_version`; any other spelling (for example
+//! `2.4000-rc1`) is not recognizable as a reviewed version, so the import can
+//! never establish exact activation — it is either not classified as Moose at
+//! all or carried as unmodeled arguments. That rejection is deliberate: the
+//! detection side cannot check a version it cannot compare against the
+//! reviewed constraint.
 
 use crate::ast::{Node, NodeKind};
 use perl_semantic_facts::framework_adapters::moose::{
@@ -164,7 +173,11 @@ fn classify_moose_import(
     let normalized = normalize_import_args(args);
     let import_disposition = if normalized.is_empty() {
         if source_span.contains('(') {
-            MooseImportDisposition::Unmodeled { arguments: vec!["(".to_string(), ")".to_string()] }
+            // Explicit-empty spelling `use Moose ();`: the parser reports no
+            // arguments, so the disposition carries an empty list rather than
+            // synthetic placeholder tokens. The spelling still cannot
+            // establish exact activation because the import applies no sugar.
+            MooseImportDisposition::Unmodeled { arguments: Vec::new() }
         } else {
             MooseImportDisposition::Exact
         }
@@ -291,9 +304,28 @@ mod tests {
         assert!(!site.is_exact());
         assert!(matches!(
             &site.import_disposition,
-            MooseImportDisposition::Unmodeled { arguments }
-                if arguments == &["(".to_string(), ")".to_string()]
+            MooseImportDisposition::Unmodeled { arguments } if arguments.is_empty()
         ));
+    }
+
+    #[test]
+    fn dev_release_version_spelling_is_retained() {
+        let found = sites("package App;\nuse Moose 2.4000_001;\n");
+        let site = must_some(found.first());
+        assert_eq!(site.requested_version.as_deref(), Some("2.4000_001"));
+        assert!(site.is_exact());
+    }
+
+    #[test]
+    fn non_version_module_suffix_is_not_an_import() {
+        let found = sites("package App;\nuse Moose 2.4000-rc1;\n");
+        // The version spelling is not recognizable, so whatever the parser
+        // reports for this import can never establish exact activation.
+        assert!(found.iter().all(|site| !site.is_exact()));
+        assert!(found.iter().all(|site| matches!(
+            &site.import_disposition,
+            MooseImportDisposition::Unmodeled { .. }
+        )));
     }
 
     #[test]

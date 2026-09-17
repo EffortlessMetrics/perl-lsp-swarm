@@ -1,8 +1,8 @@
 //! End-to-end checked Moose and Moose::Role activation proof (#7788).
 //!
-//! Exercises source-site extraction and the production detection descriptors
-//! without emitting attributes, generated members, package edges, types, or
-//! provider output.
+//! Exercises source-site extraction and the bounded Shadow detection
+//! descriptors without emitting attributes, generated members, package edges,
+//! types, or provider output.
 
 use perl_semantic_analyzer::Parser;
 use perl_semantic_analyzer::analysis::moose_activation::{
@@ -112,7 +112,7 @@ fn descriptors_are_distinct_bounded_and_deterministic() {
     assert_eq!(first[1].required_module_selectors, vec!["Moose::Role"]);
     assert_eq!(first[0].framework_version_constraint.as_deref(), Some(MOOSE_VERSION_CONSTRAINT));
     assert_eq!(first[1].framework_version_constraint.as_deref(), Some(MOOSE_VERSION_CONSTRAINT));
-    assert!(first.iter().all(|item| item.disposition == AdapterDisposition::Production));
+    assert!(first.iter().all(|item| item.disposition == AdapterDisposition::Shadow));
     assert_eq!(MOOSE_ACTIVATION_PROFILE_VERSION, "moose.activation.2.v1");
 }
 
@@ -145,13 +145,16 @@ fn exact_class_and_role_sites_produce_authoritative_checked_results() {
                 framework_version: Some("2.4000".to_string()),
             }
         );
-        assert!(
-            detection.is_authoritative_against(&detection_input),
-            "exact current input must validate"
+        // Shadow substrate: the detection is comparison-only. Authority
+        // validation must reject it as publication authority until the
+        // registry cutover (#6821) lands, even on an exact current input.
+        assert_eq!(
+            detection.validate_authority_against(&detection_input),
+            Err(DetectionAuthorityError::NonProduction)
         );
         let receipt = detection.authority_receipt_against(&detection_input);
-        assert!(receipt.authoritative);
-        assert_eq!(receipt.error, None);
+        assert!(!receipt.authoritative);
+        assert_eq!(receipt.error, Some(DetectionAuthorityError::NonProduction));
     }
 
     assert_eq!(found[0].kind, MooseActivationKind::Class);
@@ -175,7 +178,10 @@ fn complete_absence_is_authoritative_but_partial_discovery_is_not_absence() {
         absent.outcome,
         DetectionOutcome::Absent { reason: DetectionAbsenceReason::RequiredModulesMissing }
     );
-    assert!(absent.is_authoritative_against(&absent_input));
+    assert_eq!(
+        absent.validate_authority_against(&absent_input),
+        Err(DetectionAuthorityError::NonProduction)
+    );
 
     let unresolved_input = input(
         MooseActivationKind::Class,
@@ -217,8 +223,8 @@ fn unsupported_version_and_name_only_identity_fail_closed() {
         DetectionOutcome::Absent { reason: DetectionAbsenceReason::VersionConstraintNotSatisfied }
     );
     assert!(
-        unsupported.is_authoritative_against(&unsupported_input),
-        "supported-version absence carries exact version evidence"
+        !unsupported.is_authoritative_against(&unsupported_input),
+        "Shadow substrate never publishes authority, even for supported-version absence"
     );
 
     let name_only_input = input(
@@ -311,7 +317,8 @@ fn stale_module_generation_publishes_no_exact_detection() {
     );
     assert_eq!(
         stale.validate_authority_against(&stale_input),
-        Err(DetectionAuthorityError::InvalidModuleEvidence)
+        Err(DetectionAuthorityError::NonProduction),
+        "Shadow substrate reports non-production before module-evidence checks"
     );
 }
 
@@ -333,7 +340,10 @@ fn import_removal_and_readdition_change_source_and_detection_identity() {
         "sha256:with-import",
     );
     let initial = detect_moose_class(&initial_input);
-    assert!(initial.is_authoritative_against(&initial_input));
+    assert!(
+        !initial.is_authoritative_against(&initial_input),
+        "Shadow substrate output stays comparison-only"
+    );
 
     let removed_sites = sites("package App;\n1;\n", 1, "gen-2");
     assert!(removed_sites.is_empty());
@@ -347,7 +357,7 @@ fn import_removal_and_readdition_change_source_and_detection_identity() {
     );
     assert_eq!(
         initial.validate_authority_against(&removed_input),
-        Err(DetectionAuthorityError::GenerationMismatch)
+        Err(DetectionAuthorityError::NonProduction)
     );
 
     let readded_sites = sites("package App;\nuse Moose;\n", 1, "gen-3");
@@ -395,8 +405,11 @@ fn same_package_in_two_roots_remains_isolated_by_checked_input_identity() {
     );
     let root_a = detect_moose_class(&root_a_input);
     let root_b = detect_moose_class(&root_b_input);
-    assert!(root_a.is_authoritative_against(&root_a_input));
-    assert!(root_b.is_authoritative_against(&root_b_input));
+    assert!(
+        !root_a.is_authoritative_against(&root_a_input)
+            && !root_b.is_authoritative_against(&root_b_input),
+        "Shadow substrate output stays comparison-only in every root"
+    );
     assert_ne!(root_a.input_identity, root_b.input_identity);
 }
 
@@ -419,8 +432,7 @@ fn empty_import_list_is_not_activation() {
     assert!(!site.is_exact());
     assert!(matches!(
         &site.import_disposition,
-        MooseImportDisposition::Unmodeled { arguments }
-            if arguments == &["(".to_string(), ")".to_string()]
+        MooseImportDisposition::Unmodeled { arguments } if arguments.is_empty()
     ));
 }
 

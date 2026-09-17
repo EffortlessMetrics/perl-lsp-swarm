@@ -84,7 +84,10 @@ pub enum MooseImportDisposition {
     Exact,
     /// The exact module was imported with arguments outside this activation
     /// profile. The site remains inspectable but cannot establish exact
-    /// activation.
+    /// activation. An empty `arguments` list is the explicit-empty import
+    /// spelling (`use Moose ();`): the module loads without applying its
+    /// activation sugar, so the spelling is retained as inspectable evidence
+    /// rather than silently folded into [`MooseImportDisposition::Exact`].
     Unmodeled { arguments: Vec<String> },
 }
 
@@ -125,9 +128,11 @@ impl MooseSiteAnchor {
 
 /// Canonical descriptor for class activation through `use Moose`.
 ///
-/// Production disposition is intentional: checked detection receipts may be
-/// authoritative. This module exposes no semantic-fact emitter, so the
-/// descriptor alone cannot change provider output.
+/// Shadow disposition, matching the not-yet-wired substrate boundary of the
+/// Mojo::Base sibling: no rs-core consumer reads this adapter yet, so output is
+/// comparison-only and authority validation rejects it as publication
+/// authority. The registry/publication cutover (#6821) must land and assign
+/// final identities before this can become `Production`.
 #[must_use]
 pub fn moose_class_descriptor() -> AdapterDescriptor {
     moose_descriptor(MooseActivationKind::Class)
@@ -135,9 +140,11 @@ pub fn moose_class_descriptor() -> AdapterDescriptor {
 
 /// Canonical descriptor for role activation through `use Moose::Role`.
 ///
-/// Production disposition is intentional: checked detection receipts may be
-/// authoritative. This module exposes no semantic-fact emitter, so the
-/// descriptor alone cannot change provider output.
+/// Shadow disposition, matching the not-yet-wired substrate boundary of the
+/// Mojo::Base sibling: no rs-core consumer reads this adapter yet, so output is
+/// comparison-only and authority validation rejects it as publication
+/// authority. The registry/publication cutover (#6821) must land and assign
+/// final identities before this can become `Production`.
 #[must_use]
 pub fn moose_role_descriptor() -> AdapterDescriptor {
     moose_descriptor(MooseActivationKind::Role)
@@ -156,7 +163,7 @@ fn moose_descriptor(kind: MooseActivationKind) -> AdapterDescriptor {
         kind.module_name(),
         Some(MOOSE_VERSION_CONSTRAINT.to_string()),
         MOOSE_DESCRIPTOR_REVISION,
-        AdapterDisposition::Production,
+        AdapterDisposition::Shadow,
     )
 }
 
@@ -312,27 +319,23 @@ fn detect_moose(
                 MOOSE_VERSION_CONSTRAINT,
                 &version.version,
             ) {
-                Some(true) => {
-                    let mut result = AdapterDetectionResult::for_input(
-                        input,
-                        DetectionOutcome::Detected {
-                            confidence: Confidence::High,
-                            framework_version: Some(version.version.clone()),
-                        },
-                    );
-                    result = result.with_contributing_modules(vec![activation.clone()]);
-                    result.with_version_evidence(version.clone())
-                }
-                Some(false) => {
-                    let mut result = AdapterDetectionResult::for_input(
-                        input,
-                        DetectionOutcome::Absent {
-                            reason: DetectionAbsenceReason::VersionConstraintNotSatisfied,
-                        },
-                    );
-                    result = result.with_contributing_modules(vec![activation.clone()]);
-                    result.with_version_evidence(version.clone())
-                }
+                Some(true) => AdapterDetectionResult::for_input(
+                    input,
+                    DetectionOutcome::Detected {
+                        confidence: Confidence::High,
+                        framework_version: Some(version.version.clone()),
+                    },
+                )
+                .with_contributing_modules(vec![activation.clone()])
+                .with_version_evidence(version.clone()),
+                Some(false) => AdapterDetectionResult::for_input(
+                    input,
+                    DetectionOutcome::Absent {
+                        reason: DetectionAbsenceReason::VersionConstraintNotSatisfied,
+                    },
+                )
+                .with_contributing_modules(vec![activation.clone()])
+                .with_version_evidence(version.clone()),
                 None => AdapterDetectionResult::for_input(
                     input,
                     DetectionOutcome::Unsupported {
