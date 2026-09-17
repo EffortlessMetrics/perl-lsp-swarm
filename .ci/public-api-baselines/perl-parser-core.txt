@@ -1375,6 +1375,10 @@ pub perl_parser_core::hir::HirExpr::Ternary::condition: perl_parser_core::hir::H
 pub perl_parser_core::hir::HirExpr::Ternary::else_expr: perl_parser_core::hir::HirExprId
 pub perl_parser_core::hir::HirExpr::Ternary::then_expr: perl_parser_core::hir::HirExprId
 pub perl_parser_core::hir::HirExpr::Transliteration(perl_parser_core::hir::HirTransliteration)
+pub perl_parser_core::hir::HirExpr::Try
+pub perl_parser_core::hir::HirExpr::Try::body: perl_parser_core::hir::HirBlockId
+pub perl_parser_core::hir::HirExpr::Try::catch_handlers: alloc::vec::Vec<perl_parser_core::hir::HirCatchHandler>
+pub perl_parser_core::hir::HirExpr::Try::finally_block: core::option::Option<perl_parser_core::hir::HirBlockId>
 pub perl_parser_core::hir::HirExpr::Unary
 pub perl_parser_core::hir::HirExpr::Unary::mode: perl_parser_core::hir::UnaryMode
 pub perl_parser_core::hir::HirExpr::Unary::op: alloc::string::String
@@ -2001,6 +2005,12 @@ pub fn perl_parser_core::hir::HirBodyId::eq(&self, other: &perl_parser_core::hir
 pub fn perl_parser_core::hir::HirBodyId::partial_cmp(&self, other: &perl_parser_core::hir::HirBodyId) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_parser_core::hir::HirBodyId::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::hir::HirBodyId::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+pub struct perl_parser_core::hir::HirCatchHandler
+pub perl_parser_core::hir::HirCatchHandler::binding: core::option::Option<perl_parser_core::hir::HirExprId>
+pub perl_parser_core::hir::HirCatchHandler::block: perl_parser_core::hir::HirBlockId
+pub fn perl_parser_core::hir::HirCatchHandler::clone(&self) -> perl_parser_core::hir::HirCatchHandler
+pub fn perl_parser_core::hir::HirCatchHandler::eq(&self, other: &perl_parser_core::hir::HirCatchHandler) -> bool
+pub fn perl_parser_core::hir::HirCatchHandler::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct perl_parser_core::hir::HirExprId(pub u32)
 pub fn perl_parser_core::hir::HirExprId::clone(&self) -> perl_parser_core::hir::HirExprId
 pub fn perl_parser_core::hir::HirExprId::cmp(&self, other: &perl_parser_core::hir::HirExprId) -> core::cmp::Ordering
