@@ -2602,5 +2602,24 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         !script.contains("--memory=6g") && !script.contains("RIPR_MAX_DIFF_INDEX_FILES=1600"),
         "stale 6g/1600 hosted budgets must not survive beside the measured 14g/2560 pair"
     );
+
+    // #15082/#15028: the review-guidance pass on a new-crate diff no longer
+    // completes in 600s on the hosted lane, so the gate failed closed on an
+    // incomplete receipt while 64-67 mechanical seams went unadjudicated.
+    // Both hosted lanes must carry the raised bound; the self-hosted 210s
+    // lanes are intentionally untouched.
+    for lane in ["ripr-github", "ripr-fallback"] {
+        let guidance = workflow_step(&workflow, "Generate review guidance")
+            .ok_or_else(|| anyhow!("missing Generate review guidance step"))?;
+        ensure!(
+            guidance.contains("--timeout-seconds 1800"),
+            "{lane}'s review-guidance pass must carry --timeout-seconds 1800; the 600s bound              failed closed twice on new-crate diffs (#15082, #15028)"
+        );
+    }
+    let count = workflow.matches("--timeout-seconds 1800").count();
+    ensure!(
+        count == 2,
+        "exactly the two hosted lanes must carry the 1800s guidance bound; found {count}"
+    );
     Ok(())
 }
