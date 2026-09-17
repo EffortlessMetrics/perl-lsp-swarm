@@ -235,6 +235,12 @@ pub enum RoutedReaderGateStatus {
     Timeout,
     CancelledAfterStart,
     SpawnErrorBeforeStart,
+    /// The runner observed the command start but could not settle a process
+    /// verdict (in-process closure error, post-spawn wait/retry-evidence
+    /// failure). Recorded with an explicit start state so the builder never
+    /// flattens a post-start error into a never-started one
+    /// (review thread FC-ADAPTER-ERROR-FLATTEN).
+    ErrorAfterStart,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -556,6 +562,17 @@ pub fn build_routed_result(
                     .to_string(),
             );
         }
+        RoutedReaderGateStatus::ErrorAfterStart
+            if !observation.command_started
+                || observation.child.timed_out
+                || observation.child.cancelled =>
+        {
+            return Err(
+                "runner reports an after-start error without a started, non-terminated child; \
+                 the start state must be carried explicitly, never flattened"
+                    .to_string(),
+            );
+        }
         _ => {}
     }
 
@@ -618,6 +635,12 @@ pub fn build_routed_result(
             // (including zero-exit free-form failures); the raw child fact
             // stays attached either way.
             RoutedReaderGateStatus::Fail => TerminalOutcome::Failure,
+            // A started command that errored without a settled process
+            // result is an instrument failure, not a product verdict and not
+            // a never-started block: the work ran, the runner just could not
+            // observe its terminal state (review thread
+            // FC-ADAPTER-ERROR-FLATTEN).
+            RoutedReaderGateStatus::ErrorAfterStart => TerminalOutcome::InstrumentFailure,
         }
     };
 
@@ -652,6 +675,8 @@ pub fn build_routed_result(
         }
     };
 
+    // Capture before `command` moves into the row identity below.
+    let focused_reproduce_command = build_reproduce_command(&command)?;
     let mut result = RoutedGateResultV1 {
         schema: ROUTED_GATE_RESULT_SCHEMA.to_string(),
         producer: ROUTED_GATE_RESULT_PRODUCER.to_string(),
@@ -693,11 +718,7 @@ pub fn build_routed_result(
         instrument: PlaneOutcome { outcome: instrument_outcome, detail: instrument_detail },
         reporting,
         artifacts: observation.artifacts.clone(),
-        focused_reproduce_command: build_reproduce_command(
-            &row.native_tier,
-            gate_id,
-            &plan.selection.base,
-        )?,
+        focused_reproduce_command,
         result_fingerprint: String::new(),
     };
     result.result_fingerprint = result.semantic_fingerprint_of()?;
@@ -766,12 +787,7 @@ fn check_timing_against_start(
              observed"
                 .to_string())
         }
-        _ => {
-            if !command_started && timing.duration_ms != 0 {
-                return Err("a never-started command claims a nonzero duration".to_string());
-            }
-            Ok(())
-        }
+        _ => Ok(()),
     }
 }
 
@@ -781,7 +797,14 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
             if end < start {
                 return Err("ended before started".to_string());
             }
-            let delta = u64::try_from(end - start).map_err(|_| "duration overflow".to_string())?;
+            // checked_sub, not a bare subtraction: both endpoints are
+            // unconstrained i64 values read back from published receipts, so
+            // `i64::MIN..0` overflows a plain `end - start` (CodeRabbit
+            // stability review on this PR).
+            let delta = end
+                .checked_sub(start)
+                .and_then(|delta| u64::try_from(delta).ok())
+                .ok_or_else(|| "duration overflow".to_string())?;
             if delta != timing.duration_ms {
                 return Err(format!(
                     "duration_ms {} does not equal ended-started ({delta})",
@@ -803,50 +826,36 @@ fn check_timing(timing: &ObservationTiming) -> Result<(), String> {
 }
 
 /// Invocable focused reproduction of the row's gate execution (review
-/// thread 3871822422). The plan spells native tiers in snake_case while the
-/// `gates` CLI spells them kebab-case, so the command is emitted in the CLI
-/// spelling; `cargo xtask gates --tier <tier> --gate <gate>` re-runs exactly
-/// this row's gate.
+/// threads 3871822422 and FC-REPRO-SCOPED-UNRUNNABLE). The command is the
+/// row's own planned command, already rendered by the planner: unlike a
+/// `--gate <id>` filter spelling (which the static filter path refuses for
+/// `rust_scoped` gates because it never resolves `{package_args}`), it is
+/// runnable for every executed row.
 ///
-/// Scope: this reproduces the **gate**, deliberately not the routed
+/// Scope: this reproduces the **gate command**, deliberately not the routed
 /// emission. It omits `--route-plan`/`--subject` because re-running the
 /// publication additionally requires the plan file, a matching subject
 /// receipt, a clean tree, and a HEAD equal to the plan's subject SHA — so a
 /// routed spelling would refuse on almost every checkout where someone is
 /// triaging a red gate. The routed emission stays reproducible from the
 /// plan itself, which this record identifies by fingerprint and row.
-fn build_reproduce_command(native_tier: &str, gate_id: &str, base: &str) -> Result<String, String> {
-    // This command is published for a person or tool to run, so nothing
-    // interpolated into it may carry shell metacharacters. The plan schema
-    // constrains `gate_id` to `^[a-z0-9_.-]+$`, but a plan's native tier and
-    // selection base are only checked non-empty upstream, so they are
-    // checked here rather than quoted: a plan carrying either is malformed,
-    // and minting a result for it would publish a command that must not be
-    // run.
-    ensure_shell_safe("native tier", native_tier)?;
-    ensure_shell_safe("selection base", base)?;
-    let tier = native_tier.replace('_', "-");
-    let staged = if tier == "commit" { " --staged" } else { "" };
-    // `base` is the plan's own selection base (a git ref). The plan schema
-    // already refuses an empty base before execution, so it is rendered
-    // unconditionally.
-    Ok(format!("cargo xtask gates --tier {tier} --base {base} --gate {gate_id}{staged}"))
-}
-
-/// Conservative allowlist covering git refs, SHAs, and tier spellings. An
-/// allowlist is used deliberately: a metacharacter denylist has to be right
-/// about every shell.
-fn ensure_shell_safe(subject: &str, value: &str) -> Result<(), String> {
-    let safe = |byte: u8| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b'@' | b'+')
-    };
-    if value.is_empty() || !value.bytes().all(safe) {
-        return Err(format!(
-            "{subject} {value:?} is not safe to interpolate into the published \
-             reproduce command (allowed: ASCII alphanumerics and _-./@+)"
-        ));
+///
+/// No interpolation happens here, so there is nothing for a shell-metacharacter
+/// allowlist to re-check: the command equals the record's own `row.command`
+/// field, published verbatim in the same bytes, and nothing else from the
+/// plan reaches the published string. An unresolved placeholder is still
+/// refused so a result can never suggest running a gate with a literal
+/// `{package_args}` filter.
+fn build_reproduce_command(row_command: &str) -> Result<String, String> {
+    if row_command.trim().is_empty() {
+        return Err("planned row command is empty; refusing to publish a reproduce command".into());
     }
-    Ok(())
+    if row_command.contains("{package_args}") {
+        return Err("planned row command still contains a {package_args} placeholder; \
+             refusing to publish a reproduce command that would silently filter zero tests"
+            .into());
+    }
+    Ok(row_command.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -900,21 +909,6 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
         return Err("route_plan_fingerprint disagrees with plan_authority identity".to_string());
     }
     validate_plan_authority(&result.plan_authority)?;
-    // The builder refuses a row outside the plan's denominator, but the
-    // validator also runs on bytes read back from disk, where a re-sealed
-    // record could name a gate or tier the embedded authority never governed.
-    if !result.plan_authority.denominator.contains(&result.row.gate_id) {
-        return Err(format!(
-            "row gate {:?} is outside the plan authority's denominator",
-            result.row.gate_id
-        ));
-    }
-    if !result.plan_authority.included_native_tiers.contains(&result.row.native_tier) {
-        return Err(format!(
-            "row native tier {:?} is not among the plan authority's included tiers",
-            result.row.native_tier
-        ));
-    }
     // The row's profile is copied from the same plan as the authority
     // block; a record claiming one profile in the row and another in its
     // authority is contradictory whatever its fingerprint reseals to.
@@ -922,6 +916,28 @@ fn validate_result(result: &RoutedGateResultV1) -> Result<(), String> {
         return Err(format!(
             "row requested_profile {:?} disagrees with plan authority {:?}",
             result.row.requested_profile, result.plan_authority.requested_profile
+        ));
+    }
+    // A row outside the authority's governed denominator or native tiers
+    // claims execution under selection authority that never named it: the
+    // validator runs on bytes read back from disk, so it re-checks
+    // membership instead of trusting the resealing fingerprint
+    // (review thread FC-VALIDATION-AUTHORITY-PROJECTION).
+    if !result.plan_authority.denominator.iter().any(|gate| gate == &result.row.gate_id) {
+        return Err(format!(
+            "row gate {:?} is absent from the plan authority denominator",
+            result.row.gate_id
+        ));
+    }
+    if !result
+        .plan_authority
+        .included_native_tiers
+        .iter()
+        .any(|tier| tier == &result.row.native_tier)
+    {
+        return Err(format!(
+            "row native tier {:?} is absent from the plan authority included_native_tiers",
+            result.row.native_tier
         ));
     }
     for sha in [&result.subject.head_sha, &result.subject.subject_digest] {

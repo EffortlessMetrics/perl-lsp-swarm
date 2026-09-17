@@ -8,12 +8,7 @@
 //! mis-attribution class the issue lists is exercised against the type's
 //! validation alone, plus the durable publication pipeline.
 
-#![expect(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "falsifier assertions on fixture building"
-)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -608,18 +603,16 @@ fn every_runner_status_variant_builds_a_consistent_valid_result() {
 
 #[test]
 fn focused_reproduce_command_is_invocable_cli() {
-    // The command must run as spelled: `cargo xtask gates --tier <kebab>
-    // --gate <id>` (review thread 3871822422). The plan's native tier is
-    // snake_case; the CLI spelling is kebab-case.
+    // The command must run as spelled (review threads 3871822422 and
+    // FC-REPRO-SCOPED-UNRUNNABLE): the row's own planned command is
+    // published verbatim, which stays invocable for `rust_scoped` rows
+    // where a `--gate <id>` filter spelling is refused by the runner
+    // (the static filter path never resolves `{package_args}`).
     let plan = compiled_plan();
     let result = build_success(&plan);
-    // `--base` carries the plan's own selection base (a git ref), not a
-    // profile or tier name; binding the expectation to the fixture's base
-    // keeps the two from drifting apart again.
     assert_eq!(
-        result.focused_reproduce_command,
-        format!("cargo xtask gates --tier pr-fast --base {SHA_B} --gate fmt_gate"),
-        "reproduce command must match the real gates CLI syntax"
+        result.focused_reproduce_command, "cargo fmt --check",
+        "reproduce command must be the row's own planned command"
     );
 }
 
@@ -677,6 +670,59 @@ fn resealed_contradictory_plan_authority_still_fails_validation() {
 }
 
 #[test]
+fn reproduce_command_refuses_unrunnable_row_commands() {
+    // The published command equals the record's own row.command field
+    // (review thread FC-REPRO-SCOPED-UNRUNNABLE), so nothing from the plan
+    // is newly interpolated and no shell-metacharacter allowlist applies.
+    // What must still refuse at mint time is a row command that cannot be
+    // run as spelled: an unresolved placeholder (silently filters zero tests
+    // and false-passes) or an empty command.
+    let mut plan = compiled_plan();
+    for row in &mut plan.rows {
+        if let xtask::ci_route_plan::PlannedOutcome::Run { command, .. } = &mut row.outcome {
+            *command = "cargo test -p unit {package_args}".to_string();
+        }
+    }
+    let refused = build_routed_result(&plan, "fmt_gate", success_observation());
+    assert!(
+        refused.is_err(),
+        "an unresolved {{package_args}} placeholder must refuse, got {refused:?}"
+    );
+}
+
+#[test]
+fn validation_rejects_rows_outside_the_authority_projection() {
+    // `validate_result` runs on bytes read back from disk (review thread
+    // FC-VALIDATION-AUTHORITY-PROJECTION): a re-sealed record whose row
+    // escapes the authority's governed denominator or native tiers must
+    // fail closed even though the fingerprint matches the mutated bytes.
+    let plan = compiled_plan();
+    let mutations: Vec<(&str, Box<dyn Fn(&mut RoutedGateResultV1)>)> = vec![
+        (
+            "foreign denominator gate",
+            Box::new(|r: &mut RoutedGateResultV1| {
+                r.row.gate_id = "unplanned_gate".to_string();
+            }),
+        ),
+        (
+            "foreign native tier",
+            Box::new(|r: &mut RoutedGateResultV1| {
+                r.row.native_tier = "nightly".to_string();
+            }),
+        ),
+    ];
+    for (name, mutate) in mutations {
+        let mut result = build_success(&plan);
+        mutate(&mut result);
+        result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+        assert!(
+            result.validate().is_err(),
+            "a re-sealed record carrying {name} must fail validation"
+        );
+    }
+}
+
+#[test]
 fn timing_must_agree_with_whether_the_command_started() {
     // `check_timing` only proves the window is internally coherent. An empty
     // window on a started command, and a full window on one that never
@@ -699,60 +745,6 @@ fn timing_must_agree_with_whether_the_command_started() {
         result.validate().is_err(),
         "a never-started command carrying an observation window must fail validation"
     );
-}
-
-#[test]
-fn a_row_outside_the_embedded_plan_authority_fails_validation() {
-    // The builder refuses an out-of-denominator row, but the validator also
-    // runs on bytes read back from disk, where a re-sealed record could name
-    // a gate or tier the embedded authority never governed.
-    let plan = compiled_plan();
-
-    let mut result = build_success(&plan);
-    result.row.gate_id = "some_other_gate".to_string();
-    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
-    assert!(
-        result.validate().is_err(),
-        "a gate outside the authority's denominator must fail validation"
-    );
-
-    let mut result = build_success(&plan);
-    result.row.native_tier = "nightly".to_string();
-    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
-    assert!(
-        result.validate().is_err(),
-        "a tier outside the authority's included tiers must fail validation"
-    );
-}
-
-#[test]
-fn reproduce_command_refuses_shell_metacharacters_from_the_plan() {
-    // The plan constrains gate ids, but a native tier and a selection base
-    // are only checked non-empty upstream, and both are interpolated into a
-    // command published for a person to run. A plan carrying either must
-    // not mint a result at all.
-    let mut plan = compiled_plan();
-    plan.selection.base = "main; rm -rf /".to_string();
-    let refused = build_routed_result(&plan, "fmt_gate", success_observation());
-    assert!(
-        refused.is_err(),
-        "a selection base carrying shell metacharacters must refuse, got {refused:?}"
-    );
-
-    let mut plan = compiled_plan();
-    for row in &mut plan.rows {
-        row.native_tier = "pr_fast $(id)".to_string();
-    }
-    let refused = build_routed_result(&plan, "fmt_gate", success_observation());
-    assert!(
-        refused.is_err(),
-        "a native tier carrying a command substitution must refuse, got {refused:?}"
-    );
-
-    // A base that is a plain git ref or SHA stays acceptable.
-    let plan = compiled_plan();
-    let ok = build_routed_result(&plan, "fmt_gate", success_observation());
-    assert!(ok.is_ok(), "an ordinary base must still build, got {ok:?}");
 }
 
 #[test]

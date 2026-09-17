@@ -13,6 +13,8 @@ on:
       - '.github/workflows/dap-scorecard.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
   push:
     branches: [main, master]
     paths:
@@ -25,6 +27,8 @@ on:
       - '.github/workflows/dap-scorecard.yml'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:
