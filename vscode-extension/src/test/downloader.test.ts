@@ -27,6 +27,8 @@ import {
   isTransientManagedInstallError,
   parseLocalVersion,
   hostManagedCompatibilityKeys,
+  readGitHubToken,
+  resolveGitHubAuthDisposition,
   __resetManagedInstallSingleflightForTesting,
 } from '../downloader';
 import {
@@ -74,7 +76,6 @@ interface DownloaderPrivateSurface {
   collectStaleManagedCandidates(baseDir: string): void;
   runEnsureBinary(forceDownload: boolean): Promise<string | null>;
   calculateSHA256(filePath: string): Promise<string>;
-  findBinary(dir: string, name: string): string | null;
   getLatestRelease(timeoutMs?: number): Promise<unknown>;
   getLocalVersion(binaryPath: string): Promise<string | null>;
   downloadWithProgress(): Promise<string>;
@@ -102,6 +103,41 @@ function makeContext(storagePath?: string): vscode.ExtensionContext {
     extensionPath: dir,
     subscriptions: [],
   } as unknown as vscode.ExtensionContext;
+}
+
+/** Put one environment variable back, including the "was unset" case. */
+function restoreEnv(name: 'GITHUB_TOKEN' | 'GH_TOKEN', value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
+
+/**
+ * Neutralize ambient GitHub credentials for the enclosing describe block.
+ *
+ * `GITHUB_TOKEN` and `GH_TOKEN` are routinely set on developer machines and CI
+ * runners, and `readGitHubToken` consults both. Without this, whether a test
+ * that never mentions credentials takes the authenticated path depends on the
+ * host environment. Tests that need a token assign one directly; these hooks
+ * put the ambient values back afterwards.
+ */
+function isolateGitHubTokenEnv(): void {
+  let priorGitHubToken: string | undefined;
+  let priorGhToken: string | undefined;
+
+  beforeEach(() => {
+    priorGitHubToken = process.env.GITHUB_TOKEN;
+    priorGhToken = process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+  });
+
+  afterEach(() => {
+    restoreEnv('GITHUB_TOKEN', priorGitHubToken);
+    restoreEnv('GH_TOKEN', priorGhToken);
+  });
 }
 
 function makeOutputChannel(): vscode.OutputChannel {
@@ -1350,70 +1386,6 @@ describe('BinaryDownloader.calculateSHA256', () => {
 });
 
 // ---------------------------------------------------------------------------
-// findBinary (recursive directory search)
-// ---------------------------------------------------------------------------
-describe('BinaryDownloader.findBinary', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'find-bin-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  test('finds binary in top-level directory', () => {
-    fs.writeFileSync(path.join(tmpDir, 'perllsp'), 'binary');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBe(path.join(tmpDir, 'perllsp'));
-  });
-
-  test('finds binary in nested directory', () => {
-    const nested = path.join(tmpDir, 'subdir', 'bin');
-    fs.mkdirSync(nested, { recursive: true });
-    fs.writeFileSync(path.join(nested, 'perllsp'), 'binary');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBe(path.join(nested, 'perllsp'));
-  });
-
-  test('returns null when binary is not found', () => {
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'nonexistent');
-
-    expect(result).toBeNull();
-  });
-
-  test('ignores files with different names', () => {
-    fs.writeFileSync(path.join(tmpDir, 'not-perllsp'), 'wrong');
-    fs.writeFileSync(path.join(tmpDir, 'perllsp.old'), 'wrong');
-
-    const downloader = new BinaryDownloader(
-      makeContext(),
-      makeOutputChannel(),
-    ) as unknown as TestDownloader;
-    const result = downloader.findBinary(tmpDir, 'perllsp');
-
-    expect(result).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Download URL security validation (downloadFile method)
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader download URL security', () => {
@@ -1530,18 +1502,22 @@ describe('BinaryDownloader download stream lifecycle', () => {
   type TestFile = EventEmitter & {
     destroy: jest.Mock;
     close: jest.Mock;
+    write: jest.Mock;
+    end: jest.Mock;
   };
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
   type TestResponse = EventEmitter & {
     statusCode: number;
-    pipe: jest.Mock;
+    headers: Record<string, string>;
+    destroy: jest.Mock;
+    resume: jest.Mock;
   };
   type DownloaderSeams = {
     downloadFile: (url: string, dest: string, timeoutMs?: number) => Promise<void>;
     createWriteStream: (dest: string) => TestFile;
-    removePartialFile: (dest: string) => void;
+    removePartialFile: (dest: string) => Promise<void>;
     httpGet: (...args: unknown[]) => TestRequest;
   };
 
@@ -1573,26 +1549,18 @@ describe('BinaryDownloader download stream lifecycle', () => {
     };
   }
 
-  test('observes stream errors before request failure and temporary-directory cleanup', async () => {
+  test('does not open a dest stream before a response, and still cleans up request failure', async () => {
     const destination = path.join(tmpDir, 'partial.bin');
     const seams = downloader as unknown as DownloaderSeams;
-    const file = new EventEmitter() as TestFile;
-    file.destroy = jest.fn();
-    file.close = jest.fn();
-    const createWriteStream = jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
+    const createWriteStream = jest.spyOn(seams, 'createWriteStream');
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
 
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     const requestError = Object.assign(new Error('request failed'), { code: 'ECONNRESET' });
-    const streamError = Object.assign(new Error('destination disappeared'), { code: 'ENOENT' });
-    let listenerCountBeforeRequestActivity = 0;
     jest.spyOn(seams, 'httpGet').mockImplementation(() => {
-      listenerCountBeforeRequestActivity = file.listenerCount('error');
-      fs.rmSync(tmpDir, { recursive: true, force: true });
       process.nextTick(() => {
         request.emit('error', requestError);
-        setImmediate(() => file.emit('error', streamError));
       });
       return request;
     });
@@ -1604,8 +1572,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(listenerCountBeforeRequestActivity).toBe(1);
-      expect(createWriteStream).toHaveBeenCalledWith(destination);
+      expect(createWriteStream).not.toHaveBeenCalled();
       expect(removePartialFile).toHaveBeenCalledTimes(1);
       expect(uncaught.errors).toEqual([]);
     } finally {
@@ -1616,14 +1583,7 @@ describe('BinaryDownloader download stream lifecycle', () => {
   test('cleans up exactly once when the download times out', async () => {
     const destination = path.join(tmpDir, 'timed-out.bin');
     const seams = downloader as unknown as DownloaderSeams;
-    const file = new EventEmitter() as TestFile;
-    file.close = jest.fn();
-    file.destroy = jest.fn(() => {
-      process.nextTick(() =>
-        file.emit('error', Object.assign(new Error('stream closed'), { code: 'ENOENT' })),
-      );
-    });
-    jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
+    const createWriteStream = jest.spyOn(seams, 'createWriteStream');
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
@@ -1636,7 +1596,8 @@ describe('BinaryDownloader download stream lifecycle', () => {
       );
       await new Promise<void>((resolve) => setImmediate(resolve));
 
-      expect(file.destroy).toHaveBeenCalledTimes(1);
+      expect(request.destroy).toHaveBeenCalled();
+      expect(createWriteStream).not.toHaveBeenCalled();
       expect(removePartialFile).toHaveBeenCalledTimes(1);
       expect(uncaught.errors).toEqual([]);
     } finally {
@@ -1650,27 +1611,30 @@ describe('BinaryDownloader download stream lifecycle', () => {
     const file = new EventEmitter() as TestFile;
     file.destroy = jest.fn();
     file.close = jest.fn();
+    file.write = jest.fn();
+    file.end = jest.fn();
     jest.spyOn(seams, 'createWriteStream').mockReturnValue(file);
     const removePartialFile = jest.spyOn(seams, 'removePartialFile');
 
     const response = new EventEmitter() as TestResponse;
     response.statusCode = 200;
+    response.headers = {};
+    response.destroy = jest.fn();
+    response.resume = jest.fn();
     const streamError = Object.assign(new Error('partial response failed'), { code: 'EPIPE' });
-    response.pipe = jest.fn(() => {
-      file.emit('error', streamError);
-      return file;
-    });
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
     jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
-      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        (callback as (value: unknown) => void)(response);
+        process.nextTick(() => response.emit('error', streamError));
+      });
       return request;
     });
 
     await expect(seams.downloadFile('http://localhost/file', destination, 1000)).rejects.toBe(
       streamError,
     );
-    expect(response.pipe).toHaveBeenCalledTimes(1);
     expect(removePartialFile).toHaveBeenCalledTimes(1);
   });
 });
@@ -1679,6 +1643,8 @@ describe('BinaryDownloader download stream lifecycle', () => {
 // Release metadata fetch timeout
 // ---------------------------------------------------------------------------
 describe('BinaryDownloader getLatestRelease timeout', () => {
+  isolateGitHubTokenEnv();
+
   type TestRequest = EventEmitter & {
     destroy: jest.Mock;
   };
@@ -2129,7 +2095,6 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
     const response = makeResponse();
     const request = new EventEmitter() as TestRequest;
     request.destroy = jest.fn();
-    const priorToken = process.env.GITHUB_TOKEN;
     process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
 
     const vscode = require('vscode');
@@ -2175,16 +2140,189 @@ describe('BinaryDownloader getLatestRelease timeout', () => {
       return request;
     });
 
-    try {
-      await seams.getLatestRelease(1000);
-      expect(capturedOptions?.headers?.Authorization).toBeUndefined();
-    } finally {
-      if (priorToken === undefined) {
-        delete process.env.GITHUB_TOKEN;
-      } else {
-        process.env.GITHUB_TOKEN = priorToken;
-      }
+    await seams.getLatestRelease(1000);
+    expect(capturedOptions?.headers?.Authorization).toBeUndefined();
+  });
+
+  /**
+   * The credential decision is named rather than inferred (#15493): the reason
+   * the token was dropped reaches the log, and the token itself never does.
+   */
+  test('records why credentials were withheld without logging the token', async () => {
+    // This control reads the log, so it needs its own channel rather than the
+    // shared fixture's discarded one.
+    const channel = makeOutputChannel();
+    const localDownloader = new BinaryDownloader(
+      makeContext(),
+      channel,
+    ) as unknown as TestDownloader;
+    jest
+      .spyOn(localDownloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
+    const seams = localDownloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        if (key === 'proxyStrictSSL') {
+          return false;
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, _options, callback) => {
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await seams.getLatestRelease(1000);
+    const logged = (channel.appendLine as unknown as jest.Mock).mock.calls
+      .map((call) => String(call[0]))
+      .join('\n');
+    expect(logged).toMatch(/withheld/i);
+    expect(logged).toMatch(/http\.proxyStrictSSL/);
+    expect(logged).not.toContain('test-token-should-not-leak');
+  });
+
+  test('sends GitHub bearer credentials when certificate validation is on', async () => {
+    const seams = downloader as unknown as DownloaderSeams;
+    const response = makeResponse();
+    const request = new EventEmitter() as TestRequest;
+    request.destroy = jest.fn();
+    process.env.GITHUB_TOKEN = 'test-token-should-be-sent';
+
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockReturnValue({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'channel') {
+          return 'latest';
+        }
+        if (key === 'downloadBaseUrl') {
+          return '';
+        }
+        if (key === 'proxyStrictSSL') {
+          return true;
+        }
+        return defaultValue;
+      }),
+      update: jest.fn(),
+    });
+
+    let capturedOptions: { headers?: Record<string, string> } | undefined;
+    jest.spyOn(seams, 'httpGet').mockImplementation((_https, _url, options, callback) => {
+      capturedOptions = options as { headers?: Record<string, string> };
+      (callback as (value: unknown) => void)(response);
+      process.nextTick(() => {
+        response.emit(
+          'data',
+          JSON.stringify([
+            {
+              tag_name: 'v1.2.3',
+              prerelease: false,
+              assets: [
+                {
+                  name: 'perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                  browser_download_url:
+                    'https://example.invalid/perllsp-1.2.3-x86_64-unknown-linux-gnu.tar.gz',
+                },
+              ],
+            },
+          ]),
+        );
+        response.emit('end');
+      });
+      return request;
+    });
+
+    await seams.getLatestRelease(1000);
+    expect(capturedOptions?.headers?.Authorization).toBe('Bearer test-token-should-be-sent');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GitHub credential policy (#15493)
+// ---------------------------------------------------------------------------
+describe('GitHub API credential policy', () => {
+  isolateGitHubTokenEnv();
+
+  const apiUrl = 'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases';
+
+  test('attaches the credential to a GitHub API host over verified TLS', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: true, strictTls: true })).toBe(
+      'sent',
+    );
+  });
+
+  test('withholds the credential when certificate validation is disabled', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: true, strictTls: false })).toBe(
+      'withheld_unverified_tls',
+    );
+  });
+
+  test('reports the absent token separately from a transport refusal', () => {
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: false, strictTls: true })).toBe(
+      'no_token',
+    );
+    expect(resolveGitHubAuthDisposition({ url: apiUrl, hasToken: false, strictTls: false })).toBe(
+      'no_token',
+    );
+  });
+
+  test('never offers the credential to another host', () => {
+    for (const url of [
+      'https://api.github.com.evil.invalid/repos/x/y/releases',
+      'https://objects.githubusercontent.com/release.tar.gz',
+      'https://internal.invalid/releases',
+      'http://api.github.com/repos/x/y/releases',
+    ]) {
+      expect(resolveGitHubAuthDisposition({ url, hasToken: true, strictTls: true })).toBe(
+        'not_github_api_host',
+      );
     }
+  });
+
+  test('reads either supported token variable', () => {
+    expect(readGitHubToken()).toBeUndefined();
+
+    process.env.GH_TOKEN = 'gh-token';
+    expect(readGitHubToken()).toBe('gh-token');
+
+    process.env.GITHUB_TOKEN = 'github-token';
+    expect(readGitHubToken()).toBe('github-token');
+
+    process.env.GITHUB_TOKEN = '';
+    expect(readGitHubToken()).toBe('gh-token');
   });
 });
 
@@ -2839,6 +2977,8 @@ describe('checkForUpdateSilent', () => {
 // ensureBinary error classification — actionable messages (#3274)
 // ---------------------------------------------------------------------------
 describe('ensureBinary error classification', () => {
+  isolateGitHubTokenEnv();
+
   let ctx: FullTestContext;
   let outputChannel: vscode.OutputChannel;
   let downloader: TestDownloader;
@@ -2969,6 +3109,215 @@ describe('ensureBinary error classification', () => {
     const call = vscode.window.showErrorMessage.mock.calls[0];
     expect(call[0]).toMatch(/403|rate.?limit|GITHUB_TOKEN/i);
     expect(call[0]).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  /**
+   * A 403 is diagnosed against the credential decision the refused request
+   * actually used (#15493). Telling a user to set GITHUB_TOKEN is wrong advice
+   * when the token exists and was withheld because certificate validation is
+   * disabled — and the `proxyStrictSSL` remedy is equally wrong for a 403 from
+   * the archive or checksum download, which never carries credentials.
+   */
+  function withStrictSSL(strictSSL: boolean): void {
+    const vscode = require('vscode');
+    vscode.workspace.getConfiguration.mockImplementation(() => ({
+      get: jest.fn((key: string, defaultValue?: unknown) =>
+        key === 'proxyStrictSSL' ? strictSSL : defaultValue,
+      ),
+      has: jest.fn(() => false),
+      inspect: jest.fn(),
+      update: jest.fn(),
+    }));
+  }
+
+  /**
+   * Drive a real release-metadata request that GitHub refuses with 403, so the
+   * remedy is derived from the disposition that request actually used rather
+   * than from a stubbed error string.
+   */
+  function setupReleaseMetadata403(): void {
+    (
+      downloader as unknown as { downloadWithProgress: { mockRestore?: () => void } }
+    ).downloadWithProgress.mockRestore?.();
+
+    jest
+      .spyOn(downloader as unknown as { getPlatformTarget: () => string }, 'getPlatformTarget')
+      .mockReturnValue('x86_64-unknown-linux-gnu');
+
+    jest
+      .spyOn(downloader as unknown as { httpGet: (...args: unknown[]) => unknown }, 'httpGet')
+      .mockImplementation((..._args: unknown[]) => {
+        const callback = _args[3] as (value: unknown) => void;
+        const response = new EventEmitter() as EventEmitter & {
+          statusCode: number;
+          headers: Record<string, string>;
+          destroy: jest.Mock;
+        };
+        response.statusCode = 403;
+        response.headers = {};
+        response.destroy = jest.fn();
+        callback(response);
+        process.nextTick(() => response.emit('end'));
+        const request = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+        request.destroy = jest.fn();
+        return request;
+      });
+  }
+
+  test('metadata 403 names proxyStrictSSL when a present token was withheld', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+    setupReleaseMetadata403();
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/http\.proxyStrictSSL/);
+    // The user already set a token; repeating that advice sends them to the
+    // wrong setting.
+    expect(message).not.toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).not.toContain('test-token-should-not-leak');
+    expect(message).toMatch(/perl-lsp\.serverPath/);
+  });
+
+  test('metadata 403 keeps the token advice when no token was withheld', async () => {
+    // Certificate validation is off, but there is no credential to withhold
+    // (the hooks cleared both variables), so the anonymous rate limit really is
+    // the whole story.
+    withStrictSSL(false);
+    setupReleaseMetadata403();
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).not.toMatch(/http\.proxyStrictSSL/);
+  });
+
+  test('metadata 403 keeps the token advice when the token was sent', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(true);
+    setupReleaseMetadata403();
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
+    expect(message).not.toMatch(/http\.proxyStrictSSL/);
+    expect(message).not.toContain('test-token-should-not-leak');
+  });
+
+  /**
+   * A force call that arrives while an ensure install is in flight waits for
+   * it, then runs its own. The 403 record belongs to the run that owns it: the
+   * waiting call must not inherit the in-flight run's disposition, and must not
+   * wipe it out from under that run either.
+   */
+  test('a force run joined behind an ensure does not inherit its 403 disposition', async () => {
+    type Seams = {
+      releaseMetadata403Disposition?: string;
+      runEnsureBinary: (forceDownload: boolean) => Promise<string | null>;
+    };
+    const seams = downloader as unknown as Seams;
+
+    let releaseEnsure!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+
+    let dispositionSeenByForceRun: string | undefined = 'never-ran';
+    const runSpy = jest.spyOn(seams, 'runEnsureBinary');
+    // The in-flight ensure records a metadata 403 while the force call waits.
+    runSpy.mockImplementationOnce(async () => {
+      await gate;
+      seams.releaseMetadata403Disposition = 'withheld_unverified_tls';
+      throw new Error('Release fetch failed: HTTP 403');
+    });
+    // The force call's own run must start from a clean record.
+    runSpy.mockImplementationOnce(async () => {
+      dispositionSeenByForceRun = seams.releaseMetadata403Disposition;
+      return null;
+    });
+
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    const ensureCall = downloader.ensureBinary(false).catch(() => null);
+    await Promise.resolve();
+    const forceCall = downloader.ensureBinary(true).catch(() => null);
+    await Promise.resolve();
+    releaseEnsure();
+    await ensureCall;
+    await forceCall;
+
+    expect(dispositionSeenByForceRun).toBeUndefined();
+  });
+
+  /**
+   * `checkForUpdateSilent` reaches `fetchReleaseMetadata` outside the
+   * singleflight contract. Only a download run reports a remedy, so only a
+   * download run may record one.
+   */
+  test('a metadata 403 outside an owned download run records nothing', async () => {
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+
+    type Seams = {
+      releaseMetadata403Disposition?: string;
+      fetchReleaseMetadata: (url: string, timeoutMs: number, token?: unknown) => Promise<unknown>;
+      httpGet: (...args: unknown[]) => unknown;
+    };
+    const seams = downloader as unknown as Seams;
+
+    jest.spyOn(seams, 'httpGet').mockImplementation((..._args: unknown[]) => {
+      const callback = _args[3] as (value: unknown) => void;
+      const response = new EventEmitter() as EventEmitter & {
+        statusCode: number;
+        headers: Record<string, string>;
+        destroy: jest.Mock;
+      };
+      response.statusCode = 403;
+      response.headers = {};
+      response.destroy = jest.fn();
+      callback(response);
+      process.nextTick(() => response.emit('end'));
+      const request = new EventEmitter() as EventEmitter & { destroy: jest.Mock };
+      request.destroy = jest.fn();
+      return request;
+    });
+
+    // No ensureBinary around this call: it stands for the silent update check.
+    await expect(
+      seams.fetchReleaseMetadata(
+        'https://api.github.com/repos/EffortlessMetrics/perl-lsp/releases',
+        1000,
+      ),
+    ).rejects.toThrow();
+
+    expect(seams.releaseMetadata403Disposition).toBeUndefined();
+  });
+
+  test('non-metadata 403 keeps the generic advice even with a withheld credential', async () => {
+    // The archive and checksum downloads never carry credentials, so
+    // re-enabling certificate validation cannot resolve a 403 from them. The
+    // remedy must follow the refused request, not the current settings.
+    process.env.GITHUB_TOKEN = 'test-token-should-not-leak';
+    withStrictSSL(false);
+    setupDownloadError('Failed to download: HTTP 403');
+    const vscode = require('vscode');
+    vscode.window.showErrorMessage.mockResolvedValue(undefined);
+
+    await downloader.ensureBinary();
+
+    const message = vscode.window.showErrorMessage.mock.calls[0][0] as string;
+    expect(message).not.toMatch(/http\.proxyStrictSSL/);
+    expect(message).toMatch(/set the GITHUB_TOKEN environment variable/);
   });
 
   test('HTTP 404 shows not-found guidance with download URL', async () => {

@@ -9,9 +9,9 @@ use perl_core_harness::transition::{
 };
 use perl_core_harness_types::{
     COMPILE_BASELINE_SCHEMA_VERSION, COMPILE_BASELINE_V2_SCHEMA_VERSION, CompatibilityTransition,
-    CompileBaseline, CompileBaselineV2, HarnessMode, HarnessProfile, HarnessRunner,
-    ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult, RunReport,
-    RunSummary, RunnerStatus, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
+    CompileBaseline, CompileBaselineV2, ExecutionMechanism, HarnessMode, HarnessProfile,
+    HarnessRunner, ObservedSemanticBoundary, RUN_REPORT_SCHEMA_VERSION, RunFailure, RunFileResult,
+    RunReport, RunSummary, RunnerStatus, SemanticBoundaryConfidence, SemanticBoundaryDisposition,
     SemanticBoundaryLockScope, SemanticBoundarySourceSpan,
 };
 use std::collections::BTreeMap;
@@ -167,9 +167,74 @@ fn recognized_execute_nonzero_exact_match_is_no_change() {
     let mut current = sample_report(2, 2);
     current.mode = HarnessMode::Execute;
     current.harness_status = Some(1);
+    // Execution evidence names its rail on both sides; the subject here is the
+    // recognized nonzero terminal status, not the mechanism.
+    for result in &mut accepted.file_results {
+        result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+    }
+    for result in &mut current.file_results {
+        result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+    }
     let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
     assert_eq!(classification.transition, CompatibilityTransition::NoChange);
     assert!(!classification.requires_candidate);
+}
+
+/// The accepted side of the forgery: a stored baseline claiming a rail no
+/// evidence backs must not become a comparable subject, even when the current
+/// observation is honest and the counts match exactly.
+#[test]
+fn forged_accepted_baseline_mechanism_is_not_proven() {
+    for mechanism in [ExecutionMechanism::EirExecution, ExecutionMechanism::RealPerlOracle] {
+        let mut accepted = sample_v2_baseline(2, 2);
+        accepted.mode = HarnessMode::Execute;
+        for result in &mut accepted.file_results {
+            result.mechanism = Some(mechanism);
+        }
+        let mut current = sample_report(2, 2);
+        current.mode = HarnessMode::Execute;
+        current.harness_status = Some(1);
+        for result in &mut current.file_results {
+            result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+        }
+
+        let classification =
+            classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+
+        assert_eq!(
+            classification.transition,
+            CompatibilityTransition::NotProven,
+            "an accepted baseline claiming {mechanism} must not be comparable"
+        );
+        assert!(!classification.requires_candidate);
+        assert!(
+            classification.reason.contains("no current rail can supply"),
+            "unexpected reason for {mechanism}: {}",
+            classification.reason
+        );
+    }
+}
+
+/// The current-observation side of the same forgery, kept alongside the
+/// accepted side so deleting either mechanism gate fails a test.
+#[test]
+fn forged_current_observation_mechanism_is_not_proven() {
+    let mut accepted = sample_v2_baseline(2, 2);
+    accepted.mode = HarnessMode::Execute;
+    for result in &mut accepted.file_results {
+        result.mechanism = Some(ExecutionMechanism::FixtureReplay);
+    }
+    let mut current = sample_report(2, 2);
+    current.mode = HarnessMode::Execute;
+    current.harness_status = Some(1);
+    for result in &mut current.file_results {
+        result.mechanism = Some(ExecutionMechanism::EirExecution);
+    }
+
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(classification.reason.contains("no current rail can supply"));
 }
 
 #[test]
@@ -445,6 +510,91 @@ fn phase_mode_mismatch_in_current_failure_is_not_proven() {
     );
 }
 
+/// A vacuous ratchet must not read as a satisfied one (#14375).
+///
+/// Before the completeness gate, two matching *empty* observations reached the
+/// classifier's V2 identity arm and landed `NoChange` — "complete observation
+/// exactly matches the accepted v2 ratchet" while holding no observations at
+/// all. Every per-row validator iterates `file_results` and so passed
+/// vacuously, and the summary reconciled `0 == 0 + 0`.
+#[test]
+fn an_empty_observation_pair_is_not_proven_rather_than_no_change() {
+    let classification = empty_pair_classification();
+
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(!classification.requires_candidate);
+    assert!(
+        classification.reason.contains("contains no file results"),
+        "unexpected reason: {}",
+        classification.reason
+    );
+    assert!(
+        !classification.reason.contains("exactly matches the accepted v2 ratchet"),
+        "an empty pair must never claim ratchet identity: {}",
+        classification.reason
+    );
+}
+
+/// Mode is not the discriminator: the issue reproduced identical behavior for
+/// compile and execute, so the gate must be mode-independent.
+#[test]
+fn an_empty_observation_pair_is_not_proven_in_execute_mode_too() {
+    let mut accepted = sample_v2_baseline(0, 0);
+    accepted.mode = HarnessMode::Execute;
+    let mut current = sample_report(0, 0);
+    current.mode = HarnessMode::Execute;
+    current.harness_status = Some(1);
+
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(
+        classification.reason.contains("contains no file results"),
+        "unexpected reason: {}",
+        classification.reason
+    );
+}
+
+/// Opposite-direction control: the gate must refuse emptiness only. The
+/// smallest non-empty exact match still classifies `NoChange`, so the fix
+/// cannot be passing by refusing every observation.
+#[test]
+fn the_smallest_non_empty_exact_match_still_classifies_no_change() {
+    let accepted = sample_v2_baseline(1, 1);
+    let current = sample_report(1, 1);
+
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+
+    assert_eq!(classification.transition, CompatibilityTransition::NoChange);
+    assert!(classification.reason.contains("exactly matches the accepted v2 ratchet"));
+}
+
+/// An empty *accepted* baseline against a real observation was already
+/// `NotProven` before the completeness gate — V2 membership equality caught it.
+/// This pins the *reason* rather than the outcome: the refusal should name the
+/// vacuous baseline, not a membership mismatch, so the half-empty case cannot
+/// silently start reporting a clean slate if membership checking ever moves.
+#[test]
+fn an_empty_accepted_baseline_cannot_absolve_a_real_observation() {
+    let accepted = sample_v2_baseline(0, 0);
+    let current = sample_report(2, 1);
+
+    let classification = classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current);
+
+    assert_eq!(classification.transition, CompatibilityTransition::NotProven);
+    assert!(
+        classification.reason.contains("contains no file results"),
+        "unexpected reason: {}",
+        classification.reason
+    );
+}
+
+fn empty_pair_classification() -> Classification {
+    let accepted = sample_v2_baseline(0, 0);
+    let current = sample_report(0, 0);
+    classify_transition(&AcceptedBaseline::V2(Box::new(accepted)), &current)
+}
+
 fn compensated_swap_classification() -> Classification {
     let accepted = sample_v2_baseline(2, 1);
     let mut current = sample_report(2, 1);
@@ -514,6 +664,7 @@ fn sample_results(total: usize, passed: usize) -> Vec<RunFileResult> {
         .map(|index| {
             let status = if index < passed { RunnerStatus::Pass } else { RunnerStatus::Fail };
             RunFileResult {
+                mechanism: None,
                 path: format!("base/{index}.t"),
                 status,
                 assertions_passed: usize::from(status == RunnerStatus::Pass),

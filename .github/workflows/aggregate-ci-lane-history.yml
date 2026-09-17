@@ -76,27 +76,47 @@ jobs:
           actuals_root="target/ci/actuals"
           manifest="target/ci/trusted-runs.tsv"
           runs_json="$(mktemp)"
+          runs_mg_json="$(mktemp)"
           run_candidates="$(mktemp)"
           mkdir -p "$actuals_root"
           printf 'run_id\trepository\tevent\thead_branch\thead_sha\tconclusion\tcreated_at\n' > "$manifest"
 
           cutoff="$(date -u -d '14 days ago' +'%Y-%m-%dT%H:%M:%SZ')"
+          # Filter server-side BEFORE paginating (#13467): the unfiltered
+          # workflow-runs listing is capped at ~1000 runs, and at this
+          # repository's volume pull_request runs fill that ceiling within
+          # ~1.5 days, so post-pagination filtering saw only a collapsed
+          # fraction of the declared 14-day window. event/branch/created are
+          # supported query parameters on this endpoint; the Python block
+          # below still re-verifies every trusted-run property client-side.
           gh api --paginate --slurp -X GET \
             "repos/${REPOSITORY}/actions/workflows/ci.yml/runs" \
             -F per_page=100 \
             -F status=completed \
+            -F event=push \
+            -F branch="$DEFAULT_BRANCH" \
+            -F "created=>$cutoff" \
             > "$runs_json"
+          gh api --paginate --slurp -X GET \
+            "repos/${REPOSITORY}/actions/workflows/ci.yml/runs" \
+            -F per_page=100 \
+            -F status=completed \
+            -F event=merge_group \
+            -F "created=>$cutoff" \
+            > "$runs_mg_json"
 
-          python3 - "$runs_json" "$REPOSITORY" "$DEFAULT_BRANCH" "$cutoff" \
+          python3 - "$runs_json" "$runs_mg_json" "$REPOSITORY" "$DEFAULT_BRANCH" "$cutoff" \
             > "$run_candidates" <<'PY'
           import json
           from pathlib import Path
           import sys
 
-          pages = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          repository = sys.argv[2]
-          default_branch = sys.argv[3]
-          cutoff = sys.argv[4]
+          pages = []
+          for runs_file in sys.argv[1:3]:
+              pages.extend(json.loads(Path(runs_file).read_text(encoding="utf-8")))
+          repository = sys.argv[3]
+          default_branch = sys.argv[4]
+          cutoff = sys.argv[5]
 
           for page in pages:
               if not isinstance(page, dict):
@@ -134,6 +154,10 @@ jobs:
 
           candidate_count="$(wc -l < "$run_candidates" | tr -d ' ')"
           printf 'Found %s trusted ci.yml run candidates.\n' "$candidate_count"
+          # Record the listing-layer count so the generated history can carry
+          # scanned-vs-accepted provenance (#13467): without it, a starved
+          # listing is indistinguishable from a quiet window in the payload.
+          printf 'RUNS_SCANNED=%s\n' "$candidate_count" >> "$GITHUB_ENV"
 
           downloaded=0
           while IFS=$'\t' read -r run_id repository event head_branch head_sha conclusion created_at; do
@@ -205,7 +229,8 @@ jobs:
             --static-lanes policy/ci-lanes.toml \
             --require-trusted-markers \
             --repository "$REPOSITORY" \
-            --default-branch "$DEFAULT_BRANCH"
+            --default-branch "$DEFAULT_BRANCH" \
+            --runs-scanned "$RUNS_SCANNED"
           mkdir -p target/ci/generated
           cp .ci/metrics/ci-lane-history.json \
             target/ci/generated/ci-lane-history.json
@@ -227,6 +252,7 @@ jobs:
           lines = [
               "## Trusted CI lane-history aggregation",
               "",
+              f"- Runs scanned (trusted candidates): {validation.get('runs_scanned', 'n/a')}",
               f"- Source runs: {validation.get('source_run_count', 0)}",
               f"- Receipt files seen: {validation.get('files_seen', 0)}",
               f"- Receipt files accepted: {validation.get('files_accepted', 0)}",
@@ -332,7 +358,10 @@ jobs:
             Refs #5995.
           add-paths: .ci/metrics/ci-lane-history.json
           signoff: false
-          delete-branch: true
+          # No delete-branch: an open PR that names this generated branch
+          # as its base is a live dependency on it, and deleting the base
+          # auto-closes that child (#12885). Cleanup is a separate admitted
+          # decision via `xtask branch-deletion-admission admit`.
 
       - name: Raise CI on the generated PR
         # GITHUB_TOKEN-created PRs raise no pull_request events, so the
@@ -348,17 +377,66 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: automation/ci-lane-history
+          PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
+          CREATED_HEAD_SHA: ${{ steps.create-pr.outputs.pull-request-head-sha }}
         run: |
-          # Keep attempting every workflow so one transient dispatch failure
-          # cannot strand the later checks. The final status remains failing
-          # when any dispatch failed.
+          # ci.yml's workflow_dispatch declares required inputs (since #13019):
+          # the dispatched subject's exact base and head SHAs. Dispatching it
+          # bare fails with HTTP 422 "Required input 'base_sha' not provided"
+          # (#15100), so the generated PR's required checks never populate.
+          # Resolve the created PR's recorded base/head identity after the
+          # create-pull-request step, and refuse to prove a different subject:
+          # if the PR head no longer matches the head this run created, the
+          # branch moved underneath us and the ci.yml dispatch is skipped
+          # rather than attached to the wrong commit. workflow_dispatch cannot
+          # name an immutable subject, so the branch is re-resolved immediately
+          # before the ci.yml dispatch and once more after the loop; a move in
+          # either window fails the run instead of silently splitting subjects.
+          # The other four workflows declare no required dispatch inputs and
+          # stay bare. Keep attempting every workflow so one transient
+          # failure cannot strand the later checks. The final status remains
+          # failing when any lookup or dispatch failed.
           set +e
           failed=0
+          base_sha=""
+          head_sha=""
+          resolve_identity() {
+            local pr_json
+            pr_json=$(gh pr view "$PR_NUMBER" --json baseRefOid,headRefOid) || return 1
+            base_sha=$(printf '%s' "$pr_json" | jq -r '.baseRefOid // empty')
+            head_sha=$(printf '%s' "$pr_json" | jq -r '.headRefOid // empty')
+            [ -n "$base_sha" ] && [ -n "$head_sha" ]
+          }
+          identity_ok=0
+          if ! resolve_identity; then
+            echo "::error::Could not resolve base/head identity for generated PR #$PR_NUMBER"
+            failed=1
+          elif [ "$head_sha" != "$CREATED_HEAD_SHA" ]; then
+            echo "::error::Generated PR head moved between creation and dispatch (created=$CREATED_HEAD_SHA current=$head_sha); refusing to prove a different subject"
+            failed=1
+          else
+            identity_ok=1
+          fi
           for workflow in ci.yml em-ci-routed-rust.yml ripr.yml pr-title-check.yml validate-ci-lane-history.yml; do
-            if gh workflow run "$workflow" --ref "$BRANCH"; then
+            if [ "$workflow" = ci.yml ]; then
+              if [ "$identity_ok" = 1 ] \
+                && resolve_identity \
+                && [ "$head_sha" = "$CREATED_HEAD_SHA" ] \
+                && gh workflow run "$workflow" --ref "$BRANCH" \
+                  -f "base_sha=$base_sha" \
+                  -f "head_sha=$head_sha"; then
+                continue
+              fi
+            elif gh workflow run "$workflow" --ref "$BRANCH"; then
               continue
             fi
             echo "::error::Failed to dispatch $workflow"
             failed=1
           done
+          if [ "$identity_ok" = 1 ]; then
+            if ! resolve_identity || [ "$head_sha" != "$CREATED_HEAD_SHA" ]; then
+              echo "::error::Generated PR head moved during the dispatch loop; raised checks may name different subjects"
+              failed=1
+            fi
+          fi
           exit "$failed"

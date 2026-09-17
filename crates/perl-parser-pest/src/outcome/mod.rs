@@ -1,9 +1,15 @@
 //! Typed parse outcome, diagnostic, and original-source range vocabulary.
 //!
-//! This module is substrate only. It does not change
-//! [`crate::PureRustPerlParser::parse`] or `parse_with_recovery`, and it does
-//! not add `parse_strict`. Constructors exist so later train rows can consume
-//! the types without implying that current recovery already accounts for source.
+//! [`StrictParseError`] and [`ParserFailure`] are integrated into
+//! [`crate::PureRustPerlParser::parse`]'s error path: [`crate::ParseError`]
+//! (the crate's single fallible-return error type) wraps exactly these two
+//! types as its `Rejected` and `Failed` arms. That integration is limited to
+//! the error side. `parse()`'s success return remains `crate::AstNode`;
+//! [`ParseOutcome`], [`ParseAttempt`], and [`ParseCompleteness`] are not
+//! wired into `parse()` and there is no `parse_strict`. Constructors for
+//! those success-side types exist so later train rows can consume the
+//! vocabulary without implying that current recovery already accounts for
+//! source.
 //!
 //! Parser-domain completeness, rejection, and operational failure are distinct
 //! types and cannot be stored in one another's success path.

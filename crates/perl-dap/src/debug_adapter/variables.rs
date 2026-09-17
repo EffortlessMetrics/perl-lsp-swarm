@@ -191,151 +191,30 @@ impl DebugAdapter {
         }
 
         // AC8.4: Render scalars/arrays/hashes with lazy child expansion.
-        let parsed_from_output;
+        let mut parsed_from_output = Vec::new();
         let mut parsed_child_cache = HashMap::new();
         let mut parsed_full_roots = Vec::new();
         let mut used_session_cache = false;
-        // Total count from cache (populated on cache-hit path when full count is known).
         let mut cached_total: Option<usize> = None;
+        let mut cached_page = None;
+        let mut framed_scope_query = None;
+        let mut captured_frame_id = None;
+        let mut captured_locals_identity = None;
 
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session") {
-            // Serve requested pages from cache for stable references and cheap repeated expansion.
-            if let Some(vars) = session.variable_cache.get_page(variables_ref, start, count) {
-                used_session_cache = true;
-                // Capture the full count from the cache entry so totalVariables is correct
-                // even on subsequent (paged) requests where parsed_full_roots is not repopulated.
-                cached_total = session.variable_cache.root_count(variables_ref);
-                parsed_from_output = vars;
-            } else {
-                let mut framed_scope_lines = None;
-
-                // Request fresh scope output from Perl debugger for scope roots only.
-                //
-                // Decode the variablesReference using the VariableReference codec.
-                // Scope variants map to their kind (Locals/Package/Globals) and frame_id.
-                // Non-Scope variants and invalid refs skip the framed output fetch;
-                // EvalResult cache hits were already served above.
-                use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
-
-                // Short-circuit: stale EvalResult ref (cache miss after resume).
-                //
-                // On resume (continue/next/step), variable_cache.clear() runs, making
-                // any eval_ref the client holds from the previous stop stale. A stale
-                // eval_ref is in the EvalResult band ([1_000_000, 1_999_999_999]) but is
-                // absent from the cache. Querying the debugger for a bogus scope or waiting
-                // for output that will never arrive is wasteful and semantically wrong.
-                //
-                // Protocol contract: return honest empty (success=true, variables=[])
-                // immediately. This matches the DAP spec — a ref that is no longer valid
-                // after a resume simply has no children.
-                if matches!(
-                    VariableReference::decode(variables_ref),
-                    Some(VariableReference::EvalResult { .. })
-                ) {
-                    // Stale eval ref after resume — omit totalVariables; no meaningful count.
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: true,
-                        command: "variables".to_string(),
-                        body: Some(json!({ "variables": [] })),
-                        message: None,
-                    };
-                }
-
-                // Short-circuit: stale Child ref (cache miss after resume).
-                //
-                // Child refs are allocated when the client expands a nested variable
-                // (a HASH or ARRAY element) during a stopped state. On resume,
-                // variable_cache.clear() makes any outstanding Child refs stale. Like
-                // stale EvalResult refs, stale Child refs must return honest-empty
-                // (success=true, variables=[]) immediately. Without this guard, a stale
-                // Child ref would fall through to the scope-routing match below and take
-                // the None arm — which silently produces an empty list after an avoidable
-                // 75 ms wait_for_debugger_output_window delay. The observable response is
-                // the same, but the code path is wrong and the latency is unnecessary.
-                //
-                // Protocol contract: a Child ref that is no longer valid after a resume
-                // simply has no children — return honest empty, no debugger query.
-                if matches!(
-                    VariableReference::decode(variables_ref),
-                    Some(VariableReference::Child { .. })
-                ) {
-                    return DapMessage::Response {
-                        seq,
-                        request_seq,
-                        success: true,
-                        command: "variables".to_string(),
-                        body: Some(json!({ "variables": [] })),
-                        message: None,
-                    };
-                }
-
-                let scope_kind = match VariableReference::decode(variables_ref) {
-                    Some(VariableReference::Scope { kind, .. }) => Some(kind),
-                    _ => None,
-                };
-                match scope_kind {
-                    Some(ScopeKind::Locals) => {
-                        // Locals scope: enumerate lexical `my` variables in the current
-                        // executing frame's pad using the B introspection module.
-                        //
-                        // Why not `V <frame_id> .`?  The `V` command takes a PACKAGE NAME,
-                        // not a frame number.  Passing a numeric frame_id (e.g. `V 1 .`)
-                        // looks up a package named "1" (which does not exist) and returns
-                        // no output.  The subsequent fallback to `fallback_scope_variables`
-                        // then returns fake DB-internal placeholders (`$self`, `@_`).
-                        //
-                        // The B-module eval approach:
-                        //   1. Gets the current frame's CV via `$DB::sub` (set by perl5db.pl
-                        //      to the sub name when stopped inside a subroutine, undef at
-                        //      file scope) or `B::main_cv()` for the file-scope frame.
-                        //   2. Walks the pad name list and value list in parallel,
-                        //      using `$va[-1]` (the last/innermost pad) so recursive
-                        //      calls show the current-innermost frame, not the outermost.
-                        //   3. Emits one `$name = value` line per lexical variable,
-                        //      which is the same format the `V` command would produce for
-                        //      package variables — fully compatible with `parse_scope_variables_from_lines`.
-                        //
-                        // The outer `eval {}` absorbs any errors (e.g. B not loadable) and
-                        // returns an empty string. An empty framed response is unavailable;
-                        // it must not be reconstructed from unrelated session history.
-                        if let Some(stdin) = session.process.stdin.as_mut() {
-                            // Locals are admitted only for the exact current frame. The
-                            // B pad-list offset is a lexical depth, not a DAP frame id;
-                            // current-frame inspection must always use the innermost pad.
-                            let cmd = Self::build_locals_b_eval_cmd();
-                            let commands = vec![cmd];
-                            match self.send_framed_debugger_commands(stdin, &commands) {
-                                Ok((begin, end)) => {
-                                    framed_scope_lines = self.capture_framed_debugger_output(
-                                        &begin,
-                                        &end,
-                                        DEBUGGER_QUERY_WAIT_MS * 8,
-                                    );
-                                }
-                                Err(error) => {
-                                    tracing::warn!(%error, "Failed to send framed locals command, falling back");
-                                }
-                            }
-                        }
-                    }
-                    Some(ScopeKind::Package | ScopeKind::Globals) => {
-                        // Rejected before entering this query path. Keep this
-                        // arm explicit so future scope kinds cannot restore the
-                        // numeric-frame V-command behavior.
-                    }
-                    Some(ScopeKind::Arguments) => {
-                        // Handled by the early return above. Keep this arm explicit so
-                        // adding a scope kind cannot silently route arguments to the
-                        // debugger fallback path.
-                    }
-                    None => {
-                        // Cache hits were already returned via variable_cache above.
-                        // Stale EvalResult and Child refs both short-circuit to an
-                        // honest-empty response before reaching this branch. Any
-                        // remaining non-Scope wire value is unknown, so it must not
-                        // be correlated with recent output from this or another stop.
+        {
+            let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+            if let Some(session) = session_guard.as_mut() {
+                if let Some(vars) = session.variable_cache.get_page(variables_ref, start, count) {
+                    used_session_cache = true;
+                    cached_total = session.variable_cache.root_count(variables_ref);
+                    cached_page = Some(vars);
+                } else {
+                    use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
+                    if matches!(
+                        VariableReference::decode(variables_ref),
+                        Some(VariableReference::EvalResult { .. })
+                            | Some(VariableReference::Child { .. })
+                    ) {
                         return DapMessage::Response {
                             seq,
                             request_seq,
@@ -345,43 +224,95 @@ impl DebugAdapter {
                             message: None,
                         };
                     }
-                }
-
-                let (full_roots, child_cache) = if let Some(lines) = framed_scope_lines.as_ref() {
-                    let (framed_vars, framed_child_cache) = Self::parse_scope_variables_from_lines(
-                        lines,
-                        variables_ref,
-                        0,
-                        1024,
-                        DebuggerOutputOrigin::DebuggerControlPayload,
-                        ParseIdentity::new().with_operation_id_from_i64(request_seq),
-                    );
-                    if framed_vars.is_empty() {
-                        // A failed or empty framed locals response is unavailable;
-                        // never reinterpret unrelated session history as this
-                        // suspension's variables.
-                        (Vec::new(), HashMap::new())
-                    } else {
-                        (framed_vars, framed_child_cache)
+                    let scope_kind = match VariableReference::decode(variables_ref) {
+                        Some(VariableReference::Scope { frame_id, kind }) => {
+                            captured_frame_id = Some(frame_id);
+                            Some(kind)
+                        }
+                        _ => None,
+                    };
+                    if scope_kind.is_none() {
+                        return DapMessage::Response {
+                            seq,
+                            request_seq,
+                            success: true,
+                            command: "variables".to_string(),
+                            body: Some(json!({ "variables": [] })),
+                            message: None,
+                        };
                     }
-                } else if scope_kind.is_some() {
-                    // Scope admission is current-frame-only.  Without a framed
-                    // response, return unavailable rather than querying or
-                    // parsing the uncorrelated recent-output buffer.
-                    (Vec::new(), HashMap::new())
-                } else {
-                    Self::wait_for_debugger_output_window(DEBUGGER_QUERY_WAIT_MS as u32);
-                    self.parse_scope_variables_from_output(variables_ref, 0, 1024)
-                };
-
-                parsed_from_output = slice_variables(&full_roots, start, count);
-                parsed_full_roots = full_roots;
-                parsed_child_cache = child_cache;
+                    if scope_kind == Some(ScopeKind::Locals) {
+                        let frame_is_current = captured_frame_id.is_some_and(|frame_id| {
+                            session.state == DebugState::Stopped
+                                && session
+                                    .stack_frames
+                                    .first()
+                                    .is_some_and(|frame| frame.id == frame_id)
+                        });
+                        if !frame_is_current {
+                            return DapMessage::Response {
+                                seq,
+                                request_seq,
+                                success: true,
+                                command: "variables".to_string(),
+                                body: Some(json!({ "variables": [] })),
+                                message: None,
+                            };
+                        }
+                        let stopped_generation = session.stopped_generation;
+                        let broker_generation = self.operation_broker.current_session_generation();
+                        if let Some(stdin) = session.process.stdin.as_mut() {
+                            let commands = vec![Self::build_locals_b_eval_cmd()];
+                            match self.send_framed_debugger_query_bound(
+                                stdin,
+                                &commands,
+                                DEBUGGER_QUERY_WAIT_MS * 8,
+                                Some(stopped_generation),
+                                Some(broker_generation),
+                            ) {
+                                Ok((operation, begin, end)) => {
+                                    framed_scope_query = Some((operation, begin, end));
+                                    captured_locals_identity =
+                                        Some((stopped_generation, broker_generation));
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "Failed to send framed locals command; locals unavailable");
+                                }
+                            }
+                        }
+                    }
+                }
             }
+        }
+
+        let had_framed_scope_query = framed_scope_query.is_some();
+        if let Some((operation, begin, end)) = framed_scope_query {
+            let framed_scope_lines =
+                self.capture_framed_debugger_output_for_operation(&operation, &begin, &end);
+            if let Some(lines) = framed_scope_lines.as_ref() {
+                let (framed_vars, framed_child_cache) = Self::parse_scope_variables_from_lines(
+                    lines,
+                    variables_ref,
+                    0,
+                    1024,
+                    DebuggerOutputOrigin::DebuggerControlPayload,
+                    ParseIdentity::new().with_operation_id_from_i64(request_seq),
+                );
+                if !framed_vars.is_empty() {
+                    parsed_full_roots = framed_vars;
+                    parsed_child_cache = framed_child_cache;
+                }
+            }
+        } else if let Some(vars) = cached_page {
+            parsed_from_output = vars;
         } else {
-            let (full_roots, _child_cache) =
-                self.parse_scope_variables_from_output(variables_ref, 0, 1024);
-            parsed_from_output = slice_variables(&full_roots, start, count);
+            // Scope admission is current-frame-only. Without a framed response,
+            // return unavailable rather than parsing unrelated recent output.
+            parsed_from_output = Vec::new();
+        }
+
+        if had_framed_scope_query {
+            parsed_from_output = slice_variables(&parsed_full_roots, start, count);
         }
 
         // Capture total count before pagination (pre-slice length) for the DAP totalVariables
@@ -415,20 +346,46 @@ impl DebugAdapter {
             .map(|cached| format_policy.project_variable(&cached.row, cached.typed.as_ref()))
             .collect();
 
-        // Cache parsed roots and generated child references for expansion/paging requests.
-        if !used_session_cache
-            && !parsed_full_roots.is_empty()
-            && let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-        {
-            session.variable_cache.upsert(
-                variables_ref,
-                VariableCacheKind::Root,
-                parsed_full_roots,
-            );
-            for (reference, children) in parsed_child_cache {
-                session.variable_cache.upsert(reference, VariableCacheKind::Child, children);
+        // Fresh roots and children share one stop/session acceptance boundary.
+        if !used_session_cache && !parsed_full_roots.is_empty() {
+            let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+            let accepted = match (session_guard.as_mut(), captured_locals_identity) {
+                (Some(session), Some((stopped, broker_generation)))
+                    if session.state == DebugState::Stopped
+                        && session.stopped_generation == stopped
+                        && session.stack_frames.first().map(|frame| frame.id)
+                            == captured_frame_id =>
+                {
+                    self.operation_broker
+                        .accept_if_current(broker_generation, || {
+                            session.variable_cache.upsert(
+                                variables_ref,
+                                VariableCacheKind::Root,
+                                parsed_full_roots,
+                            );
+                            for (reference, children) in parsed_child_cache {
+                                session.variable_cache.upsert(
+                                    reference,
+                                    VariableCacheKind::Child,
+                                    children,
+                                );
+                            }
+                            let _ = session.variable_cache.get_page(variables_ref, start, count);
+                        })
+                        .is_ok()
+                }
+                _ => false,
+            };
+            if !accepted {
+                return DapMessage::Response {
+                    seq,
+                    request_seq,
+                    success: true,
+                    command: "variables".to_string(),
+                    body: Some(json!({ "variables": [] })),
+                    message: None,
+                };
             }
-            let _ = session.variable_cache.get_page(variables_ref, start, count);
         }
 
         // Build response body. totalVariables is optional per DAP spec — omit the field
@@ -539,6 +496,27 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // #8354 fail-closed gate. The refusal is a function of the advertised
+        // capability alone, so advertisement and enforcement cannot disagree.
+        // It fires before `parse_dap_arguments`, name/value screening,
+        // reference lookup, and any broker/debugger traffic: while the
+        // capability is closed, no parser, resolver, coordinator, or transport
+        // call may run and no reference or retained state may change — valid
+        // and hostile input get the identical early unsupported response.
+        if crate::backend::capabilities::refuse_set_variable(
+            crate::backend::capabilities::advertises_set_variable(),
+        ) {
+            return DapMessage::Response {
+                seq,
+                request_seq,
+                success: false,
+                command: "setVariable".to_string(),
+                body: None,
+                message: Some(
+                    crate::backend::capabilities::SET_VARIABLE_UNSUPPORTED_MESSAGE.to_string(),
+                ),
+            };
+        }
         let args: SetVariableArguments = match parse_dap_arguments(arguments) {
             Ok(a) => a,
             Err(message) => {
@@ -658,8 +636,9 @@ impl DebugAdapter {
             if let Some(stdin) = session.process.stdin.as_mut() {
                 // Frame assignment + read-back so output parsing is deterministic.
                 let commands = vec![format!("p {name} = {value}"), format!("p {name}")];
-                match self.send_framed_debugger_commands(stdin, &commands) {
-                    Ok(markers) => Some(markers),
+                match self.send_framed_debugger_query(stdin, &commands, DEBUGGER_QUERY_WAIT_MS * 8)
+                {
+                    Ok((operation, begin, end)) => Some((operation, begin, end)),
                     Err(error) => {
                         return DapMessage::Response {
                             seq,
@@ -710,8 +689,8 @@ impl DebugAdapter {
         // branch would then discard such a line outright (#7275).
         let parsed = output_frame_markers
             .as_ref()
-            .and_then(|(begin, end)| {
-                self.capture_framed_debugger_output(begin, end, DEBUGGER_QUERY_WAIT_MS * 8)
+            .and_then(|(operation, begin, end)| {
+                self.capture_framed_debugger_output_for_operation(operation, begin, end)
             })
             .and_then(|lines| {
                 Self::parse_evaluate_result_from_lines(
@@ -988,9 +967,10 @@ mod hazard_invariant_tests {
     }
 
     #[test]
-    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query() {
+    fn package_globals_and_noncurrent_scope_refs_are_rejected_before_query()
+    -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Err("Perl is required for the locals lifecycle proof".into());
         }
         use crate::debug_adapter::var_ref::{ScopeKind, VariableReference};
         use crate::types::StackFrame;
@@ -1025,12 +1005,14 @@ mod hazard_invariant_tests {
             before_queries,
             "unadmitted scope references must perform zero framed debugger queries"
         );
+        Ok(())
     }
 
     #[test]
-    fn cleared_session_does_not_revive_stale_scope_from_recent_output() {
+    fn cleared_session_does_not_revive_stale_scope_from_recent_output()
+    -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         a.seed_stopped_session_with_frames_for_test(vec![]);
@@ -1041,12 +1023,13 @@ mod hazard_invariant_tests {
             variables_body_is_empty(&mut a, 11),
             "a scope ref must stay empty after its session is cleared"
         );
+        Ok(())
     }
 
     #[test]
-    fn unknown_reference_does_not_parse_recent_output() {
+    fn unknown_reference_does_not_parse_recent_output() -> Result<(), Box<dyn std::error::Error>> {
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         a.seed_stopped_session_with_frames_for_test(vec![]);
@@ -1058,6 +1041,7 @@ mod hazard_invariant_tests {
             variables_body_is_empty(&mut a, 999_999),
             "an unknown reference must not be correlated with recent output"
         );
+        Ok(())
     }
 
     // --- Fix #1338: stale EvalResult ref with Stopped session -> early short-circuit ---
@@ -1077,10 +1061,11 @@ mod hazard_invariant_tests {
     // Skip when perl is not on PATH (seed_stopped_session_with_frames_for_test
     // spawns perl -e 1 as a no-op child process).
     #[test]
-    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty() {
+    fn fix_1338_stale_eval_ref_stopped_session_short_circuits_to_honest_empty()
+    -> Result<(), Box<dyn std::error::Error>> {
         // Skip if perl is not available on PATH.
         if std::process::Command::new("perl").arg("-e").arg("1").output().is_err() {
-            return;
+            return Ok(());
         }
         let mut a = adapter();
         // Seed a Stopped session so the Running-state guard does not trigger.
@@ -1094,6 +1079,7 @@ mod hazard_invariant_tests {
                 "fix #1338: stopped session + stale eval_ref={eval_ref_wire} must return honest empty"
             );
         }
+        Ok(())
     }
 
     // --- Guard test: cached EvalResult is NOT short-circuited by the fix #1338 early return ---
@@ -1357,7 +1343,7 @@ mod value_format_family_tests {
 
     /// Frame 1 as the exact current stopped frame, so the Locals scope wire
     /// reference for frame 1 (11) passes current-frame admission.
-    fn seed_current_frame(adapter: &DebugAdapter) {
+    fn seed_current_frame(adapter: &DebugAdapter) -> TestResult {
         adapter.seed_stopped_session_with_frames_for_test(vec![StackFrame::new(
             1,
             "main::run",
@@ -1368,6 +1354,7 @@ mod value_format_family_tests {
             },
             3,
         )]);
+        Ok(())
     }
 
     fn seed_typed_roots(adapter: &DebugAdapter, wire: i32) {
@@ -1425,62 +1412,79 @@ mod value_format_family_tests {
         }
     }
 
-    // --- variables family: projection + identity independence ---------------
+    // --- variables family: #9581 floor + default-contract integrity ---------
 
     #[test]
-    fn variables_hex_projects_from_typed_authority_and_preserves_identity() -> TestResult {
+    fn hex_requests_are_floored_and_default_projection_preserves_identity() -> TestResult {
         if !perl_available() {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
-        // Rows are sorted by name: $f, $n, $neg, $s, $u, $zero.
-        let f = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 0)?;
-        assert_eq!(f["value"], "2.5", "floats are not an integer authority: unchanged");
+        // #9581: a hex request is rejected before any cache read or projection.
+        let hexed = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 0);
+        let hexed_err = match hexed {
+            Err(message) => message,
+            Ok(row) => {
+                return Err(format!(
+                    "hex requests must be floored-rejected (#9581), got row: {row:?}"
+                )
+                .into());
+            }
+        };
+        assert!(
+            hexed_err.contains("supportsValueFormattingOptions"),
+            "expected the #9581 floor rejection, got: {hexed_err}"
+        );
 
-        let n = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1)?;
-        assert_eq!(n["value"], "0xff", "Integer(255) must render from typed authority");
-        assert_eq!(n["name"], "$n", "formatting must not change identity fields");
+        // Rows are sorted by name: $f, $n, $neg, $s, $u, $zero. The default
+        // contract is untouched by the floor and identity fields stay exact.
+        let f = response_value_at(&mut adapter, 11, None, 0)?;
+        assert_eq!(f["value"], "2.5");
+        let n = response_value_at(&mut adapter, 11, None, 1)?;
+        assert_eq!(n["value"], "255", "default decimal rendering is unchanged");
+        assert_eq!(n["name"], "$n", "identity fields are unaffected by the floor");
         assert_eq!(n["type"], "SCALAR");
         assert_eq!(n["evaluateName"], "$n");
-
-        let neg = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 2)?;
-        assert_eq!(neg["value"], "-0x2a", "signed integers keep sign-magnitude hex");
-
-        let s = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 3)?;
-        assert_eq!(s["value"], "\"hello\"", "strings are never heuristically parsed");
-
-        let u = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 4)?;
-        assert_eq!(u["value"], "undef", "undef is a non-numeric class: unchanged");
-
-        let zero = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 5)?;
-        assert_eq!(zero["value"], "0x0", "zero renders as 0x0");
+        let neg = response_value_at(&mut adapter, 11, None, 2)?;
+        assert_eq!(neg["value"], "-42");
+        let s = response_value_at(&mut adapter, 11, None, 3)?;
+        assert_eq!(s["value"], "\"hello\"");
+        let u = response_value_at(&mut adapter, 11, None, 4)?;
+        assert_eq!(u["value"], "undef");
+        let zero = response_value_at(&mut adapter, 11, None, 5)?;
+        assert_eq!(zero["value"], "0");
         Ok(())
     }
 
     #[test]
-    fn variables_hex_does_not_leak_across_requests_sharing_the_cache() -> TestResult {
+    fn floored_hex_never_leaks_into_default_requests_sharing_the_cache() -> TestResult {
         if !perl_available() {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
-        // Hex first, then default on the same cached reference: the second
-        // response must be decimal - the cache retains policy-neutral rows.
-        assert_eq!(
-            response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1)?["value"],
-            "0xff"
-        );
+        // Hex first (floored, no effect), then default on the same cached
+        // reference: the response must be decimal — the floor mutated nothing.
+        let floored = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1);
+        let err = match floored {
+            Err(message) => message,
+            Ok(row) => {
+                return Err(format!(
+                    "hex requests must be floored-rejected (#9581), got row: {row:?}"
+                )
+                .into());
+            }
+        };
+        assert!(err.contains("supportsValueFormattingOptions"), "got: {err}");
         assert_eq!(response_value_at(&mut adapter, 11, None, 1)?["value"], "255");
-        // And hex again after default - projection is per request.
-        assert_eq!(
-            response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1)?["value"],
-            "0xff"
-        );
+        // And the floor is stable across requests on the same reference.
+        let again = response_value_at(&mut adapter, 11, Some(json!({ "hex": true })), 1);
+        assert!(again.is_err(), "hex stays floored on the same reference");
         Ok(())
     }
 
@@ -1490,7 +1494,7 @@ mod value_format_family_tests {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
         seed_typed_roots(&adapter, 11);
 
         assert_eq!(
@@ -1502,12 +1506,12 @@ mod value_format_family_tests {
     }
 
     #[test]
-    fn variables_hex_projects_cached_child_rows() -> TestResult {
+    fn child_rows_serve_the_default_contract_under_the_format_floor() -> TestResult {
         if !perl_available() {
             return Ok(());
         }
         let mut adapter = DebugAdapter::new();
-        seed_current_frame(&adapter);
+        seed_current_frame(&adapter)?;
 
         let lines = vec!["@arr = [10, 20]".to_string()];
         let (roots, children) = DebugAdapter::parse_scope_variables_from_lines(
@@ -1530,9 +1534,11 @@ mod value_format_family_tests {
         }
         assert!(child_ref > 0, "fixture must produce an expandable child ref");
 
-        let first_hex =
-            response_value_at(&mut adapter, i64::from(child_ref), Some(json!({ "hex": true })), 0)?;
-        assert_eq!(first_hex["value"], "0xa", "child Integer(10) must render hex");
+        // #9581: a hex request on a child reference is floored-rejected...
+        let floored =
+            response_value_at(&mut adapter, i64::from(child_ref), Some(json!({ "hex": true })), 0);
+        assert!(floored.is_err(), "hex child projection must be floored-rejected");
+        // ...and the default child row keeps rendering from the cache.
         let first_default = response_value_at(&mut adapter, i64::from(child_ref), None, 0)?;
         assert_eq!(first_default["value"], "10");
         Ok(())
@@ -1569,11 +1575,12 @@ mod value_format_family_tests {
     fn mutation_and_evaluate_families_reject_unknown_format_options() -> TestResult {
         let mut adapter = DebugAdapter::new();
         // Argument deserialization fails before any session or mutation work.
+        // setVariable is deliberately absent from the family loop: since
+        // #8354 its capability gate refuses before argument parsing, so
+        // setExpression carries the mutation-family admission proof. The
+        // ordering claim itself (gate precedes screening) is asserted below
+        // and in dap_setvariable_capability_fail_closed_8354.
         for (command, arguments) in [
-            (
-                "setVariable",
-                json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "radix": 16 } }),
-            ),
             ("evaluate", json!({ "expression": "$x", "format": { "radix": 16 } })),
             (
                 "setExpression",
@@ -1586,38 +1593,72 @@ mod value_format_family_tests {
                 "{command} must reject the unknown option by name: {message}"
             );
         }
+        // setVariable must refuse on the capability floor before it would ever
+        // reach this argument validation.
+        let message = response_message(
+            &mut adapter,
+            "setVariable",
+            json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "radix": 16 } }),
+        )?;
+        assert!(
+            message.contains("supportsSetVariable"),
+            "setVariable must be refused by the #8354 capability gate, not by argument \
+             validation: {message}"
+        );
         Ok(())
     }
 
     #[test]
-    fn valid_hex_format_is_accepted_by_all_four_families() -> TestResult {
-        // A well-formed format deserializes cleanly: without a session the
-        // handlers proceed to their normal "No debugger session" failure, NOT
-        // to a format error - proving the option is consumed, not rejected.
+    fn valid_hex_format_is_floored_on_all_four_families_and_set_expression_refused() -> TestResult {
+        // #9581: a well-formed hex format is no longer consumed by the
+        // handlers — the capability floor rejects every family explicitly
+        // BEFORE deserialization/session work, and never silently ignores it.
+        //
+        // #8354: setVariable is absent from this family because its capability
+        // gate refuses before argument parsing, so evaluate carries the
+        // format-acceptance proof.
+        //
+        // #9568: setExpression refuses at the capability floor before any
+        // session work, so its well-formed-format leg expects the authority
+        // refusal instead of "No debugger session". Typed deserialization is
+        // still proven here: a *malformed* format on the same command fails
+        // with "Invalid arguments" (see
+        // `mutation_and_evaluate_families_reject_unknown_format_options`),
+        // which runs before this same gate.
         let mut adapter = DebugAdapter::new();
+        // #9568: setVariable and setExpression hex requests are refused by
+        // their own exact-mutation authority (SET_VARIABLE_UNSUPPORTED_MESSAGE
+        // / SET_EXPRESSION_UNSUPPORTED_MESSAGE) before the ValueFormat floor
+        // is consulted — covered by that authority's tests. The VFO floor's
+        // own refusal contract covers the remaining two families:
         for (command, arguments) in [
-            (
-                "setVariable",
-                json!({ "variablesReference": 11, "name": "$x", "value": "5", "format": { "hex": true } }),
-            ),
             ("evaluate", json!({ "expression": "$x", "format": { "hex": true } })),
-            (
-                "setExpression",
-                json!({ "expression": "$x", "value": "5", "format": { "hex": true } }),
-            ),
+            ("variables", json!({ "variablesReference": 11, "format": { "hex": true } })),
         ] {
             let message = response_message(&mut adapter, command, arguments)?;
-            assert_eq!(message, "No debugger session", "{command}: {message}");
+            assert!(
+                message.contains("unsupported")
+                    && message.contains("supportsValueFormattingOptions"),
+                "{command} must get the #9581 floor rejection: {message}"
+            );
         }
+        // #9568 note: setExpression's dedicated authority refusal
+        // (SET_EXPRESSION_UNSUPPORTED_MESSAGE) is unreachable for a
+        // well-formed format while the #9581 ValueFormat floor holds — the
+        // floor rejects the request first (asserted above for setExpression
+        // among the four families). The #9568 message re-emerges exactly when
+        // its re-enable gate (#9570 promotion boundary) lands.
         Ok(())
     }
 
     #[test]
     fn missing_arguments_message_is_preserved() -> TestResult {
         // Regression guard: `None` arguments still report "Missing arguments"
-        // (existing integration tests assert this exact message).
+        // (existing integration tests assert this exact message). setVariable
+        // is absent since #8354: its capability gate refuses before argument
+        // parsing, so it can no longer produce this message.
         let mut adapter = DebugAdapter::new();
-        for command in ["variables", "evaluate", "setVariable", "setExpression"] {
+        for command in ["variables", "evaluate", "setExpression"] {
             let outcome = adapter.handle_request(1, command, None);
             match outcome {
                 DapMessage::Response { success: false, message: Some(message), .. } => {
@@ -1634,10 +1675,10 @@ mod value_format_family_tests {
         Ok(())
     }
 
-    // --- EvaluateResult placeholder expansion under a later format ----------
+    // --- EvaluateResult placeholder expansion under the format floor --------
 
     #[test]
-    fn eval_result_placeholder_rows_with_typed_facts_project_under_request_format() -> TestResult {
+    fn eval_result_placeholder_rows_serve_the_default_contract_under_the_floor() -> TestResult {
         if !perl_available() {
             return Ok(());
         }
@@ -1669,12 +1710,191 @@ mod value_format_family_tests {
         }
 
         let mut adapter_mut = adapter;
-        let hexed =
-            response_value_at(&mut adapter_mut, i64::from(wire), Some(json!({ "hex": true })), 0)?;
-        assert_eq!(hexed["value"], "0xbeef", "48879 = 0xbeef from typed authority");
-        assert_eq!(hexed["name"], "$expr");
+        // #9581: a hex request on an EvalResult reference is floored-rejected.
+        let floored =
+            response_value_at(&mut adapter_mut, i64::from(wire), Some(json!({ "hex": true })), 0);
+        assert!(floored.is_err(), "hex EvalResult projection must be floored-rejected");
+        // The default contract serves the cached decimal row unchanged.
         let decimal = response_value_at(&mut adapter_mut, i64::from(wire), None, 0)?;
         assert_eq!(decimal["value"], "48879");
+        assert_eq!(decimal["name"], "$expr");
         Ok(())
+    }
+    fn install_locals_test_session(
+        adapter: &DebugAdapter,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::process::{Command, Stdio};
+        let previous = lock_or_recover(&adapter.session, "test.replace_session").take();
+        if let Some(mut previous) = previous {
+            let _ = previous.process.kill();
+            let _ = previous.process.wait();
+        }
+        adapter.seed_stopped_session_with_frames_for_test(vec![crate::types::StackFrame::new(
+            7,
+            "main::test",
+            crate::types::Source::new("fixture.pl"),
+            1,
+        )]);
+        let child = Command::new("perl")
+            .args(["-e", "while (<STDIN>) {}"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut old = {
+            let mut session = lock_or_recover(&adapter.session, "test.install_pipe");
+            std::mem::replace(&mut session.as_mut().ok_or("missing session")?.process, child)
+        };
+        let _ = old.kill();
+        let _ = old.wait();
+        Ok(())
+    }
+
+    fn pending_locals_query(
+        adapter: &std::sync::Arc<DebugAdapter>,
+        marker: u64,
+    ) -> Result<std::thread::JoinHandle<DapMessage>, Box<dyn std::error::Error>> {
+        let request_adapter = std::sync::Arc::clone(adapter);
+        let request = std::thread::spawn(move || {
+            request_adapter.handle_variables(1, 1, Some(json!({ "variablesReference": 71 })))
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() < marker
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() < marker {
+            let _ = request.join();
+            return Err("locals query was not submitted".into());
+        }
+        Ok(request)
+    }
+
+    fn deliver_locals(adapter: &DebugAdapter, marker: u64, payload: &str) {
+        adapter.push_recent_output_line_for_test(&format!("DAP_BEGIN_{marker}"));
+        adapter.push_recent_output_line_for_test(payload);
+        adapter.push_recent_output_line_for_test(&format!("DAP_END_{marker}"));
+    }
+
+    fn require_empty_locals(response: DapMessage) -> Result<(), Box<dyn std::error::Error>> {
+        match response {
+            DapMessage::Response { success: true, body: Some(body), .. }
+                if body.get("variables").and_then(Value::as_array).is_some_and(Vec::is_empty)
+                    && body.get("totalVariables").is_none() =>
+            {
+                Ok(())
+            }
+            other => Err(format!("stale locals were not honest-empty: {other:?}").into()),
+        }
+    }
+
+    fn require_fresh_locals(
+        adapter: &DebugAdapter,
+        response: DapMessage,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("fresh locals failed: {response:?}").into());
+        };
+        let rows = body.get("variables").and_then(Value::as_array).ok_or("missing rows")?;
+        let row = rows.first().ok_or("fresh locals unexpectedly empty")?;
+        let child =
+            row.get("variablesReference").and_then(Value::as_i64).ok_or("missing child ref")?;
+        if rows.len() != 1
+            || row.get("name").and_then(Value::as_str) != Some("@fresh")
+            || child <= 0
+            || body.get("totalVariables").and_then(Value::as_i64) != Some(1)
+        {
+            return Err(format!("incorrect fresh locals: {body}").into());
+        }
+        let mut session = lock_or_recover(&adapter.session, "test.fresh_cache");
+        let cache = &mut session.as_mut().ok_or("missing fresh session")?.variable_cache;
+        if cache.root_count(71) != Some(1) {
+            return Err("fresh root was not cached".into());
+        }
+        let children = cache.get_page(i32::try_from(child)?, 0, 10).ok_or("child cache missing")?;
+        if children.len() != 2
+            || children.first().map(|v| v.row.value.as_str()) != Some("42")
+            || children.get(1).map(|v| v.row.value.as_str()) != Some("43")
+        {
+            return Err(format!("wrong cached children: {children:?}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn delayed_locals_query_does_not_hold_session_lock() -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = std::sync::Arc::new(DebugAdapter::new());
+        install_locals_test_session(&adapter)?;
+        let request = pending_locals_query(&adapter, 1)?;
+        let lock_available = (0..100).any(|_| {
+            if let Ok(guard) = adapter.session.try_lock() {
+                drop(guard);
+                true
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                false
+            }
+        });
+        deliver_locals(&adapter, 1, "@fresh = [42, 43]");
+        let response = request.join().map_err(|_| "locals thread panicked")?;
+        if !lock_available {
+            return Err("session lock remained held while locals response was pending".into());
+        }
+        require_fresh_locals(&adapter, response)
+    }
+
+    fn reject_delayed_locals_and_recover(
+        transition: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let adapter = std::sync::Arc::new(DebugAdapter::new());
+        install_locals_test_session(&adapter)?;
+        let request = pending_locals_query(&adapter, 1)?;
+        if transition == "replacement" {
+            adapter.operation_broker.settle_all("test_replacement");
+            install_locals_test_session(&adapter)?;
+            adapter.operation_broker.open_session();
+        } else {
+            let mut guard = lock_or_recover(&adapter.session, "test.stop_transition");
+            let session = guard.as_mut().ok_or("missing session")?;
+            if transition == "running" {
+                session.state = DebugState::Running;
+            } else {
+                session.stopped_generation = session.stopped_generation.saturating_add(1);
+            }
+        }
+        deliver_locals(&adapter, 1, "@fresh = [42, 43]");
+        require_empty_locals(request.join().map_err(|_| "stale locals thread panicked")?)?;
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.stale_cache");
+            let session = guard.as_mut().ok_or("missing session")?;
+            if session.variable_cache.all_variables().next().is_some() {
+                return Err("stale locals populated root or child cache".into());
+            }
+            if transition == "running" {
+                session.state = DebugState::Stopped;
+                session.stopped_generation = session.stopped_generation.saturating_add(1);
+            }
+        }
+        // Recover in the same replacement/new-stop session, not a third fresh fixture.
+        let request = pending_locals_query(&adapter, 2)?;
+        deliver_locals(&adapter, 2, "@fresh = [42, 43]");
+        require_fresh_locals(&adapter, request.join().map_err(|_| "recovery thread panicked")?)
+    }
+
+    #[test]
+    fn delayed_locals_rejects_running_then_recovers() -> Result<(), Box<dyn std::error::Error>> {
+        reject_delayed_locals_and_recover("running")
+    }
+
+    #[test]
+    fn delayed_locals_rejects_new_stop_then_recovers() -> Result<(), Box<dyn std::error::Error>> {
+        reject_delayed_locals_and_recover("new_stop")
+    }
+
+    #[test]
+    fn delayed_locals_rejects_replacement_then_recovers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        reject_delayed_locals_and_recover("replacement")
     }
 }

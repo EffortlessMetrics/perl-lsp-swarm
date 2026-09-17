@@ -478,11 +478,8 @@ pub(crate) fn check_panic_test(repo_root: &Path) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
+    use perl_test_must::must_err_with;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -649,7 +646,10 @@ pub fn boom() {
     #[test]
     fn check_panic_test_errors_when_identity_registry_missing() -> Result<()> {
         let repo = TempRepo::new("registry-missing-default")?;
-        let err = check_panic_test(&repo.path).unwrap_err();
+        let err = must_err_with(
+            check_panic_test(&repo.path),
+            "missing registry must fail the default checker",
+        );
         assert!(
             err.to_string().contains("identity registry"),
             "expected missing-registry error, got: {err}"
@@ -807,7 +807,10 @@ pub fn boom() {
                 "sites": [registry_site(&site, "active", " ")]
             }),
         )?;
-        let err = read_identity_registry(&empty_reason).unwrap_err();
+        let err = must_err_with(
+            read_identity_registry(&empty_reason),
+            "an empty accepted reason must be rejected",
+        );
         assert!(err.to_string().contains("accepted_reason"));
 
         let duplicate = write_registry(
@@ -820,7 +823,10 @@ pub fn boom() {
                 ]
             }),
         )?;
-        let err = read_identity_registry(&duplicate).unwrap_err();
+        let err = must_err_with(
+            read_identity_registry(&duplicate),
+            "duplicate stable identities must be rejected",
+        );
         assert!(err.to_string().contains("duplicates"));
         Ok(())
     }

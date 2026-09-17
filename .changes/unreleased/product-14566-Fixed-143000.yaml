@@ -1,0 +1,9 @@
+project: product
+component: Developer experience
+kind: Fixed
+body: 'A failure reported by an external debugger peer is no longer classified as an adapter bug. The external-peer path now returns a new `BackendError::PeerReported { command, message }` (classified `Advisory`) instead of `BackendError::Engine` (classified `Bug`), so an ordinary debuggee `die` reported over the peer protocol is not routed for adapter-bug repair. `BackendError::Engine` is retained unchanged for the in-process native backend, and the editor-visible message text is identical, so no DAP wire behavior changes. Adding a variant to the public `BackendError` enum can break downstream exhaustive matches.'
+time: 2026-09-02T14:30:00Z
+custom:
+  PR: "14566"
+  Slug: dap-peer-reported-not-adapter-bug
+  Breaking: "yes"

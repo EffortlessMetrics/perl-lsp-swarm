@@ -274,9 +274,12 @@ class MainRedRefusalWorkflowTests(unittest.TestCase):
         self.assertIn("  checks: read", self.workflow)
         self.assertNotIn("\n  push:", self.workflow)
         self.assertNotIn("pr-smoke", self.workflow)
+        probe_start = self.workflow.index("      - name: Probe main-red refusal")
+        evaluate_start = self.workflow.index("      - name: Evaluate routed result")
+        probe = self.workflow[probe_start:evaluate_start]
         self.assertIn(
-            "if: github.event_name != 'pull_request' || github.event.pull_request.draft != true",
-            self.workflow,
+            "(github.event_name != 'pull_request' || github.event.pull_request.draft != true)",
+            probe,
         )
 
     def test_probe_reads_main_before_and_after_exact_check_lookup(self) -> None:

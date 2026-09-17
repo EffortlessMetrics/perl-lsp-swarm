@@ -5,6 +5,8 @@
 
 use std::borrow::Cow;
 
+use crate::request::ModuleName;
+
 /// Normalize legacy package separator `'` to canonical `::`.
 #[must_use]
 pub fn normalize_package_separator(module_name: &str) -> Cow<'_, str> {
@@ -21,26 +23,21 @@ pub fn module_name_to_path(module_name: &str) -> String {
 /// Returns true when `module_name` is safe to map to a relative `.pm` path for @INC probing.
 ///
 /// Rejects path-shaped input, traversal segments, sigils, and other values that must not
-/// reach filesystem existence checks.
+/// reach filesystem existence checks. Package segments use the lexer-compatible Unicode XID
+/// class, intentionally excluding the token parser's emoji and join-control extensions because
+/// those values are not safe filesystem lookup module names. XID continuations, including
+/// combining marks, remain accepted: for example, `Foo::Bar\u{0301}` is one lookup-safe name,
+/// not a partial `Foo::Bar` extraction.
+///
+/// This predicate is the boolean projection of `ModuleName::parse` (#8497), which owns the
+/// grammar and the classified rejection reason. Callers that need to know *why* a name was
+/// rejected should construct a [`ModuleName`] instead of re-deriving the reason from `false`.
+///
+/// `ModuleName::is_valid` is the allocation-free form, so this stays a borrow-only check on
+/// the reference-extraction path that calls it per candidate token.
 #[must_use]
 pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
-    if module_name.is_empty() {
-        return false;
-    }
-    if module_name
-        .chars()
-        .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '\\' | '$' | '@' | '%'))
-    {
-        return false;
-    }
-
-    let normalized = normalize_package_separator(module_name);
-    normalized.split("::").all(|part| {
-        !part.is_empty()
-            && part != ".."
-            && part.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-            && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
+    ModuleName::is_valid(module_name)
 }
 
 /// Convert a module path/key into a module name.

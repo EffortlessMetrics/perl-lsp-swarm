@@ -1,0 +1,9 @@
+Changes
+LICENSE
+MANIFEST
+META.json
+META.yml
+Makefile.PL
+README
+lib/Acme/CatalogFreeze.pm
+t/00-load.t

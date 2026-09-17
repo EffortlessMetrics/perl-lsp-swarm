@@ -46,6 +46,18 @@ impl ParserConfigIdentity {
         self.budget
     }
 
+    /// Select an explicit resource budget for this configuration identity.
+    ///
+    /// Budget policy is part of the configuration identity, so two parsers with
+    /// different budgets are different configurations and may legitimately
+    /// reach different typed terminals for the same source (#7291). Recursion
+    /// and block-nesting limits are unchanged: they remain the historical
+    /// production values, not [`ParseBudget`] fields.
+    #[must_use]
+    pub fn with_budget(self, budget: ParseBudget) -> Self {
+        Self { budget, ..self }
+    }
+
     /// Production recursion-depth limit checked by the live context API.
     pub fn max_recursion_depth(self) -> usize {
         self.max_recursion_depth
@@ -122,12 +134,33 @@ impl ParserOperationContext {
         std::mem::take(&mut self.tracker)
     }
 
+    /// Record the terminal cause for this operation, preserving the first.
+    ///
+    /// More than one `Ok`-path branch can record a terminal in a single parse:
+    /// a refused heredoc collection does not stop statement parsing, so a later
+    /// lexer-budget `UnknownRest` could otherwise overwrite the heredoc cause
+    /// and leave `stop_cause()` disagreeing with the diagnostic vector. The
+    /// first selected cause is the causal one and is immutable for the rest of
+    /// the operation; [`ParserOperationContext::begin`] clears it.
     pub(crate) fn record_terminal(&mut self, cause: ParseStopCause) {
-        self.terminal = Some(cause);
+        self.terminal.get_or_insert(cause);
     }
 
     pub(crate) fn take_terminal(&mut self) -> Option<ParseStopCause> {
         self.terminal.take()
+    }
+
+    /// Whether this operation has already selected the heredoc-collection budget
+    /// as its terminal.
+    ///
+    /// Deliberately distinct from
+    /// [`ParserOperationContext::heredoc_scan_exhausted`], which is true as soon as
+    /// charged usage reaches the limit — including before any collection has been
+    /// attempted at all, when the configured budget is zero. Heredoc admission must
+    /// let that first declaration through so the drain can refuse it and report the
+    /// typed terminal; only once that report exists is further admission pointless.
+    pub(crate) fn heredoc_budget_terminal_recorded(&self) -> bool {
+        matches!(self.terminal, Some(ParseStopCause::HeredocBudgetExhausted { .. }))
     }
 
     pub(crate) fn is_pre_cancelled(&self) -> bool {
@@ -163,11 +196,71 @@ impl ParserOperationContext {
     pub(crate) fn exit_recursion(&mut self) {
         self.tracker.exit_depth();
     }
+
+    /// Whether the deterministic heredoc collection budget is already spent.
+    ///
+    /// This is the before-work half of the #7291 charge rule: the parser
+    /// refuses to begin another heredoc collection once the charged total
+    /// reaches the configured limit.
+    pub(crate) fn heredoc_scan_exhausted(&self) -> bool {
+        self.tracker.heredoc_scan_exhausted(&self.config.budget())
+    }
+
+    /// Whether charged collection work has *overrun* the heredoc budget.
+    ///
+    /// This is the after-work half of the same rule, and it is deliberately
+    /// strict where [`ParserOperationContext::heredoc_scan_exhausted`] is
+    /// inclusive. Landing exactly on the limit means the budget is spent — no
+    /// further collection may begin — but nothing was truncated: the drain
+    /// finished and every body it collected is attached. Reporting that as a
+    /// resource limit would put a blocking diagnostic on a parse that lost
+    /// nothing, which is the same false claim against valid source that the
+    /// removed wall clock used to make. Only a drain that crossed the limit
+    /// while running has actually spent more than it was allowed.
+    ///
+    /// A file that lands on the boundary and then declares another heredoc is
+    /// still reported: the before-work check refuses that next collection.
+    pub(crate) fn heredoc_scan_overrun(&self) -> bool {
+        let (limit, usage) = self.heredoc_scan_state();
+        usage > limit
+    }
+
+    /// Configured heredoc scan limit and the usage charged so far.
+    pub(crate) fn heredoc_scan_state(&self) -> (usize, usize) {
+        (self.config.budget().max_heredoc_scan_bytes, self.tracker.heredoc_scan_bytes)
+    }
+
+    /// Charge source bytes traversed by heredoc collection (after-work half).
+    pub(crate) fn record_heredoc_scan(&mut self, bytes: usize) {
+        self.tracker.record_heredoc_scan(bytes);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A refused heredoc collection does not stop statement parsing, so a later
+    /// lexer-budget stop can be recorded in the same operation. The first cause
+    /// is the causal one: without this, `stop_cause()` could name a different
+    /// limit than the diagnostic vector reports.
+    #[test]
+    fn first_recorded_terminal_wins_and_begin_clears_it() {
+        let mut ctx = ParserOperationContext::new(ParserConfigIdentity::production_default(), None);
+
+        ctx.record_terminal(ParseStopCause::HeredocBudgetExhausted { limit: 4, usage: 9 });
+        ctx.record_terminal(ParseStopCause::LexerBudgetExhausted);
+
+        assert_eq!(
+            ctx.take_terminal(),
+            Some(ParseStopCause::HeredocBudgetExhausted { limit: 4, usage: 9 }),
+            "a later terminal must not overwrite the first causal one"
+        );
+
+        ctx.record_terminal(ParseStopCause::LexerBudgetExhausted);
+        ctx.begin();
+        assert_eq!(ctx.take_terminal(), None, "a new operation must start with no terminal");
+    }
 
     #[test]
     fn production_default_identity_is_stable() {

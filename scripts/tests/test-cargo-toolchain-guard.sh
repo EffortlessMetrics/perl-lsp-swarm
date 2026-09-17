@@ -455,7 +455,14 @@ mapfile -t ENTRYPOINTS < <(
     ! -path 'scripts/lib/*' \
     -print | sort
 )
-ENTRYPOINTS+=(scripts/cargo-safe scripts/fuzz-bounded .github/run_all_tests.sh)
+# Extensionless entrypoints are invisible to the *.sh find above, so each one
+# must be named here or its guard goes unverified.
+ENTRYPOINTS+=(
+  scripts/cargo-safe
+  scripts/fuzz-bounded
+  scripts/branch-deletion-admission
+  .github/run_all_tests.sh
+)
 for entry in "${ENTRYPOINTS[@]}"; do
   [[ -f "$entry" ]] || continue
   if ! invokes_cargo "$entry"; then

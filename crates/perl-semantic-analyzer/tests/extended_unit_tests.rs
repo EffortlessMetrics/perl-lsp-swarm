@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Extended unit tests for perl-semantic-analyzer.
 //!
 //! Covers areas not exercised by the existing comprehensive_unit_tests.rs:

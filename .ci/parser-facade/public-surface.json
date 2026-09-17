@@ -138,7 +138,6 @@
         "perl_parser_core::line_index",
         "perl_parser_core::path_normalize",
         "perl_parser_core::path_security",
-        "perl_parser_core::percentile",
         "perl_parser_core::qualified_name",
         "perl_parser_core::source_file",
         "perl_parser_core::text_line",
@@ -391,6 +390,26 @@
       "owner": "#6701",
       "target_owner": "#6975",
       "exit_condition": "Replace with the canonical incremental API example or remove."
+    },
+    {
+      "kind": "bench",
+      "required_features": [],
+      "name": "positions_bench",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#6698",
+      "target_owner": "perl-parser",
+      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject."
+    },
+    {
+      "kind": "bench",
+      "required_features": [],
+      "name": "substitution_performance",
+      "classification": "parser_kernel",
+      "disposition": "retain",
+      "owner": "#6698",
+      "target_owner": "perl-parser",
+      "exit_condition": "Declare harness mode so nightly --noplot invocation stays valid; bind to an exact parser regime evidence subject."
     }
   ]
 }

@@ -21,6 +21,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 contract="${repo_root}/.ci/editor-clients/vim-vim-lsp-activation-root.v1.json"
+vim_adapter="${repo_root}/scripts/test/vim-clients/vim-lsp-adapter.vim"
 vim_bin="${VIM:-vim}"
 mode=contract
 if [[ ${1:-} == "--integration" ]]; then
@@ -36,6 +37,10 @@ if ! command -v "${vim_bin}" >/dev/null 2>&1; then
 fi
 if [[ ! -f "${contract}" ]]; then
   echo "vim activation/root FAILED: contract missing: ${contract}" >&2
+  exit 1
+fi
+if [[ ! -f "${vim_adapter}" ]]; then
+  echo "vim activation/root FAILED: canonical vim-lsp adapter missing: ${vim_adapter}" >&2
   exit 1
 fi
 
@@ -164,11 +169,13 @@ printf '[%% value %%]\n' >"${ftdir}/view.tt2"
 printf '<%%perl>my $x = 1;</%%perl>\n' >"${ftdir}/view.mason"
 
 # Root fixtures. `.git` is deliberately outer in one case so a nearer Perl
-# marker has to win.
+# marker has to win. The two Git-only fixtures distinguish an ordinary `.git`
+# directory from the `.git` file used by linked worktrees and submodules.
 mkdir -p \
   "${tmpdir}/roots/perl-config/lib" \
   "${tmpdir}/roots/makefile/lib" \
   "${tmpdir}/roots/git-only/lib" \
+  "${tmpdir}/roots/git-file/lib" \
   "${tmpdir}/roots/monorepo/.git" \
   "${tmpdir}/roots/monorepo/subproject/lib" \
   "${tmpdir}/roots/no-marker"
@@ -177,7 +184,15 @@ mkdir -p \
 : >"${tmpdir}/roots/makefile/Makefile.PL"
 : >"${tmpdir}/roots/makefile/lib/App.pm"
 mkdir -p "${tmpdir}/roots/git-only/.git"
-: >"${tmpdir}/roots/git-only/lib/App.pm"
+cat >"${tmpdir}/roots/git-only/lib/App.pm" <<'EOF'
+package App;
+1;
+EOF
+printf 'gitdir: ../actual-git-dir\n' >"${tmpdir}/roots/git-file/.git"
+cat >"${tmpdir}/roots/git-file/lib/App.pm" <<'EOF'
+package App;
+1;
+EOF
 : >"${tmpdir}/roots/monorepo/subproject/cpanfile"
 : >"${tmpdir}/roots/monorepo/subproject/lib/App.pm"
 : >"${tmpdir}/roots/no-marker/solo.pl"
@@ -188,6 +203,7 @@ export PERLLSP_VIM_RECEIPT="${receipt}"
 export PERLLSP_VIM_MODE="${mode}"
 export PERLLSP_VIM_LSP_DIR="${VIM_LSP_DIR:-}"
 export PERLLSP_VIM_BIN="${PERLLSP:-}"
+export PERLLSP_VIM_ADAPTER="${vim_adapter}"
 
 cat >"${tmpdir}/verify.vim" <<'VIM'
 set nocompatible
@@ -201,6 +217,8 @@ let s:mode = expand('$PERLLSP_VIM_MODE')
 let s:failures = []
 let s:filetypes = []
 let s:roots = []
+let s:vim_lsp_helper_roots = []
+let s:vim_lsp_helper_roots_ok = v:true
 
 function! s:RecordFailure(message) abort
   call add(s:failures, a:message)
@@ -274,7 +292,8 @@ endfunction
 
 call s:CheckRoot('perl_config', 'roots/perl-config/lib/App.pm', 'roots/perl-config')
 call s:CheckRoot('makefile_pl', 'roots/makefile/lib/App.pm', 'roots/makefile')
-call s:CheckRoot('git_only', 'roots/git-only/lib/App.pm', 'roots/git-only')
+call s:CheckRoot('git_directory', 'roots/git-only/lib/App.pm', 'roots/git-only')
+call s:CheckRoot('git_file', 'roots/git-file/lib/App.pm', 'roots/git-file')
 call s:CheckRoot('nearer_perl_marker_beats_outer_git', 'roots/monorepo/subproject/lib/App.pm', 'roots/monorepo/subproject')
 
 " No-marker semantics are explicitly cwd fallback, matching the current
@@ -287,55 +306,87 @@ let s:integration = {'requested': s:mode ==# 'integration', 'ok': v:null}
 if s:mode ==# 'integration'
   let s:vim_lsp_dir = expand('$PERLLSP_VIM_LSP_DIR')
   let s:perllsp = expand('$PERLLSP_VIM_BIN')
-  execute 'set runtimepath^=' . fnameescape(s:vim_lsp_dir)
-  let g:lsp_auto_enable = 0
-  let g:lsp_log_verbose = 1
-  let g:lsp_log_file = s:tmp . '/vim-lsp.log'
-  runtime plugin/lsp.vim
+  " The #7762 manifest keeps cross-editor semantic marker names. vim-lsp's
+  " helper decides directory-vs-file by a trailing slash, so project `.git`
+  " into both client spellings at this boundary.
+  " Load the same adapter projection used by the host runners. The integration
+  " rail must consume this exported function rather than grow a second
+  " client-specific marker policy.
+  let $PERLLSP_VIM_HOST_CANDIDATE = s:perllsp
+  let $PERLLSP_VIM_HOST_VIM_LSP_DIR = s:vim_lsp_dir
+  let $PERLLSP_VIM_HOST_SERVER_NAME = 'perllsp-under-test'
+  let $PERLLSP_VIM_HOST_ROOT_MARKERS = join(s:contract.root.markers, ',')
+  let $PERLLSP_VIM_HOST_CLIENT_LOG = s:tmp . '/adapter-client.log'
+  let $PERLLSP_VIM_HOST_SERVER_TRACE = s:tmp . '/adapter-server.log'
+  execute 'source ' . fnameescape(expand('$PERLLSP_VIM_ADAPTER'))
+  call VimLspHostLoadClient()
+
+  function! s:ObserveVimLspHelperRoot(name, relative_path, expected_relative) abort
+    let l:path = s:tmp . '/' . a:relative_path
+    let l:expected = fnamemodify(s:tmp . '/' . a:expected_relative, ':p')
+    let l:observed = lsp#utils#find_nearest_parent_file_directory(
+          \ l:path, VimLspHostClientRootMarkers())
+    let l:observed = empty(l:observed) ? '' : fnamemodify(l:observed, ':p')
+    let l:ok = l:observed ==# l:expected
+    call add(s:vim_lsp_helper_roots, {
+          \ 'case': a:name,
+          \ 'path': a:relative_path,
+          \ 'expected': l:expected,
+          \ 'observed': l:observed,
+          \ 'ok': l:ok,
+          \ })
+    if !l:ok
+      let s:vim_lsp_helper_roots_ok = v:false
+      call s:RecordFailure('vim-lsp helper root ' . a:name . ': expected ' . l:expected . ', got ' . string(l:observed))
+    endif
+  endfunction
+
+  call s:ObserveVimLspHelperRoot('perl_config', 'roots/perl-config/lib/App.pm', 'roots/perl-config')
+  call s:ObserveVimLspHelperRoot('git_directory', 'roots/git-only/lib/App.pm', 'roots/git-only')
+  call s:ObserveVimLspHelperRoot('git_file', 'roots/git-file/lib/App.pm', 'roots/git-file')
+  call s:ObserveVimLspHelperRoot('nearer_perl_marker_beats_outer_git', 'roots/monorepo/subproject/lib/App.pm', 'roots/monorepo/subproject')
+  let s:unmarked = lsp#utils#find_nearest_parent_file_directory(
+        \ s:tmp . '/roots/no-marker/solo.pl', VimLspHostClientRootMarkers())
+  if !empty(s:unmarked)
+    let s:vim_lsp_helper_roots_ok = v:false
+    call s:RecordFailure('vim-lsp helper accepted an unmarked tree: ' . string(s:unmarked))
+  endif
 
   let g:perllsp_server_init = 0
   let g:perllsp_buffer_enabled = 0
-  let g:perllsp_root_callback = ''
+  let g:perllsp_vim_host_root_callback = ''
   augroup perllsp_vim_receipt
     autocmd!
     autocmd User lsp_server_init let g:perllsp_server_init = 1
     autocmd User lsp_buffer_enabled let g:perllsp_buffer_enabled = 1
   augroup END
 
-  function! s:PerllspRootUri(server_info) abort
-    let l:root = lsp#utils#find_nearest_parent_file_directory(expand('%:p'), s:contract.root.markers)
-    if empty(l:root)
-      let l:root = getcwd()
-    endif
-    let g:perllsp_root_callback = fnamemodify(l:root, ':p')
-    return lsp#utils#path_to_uri(l:root)
-  endfunction
+  call VimLspHostRegister()
+  call VimLspHostEnable()
 
-  call lsp#register_server({
-        \ 'name': 'perllsp-under-test',
-        \ 'cmd': {server_info -> [s:perllsp, '--stdio']},
-        \ 'allowlist': ['perl'],
-        \ 'root_uri': function('s:PerllspRootUri'),
-        \ })
-  call lsp#enable()
-
-  execute 'silent edit ' . fnameescape(s:tmp . '/roots/perl-config/lib/App.pm')
+  " Make cwd fallback observably wrong, then attach through the Git-directory
+  " marker so the live server journey exercises the client-specific spelling.
+  execute 'lcd ' . fnameescape(s:tmp)
+  execute 'silent edit ' . fnameescape(s:tmp . '/roots/git-only/lib/App.pm')
   let s:deadline = reltimefloat(reltime()) + 8.0
   while (!g:perllsp_server_init || !g:perllsp_buffer_enabled) && reltimefloat(reltime()) < s:deadline
     sleep 50m
   endwhile
-  let s:expected_root = fnamemodify(s:tmp . '/roots/perl-config', ':p')
+  let s:expected_root = fnamemodify(s:tmp . '/roots/git-only', ':p')
   let s:integration = {
         \ 'requested': v:true,
         \ 'server_init': g:perllsp_server_init,
         \ 'buffer_enabled': g:perllsp_buffer_enabled,
-        \ 'root_callback': g:perllsp_root_callback,
+        \ 'root_callback': g:perllsp_vim_host_root_callback,
         \ 'expected_root': s:expected_root,
-        \ 'ok': g:perllsp_server_init && g:perllsp_buffer_enabled && g:perllsp_root_callback ==# s:expected_root,
+        \ 'vim_lsp_helper_roots': s:vim_lsp_helper_roots,
+        \ 'ok': g:perllsp_server_init && g:perllsp_buffer_enabled
+        \   && g:perllsp_vim_host_root_callback ==# s:expected_root
+        \   && s:vim_lsp_helper_roots_ok,
         \ 'vim_lsp_log': g:lsp_log_file,
         \ }
   if !s:integration.ok
-    call s:RecordFailure('vim-lsp integration did not initialize/attach at the expected root')
+    call s:RecordFailure('vim-lsp integration did not initialize/attach at the expected Git root')
   endif
   silent! call lsp#stop_server('perllsp-under-test')
 endif

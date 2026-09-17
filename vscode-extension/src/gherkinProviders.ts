@@ -1,5 +1,16 @@
 import * as vscode from 'vscode';
-import { isPotentiallyExpensiveRegex } from './gherkinRedosGuard';
+import {
+  createGherkinMatchBudget,
+  isSafeGherkinStepMatch,
+  normalizeGherkinRegexFlags,
+  type GherkinMatchBudget,
+} from './gherkinRedosGuard';
+import {
+  MAX_STEP_DEFINITION_FILE_BYTES,
+  MAX_STEP_DEFINITION_TOTAL_BYTES,
+  MAX_STEP_DEFINITION_TOTAL_READ_BYTES,
+  readBoundedFile,
+} from './gherkinStepDefinitions';
 
 type OutlineKind = 'feature' | 'rule' | 'background' | 'scenario' | 'examples' | 'step';
 type StepKeyword = 'Given' | 'When' | 'Then' | 'And' | 'But' | '*';
@@ -60,8 +71,6 @@ const STEP_DEFINITION_FILE_GLOBS = [
 ] as const;
 const STEP_DEFINITION_EXCLUDE_GLOB = '{**/node_modules/**,**/blib/**,**/.git/**}';
 const STEP_DEFINITION_FILE_LIMIT = 1000;
-const MAX_MATCH_REGEX_LENGTH = 256;
-const MAX_MATCH_STEP_TEXT_LENGTH = 512;
 // Catastrophic backtracking (ReDoS) requires a *quantified group that itself
 // contains a quantifier, a backreference, a lookaround, or alternation. A
 // single character class followed by one quantifier
@@ -96,12 +105,24 @@ export function registerGherkinProviders(): vscode.Disposable[] {
       position: vscode.Position,
       token: vscode.CancellationToken,
     ): Promise<vscode.LocationLink[] | undefined> {
-      const candidates = await loadStepDefinitionDocuments(token);
+      const scan = await loadStepDefinitionDocuments(token);
       if (token.isCancellationRequested) {
         return undefined;
       }
+      if (scan.refusal !== null) {
+        void vscode.window.showWarningMessage(
+          'Gherkin step-definition discovery stopped before the workspace was fully scanned; no definition result is available.',
+        );
+        return undefined;
+      }
 
-      const links = provideGherkinStepDefinitionLinks(document.getText(), position, candidates);
+      const links = provideGherkinStepDefinitionLinks(document.getText(), position, scan.documents);
+      if (links === null) {
+        void vscode.window.showWarningMessage(
+          'Gherkin step matching stopped after reaching its safety budget; no definition result is available.',
+        );
+        return undefined;
+      }
       return links.length > 0 ? links : undefined;
     },
   };
@@ -140,15 +161,20 @@ export function provideGherkinStepDefinitionLinks(
   featureText: string,
   position: vscode.Position,
   documents: readonly StepDefinitionDocument[],
-): vscode.LocationLink[] {
+): vscode.LocationLink[] | null {
   const step = extractStepReference(featureText, position);
   if (!step) {
     return [];
   }
 
   const matches: ParsedStepDefinition[] = [];
+  const budget = createGherkinMatchBudget();
   for (const document of documents) {
-    matches.push(...findMatchingStepDefinitions(step, document));
+    const documentMatches = findMatchingStepDefinitions(step, document, budget);
+    if (documentMatches === null) {
+      return null;
+    }
+    matches.push(...documentMatches);
   }
 
   matches.sort((left, right) => {
@@ -246,40 +272,193 @@ function buildOutline(text: string): OutlineNode[] {
 
 async function loadStepDefinitionDocuments(
   token: vscode.CancellationToken,
-): Promise<StepDefinitionDocument[]> {
+): Promise<StepDefinitionScan> {
   const seen = new Map<string, vscode.Uri>();
 
   for (const pattern of STEP_DEFINITION_FILE_GLOBS) {
     if (token.isCancellationRequested) {
-      return [];
+      return { documents: [], attemptedBytes: 0, refusal: null };
     }
 
     const uris = await vscode.workspace.findFiles(
       pattern,
       STEP_DEFINITION_EXCLUDE_GLOB,
-      STEP_DEFINITION_FILE_LIMIT,
+      STEP_DEFINITION_FILE_LIMIT + 1,
+      token,
     );
+
+    if (uris.length > STEP_DEFINITION_FILE_LIMIT) {
+      return {
+        documents: [],
+        attemptedBytes: 0,
+        refusal: 'enumeration_truncated',
+      };
+    }
 
     for (const uri of uris) {
       seen.set(uri.toString(), uri);
     }
   }
 
+  const scan = await collectStepDefinitionDocuments(Array.from(seen.values()), token);
+  return scan;
+}
+
+/** Typed refusal causes for the bounded step-definition workspace scan. */
+export type StepDefinitionScanRefusal =
+  | 'read_budget_exhausted'
+  | 'retained_budget_exhausted'
+  | 'file_over_limit'
+  | 'enumeration_truncated';
+
+/** Outcome of the bounded step-definition workspace scan. */
+export interface StepDefinitionScan {
+  documents: StepDefinitionDocument[];
+  /** Every attempted read, including candidates the scan went on to reject. */
+  attemptedBytes: number;
+  /** Set when the scan stopped before all candidates could be admitted. */
+  refusal: StepDefinitionScanRefusal | null;
+}
+
+/**
+ * Read candidate step-definition files sequentially under the shared byte
+ * envelope: a per-file cap and aggregate caps on attempted and retained
+ * bytes. Open editor documents are preferred over stale disk contents, and the
+ * post-read check also runs when the disk read or configured decode failed.
+ */
+export async function collectStepDefinitionDocuments(
+  candidates: readonly vscode.Uri[],
+  token: vscode.CancellationToken,
+): Promise<StepDefinitionScan> {
   const documents: StepDefinitionDocument[] = [];
-  for (const uri of seen.values()) {
+  let acceptedBytes = 0;
+  let attemptedBytes = 0;
+  let refusal: StepDefinitionScanRefusal | null = null;
+
+  const openDocumentFor = (candidate: vscode.Uri): vscode.TextDocument | undefined =>
+    vscode.workspace.textDocuments.find(
+      (document) => document.uri.toString() === candidate.toString(),
+    );
+
+  const admitRetainedText = (
+    uri: vscode.Uri,
+    text: string,
+  ): 'admitted' | 'over-file-cap' | 'over-retained-cap' => {
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (bytes > MAX_STEP_DEFINITION_FILE_BYTES) {
+      return 'over-file-cap';
+    }
+    if (acceptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      return 'over-retained-cap';
+    }
+    acceptedBytes += bytes;
+    documents.push({ uri, text });
+    return 'admitted';
+  };
+
+  const admitOpenDocument = (uri: vscode.Uri): 'stop' | 'continue' => {
+    const document = openDocumentFor(uri);
+    if (!document) {
+      return 'continue';
+    }
+    const text = document.getText();
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (attemptedBytes + bytes > MAX_STEP_DEFINITION_TOTAL_READ_BYTES) {
+      refusal = 'read_budget_exhausted';
+      return 'stop';
+    }
+    attemptedBytes += bytes;
+    const outcome = admitRetainedText(uri, text);
+    if (outcome === 'over-file-cap') {
+      refusal = 'file_over_limit';
+      return 'stop';
+    }
+    if (outcome === 'over-retained-cap') {
+      refusal = 'retained_budget_exhausted';
+      return 'stop';
+    }
+    return 'continue';
+  };
+
+  for (const uri of candidates) {
     if (token.isCancellationRequested) {
       break;
     }
+    if (uri.scheme !== 'file') {
+      continue;
+    }
+    if (acceptedBytes >= MAX_STEP_DEFINITION_TOTAL_BYTES) {
+      refusal = 'retained_budget_exhausted';
+      break;
+    }
 
+    if (openDocumentFor(uri)) {
+      if (admitOpenDocument(uri) === 'stop') {
+        break;
+      }
+      continue;
+    }
+
+    if (
+      attemptedBytes + MAX_STEP_DEFINITION_FILE_BYTES + 1 >
+      MAX_STEP_DEFINITION_TOTAL_READ_BYTES
+    ) {
+      refusal = 'read_budget_exhausted';
+      break;
+    }
+
+    const read = await readBoundedFile(uri.fsPath, MAX_STEP_DEFINITION_FILE_BYTES);
+    attemptedBytes +=
+      read && 'kind' in read
+        ? MAX_STEP_DEFINITION_FILE_BYTES + 1
+        : read
+          ? read.byteLength
+          : MAX_STEP_DEFINITION_FILE_BYTES + 1;
+
+    if (openDocumentFor(uri)) {
+      if (admitOpenDocument(uri) === 'stop') {
+        break;
+      }
+      continue;
+    }
+
+    if (!read) {
+      continue;
+    }
+    if ('kind' in read) {
+      refusal = 'file_over_limit';
+      break;
+    }
+    let text: string;
     try {
-      const document = await vscode.workspace.openTextDocument(uri);
-      documents.push({ uri, text: document.getText() });
+      text = await vscode.workspace.decode(read.bytes, { uri });
     } catch {
-      // Ignore unreadable files and continue.
+      const openedAfterDecodeError = openDocumentFor(uri);
+      if (openedAfterDecodeError && admitOpenDocument(uri) === 'stop') {
+        break;
+      }
+      continue;
+    }
+
+    if (openDocumentFor(uri)) {
+      if (admitOpenDocument(uri) === 'stop') {
+        break;
+      }
+      continue;
+    }
+
+    const outcome = admitRetainedText(uri, text);
+    if (outcome === 'over-file-cap') {
+      refusal = 'file_over_limit';
+      break;
+    }
+    if (outcome === 'over-retained-cap') {
+      refusal = 'retained_budget_exhausted';
+      break;
     }
   }
 
-  return documents;
+  return { documents, attemptedBytes, refusal };
 }
 
 function extractStepReference(
@@ -348,10 +527,18 @@ function resolveEffectiveKeyword(
 function findMatchingStepDefinitions(
   step: GherkinStepReference,
   document: StepDefinitionDocument,
-): ParsedStepDefinition[] {
+  budget: GherkinMatchBudget,
+): ParsedStepDefinition[] | null {
   const matches: ParsedStepDefinition[] = [];
 
   for (const definition of parseStepDefinitions(document)) {
+    // Every parsed definition consumes the shared population budget. Moving
+    // this below filtering would let incompatible or unsafe definitions make
+    // the operation's cost depend on which consumer reached them.
+    if (!budget.tryConsume()) {
+      return null;
+    }
+
     if (!keywordsAreCompatible(step, definition.keyword)) {
       continue;
     }
@@ -555,33 +742,16 @@ function stepTextMatches(stepText: string, matcher: StepMatcher): boolean {
     return matcher.text === stepText;
   }
 
-  if (!isSafeRegexForStepMatching(matcher.source, stepText)) {
+  const flags = normalizeGherkinRegexFlags(matcher.flags);
+  if (flags === null || !isSafeGherkinStepMatch(matcher.source, stepText, flags)) {
     return false;
   }
 
   try {
-    return new RegExp(matcher.source, normalizeRegexFlags(matcher.flags)).test(stepText);
+    return new RegExp(matcher.source, flags).test(stepText);
   } catch {
     return false;
   }
-}
-
-function isSafeRegexForStepMatching(source: string, stepText: string): boolean {
-  if (source.length > MAX_MATCH_REGEX_LENGTH || stepText.length > MAX_MATCH_STEP_TEXT_LENGTH) {
-    return false;
-  }
-
-  return !isPotentiallyExpensiveRegex(source);
-}
-
-function normalizeRegexFlags(flags: string): string {
-  let normalized = '';
-  for (const flag of flags.toLowerCase()) {
-    if ((flag === 'i' || flag === 'm' || flag === 's') && !normalized.includes(flag)) {
-      normalized += flag;
-    }
-  }
-  return normalized;
 }
 
 function definitionScore(uri: vscode.Uri, keyword: StepDefinitionKeyword): number {

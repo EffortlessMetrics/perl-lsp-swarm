@@ -131,6 +131,22 @@ pub struct BreakpointHitOutcome {
     pub log_messages: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EngineBreakpointHitOutcome {
+    pub(crate) matched: bool,
+    pub(crate) should_stop: bool,
+    pub(crate) log_messages: Vec<String>,
+    pub(crate) hit_breakpoint_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EngineInstallation {
+    source_path: String,
+    session_generation: u64,
+    source_digest: String,
+    line: i64,
+}
+
 fn parse_hit_condition_operand(raw: &str) -> Option<u64> {
     raw.trim().parse::<u64>().ok()
 }
@@ -295,6 +311,12 @@ pub struct BreakpointStore {
     breakpoints: Arc<Mutex<HashMap<String, Vec<BreakpointRecord>>>>,
     /// Next breakpoint ID (monotonically increasing)
     next_id: Arc<Mutex<i64>>,
+    /// Engine acknowledgements are owned by the same store as static records,
+    /// so replacement and runtime attribution cannot observe split state.
+    engine_installations: Arc<Mutex<HashMap<i64, EngineInstallation>>>,
+    /// Counts visits to the source read boundary, shared by clones of this store.
+    #[cfg(test)]
+    source_read_attempts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl BreakpointStore {
@@ -308,7 +330,65 @@ impl BreakpointStore {
     /// let store = BreakpointStore::new();
     /// ```
     pub fn new() -> Self {
-        Self { breakpoints: Arc::new(Mutex::new(HashMap::new())), next_id: Arc::new(Mutex::new(1)) }
+        Self {
+            breakpoints: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(Mutex::new(1)),
+            engine_installations: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            source_read_attempts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// Record an engine acknowledgement only if the adapter ID still names
+    /// the requested source and line. Callers supply the broker/session
+    /// generation and source digest after the external wait has completed.
+    pub(crate) fn mark_engine_installed(
+        &self,
+        id: i64,
+        source_path: &str,
+        line: i64,
+        session_generation: u64,
+        source_digest: String,
+    ) -> bool {
+        let breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(records) = breakpoints_map.get(source_path) else {
+            return false;
+        };
+        if !records.iter().any(|record| record.id == id && record.verified && record.line == line) {
+            return false;
+        }
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        installations.insert(
+            id,
+            EngineInstallation {
+                source_path: source_path.to_string(),
+                session_generation,
+                source_digest,
+                line,
+            },
+        );
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_engine_installations_for_source(&self, source_path: &str) {
+        let breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let ids: Vec<i64> = breakpoints_map
+            .get(source_path)
+            .into_iter()
+            .flatten()
+            .map(|record| record.id)
+            .collect();
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        for id in ids {
+            installations.remove(&id);
+        }
+    }
+
+    /// Observe the actual store read boundary without a process-global test counter.
+    #[cfg(test)]
+    pub(crate) fn source_read_attempts(&self) -> usize {
+        self.source_read_attempts.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Set breakpoints for a source file (REPLACE semantics)
@@ -361,6 +441,8 @@ impl BreakpointStore {
         let source_breakpoints = args.breakpoints.as_deref().unwrap_or(&[]);
 
         // Read source file and parse once for AST validation (AC7).
+        #[cfg(test)]
+        self.source_read_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let source_content = std::fs::read_to_string(&source_path).ok();
         let validator = source_content
             .as_ref()
@@ -372,7 +454,17 @@ impl BreakpointStore {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
         let mut next_id = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Clear existing breakpoints for this source (REPLACE semantics)
+        // Clear existing breakpoints and their engine acknowledgements as one
+        // replacement boundary. The records lock is held through removal so
+        // a late acknowledgement cannot commit against the old record set.
+        if let Some(old_records) = breakpoints_map.get(&source_path) {
+            let old_ids = old_records.iter().map(|record| record.id).collect::<Vec<_>>();
+            let mut installations =
+                self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+            for id in old_ids {
+                installations.remove(&id);
+            }
+        }
         breakpoints_map.remove(&source_path);
 
         let mut records = Vec::new();
@@ -535,13 +627,27 @@ impl BreakpointStore {
     /// * `source_path` - Absolute path to source file
     pub fn clear_breakpoints(&self, source_path: &str) {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
-        breakpoints_map.remove(source_path);
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = breakpoints_map
+            .remove(source_path)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|record| record.id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            installations.remove(&id);
+        }
     }
 
     /// Clear all breakpoints in all source files
     pub fn clear_all(&self) {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = breakpoints_map.values().flatten().map(|record| record.id).collect::<Vec<_>>();
         breakpoints_map.clear();
+        for id in ids {
+            installations.remove(&id);
+        }
     }
 
     /// Check if the store is empty
@@ -575,6 +681,70 @@ impl BreakpointStore {
     /// conditions. For logpoints, execution continues after emitting output.
     pub fn register_breakpoint_hit(&self, source_path: &str, line: i64) -> BreakpointHitOutcome {
         self.register_breakpoint_hit_with_variables(source_path, line, None)
+    }
+
+    /// Register a runtime hit while requiring a current engine acknowledgement.
+    pub(crate) fn register_engine_breakpoint_hit(
+        &self,
+        source_path: &str,
+        line: i64,
+        session_generation: u64,
+        source_digest: &str,
+    ) -> EngineBreakpointHitOutcome {
+        let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        let installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        let mut outcome = EngineBreakpointHitOutcome::default();
+        for (stored_path, records) in &mut *breakpoints_map {
+            if !file_paths_match(stored_path, source_path) {
+                continue;
+            }
+            for record in records {
+                let Some(installation) = installations.get(&record.id) else { continue };
+                if installation.session_generation != session_generation
+                    || !file_paths_match(&installation.source_path, source_path)
+                    || installation.line != line
+                    || installation.source_digest != source_digest
+                    || record.line != line
+                    || !record.verified
+                {
+                    continue;
+                }
+                outcome.matched = true;
+                record.hit_count = record.hit_count.saturating_add(1);
+                if !evaluate_hit_condition(record.hit_condition.as_deref(), record.hit_count)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if let Some(message) = record.log_message.clone() {
+                    outcome.log_messages.push(message);
+                } else {
+                    outcome.should_stop = true;
+                    outcome.hit_breakpoint_ids.push(record.id);
+                }
+            }
+        }
+        outcome
+    }
+
+    /// Check whether a runtime stop could belong to a current engine
+    /// installation before doing filesystem I/O for source revalidation.
+    ///
+    /// This is only an admission hint; callers must still supply the current
+    /// digest to [`Self::register_engine_breakpoint_hit`], which remains the
+    /// authoritative attribution check.
+    pub(crate) fn has_engine_breakpoint_candidate(
+        &self,
+        source_path: &str,
+        line: i64,
+        session_generation: u64,
+    ) -> bool {
+        let installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        installations.values().any(|installation| {
+            installation.session_generation == session_generation
+                && installation.line == line
+                && file_paths_match(&installation.source_path, source_path)
+        })
     }
 
     /// Register a breakpoint hit with optional variable interpolation.
@@ -638,6 +808,84 @@ impl BreakpointStore {
         outcome
     }
 
+    /// Mark every desired breakpoint of one source pending reconciliation
+    /// after a possibly applied loaded-module reload (#10102, R03).
+    ///
+    /// Durable desired client configuration is preserved — records are
+    /// never dropped here — but their applied engine installation identities
+    /// cannot survive the runtime-module generation: each record is marked
+    /// unverified with an explicit pending message until the canonical
+    /// breakpoint path acknowledges it under the new runtime source
+    /// identity. Returns the affected records in store order so callers can
+    /// emit generation-bound `breakpoint` changed events.
+    ///
+    /// Only an unambiguous subject spelling reconciles anything. When the
+    /// spelling matches more than one stored key (same-basename sources
+    /// under different directories), marking every match would mutate
+    /// unrelated sources, so nothing is marked and the caller must refuse
+    /// the reload before routing its terminal (FC-BP-ALIAS-AMBIGUOUS; see
+    /// [`Self::ambiguous_breakpoint_source`]). An unbound spelling
+    /// likewise marks nothing.
+    ///
+    /// Affected applied engine installations are removed with the records
+    /// (FC-BP-STALE-ENGINE-INSTALL): `has_engine_breakpoint_candidate`
+    /// keys on path, line, and adapter session generation, so a retained
+    /// previous-generation installation would still admit candidates and
+    /// force useless source-digest I/O after the reload.
+    pub fn mark_breakpoints_pending_reconciliation(
+        &self,
+        source_path: &str,
+    ) -> Vec<BreakpointRecord> {
+        let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        // Path-equivalence match (the same rule breakpoint hits use): a
+        // reload subject may name a source spelling (absolute) that differs
+        // from the spelling the client used at `setBreakpoints`
+        // (relative). Exact lookup alone would leave those records verified
+        // while the response describes them as pending reconciliation.
+        // Keys are collected first so no mutable map iteration coincides
+        // with another store lock.
+        let matching: Vec<String> = breakpoints_map
+            .keys()
+            .filter(|key| file_paths_match(key, source_path))
+            .cloned()
+            .collect();
+        if matching.len() != 1 {
+            // Zero matches: nothing is bound. Multiple matches: the
+            // spelling is ambiguous across distinct stored sources and
+            // must be refused upstream, never fanned out here.
+            return Vec::new();
+        }
+        // Lock order is breakpoints, then engine_installations — the same
+        // order `adjust_breakpoints_for_edit` and `set_breakpoints` use.
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        let mut affected = Vec::new();
+        for key in matching {
+            if let Some(records) = breakpoints_map.get_mut(&key) {
+                for record in records.iter_mut() {
+                    installations.remove(&record.id);
+                    record.verified = false;
+                    record.message = Some("Pending reconciliation after module reload".to_string());
+                }
+                affected.extend(records.iter().cloned());
+            }
+        }
+        affected
+    }
+
+    /// Whether one reload-subject spelling matches more than one stored
+    /// breakpoint source key (FC-BP-ALIAS-AMBIGUOUS).
+    ///
+    /// `file_paths_match` is a suffix rule, so a bare `main.pl` subject
+    /// spelling matches both `/a/main.pl` and `/b/main.pl`. The reload
+    /// route consults this before routing a mutating terminal: an
+    /// ambiguous spelling refuses inexact/stale identity rather than
+    /// reconciling unrelated sources. A unique match (including an
+    /// exact or alias spelling of one stored key) is not ambiguous.
+    pub fn ambiguous_breakpoint_source(&self, source_path: &str) -> bool {
+        let breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
+        breakpoints_map.keys().filter(|key| file_paths_match(key, source_path)).take(2).count() > 1
+    }
+
     /// AC7.4: Adjust breakpoints for a file edit
     ///
     /// This method shifts breakpoint lines based on content changes.
@@ -655,8 +903,9 @@ impl BreakpointStore {
         lines_delta: i64,
     ) {
         let mut breakpoints_map = self.breakpoints.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(records) = breakpoints_map.get_mut(source_path) {
-            for record in records {
+        let mut installations = self.engine_installations.lock().unwrap_or_else(|e| e.into_inner());
+        let ids = if let Some(records) = breakpoints_map.get_mut(source_path) {
+            for record in &mut *records {
                 // Shift breakpoints that are at or after the edit line
                 if record.line >= start_line {
                     record.line += lines_delta;
@@ -668,6 +917,12 @@ impl BreakpointStore {
                     }
                 }
             }
+            records.iter().map(|record| record.id).collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for id in ids {
+            installations.remove(&id);
         }
     }
 }
@@ -893,9 +1148,9 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_clear_breakpoints() {
+    fn test_clear_breakpoints() -> Result<(), String> {
         let store = BreakpointStore::new();
-        let source_path = "/workspace/script.pl";
+        let (_file, source_path) = create_test_perl_file();
 
         let args = SetBreakpointsArguments {
             source: Source {
@@ -912,13 +1167,23 @@ print "result: $final\n";
             source_modified: None,
         };
         store.set_breakpoints(&args);
+        if !store.mark_engine_installed(1, &source_path, 10, 7, "digest".to_string()) {
+            return Err("test breakpoint must be installable".to_string());
+        }
+        if !store.has_engine_breakpoint_candidate(&source_path, 10, 7) {
+            return Err("test breakpoint installation must be observable".to_string());
+        }
 
         // Clear breakpoints
-        store.clear_breakpoints(source_path);
+        store.clear_breakpoints(&source_path);
 
         // Should be empty
-        let breakpoints = store.get_breakpoints(source_path);
+        let breakpoints = store.get_breakpoints(&source_path);
         assert_eq!(breakpoints.len(), 0);
+        if store.has_engine_breakpoint_candidate(&source_path, 10, 7) {
+            return Err("cleared breakpoint installation must be removed".to_string());
+        }
+        Ok(())
     }
 
     #[test]
@@ -1077,6 +1342,34 @@ print "result: $final\n";
         // 3. Edit after breakpoint (no shift)
         store.adjust_breakpoints_for_edit(source_path, 20, 10);
         assert_eq!(store.get_breakpoints(source_path)[0].line, 12);
+    }
+
+    #[test]
+    fn test_adjust_breakpoints_removes_stale_engine_installation() -> Result<(), String> {
+        let store = BreakpointStore::new();
+        let source_path = "/workspace/script.pl";
+        store.breakpoints.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            source_path.to_string(),
+            vec![BreakpointRecord {
+                id: 1,
+                line: 10,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+                hit_count: 0,
+                verified: true,
+                message: None,
+            }],
+        );
+        if !store.mark_engine_installed(1, source_path, 10, 7, "digest".to_string()) {
+            return Err("test breakpoint must be installable".to_string());
+        }
+        store.adjust_breakpoints_for_edit(source_path, 5, 5);
+        if store.has_engine_breakpoint_candidate(source_path, 15, 7) {
+            return Err("edited breakpoint must not retain stale engine installation".to_string());
+        }
+        Ok(())
     }
 
     #[test]
@@ -1649,5 +1942,242 @@ EOF
                 .contains("Conditional breakpoint expression is invalid"),
             "stored message must include condition-invalid note"
         );
+    }
+
+    /// #10102 (R03): pending reconciliation after a possibly applied
+    /// module reload preserves every desired record (durable client
+    /// configuration is never dropped), marks each unverified with the
+    /// explicit pending message, and leaves other sources untouched.
+    #[test]
+    fn test_mark_breakpoints_pending_reconciliation_preserves_and_marks() {
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+        store.set_breakpoints(&SetBreakpointsArguments {
+            source: Source { path: Some(source_path.clone()), name: None },
+            breakpoints: Some(vec![
+                SourceBreakpoint {
+                    line: 5,
+                    column: None,
+                    condition: None,
+                    hit_condition: None,
+                    log_message: None,
+                },
+                SourceBreakpoint {
+                    line: 7,
+                    column: None,
+                    condition: None,
+                    hit_condition: None,
+                    log_message: None,
+                },
+            ]),
+            source_modified: None,
+        });
+        let before = store.get_breakpoints(&source_path);
+        assert_eq!(before.len(), 2);
+        assert!(before.iter().all(|record| record.verified));
+
+        let affected = store.mark_breakpoints_pending_reconciliation(&source_path);
+        assert_eq!(affected.len(), 2, "every affected record is returned for events");
+        let after = store.get_breakpoints(&source_path);
+        assert_eq!(after.len(), 2, "desired configuration is preserved, never dropped");
+        assert_eq!(after[0].id, before[0].id, "record identity is preserved");
+        assert_eq!(after[0].line, before[0].line, "location is preserved");
+        assert!(
+            after.iter().all(|record| !record.verified
+                && record.message.as_deref() == Some("Pending reconciliation after module reload")),
+            "affected records are explicitly pending: {after:?}"
+        );
+
+        // An unbound source reconciles nothing and clears nothing.
+        assert!(store.mark_breakpoints_pending_reconciliation("never_registered.pl").is_empty());
+    }
+
+    /// FC-BP-PATH-ALIAS (#10102, R03): the reload subject may name a
+    /// source spelling (absolute) that differs from the spelling the
+    /// client used at `setBreakpoints`. Reconciliation must apply the
+    /// same path-equivalence rule as breakpoint hits — an alias spelling
+    /// reconciles the stored records instead of reporting pending while
+    /// leaving them verified.
+    #[test]
+    fn test_mark_breakpoints_pending_reconciliation_matches_path_alias() {
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+        store.set_breakpoints(&SetBreakpointsArguments {
+            source: Source { path: Some(source_path.clone()), name: None },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 5,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        });
+        assert!(
+            store.get_breakpoints(&source_path).iter().all(|record| record.verified),
+            "stored records start verified"
+        );
+
+        // The subject-side spelling: a strict suffix of the stored
+        // absolute path at a component boundary. Exact lookup misses it.
+        let alias =
+            source_path.rsplit(['/', '\\']).next().unwrap_or(source_path.as_str()).to_string();
+        assert_ne!(alias, source_path, "alias must differ from the stored spelling");
+
+        let affected = store.mark_breakpoints_pending_reconciliation(&alias);
+        assert_eq!(affected.len(), 1, "alias spelling must reconcile the stored record");
+        let after = store.get_breakpoints(&source_path);
+        assert!(
+            after.iter().all(|record| !record.verified
+                && record.message.as_deref() == Some("Pending reconciliation after module reload")),
+            "aliased records are explicitly pending: {after:?}"
+        );
+    }
+
+    /// Write a valid Perl source under `dir` with file name `name` for
+    /// multi-source reconciliation tests (same basename, different
+    /// directories).
+    fn create_named_test_perl_file(dir: &std::path::Path, name: &str) -> String {
+        let path = dir.join(name);
+        must(std::fs::write(
+            &path,
+            "#!/usr/bin/perl\nuse strict;\nuse warnings;\n\nmy $x = 1;\nmy $y = 2;\n",
+        ));
+        path.to_string_lossy().to_string()
+    }
+
+    fn set_one_breakpoint(store: &BreakpointStore, source_path: &str) {
+        store.set_breakpoints(&SetBreakpointsArguments {
+            source: Source { path: Some(source_path.to_string()), name: None },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 5,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        });
+    }
+
+    /// FC-BP-ALIAS-AMBIGUOUS: a subject spelling matching two stored
+    /// sources (same basename, different directories) marks nothing —
+    /// fanning out would mutate an unrelated source — and reports
+    /// ambiguous so the route refuses before routing its terminal. The
+    /// unique spelling still reconciles exactly its own source.
+    #[test]
+    fn ambiguous_source_alias_marks_nothing_and_reports_ambiguous() {
+        let dir_a = must(tempfile::tempdir());
+        let dir_b = must(tempfile::tempdir());
+        let path_a = create_named_test_perl_file(dir_a.path(), "main.pl");
+        let path_b = create_named_test_perl_file(dir_b.path(), "main.pl");
+        let store = BreakpointStore::new();
+        set_one_breakpoint(&store, &path_a);
+        set_one_breakpoint(&store, &path_b);
+
+        assert!(
+            store.ambiguous_breakpoint_source("main.pl"),
+            "a bare basename matching two stored sources is ambiguous"
+        );
+        assert!(!store.ambiguous_breakpoint_source(&path_a), "a unique spelling is not ambiguous");
+
+        let affected = store.mark_breakpoints_pending_reconciliation("main.pl");
+        assert!(affected.is_empty(), "an ambiguous spelling must mark nothing");
+        for path in [&path_a, &path_b] {
+            assert!(
+                store.get_breakpoints(path).iter().all(|record| record.verified),
+                "{path} must stay verified when the alias is ambiguous"
+            );
+        }
+
+        let affected = store.mark_breakpoints_pending_reconciliation(&path_a);
+        assert_eq!(affected.len(), 1, "the unique spelling reconciles its own source");
+        assert!(
+            store.get_breakpoints(&path_a).iter().all(|record| !record.verified),
+            "the matched source becomes pending"
+        );
+        assert!(
+            store.get_breakpoints(&path_b).iter().all(|record| record.verified),
+            "the unrelated same-basename source stays verified"
+        );
+    }
+
+    /// FC-BP-STALE-ENGINE-INSTALL: pending reconciliation removes the
+    /// affected applied engine installations, so
+    /// `has_engine_breakpoint_candidate` no longer admits the
+    /// previous-generation installation and forces no digest I/O for it.
+    #[test]
+    fn pending_reconciliation_removes_stale_engine_installations() {
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+        set_one_breakpoint(&store, &source_path);
+        let records = store.get_breakpoints(&source_path);
+        assert!(!records.is_empty(), "one record must be stored");
+        let id = records[0].id;
+        assert!(
+            store.mark_engine_installed(id, &source_path, 5, 7, "digest".to_string()),
+            "the engine installation must commit before the reload"
+        );
+        assert!(
+            store.has_engine_breakpoint_candidate(&source_path, 5, 7),
+            "the current installation is a hit candidate before the reload"
+        );
+
+        let affected = store.mark_breakpoints_pending_reconciliation(&source_path);
+        assert_eq!(affected.len(), 1, "the affected record is returned for events");
+        assert!(
+            !store.has_engine_breakpoint_candidate(&source_path, 5, 7),
+            "the stale previous-generation installation must not survive pending reconciliation"
+        );
+    }
+
+    #[test]
+    fn engine_installation_rejects_stale_generation_and_digest()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_file, source_path) = create_test_perl_file();
+        let store = BreakpointStore::new();
+        let args = SetBreakpointsArguments {
+            source: Source { path: Some(source_path.clone()), name: Some("script.pl".to_string()) },
+            breakpoints: Some(vec![SourceBreakpoint {
+                line: 5,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }]),
+            source_modified: None,
+        };
+        let response = store.set_breakpoints(&args);
+        let id = response.first().ok_or("missing breakpoint response")?.id;
+        let digest = perl_source_identity::ContentDigest::of_bytes(&std::fs::read(&source_path)?)
+            .to_string();
+        if !store.mark_engine_installed(id, &source_path, 5, 7, digest.clone()) {
+            return Err("engine installation was not committed".into());
+        }
+        if !store.has_engine_breakpoint_candidate(&source_path, 5, 7) {
+            return Err("current engine installation was not admitted as a hit candidate".into());
+        }
+        if store.has_engine_breakpoint_candidate(&source_path, 6, 7)
+            || store.has_engine_breakpoint_candidate(&source_path, 5, 8)
+        {
+            return Err("wrong line or generation was admitted as a hit candidate".into());
+        }
+        if store.register_engine_breakpoint_hit(&source_path, 5, 8, &digest).matched {
+            return Err("stale session generation matched an engine breakpoint".into());
+        }
+        if store.register_engine_breakpoint_hit(&source_path, 5, 7, "changed").matched {
+            return Err("changed source digest matched an engine breakpoint".into());
+        }
+        let outcome = store.register_engine_breakpoint_hit(&source_path, 5, 7, &digest);
+        if !outcome.should_stop || outcome.hit_breakpoint_ids != vec![id] {
+            return Err(
+                format!("current installation did not produce its sole ID: {outcome:?}").into()
+            );
+        }
+        store.clear_engine_installations_for_source(&source_path);
+        if store.register_engine_breakpoint_hit(&source_path, 5, 7, &digest).matched {
+            return Err("replaced source retained the old engine installation".into());
+        }
+        Ok(())
     }
 }

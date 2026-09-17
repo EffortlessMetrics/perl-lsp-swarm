@@ -39,7 +39,6 @@ fn kind_clone_and_copy() {
 
 #[test]
 fn kind_eq_and_ne() {
-    assert_eq!(CursorSymbolKind::Scalar, CursorSymbolKind::Scalar);
     assert_ne!(CursorSymbolKind::Scalar, CursorSymbolKind::Array);
     assert_ne!(CursorSymbolKind::Hash, CursorSymbolKind::Subroutine);
 }

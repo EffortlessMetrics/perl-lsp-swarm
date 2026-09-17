@@ -66,10 +66,30 @@
 "   VimLspHostServerInitCount()     how many lsp_server_init events fired
 "                                   (process-generation observation)
 "   VimLspHostBufferEnabledCount()  how many lsp_buffer_enabled events fired
+"   VimLspHostServerExitCount()     how many lsp_server_exit events fired
+"                                   (generation-end observation; the crash
+"                                   stimulus and every stop land here, #11398)
 "   VimLspHostUpdateWorkspaceConfig(paths)
 "                                   the stable public settings channel:
 "                                   lsp#update_workspace_config over a
 "                                   comma-separated relative include-path list
+"   VimLspHostStartPendingDocumentSymbol()
+"                                   start one deterministic pending request
+"                                   through the client's public request path
+"                                   (lsp#request_with_context over
+"                                   textDocument/documentSymbol) (#11401)
+"   VimLspHostPendingRequestId()    the started request's wire identity, 0
+"                                   until the client assigns one (#11401)
+"   VimLspHostPendingNotificationCount()
+"                                   how many results the client delivered to
+"                                   the started request's subscription (#11401)
+"   VimLspHostPendingDone()         whether the client settled the started
+"                                   request (done) (#11401)
+"   VimLspHostCancelPendingDocumentSymbol()
+"                                   cancel the started request by identity
+"                                   through the client's own public
+"                                   lsp#cancel_request ($/cancelRequest with
+"                                   the exact request id) (#11401)
 "   VimLspHostStopServer()          stop the server through vim-lsp
 "   VimLspHostStopServerAndWait()   stop + bounded wait for client exit
 "                                   evidence (one bounded stop re-issue)
@@ -141,6 +161,24 @@ if !filereadable(s:vim_lsp_dir . '/plugin/lsp.vim')
   cquit 3
 endif
 
+" vim-lsp's public root helper decides file-vs-directory by spelling alone:
+" a marker ending in `/` or `\` is searched with finddir(), every other marker
+" with findfile(). The cross-editor #7762 contract deliberately keeps the
+" semantic name `.git`, so adapt it here into both client spellings. `.git/`
+" covers ordinary repositories; `.git` covers linked worktrees and submodules
+" where Git writes a gitdir file instead of a directory.
+function! VimLspHostClientRootMarkers() abort
+  let l:markers = []
+  for l:marker in s:root_markers
+    if l:marker ==# '.git'
+      call extend(l:markers, ['.git/', '.git'])
+    else
+      call add(l:markers, l:marker)
+    endif
+  endfor
+  return l:markers
+endfunction
+
 " State counters over public vim-lsp User events (the same proven event
 " surface the #7810 harness mined).
 let g:perllsp_vim_host_server_init = 0
@@ -185,12 +223,14 @@ endfunction
 
 function! s:RootUri(_server_info) abort
   " #7762 consumption: nearest parent marker from the environment-delivered
-  " list, cwd fallback. No second marker policy lives here.
+  " list, cwd fallback. Client-specific directory syntax is projected at this
+  " boundary; no second semantic marker policy lives here.
   let l:root = lsp#utils#find_nearest_parent_file_directory(
-        \ expand('%:p'), s:root_markers)
+        \ expand('%:p'), VimLspHostClientRootMarkers())
   if empty(l:root)
     let l:root = getcwd()
   endif
+  let g:perllsp_vim_host_root_callback = fnamemodify(l:root, ':p')
   return lsp#utils#path_to_uri(l:root)
 endfunction
 
@@ -399,6 +439,13 @@ function! VimLspHostBufferEnabledCount() abort
   return g:perllsp_vim_host_buffer_enabled
 endfunction
 
+function! VimLspHostServerExitCount() abort
+  " How many times the client emitted its public server-exit event: the
+  " generation-end observation for crash-stimulus and restart routes (#11398).
+  " Read-only — this adapter never terminates a process.
+  return g:perllsp_vim_host_server_exit
+endfunction
+
 function! VimLspHostUpdateWorkspaceConfig(include_paths_csv) abort
   " The stable public settings channel (#11369-classified
   " lsp#update_workspace_config): merges the delivered include-path list into
@@ -476,6 +523,74 @@ endfunction
 function! VimLspHostStopServer() abort
   call lsp#stop_server(s:server_name)
   return v:true
+endfunction
+
+" ---------------------------------------------------------------------------
+" #11401 pending-request surface (thin wrappers over the client's public
+" request path). One pending request slot per session: the driver starts,
+" observes, and optionally cancels or leaves in flight. The wrapper, its
+" context handle, and the disposal function stay in adapter script scope; the
+" driver observes only through the bounded read functions below, and the
+" admission counter counts exactly what the client itself delivered to the
+" subscription.
+let s:pending_wrapper = v:null
+let s:pending_dispose = v:null
+let g:perllsp_vim_host_pending_notifications = 0
+
+function! VimLspHostStartPendingDocumentSymbol() abort
+  " Reset the slot: a prior completed request's delivery count must never
+  " leak into the next observation.
+  if !empty(s:pending_dispose)
+    try
+      call s:pending_dispose()
+    catch
+      " A prior request already settled server-side; its disposal is
+      " contained and the new slot starts from zero either way.
+    endtry
+  endif
+  let s:pending_dispose = v:null
+  let g:perllsp_vim_host_pending_notifications = 0
+  let s:pending_wrapper = lsp#request_with_context(s:server_name, {
+        \ 'method': 'textDocument/documentSymbol',
+        \ 'params': {'textDocument': lsp#get_text_document_identifier()},
+        \ })
+  let s:pending_dispose = lsp#callbag#pipe(
+        \ s:pending_wrapper.callbag,
+        \ lsp#callbag#subscribe({
+        \   'next': {d -> execute('let g:perllsp_vim_host_pending_notifications += 1')},
+        \   'error': {e -> 0},
+        \   'complete': {-> 0},
+        \ }))
+  return v:true
+endfunction
+
+function! VimLspHostPendingRequestId() abort
+  if empty(s:pending_wrapper)
+    return 0
+  endif
+  return get(s:pending_wrapper.ctx, 'request_id', 0)
+endfunction
+
+function! VimLspHostPendingNotificationCount() abort
+  return g:perllsp_vim_host_pending_notifications
+endfunction
+
+function! VimLspHostPendingDone() abort
+  if empty(s:pending_wrapper)
+    return 0
+  endif
+  return get(s:pending_wrapper.ctx, 'done', 0)
+endfunction
+
+function! VimLspHostCancelPendingDocumentSymbol() abort
+  " Identity-bound cancellation through the client's own public path: the
+  " client sends $/cancelRequest carrying the exact request id and suppresses
+  " any late delivery to the cancelled subscription.
+  if empty(s:pending_wrapper)
+    return 0
+  endif
+  call lsp#cancel_request(s:pending_wrapper.ctx)
+  return 1
 endfunction
 
 " Stop the server through the public vim-lsp stop path and boundedly wait for
