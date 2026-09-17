@@ -235,6 +235,8 @@ fn file_paths_match(stored: &str, observed: &str) -> bool {
 /// # Examples
 ///
 /// ```
+/// use perl_dap::breakpoints::interpolate_logpoint_message;
+///
 /// let mut vars = std::collections::HashMap::new();
 /// vars.insert("x".to_string(), "42".to_string());
 /// let result = interpolate_logpoint_message("value: {$x}", &vars);
