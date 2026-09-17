@@ -34,37 +34,38 @@ use tasks::ux_scorecard::UxScorecardFormat;
 use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
-    active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
-    agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks,
-    build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
-    check_tautology, check_test_wiring, check_toolchain, check_version_sync, ci,
-    ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
-    ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
-    code_action_generation_ledger, command_evidence, compare, compat_inventory,
-    compiler_lexical_cutline, compiler_performance_receipt, compiler_upstream_status,
-    completion_candidates, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof, dead_code,
-    debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc, doc_claims,
-    e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features, finalize_check,
-    fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates, generated_files,
-    github, github_preflight, github_review, goals, hardening, hook_checks, ignored_tests,
-    incremental_proof, inject_sha_assets, inline_completion_quality, inline_completion_smoke,
-    install_surface_check, integration_proof, intent_diff_gate, issue_plan, layer_check,
-    lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends, merge_ready, methodology_gate,
-    metrics, module_train, module_train_live, native_critic, native_format, native_neovim_train,
-    native_product_surface, native_tooling, oneliner_capability_matrix, oracle_fixture_manifest,
-    oracle_receipt_schema, oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix,
-    parser_ratchet, perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book,
-    pre_push_plan, prep_crates_io_launch, product_health_rail_contract, product_health_status,
-    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
-    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
-    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
-    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
-    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
-    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
-    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
-    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
-    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
-    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    activation, active_goal_manifest, agent_capability_policy, agent_flow,
+    agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
+    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
+    check, check_agent_context, check_lint_policy, check_tautology, check_test_wiring,
+    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_cache_inventory, ci_contract,
+    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
+    ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
+    compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
+    compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
+    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
+    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
+    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
+    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
+    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
+    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
+    native_format, native_neovim_train, native_product_surface, native_tooling,
+    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
+    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
+    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
+    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
+    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
+    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
+    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
+    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
+    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
+    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
+    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
+    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
+    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
+    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
     workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
     writer_admission,
@@ -157,6 +158,18 @@ enum Commands {
 
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
+
+    /// Generate, validate, and list the versioned activation inventory
+    /// (`activation_inventory.v1`, #9204): a deterministic classified catalog
+    /// of product, preview, compatibility-shim, test-api, lab, oracle,
+    /// benchmark, and gate surfaces derived from existing authorities plus a
+    /// narrow, typed, owner/expiry-bound override ledger. Does not implement
+    /// activation checking (#9205).
+    Activation {
+        /// Operation to run against the activation inventory.
+        #[command(subcommand)]
+        command: tasks::activation::ActivationSubcommand,
+    },
 
     /// List, validate, and explain the compiler lexical cut-line cases
     /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
@@ -1188,6 +1201,34 @@ enum Commands {
 
     /// Audit CI workflows for PR-safety and spend-risk controls.
     CiAuditWorkflows,
+
+    /// Derive the active CI cache inventory + `ci_cache_receipt.v1` (#9177).
+    ///
+    /// Diagnostic: classifies reachability, save authority, and byte
+    /// provenance for every `Swatinem/rust-cache`/`actions/cache` step
+    /// already in source. Changes no cache behavior and grants no save
+    /// authority.
+    CiCacheInventory {
+        /// Diff the derived inventory against the checked-in manifest and
+        /// fail on drift, instead of (re)writing it.
+        #[arg(long)]
+        check: bool,
+
+        /// Write the receipt JSON to this path instead of stdout.
+        /// Rejected alongside `--check`, which never writes a receipt.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+
+        /// Checked-in manifest path (defaults to `ci_cache_inventory::MANIFEST`).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Schema version this producer must emit and validate. Only
+        /// `v1` is supported; anything else fails loudly instead of
+        /// emitting a shape the caller does not parse.
+        #[arg(long, default_value = "v1")]
+        api_version: String,
+    },
 
     /// Classify credential derivation kinds in `.github/workflows/*.yml` (#14867).
     ///
@@ -2990,6 +3031,12 @@ enum VimEditorCompatCommand {
     /// legitimate no-change bytes, distinct disabled/refused/failure
     /// dispositions, and stale-result rejection — against the governed save
     /// fixture.
+    /// `host-reopen-lifecycle` (#11401) runs the eight-cell host-reopen
+    /// journey — buffer close/reopen, full host exit and replacement launch,
+    /// the workspace not-exposed disposition, identity-bound cancellation,
+    /// late-result rejection, finite repeated sessions, normal terminal
+    /// cleanup, and forced-failure cleanup — as a finite sequence of hermetic
+    /// host sessions over one shared fixture.
     Run {
         /// Exact client subject id (see
         /// `xtask::vim_host_run::VimClientSubject::known_ids`).
@@ -2997,12 +3044,12 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// freshness-generations, recovery-generations, or save-format.
+        /// freshness-generations, recovery-generations, save-format, or host-reopen-lifecycle.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
         /// Fixture variant for the bootstrap-diagnostics,
-        /// freshness-generations, recovery-generations, and save-format
+        /// freshness-generations, recovery-generations, save-format, and host-reopen-lifecycle
         /// journeys. The canonical variant must reach its journey's honest
         /// top-line — `pass`, except `recovery-generations`, whose
         /// adverse-exit cell is never a passing observation, so its honest
@@ -5259,6 +5306,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::Activation { command } => activation::run(command),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
@@ -5479,6 +5527,67 @@ fn run_cli(cli: Cli) -> Result<()> {
                         }
                         return Ok(());
                     }
+                    if journey == "host-reopen-lifecycle" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_lifecycle_run::LifecycleFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_lifecycle_run::host_lifecycle_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim host-reopen-lifecycle run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} failure_reason={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim host-reopen-lifecycle run did not pass: {result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "freshness-generations" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -5601,7 +5710,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
                              bootstrap-diagnostics, freshness-generations, recovery-generations, \
-                             save-format"
+                             save-format, host-reopen-lifecycle"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
@@ -6068,6 +6177,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::TestEdgeCases { bench, coverage, test } => edge_cases::run(bench, coverage, test),
         Commands::CiAuditWorkflows => ci_audit_workflows::run(),
+        Commands::CiCacheInventory { check, receipt, manifest, api_version } => {
+            ci_cache_inventory::run(check, receipt, manifest, &api_version)
+        }
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)
         }

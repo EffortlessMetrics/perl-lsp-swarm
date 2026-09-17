@@ -1,5 +1,6 @@
 //! Task implementations for xtask automation
 
+pub mod activation;
 pub mod active_goal_manifest;
 pub mod agent_capability_policy;
 pub mod agent_flow;
@@ -30,6 +31,7 @@ pub mod check_toolchain;
 pub mod check_version_sync;
 pub mod ci;
 pub mod ci_audit_workflows;
+pub mod ci_cache_inventory;
 pub mod ci_contract;
 pub mod ci_doctor;
 pub mod ci_explain;
