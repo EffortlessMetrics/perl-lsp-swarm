@@ -98,6 +98,17 @@ jobs:
             cargo run -p xtask --locked -- integration emacs train review-packet CTXENG
           assert_refusal NO_LIVE_OBSERVATION \
             cargo run -p xtask --locked -- integration emacs train reconcile-packet CTXENG
+          # The review challenges the exact supplied builder packet (FC1), so
+          # identity plus controls without one must refuse with the
+          # packet-input code. The head must be the observed checkout or
+          # HEAD_TREE_MISMATCH fires first, so resolve it from git; the
+          # controls file only needs to be non-empty because the
+          # builder-packet requirement precedes falsifier coverage.
+          head="$(git rev-parse HEAD)"
+          printf '{"F_lane":{"exists":{"status":"established","evidence":"lane"}}}' > /tmp/controls.json
+          assert_refusal MISSING_BUILDER_PACKET \
+            cargo run -p xtask --locked -- integration emacs train review-packet CTXENG \
+              --base "$head" --head "$head" --diff sha256:lane --controls /tmp/controls.json
           # The blind packet route must also refuse typed, but which gate
           # fires first (hard dependencies vs the live gate) is E01/E02
           # real-tree state, so pin the refusal shape, not the code.

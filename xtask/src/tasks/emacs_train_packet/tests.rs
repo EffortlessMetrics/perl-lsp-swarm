@@ -660,6 +660,33 @@ fn fixture_head() -> String {
     fixture_git().0
 }
 
+/// Compose the exact builder packet a review challenges: the bounded coding
+/// packet for SUB against an observed vacancy, round-tripped through JSON
+/// bytes the way a `--builder-packet` CLI file arrives, so the review binds
+/// supplied bytes rather than a live reference.
+fn review_builder_packet(root: &Path, inputs: &AdapterInputs) -> Result<Value> {
+    let doc = compose_builder_packet(
+        root,
+        inputs,
+        "SUB",
+        "coding_agent_bounded",
+        Some(&observed_vacant()),
+    )
+    .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let bytes = serde_json::to_vec(&doc)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn review_facts(builder: Value) -> ReviewFacts {
+    ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls: complete_controls(),
+        builder_packet: Some(builder),
+    }
+}
+
 fn complete_controls() -> BTreeMap<String, BTreeMap<String, Value>> {
     let criteria = [
         "exists",
@@ -695,6 +722,7 @@ fn review_packet_requires_supplied_candidate_identity_and_controls() -> Result<(
         head: String::new(),
         diff: String::new(),
         controls: BTreeMap::new(),
+        builder_packet: None,
     };
     let refusal = compose_review_packet(&root, &inputs, "SUB", &empty)
         .expect_err("offline review must refuse without facts");
@@ -705,6 +733,7 @@ fn review_packet_requires_supplied_candidate_identity_and_controls() -> Result<(
         head: fixture_head(),
         diff: "sha256:dd".into(),
         controls: BTreeMap::new(),
+        builder_packet: None,
     };
     let refusal = compose_review_packet(&root, &inputs, "SUB", &partial)
         .expect_err("missing controls must refuse");
@@ -719,6 +748,7 @@ fn review_packet_requires_supplied_candidate_identity_and_controls() -> Result<(
             controls.remove("F_stale");
             controls
         },
+        builder_packet: Some(review_builder_packet(&root, &inputs)?),
     };
     let refusal = compose_review_packet(&root, &inputs, "SUB", &uncovered)
         .expect_err("an uncovered falsifier must refuse");
@@ -741,6 +771,7 @@ fn review_packet_refuses_unestablished_control_evidence() -> Result<()> {
         head: fixture_head(),
         diff: "sha256:dd".into(),
         controls,
+        builder_packet: Some(review_builder_packet(&root, &inputs)?),
     };
     let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
         .expect_err("unestablished evidence is a finding, never a pass");
@@ -753,12 +784,8 @@ fn review_packet_refuses_unestablished_control_evidence() -> Result<()> {
 fn review_packet_renders_shared_review_contract_deterministically() -> Result<()> {
     let root = fixture_tree("review-happy")?;
     let inputs = default_fixture(&root)?;
-    let facts = ReviewFacts {
-        base: "base0".into(),
-        head: fixture_head(),
-        diff: "sha256:dd".into(),
-        controls: complete_controls(),
-    };
+    let builder = review_builder_packet(&root, &inputs)?;
+    let facts = review_facts(builder.clone());
     let doc = compose_review_packet(&root, &inputs, "SUB", &facts)
         .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
     assert_eq!(doc["schema"], REVIEW_CONTRACT);
@@ -775,6 +802,104 @@ fn review_packet_renders_shared_review_contract_deterministically() -> Result<()
             .contains("authority")
     );
     assert!(first.contains("Q_one_authority"));
+    // FC1: the recorded digest identifies the exact supplied bytes. Recompute
+    // it from the supplied packet's own machine rendering: a digest of a
+    // rebuilt packet could not match, because the rebuild embeds different
+    // inputs.
+    let expected = render_builder_packet(&builder, PacketProjection::Machine)?;
+    assert_eq!(
+        doc["subject"]["builder_packet"]["digest"].as_str().unwrap_or_default(),
+        format!("sha256:{}", short(&sha256_hex(expected.as_bytes()), 16)),
+        "the review must bind the supplied builder bytes"
+    );
+    // And the digest follows the bytes, not the node: the same node with a
+    // different observed vacancy composes different bytes and must record a
+    // different digest.
+    let other_live = LiveObservation {
+        candidate_identity: Some("no candidate: a different sweep statement".to_string()),
+        ..observed_vacant()
+    };
+    let other =
+        compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&other_live))
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let other_facts = review_facts(serde_json::from_slice(&serde_json::to_vec(&other)?)?);
+    let other_doc = compose_review_packet(&root, &inputs, "SUB", &other_facts)
+        .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_ne!(
+        doc["subject"]["builder_packet"]["digest"],
+        other_doc["subject"]["builder_packet"]["digest"],
+        "different builder bytes must record a different digest"
+    );
+    Ok(())
+}
+
+#[test]
+fn review_packet_requires_the_exact_builder_packet() -> Result<()> {
+    // FC1: without the packet that assigned the work there is nothing to
+    // challenge. The adapter refuses rather than rebuilding a packet that
+    // merely resembles the one under review.
+    let root = fixture_tree("review-missing-builder")?;
+    let inputs = default_fixture(&root)?;
+    let facts = ReviewFacts {
+        base: "base0".into(),
+        head: fixture_head(),
+        diff: "sha256:dd".into(),
+        controls: complete_controls(),
+        builder_packet: None,
+    };
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
+        .expect_err("a review without the exact builder packet must refuse");
+    assert_eq!(refusal.code, "MISSING_BUILDER_PACKET");
+    assert!(refusal.detail.contains("--builder-packet"), "{}", refusal.line());
+    Ok(())
+}
+
+#[test]
+fn review_packet_refuses_a_builder_packet_for_another_subject() -> Result<()> {
+    // A packet for another node -- or in a profile this node does not permit
+    // -- is a different packet's evidence, even when it validates.
+    let root = fixture_tree("review-wrong-subject")?;
+    let inputs = default_fixture(&root)?;
+    let builder = review_builder_packet(&root, &inputs)?;
+
+    let mut other_node = builder.clone();
+    other_node["packet_id"] = json!("emacs-train/OTHER/coding_agent_bounded");
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &review_facts(other_node))
+        .expect_err("another node's packet must refuse");
+    assert_eq!(refusal.code, "BUILDER_PACKET_SUBJECT_MISMATCH");
+
+    let mut wrong_profile = builder;
+    wrong_profile["packet_id"] = json!("emacs-train/SUB/maintainer_external_action");
+    wrong_profile["work"]["profile"] = json!("maintainer_external_action");
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &review_facts(wrong_profile))
+        .expect_err("an unpermitted profile must refuse");
+    assert_eq!(refusal.code, "BUILDER_PACKET_SUBJECT_MISMATCH");
+    Ok(())
+}
+
+#[test]
+fn review_packet_refuses_a_builder_packet_from_another_tree() -> Result<()> {
+    // The review binds one exact tree: a packet composed against a different
+    // checkout cannot anchor this review even when everything else matches.
+    // The tampered packet stays internally consistent (every tree site moves
+    // together, so the shared contract still accepts it) but no longer binds
+    // the observed checkout.
+    fn retree(value: &mut Value, old: &str, new: &str) {
+        match value {
+            Value::String(text) if text.contains(old) => *text = text.replace(old, new),
+            Value::Array(items) => items.iter_mut().for_each(|item| retree(item, old, new)),
+            Value::Object(map) => map.values_mut().for_each(|item| retree(item, old, new)),
+            _ => {}
+        }
+    }
+    let root = fixture_tree("review-wrong-tree")?;
+    let inputs = default_fixture(&root)?;
+    let mut builder = review_builder_packet(&root, &inputs)?;
+    retree(&mut builder, &fixture_head(), &"f".repeat(40));
+    assert_eq!(builder["repository"]["observed_tree"].as_str().unwrap_or_default(), "f".repeat(40));
+    let refusal = compose_review_packet(&root, &inputs, "SUB", &review_facts(builder))
+        .expect_err("a packet from another tree must refuse");
+    assert_eq!(refusal.code, "BUILDER_PACKET_TREE_MISMATCH");
     Ok(())
 }
 
@@ -896,6 +1021,7 @@ fn review_head_must_bind_the_observed_checkout() -> Result<()> {
         head: "deadbeef".to_string(),
         diff: "sha256:dd".into(),
         controls: complete_controls(),
+        builder_packet: None,
     };
     let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
         .expect_err("a head from another tree must refuse");
@@ -923,6 +1049,13 @@ fn eligibility_refusals_are_distinct_from_instrument_failures() -> Result<()> {
         "NODE_RESOLUTION_FAILED",
         "CONTEXT_RESOLUTION_FAILED",
         "BUILDER_PACKET_INVALID",
+        // Review-route input and binding refusals: the review challenges one
+        // exact supplied packet, so a missing or misbound packet is an
+        // instrument-class failure of the invocation, not a denominator
+        // eligibility blocker.
+        "MISSING_BUILDER_PACKET",
+        "BUILDER_PACKET_SUBJECT_MISMATCH",
+        "BUILDER_PACKET_TREE_MISMATCH",
     ] {
         assert!(!is_eligibility_refusal(code), "{code} is an instrument failure, not eligibility");
     }
@@ -975,6 +1108,7 @@ fn review_packet_without_a_test_obligation_refuses() -> Result<()> {
         head: fixture_head(),
         diff: "sha256:dd".into(),
         controls: complete_controls(),
+        builder_packet: Some(review_builder_packet(&root, &inputs)?),
     };
     let refusal = compose_review_packet(&root, &inputs, "SUB", &facts)
         .expect_err("a node with no test obligation must refuse a review packet");
@@ -1147,33 +1281,57 @@ fn candidate_order_does_not_change_the_reconcile_packet() -> Result<()> {
 }
 
 #[test]
-fn a_reported_collision_refuses_a_coding_packet() -> Result<()> {
-    // One candidate, one writer. An observation that *reports* a collision is
-    // unambiguous -- someone else is on this claim -- so admitting a coding
-    // packet would authorize a second writer. This is distinct from the
-    // missing-collision case, which stays admissible because an observed
-    // vacancy legitimately carries no collision state.
+fn a_reported_collision_state_is_recorded_without_refusing_a_coding_packet() -> Result<()> {
+    // FC2: `collision_state` is untyped free text, not a collision boolean.
+    // The shared #10872 vocabulary has no typed collision signal, so a
+    // non-empty value reports `one-writer-active-no-collision` exactly as
+    // readily as a genuine collision -- refusing every non-empty value blocks
+    // writers on observations that explicitly report no collision. The adapter
+    // therefore admits, carries the report in the packet evidence, and records
+    // writer ownership as unproven.
     let root = fixture_tree("reported-collision")?;
     let inputs = default_fixture(&root)?;
-    let contested = LiveObservation {
+    let digest =
+        "sha256:5f3a1c0e9b7d24486ac1f0e2d93b8570cc41a6e28d5f9017b3e4c6a8d0f21b95".to_string();
+    let live_no_collision = LiveObservation {
         candidate_state: "observed".to_string(),
-        digest: "sha256:5f3a1c0e9b7d24486ac1f0e2d93b8570cc41a6e28d5f9017b3e4c6a8d0f21b95"
-            .to_string(),
+        digest: digest.clone(),
         candidate_identity: Some("PR #8800 (tooling/sub-claim)".to_string()),
-        collision_state: Some("a second writer holds an open PR on this claim".to_string()),
+        // The exact shared-contract shape the owner confirmed must not refuse.
+        collision_state: Some("one-writer-active-no-collision".to_string()),
     };
-    let refusal =
+    let doc = compose_builder_packet(
+        &root,
+        &inputs,
+        "SUB",
+        "coding_agent_bounded",
+        Some(&live_no_collision),
+    )
+    .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    assert_eq!(
+        doc["live_observation"]["collision_state"].as_str().unwrap_or_default(),
+        "one-writer-active-no-collision",
+        "the report must travel in the packet evidence"
+    );
+
+    // A free-text collision report admits too, but writer ownership beyond the
+    // packet stays explicitly unproven rather than silently assumed.
+    let contested = LiveObservation {
+        collision_state: Some("a second writer holds an open PR on this claim".to_string()),
+        ..live_no_collision
+    };
+    let doc =
         compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&contested))
-            .expect_err("a reported collision must refuse a coding packet");
-    assert_eq!(refusal.code, "NO_LIVE_OBSERVATION");
+            .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;
+    let unproven = doc["work"]["unproven"].as_array().cloned().unwrap_or_default();
     assert!(
-        refusal.detail.contains("reports a collision"),
-        "the refusal must name the collision, got: {}",
-        refusal.detail
+        unproven.iter().filter_map(Value::as_str).any(|entry| entry.contains("ownership")
+            && entry.contains("a second writer holds an open PR on this claim")),
+        "the collision report must be recorded as unproven ownership, got: {unproven:?}"
     );
 
     // Negative control: the same observation with no collision reported still
-    // admits, so the guard cannot pass by refusing every observation.
+    // admits, so the recording cannot pass by refusing every observation.
     let uncontested = LiveObservation { collision_state: None, ..contested };
     compose_builder_packet(&root, &inputs, "SUB", "coding_agent_bounded", Some(&uncontested))
         .map_err(|refusal| color_eyre::eyre::eyre!("unexpected refusal: {}", refusal.line()))?;

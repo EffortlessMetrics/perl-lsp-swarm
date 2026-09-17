@@ -135,14 +135,19 @@ pub struct LiveObservation {
 }
 
 /// Explicitly supplied review-candidate facts. The adapter is offline: exact
-/// base/head/diff identities and the negative-control audit rows must come
-/// from the caller; none of them is ever invented.
+/// base/head/diff identities, the negative-control audit rows, and the exact
+/// builder packet under review must come from the caller; none of them is
+/// ever invented or rebuilt.
 pub struct ReviewFacts {
     pub base: String,
     pub head: String,
     pub diff: String,
     /// falsifier_id -> criterion -> {status, evidence}
     pub controls: BTreeMap<String, BTreeMap<String, Value>>,
+    /// Canonical JSON of the exact builder packet that assigned the work
+    /// under review. The review validates these bytes through the shared
+    /// #10872 layer and hashes them; it never rebuilds the packet (FC1).
+    pub builder_packet: Option<Value>,
 }
 
 pub fn load_adapter_inputs(root: &Path) -> Result<AdapterInputs> {
@@ -237,8 +242,9 @@ pub enum EmacsTrainPacketCommand {
         live_observation: Option<PathBuf>,
     },
     /// Render the independent reviewer packet (#10881) for one node. The
-    /// adapter is offline: exact candidate identities (base/head/diff) and
-    /// the negative-control audit rows must be supplied explicitly.
+    /// adapter is offline: exact candidate identities (base/head/diff), the
+    /// negative-control audit rows, and the exact builder packet that
+    /// assigned the work (--builder-packet) must be supplied explicitly.
     ReviewPacket {
         /// Node id, alias or issue number.
         node: String,
@@ -255,6 +261,12 @@ pub enum EmacsTrainPacketCommand {
         /// {status: established, evidence}.
         #[arg(long)]
         controls: Option<PathBuf>,
+        /// Exact builder packet JSON that assigned the work under review.
+        /// The review validates these canonical bytes through the shared
+        /// #10872 layer and binds their digest; it never rebuilds the
+        /// packet it challenges.
+        #[arg(long)]
+        builder_packet: Option<PathBuf>,
         /// Output format: machine | markdown | compact.
         #[arg(long, default_value = "machine")]
         format: String,
@@ -310,7 +322,15 @@ pub fn run(command: EmacsTrainPacketCommand) -> Result<()> {
                 }
             }
         }
-        EmacsTrainPacketCommand::ReviewPacket { node, base, head, diff, controls, format } => {
+        EmacsTrainPacketCommand::ReviewPacket {
+            node,
+            base,
+            head,
+            diff,
+            controls,
+            builder_packet,
+            format,
+        } => {
             let inputs = load_adapter_inputs(&root)?;
             let facts = ReviewFacts {
                 base: base.unwrap_or_default(),
@@ -319,6 +339,10 @@ pub fn run(command: EmacsTrainPacketCommand) -> Result<()> {
                 controls: match &controls {
                     Some(path) => parse_controls(path)?,
                     None => BTreeMap::new(),
+                },
+                builder_packet: match &builder_packet {
+                    Some(path) => Some(parse_builder_packet(path)?),
+                    None => None,
                 },
             };
             match compose_review_packet(&root, &inputs, &node, &facts) {
@@ -509,41 +533,20 @@ fn compose_packet_document(
     // it is not evidence that the claim is free.
     if is_coding && live_gate == LiveGate::Enforced {
         let observed = live.filter(|live| live.candidate_state == "observed");
-        // Devin raised that an `observed` candidate carrying no `collision_state`
-        // can still be admitted, so a writer may be sent to a candidate another
-        // writer already owns. That is a real hole, and it is NOT closable here:
-        // this repository encodes an observed *vacancy* as `observed` with a
-        // free-text identity and no collision state (see
-        // `fixtures/emacs_train_packet/observed_no_candidate.v1.json`), so
-        // "observed with no collision facts" is ambiguous between "nothing is
-        // there" and "something is there and nobody looked at ownership".
-        // The shared #10872 `live_observation` is closed
-        // (`additionalProperties: false`, exactly four fields) and its
-        // `candidate_state` enum is `not_observed | observed`, so no field can
-        // carry the distinction and this adapter does not own that schema.
-        // Requiring collision facts unconditionally would reject every legitimate
-        // vacancy and make coding packets unissuable. Tracked against
-        // #10872/#10930 with the rest of the vocabulary gap.
+        // `collision_state` is untyped free text, not a collision boolean:
+        // the shared #10872 live_observation vocabulary has no typed collision
+        // signal, so a non-empty value reports `one-writer-active-no-collision`
+        // exactly as readily as a genuine collision (FC2). Refusing every
+        // non-empty value blocks writers on observations that explicitly
+        // report no collision, while admitting on a fixed allowlist would
+        // authorize a second writer on a real collision report -- neither
+        // reading is sound. The adapter therefore records a supplied report
+        // as unproven evidence below and leaves ownership adjudication to the
+        // declared #10872/#10930 vocabulary gap. (The missing-collision case
+        // is the same gap from the other side: an observed vacancy
+        // legitimately carries no collision state, so "observed with no
+        // collision facts" stays admissible.)
         let detail = match (observed, live) {
-            // A *reported* collision is unambiguous: someone else is on this
-            // claim. Admitting a writer anyway is the one-candidate/one-writer
-            // violation, and unlike the missing-collision case below there is
-            // no vacancy reading to preserve -- an observed vacancy carries no
-            // collision state at all.
-            (Some(observed), _)
-                if observed
-                    .collision_state
-                    .as_deref()
-                    .map(|collision| !collision.trim().is_empty())
-                    .unwrap_or(false) =>
-            {
-                Some(format!(
-                    "the observed candidate {} reports a collision ({}); ownership must be \
-                     reconciled before a coding packet admits a second writer",
-                    observed.candidate_identity.as_deref().unwrap_or("(unnamed)"),
-                    observed.collision_state.as_deref().unwrap_or_default().trim()
-                ))
-            }
             (Some(_), _) => None,
             (None, None) => Some(
                 "no live candidate observation was supplied (--live-observation); a coding \
@@ -601,6 +604,23 @@ fn compose_packet_document(
              of knowledge is never vacancy"
                 .to_string(),
         );
+    }
+    if is_coding
+        && let Some(collision) = live
+            .filter(|live| live.candidate_state == "observed")
+            .and_then(|observed| observed.collision_state.as_deref())
+            .map(str::trim)
+            .filter(|collision| !collision.is_empty())
+    {
+        // FC2: the report travels in the packet's live_observation evidence,
+        // but the adapter cannot evaluate free text as a collision boolean,
+        // so writer ownership beyond this packet stays explicitly unproven.
+        unproven.push(format!(
+            "writer ownership beyond this packet is not verified: the supplied observation \
+             reports collision_state {collision:?}, which the shared #10872 live_observation \
+             vocabulary carries as untyped free text with no collision boolean, so this adapter \
+             records the report without evaluating it (#10872/#10930 vocabulary gap)"
+        ));
     }
 
     let mut non_goals = vec![
@@ -1184,47 +1204,13 @@ pub fn compose_review_packet(
     facts: &ReviewFacts,
 ) -> Result<Value, Refusal> {
     const PROFILE: &str = "read_only_reviewer";
-    // The reviewer packet anchors the builder packet it challenges: compose
-    // it first and propagate its refusal honestly.
-    // Anchor the packet this review challenges.  A node that permits a coding
-    // profile is reviewed against the one it permits; a controller, fan-in,
-    // dogfood or external node permits no coding profile at all, so forcing one
-    // would refuse the very `read_only_reviewer` packet those nodes do permit
-    // and leave them unreviewable.  The reviewer profile is therefore the last
-    // anchor rather than an omitted one.
-    //
-    // Every refusal in the chain is kept, so a caller sees which profiles were
-    // attempted rather than only the one that happened to be tried last.
-    let mut refusals: Vec<Refusal> = Vec::new();
-    let mut builder_doc = None;
-    for anchor in ["coding_agent_bounded", "coding_agent_strong", PROFILE] {
-        match compose_packet_document(root, inputs, subject, anchor, None, LiveGate::Anchored) {
-            Ok(doc) => {
-                builder_doc = Some(doc);
-                break;
-            }
-            Err(refusal) => refusals.push(refusal),
-        }
-    }
-    let builder_doc = match builder_doc {
-        Some(doc) => doc,
-        None => {
-            let mut last = refusals.pop().unwrap_or_else(|| {
-                Refusal::new(subject, PROFILE, "NODE_RESOLUTION_FAILED", "no anchor".to_string())
-            });
-            if !refusals.is_empty() {
-                let earlier = refusals
-                    .iter()
-                    .map(|refusal| {
-                        format!("{} refused {}: {}", refusal.profile, refusal.code, refusal.detail)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                last.detail = format!("{}; earlier anchors: {earlier}", last.detail);
-            }
-            return Err(last);
-        }
-    };
+    // The reviewer packet challenges one exact builder packet: the caller
+    // supplies the canonical bytes of the packet that assigned the work, and
+    // this route validates and binds those bytes. Rebuilding a bounded,
+    // observation-free packet here instead would hash a different machine
+    // projection than the strong or observed coding packet actually under
+    // review, so the recorded digest could never identify the challenged
+    // packet (FC1). The offline adapter never rebuilds the packet it reviews.
     let node = resolve_train_node(inputs, subject).map_err(|error| {
         Refusal::new(subject, PROFILE, "NODE_RESOLUTION_FAILED", error.to_string())
     })?;
@@ -1270,7 +1256,86 @@ pub fn compose_review_packet(
                 .to_string(),
         ));
     }
-    let builder_falsifiers: Vec<(String, String, String)> = builder_doc
+    let Some(builder) = facts.builder_packet.as_ref() else {
+        return Err(Refusal::new(
+            &node.node_id,
+            PROFILE,
+            "MISSING_BUILDER_PACKET",
+            "review-packet requires the exact builder packet that assigned the work under review \
+             (--builder-packet): the review binds the digest of those supplied bytes, and the \
+             offline adapter never rebuilds the packet it challenges"
+                .to_string(),
+        ));
+    };
+    // Zero-drift law, review side: the supplied bytes must satisfy the shared
+    // closed contract through #10872's own fail-closed layer before anything
+    // is read out of them.
+    let machine = render_builder_packet(builder, PacketProjection::Machine).map_err(|error| {
+        Refusal::new(
+            &node.node_id,
+            PROFILE,
+            "BUILDER_PACKET_INVALID",
+            format!("the supplied builder packet violates the shared #10872 contract: {error:#}"),
+        )
+    })?;
+    // Bind the supplied packet to this review: it must be a packet for this
+    // node, in a profile the node's spec disposition permits, composed against
+    // the observed checkout. Anything else is a different packet's evidence.
+    let disposition = inputs
+        .specs
+        .records
+        .iter()
+        .find(|record| record.node_id == node.node_id)
+        .map(|record| record.disposition.to_string())
+        .unwrap_or_else(|| node.spec.disposition.clone());
+    let supplied_profile =
+        builder.get("work").and_then(|work| work.get("profile")).and_then(Value::as_str);
+    let supplied_id = builder.get("packet_id").and_then(Value::as_str).unwrap_or_default();
+    let permitted = supplied_profile
+        .map(|profile| {
+            allowed_profiles_for(node, &disposition).iter().any(|allowed| *allowed == profile)
+        })
+        .unwrap_or(false);
+    if !permitted
+        || supplied_id
+            != format!("emacs-train/{}/{}", node.node_id, supplied_profile.unwrap_or_default())
+    {
+        return Err(Refusal::new(
+            &node.node_id,
+            PROFILE,
+            "BUILDER_PACKET_SUBJECT_MISMATCH",
+            format!(
+                "the supplied builder packet {:?} is not a packet this node permits: node {} with \
+                 spec disposition {disposition} permits profiles [{}]; a review challenges the \
+                 exact permitted packet that assigned the work, never another subject's",
+                supplied_id,
+                node.node_id,
+                allowed_profiles_for(node, &disposition).join(", ")
+            ),
+        ));
+    }
+    let packet_tree = builder
+        .get("repository")
+        .and_then(|repo| repo.get("observed_tree"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if packet_tree != context.binding.git_commit.as_str() {
+        return Err(Refusal::new(
+            &node.node_id,
+            PROFILE,
+            "BUILDER_PACKET_TREE_MISMATCH",
+            format!(
+                "the supplied builder packet was composed against tree {packet_tree}, not the \
+                 observed checkout {}; the offline adapter binds review evidence to the exact \
+                 tree it runs on",
+                context.binding.git_commit
+            ),
+        ));
+    }
+    // The digest identifies the exact supplied bytes: it is the hash of the
+    // shared-contract machine rendering of those bytes, never of a rebuild.
+    let builder_digest = format!("sha256:{}", short(&sha256_hex(machine.as_bytes()), 16));
+    let builder_falsifiers: Vec<(String, String, String)> = builder
         .get("proof")
         .and_then(Value::as_object)
         .and_then(|proof| proof.get("falsifiers"))
@@ -1282,7 +1347,7 @@ pub fn compose_review_packet(
                     Some((
                         entry.get("id")?.as_str()?.to_string(),
                         entry.get("stage")?.as_str()?.to_string(),
-                        entry.get("statement")?.as_str()?.to_string(),
+                        entry.get("statement")?.to_string(),
                     ))
                 })
                 .collect()
@@ -1290,12 +1355,6 @@ pub fn compose_review_packet(
         .unwrap_or_default();
     let negative_controls =
         build_negative_controls(&node.node_id, PROFILE, &builder_falsifiers, facts)?;
-
-    let machine =
-        render_builder_packet(&builder_doc, PacketProjection::Machine).map_err(|error| {
-            Refusal::new(&node.node_id, PROFILE, "BUILDER_PACKET_INVALID", format!("{error:#}"))
-        })?;
-    let builder_digest = format!("sha256:{}", short(&sha256_hex(machine.as_bytes()), 16));
 
     let mut stage_questions: Vec<Value> = node
         .review_forward
@@ -1338,7 +1397,7 @@ pub fn compose_review_packet(
             "programme": {
                 "name": "emacs-train",
                 "stage": node.node_id,
-                "proposition": builder_doc
+                "proposition": builder
                     .get("work")
                     .and_then(|work| work.get("proposition_id"))
                     .and_then(Value::as_str)
@@ -2078,6 +2137,22 @@ fn parse_candidates(path: &Path) -> Result<Value> {
         .with_context(|| format!("reading candidate facts {}", path.display()))?;
     serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing candidate facts {}", path.display()))
+}
+
+/// Read the exact builder packet under review. The value is validated and
+/// bound by `compose_review_packet`; parsing only requires a JSON object so
+/// a truncated or non-packet file fails closed downstream, never silently.
+fn parse_builder_packet(path: &Path) -> Result<Value> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("reading builder packet {}", path.display()))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing builder packet {}", path.display()))?;
+    ensure!(
+        value.is_object(),
+        "builder packet {} must be a JSON object carrying the exact packet that assigned the work",
+        path.display()
+    );
+    Ok(value)
 }
 
 fn render_with_format(doc: &Value, format: &str) -> Result<String> {
