@@ -800,7 +800,7 @@ fn default_write_scopes(workflow: &Value) -> Vec<String> {
     }
 }
 
-fn workflow_on(workflow: &Value) -> Option<&Value> {
+pub(crate) fn workflow_on(workflow: &Value) -> Option<&Value> {
     workflow.as_mapping()?.iter().find_map(|(key, value)| match key {
         Value::String(key) if key == "on" => Some(value),
         Value::Bool(true) => Some(value),
@@ -808,7 +808,7 @@ fn workflow_on(workflow: &Value) -> Option<&Value> {
     })
 }
 
-fn triggers(workflow: &Value) -> Vec<String> {
+pub(crate) fn triggers(workflow: &Value) -> Vec<String> {
     let Some(on) = workflow_on(workflow) else {
         return Vec::new();
     };
@@ -824,11 +824,11 @@ fn triggers(workflow: &Value) -> Vec<String> {
     }
 }
 
-fn is_pull_request(triggers: &[String]) -> bool {
+pub(crate) fn is_pull_request(triggers: &[String]) -> bool {
     triggers.iter().any(|trigger| trigger == "pull_request")
 }
 
-fn is_pull_request_target(triggers: &[String]) -> bool {
+pub(crate) fn is_pull_request_target(triggers: &[String]) -> bool {
     triggers.iter().any(|trigger| trigger == "pull_request_target")
 }
 
@@ -885,7 +885,7 @@ fn job_has_contents_write_permission(job: &Mapping) -> bool {
         .is_some_and(|value| value == "write")
 }
 
-fn job_is_statically_excluded_from_pr(job: &Mapping) -> bool {
+pub(crate) fn job_is_statically_excluded_from_pr(job: &Mapping) -> bool {
     let Some(condition) = job.get(Value::String("if".to_string())).and_then(Value::as_str) else {
         return false;
     };
@@ -899,7 +899,7 @@ fn job_is_statically_excluded_from_pr(job: &Mapping) -> bool {
     condition_excludes_pull_request(condition)
 }
 
-fn condition_excludes_pull_request(condition: &str) -> bool {
+pub(crate) fn condition_excludes_pull_request(condition: &str) -> bool {
     let Some(condition) = strip_outer_parentheses(condition) else {
         return false;
     };
@@ -959,7 +959,7 @@ fn term_is_trusted_event_equality(term: &str) -> bool {
     )
 }
 
-fn split_top_level<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str>> {
+pub(crate) fn split_top_level<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str>> {
     let mut parts = Vec::new();
     let mut start = 0;
     let mut index = 0;
@@ -1013,7 +1013,7 @@ fn split_top_level<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str
     Some(parts)
 }
 
-fn strip_outer_parentheses(mut expression: &str) -> Option<&str> {
+pub(crate) fn strip_outer_parentheses(mut expression: &str) -> Option<&str> {
     loop {
         expression = expression.trim();
         if expression.is_empty() {
