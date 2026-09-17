@@ -27,13 +27,17 @@ impl<'a> Parser<'a> {
             match stmt_result {
                 Ok(stmt) => statements.push(stmt),
                 Err(e) => {
-                    // Don't recover from these — propagate immediately
+                    // Don't recover from these — propagate immediately.
+                    // `DoWhileTrailingBlock` joins them because the trailing
+                    // `{` has no recovery that stays honest about source that
+                    // real `perl` refuses to compile (#15649).
                     if matches!(
                         e,
                         ParseError::RecursionLimit
                             | ParseError::RecursionDepthExhausted { .. }
                             | ParseError::NestingTooDeep { .. }
                             | ParseError::Cancelled
+                            | ParseError::DoWhileTrailingBlock { .. }
                     ) {
                         return Err(e);
                     }
@@ -1167,6 +1171,25 @@ impl<'a> Parser<'a> {
         self.at_stmt_start = false;
     }
 
+    /// Enter one grouping `(...)` while a parenthesized do-while condition is
+    /// armed (#15649 review). Braces inside the condition's own parentheses
+    /// are ordinary subscripts; only a brace after the outermost closing `)`
+    /// is the trailing block.
+    fn enter_paren_group(&mut self) {
+        if self.in_do_while_condition && self.do_while_paren_reject {
+            self.do_while_paren_depth += 1;
+        }
+    }
+
+    /// Counterpart of [`Parser::enter_paren_group`]; called on every exit of
+    /// the grouping-paren arm. Error paths that skip it are contained: the
+    /// armed site restores the saved depth around the whole condition parse.
+    fn leave_paren_group(&mut self) {
+        if self.in_do_while_condition && self.do_while_paren_reject {
+            self.do_while_paren_depth = self.do_while_paren_depth.saturating_sub(1);
+        }
+    }
+
     /// Check if current token is a statement modifier keyword
     fn is_statement_modifier_keyword(&mut self) -> bool {
         matches!(self.peek_kind(), Some(k) if Self::is_stmt_modifier_kind(k))
@@ -1786,13 +1809,60 @@ impl<'a> Parser<'a> {
         let modifier_token = self.consume_token()?;
         let modifier = modifier_token.text.to_string();
 
+        // `do BLOCK while/until COND` is the do-while loop. Real Perl reports
+        // `syntax error near ") {"` when a block follows the condition
+        // (#15649); absorbing that `{` as a hash subscript of the condition
+        // silently accepted input real Perl rejects. Arm the condition context
+        // so the postfix parser leaves the brace in place, then reject it.
+        // `do BLOCK` reaches this seam bare and as an expression statement.
+        let do_block = match &statement.kind {
+            NodeKind::Do { block } => Some(block),
+            NodeKind::ExpressionStatement { expression } => match &expression.kind {
+                NodeKind::Do { block } => Some(block),
+                _ => None,
+            },
+            _ => None,
+        };
+        let is_do_loop = do_block
+            .is_some_and(|block| matches!(&block.kind, NodeKind::Block { .. }))
+            && matches!(modifier_token.kind(), TokenKind::While | TokenKind::Until);
+
+        let saved_do_while_condition = self.in_do_while_condition;
+        let saved_paren_reject = self.do_while_paren_reject;
+        let saved_paren_depth = self.do_while_paren_depth;
+        if is_do_loop {
+            self.in_do_while_condition = true;
+            // Only a condition that *starts* with `(` can be followed by the
+            // trailing block real Perl rejects near ") {": after the group
+            // closes, a `{` can no longer be a subscript. Unparenthesized
+            // conditions (`while $h{k}{j}`) keep the shape rule instead.
+            self.do_while_paren_reject =
+                is_do_loop && self.peek_kind() == Some(TokenKind::LeftParen);
+            self.do_while_paren_depth = 0;
+        }
         // For 'for' and 'foreach', we parse a list expression
         let condition = if matches!(modifier_token.kind(), TokenKind::For | TokenKind::Foreach) {
-            self.parse_expression()?
+            self.parse_expression()
         } else {
             // For other modifiers, parse a regular expression
-            self.parse_expression()?
+            self.parse_expression()
         };
+        // Restore before `?` so an error unwind inside the condition also
+        // leaves the context flags clean for the enclosing parse.
+        self.in_do_while_condition = saved_do_while_condition;
+        self.do_while_paren_reject = saved_paren_reject;
+        self.do_while_paren_depth = saved_paren_depth;
+        let condition = condition?;
+
+        // A `{` surviving the do-while condition is the trailing block real
+        // Perl rejects (`syntax error near ") {"`). This fails the parse
+        // outright rather than recovering: real `perl` refuses to compile the
+        // file, and the `continue.do.while` corpus case pins `parse()` to
+        // return an error (#15649).
+        if is_do_loop && self.peek_kind() == Some(TokenKind::LeftBrace) {
+            let location = self.current_position();
+            return Err(ParseError::DoWhileTrailingBlock { location });
+        }
 
         let start = statement.location.start;
         let end = condition.location.end;
@@ -1829,13 +1899,18 @@ impl<'a> Parser<'a> {
                         }
                     }
                     Err(e) => {
-                        // Don't recover from these — propagate immediately
+                        // Don't recover from these — propagate immediately.
+                        // `DoWhileTrailingBlock` joins them: the trailing block
+                        // after a do-while condition has no recovery that stays
+                        // honest about source that real `perl` refuses to
+                        // compile (#15649).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
                                 | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
+                                | ParseError::DoWhileTrailingBlock { .. }
                         ) {
                             return Err(e);
                         }
