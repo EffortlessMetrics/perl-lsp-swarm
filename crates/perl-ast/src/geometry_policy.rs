@@ -793,7 +793,7 @@ pub fn observe_geometry_fields(kind: &NodeKind) -> Vec<ObservedGeometryField> {
         NodeKind::Diamond | NodeKind::Ellipsis | NodeKind::Undef => NONE,
         NodeKind::Readline { filehandle: _ } => NONE,
         NodeKind::Glob { pattern: _ } => NONE,
-        NodeKind::Typeglob { name: _ } => NONE,
+        NodeKind::Typeglob { name: _, body: _ } => NONE,
         NodeKind::Number { value: _ } => NONE,
         NodeKind::String { value: _, interpolated: _ } => NONE,
         NodeKind::VString { value: _ } => NONE,
