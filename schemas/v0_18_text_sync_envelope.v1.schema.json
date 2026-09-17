@@ -23,14 +23,11 @@
     "schema_version": { "const": "v0_18_text_sync_envelope.v1" },
     "release": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
     "subject_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "decision": { "enum": ["atomic_incremental", "full_document_utf16"] },
+    "decision": { "const": "full_document_utf16" },
     "active_encoding_set": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": { "enum": ["utf-8", "utf-16"] }
+      "const": ["utf-16"]
     },
-    "text_sync_kind": { "enum": ["incremental", "full"] },
+    "text_sync_kind": { "const": "full" },
     "required_owner_issues": {
       "type": "array",
       "items": { "type": "integer", "minimum": 1 }

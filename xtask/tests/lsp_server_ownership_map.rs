@@ -212,42 +212,6 @@ const OWNERSHIP: &[OwnershipRow] = &[
         "#8385"
     ),
     row!(
-        "workspace_identity_generation",
-        WorkspaceServices,
-        "Arc<AtomicU64>",
-        "workspace identity invalidation",
-        "workspace-set generation",
-        false,
-        "#8385"
-    ),
-    row!(
-        "workspace_identity_lock",
-        WorkspaceServices,
-        "Arc<Mutex>",
-        "workspace identity invalidation",
-        "workspace-set generation",
-        false,
-        "#8385"
-    ),
-    row!(
-        "single_file_project_config",
-        WorkspaceServices,
-        "Arc<Mutex>",
-        "single-file project config replacement / server drop",
-        "single-file project generation",
-        false,
-        "#8385"
-    ),
-    row!(
-        "single_file_project_config_generation",
-        WorkspaceServices,
-        "Arc<AtomicU64>",
-        "single-file project config replacement / server drop",
-        "single-file project generation",
-        false,
-        "#8385"
-    ),
-    row!(
         "root_path",
         WorkspaceServices,
         "Arc<Mutex>",

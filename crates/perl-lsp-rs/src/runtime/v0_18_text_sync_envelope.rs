@@ -108,7 +108,10 @@ pub(crate) fn admit_full_document_changes(changes: &[Value]) -> FullDocumentAdmi
     let mut replacements = Vec::with_capacity(changes.len());
     for (change_index, change) in changes.iter().enumerate() {
         match serde_json::from_value::<TextDocumentContentChangeEvent>(change.clone()) {
-            Ok(event) if event.range.is_none() => {
+            // The LSP full-document event is the text-only variant: the raw
+            // member must not carry a `range` key at all, because serde also
+            // deserializes an explicit `"range": null` into `None`.
+            Ok(event) if change.get("range").is_none() => {
                 replacements.push(strip_utf8_bom(&event.text).to_string());
             }
             Ok(_) => {
@@ -244,6 +247,12 @@ mod tests {
         assert!(matches!(
             admit_full_document_changes(&[json!({ "text": "ok\n" }), json!({ "range": true })]),
             FullDocumentAdmission::Violation { .. }
+        ));
+        // An explicit `"range": null` is not the text-only full-document
+        // variant: the raw member must not carry a `range` key at all.
+        assert!(matches!(
+            admit_full_document_changes(&[json!({ "range": null, "text": "ok\n" })]),
+            FullDocumentAdmission::Violation { change_index: Some(0), .. }
         ));
         let mixed = admit_full_document_changes(&[
             json!({ "text": "committed-if-partial\n" }),
