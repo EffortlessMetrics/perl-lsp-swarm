@@ -39,7 +39,9 @@ jobs:
           fetch-depth: 1
 
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
 
       - name: Run the contract battery
         run: cargo test -p xtask --example standalone_owned_state --locked
@@ -57,7 +59,9 @@ jobs:
           fetch-depth: 1
 
       - name: Install schema libraries
-        run: python3 -m pip install --quiet jsonschema referencing
+        run: |
+          python3 -m venv .venv-schema-harness
+          .venv-schema-harness/bin/pip install --quiet jsonschema referencing
 
       - name: Run the schema harness
-        run: python3 -m unittest scripts.ci.test_standalone_contract_schemas
+        run: .venv-schema-harness/bin/python -m unittest scripts.ci.test_standalone_contract_schemas
