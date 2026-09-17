@@ -686,23 +686,16 @@ impl DebugAdapter {
     ///
     /// Routes through `dispatch_event`: `output` events are non-blocking (dropped
     /// when the queue is full); all other events apply backpressure.
+    ///
+    /// The publication joins the drain latch inside `dispatch_event` (reserve
+    /// before publish under the seq lock, roll back on refusal). When the
+    /// publishing thread runs inside the transport worker's request drain
+    /// scope, the ticket is recorded into that scope, so the response waits
+    /// only for the events its own handler emitted
+    /// (#15725, FC-DRAIN-NOT-REQUEST-SCOPED).
     fn send_event(&self, event: &str, body: Option<Value>) {
         if let Some(ref sender) = self.event_sender {
-            // Reserve the latch count before publishing: the transport's request
-            // loop waits on this latch before writing a response so accepted
-            // events are observed first (bounded, fail-open on timeout).
-            // Reserving first closes the race where a fast consumer drains
-            // and completes before the increment lands, which left phantom
-            // residue that pushed every later response through the full
-            // timeout; a refused or dropped dispatch rolls its reservation
-            // back below.
-            self.event_drain.enqueue(1);
-            if !matches!(
-                sender.send_event(&self.seq, event, body),
-                crate::debug_adapter::sync_utils::EventDispatchResult::Sent
-            ) {
-                self.event_drain.complete(1);
-            }
+            sender.send_event(&self.seq, event, body, Some(&self.event_drain));
         }
     }
 

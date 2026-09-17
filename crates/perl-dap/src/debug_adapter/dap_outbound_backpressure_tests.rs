@@ -22,13 +22,13 @@ fn output_drop_when_queue_full() {
     let (tx, rx) = sync_channel::<DapMessage>(2);
     let seq = Mutex::new(0i64);
 
-    let r1 = dispatch_event(&tx, &seq, "output", None);
-    let r2 = dispatch_event(&tx, &seq, "output", None);
+    let r1 = dispatch_event(&tx, &seq, "output", None, None);
+    let r2 = dispatch_event(&tx, &seq, "output", None, None);
     assert_eq!(r1, EventDispatchResult::Sent, "first output event must be sent");
     assert_eq!(r2, EventDispatchResult::Sent, "second output event must be sent");
 
     // Queue is full — next output must be dropped, never block
-    let r3 = dispatch_event(&tx, &seq, "output", None);
+    let r3 = dispatch_event(&tx, &seq, "output", None, None);
     assert_eq!(
         r3,
         EventDispatchResult::Dropped,
@@ -49,7 +49,7 @@ fn lifecycle_blocks_until_drain() {
     let seq = Arc::new(Mutex::new(0i64));
 
     // Fill the single queue slot with an output event
-    let r = dispatch_event(&tx, &seq, "output", None);
+    let r = dispatch_event(&tx, &seq, "output", None, None);
     assert_eq!(r, EventDispatchResult::Sent, "must fill the single queue slot");
 
     // Spawn a helper that dispatches a lifecycle event; it will block on the full queue
@@ -61,6 +61,7 @@ fn lifecycle_blocks_until_drain() {
             &seq2,
             "stopped",
             Some(serde_json::json!({"reason": "breakpoint", "threadId": 1})),
+            None,
         )
     });
 
@@ -99,7 +100,7 @@ fn slow_writer_queue_stays_bounded() {
     let before = dropped_output_event_count();
 
     for _ in 0..FLOOD {
-        dispatch_event(&tx, &seq, "output", None);
+        dispatch_event(&tx, &seq, "output", None, None);
     }
 
     let dropped = dropped_output_event_count().saturating_sub(before);

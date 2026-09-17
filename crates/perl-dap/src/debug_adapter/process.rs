@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::sync_channel;
 
-use super::sync_utils::{EventDrainLatch, EventSender};
+use super::sync_utils::{EventDrainLatch, EventSender, note_published_ticket};
 use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
@@ -38,8 +38,10 @@ fn emit_event_safe(
     seq: &Mutex<i64>,
     event: &str,
     body: Option<Value>,
+    drain: Option<&EventDrainLatch>,
 ) -> bool {
-    sender.send_event(seq, event, body) != super::sync_utils::EventDispatchResult::Disconnected
+    sender.send_event(seq, event, body, drain)
+        != super::sync_utils::EventDispatchResult::Disconnected
 }
 
 const SCOPE_FRAME_ID_MAX: u64 = 99_999;
@@ -1360,7 +1362,12 @@ impl DebugAdapter {
                         // The debuggee exited mid-query: emit the logpoint with
                         // whatever values arrived rather than dropping it.
                         if let Some(pending) = pending_logpoint.take() {
-                            emit_logpoint_messages(sender.as_ref(), &seq, pending.into_messages());
+                            emit_logpoint_messages(
+                                sender.as_ref(),
+                                &seq,
+                                pending.into_messages(),
+                                Some(&event_drain),
+                            );
                         }
                         if let Some(ref sender) = sender {
                             emit_terminated_event(
@@ -1469,6 +1476,7 @@ impl DebugAdapter {
                                     sender.as_ref(),
                                     &seq,
                                     pending.into_messages(),
+                                    Some(&event_drain),
                                 );
                             }
                             if matches!(
@@ -1499,6 +1507,7 @@ impl DebugAdapter {
                                     "category": "stdout",
                                     "output": format!("{}\n", text)
                                 })),
+                                Some(&event_drain),
                             )
                         {
                             tracing::warn!(
@@ -1654,6 +1663,7 @@ impl DebugAdapter {
                                         "category": "stderr",
                                         "output": format!("Error: {}\n", text)
                                     })),
+                                    Some(&event_drain),
                                 );
                             }
                         }
@@ -1952,7 +1962,12 @@ impl DebugAdapter {
 
                             // Empty when a value query was queued instead: those messages
                             // are emitted once the framed replies arrive.
-                            emit_logpoint_messages(sender.as_ref(), &seq, logpoint_messages);
+                            emit_logpoint_messages(
+                                sender.as_ref(),
+                                &seq,
+                                logpoint_messages,
+                                Some(&event_drain),
+                            );
 
                             if should_auto_continue {
                                 continue;
@@ -1975,6 +1990,7 @@ impl DebugAdapter {
                                         }
                                         body
                                     }),
+                                    Some(&event_drain),
                                 )
                             {
                                 tracing::warn!(
@@ -2085,6 +2101,7 @@ impl DebugAdapter {
                                         "threadId": thread_id,
                                         "allThreadsStopped": true
                                     })),
+                                    Some(&event_drain),
                                 )
                             {
                                 tracing::warn!(
@@ -2106,7 +2123,12 @@ impl DebugAdapter {
                         // framed value query must still surface the logpoint with
                         // whatever values arrived, not swallow it.
                         if let Some(pending) = pending_logpoint.take() {
-                            emit_logpoint_messages(sender.as_ref(), &seq, pending.into_messages());
+                            emit_logpoint_messages(
+                                sender.as_ref(),
+                                &seq,
+                                pending.into_messages(),
+                                Some(&event_drain),
+                            );
                         }
                         // Send termination event before exiting
                         if let Some(ref sender) = sender {
@@ -2271,20 +2293,18 @@ impl DebugAdapter {
                 && terminated_delivery_is_current(&termination_state, Some(session_generation))
             {
                 // The reserved timeout event joins the drain latch like
-                // every other terminal emission, so a response cannot
-                // overtake it on the wire.
-                event_drain.enqueue(1);
-                let delivered = deliver_reserved_terminated_event(
+                // every other terminal emission (inside the delivery's
+                // seq-locked region), so a response cannot overtake it on
+                // the wire.
+                deliver_reserved_terminated_event(
                     sender,
                     &seq,
                     &termination_state,
                     session_generation,
                     Some(json!({"reason": "debuggee_timeout"})),
                     &|| false,
+                    Some(&event_drain),
                 );
-                if !delivered {
-                    event_drain.complete(1);
-                }
             }
         });
     }
@@ -3332,7 +3352,12 @@ fn terminated_delivery_is_current(
 }
 
 /// Emit interpolated logpoint text on the debug console.
-fn emit_logpoint_messages(sender: Option<&EventSender>, seq: &Mutex<i64>, messages: Vec<String>) {
+fn emit_logpoint_messages(
+    sender: Option<&EventSender>,
+    seq: &Mutex<i64>,
+    messages: Vec<String>,
+    drain: Option<&EventDrainLatch>,
+) {
     let Some(sender) = sender else {
         return;
     };
@@ -3344,6 +3369,7 @@ fn emit_logpoint_messages(sender: Option<&EventSender>, seq: &Mutex<i64>, messag
                 "category": "console",
                 "output": format!("{message}\n")
             })),
+            drain,
         );
     }
 }
@@ -3397,21 +3423,19 @@ pub(super) fn emit_terminated_event_guarded(
     if !reserve_terminated_event(termination_state, Some(generation)) {
         return false;
     }
-    // Join the drain latch (FC-TERMINATED-DRAIN-BYPASS): reserve before
-    // the delivery attempt and retain only when the event was accepted
-    // into the outbound channel; stale, replaced-generation, and
-    // disconnected outcomes complete the reservation instead.
-    if let Some(drain) = drain {
-        drain.enqueue(1);
-    }
-    let delivered =
-        deliver_reserved_terminated_event(sender, seq, termination_state, generation, body, stale);
-    if let Some(drain) = drain
-        && !delivered
-    {
-        drain.complete(1);
-    }
-    delivered
+    // Join the drain latch (FC-TERMINATED-DRAIN-BYPASS): the ticket is
+    // reserved inside the delivery's seq-locked region and retained only
+    // when the event was accepted into the outbound channel; stale,
+    // replaced-generation, and disconnected outcomes roll it back.
+    deliver_reserved_terminated_event(
+        sender,
+        seq,
+        termination_state,
+        generation,
+        body,
+        stale,
+        drain,
+    )
 }
 
 fn deliver_reserved_terminated_event(
@@ -3421,25 +3445,40 @@ fn deliver_reserved_terminated_event(
     generation: u64,
     body: Option<Value>,
     stale: &dyn Fn() -> bool,
+    drain: Option<&EventDrainLatch>,
 ) -> bool {
     let Some(sender) = sender.admitted_sender() else { return false };
     let mut sequence = lock_or_recover(seq, "terminal.seq");
     *sequence += 1;
     let mut message = DapMessage::Event { seq: *sequence, event: "terminated".to_string(), body };
+    // Join the drain latch inside the seq-locked region: the ticket is
+    // reserved after the final pre-commit staleness checks and rolled back
+    // on every post-reservation failure path, so ticket order tracks wire
+    // order (#15725).
+    let ticket = drain.map(|drain| drain.reserve());
     loop {
-        if stale() {
+        if stale() || lock_or_recover(termination_state, "terminal.commit").generation != generation
+        {
+            if let (Some(drain), Some(ticket)) = (drain, ticket) {
+                drain.rollback(ticket);
+            }
             return false;
         }
         let mut state = lock_or_recover(termination_state, "terminal.commit");
-        if state.generation != generation {
-            return false;
-        }
         match sender.try_send(message) {
             Ok(()) => {
                 state.terminal_committed = true;
+                if let Some(ticket) = ticket {
+                    note_published_ticket(ticket);
+                }
                 return true;
             }
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                if let (Some(drain), Some(ticket)) = (drain, ticket) {
+                    drain.rollback(ticket);
+                }
+                return false;
+            }
             Err(std::sync::mpsc::TrySendError::Full(returned)) => message = returned,
         }
         drop(state);
@@ -3902,7 +3941,7 @@ mod tests {
             let emitted = if reserved_watchdog {
                 reserve_terminated_event(&state, Some(generation))
                     && super::deliver_reserved_terminated_event(
-                        &sender, &sequence, &state, generation, body, &stale,
+                        &sender, &sequence, &state, generation, body, &stale, None,
                     )
             } else {
                 super::emit_terminated_event_guarded(
@@ -4143,7 +4182,6 @@ mod tests {
 
     #[test]
     fn terminated_emission_holds_the_drain_latch_only_when_sent() -> Result<(), String> {
-        use std::time::Duration;
         // A sent terminal event retains its drain reservation for the
         // transport consumer, so `run_with_io` observes it before the
         // response that follows.
@@ -4165,7 +4203,7 @@ mod tests {
         ) {
             return Err("a live terminal emission must report delivery".to_string());
         }
-        if drain.wait_until_drained(Duration::from_millis(0)) {
+        if !drain.has_outstanding() {
             return Err("a sent terminal event must retain its drain reservation".to_string());
         }
         // A stale guarded dispatch retires without retaining anything.
@@ -4187,7 +4225,7 @@ mod tests {
         ) {
             return Err("a stale dispatch must retire without reporting delivery".to_string());
         }
-        if !stale_drain.wait_until_drained(Duration::from_millis(0)) {
+        if stale_drain.has_outstanding() {
             return Err("a stale terminal emission must not retain a reservation".to_string());
         }
         // A disconnected channel completes its reservation as well.
@@ -4209,7 +4247,7 @@ mod tests {
         ) {
             return Err("emission on a closed channel must report failure".to_string());
         }
-        if !closed_drain.wait_until_drained(Duration::from_millis(0)) {
+        if closed_drain.has_outstanding() {
             return Err("a disconnected emission must not retain a reservation".to_string());
         }
         Ok(())

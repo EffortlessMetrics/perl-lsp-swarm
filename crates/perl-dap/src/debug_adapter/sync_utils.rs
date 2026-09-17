@@ -28,42 +28,86 @@ pub(crate) enum EventDispatchResult {
     Disconnected,
 }
 
-/// Bounded wait before a response write, used by the transport loop to
-/// let the event-consumer thread drain events that a command handler
-/// enqueued before the handler returned. Events accepted by
-/// [`EventSender::send_event`] reserve the latch before publishing (a
-/// refused or dropped dispatch rolls its reservation back); the consumer
-/// completes the exact drained count after its receive loop. The
-/// transport waits (capped) on the latch before writing a response, so a
-/// client observes a command's events before the terminal response that
-/// can imply their effect (review finding on #12745: queueing alone does
-/// not order the wire).
+/// Request-scoped drain barrier (issue #15725).
 ///
-/// Saturation semantics keep the latch fail-open: uncounted synthetic
-/// messages (the drop notice) or lost decrements can only open the
-/// barrier early, never hang it, and the bounded wait caps every
-/// response's added latency even when the consumer is stalled on a
-/// blocked wire.
+/// Bounded wait before a response write, used by the transport worker to
+/// let the event-consumer thread drain the events that *this request's
+/// handler* published before the handler returned. Every accepted
+/// publication reserves one ticket (under the publication-ordering seq
+/// lock, so ticket order equals wire order); a refused, dropped, stale,
+/// or disconnected dispatch rolls its ticket back. The consumer completes
+/// the exact drained count after its receive loop, which removes the
+/// drained tickets in ticket order.
+///
+/// The response waits on its own *highest* ticket, not on the whole
+/// latch: unrelated asynchronous traffic (output-reader events, forwarded
+/// attach events) reserves tickets that no response ever waits on. This
+/// is the request scoping required by FC-DRAIN-NOT-REQUEST-SCOPED — the
+/// previous global pending counter made a busy debug session pay
+/// unrelated-event latency on every response, up to the full fail-open
+/// cap.
+///
+/// Fail-open posture is unchanged: a consumer that dies mid-batch or a
+/// stalled wire can only hold a ticket until the bounded wait times out,
+/// never hang a response, and [`EventDrainLatch::reset`] clears any
+/// residue between transport runs.
 #[derive(Clone, Default)]
 pub(crate) struct EventDrainLatch {
-    pending: std::sync::Arc<(Mutex<usize>, std::sync::Condvar)>,
+    pending: std::sync::Arc<(Mutex<DrainState>, std::sync::Condvar)>,
+}
+
+#[derive(Default)]
+struct DrainState {
+    /// Monotonic ticket source. Tickets are assigned while the caller
+    /// holds the publication-ordering seq lock, so ticket order matches
+    /// outbound channel order.
+    next_ticket: u64,
+    /// Tickets of messages accepted onto the outbound channel and not yet
+    /// written by the consumer (plus, transiently, reservations whose
+    /// dispatch failed and is about to roll back — the rollback happens
+    /// before the seq lock is released, so outside the lock the set only
+    /// ever contains published tickets).
+    outstanding: std::collections::BTreeSet<u64>,
 }
 
 impl EventDrainLatch {
-    /// Record `count` messages accepted onto the outbound channel.
-    pub(crate) fn enqueue(&self, count: usize) {
-        if count == 0 {
-            return;
-        }
+    /// Reserve one outbound slot. The caller must hold the
+    /// publication-ordering seq lock from reservation through send so
+    /// ticket order cannot invert wire order.
+    pub(crate) fn reserve(&self) -> u64 {
         let (mutex, _) = &*self.pending;
-        *lock_or_recover(mutex, "event_drain_latch.enqueue") += count;
+        let mut state = lock_or_recover(mutex, "event_drain_latch.reserve");
+        state.next_ticket = state.next_ticket.wrapping_add(1);
+        let ticket = state.next_ticket;
+        state.outstanding.insert(ticket);
+        ticket
     }
 
-    /// Record that the consumer wrote `count` previously counted messages.
+    /// Roll a reservation back: the dispatch was refused, dropped, stale,
+    /// or disconnected, so no message carrying this ticket will be
+    /// written. Must run before the caller releases the publication-
+    /// ordering seq lock (see [`DrainState::outstanding`]).
+    pub(crate) fn rollback(&self, ticket: u64) {
+        let (mutex, condvar) = &*self.pending;
+        let mut state = lock_or_recover(mutex, "event_drain_latch.rollback");
+        state.outstanding.remove(&ticket);
+        condvar.notify_all();
+    }
+
+    /// Record that the consumer wrote `count` previously reserved
+    /// messages. The consumer drains the channel FIFO, so these are the
+    /// `count` smallest outstanding tickets.
     pub(crate) fn complete(&self, count: usize) {
         let (mutex, condvar) = &*self.pending;
-        let mut pending = lock_or_recover(mutex, "event_drain_latch.complete");
-        *pending = pending.saturating_sub(count);
+        let mut state = lock_or_recover(mutex, "event_drain_latch.complete");
+        for _ in 0..count {
+            match state.outstanding.iter().next().copied() {
+                Some(smallest) => {
+                    state.outstanding.remove(&smallest);
+                }
+                None => break,
+            }
+        }
         condvar.notify_all();
     }
 
@@ -71,32 +115,111 @@ impl EventDrainLatch {
     /// consumer terminated mid-batch).
     pub(crate) fn reset(&self) {
         let (mutex, condvar) = &*self.pending;
-        *lock_or_recover(mutex, "event_drain_latch.reset") = 0;
+        lock_or_recover(mutex, "event_drain_latch.reset").outstanding.clear();
         condvar.notify_all();
     }
 
-    /// Wait until every counted message has been written, bounded by
-    /// `cap`. Returns `true` when fully drained, `false` on timeout.
-    pub(crate) fn wait_until_drained(&self, cap: std::time::Duration) -> bool {
+    /// Wait until `ticket` — and, by ticket order, every event published
+    /// before it — has been written by the consumer, bounded by `cap`.
+    /// Returns `true` when drained, `false` on timeout (fail-open).
+    pub(crate) fn wait_for_ticket(&self, ticket: u64, cap: std::time::Duration) -> bool {
         let start = std::time::Instant::now();
         let (mutex, condvar) = &*self.pending;
-        let mut pending = lock_or_recover(mutex, "event_drain_latch.wait");
-        while *pending > 0 {
+        let mut state = lock_or_recover(mutex, "event_drain_latch.wait");
+        while state.outstanding.contains(&ticket) {
             let elapsed = start.elapsed();
             if elapsed >= cap {
                 return false;
             }
-            let (guard, timed_out) = match condvar.wait_timeout(pending, cap - elapsed) {
+            let (guard, timed_out) = match condvar.wait_timeout(state, cap - elapsed) {
                 Ok(pair) => pair,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            pending = guard;
-            if timed_out.timed_out() && *pending > 0 && start.elapsed() >= cap {
+            state = guard;
+            if timed_out.timed_out()
+                && state.outstanding.contains(&ticket)
+                && start.elapsed() >= cap
+            {
                 return false;
             }
         }
         true
     }
+
+    /// Whether any reserved message is still outstanding. Test-facing
+    /// residue probe (retained-reservation checks).
+    #[cfg(test)]
+    pub(crate) fn has_outstanding(&self) -> bool {
+        let (mutex, _) = &*self.pending;
+        !lock_or_recover(mutex, "event_drain_latch.has_outstanding").outstanding.is_empty()
+    }
+}
+
+/// Request-scoped ticket collection for the drain barrier (#15725).
+///
+/// The transport worker activates a scope while a request handler runs;
+/// every event published *on that thread* while the scope is active
+/// records its latch ticket into the scope (see [`note_published_ticket`]).
+/// After the handler returns, the worker waits on the scope's highest
+/// ticket: the response is ordered after exactly the events its own
+/// handler emitted. Threads without an active scope (output readers, the
+/// TCP-attach forwarder) publish normally — their tickets join the latch
+/// accounting but no response waits on them.
+#[derive(Default)]
+struct RequestScopeState {
+    active: bool,
+    max_ticket: Option<u64>,
+}
+
+thread_local! {
+    static REQUEST_DRAIN_SCOPE: std::cell::RefCell<RequestScopeState> =
+        std::cell::RefCell::new(RequestScopeState::default());
+}
+
+/// RAII scope active on the worker thread while one request handler runs.
+pub(crate) struct RequestDrainScope {
+    _priv: (),
+}
+
+impl RequestDrainScope {
+    /// Activate request-scoped ticket collection on the current thread.
+    /// Nested or concurrent activation on one thread is not a supported
+    /// shape (request handling is FIFO on a single worker); activation
+    /// resets the state so a leaked stale scope cannot poison a later one.
+    pub(crate) fn activate() -> Self {
+        REQUEST_DRAIN_SCOPE.with(|scope| {
+            *scope.borrow_mut() = RequestScopeState { active: true, max_ticket: None };
+        });
+        Self { _priv: () }
+    }
+
+    /// The highest ticket published under this scope, if the handler
+    /// published any event.
+    pub(crate) fn wait_target(&self) -> Option<u64> {
+        REQUEST_DRAIN_SCOPE.with(|scope| scope.borrow().max_ticket)
+    }
+}
+
+impl Drop for RequestDrainScope {
+    fn drop(&mut self) {
+        REQUEST_DRAIN_SCOPE.with(|scope| *scope.borrow_mut() = RequestScopeState::default());
+    }
+}
+
+/// Record a successfully published ticket into the active request scope,
+/// if one is active on the publishing thread. Called by the dispatch
+/// primitives right after the message was accepted onto the outbound
+/// channel (while the publication-ordering seq lock is still held).
+pub(super) fn note_published_ticket(ticket: u64) {
+    REQUEST_DRAIN_SCOPE.with(|scope| {
+        let mut state = scope.borrow_mut();
+        if state.active {
+            state.max_ticket = Some(match state.max_ticket {
+                Some(max) => max.max(ticket),
+                None => ticket,
+            });
+        }
+    });
 }
 
 /// Shared event-sender admission gate. A producer clones the sender while the
@@ -124,11 +247,12 @@ impl EventSender {
         seq: &Mutex<i64>,
         event: &str,
         body: Option<Value>,
+        drain: Option<&EventDrainLatch>,
     ) -> EventDispatchResult {
         let Some(sender) = self.admitted_sender() else {
             return EventDispatchResult::Disconnected;
         };
-        dispatch_event(&sender, seq, event, body)
+        dispatch_event(&sender, seq, event, body, drain)
     }
 
     pub(crate) fn send_event_generation_guarded(
@@ -137,11 +261,12 @@ impl EventSender {
         event: &str,
         body: Option<Value>,
         stale: &dyn Fn() -> bool,
+        drain: Option<&EventDrainLatch>,
     ) -> GuardedDispatchResult {
         let Some(sender) = self.admitted_sender() else {
             return GuardedDispatchResult::Disconnected;
         };
-        dispatch_event_generation_guarded(&sender, seq, event, body, stale)
+        dispatch_event_generation_guarded(&sender, seq, event, body, stale, drain)
     }
 }
 
@@ -201,7 +326,9 @@ fn should_warn_on_drop(count: u64) -> bool {
 /// The `seq` guard is held for the *entire* dispatch, including the `try_send`/`send`
 /// call, so that seq-assignment and enqueue are atomic: two threads racing to dispatch
 /// events can never have the later-assigned `seq` overtake the earlier one in the
-/// outbound channel.
+/// outbound channel. The drain ticket (when `drain` is given) is reserved inside the
+/// same critical section, so ticket order equals wire order and the consumer's
+/// smallest-first completion removes exactly the drained tickets (#15725).
 ///
 /// Callers must not hold any other lock that the writer/consumer thread may need to
 /// acquire while draining the channel (e.g. the transport's response-writer mutex) —
@@ -212,14 +339,19 @@ pub(crate) fn dispatch_event(
     seq: &Mutex<i64>,
     event: &str,
     body: Option<Value>,
+    drain: Option<&EventDrainLatch>,
 ) -> EventDispatchResult {
     let (msg, mut seq_lock) = {
         let mut seq_lock = lock_or_recover(seq, "dispatch_event.seq");
         *seq_lock += 1;
         (DapMessage::Event { seq: *seq_lock, event: event.to_string(), body }, seq_lock)
     };
+    // Reserve inside the seq-locked region so ticket order cannot invert
+    // publication order; a refused or dropped dispatch rolls the ticket
+    // back before the lock is released.
+    let ticket = drain.map(|drain| drain.reserve());
 
-    if is_output_event(event) {
+    let result = if is_output_event(event) {
         match sender.try_send(msg) {
             Ok(()) => EventDispatchResult::Sent,
             Err(TrySendError::Full(_)) => {
@@ -230,7 +362,7 @@ pub(crate) fn dispatch_event(
                         "DAP outbound queue full; dropping output events"
                     );
                 }
-                try_emit_drop_notice(sender, &mut seq_lock, dropped_total);
+                try_emit_drop_notice(sender, &mut seq_lock, dropped_total, drain);
                 EventDispatchResult::Dropped
             }
             Err(TrySendError::Disconnected(_)) => EventDispatchResult::Disconnected,
@@ -240,7 +372,16 @@ pub(crate) fn dispatch_event(
             Ok(()) => EventDispatchResult::Sent,
             Err(_) => EventDispatchResult::Disconnected,
         }
+    };
+
+    if let Some(ticket) = ticket {
+        if matches!(&result, EventDispatchResult::Sent) {
+            note_published_ticket(ticket);
+        } else if let Some(drain) = drain {
+            drain.rollback(ticket);
+        }
     }
+    result
 }
 
 /// [`dispatch_event`] with a staleness hook for the generation-aware TCP-attach
@@ -267,14 +408,19 @@ pub(crate) fn dispatch_event_generation_guarded(
     event: &str,
     body: Option<Value>,
     stale: &dyn Fn() -> bool,
+    drain: Option<&EventDrainLatch>,
 ) -> GuardedDispatchResult {
     let (mut msg, mut seq_lock) = {
         let mut seq_lock = lock_or_recover(seq, "dispatch_event.seq");
         *seq_lock += 1;
         (DapMessage::Event { seq: *seq_lock, event: event.to_string(), body }, seq_lock)
     };
+    // Reserved inside the seq-locked region (which spans the retry parks)
+    // so ticket order equals publication order; a stale or disconnected
+    // outcome rolls the ticket back before the lock is released.
+    let ticket = drain.map(|drain| drain.reserve());
 
-    if is_output_event(event) {
+    let result = if is_output_event(event) {
         match sender.try_send(msg) {
             Ok(()) => GuardedDispatchResult::Sent,
             Err(TrySendError::Full(_)) => {
@@ -285,7 +431,7 @@ pub(crate) fn dispatch_event_generation_guarded(
                         "DAP outbound queue full; dropping output events"
                     );
                 }
-                try_emit_drop_notice(sender, &mut seq_lock, dropped_total);
+                try_emit_drop_notice(sender, &mut seq_lock, dropped_total, drain);
                 GuardedDispatchResult::Dropped
             }
             Err(TrySendError::Disconnected(_)) => GuardedDispatchResult::Disconnected,
@@ -293,18 +439,27 @@ pub(crate) fn dispatch_event_generation_guarded(
     } else {
         loop {
             if stale() {
-                return GuardedDispatchResult::Stale;
+                break GuardedDispatchResult::Stale;
             }
             match sender.try_send(msg) {
-                Ok(()) => return GuardedDispatchResult::Sent,
+                Ok(()) => break GuardedDispatchResult::Sent,
                 Err(TrySendError::Full(returned)) => {
                     msg = returned;
                     std::thread::sleep(GENERATION_GUARD_PARK);
                 }
-                Err(TrySendError::Disconnected(_)) => return GuardedDispatchResult::Disconnected,
+                Err(TrySendError::Disconnected(_)) => break GuardedDispatchResult::Disconnected,
             }
         }
+    };
+
+    if let Some(ticket) = ticket {
+        if matches!(&result, GuardedDispatchResult::Sent) {
+            note_published_ticket(ticket);
+        } else if let Some(drain) = drain {
+            drain.rollback(ticket);
+        }
     }
+    result
 }
 
 /// Best-effort emission of a synthetic `output` event telling the user that output lines
@@ -323,11 +478,14 @@ pub(crate) fn dispatch_event_generation_guarded(
 ///   therefore produces zero notices until the client catches up enough to free a slot —
 ///   never one notice per dropped line.
 /// - Called while the caller already holds `seq_lock`; reuses that guard instead of
-///   re-acquiring the mutex.
+///   re-acquiring the mutex. When `drain` is given, the notice reserves its own ticket
+///   inside that critical section so every channel message holds exactly one
+///   outstanding ticket (#15725).
 fn try_emit_drop_notice(
     sender: &SyncSender<DapMessage>,
     seq_lock: &mut MutexGuard<'_, i64>,
     dropped_total: u64,
+    drain: Option<&EventDrainLatch>,
 ) {
     let last_notified = LAST_NOTIFIED_DROP_COUNT.load(Ordering::Relaxed);
     if dropped_total <= last_notified {
@@ -342,11 +500,13 @@ fn try_emit_drop_notice(
         ),
     }));
     let next_seq = **seq_lock + 1;
+    let ticket = drain.map(|drain| drain.reserve());
 
     // Bounded, non-blocking retries: gives a slow-but-not-permanently-stalled client's
     // writer thread a few scheduling slices to drain a slot, without ever looping
     // unboundedly or blocking. Fixed upper bound, no recursion.
     const MAX_ATTEMPTS: u8 = 8;
+    let mut published = false;
     for attempt in 0..MAX_ATTEMPTS {
         let msg =
             DapMessage::Event { seq: next_seq, event: "output".to_string(), body: body.clone() };
@@ -354,9 +514,10 @@ fn try_emit_drop_notice(
             Ok(()) => {
                 **seq_lock = next_seq;
                 LAST_NOTIFIED_DROP_COUNT.store(dropped_total, Ordering::Relaxed);
-                return;
+                published = true;
+                break;
             }
-            Err(TrySendError::Disconnected(_)) => return,
+            Err(TrySendError::Disconnected(_)) => break,
             Err(TrySendError::Full(_)) => {
                 if attempt + 1 < MAX_ATTEMPTS {
                     std::thread::yield_now();
@@ -364,8 +525,18 @@ fn try_emit_drop_notice(
             }
         }
     }
-    // Queue stayed full for every attempt: skip silently. Do not retry beyond the fixed
-    // bound above, do not consume a seq number, do not recurse into the drop-counting path.
+    match (ticket, published) {
+        (Some(ticket), true) => note_published_ticket(ticket),
+        (Some(ticket), false) => {
+            if let Some(drain) = drain {
+                drain.rollback(ticket);
+            }
+        }
+        (None, _) => {}
+    }
+    // Queue stayed full for every attempt when not published: skip silently. Do not
+    // retry beyond the fixed bound above, do not consume a seq number, do not recurse
+    // into the drop-counting path.
 }
 
 /// Return the cumulative count of dropped `output` events (test instrumentation).
@@ -404,13 +575,13 @@ mod tests {
         let (tx, rx) = sync_channel::<DapMessage>(2);
         let sender = EventSender::new(tx);
         let seq = Mutex::new(0i64);
-        if sender.send_event(&seq, "output", Some(json!({"output": "before-close\n"})))
+        if sender.send_event(&seq, "output", Some(json!({"output": "before-close\n"})), None)
             != EventDispatchResult::Sent
         {
             return Err("pre-close event was not admitted".to_string());
         }
         sender.close();
-        if sender.send_event(&seq, "output", Some(json!({"output": "after-close\n"})))
+        if sender.send_event(&seq, "output", Some(json!({"output": "after-close\n"})), None)
             != EventDispatchResult::Disconnected
         {
             return Err("late event was admitted after close".to_string());
@@ -430,7 +601,7 @@ mod tests {
         let (tx, rx) = sync_channel::<DapMessage>(1);
         let sender = EventSender::new(tx);
         let seq = Arc::new(Mutex::new(0i64));
-        if sender.send_event(&seq, "output", Some(json!({"output": "queued\n"})))
+        if sender.send_event(&seq, "output", Some(json!({"output": "queued\n"})), None)
             != EventDispatchResult::Sent
         {
             return Err("queue-filling event was not admitted".to_string());
@@ -439,7 +610,12 @@ mod tests {
         let producer_sender = sender.clone();
         let producer_seq = Arc::clone(&seq);
         let producer = thread::spawn(move || {
-            producer_sender.send_event(&producer_seq, "stopped", Some(json!({"reason": "pause"})))
+            producer_sender.send_event(
+                &producer_seq,
+                "stopped",
+                Some(json!({"reason": "pause"})),
+                None,
+            )
         });
         match rx.recv().map_err(|error| error.to_string())? {
             DapMessage::Event { event, .. } if event == "output" => {}
@@ -452,7 +628,7 @@ mod tests {
         }
 
         sender.close();
-        if sender.send_event(&seq, "stopped", Some(json!({"reason": "late"})))
+        if sender.send_event(&seq, "stopped", Some(json!({"reason": "late"})), None)
             != EventDispatchResult::Disconnected
         {
             return Err("late lifecycle event was admitted after close".to_string());
@@ -473,7 +649,7 @@ mod tests {
         let (tx, rx) = sync_channel::<DapMessage>(1);
         let sender = EventSender::new(tx);
         let seq = Mutex::new(0i64);
-        if sender.send_event(&seq, "output", Some(json!({"output": "queued\n"})))
+        if sender.send_event(&seq, "output", Some(json!({"output": "queued\n"})), None)
             != EventDispatchResult::Sent
         {
             return Err("queue-filling event was not admitted".to_string());
@@ -482,7 +658,12 @@ mod tests {
         let producer_seq = Arc::clone(&seq);
         let producer_sender = sender.clone();
         let producer = thread::spawn(move || {
-            producer_sender.send_event(&producer_seq, "stopped", Some(json!({"reason": "pause"})))
+            producer_sender.send_event(
+                &producer_seq,
+                "stopped",
+                Some(json!({"reason": "pause"})),
+                None,
+            )
         });
 
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -516,7 +697,7 @@ mod tests {
         let producer_result =
             producer.join().map_err(|_| "admitted producer panicked".to_string())?;
         let _ = closer.join();
-        let late_result = sender.send_event(&seq, "stopped", Some(json!({"reason": "late"})));
+        let late_result = sender.send_event(&seq, "stopped", Some(json!({"reason": "late"})), None);
         if !producer_blocked || !close_completed_before_drain {
             return Err(format!(
                 "close must complete before draining a blocked admitted send: blocked={producer_blocked}, close_completed={close_completed_before_drain}"
@@ -547,14 +728,20 @@ mod tests {
         let seq = Mutex::new(0i64);
 
         for i in 0..cap {
-            let result =
-                dispatch_event(&tx, &seq, "output", Some(json!({"output": format!("line {i}\n")})));
+            let result = dispatch_event(
+                &tx,
+                &seq,
+                "output",
+                Some(json!({"output": format!("line {i}\n")})),
+                None,
+            );
             if result != EventDispatchResult::Sent {
                 return Err(format!("slot {i} should be accepted, got {result:?}"));
             }
         }
 
-        let result = dispatch_event(&tx, &seq, "output", Some(json!({"output": "overflow\n"})));
+        let result =
+            dispatch_event(&tx, &seq, "output", Some(json!({"output": "overflow\n"})), None);
         if result != EventDispatchResult::Dropped {
             return Err(format!(
                 "output event on a full queue must be Dropped, not Sent or Disconnected; got {result:?}"
@@ -570,7 +757,7 @@ mod tests {
         let (tx, rx) = sync_channel::<DapMessage>(cap);
         let seq = Arc::new(Mutex::new(0i64));
 
-        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "filling\n"})));
+        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "filling\n"})), None);
         if r != EventDispatchResult::Sent {
             return Err(format!("expected Sent when filling queue, got {r:?}"));
         }
@@ -583,6 +770,7 @@ mod tests {
                 &seq2,
                 "stopped",
                 Some(json!({"reason": "pause", "threadId": 1, "allThreadsStopped": true})),
+                None,
             )
         });
 
@@ -628,6 +816,7 @@ mod tests {
                 &seq,
                 "output",
                 Some(json!({"output": format!("line {i}\n")})),
+                None,
             ) {
                 EventDispatchResult::Sent => sent += 1,
                 EventDispatchResult::Dropped => dropped += 1,
@@ -667,12 +856,12 @@ mod tests {
 
         drop(rx); // disconnect the receiver
 
-        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "x\n"})));
+        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "x\n"})), None);
         if r != EventDispatchResult::Disconnected {
             return Err(format!("output must be Disconnected when rx dropped, got {r:?}"));
         }
 
-        let r2 = dispatch_event(&tx, &seq, "stopped", Some(json!({"reason": "end"})));
+        let r2 = dispatch_event(&tx, &seq, "stopped", Some(json!({"reason": "end"})), None);
         if r2 != EventDispatchResult::Disconnected {
             return Err(format!("stopped must be Disconnected when rx dropped, got {r2:?}"));
         }
@@ -702,7 +891,7 @@ mod tests {
         let (tx, rx) = sync_channel::<DapMessage>(cap);
         let seq = Arc::new(Mutex::new(0i64));
 
-        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "fill\n"})));
+        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "fill\n"})), None);
         if r != EventDispatchResult::Sent {
             return Err(format!("trial {trial}: initial fill should be accepted, got {r:?}"));
         }
@@ -721,6 +910,7 @@ mod tests {
                             &seq,
                             "output",
                             Some(json!({"output": format!("t{trial}-flood{t}-{i}\n")})),
+                            None,
                         );
                     }
                 })
@@ -735,6 +925,7 @@ mod tests {
                 &seq_life,
                 "stopped",
                 Some(json!({"reason": "pause", "threadId": 1, "allThreadsStopped": true})),
+                None,
             )
         });
 
@@ -793,7 +984,7 @@ mod tests {
         let (tx, rx) = sync_channel::<DapMessage>(cap);
         let seq = Arc::new(Mutex::new(0i64));
 
-        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "filling\n"})));
+        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "filling\n"})), None);
         if r != EventDispatchResult::Sent {
             return Err(format!("expected Sent when filling queue, got {r:?}"));
         }
@@ -801,7 +992,7 @@ mod tests {
         let tx2 = tx.clone();
         let seq2 = Arc::clone(&seq);
         let handle = thread::spawn(move || {
-            dispatch_event(&tx2, &seq2, "terminated", Some(json!({"restart": false})))
+            dispatch_event(&tx2, &seq2, "terminated", Some(json!({"restart": false})), None)
         });
 
         thread::sleep(Duration::from_millis(20));
@@ -849,6 +1040,7 @@ mod tests {
                             &seq,
                             "output",
                             Some(json!({"output": format!("p{p}-l{i}\n")})),
+                            None,
                         );
                     }
                 })
@@ -904,7 +1096,7 @@ mod tests {
         let (tx, rx) = sync_channel::<DapMessage>(cap);
         let seq = Mutex::new(0i64);
 
-        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "keep\n"})));
+        let r = dispatch_event(&tx, &seq, "output", Some(json!({"output": "keep\n"})), None);
         if r != EventDispatchResult::Sent {
             return Err(format!("expected Sent when filling queue, got {r:?}"));
         }
@@ -912,7 +1104,7 @@ mod tests {
         let total = 500usize;
         let mut dropped = 0usize;
         for i in 0..total {
-            if dispatch_event(&tx, &seq, "output", Some(json!({"output": format!("l{i}\n")})))
+            if dispatch_event(&tx, &seq, "output", Some(json!({"output": format!("l{i}\n")})), None)
                 == EventDispatchResult::Dropped
             {
                 dropped += 1;
@@ -944,6 +1136,113 @@ mod tests {
                 "a permanently-full queue must produce zero notices, not one per dropped line \
                  ({dropped} drops); notices={notices}"
             ));
+        }
+        Ok(())
+    }
+
+    // ── request-scoped drain barrier (#15725, FC-DRAIN-NOT-REQUEST-SCOPED) ─────
+
+    /// Core falsifier of the request scoping: the response waits on its own
+    /// ticket only. A request-scoped barrier must release the response as soon
+    /// as the request's own event is written, even though an unrelated
+    /// asynchronous reservation is still outstanding — the previous global
+    /// pending counter kept the waiter blocked here (deterministic
+    /// interleaving, no timing dependency: zero-cap waits never park).
+    #[test]
+    fn request_scoped_wait_ignores_unrelated_reservations() -> Result<(), String> {
+        let latch = EventDrainLatch::default();
+
+        // Interleaving: the handler's event is reserved first, then an
+        // unrelated asynchronous event (e.g. an output-reader emission)
+        // reserves behind it.
+        let own = latch.reserve();
+        let unrelated = latch.reserve();
+
+        // The consumer writes in FIFO/ticket order: the request's own event.
+        latch.complete(1);
+
+        // The response's request-scoped wait must be satisfied by its own
+        // ticket's completion alone.
+        if !latch.wait_for_ticket(own, Duration::from_millis(0)) {
+            return Err("the response must not wait for an unrelated event's reservation \
+                 after its own event drained (request scoping violated)"
+                .to_string());
+        }
+        // And the unrelated reservation must still be outstanding: it was
+        // not consumed by the response's wait.
+        if !latch.has_outstanding() {
+            return Err("the unrelated reservation must still be outstanding".to_string());
+        }
+        if latch.wait_for_ticket(unrelated, Duration::from_millis(0)) {
+            return Err("an outstanding unrelated ticket must not report drained".to_string());
+        }
+
+        // Draining the unrelated event releases a waiter that targets it.
+        latch.complete(1);
+        if !latch.wait_for_ticket(unrelated, Duration::from_millis(0)) {
+            return Err(
+                "the unrelated ticket must drain after the consumer completes it".to_string()
+            );
+        }
+        if latch.has_outstanding() {
+            return Err("the latch must be fully drained".to_string());
+        }
+        Ok(())
+    }
+
+    /// A rolled-back reservation must not wedge the smallest-first completion
+    /// accounting: the consumer completes exactly the tickets of the messages
+    /// it wrote, and waiters on later tickets are released at their own ticket.
+    #[test]
+    fn rollback_keeps_ticket_accounting_aligned() -> Result<(), String> {
+        let latch = EventDrainLatch::default();
+        let first = latch.reserve();
+        let second = latch.reserve();
+
+        // The first dispatch was refused (queue full / disconnected): its
+        // message never enters the channel, so its ticket is rolled back.
+        latch.rollback(first);
+        if latch.wait_for_ticket(second, Duration::from_millis(0)) {
+            return Err(
+                "a ticket behind an outstanding message must not report drained".to_string()
+            );
+        }
+
+        // The consumer writes the only published message.
+        latch.complete(1);
+        if !latch.wait_for_ticket(second, Duration::from_millis(0)) {
+            return Err("the published message's ticket must drain after completion".to_string());
+        }
+        if latch.has_outstanding() {
+            return Err("a rolled-back ticket must not leave residue".to_string());
+        }
+        Ok(())
+    }
+
+    /// Ticket collection is thread-scoped: publications recorded on a thread
+    /// without an active request scope never join a scope on another thread.
+    #[test]
+    fn scope_collection_follows_the_publishing_thread() -> Result<(), String> {
+        // No scope active here: a recorded publication is invisible.
+        note_published_ticket(41);
+        let scope = RequestDrainScope::activate();
+        if scope.wait_target().is_some() {
+            return Err("activation must not inherit tickets from outside the scope".to_string());
+        }
+        note_published_ticket(7);
+        note_published_ticket(3);
+        let target = scope.wait_target();
+        if target != Some(7) {
+            return Err(format!(
+                "the scope must track the highest published ticket (7), got {target:?}"
+            ));
+        }
+        drop(scope);
+        let after = RequestDrainScope::activate();
+        if after.wait_target().is_some() {
+            return Err(
+                "a fresh scope must start empty after the previous scope closed".to_string()
+            );
         }
         Ok(())
     }

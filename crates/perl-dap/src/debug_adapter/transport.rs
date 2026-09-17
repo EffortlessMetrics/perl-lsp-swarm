@@ -3,6 +3,7 @@
 use super::sync_utils::EventSender;
 #[cfg(test)]
 use super::sync_utils::dispatch_event;
+use super::sync_utils::{EventDrainLatch, RequestDrainScope};
 use super::{
     Arc, AtomicBool, ContentLengthFramer, DapMessage, DebugAdapter, EVENT_QUEUE_CAPACITY, Mutex,
     Read, Write, io, lock_or_recover, sync_channel, thread,
@@ -397,6 +398,13 @@ impl DebugAdapter {
                         worker_queued_count.fetch_sub(1, Ordering::AcqRel);
                     }
                     let is_disconnect = request.command == "disconnect";
+                    // Request-scoped drain barrier (#15725): while the handler
+                    // runs, every event it publishes records its latch ticket
+                    // into this scope. The response then waits only for the
+                    // events its own handler emitted — unrelated asynchronous
+                    // traffic (output readers, attach forwarders) no longer
+                    // delays any response (FC-DRAIN-NOT-REQUEST-SCOPED).
+                    let drain_scope = RequestDrainScope::activate();
                     // This load is the worker's claim point. Disconnect refuses
                     // requests that have not started; a request already claimed
                     // may finish or settle through the broker. Clean EOF does
@@ -444,16 +452,23 @@ impl DebugAdapter {
                         && DebugAdapter::response_succeeded_for_command(&response, "initialize");
                     let disconnect_succeeded = is_disconnect
                         && matches!(&response, DapMessage::Response { success: true, .. });
+                    let drain_wait_target = drain_scope.wait_target();
+                    drop(drain_scope);
                     // Handler-emitted events must reach the client before the
                     // terminal response that can imply their effect: queueing
                     // alone does not order the wire because the event consumer
-                    // is asynchronous. Wait (bounded, fail-open) for the drain;
-                    // on timeout the response proceeds without the ordering
-                    // guarantee rather than stalling the session.
-                    if !self.event_drain.wait_until_drained(EVENT_DRAIN_MAX_WAIT) {
+                    // is asynchronous. Wait (bounded, fail-open) for the drain
+                    // of the request's own events; on timeout the response
+                    // proceeds without the ordering guarantee rather than
+                    // stalling the session.
+                    if let Some(target) = drain_wait_target
+                        && !self.event_drain.wait_for_ticket(target, EVENT_DRAIN_MAX_WAIT)
+                    {
                         tracing::warn!(
                             wait_ms = EVENT_DRAIN_MAX_WAIT.as_millis() as u64,
-                            "event drain barrier timed out; writing response without event ordering"
+                            request_seq = request.request_seq,
+                            "request-scoped event drain barrier timed out; \
+                             writing response without event ordering"
                         );
                     }
                     if let Err(error) = write_message_then_notify_initialized(
@@ -463,6 +478,7 @@ impl DebugAdapter {
                         Some(&worker_event_sender),
                         &worker_seq,
                         &worker_wire_seq,
+                        Some(&self.event_drain),
                     ) {
                         if is_disconnect {
                             let _ = disconnect_done_tx.send(false);
@@ -597,6 +613,7 @@ impl DebugAdapter {
                             Some(&event_sender),
                             &transport_seq,
                             &wire_seq,
+                            None,
                         ) {
                             break 'transport Err(error);
                         }
@@ -629,6 +646,7 @@ impl DebugAdapter {
                             Some(&event_sender),
                             &transport_seq,
                             &wire_seq,
+                            None,
                         ) {
                             break 'transport Err(error);
                         }
@@ -659,6 +677,7 @@ impl DebugAdapter {
                                 Some(&event_sender),
                                 &transport_seq,
                                 &wire_seq,
+                                None,
                             ) {
                                 break 'transport Err(error);
                             }
@@ -693,6 +712,7 @@ impl DebugAdapter {
                                     Some(&event_sender),
                                     &transport_seq,
                                     &wire_seq,
+                                    None,
                                 ) {
                                     break 'transport Err(error);
                                 }
@@ -781,10 +801,11 @@ fn write_message_then_notify_initialized<W: Write>(
     event_sender: Option<&EventSender>,
     seq: &Mutex<i64>,
     wire_seq: &Mutex<i64>,
+    drain: Option<&EventDrainLatch>,
 ) -> io::Result<()> {
     write_message_with_wire_seq(shared_writer, message, wire_seq)?;
     if notify_initialized && let Some(sender) = event_sender {
-        let _ = sender.send_event(seq, "initialized", None);
+        let _ = sender.send_event(seq, "initialized", None, drain);
     }
     Ok(())
 }
@@ -1839,7 +1860,8 @@ while (my $line = <STDIN>) {
         let (consumer_go_tx, consumer_go_rx) = sync_channel(1);
 
         // Fill the single slot so the `initialized` dispatch below must wait for a drain.
-        let fill = dispatch_event(&tx, &seq, "output", Some(serde_json::json!({"output": "x\n"})));
+        let fill =
+            dispatch_event(&tx, &seq, "output", Some(serde_json::json!({"output": "x\n"})), None);
         if fill != sync_utils::EventDispatchResult::Sent {
             return Err(format!("expected the fill send to succeed, got {fill:?}"));
         }
@@ -1864,7 +1886,8 @@ while (my $line = <STDIN>) {
         consumer_ready_rx
             .recv_timeout(Duration::from_secs(2))
             .map_err(|error| error.to_string())?;
-        if dispatch_event(&tx, &seq, "output", None) != sync_utils::EventDispatchResult::Sent {
+        if dispatch_event(&tx, &seq, "output", None, None) != sync_utils::EventDispatchResult::Sent
+        {
             return Err("could not refill the event queue".to_string());
         }
 
@@ -1892,6 +1915,7 @@ while (my $line = <STDIN>) {
                 Some(&EventSender::new(tx.clone())),
                 &producer_seq,
                 &producer_wire_seq,
+                None,
             )
         });
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -2782,5 +2806,67 @@ mod framing_tests {
     /// Byte-subsequence search returning the match offset.
     fn windows_find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// Request-scope wiring (#15725): a publication through the adapter's
+    /// `send_event` inside an active `RequestDrainScope` records its latch
+    /// ticket as the scope's wait target, and the scoped wait tracks the
+    /// adapter's own latch. Deterministic channel choreography, no timing.
+    #[test]
+    fn request_scope_tracks_handler_publications_through_send_event() -> Result<(), String> {
+        let mut adapter = DebugAdapter::new();
+        let (tx, rx) = sync_channel::<DapMessage>(8);
+        adapter.set_event_sender(tx);
+        let drain = adapter.event_drain.clone();
+
+        let scope = RequestDrainScope::activate();
+        adapter.send_event("stopped", Some(serde_json::json!({"reason": "breakpoint"})));
+        let target =
+            scope.wait_target().ok_or("a scoped handler publication must record a wait target")?;
+        drop(scope);
+
+        // The published message holds its reservation until the consumer
+        // completes it.
+        if drain.wait_for_ticket(target, Duration::from_millis(0)) {
+            return Err("an undrained handler event must keep its ticket outstanding".to_string());
+        }
+
+        // Simulate the consumer: receive the message (deterministic — the
+        // only publication), then complete its ticket.
+        let msg = rx
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|e| format!("published event must be queued: {e}"))?;
+        assert!(
+            matches!(&msg, DapMessage::Event { event, .. } if event == "stopped"),
+            "expected the published stopped event, got {msg:?}"
+        );
+        drain.complete(1);
+        if !drain.wait_for_ticket(target, Duration::from_millis(0)) {
+            return Err("the response wait must release once its own event drains".to_string());
+        }
+        Ok(())
+    }
+
+    /// An unrelated asynchronous publication (no active scope on its thread)
+    /// must not become any request's wait target (#15725).
+    #[test]
+    fn unscoped_publication_joins_no_request_scope() -> Result<(), String> {
+        let mut adapter = DebugAdapter::new();
+        let (tx, rx) = sync_channel::<DapMessage>(8);
+        adapter.set_event_sender(tx);
+
+        // No scope active on this thread: the publication joins the latch
+        // accounting but no scope.
+        adapter.send_event("output", Some(serde_json::json!({"output": "async\n"})));
+        let scope = RequestDrainScope::activate();
+        if scope.wait_target().is_some() {
+            return Err(
+                "an unscoped (asynchronous) publication must not join a later request scope"
+                    .to_string(),
+            );
+        }
+        drop(scope);
+        let _unused = rx.try_recv();
+        Ok(())
     }
 }

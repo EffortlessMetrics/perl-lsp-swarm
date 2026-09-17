@@ -125,15 +125,19 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
                         // enter the shared outbound queue. The guarded dispatch
                         // re-validates the generation before every commit
                         // attempt, so the replacement retires the stale event
-                        // instead (#9521 review). The accepted event joins
-                        // the drain latch like every other emission, so a
-                        // response cannot overtake it.
-                        event_drain.enqueue(1);
-                        let published =
-                            sender.send_event_generation_guarded(&seq_counter, name, body, &stale);
-                        if published != GuardedDispatchResult::Sent {
-                            event_drain.complete(1);
-                        }
+                        // instead (#9521 review). The accepted event joins the
+                        // drain latch inside the guarded dispatch (reserved
+                        // under the publication seq lock, rolled back on
+                        // stale, dropped, or disconnected outcomes), so a
+                        // response cannot overtake it; being asynchronous
+                        // traffic, it joins no request scope (#15725).
+                        let published = sender.send_event_generation_guarded(
+                            &seq_counter,
+                            name,
+                            body,
+                            &stale,
+                            Some(&event_drain),
+                        );
                         if published == GuardedDispatchResult::Stale {
                             break;
                         }
