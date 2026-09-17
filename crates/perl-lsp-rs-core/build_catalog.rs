@@ -178,10 +178,8 @@ mod tests {
 
     #[test]
     fn missing_explicit_override_does_not_fall_back_to_workspace_catalog() {
-        let root = std::env::temp_dir().join(format!(
-            "perl-lsp-build-catalog-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("perl-lsp-build-catalog-{}", std::process::id()));
         must_with(fs::create_dir_all(&root), "create test catalog directory");
         let workspace_catalog = root.join("features.toml");
         let missing_override = root.join("missing-features.toml");
@@ -190,23 +188,23 @@ mod tests {
             "write fallback workspace catalog",
         );
 
-        let result = resolve_catalog_source_with_override(
-            &root,
-            Some(PathBuf::from(&missing_override)),
-        );
+        let result =
+            resolve_catalog_source_with_override(&root, Some(PathBuf::from(&missing_override)));
 
         assert!(result.is_err(), "missing explicit override must be terminal");
-        assert!(must_err_with(result, "missing explicit override must be terminal")
-            .contains("FEATURES_TOML_OVERRIDE path does not exist"));
+        assert!(
+            must_err_with(result, "missing explicit override must be terminal")
+                .contains("FEATURES_TOML_OVERRIDE path does not exist")
+        );
         must_with(fs::remove_dir_all(root), "remove test catalog directory");
     }
 }
 
 pub fn read_catalog(path: &Path) -> Result<Catalog, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("failed to read features catalog: {e}"))?;
-    let catalog: Catalog = toml::from_str(&content)
-        .map_err(|e| format!("failed to parse features catalog: {e}"))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("failed to read features catalog: {e}"))?;
+    let catalog: Catalog =
+        toml::from_str(&content).map_err(|e| format!("failed to parse features catalog: {e}"))?;
     catalog.validate()?;
     Ok(catalog)
 }
@@ -271,7 +269,11 @@ pub fn render_lsp_feature_catalog_module(catalog: &Catalog, source_comment: &str
         code.push_str(&format!("    {:?},\n", id));
     }
     code.push_str("];\n\n");
-    code.push_str("pub fn advertised_features() -> &'static [&'static str] { ADVERTISED_LSP_FEATURES }\n\n");
-    code.push_str("pub fn has_feature(id: &str) -> bool { ADVERTISED_LSP_FEATURES.contains(&id) }\n");
+    code.push_str(
+        "pub fn advertised_features() -> &'static [&'static str] { ADVERTISED_LSP_FEATURES }\n\n",
+    );
+    code.push_str(
+        "pub fn has_feature(id: &str) -> bool { ADVERTISED_LSP_FEATURES.contains(&id) }\n",
+    );
     code
 }
