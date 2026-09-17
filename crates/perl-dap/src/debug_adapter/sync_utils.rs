@@ -90,25 +90,30 @@ impl EventDrainLatch {
     pub(crate) fn rollback(&self, ticket: u64) {
         let (mutex, condvar) = &*self.pending;
         let mut state = lock_or_recover(mutex, "event_drain_latch.rollback");
-        state.outstanding.remove(&ticket);
-        condvar.notify_all();
+        if state.outstanding.remove(&ticket) {
+            condvar.notify_all();
+        }
     }
 
     /// Record that the consumer wrote `count` previously reserved
     /// messages. The consumer drains the channel FIFO, so these are the
     /// `count` smallest outstanding tickets.
     pub(crate) fn complete(&self, count: usize) {
+        if count == 0 {
+            return;
+        }
         let (mutex, condvar) = &*self.pending;
         let mut state = lock_or_recover(mutex, "event_drain_latch.complete");
+        let mut removed_any = false;
         for _ in 0..count {
-            match state.outstanding.iter().next().copied() {
-                Some(smallest) => {
-                    state.outstanding.remove(&smallest);
-                }
+            match state.outstanding.pop_first() {
+                Some(_) => removed_any = true,
                 None => break,
             }
         }
-        condvar.notify_all();
+        if removed_any {
+            condvar.notify_all();
+        }
     }
 
     /// Clear any residue (for example from a previous transport run whose
@@ -214,10 +219,7 @@ pub(super) fn note_published_ticket(ticket: u64) {
     REQUEST_DRAIN_SCOPE.with(|scope| {
         let mut state = scope.borrow_mut();
         if state.active {
-            state.max_ticket = Some(match state.max_ticket {
-                Some(max) => max.max(ticket),
-                None => ticket,
-            });
+            state.max_ticket = Some(state.max_ticket.map_or(ticket, |max| max.max(ticket)));
         }
     });
 }

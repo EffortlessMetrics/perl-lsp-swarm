@@ -3457,14 +3457,18 @@ fn deliver_reserved_terminated_event(
     // order (#15725).
     let ticket = drain.map(|drain| drain.reserve());
     loop {
-        if stale() || lock_or_recover(termination_state, "terminal.commit").generation != generation
-        {
+        let is_stale = stale();
+        let mut state = lock_or_recover(termination_state, "terminal.commit");
+        if is_stale || state.generation != generation {
+            // Release the state lock before the latch rollback: the rollback
+            // only touches the drain latch, and no waiter needs (or takes)
+            // the termination lock to wake up.
+            drop(state);
             if let (Some(drain), Some(ticket)) = (drain, ticket) {
                 drain.rollback(ticket);
             }
             return false;
         }
-        let mut state = lock_or_recover(termination_state, "terminal.commit");
         match sender.try_send(message) {
             Ok(()) => {
                 state.terminal_committed = true;
