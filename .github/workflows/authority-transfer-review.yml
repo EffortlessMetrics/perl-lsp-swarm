@@ -118,19 +118,33 @@ jobs:
           mkdir -p "$CANDIDATE_TREE"
           # Fail closed BEFORE extracting a single byte: list every tree
           # entry and reject an absolute path, a `..` traversal component,
-          # or a symlink/submodule gitlink mode. `git archive | tar -x`
+          # or a submodule gitlink mode. Symlinks (120000) are deliberately
+          # NOT rejected here — the repository tracks one, so rejecting
+          # them fails every run; they are deleted after extraction,
+          # before anything reads the tree. `git archive | tar -x`
           # writes to disk first and a post-hoc `find -type l` only reports
           # a symlink that already landed, so a crafted candidate head could
           # otherwise write outside CANDIDATE_TREE on this trusted runner.
           git ls-tree -r -z --full-tree "$HEAD_SHA" \
             | python3 scripts/ci/authority_transfer_review.py --validate-tree-entries
           git archive "$HEAD_SHA" | tar -x -C "$CANDIDATE_TREE"
-          # Defense in depth: the pre-extraction check already refused every
-          # symlink/submodule entry in the tree, so this must always be
-          # empty; keep it as a second independent gate against a tar/tree
-          # discrepancy rather than trusting either check alone.
+          # `git archive | tar` preserves symlink entries, and the trusted
+          # validator's read calls would follow them out of the extracted
+          # tree into the predictable base checkout. Remove every link so
+          # the verdict can only reflect the candidate's own regular files.
+          #
+          # Removal, not rejection: this repository legitimately tracks a
+          # symlink (crates/tree-sitter-perl/test/corpus), so every archive
+          # of every head contains one. Aborting on its presence failed the
+          # job on every pull request and the evaluator never ran at all.
+          # Deleting is also the stronger guarantee — nothing is left to
+          # follow — and the denominator this walk reads
+          # (policy/review-surfaces.toml and its projection) are regular
+          # files that no link participates in.
+          removed="$(find "$CANDIDATE_TREE" -type l -print -delete | wc -l)"
+          printf 'removed %s symlink entries from the bounded candidate tree\n' "$removed"
           if find "$CANDIDATE_TREE" -type l -print -quit | grep -q .; then
-            echo "::error::Candidate tree contains symlink entries; refusing to follow linked content as bounded data"
+            echo "::error::Candidate tree still contains symlink entries after removal"
             exit 3
           fi
 
@@ -160,7 +174,12 @@ jobs:
           # against policy/review-surfaces.toml bindings, silently letting a
           # governed change bypass matching. `-z` emits raw NUL-terminated
           # bytes with no quoting; the evaluator parses those directly.
-          git diff --name-only -z "$MERGE_BASE" "$HEAD_SHA" > "$CHANGED_LIST"
+          # `--no-renames` is equally load-bearing: with rename detection
+          # on (Git's default), moving a governed file out of its surface
+          # emits only the destination path, so the governed row never
+          # appears and the run reports PASS_NOT_APPLICABLE for a change
+          # that removed governed authority. `--no-renames` emits both sides.
+          git diff --no-renames --name-only -z "$MERGE_BASE" "$HEAD_SHA" > "$CHANGED_LIST"
           # Trusted merge-subject identities the evaluator binds packets to
           # (#11795 exact base/head/tree): computed here from the verified
           # fetch, never read from candidate-controlled content.

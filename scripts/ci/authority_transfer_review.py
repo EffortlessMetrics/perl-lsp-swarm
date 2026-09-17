@@ -234,9 +234,13 @@ def aggregate(results: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 # git tree entry modes that must never be extracted as bounded data: a
-# symlink can point outside the extraction directory, and a submodule
-# gitlink names another repository entirely.
-UNSAFE_TREE_MODES = ("120000", "160000")
+# submodule gitlink names another repository entirely. Symlinks (120000)
+# are deliberately NOT rejected here: this repository tracks one
+# (crates/tree-sitter-perl/test/corpus), so rejecting them fails every run
+# before the evaluator starts; the workflow deletes every link after
+# extraction, before anything reads the tree, which is the stronger
+# guarantee since nothing remains to follow.
+UNSAFE_TREE_MODES = ("160000",)
 
 
 def parse_ls_tree_entries(raw: bytes) -> list[tuple[str, str]]:
@@ -260,7 +264,10 @@ def validate_tree_entries(entries: list[tuple[str, str]]) -> list[str]:
     archive | tar -x` writes a single byte to disk. A crafted candidate head
     must never be able to escape the bounded extraction directory (absolute
     path or `..` traversal component) or have the trusted validator follow a
-    symlink/submodule gitlink into content outside the extracted tree.
+    submodule gitlink into another repository. Symlinks are neutralized
+    after extraction by deletion (the workflow removes every link before
+    the evaluator reads the tree), so they are not rejected here: rejecting
+    them aborts every run because the repository itself tracks one.
     Checking only after extraction (as a post-hoc `find -type l`) leaves a
     window where the escaping write already happened."""
     violations: list[str] = []
@@ -445,6 +452,32 @@ def governed_rows(
             }
         )
     return rows, overlap_detected
+
+
+def merge_governed_rows(
+    base_rows: list[dict[str, Any]], candidate_rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Union two governed-row sets by surface id, widening matched paths.
+
+    Base metadata wins where a surface exists on both sides: the base
+    manifest is the trusted statement of what a surface *requires*. The
+    candidate only contributes applicability — which paths are governed —
+    so a candidate cannot weaken an existing row's evidence requirements,
+    only bring more paths (or a new surface) under review.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for row in base_rows:
+        merged[row["surface_id"]] = dict(row)
+    for row in candidate_rows:
+        surface_id = row["surface_id"]
+        existing = merged.get(surface_id)
+        if existing is None:
+            merged[surface_id] = dict(row)
+            continue
+        existing["matched_paths"] = sorted(
+            set(existing["matched_paths"]) | set(row["matched_paths"])
+        )
+    return [merged[key] for key in sorted(merged)]
 
 
 # ---------------------------------------------------------------------------
@@ -975,6 +1008,27 @@ def evaluate(inputs: dict[str, Any]) -> dict[str, Any]:
             truncated = True
         if changed_files or not truncated:
             governed, overlap_detected = governed_rows(doc, changed_files)
+            # Applicability is the union of the base and candidate
+            # denominators, never the base alone. A candidate that adds a
+            # surface binding and changes that newly governed path in the
+            # same commit is invisible to the base manifest, so the row
+            # never resolves and the run reports PASS_NOT_APPLICABLE for
+            # governed work. Union, not replacement, and it only ever
+            # widens governance: base metadata wins per surface, so a
+            # candidate cannot escape review by deleting its own binding,
+            # and the worst a hostile candidate achieves by adding one is
+            # more required evidence against itself.
+            if candidate_root is not None:
+                try:
+                    candidate_doc = load_manifest_document(candidate_root)
+                except ValueError:
+                    candidate_doc = {}
+                if candidate_doc:
+                    candidate_rows, candidate_overlap = governed_rows(
+                        candidate_doc, changed_files
+                    )
+                    governed = merge_governed_rows(governed, candidate_rows)
+                    overlap_detected = overlap_detected or candidate_overlap
         if truncated:
             global_results.append(NOT_PROVEN_GITHUB)
         if overlap_detected:

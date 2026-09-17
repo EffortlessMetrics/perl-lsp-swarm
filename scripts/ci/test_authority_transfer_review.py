@@ -614,11 +614,14 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         self.assertEqual(1, len(violations))
         self.assertIn("unsafe_path", violations[0])
 
-    def test_tree_entry_validator_rejects_symlink_mode(self) -> None:
+    def test_tree_entry_validator_accepts_symlink_mode_for_post_extraction_removal(self) -> None:
+        # Removal, not rejection: the repository tracks
+        # crates/tree-sitter-perl/test/corpus as mode 120000, so rejecting
+        # symlinks pre-extraction fails every run before the evaluator
+        # starts. The workflow deletes every link after extraction, before
+        # anything reads the tree.
         entries = [("120000", "src/authority/link")]
-        self.assertEqual(
-            ["unsafe_mode (120000:src/authority/link)"], atr.validate_tree_entries(entries)
-        )
+        self.assertEqual([], atr.validate_tree_entries(entries))
 
     def test_tree_entry_validator_rejects_submodule_gitlink_mode(self) -> None:
         entries = [("160000", "vendor/evil")]
@@ -630,7 +633,7 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         import io as _io
         from unittest import mock
 
-        raw = b"120000 blob abc\tsrc/authority/link\x00"
+        raw = b"160000 commit abc\tvendor/evil\x00"
         with mock.patch.object(sys, "stdin") as stdin_mock:
             stdin_mock.buffer = _io.BytesIO(raw)
             status = atr.main(["--validate-tree-entries"])
@@ -772,6 +775,101 @@ class AuthorityTransferReviewTests(unittest.TestCase):
         )
         receipt = self.evaluate(changed, [full])
         self.assertEqual(atr.PASS_CURRENT_REVIEW, receipt["result"])
+
+    # ------------------------------------------------------------------
+    # Candidate-union applicability (base ∪ candidate, never base alone)
+    # ------------------------------------------------------------------
+
+    def test_merge_governed_rows_unites_candidate_added_surface(self) -> None:
+        base_rows = [
+            {"surface_id": "a", "matched_paths": ["x.rs"]},
+        ]
+        candidate_rows = [
+            {"surface_id": "b", "matched_paths": ["y.rs"]},
+        ]
+        merged = atr.merge_governed_rows(base_rows, candidate_rows)
+        self.assertEqual(["a", "b"], [row["surface_id"] for row in merged])
+
+    def test_merge_governed_rows_keeps_base_metadata_and_widens_paths(self) -> None:
+        base_rows = [
+            {
+                "surface_id": "a",
+                "family": "base-family",
+                "matched_paths": ["x.rs"],
+            },
+        ]
+        candidate_rows = [
+            {
+                "surface_id": "a",
+                "family": "candidate-family",
+                "matched_paths": ["y.rs"],
+            },
+        ]
+        merged = atr.merge_governed_rows(base_rows, candidate_rows)
+        self.assertEqual(1, len(merged))
+        # Base metadata wins: the candidate only contributes applicability.
+        self.assertEqual("base-family", merged[0]["family"])
+        self.assertEqual(["x.rs", "y.rs"], merged[0]["matched_paths"])
+
+    def test_candidate_added_surface_is_governed_not_not_applicable(self) -> None:
+        import shutil
+
+        candidate_root = Path(self._tmp.name) / "candidate"
+        shutil.copytree(self.base, candidate_root, ignore=shutil.ignore_patterns("packets"))
+        manifest_path = candidate_root / atr.DEFAULT_MANIFEST
+        extra = """
+[surface.candidate_added]
+family = "semantic_issue_completion"
+authority = "Candidate-added surface."
+controller = "#11795"
+conflict_key = "candidate.added"
+risk_class = "semantic_control"
+review_profile = "semantic_close_authority"
+required_evidence = "current_head_reviewer_packet"
+first_falsifier = "The candidate-added path is ungoverned."
+enforcement_successor = "#11796"
+code_owner_route = { kind = "not_proven", resolution_owner = "#11796", note = "deferred" }
+paths = [
+  "src/candidate-added/**",
+]
+"""
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8") + extra,
+            encoding="utf-8",
+            newline="\n",
+        )
+        added = candidate_root / "src/candidate-added/new.rs"
+        added.parent.mkdir(parents=True, exist_ok=True)
+        added.write_text("candidate", encoding="utf-8")
+        doc = atr.tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        projection_path = candidate_root / atr.DEFAULT_PROJECTION
+        projection_path.write_text(
+            atr.vrs.render_projection(doc), encoding="utf-8", newline="\n"
+        )
+        changed = ["src/candidate-added/new.rs"]
+        # Base alone sees no governed row for this path.
+        base_only = self.evaluate(changed, [])
+        self.assertEqual(atr.PASS_NOT_APPLICABLE, base_only["result"])
+        # The union sees the candidate-added surface and fails typed-missing.
+        receipt = self.evaluate(changed, [], candidate_root=candidate_root)
+        self.assertEqual(atr.FAIL_REVIEW_MISSING, receipt["result"])
+        self.assertEqual(
+            ["candidate_added"], [row["surface_id"] for row in receipt["governed_rows"]]
+        )
+
+    # ------------------------------------------------------------------
+    # Workflow shape pins (rename detection, symlink removal)
+    # ------------------------------------------------------------------
+
+    def test_workflow_changed_file_diff_disables_rename_detection(self) -> None:
+        workflow = _HERE / "../../.github/workflows/authority-transfer-review.yml"
+        text = workflow.resolve().read_text(encoding="utf-8")
+        self.assertIn("--no-renames", text)
+
+    def test_workflow_neutralizes_symlinks_by_removal(self) -> None:
+        workflow = _HERE / "../../.github/workflows/authority-transfer-review.yml"
+        text = workflow.resolve().read_text(encoding="utf-8")
+        self.assertIn("print -delete", text)
 
 
 if __name__ == "__main__":
