@@ -1126,9 +1126,18 @@ mod tests {
                 let broker = Arc::clone(&broker);
                 let settled = Arc::clone(&settled);
                 std::thread::spawn(move || {
-                    entered_rx
-                        .recv_timeout(Duration::from_secs(1))
-                        .map_err(|_| "acceptance callback did not start")?;
+                    entered_rx.recv_timeout(Duration::from_secs(1)).map_err(
+                        |error| match error {
+                            // The acceptance thread hung up before signaling
+                            // entry: it panicked in callback setup, which the
+                            // join below would otherwise attribute confusingly.
+                            mpsc::RecvTimeoutError::Disconnected => {
+                                "acceptance thread disconnected before entering its callback \
+                                 (panic)"
+                            }
+                            mpsc::RecvTimeoutError::Timeout => "acceptance callback did not start",
+                        },
+                    )?;
                     broker.settle_all("terminated");
                     settled.store(true, Ordering::Release);
                     Ok::<(), String>(())

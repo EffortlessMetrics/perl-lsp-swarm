@@ -15,6 +15,7 @@ keywords = ["perl", "parser", "tree-sitter", "lsp", "ast"]
 include = [
     "src/**",
     "tests/**",
+    "examples/**",
     "README.md",
     "ROADMAP.md",
     "CLAUDE.md",
@@ -33,17 +34,36 @@ doctest = true
 [features]
 default = []
 queries = ["dep:regex"]
+# Experimental semantic overlay (#7603). Non-default: enabling it is what pulls
+# the module/pragma/semantic-analyzer stack into a consumer's dependency graph.
+# Default and `queries`-only consumers compile a parser-owned facade in which the
+# overlay API does not exist, rather than one that degrades at runtime.
+semantic-overlay = [
+    "dep:perl-module",
+    "dep:perl-pragma",
+    "dep:perl-semantic-analyzer",
+]
 
 [[bin]]
 name = "bench_facade"
 path = "src/bin/bench_facade.rs"
 
+[[test]]
+name = "semantic_overlay_tests"
+required-features = ["semantic-overlay"]
+
+[[example]]
+name = "semantic_overlay_queries"
+required-features = ["semantic-overlay"]
+
 [dependencies]
 perl-parser-core = { workspace = true }
 perl-ast = { workspace = true }
-perl-module = { workspace = true }
-perl-pragma = { workspace = true }
-perl-semantic-analyzer = { workspace = true }
+perl-module = { workspace = true, optional = true }
+# Direct edge only for the overlay; `perl-parser-core` keeps its own transitive
+# edge, so a parser-only graph still resolves perl-pragma.
+perl-pragma = { workspace = true, optional = true }
+perl-semantic-analyzer = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
 
 [dev-dependencies]

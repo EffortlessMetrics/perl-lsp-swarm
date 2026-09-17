@@ -317,10 +317,6 @@ pub(crate) struct Scheduler {
     workers: Vec<tokio::task::JoinHandle<()>>,
     /// Monotonic sequence assigned to mutations/lifecycle requests at ingress.
     mutation_seq_next: Arc<AtomicU64>,
-    /// Highest mutation sequence that has completed processing.
-    mutation_seq_done: Arc<AtomicU64>,
-    /// Wakes read workers waiting for earlier mutations to finish.
-    mutation_notify: Arc<Notify>,
     /// Server reference retained at the scheduler level so ingress paths
     /// (`send_read`) can snapshot document generation without waiting for a
     /// worker. Workers receive their own `Arc` clones via the spawn closures.
@@ -430,6 +426,22 @@ struct PendingRequestGuard {
     id: Option<JsonRpcId>,
 }
 
+struct AdmissionGuard {
+    server: Arc<LspServer>,
+    id: Option<JsonRpcId>,
+    armed: bool,
+}
+
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        if self.armed
+            && let Some(id) = self.id.as_ref()
+        {
+            self.server.clear_request_pending(id);
+        }
+    }
+}
+
 impl Drop for PendingRequestGuard {
     fn drop(&mut self) {
         if let Some(id) = self.id.as_ref() {
@@ -494,15 +506,7 @@ impl Scheduler {
         // mutation worker below only ever text-applies -- it never parses.
         server.install_default_parse_worker();
 
-        Self {
-            mutation_tx,
-            read_tx,
-            workers,
-            mutation_seq_next,
-            mutation_seq_done,
-            mutation_notify,
-            server,
-        }
+        Self { mutation_tx, read_tx, workers, mutation_seq_next, server }
     }
 
     /// Send a mutation or lifecycle request to the exclusive worker.
@@ -513,18 +517,20 @@ impl Scheduler {
         if let Some(id) = pending_id.as_ref() {
             self.server.mark_request_pending(id);
         }
+        // Reserve queue capacity before allocating the mutation sequence. If
+        // ingress is cancelled by a transport failure while waiting, no gap
+        // is introduced into the read barrier.
+        let mut admission = AdmissionGuard {
+            server: Arc::clone(&self.server),
+            id: pending_id.clone(),
+            armed: true,
+        };
+        let permit = self.mutation_tx.reserve().await.map_err(|_| ())?;
         let seq = self.mutation_seq_next.fetch_add(1, Ordering::SeqCst) + 1;
         let enqueued = std::time::Instant::now();
-        let result = self.mutation_tx.send(QueuedMutation { request, seq, enqueued }).await;
-        if result.is_err()
-            && let Some(id) = pending_id.as_ref()
-        {
-            self.server.clear_request_pending(id);
-        }
-        result.map_err(|_| {
-            self.mutation_seq_done.store(seq, Ordering::SeqCst);
-            self.mutation_notify.notify_waiters();
-        })
+        permit.send(QueuedMutation { request, seq, enqueued });
+        admission.armed = false;
+        Ok(())
     }
 
     /// Send a read-only request to the priority read pool.
@@ -538,22 +544,28 @@ impl Scheduler {
         if let Some(id) = pending_id.as_ref() {
             self.server.mark_request_pending(id);
         }
+        let mut admission = AdmissionGuard {
+            server: Arc::clone(&self.server),
+            id: pending_id.clone(),
+            armed: true,
+        };
         let wait_for_seq = self.mutation_seq_next.load(Ordering::SeqCst);
         let priority = request_priority(&request.method);
         let dedup_key = extract_dedup_key(&request.method, request.params.as_ref(), priority);
         let freshness =
             extract_freshness(&self.server, &request.method, request.params.as_ref(), priority);
         let arrival_seq = READ_ARRIVAL_SEQ.fetch_add(1, Ordering::Relaxed);
-        let result = self
-            .read_tx
-            .send(QueuedRead { request, wait_for_seq, priority, arrival_seq, dedup_key, freshness })
-            .await;
-        if result.is_err()
-            && let Some(id) = pending_id.as_ref()
-        {
-            self.server.clear_request_pending(id);
-        }
-        result.map_err(|_| ())
+        let permit = self.read_tx.reserve().await.map_err(|_| ())?;
+        permit.send(QueuedRead {
+            request,
+            wait_for_seq,
+            priority,
+            arrival_seq,
+            dedup_key,
+            freshness,
+        });
+        admission.armed = false;
+        Ok(())
     }
 
     /// Shut down all workers by dropping senders and awaiting completion.
@@ -1480,6 +1492,69 @@ mod tests {
 
         assert!(!server.pending_request_ids.lock().contains(&id));
         assert_eq!(mutation_seq_done.load(Ordering::SeqCst), 7);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_full_mutation_admission_keeps_sequence_and_pending_clean()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = Arc::new(crate::LspServer::new());
+        let (mutation_tx, mut mutation_rx) = tokio::sync::mpsc::channel(1);
+        mutation_tx
+            .send(QueuedMutation {
+                request: JsonRpcRequest {
+                    _jsonrpc: "2.0".to_string(),
+                    id: None,
+                    method: "textDocument/didChange".to_string(),
+                    params: None,
+                },
+                seq: 1,
+                enqueued: std::time::Instant::now(),
+            })
+            .await
+            .map_err(|_| "test queue fill failed")?;
+        let (read_tx, _read_rx) = tokio::sync::mpsc::channel(1);
+        let mutation_seq_next = Arc::new(AtomicU64::new(1));
+        let scheduler = Scheduler {
+            mutation_tx,
+            read_tx,
+            workers: Vec::new(),
+            mutation_seq_next: Arc::clone(&mutation_seq_next),
+            server: Arc::clone(&server),
+        };
+        let id = JsonRpcId::Integer(14168);
+        let request = JsonRpcRequest {
+            _jsonrpc: "2.0".to_string(),
+            id: Some(id.clone()),
+            method: "textDocument/didChange".to_string(),
+            params: None,
+        };
+        let pending = tokio::spawn(async move { scheduler.send_mutation(request).await });
+        let mut observed_pending = false;
+        for _ in 0..1000 {
+            if server.pending_request_ids.lock().contains(&id) {
+                observed_pending = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        if !observed_pending {
+            pending.abort();
+            let _ = pending.await;
+            return Err("full admission test never observed its pending request".into());
+        }
+        pending.abort();
+        let _ = pending.await;
+        if server.pending_request_ids.lock().contains(&id) {
+            return Err("cancelled full admission leaked its pending request".into());
+        }
+        if mutation_seq_next.load(Ordering::SeqCst) != 1 {
+            return Err("cancelled full admission advanced mutation sequence".into());
+        }
+        let queued = mutation_rx.try_recv().map_err(|_| "queued mutation disappeared")?;
+        if queued.seq != 1 {
+            return Err(format!("queued mutation sequence changed to {}", queued.seq).into());
+        }
+        Ok(())
     }
 
     // =====================================================================

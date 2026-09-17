@@ -265,15 +265,37 @@ fn navigation_provider_decision_replays_definition_and_references_traces()
         .and_then(Value::as_array)
         .ok_or("definition semantic shadow receipt must preserve candidate identities")?;
     assert!(
-        candidate_identities.iter().any(|identity| {
-            identity.as_str().is_some_and(|identity| {
-                trace_anchor_ids.iter().any(|anchor_id| {
-                    identity.starts_with("Real::Nav::target")
-                        && identity.ends_with(&format!("target:anchor:{anchor_id}"))
-                })
-            })
+        !trace_anchor_ids.is_empty(),
+        "definition fact-source traces must carry resolvable target anchors"
+    );
+    // The semantic candidate identity must live in the same space as the legacy
+    // identity. While the two paths used disjoint namespaces, no definition
+    // comparison could ever report agreement and every agreeing request was
+    // recorded as a false mismatch (#7556).
+    let legacy_identities = semantic_shadow_receipt
+        .get("old_result")
+        .and_then(|result| result.get("identities"))
+        .and_then(Value::as_array)
+        .ok_or("definition semantic shadow receipt must preserve legacy identities")?;
+    assert!(
+        !legacy_identities.is_empty(),
+        "the legacy path must resolve this fixture's declaration"
+    );
+    assert!(
+        candidate_identities.iter().all(|identity| {
+            identity.as_str().is_some_and(|identity| identity.starts_with("file:///"))
         }),
-        "definition candidate identities must match a traced target anchor: {candidate_identities:?}"
+        "definition candidate identities must be source-backed locations: {candidate_identities:?}"
+    );
+    assert_eq!(
+        candidate_identities, legacy_identities,
+        "both paths resolve the same declaration here, so their identities must be comparable \
+         and equal"
+    );
+    assert_eq!(
+        semantic_shadow_receipt.get("verdict").and_then(Value::as_str),
+        Some("same"),
+        "an agreeing definition comparison must record `same`, not a false mismatch"
     );
 
     let (references_line, references_character) = position_of(MAIN, "target()")?;
