@@ -886,7 +886,7 @@ git() {
           [ "$5" = "--head" ] && [ "$6" = "HEAD" ] || return 1
           [ "$7" = "--pr-head" ] && [ "$8" = "$FAKE_PR_HEAD_SHA" ] || return 1
           if [ "$#" -eq 10 ]; then
-            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "600" ] || return 1
+            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "1800" ] || return 1
           elif [ "$#" -eq 9 ]; then
             [ "$9" = "--check" ] || return 1
           else
@@ -1746,7 +1746,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     for expected_command in [
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json",
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
-        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 600",
+        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 1800",
         "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --check",
         "cargo xtask impacted-evidence --labels-csv ci",
         "cargo xtask impacted-evidence --labels-csv ci --check",
@@ -2609,11 +2609,13 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
     // Both hosted lanes must carry the raised bound; the self-hosted 210s
     // lanes are intentionally untouched.
     for lane in ["ripr-github", "ripr-fallback"] {
-        let guidance = workflow_step(&workflow, "Generate review guidance")
-            .ok_or_else(|| anyhow!("missing Generate review guidance step"))?;
+        // Job-scoped on purpose: workflow_step would return the first
+        // matching step in the file, so both iterations would inspect
+        // ripr-github and ripr-fallback could silently miss the bound.
+        let guidance = workflow_run_block(lane, "Generate review guidance")?;
         ensure!(
             guidance.contains("--timeout-seconds 1800"),
-            "{lane}'s review-guidance pass must carry --timeout-seconds 1800; the 600s bound              failed closed twice on new-crate diffs (#15082, #15028)"
+            "{lane}'s review-guidance pass must carry --timeout-seconds 1800; the 600s bound failed closed twice on new-crate diffs (#15082, #15028)"
         );
     }
     let count = workflow.matches("--timeout-seconds 1800").count();
