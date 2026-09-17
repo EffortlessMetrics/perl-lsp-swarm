@@ -830,12 +830,17 @@ impl<'a> Parser<'a> {
                     }
                     Err(e) => {
                         // Don't recover from these — propagate immediately.
+                        // `DoWhileTrailingBlock` joins them: the trailing block
+                        // after a do-while condition has no recovery that stays
+                        // honest about source that real `perl` refuses to
+                        // compile (#15649).
                         if matches!(
                             e,
                             ParseError::RecursionLimit
                                 | ParseError::RecursionDepthExhausted { .. }
                                 | ParseError::NestingTooDeep { .. }
                                 | ParseError::Cancelled
+                                | ParseError::DoWhileTrailingBlock { .. }
                         ) {
                             return Err(e);
                         }
