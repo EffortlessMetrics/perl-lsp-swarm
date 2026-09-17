@@ -4411,4 +4411,4 @@ reason = "PR #12059 defines the typed writer-preflight domain (#11633): pure sub
 created = "2026-09-17"
 review_after = "2026-10-17"
 expires = "2026-10-31"
-removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces field_construction declaration lines to the tests that exercise their owning type, when the module gains a live adapter with traceable call seams and the declaration suppressions can narrow, or at expiry. Narrow immediately if a receipt reports a reachable_unrevealed or other-classified seam under xtask/src/writer_preflight/."
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces field_construction declaration lines to the tests that exercise their owning type, when the module gains a live adapter with traceable call seams and the declaration suppressions can narrow, or at expiry. Narrow immediately if a receipt reports a reachable_unrevealed or other-classified seam under xtask/src/writer_preflight/. Evidence basis: ripr run 35195292770 quality-gate receipt (95 no_static_path, 0 reachable_unrevealed on this diff)."
