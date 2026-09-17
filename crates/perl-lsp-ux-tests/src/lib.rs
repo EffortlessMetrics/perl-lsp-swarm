@@ -53,6 +53,7 @@ pub mod env;
 pub mod observation;
 pub mod project_fixture;
 pub mod recorder;
+pub mod reverse_request_fixture;
 pub mod scorecard;
 pub mod server_request_fixture;
 pub mod taxonomy;
