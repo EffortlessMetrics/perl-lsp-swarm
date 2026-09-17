@@ -87,6 +87,9 @@ pub enum RecoveryKind {
     TruncatedChain,
     /// A statement boundary (`;`) was inferred from context.
     InferredSemicolon,
+    /// A statement parser stopped before a token that cannot legally continue
+    /// the statement on the same line.
+    UnexpectedSameLineResidue,
 }
 
 /// Budget limits for parser operations to prevent runaway parsing.
@@ -103,13 +106,14 @@ pub enum RecoveryKind {
 /// // Use defaults for normal parsing
 /// let budget = ParseBudget::default();
 ///
-/// // Stricter limits for untrusted input
-/// let strict = ParseBudget {
-///     max_errors: 10,
-///     max_depth: 64,
-///     max_tokens_skipped: 100,
-///     max_recoveries: 50,
-/// };
+/// // Stricter limits for untrusted input: the dedicated constructor.
+/// // `ParseBudget` is `#[non_exhaustive]`, so external code customizes it
+/// // through constructors and field mutation, not struct literals.
+/// let strict = ParseBudget::strict();
+/// assert_eq!(strict.max_errors, 10);
+/// assert_eq!(strict.max_depth, 64);
+/// assert_eq!(strict.max_tokens_skipped, 100);
+/// assert_eq!(strict.max_recoveries, 50);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1242,7 +1246,7 @@ impl ParseError {
     /// # Examples
     ///
     /// ```rust
-    /// use perl_error::ParseError;
+    /// use perl_parser_core::syntax::error::ParseError;
     ///
     /// let error = ParseError::syntax("Missing semicolon in Perl script", 42);
     /// assert!(matches!(error, ParseError::SyntaxError { .. }));
@@ -1266,7 +1270,7 @@ impl ParseError {
     /// # Examples
     ///
     /// ```rust
-    /// use perl_error::ParseError;
+    /// use perl_parser_core::syntax::error::ParseError;
     ///
     /// let error = ParseError::unexpected("semicolon", "comma", 15);
     /// assert!(matches!(error, ParseError::UnexpectedToken { .. }));
@@ -1662,6 +1666,7 @@ mod tests {
             RecoveryKind::MissingOperand,
             RecoveryKind::TruncatedChain,
             RecoveryKind::InferredSemicolon,
+            RecoveryKind::UnexpectedSameLineResidue,
         ];
         // Each site and kind is debug-formattable and clone-able.
         for s in &sites {
@@ -1849,6 +1854,9 @@ fn recovered_message(site: &RecoverySite, kind: &RecoveryKind) -> String {
         }
         RecoveryKind::InferredSemicolon => {
             format!("Missing `;` at the end of the {site_desc}")
+        }
+        RecoveryKind::UnexpectedSameLineResidue => {
+            format!("Unexpected same-line residue after the {site_desc}")
         }
     }
 }
