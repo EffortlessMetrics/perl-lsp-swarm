@@ -37,8 +37,9 @@ jobs:
           set -euo pipefail
           compiler="${RUNNER_TEMP:?}/gh-aw-v0.88.7"
           curl --fail --silent --show-error --location --retry 3 --retry-all-errors             --connect-timeout 15 --max-time 180             https://github.com/github/gh-aw/releases/download/v0.88.7/linux-amd64             --output "$compiler"
-          printf '%s  %s
-'             37faaaa95f622b910568bc878452f6036f01e951380fdfc41441944a95da43bf             "$compiler" | sha256sum --check --status
+          printf '%s  %s\n' \
+            37faaaa95f622b910568bc878452f6036f01e951380fdfc41441944a95da43bf \
+            "$compiler" | sha256sum --check --status
           chmod 0755 "$compiler"
           "$compiler" --version
           echo "GH_AW_COMPILER=$compiler" >> "$GITHUB_ENV"
