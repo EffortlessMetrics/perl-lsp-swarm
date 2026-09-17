@@ -26,6 +26,7 @@ use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::emacs_train_specs::{LeafSpecDisposition, SpecsOutputFormat};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
+use tasks::issue_controllers::IssueControllersCommand;
 use tasks::issue_plan::IssuePlanOutputFormat;
 use tasks::methodology_gate::MethodologyOutputFormat;
 use tasks::targeted_checks::CheckMode;
@@ -38,9 +39,9 @@ use tasks::{
     agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
     aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
     check, check_agent_context, check_lint_policy, check_tautology, check_test_wiring,
-    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_contract, ci_doctor,
-    ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route, ci_scope,
-    clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
+    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_cache_inventory, ci_contract,
+    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
+    ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
     compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
     compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
     critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
@@ -49,9 +50,9 @@ use tasks::{
     gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
     ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
+    issue_controllers, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
     parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
     perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
@@ -540,6 +541,15 @@ enum Commands {
     Integration {
         #[command(subcommand)]
         command: IntegrationCommand,
+    },
+
+    /// Issue-controller train tooling: independent static validation of the
+    /// stable `issue_controller_train.v1` manifest and its checked human
+    /// projection (#11765). Deterministic and offline only.
+    #[command(name = "issue-controllers")]
+    IssueControllers {
+        #[command(subcommand)]
+        command: IssueControllersCommand,
     },
 
     /// Writer admission — read-only pre-admission diagnostic (#3957 W1).
@@ -1192,6 +1202,34 @@ enum Commands {
     /// Audit CI workflows for PR-safety and spend-risk controls.
     CiAuditWorkflows,
 
+    /// Derive the active CI cache inventory + `ci_cache_receipt.v1` (#9177).
+    ///
+    /// Diagnostic: classifies reachability, save authority, and byte
+    /// provenance for every `Swatinem/rust-cache`/`actions/cache` step
+    /// already in source. Changes no cache behavior and grants no save
+    /// authority.
+    CiCacheInventory {
+        /// Diff the derived inventory against the checked-in manifest and
+        /// fail on drift, instead of (re)writing it.
+        #[arg(long)]
+        check: bool,
+
+        /// Write the receipt JSON to this path instead of stdout.
+        /// Rejected alongside `--check`, which never writes a receipt.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+
+        /// Checked-in manifest path (defaults to `ci_cache_inventory::MANIFEST`).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Schema version this producer must emit and validate. Only
+        /// `v1` is supported; anything else fails loudly instead of
+        /// emitting a shape the caller does not parse.
+        #[arg(long, default_value = "v1")]
+        api_version: String,
+    },
+
     /// Classify credential derivation kinds in `.github/workflows/*.yml` (#14867).
     ///
     /// Advisory inventory of the credential column. Does not change workflow
@@ -1272,7 +1310,12 @@ enum Commands {
         limit: usize,
 
         /// Output directory for ci_baseline artifacts.
-        #[arg(short, long, default_value = ".ci")]
+        ///
+        /// Defaults to `target/metrics` so the consumer in
+        /// `metrics::release_health::read_ci_baseline` finds the file at the
+        /// canonical contract path. Override to a different directory to keep
+        /// historical or per-branch baselines side by side.
+        #[arg(short, long, default_value = metrics::release_health::CI_BASELINE_OUTPUT_DIR)]
         output: PathBuf,
     },
 
@@ -2993,6 +3036,12 @@ enum VimEditorCompatCommand {
     /// legitimate no-change bytes, distinct disabled/refused/failure
     /// dispositions, and stale-result rejection — against the governed save
     /// fixture.
+    /// `host-reopen-lifecycle` (#11401) runs the eight-cell host-reopen
+    /// journey — buffer close/reopen, full host exit and replacement launch,
+    /// the workspace not-exposed disposition, identity-bound cancellation,
+    /// late-result rejection, finite repeated sessions, normal terminal
+    /// cleanup, and forced-failure cleanup — as a finite sequence of hermetic
+    /// host sessions over one shared fixture.
     Run {
         /// Exact client subject id (see
         /// `xtask::vim_host_run::VimClientSubject::known_ids`).
@@ -3000,12 +3049,12 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// freshness-generations, recovery-generations, or save-format.
+        /// freshness-generations, recovery-generations, save-format, or host-reopen-lifecycle.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
         /// Fixture variant for the bootstrap-diagnostics,
-        /// freshness-generations, recovery-generations, and save-format
+        /// freshness-generations, recovery-generations, save-format, and host-reopen-lifecycle
         /// journeys. The canonical variant must reach its journey's honest
         /// top-line — `pass`, except `recovery-generations`, whose
         /// adverse-exit cell is never a passing observation, so its honest
@@ -4547,6 +4596,12 @@ enum CiSubcommand {
         /// Explicit changed file path. Repeat for tests or disconnected runs; when omitted, git diff is used.
         #[arg(long = "changed-file")]
         changed_file: Vec<String>,
+
+        /// Schema version for the route receipt envelope. Must match a supported value
+        /// (currently `ci-route.v1`); an unknown version fails closed with an error so
+        /// the consumer never silently coerces a mismatched envelope.
+        #[arg(long, default_value = "ci-route.v1")]
+        envelope_version: String,
     },
 
     /// Explain the blocking CI check failure with a local reproduction path.
@@ -5236,15 +5291,21 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Ci { command } => match command {
             None => ci::run(),
             Some(CiSubcommand::Doctor) => ci_doctor::run(),
-            Some(CiSubcommand::Route { base, head, receipt, summary, changed_file }) => {
-                ci_route::run(ci_route::CiRouteArgs {
-                    base,
-                    head,
-                    receipt,
-                    summary,
-                    changed_files: changed_file,
-                })
-            }
+            Some(CiSubcommand::Route {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_file,
+                envelope_version,
+            }) => ci_route::run(ci_route::CiRouteArgs {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_files: changed_file,
+                envelope_version,
+            }),
             Some(CiSubcommand::Explain { receipt, run_id, base }) => {
                 ci_explain::run(receipt, run_id, base)
             }
@@ -5480,6 +5541,67 @@ fn run_cli(cli: Cli) -> Result<()> {
                         }
                         return Ok(());
                     }
+                    if journey == "host-reopen-lifecycle" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_lifecycle_run::LifecycleFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_lifecycle_run::host_lifecycle_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim host-reopen-lifecycle run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} failure_reason={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim host-reopen-lifecycle run did not pass: {result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "freshness-generations" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -5602,7 +5724,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
                              bootstrap-diagnostics, freshness-generations, recovery-generations, \
-                             save-format"
+                             save-format, host-reopen-lifecycle"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
@@ -6069,6 +6191,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::TestEdgeCases { bench, coverage, test } => edge_cases::run(bench, coverage, test),
         Commands::CiAuditWorkflows => ci_audit_workflows::run(),
+        Commands::CiCacheInventory { check, receipt, manifest, api_version } => {
+            ci_cache_inventory::run(check, receipt, manifest, &api_version)
+        }
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)
         }
@@ -7131,6 +7256,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
+        Commands::IssueControllers { command } => issue_controllers::run(command),
         Commands::WriterAdmission {
             branch,
             base,

@@ -23,6 +23,7 @@ pub perl_module::api::IncRootKind::WorkspaceRelative
 pub fn perl_module::IncRootKind::clone(&self) -> perl_module::IncRootKind
 pub fn perl_module::IncRootKind::eq(&self, other: &perl_module::IncRootKind) -> bool
 pub fn perl_module::IncRootKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::api::LegacySeparatorProfile
 pub perl_module::api::LegacySeparatorProfile::Accept
 pub perl_module::api::LegacySeparatorProfile::Reject
 pub fn perl_module::LegacySeparatorProfile::clone(&self) -> perl_module::LegacySeparatorProfile
@@ -36,6 +37,7 @@ pub perl_module::api::LoadTiming::Runtime
 pub fn perl_module::LoadTiming::clone(&self) -> perl_module::LoadTiming
 pub fn perl_module::LoadTiming::eq(&self, other: &perl_module::LoadTiming) -> bool
 pub fn perl_module::LoadTiming::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::api::ModuleFilePathError
 pub perl_module::api::ModuleFilePathError::Absolute
 pub perl_module::api::ModuleFilePathError::ControlCharacter
 pub perl_module::api::ModuleFilePathError::ControlCharacter::character: char
@@ -61,6 +63,7 @@ pub fn perl_module::ModuleImportKind::dispatch_semantics(self) -> perl_module::D
 pub fn perl_module::ModuleImportKind::clone(&self) -> perl_module::ModuleImportKind
 pub fn perl_module::ModuleImportKind::eq(&self, other: &perl_module::ModuleImportKind) -> bool
 pub fn perl_module::ModuleImportKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::api::ModuleNameError
 pub perl_module::api::ModuleNameError::AbsoluteOrDriveSyntax
 pub perl_module::api::ModuleNameError::ControlCharacter
 pub perl_module::api::ModuleNameError::ControlCharacter::character: char
@@ -92,6 +95,7 @@ pub perl_module::api::ModuleReferenceKind::Use
 pub fn perl_module::ModuleReferenceKind::clone(&self) -> perl_module::ModuleReferenceKind
 pub fn perl_module::ModuleReferenceKind::eq(&self, other: &perl_module::ModuleReferenceKind) -> bool
 pub fn perl_module::ModuleReferenceKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::api::ModuleRequest
 pub perl_module::api::ModuleRequest::BarewordModule(perl_module::ModuleName)
 pub perl_module::api::ModuleRequest::Dynamic(perl_module::DynamicModuleRequest)
 pub perl_module::api::ModuleRequest::LiteralRelativeFile(perl_module::ModuleFilePath)
@@ -112,6 +116,7 @@ pub fn perl_module::ModuleRequest::eq(&self, other: &perl_module::ModuleRequest)
 pub fn perl_module::ModuleRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+#[non_exhaustive] pub enum perl_module::api::ModuleRequestError
 pub perl_module::api::ModuleRequestError::InvalidFilePath(perl_module::ModuleFilePathError)
 pub perl_module::api::ModuleRequestError::InvalidModuleName(perl_module::ModuleNameError)
 pub const fn perl_module::ModuleRequestError::boundary_id(&self) -> &'static str
@@ -122,6 +127,7 @@ pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError
 pub fn perl_module::ModuleRequestError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_module::ModuleRequestError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequestError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::api::ModuleRequestKind
 pub perl_module::api::ModuleRequestKind::BarewordModule
 pub perl_module::api::ModuleRequestKind::Dynamic
 pub perl_module::api::ModuleRequestKind::LiteralRelativeFile
@@ -130,6 +136,7 @@ pub fn perl_module::ModuleRequestKind::clone(&self) -> perl_module::ModuleReques
 pub fn perl_module::ModuleRequestKind::eq(&self, other: &perl_module::ModuleRequestKind) -> bool
 pub fn perl_module::ModuleRequestKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequestKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_module::api::ModuleResolutionOutcome
 pub perl_module::api::ModuleResolutionOutcome::Ambiguous
 pub perl_module::api::ModuleResolutionOutcome::Dynamic(perl_module::RequestBoundary)
 pub perl_module::api::ModuleResolutionOutcome::EnvironmentUnavailable
@@ -158,6 +165,7 @@ pub perl_module::api::ModuleUriResolution::TimedOut
 pub fn perl_module::ModuleUriResolution::clone(&self) -> perl_module::ModuleUriResolution
 pub fn perl_module::ModuleUriResolution::eq(&self, other: &perl_module::ModuleUriResolution) -> bool
 pub fn perl_module::ModuleUriResolution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::api::PackageSeparatorForm
 pub perl_module::api::PackageSeparatorForm::Canonical
 pub perl_module::api::PackageSeparatorForm::Legacy
 pub perl_module::api::PackageSeparatorForm::Mixed
@@ -167,6 +175,7 @@ pub fn perl_module::PackageSeparatorForm::eq(&self, other: &perl_module::Package
 pub fn perl_module::PackageSeparatorForm::partial_cmp(&self, other: &perl_module::PackageSeparatorForm) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_module::PackageSeparatorForm::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::PackageSeparatorForm::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_module::api::RequestBoundary
 pub perl_module::api::RequestBoundary::ComputedExpression
 pub perl_module::api::RequestBoundary::RuntimeString
 pub perl_module::api::RequestBoundary::UnmodeledConstruct
@@ -202,6 +211,7 @@ pub fn perl_module::DispatchSemantics::hover_description(&self) -> &'static str
 pub fn perl_module::DispatchSemantics::clone(&self) -> perl_module::DispatchSemantics
 pub fn perl_module::DispatchSemantics::eq(&self, other: &perl_module::DispatchSemantics) -> bool
 pub fn perl_module::DispatchSemantics::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_module::api::DynamicModuleRequest
 pub const fn perl_module::DynamicModuleRequest::boundary(&self) -> perl_module::RequestBoundary
 pub fn perl_module::DynamicModuleRequest::source_form(&self) -> &str
 pub const fn perl_module::DynamicModuleRequest::span(&self) -> core::option::Option<perl_module::ModuleTokenSpan>
@@ -304,6 +314,7 @@ pub perl_module::api::ModuleTokenSpan::start: usize
 pub fn perl_module::ModuleTokenSpan::clone(&self) -> perl_module::ModuleTokenSpan
 pub fn perl_module::ModuleTokenSpan::eq(&self, other: &perl_module::ModuleTokenSpan) -> bool
 pub fn perl_module::ModuleTokenSpan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_module::api::ModuleUriCandidate
 pub perl_module::api::ModuleUriCandidate::inc_root: core::option::Option<perl_module::IncRoot>
 pub perl_module::api::ModuleUriCandidate::search_order: usize
 pub perl_module::api::ModuleUriCandidate::source: alloc::string::String
@@ -311,6 +322,7 @@ pub perl_module::api::ModuleUriCandidate::uri: alloc::string::String
 pub fn perl_module::ModuleUriCandidate::clone(&self) -> perl_module::ModuleUriCandidate
 pub fn perl_module::ModuleUriCandidate::eq(&self, other: &perl_module::ModuleUriCandidate) -> bool
 pub fn perl_module::ModuleUriCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_module::api::ModuleUriCandidateReport
 pub perl_module::api::ModuleUriCandidateReport::candidates: alloc::vec::Vec<perl_module::ModuleUriCandidate>
 pub perl_module::api::ModuleUriCandidateReport::module_name: alloc::string::String
 pub perl_module::api::ModuleUriCandidateReport::relative_path: alloc::string::String
@@ -318,6 +330,7 @@ pub perl_module::api::ModuleUriCandidateReport::timed_out: bool
 pub fn perl_module::ModuleUriCandidateReport::clone(&self) -> perl_module::ModuleUriCandidateReport
 pub fn perl_module::ModuleUriCandidateReport::eq(&self, other: &perl_module::ModuleUriCandidateReport) -> bool
 pub fn perl_module::ModuleUriCandidateReport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_module::api::PartialModuleRequest
 pub const fn perl_module::PartialModuleRequest::boundary(&self) -> perl_module::RequestBoundary
 pub fn perl_module::PartialModuleRequest::source_form(&self) -> &str
 pub const fn perl_module::PartialModuleRequest::span(&self) -> core::option::Option<perl_module::ModuleTokenSpan>
@@ -423,6 +436,7 @@ pub perl_module::IncRootKind::WorkspaceRelative
 pub fn perl_module::IncRootKind::clone(&self) -> perl_module::IncRootKind
 pub fn perl_module::IncRootKind::eq(&self, other: &perl_module::IncRootKind) -> bool
 pub fn perl_module::IncRootKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::LegacySeparatorProfile
 pub perl_module::LegacySeparatorProfile::Accept
 pub perl_module::LegacySeparatorProfile::Reject
 pub fn perl_module::LegacySeparatorProfile::clone(&self) -> perl_module::LegacySeparatorProfile
@@ -436,6 +450,7 @@ pub perl_module::LoadTiming::Runtime
 pub fn perl_module::LoadTiming::clone(&self) -> perl_module::LoadTiming
 pub fn perl_module::LoadTiming::eq(&self, other: &perl_module::LoadTiming) -> bool
 pub fn perl_module::LoadTiming::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::ModuleFilePathError
 pub perl_module::ModuleFilePathError::Absolute
 pub perl_module::ModuleFilePathError::ControlCharacter
 pub perl_module::ModuleFilePathError::ControlCharacter::character: char
@@ -461,6 +476,7 @@ pub fn perl_module::ModuleImportKind::dispatch_semantics(self) -> perl_module::D
 pub fn perl_module::ModuleImportKind::clone(&self) -> perl_module::ModuleImportKind
 pub fn perl_module::ModuleImportKind::eq(&self, other: &perl_module::ModuleImportKind) -> bool
 pub fn perl_module::ModuleImportKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::ModuleNameError
 pub perl_module::ModuleNameError::AbsoluteOrDriveSyntax
 pub perl_module::ModuleNameError::ControlCharacter
 pub perl_module::ModuleNameError::ControlCharacter::character: char
@@ -492,6 +508,7 @@ pub perl_module::ModuleReferenceKind::Use
 pub fn perl_module::ModuleReferenceKind::clone(&self) -> perl_module::ModuleReferenceKind
 pub fn perl_module::ModuleReferenceKind::eq(&self, other: &perl_module::ModuleReferenceKind) -> bool
 pub fn perl_module::ModuleReferenceKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::ModuleRequest
 pub perl_module::ModuleRequest::BarewordModule(perl_module::ModuleName)
 pub perl_module::ModuleRequest::Dynamic(perl_module::DynamicModuleRequest)
 pub perl_module::ModuleRequest::LiteralRelativeFile(perl_module::ModuleFilePath)
@@ -512,6 +529,7 @@ pub fn perl_module::ModuleRequest::eq(&self, other: &perl_module::ModuleRequest)
 pub fn perl_module::ModuleRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequest::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequest::serialize<S>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+#[non_exhaustive] pub enum perl_module::ModuleRequestError
 pub perl_module::ModuleRequestError::InvalidFilePath(perl_module::ModuleFilePathError)
 pub perl_module::ModuleRequestError::InvalidModuleName(perl_module::ModuleNameError)
 pub const fn perl_module::ModuleRequestError::boundary_id(&self) -> &'static str
@@ -522,6 +540,7 @@ pub fn perl_module::ModuleRequestError::from(error: perl_module::ModuleNameError
 pub fn perl_module::ModuleRequestError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 pub fn perl_module::ModuleRequestError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequestError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::ModuleRequestKind
 pub perl_module::ModuleRequestKind::BarewordModule
 pub perl_module::ModuleRequestKind::Dynamic
 pub perl_module::ModuleRequestKind::LiteralRelativeFile
@@ -530,6 +549,7 @@ pub fn perl_module::ModuleRequestKind::clone(&self) -> perl_module::ModuleReques
 pub fn perl_module::ModuleRequestKind::eq(&self, other: &perl_module::ModuleRequestKind) -> bool
 pub fn perl_module::ModuleRequestKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::ModuleRequestKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_module::ModuleResolutionOutcome
 pub perl_module::ModuleResolutionOutcome::Ambiguous
 pub perl_module::ModuleResolutionOutcome::Dynamic(perl_module::RequestBoundary)
 pub perl_module::ModuleResolutionOutcome::EnvironmentUnavailable
@@ -558,6 +578,7 @@ pub perl_module::ModuleUriResolution::TimedOut
 pub fn perl_module::ModuleUriResolution::clone(&self) -> perl_module::ModuleUriResolution
 pub fn perl_module::ModuleUriResolution::eq(&self, other: &perl_module::ModuleUriResolution) -> bool
 pub fn perl_module::ModuleUriResolution::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_module::PackageSeparatorForm
 pub perl_module::PackageSeparatorForm::Canonical
 pub perl_module::PackageSeparatorForm::Legacy
 pub perl_module::PackageSeparatorForm::Mixed
@@ -567,6 +588,7 @@ pub fn perl_module::PackageSeparatorForm::eq(&self, other: &perl_module::Package
 pub fn perl_module::PackageSeparatorForm::partial_cmp(&self, other: &perl_module::PackageSeparatorForm) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_module::PackageSeparatorForm::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_module::PackageSeparatorForm::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_module::RequestBoundary
 pub perl_module::RequestBoundary::ComputedExpression
 pub perl_module::RequestBoundary::RuntimeString
 pub perl_module::RequestBoundary::UnmodeledConstruct
@@ -602,6 +624,7 @@ pub fn perl_module::DispatchSemantics::hover_description(&self) -> &'static str
 pub fn perl_module::DispatchSemantics::clone(&self) -> perl_module::DispatchSemantics
 pub fn perl_module::DispatchSemantics::eq(&self, other: &perl_module::DispatchSemantics) -> bool
 pub fn perl_module::DispatchSemantics::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_module::DynamicModuleRequest
 pub const fn perl_module::DynamicModuleRequest::boundary(&self) -> perl_module::RequestBoundary
 pub fn perl_module::DynamicModuleRequest::source_form(&self) -> &str
 pub const fn perl_module::DynamicModuleRequest::span(&self) -> core::option::Option<perl_module::ModuleTokenSpan>
@@ -704,6 +727,7 @@ pub perl_module::ModuleTokenSpan::start: usize
 pub fn perl_module::ModuleTokenSpan::clone(&self) -> perl_module::ModuleTokenSpan
 pub fn perl_module::ModuleTokenSpan::eq(&self, other: &perl_module::ModuleTokenSpan) -> bool
 pub fn perl_module::ModuleTokenSpan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_module::ModuleUriCandidate
 pub perl_module::ModuleUriCandidate::inc_root: core::option::Option<perl_module::IncRoot>
 pub perl_module::ModuleUriCandidate::search_order: usize
 pub perl_module::ModuleUriCandidate::source: alloc::string::String
@@ -711,6 +735,7 @@ pub perl_module::ModuleUriCandidate::uri: alloc::string::String
 pub fn perl_module::ModuleUriCandidate::clone(&self) -> perl_module::ModuleUriCandidate
 pub fn perl_module::ModuleUriCandidate::eq(&self, other: &perl_module::ModuleUriCandidate) -> bool
 pub fn perl_module::ModuleUriCandidate::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_module::ModuleUriCandidateReport
 pub perl_module::ModuleUriCandidateReport::candidates: alloc::vec::Vec<perl_module::ModuleUriCandidate>
 pub perl_module::ModuleUriCandidateReport::module_name: alloc::string::String
 pub perl_module::ModuleUriCandidateReport::relative_path: alloc::string::String
@@ -718,6 +743,7 @@ pub perl_module::ModuleUriCandidateReport::timed_out: bool
 pub fn perl_module::ModuleUriCandidateReport::clone(&self) -> perl_module::ModuleUriCandidateReport
 pub fn perl_module::ModuleUriCandidateReport::eq(&self, other: &perl_module::ModuleUriCandidateReport) -> bool
 pub fn perl_module::ModuleUriCandidateReport::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_module::PartialModuleRequest
 pub const fn perl_module::PartialModuleRequest::boundary(&self) -> perl_module::RequestBoundary
 pub fn perl_module::PartialModuleRequest::source_form(&self) -> &str
 pub const fn perl_module::PartialModuleRequest::span(&self) -> core::option::Option<perl_module::ModuleTokenSpan>
