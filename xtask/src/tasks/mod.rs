@@ -1,5 +1,6 @@
 //! Task implementations for xtask automation
 
+pub mod activation;
 pub mod active_goal_manifest;
 pub mod agent_capability_policy;
 pub mod agent_flow;
@@ -30,6 +31,7 @@ pub mod check_toolchain;
 pub mod check_version_sync;
 pub mod ci;
 pub mod ci_audit_workflows;
+pub mod ci_cache_inventory;
 pub mod ci_contract;
 pub mod ci_doctor;
 pub mod ci_explain;
@@ -40,6 +42,7 @@ pub mod ci_policy;
 pub mod ci_pr_summary;
 pub mod ci_route;
 pub mod ci_scope;
+pub mod ci_stack_increment;
 pub mod ci_subject;
 pub mod clean;
 pub mod clippy_cost_measure;
@@ -53,7 +56,10 @@ pub mod compare_parsers;
 pub mod compat_inventory;
 pub mod compiler_lexical_cutline;
 pub mod compiler_oracle;
+pub mod compiler_performance_receipt;
 pub mod compiler_profile;
+pub mod compiler_upstream_status;
+pub mod completion_candidates;
 #[cfg(feature = "legacy")]
 pub mod corpus;
 pub mod corpus_audit;
@@ -107,6 +113,7 @@ pub mod install_surface_check;
 pub mod integration_proof;
 pub mod integration_trigger;
 pub mod intent_diff_gate;
+pub mod issue_controllers;
 pub mod issue_plan;
 pub mod layer_check;
 pub mod lsp_318_claims;
