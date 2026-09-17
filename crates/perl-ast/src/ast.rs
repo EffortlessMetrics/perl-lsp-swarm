@@ -835,6 +835,11 @@ pub enum NodeKind {
     Typeglob {
         /// Name of the symbol (including package qualification)
         name: String,
+        /// Computed `*{EXPR}` assignment body, present exactly when `name`
+        /// keeps the braced dynamic marker (`*{$x . $y} = ...`). A braced
+        /// bareword (`*{name}`) strips to its static name and carries no body
+        /// (#15731).
+        body: Option<Box<Node>>,
     },
 
     /// Numeric literal in Perl code (integer, float, hex, octal, binary)
@@ -2031,7 +2036,7 @@ mod tests {
             NodeKind::Undef,
             NodeKind::Readline { filehandle: None },
             NodeKind::Glob { pattern: String::new() },
-            NodeKind::Typeglob { name: String::new() },
+            NodeKind::Typeglob { name: String::new(), body: None },
             NodeKind::Number { value: String::new() },
             NodeKind::String { value: String::new(), interpolated: false },
             NodeKind::VString { value: String::new() },

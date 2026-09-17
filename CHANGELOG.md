@@ -87,7 +87,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extension does not yet pass `--workspace-root`, so editor-launched sessions
   remain unbounded until it does; the boundary also confines the `program` and
   session source paths only, not the interpreter or launch environment (#14601)
-  and not `setBreakpoints` (#14593). (#14587; parent #8145.)
+   and not `setBreakpoints` (#14593). (#14587; parent #8145.)
+- **`perl-source-identity`: the canonical root-relative logical-path invariant is
+  now enforced, not just documented.** `LogicalSourceId::from_root_and_path` has
+  always required a forward-slash, root-relative path with no leading separator
+  and no `..` segments, but nothing checked it — so a host absolute path, a
+  traversal sequence or an empty string could mint a perfectly well-formed durable
+  ID for the wrong source. New `RootRelativeLogicalPath::parse` returns a typed,
+  **path-free** `LogicalPathError` (absolute, backslash, Windows drive prefix,
+  `.`/`..` segment, empty segment, control character), and new
+  `LogicalSourceId::from_root_and_logical_path` accepts only the validated type.
+  Nothing is normalized: case and Unicode spellings stay distinct, because
+  identity must reflect what the producer named rather than this crate's folding
+  rules. The governed constructor delegates to the primitive, so published wire
+  vectors are unchanged, and the crate still depends only on `serde` + `sha2`
+  (#15555, under #7655/#4851).
+
+- **Breaking (`perl-lsp-rs`): `PullDiagnosticsContext` gains a public
+  `identity_root_path: Option<PathBuf>` field.** The struct has public fields, so
+  any downstream exhaustive struct literal must add it; `PullDiagnosticsContext::new()`
+  and the other constructors are unaffected. **Migration:** add
+  `identity_root_path: None` to preserve today's behavior for a context that never
+  had one, or set it to the same resolved root that produced `identity_root_key`
+  to get root-relative identities. Per `docs/reference/STABILITY.md` this
+  public-field addition requires the next minor release; it must not ship in a
+  0.17.x patch. `NotReusable` also gains variants and becomes `#[non_exhaustive]`,
+  so downstream matches need a wildcard arm — once — rather than a new arm per
+  future refusal reason (#15555).
+
+- **Pull diagnostics: report identity is now positioned relative to the owning
+  workspace root.** The composer previously used `url::Url::path()` — the *host
+  absolute* path — with its leading slash stripped, so the same logical file in
+  two checkout locations produced two different logical sources, and a URI that
+  failed to parse was passed through raw. A document inside its owning root is now
+  identified by its path relative to that root; a document no root owns keeps a
+   reusable result ID but is identified relative to its own directory, so host
+   location lands in the root key rather than in the logical source. Absent root
+   authority still yields no reusable ID (#7480), and `NotReusable` gained typed
+   variants for the new refusals and is now `#[non_exhaustive]` (#15555).
 
 - **Test2 framework awareness (reader/integration, not a Test2 runtime).**
   `perl-lsp` now reads Test2 source and Test2 runner output and drives the
