@@ -32,7 +32,10 @@
    populations, result vocabulary coherence plus exact result⇔plan⇔manifest
    binding reconciliation (marker-cleanup failures bind planned marker work),
    canonical serialization.
-5. Non-Rust registration for every new file plus regenerated inventory.
+5. Non-Rust registration for every new file (`policy/non-rust-allowlist.toml`);
+   `docs/policy/NON_RUST_INVENTORY.md` follows the default-branch publication
+   policy (feature branches carry the allowlist registration; the generated
+   inventory evidence lives under `target/policy/`).
 6. `.github/workflows/standalone-contract-tests.yml` — hosted CI runs for
    the validator battery and the schema-only parity harness.
 
