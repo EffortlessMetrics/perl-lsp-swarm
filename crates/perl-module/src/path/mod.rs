@@ -5,7 +5,7 @@
 
 use std::borrow::Cow;
 
-use crate::token_core::is_module_identifier_segment;
+use crate::request::ModuleName;
 
 /// Normalize legacy package separator `'` to canonical `::`.
 #[must_use]
@@ -28,20 +28,16 @@ pub fn module_name_to_path(module_name: &str) -> String {
 /// those values are not safe filesystem lookup module names. XID continuations, including
 /// combining marks, remain accepted: for example, `Foo::Bar\u{0301}` is one lookup-safe name,
 /// not a partial `Foo::Bar` extraction.
+///
+/// This predicate is the boolean projection of `ModuleName::parse` (#8497), which owns the
+/// grammar and the classified rejection reason. Callers that need to know *why* a name was
+/// rejected should construct a [`ModuleName`] instead of re-deriving the reason from `false`.
+///
+/// `ModuleName::is_valid` is the allocation-free form, so this stays a borrow-only check on
+/// the reference-extraction path that calls it per candidate token.
 #[must_use]
 pub fn is_lookup_safe_module_name(module_name: &str) -> bool {
-    if module_name.is_empty() {
-        return false;
-    }
-    if module_name
-        .chars()
-        .any(|ch| ch.is_whitespace() || matches!(ch, '/' | '\\' | '$' | '@' | '%'))
-    {
-        return false;
-    }
-
-    let normalized = normalize_package_separator(module_name);
-    normalized.split("::").all(|part| part != ".." && is_module_identifier_segment(part))
+    ModuleName::is_valid(module_name)
 }
 
 /// Convert a module path/key into a module name.
