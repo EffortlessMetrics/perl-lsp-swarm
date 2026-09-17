@@ -2313,7 +2313,7 @@ print "result: $final\n";
         let (tx, rx) = sync_channel::<DapMessage>(64);
         // Tests are a child module of `debug_adapter`, so the private field is
         // directly reachable; no production setter is needed.
-        adapter.event_sender = Some(tx);
+        adapter.event_sender = Some(EventSender::new(tx));
 
         let args = json!({ "processId": std::process::id(), "stopOnEntry": true });
         let response = adapter.handle_request(1, "attach", Some(args));
