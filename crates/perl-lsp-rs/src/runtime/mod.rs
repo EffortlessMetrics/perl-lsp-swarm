@@ -92,8 +92,8 @@ use perl_lsp_rs_core::tooling::performance::SymbolIndex;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
-    declaration::ParentMap,
 };
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
 
 #[cfg(any(test, feature = "expose_lsp_test_api"))]
 pub(crate) struct WorkspaceTopologyTransitionGate {
