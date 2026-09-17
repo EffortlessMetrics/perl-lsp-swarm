@@ -463,6 +463,13 @@ pub struct SemanticQueryView {
     /// The project/root identity the model was built from.
     pub root: String,
     /// Deterministic identity of the source model serialization.
+    ///
+    /// Equivalence rule: this identity tracks the *raw* model vector order
+    /// (two models differing only in fact-vector order carry different
+    /// snapshot identities), while [`Self::fingerprint`] is canonical over
+    /// sorted keys and equal for such models. Use the snapshot identity for
+    /// freshness and cache invalidation against a model generation; use the
+    /// fingerprint to compare materialized views.
     pub model_snapshot_identity: String,
     /// Fact classes the generating request admitted.
     pub requested_fact_classes: FactClasses,
@@ -471,14 +478,25 @@ pub struct SemanticQueryView {
     /// Logical source → ordered declaration contributions, keyed by file id.
     declarations_by_file: BTreeMap<FileId, Vec<DeclarationRow>>,
     /// Canonical symbol id → its current declaration contribution.
+    ///
+    /// If a model generation contains duplicate canonical ids, the map
+    /// deterministically keeps the last row in `(start_byte, entity_key)`
+    /// order; the per-file index ([`Self::declarations_in_file`]) still
+    /// reports every row. Rejecting duplicate ids belongs to the model
+    /// ingestion seam, not this read-only view.
     symbols: BTreeMap<SymbolId, DeclarationRow>,
     /// Canonical package id → its current declaration contribution.
+    ///
+    /// Same duplicate-id rule as [`SemanticQueryView::symbols`].
     packages: BTreeMap<PackageId, DeclarationRow>,
     /// Declaration anchors sorted by start byte, keyed by file id.
     anchors_by_file: BTreeMap<FileId, Vec<AnchorRow>>,
     /// Max-end augmented index per file (same keys as `anchors_by_file`),
     /// enabling nesting-safe overlap descent without full-set scans.
     anchor_max_ends: BTreeMap<FileId, AnchorMaxEndIndex>,
+    /// Relative source path by canonical file id (same rows as `sources`),
+    /// so path-scoped Partial lookups never pay a linear source scan.
+    source_paths_by_file_id: BTreeMap<FileId, String>,
     /// Typed completeness per family, keyed by family name.
     completeness: BTreeMap<&'static str, IndexCompleteness>,
     /// Discovered-but-unread relative paths carried over from the model so
@@ -493,6 +511,15 @@ pub struct SemanticQueryView {
     /// Build work receipt.
     work: ViewWorkReceipt,
     /// Deterministic view fingerprint (`fnv64:` form).
+    ///
+    /// Canonical (order-insensitive) identity of the materialized view:
+    /// two views fingerprint equal exactly when every fingerprinted input
+    /// below agrees. Canonicalization is NUL-terminated field encoding, so
+    /// injectivity relies on the invariant that no field value contains a
+    /// NUL byte — true for repo-relative paths, hex digests, canonical id
+    /// strings, and Perl identifier vocabulary; a producer able to smuggle
+    /// NUL into any of those changes the encoding contract and must bump
+    /// this version.
     fingerprint: String,
 }
 
@@ -523,6 +550,10 @@ impl SemanticQueryView {
         let model_snapshot_identity = accepted_snapshot_identity(model.snapshot_identity())?;
 
         let sources = index_sources(model);
+        let source_paths_by_file_id = sources
+            .values()
+            .map(|entry| (entry.file_id.clone(), entry.relative_path.clone()))
+            .collect();
         let (declarations_by_file, symbols, packages) = index_declarations(model);
         let anchors_by_file = index_anchors(&declarations_by_file);
         let anchor_max_ends = anchor_max_end_index(&anchors_by_file);
@@ -549,6 +580,7 @@ impl SemanticQueryView {
             packages,
             anchors_by_file,
             anchor_max_ends,
+            source_paths_by_file_id,
             completeness,
             unread_discovered,
             limitation_paths,
@@ -702,6 +734,13 @@ impl SemanticQueryView {
     /// the reported range to anchors starting before `end`. Overlapping and
     /// nested anchors are all reported.
     ///
+    /// Degenerate queries answer as their half-open semantics require:
+    /// `[p, p)` is an empty interval and reports no anchors (a position
+    /// probe is the well-formed query `[p, p + 1)`), and a reversed
+    /// `start > end` range likewise reports no anchors. Zero-width
+    /// *anchors* are data, not queries: `[p, p)` is reported by exactly
+    /// the queries with `start <= p < end`.
+    ///
     /// As with [`Self::declarations_in_file`], a `FileId` absent from this
     /// generation is a legitimate exact empty: complete denominator, zero
     /// rows.
@@ -730,6 +769,15 @@ impl SemanticQueryView {
                 AnchorLookupWork { probes: 0, scanned_rows: 0, candidate_rows: 0 },
             ));
         };
+        if start >= end {
+            // Empty or reversed query interval: the half-open overlap
+            // `anchor.start < end && anchor.end > start` is unsatisfiable,
+            // so answer the legitimate exact empty before any search.
+            return IndexAnswer::Complete((
+                Vec::new(),
+                AnchorLookupWork { probes: 0, scanned_rows: 0, candidate_rows: rows.len() },
+            ));
+        }
 
         // Right cut over the start-sorted vector (logarithmic descent):
         // every anchor starting at or after `end` is excluded by
@@ -821,11 +869,12 @@ impl SemanticQueryView {
         }
     }
 
+    /// The relative path owning one canonical file id. `FileId` is a
+    /// canonical hash of path + digest, so distinct source rows carry
+    /// distinct ids except for a hash collision; under a collision the
+    /// path-ordered last row wins, deterministically.
     fn file_path_of(&self, file_id: &FileId) -> Option<&str> {
-        self.sources
-            .values()
-            .find(|entry| &entry.file_id == file_id)
-            .map(|e| e.relative_path.as_str())
+        self.source_paths_by_file_id.get(file_id).map(String::as_str)
     }
 
     /// The family limitation ids that bound one path.
@@ -1243,14 +1292,17 @@ fn fingerprint_view(
 ) -> String {
     let mut buf = Vec::new();
     push_field(&mut buf, "semantic-query-view");
-    // v3: unread paths + structural limitation-path associations.
-    push_field(&mut buf, "v3");
+    // v4: source rows carry role and parse_status (every materialized
+    // public field participates in the view identity).
+    push_field(&mut buf, "v4");
     push_field(&mut buf, &model.root);
     push_u32(&mut buf, model.requested.bits());
 
     for (path, entry) in sources {
         push_field(&mut buf, path);
         push_field(&mut buf, entry.file_id.as_str());
+        push_field(&mut buf, &format!("{:?}", entry.role));
+        push_field(&mut buf, &format!("{:?}", entry.parse_status));
         push_field(&mut buf, entry.digest.as_str());
         if let Some(shard) = &entry.shard {
             push_field(&mut buf, &shard.generation.to_string());
@@ -1262,7 +1314,9 @@ fn fingerprint_view(
     for (file_id, rows) in declarations_by_file {
         push_field(&mut buf, file_id.as_str());
         for row in rows {
-            push_field(&mut buf, &row.entity_key());
+            // Borrowed canonical key: no per-row allocation while
+            // fingerprinting (same comparator basis as the index sort).
+            push_field(&mut buf, row.entity_key_str());
             push_u32(&mut buf, row.start_byte());
             push_u32(&mut buf, row.end_byte());
             match row {
@@ -1818,6 +1872,65 @@ mod tests {
             at_start_edge.is_empty(),
             "zero-width anchor coincident with the query start is empty under half-open rules"
         );
+
+        // Degenerate queries answer the legitimate exact empty: [p, p) is
+        // an empty interval, and a reversed range is not a valid overlap
+        // query. An enclosing anchor must NOT leak back in.
+        let view = nested_view();
+        let file_id = nested_file_id();
+        let (degenerate, work) = view.anchors_overlapping(&file_id, 50, 50).rows().unwrap();
+        assert!(degenerate.is_empty(), "empty query interval must report no anchors");
+        assert_eq!(work.scanned_rows, 0, "degenerate query must not scan anchors");
+        let (reversed, work) = view.anchors_overlapping(&file_id, 60, 50).rows().unwrap();
+        assert!(reversed.is_empty(), "reversed query interval must report no anchors");
+        assert_eq!(work.scanned_rows, 0, "reversed query must not scan anchors");
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_role_and_parse_status() {
+        // Same path, same digest, same shard identity: only role and
+        // parse_status differ. The fingerprint must not alias these views.
+        let mut left = ProjectModel::empty("proj", FactClasses::all());
+        left.files.push(file("lib/F.pm", "content"));
+        let mut right = ProjectModel::empty("proj", FactClasses::all());
+        let mut flipped = file("lib/F.pm", "content");
+        flipped.parse_status = ParseStatus::Failed;
+        right.files.push(flipped);
+
+        let left_view = SemanticQueryView::build(&left).unwrap();
+        let right_view = SemanticQueryView::build(&right).unwrap();
+        let (left_fp, right_fp) = (left_view.fingerprint(), right_view.fingerprint());
+        assert_ne!(left_fp, right_fp, "parse_status participates in view identity");
+
+        // Role: hand-build two records identical except for the role.
+        // `lib/R.pm` classifies as Lib; flip it to Test.
+        let mut role_left = ProjectModel::empty("proj", FactClasses::all());
+        let record = file("lib/R.pm", "content");
+        assert_eq!(record.role, FileRole::Lib);
+        role_left.files.push(record);
+        let mut role_right = ProjectModel::empty("proj", FactClasses::all());
+        let mut other_role = file("lib/R.pm", "content");
+        other_role.role = FileRole::Test;
+        role_right.files.push(other_role);
+        let role_left_view = SemanticQueryView::build(&role_left).unwrap();
+        let role_right_view = SemanticQueryView::build(&role_right).unwrap();
+        let (left_fp, right_fp) = (role_left_view.fingerprint(), role_right_view.fingerprint());
+        assert_ne!(left_fp, right_fp, "role participates in view identity");
+    }
+
+    /// The nested-anchor fixture of [`nested_anchor_enclosures_are_found`],
+    /// shared by the degenerate-query assertions.
+    fn nested_view() -> SemanticQueryView {
+        let content = "nested";
+        let mut model = ProjectModel::empty("proj", FactClasses::all());
+        model.files.push(file("lib/N.pm", content));
+        model.packages.push(package_record("lib/N.pm", content, "N", 0, 100));
+        model.symbols.push(symbol("lib/N.pm", content, Some("N"), "run", "N::run", 10, 20));
+        SemanticQueryView::build(&model).unwrap()
+    }
+
+    fn nested_file_id() -> FileId {
+        FileId::new("lib/N.pm", &Digest::of("nested"))
     }
 
     #[test]
