@@ -316,15 +316,31 @@ fn is_cfg_test_attr(line: &str) -> bool {
 /// Strip lines that fall inside `#[cfg(test)]` blocks from a parsed
 /// `LcovSummary`.  Source files are resolved relative to `source_root`.
 ///
-/// Files that cannot be read (e.g. absolute paths in a different tree,
-/// generated files) are silently skipped — their lines remain measured,
-/// which is the conservative direction.
-fn strip_cfg_test_lines(summary: &mut LcovSummary, source_root: &Path) {
+/// Required production Rust source paths must resolve to readable text before
+/// their `cfg(test)` lines can be filtered. Explicitly excluded/non-production
+/// paths retain the raw LCOV counters because they are outside this filter's
+/// production-source contract.
+fn strip_cfg_test_lines(summary: &mut LcovSummary, source_root: &Path) -> Result<()> {
     for file in &mut summary.files {
         let source_path = resolve_source_path(&file.path, source_root);
-        let source_text = source_path.and_then(|p| fs::read_to_string(p).ok());
-        let Some(text) = source_text else {
-            continue; // cannot resolve — leave file untouched
+        let Some(source_path) = source_path else {
+            if is_required_production_source_path(&file.path, source_root) {
+                bail!(
+                    "cannot resolve production LCOV source {:?} under {}",
+                    file.path,
+                    source_root.display()
+                );
+            }
+            continue;
+        };
+        let text = match fs::read_to_string(&source_path) {
+            Ok(text) => text,
+            Err(error) if is_required_production_source_path(&file.path, source_root) => {
+                return Err(error).with_context(|| {
+                    format!("reading production LCOV source {}", source_path.display())
+                });
+            }
+            Err(_) => continue,
         };
         let test_line_set = cfg_test_line_numbers(&text);
         if test_line_set.is_empty() {
@@ -359,6 +375,7 @@ fn strip_cfg_test_lines(summary: &mut LcovSummary, source_root: &Path) {
         file.line_found = new_line_found;
         file.uncovered_lines = new_uncovered;
     }
+    Ok(())
 }
 
 /// Resolve an LCOV `SF:` path to an existing filesystem path.
@@ -375,6 +392,28 @@ fn resolve_source_path(lcov_path: &str, source_root: &Path) -> Option<PathBuf> {
         return Some(joined);
     }
     None
+}
+
+fn is_required_production_source_path(lcov_path: &str, source_root: &Path) -> bool {
+    if let Some(relative) = relative_lcov_path(source_root, lcov_path) {
+        return is_patch_coverage_source_path(&relative);
+    }
+    let normalized = lcov_path.replace('\\', "/");
+    if is_patch_coverage_source_path(&normalized) {
+        return true;
+    }
+    for marker in ["crates/", "xtask/src/", "xtask/tests/"] {
+        for (index, _) in normalized.match_indices(marker) {
+            // The marker must start a real path component: a foreign path
+            // like `/tmp/vendor-crates/client_generated.rs` contains the
+            // marker inside a directory name and must stay excluded.
+            let at_component_boundary = index == 0 || normalized.as_bytes()[index - 1] == b'/';
+            if at_component_boundary {
+                return normalized.get(index..).is_some_and(is_patch_coverage_source_path);
+            }
+        }
+    }
+    false
 }
 
 #[derive(Debug)]
@@ -412,7 +451,11 @@ struct LcovLine {
 
 pub fn run(args: CoverageBaselineArgs) -> Result<()> {
     let root = std::env::current_dir().context("resolving current directory")?;
-    let receipt = build_receipt(&root, &args)?;
+    run_from_root(&root, args)
+}
+
+fn run_from_root(root: &Path, args: CoverageBaselineArgs) -> Result<()> {
+    let receipt = build_receipt(root, &args)?;
     let rendered = render_json(&receipt)?;
 
     if args.check {
@@ -440,7 +483,7 @@ fn build_receipt(root: &Path, args: &CoverageBaselineArgs) -> Result<JsonValue> 
     // uncovered even after running the full test suite.  Production lines
     // exercised by the test binary are unaffected (they appear in the LCOV
     // regardless of which `cfg` block they live in).
-    strip_cfg_test_lines(&mut lcov, root);
+    strip_cfg_test_lines(&mut lcov, root)?;
     let codecov = read_codecov_status(&args.codecov)?;
     let line_coverage = percent(lcov.line_hit, lcov.line_found);
     let changed_lines =
@@ -1470,10 +1513,16 @@ coverage:
         let lcov = repo.join("lcov.info");
         let mut lcov_body = String::new();
         for file_index in 0..12 {
+            let source = repo.join(format!("crates/product-{file_index}/src/lib.rs"));
+            fs::create_dir_all(source.parent().ok_or("source has no parent")?)?;
+            fs::write(&source, "pub fn product() -> bool { true }\n")?;
             lcov_body.push_str(&format!(
                 "SF:crates/product-{file_index}/src/lib.rs\nDA:1,0\nDA:2,0\nDA:3,1\nend_of_record\n"
             ));
         }
+        let quality_gate_source = repo.join("xtask/src/tasks/quality_gate.rs");
+        fs::create_dir_all(quality_gate_source.parent().ok_or("source has no parent")?)?;
+        fs::write(&quality_gate_source, "pub fn quality_gate() -> bool { true }\n")?;
         lcov_body.push_str("SF:xtask/src/tasks/quality_gate.rs\nDA:1,0\nDA:2,1\nend_of_record\n");
         fs::write(&lcov, lcov_body)?;
         let codecov = repo.join("codecov.yml");
@@ -1626,7 +1675,8 @@ coverage:
         let receipt = repo.join("target/receipts/quality/coverage-baseline.json");
         let codecov = repo.join("codecov.yml");
         fs::create_dir_all(receipt.parent().ok_or("receipt missing parent")?)?;
-        fs::write(&lcov, "SF:xtask/src/tasks/quality_baseline.rs\nDA:1,1\nend_of_record\n")?;
+        let source = std::env::current_dir()?.join("src/tasks/quality_baseline.rs");
+        fs::write(&lcov, format!("SF:{}\nDA:1,1\nend_of_record\n", source.display()))?;
         fs::write(
             &codecov,
             "coverage:\n  status:\n    patch:\n      default:\n        target: 95%\n",
@@ -1946,7 +1996,7 @@ mod tests {\n\
         assert_eq!(summary.line_found, 4, "pre-strip: 4 executable lines");
         assert_eq!(summary.line_hit, 2, "pre-strip: 2 hit lines");
 
-        strip_cfg_test_lines(&mut summary, temp.path());
+        strip_cfg_test_lines(&mut summary, temp.path())?;
 
         // After stripping: only production lines 1,2,3 remain; test line 6 is gone.
         assert_eq!(summary.line_found, 3, "post-strip: only 3 production lines");
@@ -1987,7 +2037,7 @@ mod tests {\n\
         fs::write(&lcov_path, &lcov_content)?;
 
         let mut summary = parse_lcov(&lcov_path)?;
-        strip_cfg_test_lines(&mut summary, temp.path());
+        strip_cfg_test_lines(&mut summary, temp.path())?;
 
         // Only line 1 (production, hit) should remain.
         assert_eq!(summary.line_found, 1);
@@ -2026,7 +2076,7 @@ mod tests {\n\
         fs::write(&lcov_path, &lcov_content)?;
 
         let mut summary = parse_lcov(&lcov_path)?;
-        strip_cfg_test_lines(&mut summary, temp.path());
+        strip_cfg_test_lines(&mut summary, temp.path())?;
 
         // Changed lines are only within the test block (lines 3-7).
         let changed: BTreeMap<String, BTreeSet<u64>> = BTreeMap::from([(
@@ -2039,6 +2089,193 @@ mod tests {\n\
         let patch =
             patch_coverage_from_changed_lines_for_root(Some(temp.path()), &summary, &changed);
         assert_eq!(patch, 100.0, "test-only patch coverage must be 100.0 after stripping");
+        Ok(())
+    }
+
+    #[test]
+    fn strip_cfg_test_lines_preserves_explicit_excluded_source_behavior() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let foreign_path = temp.path().join("foreign/generated.rs").to_string_lossy().into_owned();
+        for path in [
+            "crates/perl-lsp-ux-tests/src/lib.rs",
+            "C:/old-checkout/crates/perl-lsp-ux-tests/src/lib.rs",
+            foreign_path.as_str(),
+        ] {
+            let mut summary = LcovSummary {
+                line_hit: 0,
+                line_found: 1,
+                files: vec![FileCoverage {
+                    path: path.to_string(),
+                    line_hit: 0,
+                    line_found: 1,
+                    uncovered_lines: vec![1],
+                    lines: vec![LcovLine { number: 1, hit_count: 0 }],
+                }],
+            };
+            strip_cfg_test_lines(&mut summary, Path::new("missing-source-root"))?;
+            if summary.line_found != 1 || summary.line_hit != 0 {
+                return Err("explicitly excluded source must retain raw counters".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn marker_fallback_requires_path_component_boundary() -> TestResult {
+        let root = Path::new("missing-source-root");
+        // A marker inside a directory name is a foreign path: it must stay
+        // excluded so its raw LCOV counters are retained instead of
+        // aborting receipt generation.
+        for foreign in [
+            "/tmp/vendor-crates/client_generated.rs",
+            "vendor-crates/foo.rs",
+            "/tmp/my-xtask/src/tool.rs",
+            "/deps/some-crates/src/lib.rs",
+        ] {
+            if is_required_production_source_path(foreign, root) {
+                return Err(format!("foreign path {foreign} must stay excluded").into());
+            }
+        }
+        // A marker at a component boundary keeps the conservative
+        // fail-closed behavior for genuinely unavailable production sources.
+        for required in [
+            "crates/perl-lexer/src/lib.rs",
+            "/home/runner/work/repo/repo/crates/perl-lexer/src/lib.rs",
+            "C:/old-checkout/xtask/src/tasks/example.rs",
+        ] {
+            if !is_required_production_source_path(required, root) {
+                return Err(format!("boundary path {required} must stay required").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn build_receipt_rejects_unresolved_production_source_after_valid_read() -> TestResult {
+        for use_absolute_source_path in [false, true] {
+            let temp = tempfile::tempdir()?;
+            let repo = temp.path().join("new-checkout");
+            fs::create_dir_all(&repo)?;
+            let source = repo.join("crates/example/src/lib.rs");
+            fs::create_dir_all(source.parent().ok_or("source has no parent")?)?;
+            fs::write(
+                &source,
+                "pub fn production() -> bool { true }\n#[cfg(test)]\nmod tests {\n    fn test_only() {}\n}\n",
+            )?;
+            run_git(&repo, &["init"])?;
+            run_git(&repo, &["add", "crates/example/src/lib.rs"])?;
+            run_git(
+                &repo,
+                &[
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-m",
+                    "source",
+                ],
+            )?;
+            let source_ref = if use_absolute_source_path {
+                source.to_string_lossy().replace('\\', "/")
+            } else {
+                "crates/example/src/lib.rs".to_string()
+            };
+            let lcov = repo.join("lcov.info");
+            fs::write(&lcov, format!("SF:{source_ref}\nDA:1,0\nDA:4,1\nDA:5,1\nend_of_record\n"))?;
+            let codecov = repo.join("codecov.yml");
+            fs::write(&codecov, "coverage:\n  status: {}\n")?;
+            let lcov_path = lcov;
+            let receipt_path = repo.join("target/coverage-baseline.json");
+            let codecov_path = codecov;
+            let make_args = |lcov_path: &Path, receipt_path: &Path, codecov_path: &Path, check| {
+                CoverageBaselineArgs {
+                    lcov: lcov_path.to_path_buf(),
+                    receipt: receipt_path.to_path_buf(),
+                    codecov: codecov_path.to_path_buf(),
+                    patch_coverage: None,
+                    patch_base: None,
+                    scope: Some("workspace-lib-xtask-quality".to_string()),
+                    check,
+                }
+            };
+
+            let readable =
+                build_receipt(&repo, &make_args(&lcov_path, &receipt_path, &codecov_path, false))?;
+            let readable_coverage = readable
+                .pointer("/coverage/project")
+                .and_then(JsonValue::as_f64)
+                .ok_or("readable receipt is missing project coverage")?;
+            if readable_coverage != 0.0 {
+                return Err(
+                    "readable cfg(test) filtering should retain uncovered production lines".into(),
+                );
+            }
+            run_from_root(&repo, make_args(&lcov_path, &receipt_path, &codecov_path, false))?;
+            let previous_receipt = fs::read(&receipt_path)?;
+            if use_absolute_source_path {
+                let old_checkout_source =
+                    temp.path().join("old-checkout/crates/example/src/lib.rs");
+                fs::write(
+                    &lcov_path,
+                    format!(
+                        "SF:{}\nDA:1,0\nDA:4,1\nDA:5,1\nend_of_record\n",
+                        old_checkout_source.display()
+                    ),
+                )?;
+            } else {
+                fs::remove_file(&source)?;
+            }
+            let error = match run_from_root(
+                &repo,
+                make_args(&lcov_path, &receipt_path, &codecov_path, false),
+            ) {
+                Ok(_) => return Err("missing production source must fail closed".into()),
+                Err(error) => error,
+            };
+            if !format!("{error:#}").contains("cannot resolve production LCOV source") {
+                return Err(format!("unexpected unresolved-source error: {error:#}").into());
+            }
+            if fs::read(&receipt_path)? != previous_receipt {
+                return Err("failed generation must not overwrite the prior receipt".into());
+            }
+            let check_error = match run_from_root(
+                &repo,
+                make_args(&lcov_path, &receipt_path, &codecov_path, true),
+            ) {
+                Ok(_) => return Err("--check must fail when the source is unavailable".into()),
+                Err(error) => error,
+            };
+            if !format!("{check_error:#}").contains("cannot resolve production LCOV source") {
+                return Err(format!("unexpected --check error: {check_error:#}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn strip_cfg_test_lines_rejects_unreadable_production_source() -> TestResult {
+        let temp = tempfile::tempdir()?;
+        let unreadable = temp.path().join("crates/example/src/unreadable.rs");
+        fs::create_dir_all(&unreadable)?;
+        let mut summary = LcovSummary {
+            line_hit: 1,
+            line_found: 1,
+            files: vec![FileCoverage {
+                path: "crates/example/src/unreadable.rs".to_string(),
+                line_hit: 1,
+                line_found: 1,
+                uncovered_lines: Vec::new(),
+                lines: vec![LcovLine { number: 1, hit_count: 1 }],
+            }],
+        };
+        let error = match strip_cfg_test_lines(&mut summary, temp.path()) {
+            Ok(()) => return Err("directory source must fail closed as unreadable".into()),
+            Err(error) => error,
+        };
+        if !format!("{error:#}").contains("reading production LCOV source") {
+            return Err(format!("unexpected unreadable-source error: {error:#}").into());
+        }
         Ok(())
     }
 

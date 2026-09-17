@@ -179,6 +179,22 @@ const XTASK_FILE_POLICY_PACK: ProofPack = ProofPack {
     ],
 };
 
+const TAUTOLOGY_CHECK_PACK: ProofPack = ProofPack {
+    id: "tautology-check-focused",
+    commands: &[
+        "cargo test -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture",
+        "cargo run -p xtask --profile agent --locked -- check-tautology --check",
+    ],
+};
+
+const XTASK_PRODUCT_TOPOLOGY_PACK: ProofPack = ProofPack {
+    id: "xtask-product-topology",
+    commands: &[
+        "cargo test -p xtask --bin product-topology --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test product_topology_cli --profile agent --locked -- --nocapture",
+    ],
+};
+
 const XTASK_PARSER_TDD_FACADE_GUARD_PACK: ProofPack = ProofPack {
     id: "xtask-parser-tdd-facade-guard",
     commands: &[
@@ -206,8 +222,16 @@ const CI_POLICY_PACK: ProofPack = ProofPack {
     commands: &[
         "python -m unittest scripts/ci/test_ci_classify.py",
         "python -m unittest scripts/ci/test_docker_publish_metadata.py",
+        "python -m unittest scripts/ci/test_docker_publish_topology.py",
         "cargo xtask workflow-trigger-lint --policy .ci/policies/required-checks.toml --receipt target/receipts/workflow-trigger-lint.json",
         "cargo test -p xtask --test quality_ci_wiring_policy --profile agent --locked -- --nocapture",
+        // The #5432 shadow measurement lane is manual-only, so ordinary CI
+        // never executes it. These three targets are the only thing standing
+        // between that lane and silent drift, and compiling them is not
+        // running them.
+        "cargo test -p xtask --test release_artifact_size_shadow_workflow --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test release_artifact_size_stage_script --profile agent --locked -- --nocapture",
+        "cargo test -p xtask --test release_artifact_size_smoke_script --profile agent --locked -- --nocapture",
     ],
 };
 
@@ -700,6 +724,29 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         return route.add_coverage_pack("patch-coverage-xtask-file-policy");
     }
 
+    if file == "xtask/src/tasks/check_tautology.rs"
+        || file.starts_with("xtask/src/tasks/check_tautology/")
+        || file == "policy/tautology-dispositions.toml"
+    {
+        route.add_surface("tautology-check");
+        route.add_pack(TAUTOLOGY_CHECK_PACK);
+        return route.add_coverage_pack("patch-coverage-tautology-check");
+    }
+
+    // #13491: the staged topology contract is a checker, its CLI proof, and the
+    // policy file that *is* its content. The policy file has to match here
+    // rather than fall through to the generic `policy/` arm below, or editing
+    // the contract itself selects the broad CI-policy pack and never runs the
+    // topology commands.
+    if file == "xtask/src/bin/product-topology.rs"
+        || file == "xtask/tests/product_topology_cli.rs"
+        || file == "policy/product-topology.toml"
+    {
+        route.add_surface("xtask-product-topology");
+        route.add_pack(XTASK_PRODUCT_TOPOLOGY_PACK);
+        return route.add_coverage_pack("patch-coverage-xtask-product-topology");
+    }
+
     if file == "xtask/tests/parser_tdd_facade_consumers.rs" {
         route.add_surface("xtask-parser-tdd-facade-guard");
         route.add_pack(XTASK_PARSER_TDD_FACADE_GUARD_PACK);
@@ -727,11 +774,22 @@ fn route_file(file: &str, route: &mut RouteBuilder) {
         || file == "scripts/ci/test_ci_classify.py"
         || file == "scripts/ci/docker_publish_metadata.py"
         || file == "scripts/ci/test_docker_publish_metadata.py"
+        || file == "scripts/ci/test_docker_publish_topology.py"
         || matches!(
             file,
             "xtask/tests/codecov_patch_gate_policy.rs"
                 | "xtask/tests/quality_ci_wiring_policy.rs"
                 | "xtask/tests/quality_gate_patch_coverage_cli_policy.rs"
+                // The #5432 shadow measurement lane: its adapters, the shared
+                // constants the lane and the instrument both read, and the
+                // contracts that bind them together.
+                | "scripts/ci/release_artifact_size_stage.sh"
+                | "scripts/ci/release_artifact_size_smoke.sh"
+                | "xtask/examples/release_artifact_size.rs"
+                | "xtask/src/bin/release_artifact_size/policy.rs"
+                | "xtask/tests/release_artifact_size_shadow_workflow.rs"
+                | "xtask/tests/release_artifact_size_stage_script.rs"
+                | "xtask/tests/release_artifact_size_smoke_script.rs"
         )
     {
         route.add_surface("ci-policy");
@@ -1782,6 +1840,32 @@ mod tests {
             receipt.skipped_by_policy.get("patch-coverage-ci-route").map(String::as_str),
             Some(NON_LCOV_COVERAGE_SKIP_REASON)
         );
+        Ok(())
+    }
+
+    /// Each of the three topology files must select the topology surface.
+    /// `policy/product-topology.toml` is the one that can regress silently: it
+    /// also matches the generic `policy/` arm, so if the topology arm is ever
+    /// moved below it, editing the contract's own content would select the
+    /// broad CI-policy pack and never run the topology commands.
+    #[test]
+    fn route_receipt_maps_product_topology_files_to_the_topology_surface() -> Result<()> {
+        for file in [
+            "xtask/src/bin/product-topology.rs",
+            "xtask/tests/product_topology_cli.rs",
+            "policy/product-topology.toml",
+        ] {
+            let receipt = route_receipt("origin/main", "HEAD", vec![file.to_string()])?;
+            assert_eq!(
+                receipt.changed_surfaces,
+                vec!["xtask-product-topology"],
+                "{file} selected the wrong surface"
+            );
+            assert!(
+                proof_pack_ids(&receipt).contains(&"xtask-product-topology"),
+                "{file} did not select the topology proof pack"
+            );
+        }
         Ok(())
     }
 
@@ -3348,9 +3432,11 @@ mod tests {
                 "patch-coverage-xtask-gates",
                 "patch-coverage-xtask-ci-explain",
                 "patch-coverage-xtask-file-policy",
+                "patch-coverage-tautology-check",
                 "patch-coverage-completion-core",
                 "patch-coverage-ux-scenario",
                 "patch-coverage-ci-policy",
+                "patch-coverage-xtask-product-topology",
                 "patch-coverage-xtask-parser-tdd-facade-guard",
                 "patch-coverage-ci-route",
                 "patch-coverage-ci-actuals",
@@ -3419,6 +3505,7 @@ mod tests {
             "patch-coverage-xtask-gates",
             "patch-coverage-xtask-ci-explain",
             "patch-coverage-xtask-file-policy",
+            "patch-coverage-tautology-check",
             "patch-coverage-completion-core",
             "patch-coverage-ux-scenario",
             "patch-coverage-ci-policy",
@@ -3949,6 +4036,30 @@ mod tests {
                 && pack.commands.iter().any(|command| {
                     command
                         == "cargo test -p xtask --bin xtask --profile agent --locked file_policy -- --nocapture"
+                })
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn ci_route_receipt_maps_tautology_checker_to_focused_pack() -> Result<()> {
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["xtask/src/tasks/check_tautology/mod.rs".to_string()],
+        )?;
+
+        assert_eq!(receipt.changed_surfaces, vec!["tautology-check"]);
+        assert!(proof_pack_ids(&receipt).contains(&"tautology-check-focused"));
+        assert_eq!(receipt.coverage_pack_selector, vec!["patch-coverage-tautology-check"]);
+        assert!(receipt.required_proof_packs.iter().any(|pack| {
+            pack.id == "tautology-check-focused"
+                && pack.commands.iter().any(|command| {
+                    command
+                        == "cargo test -p xtask --bin xtask --profile agent --locked check_tautology -- --nocapture"
+                })
+                && pack.commands.iter().any(|command| {
+                    command == "cargo run -p xtask --profile agent --locked -- check-tautology --check"
                 })
         }));
         Ok(())

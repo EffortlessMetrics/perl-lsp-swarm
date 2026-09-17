@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: Incremental parsing no longer accepts trees whose payload sub-spans point at pre-edit offsets. Edits inside numeric, string, variable, or identifier leaves that change text length now remap heredoc body spans, package and subroutine/method/class/format name spans, phase-block keyword spans, try/catch variable locations, and recovery token spans together with the node spans they anchor, so navigation after an incremental edit lands on the bytes the range claims instead of silently wrong nearby text.
+time: 2026-08-30T01:40:13Z
+custom:
+  PR: "14350"
+  Slug: incremental-shift-remaps-payload-sub-spans
+  Breaking: "no"

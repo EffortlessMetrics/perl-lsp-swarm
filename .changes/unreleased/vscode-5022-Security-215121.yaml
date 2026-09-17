@@ -1,0 +1,9 @@
+project: vscode
+component: Editor behavior
+kind: Security
+body: "AI-completion settings are now machine-scoped in the extension, the 'Enable' suggestion writes the user (global) setting instead of a workspace setting, and changes to machine-scoped AI-completion settings are re-sent to the server, so a workspace can no longer switch AI completion on for its users."
+time: 2026-07-28T21:51:21Z
+custom:
+  PR: "5022"
+  Slug: ai-completion-machine-scope-extension
+  Breaking: "no"

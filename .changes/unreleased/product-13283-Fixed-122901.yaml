@@ -1,0 +1,9 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: "Perl 5.42 native-class and Object::Pad fields using :writer(NAME) now expose the explicitly named writer to language intelligence instead of silently dropping it."
+time: 2026-08-28T12:29:01Z
+custom:
+  PR: "13283"
+  Slug: perl-542-named-field-writer
+  Breaking: "no"

@@ -26,12 +26,16 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+serde.workspace = true
+unicode-ident = "1.0.22"
 url = { workspace = true }
 perl-parser-core = { workspace = true }
 perl-workspace = { workspace = true }
+regex.workspace = true
 
 [dev-dependencies]
 proptest = { workspace = true }
+serde_json.workspace = true
 tempfile = { workspace = true }
 perl-tdd-support = { workspace = true }
 

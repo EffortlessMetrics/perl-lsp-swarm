@@ -7,13 +7,13 @@
 //! content digest, so an edit immediately changes the generation and a
 //! stale exact answer cannot survive a re-query.
 
-use super::activation::Dancer2FileActivations;
+use super::activation::{Dancer2FileActivations, Dancer2TwoXPackageActivation};
 use perl_parser_core::Node;
 use perl_semantic_analyzer::analysis::dancer2_hooks::extract_dancer2_hook_declarations;
 use perl_semantic_analyzer::analysis::dancer2_routes::extract_dancer2_route_contexts;
 use perl_semantic_facts::FileId;
 use perl_semantic_facts::framework_adapters::dancer2_hooks::{
-    Dancer2HookDeclaration, dancer2_hook_facts,
+    Dancer2HookDeclaration, dancer2_hook_facts, dancer2_hook_handler_context_facts,
 };
 use perl_semantic_facts::framework_adapters::dancer2_routes::{
     Dancer2RouteFacts, dancer2_route_family_facts,
@@ -41,6 +41,21 @@ pub struct CanonicalDancer2FileFacts {
     /// remain source observations).
     pub extracted_routes:
         Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration>,
+    /// Exact 2.x activations for this document (#14989). Comparison-only
+    /// output (the 2.x adapter stays Shadow); consumers must render the
+    /// route-handler scope honestly and never treat this as publication
+    /// authority.
+    pub two_x: Vec<Dancer2TwoXPackageActivation>,
+    /// Source-extracted route declarations inside exact 2.x packages, kept
+    /// separate from the 1.x `extracted_routes` so the two contracts never
+    /// conflate (#14989).
+    pub two_x_extracted_routes:
+        Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteDeclaration>,
+    /// Minted 2.x route-family facts (contract marker `TwoX`),
+    /// comparison-only output of the Shadow adapter — merged across exact
+    /// 2.x packages in source order (#14989).
+    pub two_x_route_facts:
+        Vec<perl_semantic_facts::framework_adapters::dancer2_routes::Dancer2RouteFacts>,
 }
 
 impl CanonicalDancer2FileFacts {
@@ -53,6 +68,13 @@ impl CanonicalDancer2FileFacts {
             && self.parameters.is_empty()
             && self.handler_contexts.is_empty()
             && self.hooks.is_empty()
+    }
+
+    /// Whether comparison-only 2.x (shadow) facts are present. Deliberately
+    /// separate from [`Self::is_empty`]: shadow evidence must never read as
+    /// publication-grade canonical output (#15006 review).
+    pub fn has_comparison_facts(&self) -> bool {
+        !self.two_x.is_empty() || !self.two_x_extracted_routes.is_empty()
     }
 
     /// The route fact whose declaration span contains `offset`, excluding
@@ -95,14 +117,53 @@ impl CanonicalDancer2FileFacts {
         })
     }
 
+    /// The canonical handler-context fact whose interval contains `offset`.
+    ///
+    /// This is the one context query for the Dancer2 cell: route handlers and
+    /// admitted hook handlers are both minted into `handler_contexts`, so no
+    /// consumer needs its own span heuristic for either. The returned fact
+    /// carries `handler_kind` (route vs hook) and `request_context` (whether
+    /// the reviewed contract establishes request-scoped keyword availability
+    /// inside the interval).
+    ///
+    /// A `Some(..)` answer means "an exact handler body owns this offset". It
+    /// does **not** by itself mean request-scoped keywords are available —
+    /// gate that on [`RouteHandlerContextFact::establishes_request_context`],
+    /// or use [`Self::inside_request_context`].
+    /// When intervals overlap the innermost one wins, so the answer does not
+    /// depend on minting order. The extractors do not currently descend into
+    /// a handler body, so overlap cannot arise today; selecting the narrowest
+    /// containing interval keeps this query correct without depending on that
+    /// invariant holding forever.
+    #[must_use]
+    pub fn request_context_at(&self, offset: usize) -> Option<&RouteHandlerContextFact> {
+        self.handler_contexts
+            .iter()
+            .filter(|context| span_contains(&context.envelope.anchor, offset))
+            .min_by_key(|context| {
+                context.envelope.anchor.end_byte.saturating_sub(context.envelope.anchor.start_byte)
+            })
+    }
+
+    /// Whether the reviewed contract establishes request context at `offset`.
+    ///
+    /// True inside an exact route handler and inside an admitted hook
+    /// handler; false inside a hook position whose request context the
+    /// reviewed contract does not establish, and false outside every handler.
+    #[must_use]
+    pub fn inside_request_context(&self, offset: usize) -> bool {
+        self.request_context_at(offset)
+            .is_some_and(RouteHandlerContextFact::establishes_request_context)
+    }
+
     /// Whether `offset` lies inside one of the minted inline handler spans.
+    ///
+    /// Retained as the containment predicate; prefer
+    /// [`Self::inside_request_context`] when deciding keyword availability,
+    /// because an exact handler interval alone does not establish it.
     #[must_use]
     pub fn inside_handler_context(&self, offset: usize) -> bool {
-        self.handler_contexts.iter().any(|context| {
-            let anchor = &context.envelope.anchor;
-            usize::try_from(anchor.start_byte).ok() <= Some(offset)
-                && offset < usize::try_from(anchor.end_byte).unwrap_or(0)
-        })
+        self.request_context_at(offset).is_some()
     }
 }
 
@@ -160,6 +221,44 @@ pub fn canonical_file_facts(
             package,
             &hook_declarations,
         ));
+        // Hook handler bodies join the same handler-context family as route
+        // handlers, so one query answers both (#13604).
+        facts.handler_contexts.extend(dancer2_hook_handler_context_facts(
+            detection,
+            &activation.facts,
+            package,
+            &hook_declarations,
+        ));
+    }
+    // 2.x activations (#14989): exact packages only, plus their
+    // source-level route declarations kept contract-separated.
+    for activation in &activations.two_x_packages {
+        if !activation.facts.is_exact() {
+            continue;
+        }
+        facts.two_x.push(activation.clone());
+        let package = Some(activation.package.as_str());
+        for declaration in &route_contexts.routes {
+            if declaration.package.as_deref() == package {
+                facts.two_x_extracted_routes.push(declaration.clone());
+            }
+        }
+        // Mint the 2.x route family through the shared view core; the
+        // bundle carries the TwoX contract marker and stays
+        // comparison-only while the adapter is Shadow (#14989).
+        let detection_detected = activations
+            .two_x_detection
+            .as_ref()
+            .is_some_and(perl_semantic_facts::framework::AdapterDetectionResult::is_detected);
+        facts.two_x_route_facts.push(
+            perl_semantic_facts::framework_adapters::dancer2_two_x::dancer2_two_x_route_family_facts(
+                detection_detected,
+                &activation.facts,
+                package,
+                &route_contexts.routes,
+                &route_contexts.prefixes,
+            ),
+        );
     }
     facts
 }

@@ -63,7 +63,7 @@ fn active_client_round_trips_two_gated_requests_through_a_child_process() -> Res
     assert_eq!(client.peek_server_requests().len(), 2);
     assert!(client.peek_transport_error().is_none());
 
-    client.shutdown_and_wait(Duration::from_secs(2))?;
+    client.shutdown_and_exit(Duration::from_secs(2))?;
     assert!(client.peek_transport_error().is_none());
     Ok(())
 }
@@ -118,7 +118,7 @@ fn did_close_registration_round_trip(advertised: bool) -> Result<()> {
     if client.peek_capability_violations() != expected_violations {
         return Err(anyhow!("didClose {mode} capability evidence did not match advertisement"));
     }
-    client.shutdown_and_wait(Duration::from_secs(2))?;
+    client.shutdown_and_exit(Duration::from_secs(2))?;
     if let Some(error) = client.peek_transport_error() {
         return Err(anyhow!("didClose {mode} shutdown failed: {error}"));
     }
@@ -161,15 +161,15 @@ fn assert_protocol_failure(mode: &str, expected: &str) -> Result<()> {
 
 #[test]
 fn malformed_frame_from_child_is_a_transport_failure() -> Result<()> {
-    assert_protocol_failure("malformed-frame", "No Content-Length")
+    assert_protocol_failure("malformed-frame", "no usable Content-Length")
 }
 
 #[test]
 fn invalid_json_from_child_is_a_transport_failure() -> Result<()> {
-    assert_protocol_failure("invalid-json", "Failed to parse LSP JSON body")
+    assert_protocol_failure("invalid-json", "was not valid JSON")
 }
 
 #[test]
 fn partial_header_eof_from_child_is_a_transport_failure() -> Result<()> {
-    assert_protocol_failure("partial-header", "Unexpected EOF in LSP message headers")
+    assert_protocol_failure("partial-header", "part way through an LSP message header block")
 }

@@ -214,7 +214,7 @@ fn suppression(
         build_profile_config_tool_inputs: &["initializationOptions.disabledFeatures"],
         disposition: Disposition::Unadvertised,
         runtime_route_owner: "perl-lsp-rs/src/runtime/dispatch dispatch gating (-32601 method_not_advertised)",
-        evidence_owner: "features.toml feature catalog; perl-lsp-rs lifecycle tests",
+        evidence_owner: "features.toml feature catalog; perl-lsp-rs lifecycle tests; S02 typed model authority crates/perl-lsp-rs-core/src/protocol/effective_surface.rs (#9665); live cutover remains S03",
         competing_paths: Vec::new(),
         target_issue: "#9665",
         compatibility: None,
@@ -275,6 +275,13 @@ fn compat(
 }
 
 /// Stable surface IDs referenced across crates by the runtime census proof.
+#[expect(
+    dead_code,
+    reason = "#9662 / train #8032 capability-inventory ledger identity rows: each row is \
+              migration evidence observed by the cross-crate census (grep/documentation \
+              cross-reference), not by an in-crate Rust caller. Deleting a row destroys \
+              that evidence rather than removing dead code."
+)]
 pub mod ids {
     /// Static inline-completion provider advertisement row.
     pub const CAP_INLINE_COMPLETION_PROVIDER: &str = "cap.inlineCompletionProvider";
@@ -419,16 +426,6 @@ pub fn static_surface_census() -> BTreeMap<&'static str, BTreeSet<String>> {
 /// Union of census pointers across all census profiles.
 pub fn census_pointer_union() -> BTreeSet<String> {
     static_surface_census().into_values().flatten().collect()
-}
-
-/// Every final-surface pointer the ledger covers: the live static census
-/// union plus mutation-owned pointers. Runtime initialize responses must be
-/// subsets of this set; the `perl-lsp-rs` final-surface census tests enforce
-/// that against the exact emitted surface.
-pub fn covered_final_surface_pointers() -> BTreeSet<String> {
-    let mut covered = owned_surface_pointers(&final_surface_rows());
-    covered.extend(census_pointer_union());
-    covered
 }
 
 /// Pointers owned by ledger rows: `protocol_field` plus

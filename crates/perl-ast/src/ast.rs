@@ -835,6 +835,11 @@ pub enum NodeKind {
     Typeglob {
         /// Name of the symbol (including package qualification)
         name: String,
+        /// Computed `*{EXPR}` assignment body, present exactly when `name`
+        /// keeps the braced dynamic marker (`*{$x . $y} = ...`). A braced
+        /// bareword (`*{name}`) strips to its static name and carries no body
+        /// (#15731).
+        body: Option<Box<Node>>,
     },
 
     /// Numeric literal in Perl code (integer, float, hex, octal, binary)
@@ -1339,8 +1344,12 @@ pub enum NodeKind {
     DataSection {
         /// Section marker (__DATA__ or __END__)
         marker: String,
+        /// Source location span of the marker token itself, for precise navigation
+        marker_span: Option<SourceLocation>,
         /// Content following the marker (if any)
         body: Option<String>,
+        /// Source location span of the payload text following the marker, if any
+        body_span: Option<SourceLocation>,
     },
 
     /// Class declaration (Perl 5.38+ with `use feature 'class'`)
@@ -2027,7 +2036,7 @@ mod tests {
             NodeKind::Undef,
             NodeKind::Readline { filehandle: None },
             NodeKind::Glob { pattern: String::new() },
-            NodeKind::Typeglob { name: String::new() },
+            NodeKind::Typeglob { name: String::new(), body: None },
             NodeKind::Number { value: String::new() },
             NodeKind::String { value: String::new(), interpolated: false },
             NodeKind::VString { value: String::new() },
@@ -2173,7 +2182,12 @@ mod tests {
                 phase_span: None,
                 block: Box::new(dummy_node()),
             },
-            NodeKind::DataSection { marker: String::new(), body: None },
+            NodeKind::DataSection {
+                marker: String::new(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
             NodeKind::Class {
                 name: String::new(),
                 name_span: None,

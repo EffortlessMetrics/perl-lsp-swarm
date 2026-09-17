@@ -1,0 +1,14 @@
+project: product
+component: Language intelligence
+kind: Fixed
+body: >-
+  Keep conditional cpanfile declarations out of dependency advisories:
+  canonical `on '<phase>' => sub` declarations are attributed as
+  `{phase}.{relation}`, while declarations inside `feature` blocks, platform
+  conditionals, loops, arbitrary callbacks, and unknown phases are suppressed
+  instead of being reported as unconditional.
+time: 2026-08-29T22:58:41Z
+custom:
+  PR: "13890"
+  Slug: conditional-cpanfile-advisories
+  Breaking: "no"

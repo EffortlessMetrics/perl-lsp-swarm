@@ -29,6 +29,7 @@ SURFACE_PATH = EDITOR_CLIENTS / "vim-vim-lsp-public-surface.v1.json"
 ACTIVATION_ROOT_PATH = EDITOR_CLIENTS / "vim-vim-lsp-activation-root.v1.json"
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "ux" / "vim_vim_lsp_smoke.sh"
 DRIVER_SCRIPT = REPO_ROOT / "scripts" / "ux" / "vim_vim_lsp_driver.vim"
+ADAPTER_SCRIPT = REPO_ROOT / "scripts" / "test" / "vim-clients" / "vim-lsp-adapter.vim"
 
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
@@ -268,27 +269,97 @@ def validate_public_surface(surface: dict, violations: Violations) -> None:
         violations.add("surface: consumer_binding.canonical_driver must name the canonical driver")
 
 
+def semantic_marker(marker: str) -> str:
+    """Collapse vim-lsp's directory spelling onto the semantic marker name.
+
+    The cross-editor activation contract stores semantic names (`.git`). The
+    pinned vim-lsp helper treats a marker as a directory only when its spelling
+    ends in `/`, so the canonical driver may legitimately project one semantic
+    marker onto both client spellings (`.git/` directory, `.git` file for
+    linked worktrees/submodules). The manifest itself keeps only the semantic
+    spelling.
+    """
+    return marker[:-1] if marker.endswith("/") else marker
+
+
 def validate_activation_root_consumption(violations: Violations) -> None:
-    """Root markers consumed from #7762, never re-declared with drift (#NC5)."""
+    """Root markers consumed from #7762, never re-declared with drift (#NC5).
+
+    The driver may only carry an authority marker verbatim or as its
+    trailing-slash directory spelling, and its semantic projection must equal
+    the authority list exactly.
+    """
     activation = load_json(ACTIVATION_ROOT_PATH)
     markers = ((activation.get("root") or {}).get("markers")) or []
     if not markers:
         raise SystemExit(f"FAIL: {ACTIVATION_ROOT_PATH.name} lost its marker list")
+    authority = sorted(markers)
+    authority_set = set(authority)
 
     driver_text = DRIVER_SCRIPT.read_text(encoding="utf-8")
+    adapter_text = ADAPTER_SCRIPT.read_text(encoding="utf-8")
+    required_adapter_fragments = (
+        "function! VimLspHostClientRootMarkers() abort",
+        "call extend(l:markers, ['.git/', '.git'])",
+        "expand('%:p'), VimLspHostClientRootMarkers()",
+    )
+    for fragment in required_adapter_fragments:
+        if fragment not in adapter_text:
+            violations.add(f"adapter: canonical marker projection is missing {fragment!r}")
+
+    if "execute 'source ' . fnameescape(expand('$PERLLSP_VIM_ADAPTER'))" not in driver_text:
+        violations.add("driver: integration rail must source the canonical Vim adapter")
+    if "VimLspHostRegister()" not in driver_text:
+        violations.add("driver: integration rail must use adapter-owned registration")
+
+    if "VimLspHostRegister()" in driver_text:
+        # The adapter-owned registration reaches its root callback through the
+        # canonical projection checked above. There is intentionally no second
+        # nearest-parent call in this rail to inspect.
+        return
+
+    direct_calls = re.findall(
+        r"find_nearest_parent_file_directory\((.*?)\)", driver_text, re.DOTALL
+    )
+    if direct_calls and all("VimLspHostClientRootMarkers()" in call for call in direct_calls):
+        return
+
     call_match = re.search(
-        r"find_nearest_parent_file_directory\([\s\\]*[^,]+,[\s\\]*\[([^\]]*)\]",
+        r"find_nearest_parent_file_directory\([\s\\]*[^,]+,[\s\\]*([^\)]+)\)",
         driver_text,
         re.DOTALL,
     )
     if not call_match:
         violations.add("driver: nearest-parent marker call not found for consumption check")
         return
-    driver_markers = sorted(re.findall(r"'([^']+)'", call_match.group(1)))
-    if driver_markers != sorted(markers):
+    marker_expression = call_match.group(1).strip()
+    if marker_expression == "VimLspHostClientRootMarkers()":
+        # The deep rail delegates to the canonical adapter projection. Its
+        # source-level contract is checked below; there is no second marker
+        # list to compare here.
+        return
+    literal_match = re.fullmatch(r"\[([^\]]*)\]", marker_expression, re.DOTALL)
+    if not literal_match:
+        violations.add("driver: nearest-parent call must consume VimLspHostClientRootMarkers()")
+        return
+    driver_markers = re.findall(r"'([^']+)'", literal_match.group(1))
+
+    unsanctioned = sorted(
+        marker
+        for marker in driver_markers
+        if marker not in authority_set and semantic_marker(marker) not in authority_set
+    )
+    if unsanctioned:
+        violations.add(
+            "driver: root markers outside #7762 authority and its directory spelling: "
+            f"{unsanctioned} (authority={authority})"
+        )
+
+    semantic_projection = sorted({semantic_marker(marker) for marker in driver_markers})
+    if semantic_projection != authority:
         violations.add(
             "driver: root marker copy drifted from #7762 activation-root manifest "
-            f"(driver={driver_markers}, authority={sorted(markers)})"
+            f"(driver_semantic={semantic_projection}, authority={authority})"
         )
 
 

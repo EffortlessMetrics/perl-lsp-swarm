@@ -38,7 +38,34 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # duplicate #11940 @ 254f0e214): the document_access gen-0 builder fixture
 # dropped one .index_file_with_generation(...) call; the scorecard coordinator
 # re-seed added a canonical index_live_file caller identity (not counted).
-compatibility_baseline = 696
+# Burndown 696 -> 695 by #13183 (extensionless Perl shebang discovery,
+# PR #13185) plus this reconciliation. Checker-equivalent per-file scan over
+# git ls-tree blobs, base 5410b54d = 696 with the merged tree already at 699:
+#   crates/perl-lsp-rs/src/runtime/workspace.rs 6 -> 9 (+3 net) as merged:
+#     -1 production call (the removed did-create/did-rename reclassification
+#     arm no longer re-indexes through the compatibility surface) and +4
+#     `#[cfg(test)]` fixtures that pre-seed closed-file facts before watcher,
+#     create and rename events.
+# The four fixtures seed initial (on-disk, non-live) state, so they are
+# migrated here to the canonical `index_initial_file` -- `index_file` is a
+# thin alias of it, so the migration is behavior-preserving and removes four
+# compatibility callers rather than accepting them into the baseline. Net
+# effect on the combined tree: 696 - 1 = 695.
+# Burndown 695 -> 693 by #7588 (PR #15633, per-file SemanticQueryFacade).
+# `SemanticQueryFacade::visible_imports` was the facade's only cross-file
+# query; it forwarded to `WorkspaceIndex::file_dependencies` without reading
+# the facade's own model, and had no caller anywhere in the workspace. Retiring
+# it removed its two unit tests, which were the only source-commit API callers
+# in that file:
+#   crates/perl-semantic-analyzer/src/analysis/semantic/query_facade.rs
+#     2 -> 0 (-2 index_file_str, both `#[cfg(test)]` fixtures that pre-seeded a
+#     WorkspaceIndex solely to exercise the retired wrapper)
+# The file therefore leaves `caller_paths` entirely rather than dropping to a
+# zero-call row, which the checker rejects as a stale identity. No call was
+# migrated to a canonical API: the calls are gone because the behaviour they
+# set up is gone. The `crates/perl-semantic-analyzer` owner row stays -- it
+# still anchors `analysis/index.rs` and the ripr seam proof.
+compatibility_baseline = 693
 
 # Structural recurrence control (#11305): files under these prefixes must
 # never call compatibility source APIs at all -- live commits go through
@@ -96,7 +123,6 @@ caller_paths = [
   "crates/perl-parser/tests/mutation_hardening_tests.rs",
   "crates/perl-parser/tests/workspace_index_tests.rs",
   "crates/perl-semantic-analyzer/src/analysis/index.rs",
-  "crates/perl-semantic-analyzer/src/analysis/semantic/query_facade.rs",
   "crates/perl-semantic-analyzer/tests/ripr_seam_proof_qw_whitespace.rs",
   "crates/perl-workspace/benches/workspace_index_benchmark.rs",
   "crates/perl-workspace/src/bin/workspace_memory_profile.rs",

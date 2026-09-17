@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+// Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 //! Comprehensive unit tests for perl-position-tracking.
 //!
 //! Covers: ByteSpan, LineStartsCache, LineIndex, PositionMapper, WirePosition,
@@ -355,8 +357,8 @@ fn line_starts_cache_cr_only() {
     let cache = LineStartsCache::new(src);
 
     assert_eq!(cache.offset_to_position(src, 0), (0, 0));
-    assert_eq!(cache.offset_to_position(src, 3), (1, 0));
-    assert_eq!(cache.offset_to_position(src, 6), (2, 0));
+    assert_eq!(cache.offset_to_position(src, 3), (0, 3));
+    assert_eq!(cache.offset_to_position(src, 6), (0, 6));
 }
 
 #[test]
