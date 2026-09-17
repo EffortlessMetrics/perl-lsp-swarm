@@ -9,10 +9,11 @@ use crate::syntax::regex_analysis::RegexAnalysisFamily;
 
 use super::body::{
     AccessMode, Arena, AssignMode, BinaryOp, BodyOwner, BodyOwnerKind, BodySourceMap,
-    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirExpr, HirExprId, HirRegex,
-    HirRegexMatch, HirRegexTarget, HirStmt, HirStmtId, HirSubscript, HirSubstitution,
-    HirTransliteration, HirVariable, RegexAnalysisAnchor, ReplacementEvaluation, Sigil,
-    SubscriptKind, UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
+    DeclStorageClass, HirBlock, HirBlockId, HirBody, HirBodyId, HirCatchHandler, HirExpr,
+    HirExprId, HirLoopLabel, HirLoopRegionId, HirRegex, HirRegexMatch, HirRegexTarget, HirStmt,
+    HirStmtId, HirSubscript, HirSubstitution, HirTransliteration, HirVariable,
+    LoopControlResolution, RegexAnalysisAnchor, ReplacementEvaluation, Sigil, SubscriptKind,
+    UnaryMode, VariableKind, diamond_expr, glob_expr, heredoc_expr, readline_expr,
 };
 use super::model::{
     AstAnchor, BarewordExpr, BarewordFact, BarewordRole, BarewordTable, Binding, BindingReference,
@@ -929,7 +930,7 @@ impl Lowerer {
                 );
                 self.visit_children(node, confidence);
             }
-            NodeKind::Try { catch_blocks, finally_block, .. } => {
+            NodeKind::Try { body, catch_blocks, finally_block } => {
                 self.push_item(
                     node,
                     None,
@@ -941,11 +942,57 @@ impl Lowerer {
                     self.package_context.clone(),
                     Some(self.current_scope()),
                 );
-                // The try body, each catch handler body, and the finally body
-                // (when present) are all visited via the AST's own child
-                // iteration, same mechanism as Eval/Do/Match, so nested
-                // statements still lower to their own HIR items.
-                self.visit_children(node, confidence);
+
+                // Children are visited explicitly rather than through
+                // `visit_children` because a `catch ($e)` binding needs a scope
+                // frame that `visit_children` cannot provide (#15567).
+                //
+                // The parser stores the catch variable as tuple metadata on
+                // `NodeKind::Try`, not as a child `NodeKind::Variable`, so no
+                // arm of this traversal ever recorded it. Reads of `$e` inside
+                // the handler then resolved against the *enclosing* scope:
+                // `catch ($e) { h($e) }` produced a `StashRead` for `$e`, and
+                // an outer `my $e` was not shadowed but silently reused.
+                //
+                // Each handler that binds a variable gets its own frame,
+                // spanning the binding through the end of the handler block, so
+                // the block scope created by the `Block` arm nests inside it and
+                // ordinary parent-chain resolution finds the binding.
+                self.visit(body, confidence);
+
+                for (catch_variable, handler) in catch_blocks {
+                    let Some((spelling, variable_range)) = catch_variable else {
+                        // Bare `catch { … }` and `catch Class with { … }` bind
+                        // nothing, so they need no frame of their own.
+                        self.visit(handler, confidence);
+                        continue;
+                    };
+
+                    let (sigil, name) = split_catch_variable(spelling);
+                    let frame_range =
+                        SourceLocation::new(variable_range.start, handler.location.end);
+                    let scope_id = self.enter_scope(
+                        ScopeKind::Block,
+                        frame_range,
+                        self.package_context.clone(),
+                    );
+                    // `catch ($e)` introduces a lexical, so the binding storage
+                    // is the same class an explicit `my $e` would record.
+                    self.record_binding(
+                        sigil.to_string(),
+                        name.to_string(),
+                        *variable_range,
+                        StorageClass::LexicalMy,
+                        scope_id,
+                        None,
+                    );
+                    self.visit(handler, confidence);
+                    self.exit_scope();
+                }
+
+                if let Some(finally_block) = finally_block {
+                    self.visit(finally_block, confidence);
+                }
             }
             NodeKind::Class { name, name_span, parents, .. } => {
                 // First slice: shell + child traversal only. Unlike `Package`,
@@ -2045,7 +2092,7 @@ impl Lowerer {
         confidence: RecoveryConfidence,
     ) {
         match &lhs.kind {
-            NodeKind::Typeglob { name } => {
+            NodeKind::Typeglob { name, .. } => {
                 let (package, symbol) = package_and_symbol(name, self.package_context.as_deref());
                 // A dynamically dereferenced glob (`*{$name} = ...`) captures its
                 // destination symbol from a runtime expression, so `name` is the raw
@@ -2528,13 +2575,13 @@ fn static_glob_alias_target(node: &Node) -> Option<(GlobSlotKind, String)> {
             NodeKind::AmperCall { name, args } if args.is_empty() => {
                 Some((GlobSlotKind::Code, name.clone()))
             }
-            NodeKind::Typeglob { name } => Some((GlobSlotKind::Code, name.clone())),
+            NodeKind::Typeglob { name, .. } => Some((GlobSlotKind::Code, name.clone())),
             NodeKind::Variable { sigil, name } => {
                 slot_kind_for_sigil(sigil).map(|slot_kind| (slot_kind, name.clone()))
             }
             _ => None,
         },
-        NodeKind::Typeglob { name } => Some((GlobSlotKind::Code, name.clone())),
+        NodeKind::Typeglob { name, .. } => Some((GlobSlotKind::Code, name.clone())),
         _ => None,
     }
 }
@@ -3097,7 +3144,7 @@ fn named_variable_or_glob(node: &Node) -> Option<(&str, String)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone())),
         NodeKind::VariableWithAttributes { variable, .. } => named_variable_or_glob(variable),
-        NodeKind::Typeglob { name } if is_direct_glob_name(name) => Some(("*", name.clone())),
+        NodeKind::Typeglob { name, .. } if is_direct_glob_name(name) => Some(("*", name.clone())),
         _ => None,
     }
 }
@@ -3114,7 +3161,9 @@ fn is_arrow_postfix_op(op: &str) -> bool {
 fn declared_base_variable(node: &Node) -> Option<(&str, String, &Node)> {
     match &node.kind {
         NodeKind::Variable { sigil, name } => Some((sigil.as_str(), name.clone(), node)),
-        NodeKind::Typeglob { name } if is_direct_glob_name(name) => Some(("*", name.clone(), node)),
+        NodeKind::Typeglob { name, .. } if is_direct_glob_name(name) => {
+            Some(("*", name.clone(), node))
+        }
         NodeKind::VariableWithAttributes { variable, .. } => declared_base_variable(variable),
         NodeKind::Binary { op, left, .. } if is_arrow_postfix_op(op) => {
             declared_base_variable(left)
@@ -3169,7 +3218,7 @@ fn require_target(argument: Option<&Node>) -> Option<String> {
     match argument.map(|node| &node.kind) {
         Some(NodeKind::Identifier { name })
         | Some(NodeKind::String { value: name, .. })
-        | Some(NodeKind::Typeglob { name }) => Some(name.clone()),
+        | Some(NodeKind::Typeglob { name, .. }) => Some(name.clone()),
         _ => None,
     }
 }
@@ -3271,7 +3320,7 @@ fn variable_binding(node: &Node) -> Option<VariableBinding> {
             Some(VariableBinding { sigil: sigil.clone(), name: name.clone(), range: node.location })
         }
         NodeKind::VariableWithAttributes { variable, .. } => variable_binding(variable),
-        NodeKind::Typeglob { name } => Some(VariableBinding {
+        NodeKind::Typeglob { name, .. } => Some(VariableBinding {
             sigil: "*".to_string(),
             name: name.clone(),
             range: node.location,
@@ -3422,8 +3471,7 @@ fn lower_body_from_ast(
     let mut root_block = HirBlock::default();
 
     for stmt_node in stmts {
-        let stmt_id = builder.lower_statement(stmt_node);
-        root_block.stmts.push(stmt_id);
+        builder.append_statement_nodes(stmt_node, &mut root_block);
     }
 
     let root_id = builder.alloc_block(root_block, root_range);
@@ -3436,6 +3484,20 @@ fn lower_body_from_ast(
 //   - Scope-based variable-kind resolution (lexical vs. package)
 //   - Compound-assignment ReadModifyWrite distinction
 //   - Recovery-confidence propagation (no exact fact through contamination)
+
+/// One entry on the enclosing-loop stack used by [`BodyBuilder2`] to resolve
+/// `next`/`last`/`redo` statements to a specific loop region (#13249).
+///
+/// Each entry pairs a stable region ID with the label spelling written on the
+/// loop (if any). Labelled non-loop constructs — labelled bare blocks and the
+/// like — are recorded in a separate stack so a labelled transfer targeting a
+/// non-loop label returns a typed [`LoopControlResolution::NonLoopTarget`]
+/// disposition rather than silently falling back to the nearest loop.
+#[derive(Debug)]
+enum EnclosingLabel {
+    Loop { region: HirLoopRegionId, label: Option<String> },
+    NonLoop(String),
+}
 
 struct BodyBuilder2<'a> {
     exprs: Arena<HirExpr>,
@@ -3452,6 +3514,21 @@ struct BodyBuilder2<'a> {
     /// so every variable in a sub body incorrectly resolved to scope 0 (file root),
     /// making all bindings declared inside the sub invisible.
     start_scope: HirScopeId,
+    /// Next stable loop-region ID to hand out. Region IDs are allocated in
+    /// body source order as loops (or loop-form postfix modifiers) are
+    /// lowered (#13249).
+    next_loop_region_id: u32,
+    /// Enclosing structured-loop regions in source order (top of stack is
+    /// the innermost). Consumed by `HirStmt::LoopControl` resolution (#13249).
+    /// Enclosing labelled non-loop constructs (labelled bare blocks) that
+    /// consumed a pending label without allocating a loop region. Used to
+    /// tell a labelled `last LABEL` targeting a non-loop from a genuinely
+    /// unresolved label (#13249).
+    enclosing_label_stack: Vec<EnclosingLabel>,
+    /// Label inherited from an immediately-enclosing `LABEL:` statement,
+    /// consumed by the labelled construct as it is lowered. Distinct from
+    /// [`Lowerer::pending_label`] (which drives the flat-HIR first pass).
+    body_pending_label: Option<HirLoopLabel>,
 }
 
 impl<'a> BodyBuilder2<'a> {
@@ -3463,6 +3540,59 @@ impl<'a> BodyBuilder2<'a> {
             source_map: BodySourceMap::default(),
             scope_graph,
             start_scope,
+            next_loop_region_id: 0,
+            enclosing_label_stack: Vec::new(),
+            body_pending_label: None,
+        }
+    }
+
+    /// Allocate the next stable loop-region ID (#13249). Region IDs are
+    /// assigned in body source order as loops are lowered, so identical
+    /// inputs produce identical IDs.
+    fn alloc_loop_region(&mut self) -> HirLoopRegionId {
+        let id = HirLoopRegionId::from_index(self.next_loop_region_id);
+        self.next_loop_region_id += 1;
+        id
+    }
+
+    /// Resolve a `next`/`last`/`redo` transfer against the current
+    /// enclosing-loop and non-loop-label stacks (#13249).
+    fn resolve_loop_control(
+        &self,
+        written_label: Option<&str>,
+    ) -> (Option<HirLoopRegionId>, LoopControlResolution) {
+        match written_label {
+            None => self
+                .enclosing_label_stack
+                .iter()
+                .rev()
+                .find_map(|frame| match frame {
+                    EnclosingLabel::Loop { region, .. } => {
+                        Some((Some(*region), LoopControlResolution::Resolved))
+                    }
+                    EnclosingLabel::NonLoop(_) => None,
+                })
+                .unwrap_or((None, LoopControlResolution::NoEnclosingLoop)),
+            Some(label) => self
+                .enclosing_label_stack
+                .iter()
+                .rev()
+                .find_map(|frame| match frame {
+                    EnclosingLabel::Loop { region, label: Some(candidate) }
+                        if candidate == label =>
+                    {
+                        Some((Some(*region), LoopControlResolution::Resolved))
+                    }
+                    EnclosingLabel::NonLoop(candidate) if candidate == label => Some((
+                        None,
+                        LoopControlResolution::NonLoopTarget { label: label.to_string() },
+                    )),
+                    _ => None,
+                })
+                .unwrap_or((
+                    None,
+                    LoopControlResolution::UnresolvedLabel { label: label.to_string() },
+                )),
         }
     }
 
@@ -3652,19 +3782,108 @@ impl<'a> BodyBuilder2<'a> {
     }
 
     fn lower_statement(&mut self, node: &Node) -> HirStmtId {
+        self.lower_labelled_statement(node, None)
+    }
+
+    /// Lower one statement, carrying the label of an immediately-enclosing
+    /// `LABEL:` wrapper.
+    ///
+    /// `direct_label` is the label written directly on this statement, not any
+    /// label further out: it survives only the transparent
+    /// `ExpressionStatement` peel and is `None` for every child lowered from
+    /// here. A postfix modifier needs that distinction, because the
+    /// enclosing-label stack cannot tell `LOOP: $x++ while $c` (labelled) from
+    /// `BLK: { $x++ while $c; }` (an unlabelled modifier under a labelled
+    /// ancestor) — both leave a `NonLoop` frame on top (#13249).
+    fn lower_labelled_statement(&mut self, node: &Node, direct_label: Option<&str>) -> HirStmtId {
         let range = node.location;
 
         match &node.kind {
-            // Peel through the expression-statement wrapper.
-            NodeKind::ExpressionStatement { expression } => self.lower_statement(expression),
+            // Peel through the expression-statement wrapper. The wrapper is
+            // transparent, so a label written on it still counts as direct.
+            NodeKind::ExpressionStatement { expression } => {
+                self.lower_labelled_statement(expression, direct_label)
+            }
+
+            // `LABEL: <statement>` (#13249). The label attaches to the
+            // immediately-nested statement. Loop-shaped children consume it
+            // via `body_pending_label` (allocating a loop region); every
+            // other child is a non-loop labelled construct, tracked on the
+            // non-loop label stack so a labelled `last LABEL` targeting a
+            // non-loop returns a typed `NonLoopTarget` disposition rather
+            // than silently reaching for the nearest loop.
+            NodeKind::LabeledStatement { label, statement } => {
+                let label_meta = HirLoopLabel { name: label.clone(), range };
+                if is_loop_like_statement(statement) {
+                    let saved = self.body_pending_label.replace(label_meta);
+                    let stmt_id = self.lower_statement(statement);
+                    // The loop should have taken it. If somehow it did not
+                    // (e.g. the inner shape does not actually reach a loop
+                    // lowering site — a recovered/opaque node), drop it so a
+                    // later loop-form modifier does not inherit a stale
+                    // label. Restore the outer pending label either way.
+                    self.body_pending_label = saved;
+                    stmt_id
+                } else {
+                    self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
+                    let stmt_id = self.lower_labelled_statement(statement, Some(label));
+                    // Pop only the entry this LabeledStatement pushed. Any
+                    // nested LabeledStatement inside `statement` popped its
+                    // own entry before returning, so this pop always removes
+                    // our own frame.
+                    self.enclosing_label_stack.pop();
+                    stmt_id
+                }
+            }
+
+            // A bare block in statement position. Its children are kept as an
+            // ordered sequence in the block arena and referenced by the
+            // statement, so every child stays reachable from `root_block`;
+            // returning only the first child's ID would leave the rest as
+            // orphan arena entries that no consumer walks (#13249).
+            // `lower_nested_block` also applies the block's own lexical scope.
+            NodeKind::Block { .. } => {
+                let block_id = self.lower_nested_block(node);
+                self.alloc_stmt(HirStmt::Block(block_id), range)
+            }
 
             NodeKind::LoopControl { op, label } => {
                 let verb = loop_control_kind(op);
-                self.alloc_stmt(HirStmt::LoopControl { verb, target_label: label.clone() }, range)
+                let (resolved_target, resolution) = self.resolve_loop_control(label.as_deref());
+                self.alloc_stmt(
+                    HirStmt::LoopControl {
+                        verb,
+                        written_label: label.clone(),
+                        resolved_target,
+                        resolution,
+                    },
+                    range,
+                )
             }
 
             NodeKind::StatementModifier { statement, modifier, condition } => {
                 let verb = statement_modifier_kind(modifier);
+                // #13249 body-model contract: an unlabelled loop-form
+                // postfix modifier owns a stable loop region; branch-form
+                // modifiers never do. A `LABEL:` prefix is absorbed by the
+                // labelled-statement wrapper (tracked as a NonLoop frame on
+                // the enclosing stack), so a labelled postfix mints no
+                // region of its own. The region is identity only: a postfix
+                // modifier is not an enclosing loop, so nothing is pushed
+                // and transfers inside keep resolving outward.
+                let loop_form = matches!(
+                    verb,
+                    StatementModifierKind::While
+                        | StatementModifierKind::Until
+                        | StatementModifierKind::Foreach
+                );
+                // Only a label written directly on this modifier suppresses the
+                // region; a `NonLoop` frame from a labelled ancestor (say a
+                // labelled bare block) must not, or every unlabelled postfix
+                // loop inside it would silently lose its identity.
+                let labelled = direct_label.is_some();
+                let postfix_loop_region =
+                    if loop_form && !labelled { Some(self.alloc_loop_region()) } else { None };
                 let statement_id = self.lower_statement(statement);
                 let condition_id = self.lower_expr(condition);
                 self.alloc_stmt(
@@ -3672,6 +3891,7 @@ impl<'a> BodyBuilder2<'a> {
                         statement: statement_id,
                         condition: condition_id,
                         verb,
+                        postfix_loop_region,
                     },
                     range,
                 )
@@ -3877,6 +4097,29 @@ impl<'a> BodyBuilder2<'a> {
         }
     }
 
+    /// Append every statement in a labelled bare block. Bare blocks are
+    /// transparent for body sequencing, but their label remains an enclosing
+    /// non-loop target while each child is lowered, and the block's own
+    /// lexical scope applies — without the scope switch a `my` declared in the
+    /// block and read later in it resolves against the parent scope and is
+    /// misclassified as package-scoped (#13249).
+    fn append_statement_nodes(&mut self, node: &Node, block: &mut HirBlock) {
+        if let NodeKind::LabeledStatement { label, statement } = &node.kind
+            && let NodeKind::Block { statements } = &statement.kind
+        {
+            let previous_scope = self.start_scope;
+            self.start_scope = find_body_scope(self.scope_graph, statement.location);
+            self.enclosing_label_stack.push(EnclosingLabel::NonLoop(label.clone()));
+            for statement in statements {
+                block.stmts.push(self.lower_statement(statement));
+            }
+            self.enclosing_label_stack.pop();
+            self.start_scope = previous_scope;
+        } else {
+            block.stmts.push(self.lower_statement(node));
+        }
+    }
+
     fn lower_slice_operands(&mut self, node: &Node) -> Vec<HirExprId> {
         match &node.kind {
             NodeKind::ArrayLiteral { elements } => {
@@ -3998,13 +4241,26 @@ impl<'a> BodyBuilder2<'a> {
                     Some("until") => LoopKind::Until,
                     _ => LoopKind::While,
                 };
+                // Consume any pending `LABEL:` and allocate this loop's
+                // stable region BEFORE lowering the condition or body — so a
+                // `next`/`last`/`redo` inside resolves to this loop (#13249).
+                // Every loop kind allocates a region, labelled or not.
+                let label = self.body_pending_label.take();
+                let region_id = self.alloc_loop_region();
+                self.enclosing_label_stack.push(EnclosingLabel::Loop {
+                    region: region_id,
+                    label: label.as_ref().map(|l| l.name.clone()),
+                });
                 let condition_id = Some(self.lower_expr(condition));
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
                     continue_block.as_deref().map(|block| self.lower_nested_block(block));
+                self.enclosing_label_stack.pop();
                 self.alloc_expr(
                     HirExpr::Loop {
                         kind,
+                        region_id,
+                        label,
                         init: None,
                         condition: condition_id,
                         update: None,
@@ -4017,16 +4273,27 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::For { init, condition, update, body, continue_block } => {
+                let label = self.body_pending_label.take();
+                let region_id = self.alloc_loop_region();
+                // Initializer statements execute before entering the loop;
+                // controls there must not see this loop as an enclosing target.
                 let init_id =
                     init.as_deref().map(|initializer| self.lower_for_init_block(initializer));
+                self.enclosing_label_stack.push(EnclosingLabel::Loop {
+                    region: region_id,
+                    label: label.as_ref().map(|l| l.name.clone()),
+                });
                 let condition_id = condition.as_deref().map(|expr| self.lower_expr(expr));
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
                     continue_block.as_deref().map(|block| self.lower_nested_block(block));
                 let update_id = update.as_deref().map(|expr| self.lower_expr(expr));
+                self.enclosing_label_stack.pop();
                 self.alloc_expr(
                     HirExpr::Loop {
                         kind: LoopKind::CStyleFor,
+                        region_id,
+                        label,
                         init: init_id,
                         condition: condition_id,
                         update: update_id,
@@ -4039,14 +4306,23 @@ impl<'a> BodyBuilder2<'a> {
             }
 
             NodeKind::Foreach { variable, list, body, continue_block } => {
+                let label = self.body_pending_label.take();
+                let region_id = self.alloc_loop_region();
+                self.enclosing_label_stack.push(EnclosingLabel::Loop {
+                    region: region_id,
+                    label: label.as_ref().map(|l| l.name.clone()),
+                });
                 let iterator_binding = Some(self.lower_iterator_binding(variable));
                 let condition_id = Some(self.lower_expr(list));
                 let body_id = self.lower_nested_block(body);
                 let continue_id =
                     continue_block.as_deref().map(|block| self.lower_nested_block(block));
+                self.enclosing_label_stack.pop();
                 self.alloc_expr(
                     HirExpr::Loop {
                         kind: LoopKind::Foreach,
+                        region_id,
+                        label,
                         init: None,
                         condition: condition_id,
                         update: None,
@@ -4061,6 +4337,42 @@ impl<'a> BodyBuilder2<'a> {
             NodeKind::Return { value } => {
                 let value_id = value.as_deref().map(|expr| self.lower_expr(expr));
                 self.alloc_expr(HirExpr::Return { value: value_id }, range)
+            }
+
+            NodeKind::Try { body, catch_blocks, finally_block } => {
+                // Each region is lowered as a real nested block (#15567).
+                //
+                // This replaces a call-shaped arm whose stated intent — "lower
+                // all blocks so variable reads in try/catch/finally are
+                // captured for effect analysis" — was right but unmet: it
+                // called `lower_expr` on each `NodeKind::Block`, and
+                // `lower_expr` has no `Block` arm, so every region collapsed to
+                // a childless `Opaque { ast_kind: "Block" }` argument. The
+                // construct reached PIR-A as `Call` over three empty blocks,
+                // dropping every statement inside the regions and reporting the
+                // construct as an unsupported call. `lower_nested_block` is the
+                // block-lowering entry point that arm needed.
+                let body_block = self.lower_nested_block(body);
+
+                let mut catch_handlers = Vec::with_capacity(catch_blocks.len());
+                for (binding, block) in catch_blocks {
+                    // The binding is established before the handler body runs,
+                    // so it is lowered first and the arena order matches source
+                    // evaluation order.
+                    let binding = binding.as_ref().map(|(spelling, binding_range)| {
+                        self.lower_catch_binding(spelling, *binding_range, block)
+                    });
+                    let block = self.lower_nested_block(block);
+                    catch_handlers.push(HirCatchHandler { binding, block });
+                }
+
+                let finally_block =
+                    finally_block.as_deref().map(|block| self.lower_nested_block(block));
+
+                self.alloc_expr(
+                    HirExpr::Try { body: body_block, catch_handlers, finally_block },
+                    range,
+                )
             }
 
             NodeKind::VariableDeclaration { declarator, variable, initializer, .. }
@@ -4289,22 +4601,6 @@ impl<'a> BodyBuilder2<'a> {
                         ast_kind: "Defer".to_string(),
                         callee_span: None,
                     },
-                    range,
-                )
-            }
-
-            NodeKind::Try { body, catch_blocks, finally_block } => {
-                // Lower all blocks so variable reads in try/catch/finally
-                // are captured for effect analysis.
-                let mut arg_ids = vec![self.lower_expr(body)];
-                for (_, handler) in catch_blocks {
-                    arg_ids.push(self.lower_expr(handler));
-                }
-                if let Some(fin) = finally_block {
-                    arg_ids.push(self.lower_expr(fin));
-                }
-                self.alloc_expr(
-                    HirExpr::Call { args: arg_ids, ast_kind: "Try".to_string(), callee_span: None },
                     range,
                 )
             }
@@ -4605,7 +4901,7 @@ impl<'a> BodyBuilder2<'a> {
         };
         let mut block = HirBlock::default();
         for statement in statements {
-            block.stmts.push(self.lower_statement(statement));
+            self.append_statement_nodes(statement, &mut block);
         }
         self.start_scope = previous_scope;
         self.alloc_block(block, node.location)
@@ -4640,6 +4936,49 @@ impl<'a> BodyBuilder2<'a> {
     }
 
     /// Lower a foreach iterator as a write-place expression.
+    /// Lower a `catch ($e)` exception binding into a write place (#15567).
+    ///
+    /// `parse_try` records the catch variable as `format!("{sigil}{name}")`
+    /// together with the *variable token's* own range, so the spelling is split
+    /// back apart: every other [`HirVariable`] carries a bare `name` with the
+    /// sigil in its own field, and the place is anchored at the variable token
+    /// rather than the whole `catch (…)` header — the same anchoring rule as
+    /// [`lower_iterator_binding`](Self::lower_iterator_binding).
+    ///
+    /// The binding kind is resolved through the scope graph rather than assumed
+    /// lexical, from inside the handler's own scope. The first pass registers
+    /// the binding in a frame wrapping the handler (see the `NodeKind::Try` arm
+    /// there), so resolving from the handler block finds it and agrees with how
+    /// reads of the same variable inside that handler resolve. Assuming
+    /// `Lexical` here instead would emit a lexical write whose reads resolve as
+    /// package accesses — the exact mismatch this slice exists to remove.
+    fn lower_catch_binding(
+        &mut self,
+        spelling: &str,
+        range: SourceLocation,
+        handler: &Node,
+    ) -> HirExprId {
+        let (sigil, name) = split_catch_variable(spelling);
+
+        let previous_scope = self.start_scope;
+        self.start_scope = find_body_scope(self.scope_graph, handler.location);
+        let resolved = self.resolve_visible_binding(sigil, name);
+        let kind = Self::kind_for(name, resolved);
+        let binding = resolved.map(|found| found.id);
+        self.start_scope = previous_scope;
+
+        self.alloc_expr(
+            HirExpr::Variable(HirVariable {
+                sigil: sigil_from_str(sigil),
+                name: name.to_string(),
+                kind,
+                access: AccessMode::Write,
+                binding,
+            }),
+            range,
+        )
+    }
+
     fn lower_iterator_binding(&mut self, node: &Node) -> HirExprId {
         match &node.kind {
             NodeKind::Variable { .. } => self.lower_expr_as_place(node, AccessMode::Write),
@@ -4704,6 +5043,25 @@ fn loop_control_kind(op: &str) -> ControlTransferKind {
     }
 }
 
+/// True when `node` (or its `ExpressionStatement` payload) is a loop-shaped
+/// construct that will consume a pending `LABEL:` and allocate a loop
+/// region — i.e. a structured `while`/`until`/`for`/`foreach` loop, or a
+/// loop-form postfix statement modifier. Branch-form modifiers
+/// (`if`/`unless`) are deliberately excluded so `LABEL: STMT if COND;`
+/// classifies the label as a non-loop labelled region rather than silently
+/// tagging the `if` as a loop target (#13249).
+fn is_loop_like_statement(node: &Node) -> bool {
+    let inner = match &node.kind {
+        NodeKind::ExpressionStatement { expression } => &expression.kind,
+        other => other,
+    };
+    match inner {
+        NodeKind::While { .. } | NodeKind::For { .. } | NodeKind::Foreach { .. } => true,
+        NodeKind::StatementModifier { .. } => false,
+        _ => false,
+    }
+}
+
 // ── Helpers for the second-pass body lowerer ─────────────────────────────────
 
 /// Find the innermost scope frame that covers `body_loc` (the source range of
@@ -4729,6 +5087,20 @@ fn find_body_scope(scope_graph: &ScopeGraph, body_loc: SourceLocation) -> HirSco
     best.map(|(_, id)| id)
         .or_else(|| scope_graph.scopes.first().map(|s| s.id))
         .unwrap_or_else(|| HirScopeId::from_index(0))
+}
+
+/// Split a `catch ($e)` variable spelling into its sigil and bare name.
+///
+/// `parse_try` records the catch variable as `format!("{sigil}{name}")`, while
+/// every binding and `HirVariable` in this crate keeps the sigil in its own
+/// field. The parser only admits a scalar catch variable, so a spelling without
+/// a recognized sigil is treated as a bare name under the scalar sigil rather
+/// than silently keeping a sigil character inside the name.
+fn split_catch_variable(spelling: &str) -> (&str, &str) {
+    match spelling.split_at_checked(1) {
+        Some((sigil, rest)) if matches!(sigil, "$" | "@" | "%" | "&" | "*") => (sigil, rest),
+        _ => ("$", spelling),
+    }
 }
 
 fn sigil_from_str(s: &str) -> Sigil {

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,10 @@ CANONICAL_SOURCE_PATHS = {
     "parser_core_manifest": "crates/perl-parser-core/Cargo.toml",
     "generated_doc": "docs/project/PARSER_FACADE_AUTHORITY.md",
 }
+# The fail-closed consumer check below is only load-bearing when CI actually
+# runs it, so the trigger coverage of the workflow that runs this check is
+# itself part of the authority claim (#15580).
+POLICY_VALIDATORS_WORKFLOW = ".github/workflows/policy-validators.yml"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -142,6 +147,116 @@ def normalized_json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
 
 
+def pull_request_path_pattern_matches(pattern: str, candidate: str) -> bool:
+    """GitHub Actions ``pull_request.paths`` match semantics for one pattern.
+
+    Covers the filter subset this repository uses: ``**`` crosses directory
+    separators (a leading ``**/`` also matches zero segments, so
+    ``**/Cargo.toml`` names the workspace-root manifest), ``*`` stays within
+    one segment, and anything else matches literally. A missing or reshaped
+    ``paths`` block must fail the check loudly rather than match nothing, so
+    the extractor in :func:`read_pull_request_path_filters` never returns an
+    empty filter list.
+    """
+    index = 0
+    expression = ["^"]
+    while index < len(pattern):
+        if pattern.startswith("**/", index):
+            expression.append("(?:[^/]+/)*")
+            index += 3
+        elif pattern.startswith("**", index):
+            expression.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            expression.append("[^/]*")
+            index += 1
+        else:
+            expression.append(re.escape(pattern[index]))
+            index += 1
+    expression.append("$")
+    return re.match("".join(expression), candidate) is not None
+
+
+def read_pull_request_path_filters(workflow_path: Path) -> list[str]:
+    """Extract ``on.pull_request.paths`` from a workflow file, stdlib-only.
+
+    Mirrors the minimal hand-rolled YAML reading style of
+    ``scripts/ci/validate_gate_lane_mapping.py``: the block shape is
+    lint-stable, and anything unexpected raises instead of degrading to an
+    empty (always-failing-coverage) filter list.
+    """
+    try:
+        lines = workflow_path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise ValueError(f"cannot read {workflow_path}: {error}") from error
+    for on_index, line in enumerate(lines):
+        if line.rstrip() == "on:":
+            break
+    else:
+        raise ValueError(f"{workflow_path} has no top-level on: block")
+    pull_request_indent = None
+    paths_indent = None
+    for position in range(on_index + 1, len(lines)):
+        line = lines[position]
+        stripped = line.strip()
+        if stripped and not line.startswith(" "):
+            break  # next top-level key: pull_request block absent
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if paths_indent is not None:
+            if indent <= paths_indent:
+                break  # paths block ended
+            if not stripped.startswith("- "):
+                raise ValueError(
+                    f"{workflow_path} paths block has unexpected entry: {stripped!r}"
+                )
+            value = stripped[2:].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                value = value[1:-1]
+            if not value:
+                raise ValueError(f"{workflow_path} paths block has an empty filter")
+            filters.append(value)
+        elif pull_request_indent is None:
+            if stripped == "pull_request:":
+                pull_request_indent = indent
+        elif indent <= pull_request_indent:
+            break  # left the pull_request block without a paths list
+        elif stripped == "paths:" and indent == pull_request_indent + 2:
+            # A direct child of pull_request: only. A sibling trigger's
+            # deeper-nested paths list must never be mistaken for it.
+            paths_indent = indent
+            filters = []
+    if paths_indent is None:
+        raise ValueError(f"{workflow_path} pull_request block has no paths list")
+    if not filters:
+        raise ValueError(f"{workflow_path} pull_request paths block is empty")
+    return filters
+
+
+def assert_policy_validator_trigger_coverage(root: Path, consumers: set[str]) -> None:
+    """Fail closed when CI would not fire for a discovered consumer manifest.
+
+    ``discover_consumers`` scans every ``Cargo.toml`` in the repository, and
+    the consumer ledger check fails closed on an unledgered consumer — but
+    only if the Policy Validators workflow actually runs. A ``pull_request``
+    path filter that misses a consumer manifest makes that drift silent
+    until some unrelated PR trips the workflow (#15580).
+    """
+    filters = read_pull_request_path_filters(root / POLICY_VALIDATORS_WORKFLOW)
+    uncovered = sorted(
+        consumer
+        for consumer in consumers
+        if not any(pull_request_path_pattern_matches(f, consumer) for f in filters)
+    )
+    if uncovered:
+        raise ValueError(
+            f"{POLICY_VALIDATORS_WORKFLOW} pull_request.paths does not fire for "
+            f"discovered consumer manifest(s): {','.join(uncovered)}; consumer "
+            "drift there would pass silently"
+        )
+
+
 def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     ledger = load_ledger(ledger_path)
     ruling = ledger.get("ruling")
@@ -220,6 +335,7 @@ def check(root: Path, ledger_path: Path) -> tuple[dict[str, Any], dict[str, Any]
     consumers = member_table(ledger.get("consumer_groups"), "consumer_groups")
     observed_consumers = discover_consumers(root, manifest_path)
     validate_exact("workspace consumers", observed_consumers, set(consumers))
+    assert_policy_validator_trigger_coverage(root, observed_consumers)
 
     parser_core = load_toml(root / CANONICAL_SOURCE_PATHS["parser_core_manifest"])
     forbidden = sorted(name for name in dependency_rows(parser_core) if any(token in name for token in FORBIDDEN_KERNEL_DEPENDENCY_TOKENS))

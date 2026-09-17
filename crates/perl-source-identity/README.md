@@ -27,7 +27,12 @@ All durable IDs use **SHA-256** with domain separation:
 
 - Fixed inputs always produce byte-identical IDs across machines and builds.
 - No host path, URI, traversal-order counter, or process-local value becomes
-  stable identity.
+  stable identity — for the *logical path*, `RootRelativeLogicalPath` now
+  enforces this (see below). The project name and root key remain
+  authority-defined caller material, and the low-level
+  `LogicalSourceId::from_root_and_path` still hashes whatever it is given, so
+  this is a guarantee about the governed constructors rather than about every
+  public entry point.
 - IDs of different kinds never collide even when their material inputs match
   (each type uses a unique domain prefix).
 - Fields are length-prefixed so `["a", "bc"]` and `["ab", "c"]` hash
@@ -47,7 +52,14 @@ This is asserted by `tests/dependency_contract.rs`.
 
 ## Non-goals (deferred to child issues)
 
-- Path normalization or authority-bound constructor matrix (issue #7655).
+- The remaining authority-bound constructor matrix — open buffer, staged,
+  upstream, harness, generated, DAP/runtime source roles (issue #7655).
+  The canonical **logical-path** invariant is enforced here: see
+  `RootRelativeLogicalPath` below.
+- Path *normalization* of any kind. Logical paths are validated, never rewritten:
+  no separator folding, no traversal resolution, no case folding, no Unicode
+  normalization, and no I/O. Physical-path mechanics belong to issues #7621,
+  #8185 and #8198.
 - Origin/range mappings or redacted location projection (issue #7659).
 - ProjectFactShard/TestItem/DAP/RIPR consumer migration.
 - Provider or file-lifecycle behavior change.
@@ -74,6 +86,42 @@ it were v1.
 Together this means a value of any of these types, however it was obtained, is
 well-formed. `from_wire` returns `Option`; `serde` returns an error.
 
+## `RootRelativeLogicalPath`: validation, not normalization
+
+`LogicalSourceId` is *root* plus *root-relative path*. That second half used to be
+a promise in a doc comment, so a caller could hand it a host absolute path, a `..`
+traversal or an empty string and get back a perfectly well-formed durable ID for
+the wrong source — and two callers normalizing the same file differently both
+produced valid-looking, different IDs.
+
+`RootRelativeLogicalPath::parse` makes the promise checkable. Its only constructor
+is fallible, so holding the type *is* the proof, and
+`LogicalSourceId::from_root_and_logical_path` cannot be handed anything else.
+
+| Refused | Why not repaired |
+|---|---|
+| empty | names nothing |
+| leading `/` | stripping it turns a host path into a plausible relative path |
+| `\` anywhere | an unconverted separator and a literal POSIX backslash are indistinguishable without platform authority; folding would alias `we\ird.pm` onto `we/ird.pm` |
+| `C:` prefix | drive-qualified paths are not root-relative |
+| `.` / `..` segment | resolving lexically can escape the root; resolving truthfully needs the filesystem |
+| `//` run, trailing `/` | collapsing lets several spellings validate to one file while hashing differently |
+| control / NUL | not representable, and usually a truncated or injected value |
+
+Two properties worth stating explicitly:
+
+- **Nothing is folded.** Case is preserved (`lib/App.pm` ≠ `lib/app.pm`) and bytes
+  are preserved (NFC ≠ NFD), so identity reflects what the producer actually named
+  rather than this crate's Unicode tables. Case-insensitive filesystem contexts
+  need declared authority and remain #7655's business.
+- **Errors carry no path.** `LogicalPathError` holds only a reason, and its
+  `Display`/`Debug` never echo the rejected material — which is exactly the
+  material most likely to be a private host path.
+
+`from_root_and_path` remains available as the low-level constructor over material
+already proven canonical. It is the one digest implementation; the governed
+constructor delegates to it, so validation cannot move published wire vectors.
+
 ## Ownership and the FNV-1a boundary
 
 This crate owns `source_identity.v1` — durable source/project/content identity
@@ -94,12 +142,17 @@ for the recorded decision. `LogicalSourceId` is **not** an alias for
 ```rust
 use perl_source_identity::{
     ContentDigest, ContentRevision, LogicalSourceId, ProjectId,
-    SourceGeneration, SourceIdentityEnvelope, WorkspaceRootId,
+    RootRelativeLogicalPath, SourceGeneration, SourceIdentityEnvelope,
+    WorkspaceRootId,
 };
 
 let project = ProjectId::from_canonical_name("https://github.com/acme/widget");
 let root = WorkspaceRootId::from_project_and_root_key(&project, "abc123");
-let src = LogicalSourceId::from_root_and_path(&root, "lib/Widget.pm");
+
+// Validated: a host absolute path, a `..` traversal or an empty string cannot
+// become a durable logical source identity through this route.
+let path = RootRelativeLogicalPath::parse("lib/Widget.pm")?;
+let src = LogicalSourceId::from_root_and_logical_path(&root, &path);
 
 let digest = ContentDigest::of_bytes(b"package Widget;\n1;\n");
 let revision = ContentRevision::new(src.clone(), digest);
