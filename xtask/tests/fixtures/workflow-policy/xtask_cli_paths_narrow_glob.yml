@@ -1,0 +1,16 @@
+name: fixture-xtask-cli-paths-narrow-glob
+# A glob that stops short: `xtask/src/tasks/**` covers `tasks/mod.rs` but not
+# `main.rs`, so exactly one file is still unenumerated.
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/**'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: cargo xtask example-contract check

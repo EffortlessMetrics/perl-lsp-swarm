@@ -65,6 +65,15 @@ use std::process::Command;
 const POLICY_FILE: &str = "policy/workflow-contracts.toml";
 const WORKFLOWS_DIR: &str = ".github/workflows";
 
+/// Self-describing schema token for the receipt this task emits
+/// (`target/receipts/workflow-contracts.json`), mirroring the
+/// `ci_subject.rs` `SCHEMA_VERSION` reference shape. The wire schema at
+/// `.ci/receipts/schemas/workflow-contracts.schema.json` pins the same value
+/// with a `const`; `receipt_schema_const_matches_token` guards the pairing.
+/// Distinct from `WorkflowContractsPolicy::schema_version`, which versions
+/// the policy *document* format, not this receipt.
+const SCHEMA_VERSION: &str = "workflow_contracts.v1";
+
 /// The sole authority for workflow-contracts policy:
 /// `policy/workflow-contracts.toml`, deserialized. Mirrors
 /// [`crate::tasks::changelog`]'s `ChangelogPolicy` shape and the three-clock
@@ -487,7 +496,7 @@ fn write_receipt(
             .map_err(|e| format!("creating {}: {e}", parent.display()))?;
     }
     let receipt = WorkflowContractsReceipt {
-        schema_version: "1",
+        schema_version: SCHEMA_VERSION,
         receipt_kind: "workflow_contracts",
         passed,
         finding_count: findings.len(),
@@ -1042,10 +1051,29 @@ matrix_os_allowlist = []
         let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let parsed: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        assert_eq!(parsed["schema_version"], SCHEMA_VERSION);
         assert_eq!(parsed["receipt_kind"], "workflow_contracts");
         assert_eq!(parsed["passed"], false);
         assert_eq!(parsed["finding_count"], 1);
         assert_eq!(parsed["findings"][0]["message"], "ci.yml: not SHA-pinned: foo/bar@v1");
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_schema_const_matches_token() -> std::result::Result<(), String> {
+        let root = crate::utils::project_root().map_err(|e| e.to_string())?;
+        let schema_path = root.join(".ci/receipts/schemas/workflow-contracts.schema.json");
+        let content = std::fs::read_to_string(&schema_path)
+            .map_err(|e| format!("reading {}: {e}", schema_path.display()))?;
+        let schema: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        let schema_const = schema
+            .get("properties")
+            .and_then(|properties| properties.get("schema_version"))
+            .and_then(|schema_version| schema_version.get("const"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "schema missing properties.schema_version.const".to_string())?;
+        assert_eq!(schema_const, SCHEMA_VERSION);
         Ok(())
     }
 
