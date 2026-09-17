@@ -311,18 +311,51 @@ fn test_e2e_attach_workflow_stopped_event() -> TestResult {
 
     let _thread_id = attached.thread_id;
 
-    // After attach, we can set breakpoints (the adapter accepts them).
-    // Use set_breakpoints_checked to assert verified=true for all entries.
+    // This legacy self-PID attach has no debugger engine installed.  The
+    // adapter must retain the executable breakpoint as a pending request until
+    // an engine acknowledges it; this test does not claim an actual OS attach.
     let workspace = tempdir()?;
     let script = workspace.path().join("dummy.pl");
     write(&script, workflow_script_content())?;
     let script_str = script.to_str().ok_or("script path is not valid UTF-8")?.to_string();
 
-    let resolved = session.set_breakpoints_checked(&script_str, &[BP_LINE_2])?;
-    assert!(
-        !resolved.is_empty(),
-        "setBreakpoints after attach must return at least one verified breakpoint"
-    );
+    let body = session
+        .set_breakpoints(&script_str, &[BP_LINE_2])?
+        .ok_or("setBreakpoints after attach returned no body")?;
+    let breakpoints = body
+        .get("breakpoints")
+        .and_then(Value::as_array)
+        .ok_or("setBreakpoints after attach returned no breakpoint array")?;
+    if breakpoints.len() != 1 {
+        return Err(format!(
+            "engine-less attach must return exactly one pending breakpoint, got {}",
+            breakpoints.len()
+        )
+        .into());
+    }
+    let breakpoint = breakpoints.first().ok_or("pending breakpoint entry disappeared")?;
+    let line = breakpoint
+        .get("line")
+        .and_then(Value::as_i64)
+        .ok_or("pending breakpoint must include an integer line")?;
+    if line != BP_LINE_2 as i64 {
+        return Err(format!("pending breakpoint line must remain {}, got {line}", BP_LINE_2).into());
+    }
+    if breakpoint.get("id").and_then(Value::as_i64).is_none() {
+        return Err("pending breakpoint must include an integer id".into());
+    }
+    if breakpoint.get("verified").and_then(Value::as_bool) != Some(false) {
+        return Err(
+            format!("engine-less attach breakpoint must remain pending: {breakpoint:?}").into()
+        );
+    }
+    let message = breakpoint
+        .get("message")
+        .and_then(Value::as_str)
+        .ok_or("pending breakpoint must include its pending reason")?;
+    if message != "Breakpoint is pending debugger launch" {
+        return Err(format!("unexpected pending breakpoint reason: {message:?}").into());
+    }
 
     session.disconnect()?;
 
@@ -598,10 +631,26 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
         arithmetic_result.contains("15"),
         "watch evaluate should include the arithmetic result in debugger output, got `{arithmetic_result}`"
     );
+
+    let (spaced_arithmetic_result, _) = session.evaluate_expression("6 * 7", frame_id)?;
+    if !spaced_arithmetic_result.split_whitespace().eq(["0", "42"]) {
+        return Err(format!(
+            "watch evaluate should return the exact spaced arithmetic result, got `{spaced_arithmetic_result}`"
+        )
+        .into());
+    }
     assert!(
         matches!(arithmetic_type.as_deref(), Some("scalar" | "integer" | "string")),
         "arithmetic evaluate should include a scalar-like result type, got {arithmetic_type:?}"
     );
+
+    let (leading_space_result, _) = session.evaluate_expression(" 6 * 7", frame_id)?;
+    if !leading_space_result.split_whitespace().eq(["0", "42"]) {
+        return Err(format!(
+            "watch evaluate should preserve leading whitespace numeric arithmetic, got `{leading_space_result}`"
+        )
+        .into());
+    }
 
     let (string_result, string_type) = session.evaluate_expression("'dap-e2e'", frame_id)?;
     assert!(

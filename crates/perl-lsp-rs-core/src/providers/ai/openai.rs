@@ -1,10 +1,12 @@
 //! OpenAI-compatible completion provider.
 
+use super::budget::{AiResponseBudget, BudgetKind, BudgetViolation};
 use super::destination::{ApprovedDestination, credential_may_attach, validate_endpoint};
+use super::inflight::{InflightCounters, InflightGate};
 use super::prompt::build_fim_prompt;
 use super::rate_limiter::RateLimiter;
 use super::sanitize::{sanitize_completion_text, sanitize_streaming_text};
-use super::sse::SseParser;
+use super::sse::{SseParser, budget_violation};
 use crate::config::{
     DEFAULT_AI_API_KEY_HEADER, DEFAULT_AI_API_KEY_PREFIX, is_safe_http_header_value_part,
     normalize_ai_api_key_header, normalize_ai_api_key_prefix,
@@ -15,10 +17,30 @@ use crate::providers::inline_completion::{
 use std::io::{BufRead, BufReader};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use ureq::unversioned::resolver::{ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 /// Configuration for the OpenAI-compatible provider.
+///
+/// # Supported construction, and the 0.18.0 field addition
+///
+/// Build this with [`OpenAiConfig::new`] and assign the optional fields
+/// afterwards. That is the supported strategy and it survives field additions.
+///
+/// The fields are public, so an exhaustive struct literal also compiles — but
+/// it is *not* a supported construction path, because every new field breaks
+/// it. `max_inflight` (`#8300`) is such an addition: a downstream literal that
+/// enumerated every field of the 0.17.0 struct no longer compiles.
+///
+/// This crate is published and pre-1.0. Under Cargo's 0.x rules the minor
+/// component is the breaking-change vehicle. The planned disposition is to
+/// carry this field addition in the 0.18.0 release train
+/// (`docs/releases/v0.18-release-topology.md`), under the AI security umbrella
+/// (#4955). The current tree is still 0.17 and release preparation remains a
+/// separate gate.
+///
+/// Callers using `new` plus field assignment need no change.
 #[derive(Debug, Clone)]
 pub struct OpenAiConfig {
     /// The API endpoint URL (e.g. `https://api.openai.com/v1/chat/completions`).
@@ -35,15 +57,31 @@ pub struct OpenAiConfig {
     pub timeout_ms: u64,
     /// Allow plain HTTP when the endpoint resolves to loopback only.
     pub local_model_mode: bool,
+    /// Maximum simultaneously active backend requests (`#8300`).
+    ///
+    /// A live-request ceiling, not a rate. The provider builds its own
+    /// [`InflightGate`] from this so the gate's lifetime is exactly the
+    /// backend generation's.
+    pub max_inflight: u32,
 }
 
 /// An OpenAI-compatible completion provider using ureq for HTTP.
 pub struct OpenAiProvider {
     config: OpenAiConfig,
     limiter: Arc<RateLimiter>,
+    /// Live concurrency ceiling for this backend generation (`#8300`).
+    ///
+    /// Owned rather than shared: reconfiguring the AI profile builds a new
+    /// provider, so a new generation starts with an empty gate while permits
+    /// outstanding on the old one drain into the gate they came from.
+    inflight: InflightGate,
     /// Destination validated once on first use; subsequent requests only
     /// re-check credential binding against the URL about to be dispatched.
     approved: OnceLock<ApprovedDestination>,
+    /// Resource ceiling applied to every response this provider reads.
+    /// Compiled policy for now; a user-owned backend profile selects values
+    /// within the same compiled maxima once #10252 lands.
+    budget: AiResponseBudget,
 }
 
 impl OpenAiConfig {
@@ -57,6 +95,7 @@ impl OpenAiConfig {
             api_key_prefix: Some(DEFAULT_AI_API_KEY_PREFIX.to_string()),
             timeout_ms,
             local_model_mode: false,
+            max_inflight: 1,
         }
     }
 }
@@ -98,10 +137,124 @@ impl Resolver for PinnedIpResolver {
     }
 }
 
+/// Incremental accounting for the cumulative streamed completion.
+///
+/// Size is tracked as each delta arrives rather than recomputed from the text
+/// already held, so a run of individually legal deltas is bounded as cheaply
+/// as a single oversized one and no bound check rescans or clones the
+/// candidate.
+struct CumulativeOutput {
+    text: String,
+    chars: u64,
+    terminators: u64,
+    /// The previous delta ended on a carriage return, so a leading `\n` in the
+    /// next one completes that CRLF rather than starting a second line.
+    pending_cr: bool,
+}
+
+impl CumulativeOutput {
+    const fn new() -> Self {
+        Self { text: String::new(), chars: 0, terminators: 0, pending_cr: false }
+    }
+
+    /// Line terminators in `delta`, counted the way [`super::sanitize`] splits
+    /// lines: LF, CRLF as one, and a bare CR.
+    ///
+    /// Counting only `\n` would let a candidate that uses CR-only endings —
+    /// which the sanitizer downstream does split on — report a single line
+    /// however many lines it really spans, and so slip past the line ceiling.
+    /// `leading_lf_is_continuation` carries a CRLF split across two deltas.
+    fn count_terminators(delta: &str, leading_lf_is_continuation: bool) -> u64 {
+        let bytes = delta.as_bytes();
+        let mut terminators = 0_u64;
+        let mut index = 0_usize;
+        while let Some(&byte) = bytes.get(index) {
+            match byte {
+                b'\n' => {
+                    let continues_previous = index == 0 && leading_lf_is_continuation;
+                    if !continues_previous {
+                        terminators = terminators.saturating_add(1);
+                    }
+                    index = index.saturating_add(1);
+                }
+                b'\r' => {
+                    terminators = terminators.saturating_add(1);
+                    // Consume the LF of a CRLF pair so it is not counted twice.
+                    let pair = usize::from(bytes.get(index.saturating_add(1)) == Some(&b'\n'));
+                    index = index.saturating_add(1).saturating_add(pair);
+                }
+                _ => index = index.saturating_add(1),
+            }
+        }
+        terminators
+    }
+
+    /// The candidate accumulated so far.
+    fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Admit `delta`, or refuse it before any part of it is retained.
+    fn push(&mut self, delta: &str, budget: AiResponseBudget) -> Result<(), BudgetViolation> {
+        let delta_bytes = delta.len() as u64;
+        budget.check(BudgetKind::DeltaBytes, delta_bytes)?;
+
+        let bytes = (self.text.len() as u64).saturating_add(delta_bytes);
+        budget.check(BudgetKind::CompletionBytes, bytes)?;
+
+        let chars = self.chars.saturating_add(delta.chars().count() as u64);
+        budget.check(BudgetKind::CompletionChars, chars)?;
+
+        let terminators =
+            self.terminators.saturating_add(Self::count_terminators(delta, self.pending_cr));
+        // A non-empty candidate spans one more line than it holds terminators.
+        budget.check(BudgetKind::CompletionLines, terminators.saturating_add(1))?;
+
+        self.text.push_str(delta);
+        self.chars = chars;
+        self.terminators = terminators;
+        self.pending_cr = delta.as_bytes().last() == Some(&b'\r');
+        Ok(())
+    }
+}
+
 impl OpenAiProvider {
     /// Create a new provider with the given config and rate limiter.
+    ///
+    /// The live concurrency gate is built here from `config.max_inflight`, so
+    /// it belongs to this provider generation (`#8300`).
     pub fn new(config: OpenAiConfig, limiter: Arc<RateLimiter>) -> Self {
-        Self { config, limiter, approved: OnceLock::new() }
+        let inflight = InflightGate::new(config.max_inflight);
+        Self {
+            config,
+            limiter,
+            inflight,
+            approved: OnceLock::new(),
+            budget: AiResponseBudget::compiled_default(),
+        }
+    }
+
+    /// A snapshot of this generation's live-concurrency counters.
+    ///
+    /// This is the supported way to observe the gate. It returns a copied
+    /// snapshot rather than the gate itself, so reading occupancy cannot
+    /// consume it. The counters are bounded and numeric: no prompt, source,
+    /// completion, endpoint, or credential material is derivable from them.
+    pub fn inflight_counters(&self) -> InflightCounters {
+        self.inflight.counters()
+    }
+
+    /// The live gate itself — a test seam, not supported API.
+    ///
+    /// Prefer [`Self::inflight_counters`] to observe occupancy. This accessor
+    /// hands out the gate, and [`InflightGate::try_acquire`] on it takes a real
+    /// permit: a caller holding permits here starves the provider's own
+    /// requests into `Saturated`. That is what makes it useful for constructing
+    /// saturation in tests, and why it is not something to reach for in
+    /// application code.
+    #[doc(hidden)]
+    pub fn inflight(&self) -> &InflightGate {
+        &self.inflight
     }
 
     fn approved_destination(&self) -> Result<&ApprovedDestination, BackendError> {
@@ -278,12 +431,17 @@ impl OpenAiProvider {
     /// Drive the SSE event loop, forwarding cumulative candidate chunks to
     /// `sink`. Split out from [`Self::stream`] so the delta-to-sink wiring
     /// is testable without an HTTP transport.
+    ///
+    /// `budget` bounds the candidate itself. The parser has already bounded
+    /// the bytes, lines, and events beneath it; this level stops a stream of
+    /// individually legal deltas from accumulating without limit.
     fn drive_sse_stream<R: BufRead>(
         parser: &mut SseParser<R>,
+        budget: AiResponseBudget,
         api_key: &str,
         sink: &mut dyn FnMut(StreamChunk) -> StreamControl,
     ) -> Result<(), BackendError> {
-        let mut cumulative = String::new();
+        let mut cumulative = CumulativeOutput::new();
 
         loop {
             match parser.next_event() {
@@ -301,7 +459,11 @@ impl OpenAiProvider {
                         ));
                     }
                     if let Some(delta) = Self::extract_content_delta(&event.data) {
-                        cumulative.push_str(&delta);
+                        // Refused before the delta is retained, so a chunk
+                        // that crosses a limit is never partially emitted.
+                        if let Err(violation) = cumulative.push(&delta, budget) {
+                            return Err(BackendError::BudgetExceeded(violation));
+                        }
 
                         let is_final = Self::extract_finish_reason(&event.data)
                             .is_some_and(|r| r == "stop" || r == "length");
@@ -313,7 +475,7 @@ impl OpenAiProvider {
                         // code mid-stream whenever a content fence arrived
                         // and leaked partially delivered markers for a tick.
                         let control = sink(StreamChunk {
-                            text: Self::stream_chunk_text(&cumulative, is_final),
+                            text: Self::stream_chunk_text(cumulative.text(), is_final),
                             is_final,
                         });
 
@@ -324,16 +486,22 @@ impl OpenAiProvider {
                 }
                 Ok(None) => {
                     // Stream ended -- emit final chunk if we have content
-                    if !cumulative.is_empty() {
+                    if !cumulative.text().is_empty() {
                         sink(StreamChunk {
-                            text: Self::stream_chunk_text(&cumulative, true),
+                            text: Self::stream_chunk_text(cumulative.text(), true),
                             is_final: true,
                         });
                     }
                     break;
                 }
-                Err(e) => {
-                    return Err(Self::map_transport_error(e.to_string(), api_key));
+                Err(error) => {
+                    // A refused response carries its typed violation through
+                    // the IO channel; only a genuine transport failure is
+                    // classified by message.
+                    return Err(budget_violation(&error).map_or_else(
+                        || Self::map_transport_error(error.to_string(), api_key),
+                        BackendError::BudgetExceeded,
+                    ));
                 }
             }
         }
@@ -348,10 +516,17 @@ impl OpenAiProvider {
     reason = "policy:#2064: OpenAI unit tests stay beside config helpers before backend implementation"
 )]
 mod tests {
-    use super::{OpenAiConfig, OpenAiProvider};
+    use super::{AiResponseBudget, OpenAiConfig, OpenAiProvider};
     use crate::providers::ai::rate_limiter::RateLimiter;
     use perl_test_must::{must_some_with, must_with};
     use std::sync::Arc;
+
+    /// The budget every existing stream test runs under: the same compiled
+    /// policy production uses, so those tests keep proving production
+    /// behavior rather than a relaxed test-only ceiling.
+    fn test_budget() -> AiResponseBudget {
+        AiResponseBudget::compiled_default()
+    }
 
     fn provider_with_endpoint(endpoint: &str) -> OpenAiProvider {
         OpenAiProvider::new(
@@ -418,14 +593,19 @@ mod tests {
         let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
         let mut chunks: Vec<(String, bool)> = Vec::new();
         must_with(
-            OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
-                chunks.push((chunk.text, chunk.is_final));
-                if chunk.is_final {
-                    crate::providers::inline_completion::StreamControl::Stop
-                } else {
-                    crate::providers::inline_completion::StreamControl::Continue
-                }
-            }),
+            OpenAiProvider::drive_sse_stream(
+                &mut parser,
+                test_budget(),
+                "test-key",
+                &mut |chunk| {
+                    chunks.push((chunk.text, chunk.is_final));
+                    if chunk.is_final {
+                        crate::providers::inline_completion::StreamControl::Stop
+                    } else {
+                        crate::providers::inline_completion::StreamControl::Continue
+                    }
+                },
+            ),
             "synthetic SSE frames must drive the stream loop",
         );
         chunks
@@ -514,9 +694,10 @@ mod tests {
         // ignored until EOF finalizes the accumulated text.
         let body = "data: {\"type\": \"response.failed\"}\n\n";
         let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
-        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |_| {
-            crate::providers::inline_completion::StreamControl::Continue
-        });
+        let result =
+            OpenAiProvider::drive_sse_stream(&mut parser, test_budget(), "test-key", &mut |_| {
+                crate::providers::inline_completion::StreamControl::Continue
+            });
         assert!(
             matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
             "provider failure events must be typed errors"
@@ -534,10 +715,15 @@ mod tests {
         body.push_str("data: {\"type\": \"response.incomplete\"}\n\n");
         let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
         let mut chunks: Vec<(String, bool)> = Vec::new();
-        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
-            chunks.push((chunk.text, chunk.is_final));
-            crate::providers::inline_completion::StreamControl::Continue
-        });
+        let result = OpenAiProvider::drive_sse_stream(
+            &mut parser,
+            test_budget(),
+            "test-key",
+            &mut |chunk| {
+                chunks.push((chunk.text, chunk.is_final));
+                crate::providers::inline_completion::StreamControl::Continue
+            },
+        );
         assert!(
             matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
             "provider failure events must be typed errors"
@@ -562,10 +748,15 @@ mod tests {
         );
         let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
         let mut chunks: Vec<(String, bool)> = Vec::new();
-        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
-            chunks.push((chunk.text, chunk.is_final));
-            crate::providers::inline_completion::StreamControl::Continue
-        });
+        let result = OpenAiProvider::drive_sse_stream(
+            &mut parser,
+            test_budget(),
+            "test-key",
+            &mut |chunk| {
+                chunks.push((chunk.text, chunk.is_final));
+                crate::providers::inline_completion::StreamControl::Continue
+            },
+        );
         must_with(result, "token-limited incomplete must not be a provider error");
         let (text, is_final) = must_some_with(chunks.last(), "boundary chunk");
         assert!(is_final, "token-limited output must finalize");
@@ -576,9 +767,10 @@ mod tests {
     fn stream_incomplete_without_token_limit_stays_a_provider_error() {
         let body = "data: {\"type\":\"response.incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"}}\n\n";
         let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
-        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |_| {
-            crate::providers::inline_completion::StreamControl::Continue
-        });
+        let result =
+            OpenAiProvider::drive_sse_stream(&mut parser, test_budget(), "test-key", &mut |_| {
+                crate::providers::inline_completion::StreamControl::Continue
+            });
         assert!(
             matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
             "non-token-limited incomplete reasons stay failures"
@@ -599,10 +791,15 @@ mod tests {
         );
         let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
         let mut chunks: Vec<(String, bool)> = Vec::new();
-        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |chunk| {
-            chunks.push((chunk.text, chunk.is_final));
-            crate::providers::inline_completion::StreamControl::Continue
-        });
+        let result = OpenAiProvider::drive_sse_stream(
+            &mut parser,
+            test_budget(),
+            "test-key",
+            &mut |chunk| {
+                chunks.push((chunk.text, chunk.is_final));
+                crate::providers::inline_completion::StreamControl::Continue
+            },
+        );
         assert!(
             matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
             "content_filter rejections must be provider errors"
@@ -619,9 +816,10 @@ mod tests {
         // though it carries no choices/finish_reason shape.
         let body = "data: {\"type\": \"error\"}\n\n";
         let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
-        let result = OpenAiProvider::drive_sse_stream(&mut parser, "test-key", &mut |_| {
-            crate::providers::inline_completion::StreamControl::Continue
-        });
+        let result =
+            OpenAiProvider::drive_sse_stream(&mut parser, test_budget(), "test-key", &mut |_| {
+                crate::providers::inline_completion::StreamControl::Continue
+            });
         assert!(
             matches!(result, Err(crate::providers::inline_completion::BackendError::Provider(_))),
             "Responses API error events must be provider errors"
@@ -702,6 +900,208 @@ mod tests {
         assert!(!message.contains("connector-key"));
         Ok(())
     }
+
+    // ── cumulative output bounds ─────────────────────────────────────────
+
+    use crate::providers::ai::budget::{BudgetKind, BudgetViolation};
+    use crate::providers::inline_completion::{BackendError, StreamControl};
+
+    fn budget_with(kind: BudgetKind, value: u64) -> AiResponseBudget {
+        let Ok(budget) = AiResponseBudget::compiled_default().with_limit(kind, value) else {
+            unreachable!("{kind} narrowing to {value} must be within the compiled maximum");
+        };
+        budget
+    }
+
+    /// Frame `deltas` as chat-completions SSE events with no terminal
+    /// `finish_reason`, drive the real loop, and return every chunk the sink
+    /// saw alongside the outcome.
+    fn drive_open_ended(
+        deltas: &[String],
+        budget: AiResponseBudget,
+    ) -> (Vec<String>, Result<(), BackendError>) {
+        let mut body = String::new();
+        for delta in deltas {
+            let event = serde_json::json!({
+                "choices": [{ "delta": { "content": delta }, "finish_reason": null }]
+            });
+            body.push_str(&format!("data: {event}\n\n"));
+        }
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut seen: Vec<String> = Vec::new();
+        let outcome =
+            OpenAiProvider::drive_sse_stream(&mut parser, budget, "test-key", &mut |chunk| {
+                seen.push(chunk.text);
+                StreamControl::Continue
+            });
+        (seen, outcome)
+    }
+
+    fn violation_of(outcome: &Result<(), BackendError>) -> Option<BudgetViolation> {
+        match outcome {
+            Err(BackendError::BudgetExceeded(violation)) => Some(*violation),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn one_oversized_delta_is_refused_before_it_is_retained() {
+        let deltas = vec!["x".repeat(64)];
+        let (seen, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::DeltaBytes, 32));
+        assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::DeltaBytes));
+        assert!(seen.is_empty(), "an over-limit delta must not reach the sink: {seen:?}");
+    }
+
+    #[test]
+    fn a_delta_exactly_at_its_limit_is_admitted() {
+        // Negative control for the refusal above.
+        let deltas = vec!["x".repeat(32)];
+        let (seen, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::DeltaBytes, 32));
+        assert!(outcome.is_ok(), "a delta at the limit must be admitted: {outcome:?}");
+        assert_eq!(seen.last().map(String::as_str), Some("x".repeat(32).as_str()));
+    }
+
+    #[test]
+    fn many_individually_legal_deltas_are_refused_once_they_cross_the_byte_limit() {
+        // Each delta is far under the per-delta limit; only the cumulative
+        // accounting can catch this.
+        let deltas: Vec<String> = (0..64).map(|_| "abcd".to_string()).collect();
+        // The delta limit is brought down alongside the completion limit so
+        // the budget stays coherent; at 100 bytes it still dwarfs every
+        // 4-byte delta, so only cumulative accounting can trip here.
+        let Ok(budget) =
+            budget_with(BudgetKind::DeltaBytes, 100).with_limit(BudgetKind::CompletionBytes, 100)
+        else {
+            unreachable!("narrowing both output limits to 100 must be coherent");
+        };
+        let (seen, outcome) = drive_open_ended(&deltas, budget);
+        let violation = violation_of(&outcome);
+        assert_eq!(violation.map(|v| v.kind), Some(BudgetKind::CompletionBytes));
+        assert_eq!(violation.map(|v| v.limit), Some(100));
+        // Nothing past the limit was ever handed out.
+        for text in &seen {
+            assert!(text.len() <= 100, "sink saw {} bytes past a 100-byte limit", text.len());
+        }
+    }
+
+    #[test]
+    fn cumulative_character_overflow_counts_scalars_not_bytes() {
+        // Twenty four-byte emoji: 80 bytes, but only 20 characters. A limit of
+        // 16 characters must trip while the byte limit stays untouched.
+        let deltas: Vec<String> = (0..20).map(|_| "\u{1F980}".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionChars, 16));
+        let violation = violation_of(&outcome);
+        assert_eq!(violation.map(|v| v.kind), Some(BudgetKind::CompletionChars));
+        assert_eq!(violation.map(|v| v.observed_at_least), Some(17));
+    }
+
+    #[test]
+    fn cumulative_line_overflow_is_refused() {
+        let deltas: Vec<String> = (0..10).map(|_| "line\n".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 4));
+        assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::CompletionLines));
+    }
+
+    #[test]
+    fn a_single_line_candidate_is_not_refused_by_a_one_line_limit() {
+        // Boundary control for the newline accounting: a candidate with no
+        // newline spans exactly one line and must survive a limit of one.
+        let deltas = vec!["my $x = 1;".to_string()];
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 1));
+        assert!(outcome.is_ok(), "a single-line candidate must fit one line: {outcome:?}");
+    }
+
+    #[test]
+    fn malformed_event_json_under_the_limits_is_not_a_budget_error() {
+        // Negative control: budget enforcement must not swallow ordinary
+        // parse outcomes. An undecodable event yields no delta and the stream
+        // simply ends without content.
+        let body = "data: {not json at all}\n\n";
+        let mut parser = crate::providers::ai::sse::SseParser::new(std::io::Cursor::new(body));
+        let mut seen = 0_usize;
+        let outcome =
+            OpenAiProvider::drive_sse_stream(&mut parser, test_budget(), "test-key", &mut |_| {
+                seen = seen.saturating_add(1);
+                StreamControl::Continue
+            });
+        assert!(outcome.is_ok(), "malformed JSON is not a budget breach: {outcome:?}");
+        assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn a_transport_level_budget_breach_surfaces_as_a_typed_backend_error() {
+        // The violation is raised inside the parser and must reach the caller
+        // as BudgetExceeded rather than being flattened into Transport.
+        let body = "data: hello\n\ndata: world\n\n";
+        let budget = budget_with(BudgetKind::EventCount, 1);
+        let mut parser =
+            crate::providers::ai::sse::SseParser::with_budget(std::io::Cursor::new(body), budget);
+        let outcome =
+            OpenAiProvider::drive_sse_stream(&mut parser, budget, "test-key", &mut |_| {
+                StreamControl::Continue
+            });
+        assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::EventCount));
+    }
+
+    #[test]
+    fn cr_only_line_endings_count_toward_the_line_ceiling() {
+        // `sanitize::line_bounds` splits on a bare CR, so a CR-only candidate
+        // really does span these lines downstream. Counting only `\n` reported
+        // one line and let it past the ceiling.
+        let deltas: Vec<String> = (0..10).map(|_| "line\r".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 4));
+        assert_eq!(violation_of(&outcome).map(|v| v.kind), Some(BudgetKind::CompletionLines));
+    }
+
+    #[test]
+    fn a_crlf_pair_counts_as_one_line_ending() {
+        // Negative control for the CR counting above: CRLF must not be
+        // double-counted, or a legitimate DOS-line candidate would be refused
+        // at half the configured ceiling.
+        let deltas: Vec<String> = (0..3).map(|_| "line\r\n".to_string()).collect();
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 4));
+        assert!(outcome.is_ok(), "three CRLF lines must fit a limit of four: {outcome:?}");
+    }
+
+    #[test]
+    fn a_crlf_split_across_two_deltas_counts_once() {
+        // The CR arrives at the end of one delta and the LF at the start of
+        // the next; that is one terminator, not two.
+        let deltas = vec!["a\r".to_string(), "\nb\r".to_string(), "\nc".to_string()];
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::CompletionLines, 3));
+        assert!(outcome.is_ok(), "a split CRLF must not be counted twice: {outcome:?}");
+    }
+
+    #[test]
+    fn a_budget_breach_is_classified_as_a_resource_limit() {
+        use perl_parser_core::ErrorClass;
+        let error = BackendError::BudgetExceeded(BudgetViolation {
+            kind: BudgetKind::CompletionBytes,
+            limit: 16,
+            observed_at_least: 17,
+        });
+        // `ResourceLimit` is the class the framing guard gives `FrameTooLarge`,
+        // and it selects `Disposition::Cap` rather than an infrastructure
+        // notification.
+        assert_eq!(error.error_class(), perl_parser_core::ErrorCategory::ResourceLimit);
+        assert_eq!(
+            crate::protocol::error_disposition::disposition_for(error.error_class()),
+            crate::protocol::error_disposition::Disposition::Cap
+        );
+    }
+
+    #[test]
+    fn a_budget_error_message_leaks_no_response_content() {
+        let secret = "SUPER-SECRET-COMPLETION";
+        let deltas = vec![secret.to_string()];
+        let (_, outcome) = drive_open_ended(&deltas, budget_with(BudgetKind::DeltaBytes, 4));
+        let Err(error) = outcome else {
+            unreachable!("an over-limit delta must fail");
+        };
+        let message = error.to_string();
+        assert!(!message.contains(secret), "budget error leaked response content: {message}");
+        assert!(message.contains("delta_bytes"), "budget error lost its limit identity: {message}");
+    }
 }
 
 impl InlineCompletionBackend for OpenAiProvider {
@@ -710,6 +1110,14 @@ impl InlineCompletionBackend for OpenAiProvider {
         req: &BackendRequest,
         sink: &mut dyn FnMut(StreamChunk) -> StreamControl,
     ) -> Result<(), BackendError> {
+        // Live concurrency ceiling (#8300). Taken before the rate-limiter token
+        // so a request that has nowhere to run does not burn rate budget, and
+        // held for the whole of `stream()` — every exit below, including `?`
+        // and panic unwind, releases it by dropping this guard.
+        let Some(_permit) = self.inflight.try_acquire() else {
+            return Err(BackendError::Saturated);
+        };
+
         if !self.limiter.try_acquire() {
             return Err(BackendError::RateLimited);
         }
@@ -724,7 +1132,7 @@ impl InlineCompletionBackend for OpenAiProvider {
         }
 
         let body = self.build_request_body(req);
-        let timeout = std::time::Duration::from_millis(req.timeout_ms);
+        let timeout = Duration::from_millis(req.timeout_ms);
         let agent = Self::build_http_agent(timeout, approved);
         let auth_value = self.auth_header_value()?;
 
@@ -745,8 +1153,11 @@ impl InlineCompletionBackend for OpenAiProvider {
             ));
         }
 
+        // Every byte read from here on is counted against one request-scoped
+        // budget: the non-2xx path above returns before any body is read, so
+        // this is the only route that consumes a response.
         let reader = BufReader::new(response.into_body().into_reader());
-        let mut parser = SseParser::new(reader);
-        Self::drive_sse_stream(&mut parser, &self.config.api_key, sink)
+        let mut parser = SseParser::with_budget(reader, self.budget);
+        Self::drive_sse_stream(&mut parser, self.budget, &self.config.api_key, sink)
     }
 }
