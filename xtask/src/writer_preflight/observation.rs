@@ -131,7 +131,13 @@ pub enum IndexState {
 /// `unique_work_at_risk` is the adapter's typed judgment that this tree
 /// holds unique unpushed/uncommitted work the requested transition would
 /// strand or overwrite — the core never recomputes it from counts.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// There is deliberately **no `Default`** (#12059 review, FC3; #14304
+/// class): a derived `Default` would make the load-bearing safety flag
+/// pass-permitting (`unique_work_at_risk: false`) for any adapter that
+/// constructs the disposition by memory. Adapters must set every field
+/// explicitly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkingTreeDisposition {
     pub dirty_files: u32,
@@ -217,7 +223,10 @@ pub enum RemoteBranchPresence {
 ///   these fields — there is no platform-specific decision path.
 /// - #11635 persists the set alongside the decision digest so mutation can
 ///   revalidate continuity.
-/// - #11636 compares normalized sets across platforms cell-by-cell.
+/// - #11636 compares normalized sets across platforms cell-by-cell and owns
+///   canonical ordering of the Vec-valued facts for persisted packet
+///   identity; the decision core itself is order-independent (falsifier 12)
+///   and never relies on input order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WriterPreflightObservationSet {

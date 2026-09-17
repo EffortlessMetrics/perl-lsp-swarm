@@ -30,6 +30,19 @@ fn claim(branch: &str) -> ClaimIdentity {
     }
 }
 
+/// Explicit all-quiet disposition (#12059 review, FC3): the domain type has
+/// no `Default`, so tests construct the safety flag explicitly too.
+fn tree_disposition() -> WorkingTreeDisposition {
+    WorkingTreeDisposition {
+        dirty_files: 0,
+        staged_files: 0,
+        untracked_files: 0,
+        unpushed_commits: 0,
+        behind_upstream: 0,
+        unique_work_at_risk: false,
+    }
+}
+
 /// A fully affirmative mutating subject bound to the linked-worktree
 /// fixture below.
 fn create_subject() -> WriterPreflightSubject {
@@ -55,7 +68,7 @@ fn mutate_subject() -> WriterPreflightSubject {
         // In-place transition binds to the current checkout: no separate
         // worktree path.
         claim: ClaimIdentity { worktree_path: None, ..claim(CANDIDATE_BRANCH) },
-        candidate_head_sha: Some("cand0001".to_string()),
+        candidate_head_sha: Some("cafe0001".to_string()),
         ..create_subject()
     }
 }
@@ -71,7 +84,7 @@ fn healthy_worktrees() -> Vec<WorktreeRecord> {
         WorktreeRecord {
             path: LINKED_ROOT.to_string(),
             branch: Some(CANDIDATE_BRANCH.to_string()),
-            head_sha: Some("cand0001".to_string()),
+            head_sha: Some("cafe0001".to_string()),
             locked: false,
         },
     ]
@@ -92,7 +105,7 @@ fn healthy_observations() -> WriterPreflightObservationSet {
             name: CANDIDATE_BRANCH.to_string(),
             protected: false,
         }),
-        head_sha: Observation::current("cand0001".to_string()),
+        head_sha: Observation::current("cafe0001".to_string()),
         base_sha: Observation::current("deadbeef0000ff".to_string()),
         remote_branch: Observation::current(RemoteBranchPresence::Absent),
         worktrees: Observation::current(Vec::new()),
@@ -101,7 +114,7 @@ fn healthy_observations() -> WriterPreflightObservationSet {
             owner: None,
         }),
         index_state: Observation::current(IndexState::Clean),
-        working_tree: Observation::current(WorkingTreeDisposition::default()),
+        working_tree: Observation::current(tree_disposition()),
         stash: Observation::current(StashState::NoSharedStash),
         reserved_local_refs: Observation::current(Vec::new()),
         ambient_cargo_overrides: Observation::current(Vec::new()),
@@ -116,6 +129,18 @@ fn healthy_observations() -> WriterPreflightObservationSet {
 
 fn has_reason(decision: &WriterPreflightDecision, reason: WriterPreflightReason) -> bool {
     decision.reason(reason)
+}
+
+/// A fully affirmative observation set for an existing-candidate operation
+/// (resume/mutate) at the linked worktree: the candidate registration is
+/// bound to the invoked checkout and the remote candidate exists at the
+/// expected head (#12059 review: existing-candidate polarity).
+fn existing_candidate_observations() -> WriterPreflightObservationSet {
+    let mut observations = healthy_observations();
+    observations.worktrees = Observation::current(healthy_worktrees());
+    observations.remote_branch =
+        Observation::current(RemoteBranchPresence::Present { head_sha: "cafe0001".to_string() });
+    observations
 }
 
 // ---- Healthy baselines ----------------------------------------------------------
@@ -140,9 +165,7 @@ fn healthy_create_is_pass_with_no_reasons() {
 
 #[test]
 fn healthy_mutate_in_place_is_pass() {
-    let mut observations = healthy_observations();
-    observations.worktrees = Observation::current(healthy_worktrees());
-    let decision = decide(&mutate_subject(), &observations);
+    let decision = decide(&mutate_subject(), &existing_candidate_observations());
     assert_eq!(decision.outcome, WriterPreflightOutcome::Pass, "{:?}", decision.reasons);
 }
 
@@ -251,7 +274,7 @@ fn shift_left_3_named_worktree_differs_from_invoked_checkout_refuses() {
 #[test]
 fn shift_left_3_moved_head_against_expected_candidate_refuses() {
     let mut observations = healthy_observations();
-    observations.head_sha = Observation::current("moved9999".to_string());
+    observations.head_sha = Observation::current("dead9999".to_string());
     let decision = decide(&mutate_subject(), &observations);
     assert_eq!(decision.outcome, WriterPreflightOutcome::Blocked);
     assert!(has_reason(&decision, WriterPreflightReason::WrongOrUnknownCandidate));
@@ -313,7 +336,7 @@ fn active_writer_without_declared_owner_always_collides() {
 
 #[test]
 fn shift_left_5_unique_state_at_risk_blocks_while_plain_dirtiness_does_not() {
-    let mut observations = healthy_observations();
+    let mut observations = existing_candidate_observations();
     observations.working_tree = Observation::current(WorkingTreeDisposition {
         dirty_files: 7,
         staged_files: 2,
@@ -327,7 +350,7 @@ fn shift_left_5_unique_state_at_risk_blocks_while_plain_dirtiness_does_not() {
 
     observations.working_tree = Observation::current(WorkingTreeDisposition {
         unique_work_at_risk: true,
-        ..WorkingTreeDisposition::default()
+        ..tree_disposition()
     });
     let at_risk = decide(&mutate_subject(), &observations);
     assert_eq!(at_risk.outcome, WriterPreflightOutcome::Blocked);
@@ -413,7 +436,7 @@ fn shift_left_8_behind_only_is_advisory_context_never_a_denial() {
     observations.working_tree = Observation::current(WorkingTreeDisposition {
         behind_upstream: 5,
         unpushed_commits: 0,
-        ..WorkingTreeDisposition::default()
+        ..tree_disposition()
     });
     let decision = decide(&create_subject(), &observations);
     assert_eq!(decision.outcome, WriterPreflightOutcome::Advisory);
@@ -426,7 +449,7 @@ fn diverged_upstream_is_not_the_behind_only_advisory() {
     observations.working_tree = Observation::current(WorkingTreeDisposition {
         behind_upstream: 5,
         unpushed_commits: 2,
-        ..WorkingTreeDisposition::default()
+        ..tree_disposition()
     });
     let decision = decide(&create_subject(), &observations);
     assert!(!has_reason(&decision, WriterPreflightReason::AdvisoryBehindOnly));
@@ -465,6 +488,8 @@ fn shift_left_10_failed_required_evidence_refuses_regardless_of_other_affirmativ
         ..unsupported_index
     };
     unsupported_index.worktrees = Observation::current(healthy_worktrees());
+    unsupported_index.remote_branch =
+        Observation::current(RemoteBranchPresence::Present { head_sha: "cafe0001".to_string() });
     let decision = decide(&mutate_subject(), &unsupported_index);
     assert_eq!(decision.outcome, WriterPreflightOutcome::NotProven);
     assert!(has_reason(&decision, WriterPreflightReason::ProviderUnavailableOrStale));
@@ -570,7 +595,7 @@ fn advisory_outcome_renders_consistently_across_projections() {
     observations.working_tree = Observation::current(WorkingTreeDisposition {
         behind_upstream: 2,
         unpushed_commits: 0,
-        ..WorkingTreeDisposition::default()
+        ..tree_disposition()
     });
     let decision = decide(&create_subject(), &observations);
     assert_eq!(decision.outcome.as_str(), "ADVISORY");
@@ -701,15 +726,14 @@ fn malformed_observed_identity_tokens_refuse_without_panicking() {
 
 #[test]
 fn existing_remote_branch_redirects_create_to_resume() {
-    let mut observations = healthy_observations();
-    observations.remote_branch =
-        Observation::current(RemoteBranchPresence::Present { head_sha: "remote001".to_string() });
+    let observations = existing_candidate_observations();
     let create = decide(&create_subject(), &observations);
     assert!(has_reason(&create, WriterPreflightReason::WrongOrUnknownCandidate));
 
     let mut resume_subject = create_subject();
     resume_subject.operation = WriterPreflightOperation::Resume;
     resume_subject.claim.worktree_path = None;
+    resume_subject.candidate_head_sha = Some("cafe0001".to_string());
     let resume = decide(&resume_subject, &observations);
     assert!(!has_reason(&resume, WriterPreflightReason::WrongOrUnknownCandidate));
 }
@@ -720,7 +744,9 @@ fn resume_requires_an_existing_remote_candidate() {
     subject.operation = WriterPreflightOperation::Resume;
     subject.claim.worktree_path = None;
 
-    let observations = healthy_observations(); // remote branch confirmed Absent
+    let observations = existing_candidate_observations(); // remote candidate Present
+    let mut observations = observations;
+    observations.remote_branch = Observation::current(RemoteBranchPresence::Absent);
     let decision = decide(&subject, &observations);
     assert!(has_reason(&decision, WriterPreflightReason::WrongOrUnknownCandidate));
 }
@@ -829,6 +855,224 @@ fn blocking_prerequisite_takes_precedence_over_residual_uncertainty() {
     assert_eq!(decision.outcome, WriterPreflightOutcome::Blocked);
     assert!(has_reason(&decision, WriterPreflightReason::UnresolvedIndexOrMerge));
     assert!(has_reason(&decision, WriterPreflightReason::ProviderUnavailableOrStale));
+}
+
+// ---- Determinism and digest identity ---------------------------------------------
+
+// ---- #12059 review repairs: false-PASS / false-BLOCK falsifiers -------------------
+
+#[test]
+fn pinned_remote_with_missing_observed_remote_is_not_proven() {
+    // (Some(expected), None): a pinned canonical remote with no observed
+    // remote is less evidence than the caller required; the common dir
+    // alone must not mint repository identity.
+    let mut observations = healthy_observations();
+    observations.repository_identity = Observation::current(RepositoryIdentity {
+        common_dir: COMMON_DIR.to_string(),
+        canonical_remote: None,
+    });
+    let read_only = decide(&read_only_subject(), &observations);
+    assert_eq!(read_only.outcome, WriterPreflightOutcome::NotProven);
+    assert!(has_reason(&read_only, WriterPreflightReason::ProviderUnavailableOrStale));
+    assert!(!has_reason(&read_only, WriterPreflightReason::WrongOrUnknownRepository));
+}
+
+#[test]
+fn mutating_subject_without_expected_base_refuses() {
+    let mut subject = create_subject();
+    subject.expected_base_sha = None;
+    let decision = decide(&subject, &existing_candidate_observations());
+    assert!(has_reason(&decision, WriterPreflightReason::BaseOrRemoteNotProven));
+    assert_ne!(decision.outcome, WriterPreflightOutcome::Pass);
+
+    let mut blank = create_subject();
+    blank.expected_base_sha = Some("   ".to_string());
+    let blank_decision = decide(&blank, &existing_candidate_observations());
+    assert!(has_reason(&blank_decision, WriterPreflightReason::BaseOrRemoteNotProven));
+}
+
+#[test]
+fn existing_candidate_operations_require_expected_candidate_head() {
+    let mut resume = create_subject();
+    resume.operation = WriterPreflightOperation::Resume;
+    resume.candidate_head_sha = None;
+    let resume_decision = decide(&resume, &existing_candidate_observations());
+    assert!(has_reason(&resume_decision, WriterPreflightReason::WrongOrUnknownCandidate));
+
+    let mut mutate = mutate_subject();
+    mutate.candidate_head_sha = None;
+    let mutate_decision = decide(&mutate, &existing_candidate_observations());
+    assert!(has_reason(&mutate_decision, WriterPreflightReason::WrongOrUnknownCandidate));
+
+    // Create is the legitimate candidate-head exception: a fresh candidate
+    // has no head yet.
+    let create = decide(&create_subject(), &healthy_observations());
+    assert_eq!(create.outcome, WriterPreflightOutcome::Pass, "{:?}", create.reasons);
+}
+
+#[test]
+fn mutate_with_confirmed_absent_remote_candidate_refuses() {
+    // Mutate is an existing-candidate operation: a confirmed-absent remote
+    // candidate removes the compare-and-mutate continuity the decision
+    // table requires for it.
+    let mut observations = existing_candidate_observations();
+    observations.remote_branch = Observation::current(RemoteBranchPresence::Absent);
+    let decision = decide(&mutate_subject(), &observations);
+    assert!(has_reason(&decision, WriterPreflightReason::WrongOrUnknownCandidate));
+}
+
+#[test]
+fn equal_malformed_identity_tokens_refuse() {
+    // Exact-equality can no longer silently pass malformed identities: both
+    // operands must be hex tokens before any comparison path.
+    let mut subject = create_subject();
+    subject.expected_base_sha = Some("not-a-sha".to_string());
+
+    let mut observations = healthy_observations();
+    observations.base_sha = Observation::current("not-a-sha".to_string());
+    let decision = decide(&subject, &observations);
+    assert_eq!(decision.outcome, WriterPreflightOutcome::NotProven);
+    assert!(has_reason(&decision, WriterPreflightReason::BaseOrRemoteNotProven));
+
+    // Non-hex observed token against a hex prefix: refused, never a match.
+    let mut observations_non_hex = healthy_observations();
+    observations_non_hex.base_sha = Observation::current("dead\u{1f4a3}".to_string());
+    let non_hex = decide(&subject_with_base("dead"), &observations_non_hex);
+    assert_eq!(non_hex.outcome, WriterPreflightOutcome::NotProven);
+    assert!(has_reason(&non_hex, WriterPreflightReason::BaseOrRemoteNotProven));
+}
+
+fn subject_with_base(base: &str) -> WriterPreflightSubject {
+    let mut subject = create_subject();
+    subject.expected_base_sha = Some(base.to_string());
+    subject
+}
+
+#[test]
+fn resume_or_mutate_with_unregistered_candidate_refuses() {
+    // P1 (#12059 review): an all-current observation set whose worktree map
+    // registers the candidate nowhere contradicts the claimed existing
+    // candidate and must refuse rather than pass.
+    for operation in [WriterPreflightOperation::Resume, WriterPreflightOperation::Mutate] {
+        let mut observations = existing_candidate_observations();
+        observations.worktrees = Observation::current(Vec::new());
+        let mut subject = mutate_subject();
+        subject.operation = operation;
+        let decision = decide(&subject, &observations);
+        assert!(
+            has_reason(&decision, WriterPreflightReason::WrongOrUnknownCandidate),
+            "{operation:?}"
+        );
+        assert_eq!(decision.outcome, WriterPreflightOutcome::Blocked);
+    }
+}
+
+#[test]
+fn resume_registration_at_another_path_is_not_bound_to_the_checkout() {
+    // Devin BUG_0002: one matching registration at a foreign path does not
+    // bind the candidate to the invoked checkout.
+    let mut observations = existing_candidate_observations();
+    observations.worktrees = Observation::current(vec![WorktreeRecord {
+        path: "E:/code/perl-lsp-swarm/.claude/worktrees/agent-9".to_string(),
+        branch: Some(CANDIDATE_BRANCH.to_string()),
+        head_sha: Some("cafe0001".to_string()),
+        locked: false,
+    }]);
+    let decision = decide(&mutate_subject(), &observations);
+    assert!(has_reason(&decision, WriterPreflightReason::BranchWorktreeMismatch));
+}
+
+#[test]
+fn unavailable_worktree_map_does_not_hide_known_collisions() {
+    // Devin BUG_0004: the three registration observations are independent;
+    // an unavailable map must not demote known blockers to NOT_PROVEN.
+    let mut observations = healthy_observations();
+    observations.worktrees = Observation::provider_unavailable();
+    observations.same_candidate_writer = Observation::current(SameCandidateWriter {
+        active: true,
+        owner: Some("writer-b".to_string()),
+    });
+    observations.reserved_local_refs =
+        Observation::current(vec![format!("refs/heads/origin/{CANDIDATE_BRANCH}")]);
+    let decision = decide(&create_subject(), &observations);
+    assert_eq!(decision.outcome, WriterPreflightOutcome::Blocked);
+    assert!(has_reason(&decision, WriterPreflightReason::SameCandidateCollision));
+    assert!(has_reason(&decision, WriterPreflightReason::ReservedLocalRefCollision));
+    assert!(has_reason(&decision, WriterPreflightReason::ProviderUnavailableOrStale));
+}
+
+#[test]
+fn resume_is_not_blocked_by_its_own_local_branch_ref() {
+    // Devin BUG_0005: refs/heads/<branch> is the branch resume/mutate sit
+    // on; only create treats it as a shadow. The remote-tracking shadow
+    // collides for every operation.
+    let mut observations = existing_candidate_observations();
+    observations.reserved_local_refs =
+        Observation::current(vec![format!("refs/heads/{CANDIDATE_BRANCH}")]);
+    let resume = decide(&mutate_subject(), &observations);
+    assert!(!has_reason(&resume, WriterPreflightReason::ReservedLocalRefCollision));
+    assert_eq!(resume.outcome, WriterPreflightOutcome::Pass, "{:?}", resume.reasons);
+
+    let create = decide(&create_subject(), &observations);
+    assert!(has_reason(&create, WriterPreflightReason::ReservedLocalRefCollision));
+}
+
+#[test]
+fn deserialized_decisions_must_satisfy_the_decision_laws() {
+    // FC1 negative controls (#12059 review): wire objects that contradict
+    // the decision laws, carry an unknown schema version, or supply an
+    // unsorted/duplicate reason set fail deserialization instead of
+    // round-tripping into a digest-attested forgery.
+    let decision = decide(&create_subject(), &healthy_observations());
+    assert_eq!(decision.outcome, WriterPreflightOutcome::Pass);
+    let json = serde_json::to_string(&decision).ok().unwrap_or_default();
+    let round_trip = serde_json::from_str::<WriterPreflightDecision>(&json);
+    assert!(round_trip.is_ok(), "valid decision must round-trip: {:?}", round_trip.err());
+    assert_eq!(round_trip.unwrap_or_else(|_| decision.clone()), decision);
+
+    let forged_pass = json.replace("\"reasons\":[]", "\"reasons\":[\"same_candidate_collision\"]");
+    assert!(
+        serde_json::from_str::<WriterPreflightDecision>(&forged_pass).is_err(),
+        "PASS with blocking reasons must be refused"
+    );
+
+    let wrong_version = json.replace(
+        &format!("\"schema_version\":{}", WRITER_PREFLIGHT_SCHEMA_VERSION),
+        "\"schema_version\":99",
+    );
+    assert!(serde_json::from_str::<WriterPreflightDecision>(&wrong_version).is_err());
+
+    // A multi-reason decision with descending reason order is refused; a
+    // duplicated reason breaks the strictly-ascending uniqueness rule.
+    let mut observations = healthy_observations();
+    observations.base_sha = Observation::stale();
+    let mut subject = mutate_subject();
+    subject.candidate_head_sha = Some("cafe0001".to_string());
+    let blocked = decide(&subject, &observations);
+    assert!(blocked.outcome == WriterPreflightOutcome::Blocked);
+    assert!(blocked.reasons.len() >= 2, "{:?}", blocked.reasons);
+    let blocked_json = serde_json::to_string(&blocked).ok().unwrap_or_default();
+    let serialized_reasons = serde_json::to_string(&blocked.reasons).ok().unwrap_or_default();
+    let mut reversed: Vec<WriterPreflightReason> = blocked.reasons.clone();
+    reversed.reverse();
+    let reversed_json = serde_json::to_string(&reversed).ok().unwrap_or_default();
+    let unsorted = blocked_json.replace(&serialized_reasons, &reversed_json);
+    assert!(serde_json::from_str::<WriterPreflightDecision>(&unsorted).is_err());
+
+    let mut duplicated = blocked.reasons.clone();
+    let first = blocked.reasons[0];
+    duplicated.insert(1, first);
+    let duplicated_json = serde_json::to_string(&duplicated).ok().unwrap_or_default();
+    let duplicated_wire = blocked_json.replace(&serialized_reasons, &duplicated_json);
+    assert!(serde_json::from_str::<WriterPreflightDecision>(&duplicated_wire).is_err());
+}
+
+#[test]
+fn fabricated_subject_digest_refuses_deserialization() {
+    let decision = decide(&read_only_subject(), &healthy_observations());
+    let json = serde_json::to_string(&decision).ok().unwrap_or_default();
+    let forged = json.replace(&decision.subject_digest, "0123456789abcdef");
+    assert!(serde_json::from_str::<WriterPreflightDecision>(&forged).is_err());
 }
 
 // ---- Determinism and digest identity ---------------------------------------------

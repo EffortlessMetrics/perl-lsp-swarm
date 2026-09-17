@@ -199,8 +199,15 @@ impl std::fmt::Display for WriterPreflightReason {
 
 /// One decision over one subject (#11633). Every projection (human text,
 /// JSON, explain) derives from this single object; nothing else is semantic.
+///
+/// Deserialization is validated (fail-closed, #12059 review): a wire object
+/// is accepted only when its schema version is current, its reasons are
+/// sorted and unique, its subject digest is a well-formed SHA-256 token,
+/// and its outcome agrees with the decision laws applied to its own
+/// reasons. A forged `PASS` carrying blocking reasons therefore cannot
+/// round-trip; `digest()` only ever attests to law-consistent decisions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "WriterPreflightDecisionWire")]
 pub struct WriterPreflightDecision {
     pub schema_version: u32,
     pub outcome: WriterPreflightOutcome,
@@ -210,6 +217,55 @@ pub struct WriterPreflightDecision {
     /// Canonical digest of the decided subject. #11635 compares this
     /// immediately before mutation (compare-and-mutate continuity).
     pub subject_digest: String,
+}
+
+/// Raw wire form of a decision; validation happens in the conversion.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WriterPreflightDecisionWire {
+    schema_version: u32,
+    outcome: WriterPreflightOutcome,
+    reasons: Vec<WriterPreflightReason>,
+    subject_digest: String,
+}
+
+impl TryFrom<WriterPreflightDecisionWire> for WriterPreflightDecision {
+    type Error = String;
+
+    fn try_from(wire: WriterPreflightDecisionWire) -> Result<Self, Self::Error> {
+        if wire.schema_version != WRITER_PREFLIGHT_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported writer-preflight decision schema version {}",
+                wire.schema_version
+            ));
+        }
+        // Strictly ascending order proves both sortedness and uniqueness.
+        if !wire.reasons.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err("decision reasons must be sorted and unique".to_string());
+        }
+        let reasons: BTreeSet<WriterPreflightReason> = wire.reasons.iter().copied().collect();
+        if aggregate_outcome(&reasons) != wire.outcome {
+            return Err(format!(
+                "decision outcome {:?} contradicts its own reasons (expected {:?})",
+                wire.outcome,
+                aggregate_outcome(&reasons)
+            ));
+        }
+        if !is_sha256_digest(&wire.subject_digest) {
+            return Err("subject digest is not a well-formed SHA-256 token".to_string());
+        }
+        Ok(WriterPreflightDecision {
+            schema_version: wire.schema_version,
+            outcome: wire.outcome,
+            reasons: wire.reasons,
+            subject_digest: wire.subject_digest,
+        })
+    }
+}
+
+/// A well-formed hex SHA-256 digest token (64 hex characters).
+fn is_sha256_digest(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 impl WriterPreflightDecision {
@@ -238,6 +294,8 @@ pub fn decide(
 ) -> WriterPreflightDecision {
     let mut reasons = BTreeSet::new();
     let mutating = subject.operation.is_mutating();
+
+    evaluate_subject_completeness(subject, &mut reasons);
 
     evaluate_repository_identity(subject, observations, &mut reasons);
 
@@ -289,6 +347,36 @@ fn aggregate_outcome(reasons: &BTreeSet<WriterPreflightReason>) -> WriterPreflig
     }
 }
 
+/// Operation-specific subject completeness (#12059 review, FC1): a subject
+/// that omits required identity cannot bind the exact transition, so its
+/// digest cannot detect movement before #11635's compare-and-mutate. Every
+/// mutating subject must pin an expected base; existing-candidate
+/// operations (resume/mutate) must additionally pin the expected candidate
+/// head. Create is the legitimate candidate-head exception: a fresh
+/// candidate has no head yet.
+fn evaluate_subject_completeness(
+    subject: &WriterPreflightSubject,
+    reasons: &mut BTreeSet<WriterPreflightReason>,
+) {
+    if !subject.operation.is_mutating() {
+        return;
+    }
+    let pins_base = subject.expected_base_sha.as_deref().is_some_and(|s| !s.trim().is_empty());
+    if !pins_base {
+        reasons.insert(WriterPreflightReason::BaseOrRemoteNotProven);
+    }
+    let existing_candidate = matches!(
+        subject.operation,
+        WriterPreflightOperation::Resume | WriterPreflightOperation::Mutate
+    );
+    if existing_candidate {
+        let pins_head = subject.candidate_head_sha.as_deref().is_some_and(|s| !s.trim().is_empty());
+        if !pins_head {
+            reasons.insert(WriterPreflightReason::WrongOrUnknownCandidate);
+        }
+    }
+}
+
 /// Repository identity is required for every operation, read-only included:
 /// verifying facts about the wrong repository mints false evidence. The
 /// common dir compares exactly; the canonical remote compares only when the
@@ -300,15 +388,26 @@ fn evaluate_repository_identity(
 ) {
     match observations.repository_identity.usable() {
         Some(observed) => {
-            let remote_matches =
-                match (&subject.repository.canonical_remote, &observed.canonical_remote) {
-                    (Some(expected), Some(actual)) => expected == actual,
-                    // Caller did not pin a remote: nothing extra to prove. An
-                    // observed remote without a pinned expectation is fine.
-                    _ => true,
-                };
-            if observed.common_dir != subject.repository.common_dir || !remote_matches {
+            // Common dir compares exactly; a mismatch is a wrong repository.
+            if observed.common_dir != subject.repository.common_dir {
                 reasons.insert(WriterPreflightReason::WrongOrUnknownRepository);
+                return;
+            }
+            // A pinned canonical remote must be observed and equal: a pinned
+            // expectation with no observed remote is less evidence than the
+            // caller required (#12059 review), so the identity stays
+            // unproven rather than silently passing on the common dir alone.
+            match (&subject.repository.canonical_remote, &observed.canonical_remote) {
+                (Some(expected), Some(actual)) => {
+                    if expected != actual {
+                        reasons.insert(WriterPreflightReason::WrongOrUnknownRepository);
+                    }
+                }
+                (Some(_), None) => {
+                    reasons.insert(WriterPreflightReason::ProviderUnavailableOrStale);
+                }
+                // Caller did not pin a remote: nothing extra to prove.
+                (None, _) => {}
             }
         }
         None => {
@@ -436,9 +535,12 @@ fn evaluate_base_and_candidate(
     match observations.remote_branch.usable() {
         Some(presence) => match presence {
             RemoteBranchPresence::Absent => {
-                // Resume needs an existing remote candidate; create must not
-                // shadow one. Either way the polarity is decisive.
-                if subject.operation == WriterPreflightOperation::Resume {
+                // Operation-specific polarity (#12059 review): create must
+                // not shadow an existing candidate, while resume/mutate are
+                // existing-candidate operations that require one for
+                // compare-and-mutate continuity. A confirmed-absent remote
+                // candidate refuses every existing-candidate operation.
+                if subject.operation != WriterPreflightOperation::Create {
                     reasons.insert(WriterPreflightReason::WrongOrUnknownCandidate);
                 }
             }
@@ -459,9 +561,9 @@ fn evaluate_base_and_candidate(
         },
         None => match observations.remote_branch.state {
             // A confirmed-absent remote branch is legitimate evidence: it
-            // only refuses the operation that requires existence (resume).
+            // refuses exactly the operations that require existence.
             ObservationState::Absent => {
-                if subject.operation == WriterPreflightOperation::Resume {
+                if subject.operation != WriterPreflightOperation::Create {
                     reasons.insert(WriterPreflightReason::WrongOrUnknownCandidate);
                 }
             }
@@ -472,40 +574,63 @@ fn evaluate_base_and_candidate(
     }
 }
 
-/// Worktree registration and same-candidate writer conflicts.
+/// Worktree registration and same-candidate writer conflicts. The three
+/// observations here are independent (#12059 review): an unavailable
+/// worktree map adds uncertainty without suppressing current collision or
+/// reserved-ref evidence, because `BLOCKED` outranks `NOT_PROVEN` and
+/// hiding known blockers would weaken the aggregate.
 fn evaluate_registration_conflicts(
     subject: &WriterPreflightSubject,
     observations: &WriterPreflightObservationSet,
     reasons: &mut BTreeSet<WriterPreflightReason>,
 ) {
-    let worktrees = match require_current(&observations.worktrees, reasons) {
-        Some(records) => records,
-        None => return,
-    };
-
-    // The requested branch must not already be checked out anywhere, and a
-    // pinned create location must not be registered to another branch.
-    let branch_matches = count_matching_branch(worktrees, &subject.claim.branch);
-    if branch_matches > 1 {
-        // Ambiguous mapping: more than one registration owns the branch.
-        reasons.insert(WriterPreflightReason::BranchWorktreeMismatch);
-    }
-    // Create additionally refuses an already-registered branch or a create
-    // location registered to another branch; for resume/mutate a single
-    // existing registration on the claimed branch is the normal, expected
-    // state (REUSE/RESUME territory for #11635); ambiguity was handled
-    // above.
-    if subject.operation == WriterPreflightOperation::Create && branch_matches >= 1 {
-        reasons.insert(WriterPreflightReason::BranchWorktreeMismatch);
-    }
-    let reuses_registered_path = subject.operation == WriterPreflightOperation::Create
-        && subject
-            .claim
-            .worktree_path
-            .as_deref()
-            .is_some_and(|requested| worktrees.iter().any(|record| record.path == requested));
-    if reuses_registered_path {
-        reasons.insert(WriterPreflightReason::BranchWorktreeMismatch);
+    if let Some(worktrees) = require_current(&observations.worktrees, reasons) {
+        // The requested branch must not already be checked out anywhere,
+        // and a pinned create location must not be registered to another
+        // branch.
+        let branch_matches = count_matching_branch(worktrees, &subject.claim.branch);
+        if branch_matches > 1 {
+            // Ambiguous mapping: more than one registration owns the
+            // branch.
+            reasons.insert(WriterPreflightReason::BranchWorktreeMismatch);
+        }
+        match subject.operation {
+            // Create additionally refuses an already-registered branch or
+            // a create location registered to another branch.
+            WriterPreflightOperation::Create => {
+                if branch_matches >= 1 {
+                    reasons.insert(WriterPreflightReason::BranchWorktreeMismatch);
+                }
+                let reuses_registered_path =
+                    subject.claim.worktree_path.as_deref().is_some_and(|requested| {
+                        worktrees.iter().any(|record| record.path == requested)
+                    });
+                if reuses_registered_path {
+                    reasons.insert(WriterPreflightReason::BranchWorktreeMismatch);
+                }
+            }
+            // Existing-candidate operations require exactly one matching
+            // registration, bound to the invoked checkout (#12059
+            // review, P1): an empty or foreign-path map contradicts the
+            // claimed existing candidate and must refuse rather than
+            // pass. Binding needs the checkout identity; an unavailable
+            // checkout relation leaves the registration unbindable.
+            _ => {
+                if branch_matches == 0 {
+                    reasons.insert(WriterPreflightReason::WrongOrUnknownCandidate);
+                } else if branch_matches == 1 {
+                    let bound = observations.checkout_relation.usable().is_some_and(|relation| {
+                        worktrees.iter().any(|record| {
+                            record.branch.as_deref() == Some(subject.claim.branch.as_str())
+                                && record.path == relation.root
+                        })
+                    });
+                    if !bound {
+                        reasons.insert(WriterPreflightReason::BranchWorktreeMismatch);
+                    }
+                }
+            }
+        }
     }
 
     match observations.same_candidate_writer.usable() {
@@ -525,10 +650,16 @@ fn evaluate_registration_conflicts(
 
     match observations.reserved_local_refs.usable() {
         Some(refs) => {
+            // Operation-specific polarity (#12059 review): a local branch
+            // ref is a shadow only for create — resume/mutate own and sit
+            // on that exact local branch. A local ref shadowing the
+            // remote-tracking namespace (`refs/heads/origin/<branch>`)
+            // collides for every operation.
             let branch = &subject.claim.branch;
             let collides = refs.iter().any(|ref_name| {
-                ref_name == &format!("refs/heads/{branch}")
-                    || ref_name == &format!("refs/heads/origin/{branch}")
+                ref_name == &format!("refs/heads/origin/{branch}")
+                    || (subject.operation == WriterPreflightOperation::Create
+                        && ref_name == &format!("refs/heads/{branch}"))
             });
             if collides {
                 reasons.insert(WriterPreflightReason::ReservedLocalRefCollision);
@@ -635,7 +766,11 @@ fn evaluate_capacity(
 }
 
 /// A shared stash is non-authorizing context for mutations: it warns that
-/// cleanup paths must never drop it, without denying the transition.
+/// cleanup paths must never drop it, without denying the transition. Stash
+/// evidence is advisory by construction (#12059 review disposition): it is
+/// never a required fact, so its unavailability adds uncertainty to nothing
+/// and cannot refuse — only a current shared-stash observation renders the
+/// advisory.
 fn evaluate_shared_stash(
     observations: &WriterPreflightObservationSet,
     reasons: &mut BTreeSet<WriterPreflightReason>,
@@ -687,46 +822,54 @@ fn count_matching_branch(worktrees: &[WorktreeRecord], branch: &str) -> usize {
 }
 
 /// Mirrors #3957's `sha_matches` (xtask/src/tasks/writer_admission.rs):
-/// full case-insensitive equality OR a case-insensitive hex-prefix match
-/// with git's conventional minimum abbreviation, so abbreviated SHAs cited
-/// in issues/plans do not false-negative. This crate cannot import the
-/// bin-side tasks tree (lib/bin split), so the rule is restated here and
-/// pinned by test against the same fixtures.
+/// case-insensitive hex-prefix match with git's conventional minimum
+/// abbreviation, so abbreviated SHAs cited in issues/plans do not
+/// false-negative. This crate cannot import the bin-side tasks tree (lib/bin
+/// split), so the rule is restated here and pinned by test against the same
+/// fixtures.
 ///
-/// Totality and refusal semantics (repair after #12059 review): identity
-/// tokens are unvalidated caller/observation strings, so every property
-/// needed by the prefix slice is checked on BOTH operands before slicing —
-/// length, a char boundary at the cut point on `full`, and ASCII-hex
-/// charset on the compared bytes. Exact whole-string equality needs no
-/// slicing and is accepted without charset demands (it cannot panic).
+/// Totality and refusal semantics (repair after #12059 review, FC1): both
+/// operands are unvalidated caller/observation strings, so BOTH are first
+/// validated as supported Git object-identity tokens — non-empty ASCII hex.
+/// A malformed token never panics and never silently passes, including the
+/// exact-equality path (equal malformed strings refuse: "not-a-sha" is
+/// precisely an identity that is not proven). Validation implies ASCII
+/// content, so the prefix slice below cannot cut a char boundary or read
+/// out of bounds; a non-hex full token and an overshort token both yield
+/// `false` and route to the existing typed refusals —
+/// `base_or_remote_not_proven` for the base comparison and
+/// `wrong_or_unknown_candidate` for candidate/head comparisons. This keeps
+/// `decide` total and panic-free over arbitrary deserialized input (#11636
+/// feeds observation sets from JSON).
 ///
-/// A malformed token never panics and never silently passes: it yields
-/// `false`, i.e. "this identity cannot be proven to match". Callers route
-/// that through the existing typed refusals — `base_or_remote_not_proven`
-/// for the base comparison and `wrong_or_unknown_candidate` for candidate/
-/// head comparisons — because an identity that is not well-formed hex of
-/// sufficient length is precisely an identity that is not proven. This
-/// keeps `decide` total and panic-free over arbitrary deserialized input
-/// (#11636 feeds observation sets from JSON).
+/// The bin-side sibling `sha_matches` retains the older exact-equality hole;
+/// tightening it belongs to the #3957-owned consumer claim, not this
+/// lib-side leaf (cross-cutting disposition, #12059 review).
 fn sha_matches(full: &str, expected: &str) -> bool {
     const MIN_PREFIX_LEN: usize = 4;
-    if expected.eq_ignore_ascii_case(full) {
-        return true;
+    let hex_token = |token: &str| !token.is_empty() && token.bytes().all(|b| b.is_ascii_hexdigit());
+    if !hex_token(full) || !hex_token(expected) {
+        return false;
     }
-    let prefixable = expected.len() >= MIN_PREFIX_LEN
-        && full.len() >= expected.len()
-        && full.is_char_boundary(expected.len())
-        && full.as_bytes()[..expected.len()].iter().all(|byte| byte.is_ascii_hexdigit())
-        && expected.chars().all(|c| c.is_ascii_hexdigit());
-    prefixable && full[..expected.len()].eq_ignore_ascii_case(expected)
+    if expected.len() < MIN_PREFIX_LEN || full.len() < expected.len() {
+        return false;
+    }
+    full[..expected.len()].eq_ignore_ascii_case(expected)
 }
 
 /// Canonical digest: serde JSON of a closed type (fixed field declaration
 /// order, no maps, no free-form text), hashed with SHA-256. Serialization
 /// into a `Vec` sink cannot fail for these types, and non-finite floats
-/// are outside the domain's inputs; the `unwrap_or_default` fallback keeps
-/// production panic-free (AGENTS.md hygiene) on an unreachable path.
+/// are outside the domain's inputs. A serialization failure is still
+/// handled without `unwrap` (AGENTS.md hygiene; #12059 review): it hashes a
+/// distinct sentinel payload so a failing identity can never silently
+/// collapse onto the digest of empty serialization or onto any valid
+/// decision's digest.
 fn canonical_digest<T: Serialize>(value: &T) -> String {
-    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    const DIGEST_FAILURE_SENTINEL: &[u8] = b"<WRITER_PREFLIGHT_CANONICAL_DIGEST_FAILURE>";
+    let bytes = match serde_json::to_vec(value) {
+        Ok(bytes) => bytes,
+        Err(_) => DIGEST_FAILURE_SENTINEL.to_vec(),
+    };
     Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
