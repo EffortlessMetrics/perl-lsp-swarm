@@ -625,15 +625,8 @@ describe('registered packaged journey readiness contract', () => {
   // `TypeError: Cannot read properties of undefined (reading '...')` from
   // inside the transpiled journey at the next CI run.
   test('local vscode double exposes the Uri and WorkspaceEdit surface the journey uses', () => {
-    const receiptDirectory = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'perl-lsp-4346-shape-receipts-'),
-    );
-    const workspacePath = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'perl-lsp-4346-shape-workspace-'),
-    );
-    const extensionPath = fs.mkdtempSync(
-      path.join(os.tmpdir(), 'perl-lsp-4346-shape-extension-'),
-    );
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-shape-workspace-'));
+    const extensionPath = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-shape-extension-'));
     try {
       const shape = fakeVscode(
         extensionPath,
@@ -648,16 +641,19 @@ describe('registered packaged journey readiness contract', () => {
         1,
       );
       expect(shape.Uri).toBeDefined();
-      expect(typeof shape.Uri.file).toBe('function');
-      expect(typeof shape.Uri.parse).toBe('function');
-      const probeUri = (shape.Uri.file as (p: string) => unknown)('C:/probe');
+      const uri = shape.Uri as {
+        file: (p: string) => unknown;
+        parse: (value: string) => unknown;
+      };
+      expect(typeof uri.file).toBe('function');
+      expect(typeof uri.parse).toBe('function');
+      const probeUri = uri.file('C:/probe');
       expect(probeUri).toMatchObject({ fsPath: 'C:/probe' });
       const edit = new (shape.WorkspaceEdit as new () => {
         deleteFile: (uri: { fsPath: string }) => void;
       })();
       expect(typeof edit.deleteFile).toBe('function');
     } finally {
-      fs.rmSync(receiptDirectory, { recursive: true, force: true });
       fs.rmSync(workspacePath, { recursive: true, force: true });
       fs.rmSync(extensionPath, { recursive: true, force: true });
     }
