@@ -224,23 +224,222 @@ mod tests {
 
     #[test]
     fn fixture_rejects_invalid_or_truncated_client_frames() -> Result<()> {
-        for (input, expected) in [
-            ("", "EOF reading fixture message headers"),
-            ("Content-Length: 2\r\n", "EOF reading fixture message headers"),
-            ("Content-Type: application/json\r\n\r\n{}", "missing Content-Length"),
-            ("Content-Length: nope\r\n\r\n{}", "invalid Content-Length"),
-            ("Content-Length: 2\r\n\r\n!x", "invalid fixture JSON"),
+        for (input, expected_kind, expected_prefix) in [
+            ("", io::ErrorKind::InvalidData, "EOF reading fixture message headers"),
+            (
+                "Content-Length: 2\r\n",
+                io::ErrorKind::InvalidData,
+                "EOF reading fixture message headers",
+            ),
+            (
+                "Content-Type: application/json\r\n\r\n{}",
+                io::ErrorKind::InvalidData,
+                "missing Content-Length",
+            ),
+            (
+                "Content-Length: nope\r\n\r\n{}",
+                io::ErrorKind::InvalidData,
+                "invalid Content-Length: invalid digit found in string",
+            ),
+            (
+                "Content-Length: 2\r\n\r\n!x",
+                io::ErrorKind::InvalidData,
+                "invalid fixture JSON: expected value at line 1 column 1",
+            ),
         ] {
             match read_message(&mut Cursor::new(input.as_bytes())) {
-                Err(error)
-                    if error.kind() == io::ErrorKind::InvalidData
-                        && error.to_string().contains(expected) => {}
-                result => bail!("fixture did not reject {input:?} with {expected:?}: {result:?}"),
+                Err(error) => {
+                    // Exact-kind and exact-message oracles: a wrong path (for
+                    // example swallowing the parse error or misclassifying a
+                    // truncated frame) must fail this test by name.
+                    assert_eq!(error.kind(), expected_kind, "kind for {input:?}");
+                    assert!(
+                        error.to_string().starts_with(expected_prefix),
+                        "message for {input:?} was {:?}, expected prefix {expected_prefix:?}",
+                        error.to_string()
+                    );
+                }
+                result => {
+                    bail!("fixture did not reject {input:?} with {expected_prefix:?}: {result:?}")
+                }
             }
         }
         match read_message(&mut Cursor::new(b"Content-Length: 4\r\n\r\n{}")) {
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {}
             result => bail!("fixture accepted or misclassified truncated body: {result:?}"),
+        }
+        Ok(())
+    }
+
+    /// Each full-session error path is named by its exact protocol_error
+    /// message: a wrong handshake stage, a response that is not the exact
+    /// capability-rejection envelope, and post-completion traffic discipline.
+    #[test]
+    fn full_session_error_paths_are_named_exactly() -> Result<()> {
+        let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}});
+        let initialized = json!({"jsonrpc":"2.0","method":"initialized"});
+        let rejection = json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "error": {
+                "code": -32601,
+                "message": "Client capability not advertised: \
+                            workspace.textDocumentContent.refreshSupport for \
+                            workspace/textDocumentContent/refresh"
+            }
+        });
+        let second_rejection = json!({
+            "jsonrpc": "2.0",
+            "id": "configuration-42",
+            "error": {
+                "code": -32601,
+                "message": "Client capability not advertised: workspace.configuration for \
+                            workspace/configuration"
+            }
+        });
+
+        // A non-initialize first message names the exact stage.
+        let mut input = Vec::new();
+        write_message(&mut input, &json!({"jsonrpc":"2.0","method":"initialized"}))?;
+        let mut output = Cursor::new(Vec::new());
+        let error =
+            run(&mut Cursor::new(input), &mut output, None, None).err().ok_or_else(|| {
+                anyhow::anyhow!("a non-initialize first message must fail the session")
+            })?;
+        assert!(
+            error.to_string().starts_with("expected initialize, got {")
+                && error.to_string().contains("\"method\":\"initialized\""),
+            "exact initialize stage error, got {error}"
+        );
+
+        // A non-initialized second message names the exact stage.
+        let mut input = Vec::new();
+        write_message(&mut input, &initialize)?;
+        write_message(
+            &mut input,
+            &json!({"jsonrpc":"2.0","id":9,"method":"initialize","params":{}}),
+        )?;
+        let mut output = Cursor::new(Vec::new());
+        let error = run(&mut Cursor::new(input), &mut output, None, None)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("a repeated initialize must fail the session"))?;
+        assert!(
+            error.to_string().starts_with("expected initialized, got {\"id\":9,")
+                && error.to_string().contains("\"method\":\"initialize\""),
+            "exact initialized stage error, got {error}"
+        );
+
+        // A response that is a success result instead of the capability
+        // rejection names the missing rejection exactly.
+        let mut input = Vec::new();
+        for message in [&initialize, &initialized, &json!({"jsonrpc":"2.0","id":41,"result":null})]
+        {
+            write_message(&mut input, message)?;
+        }
+        let mut output = Cursor::new(Vec::new());
+        let error = run(&mut Cursor::new(input), &mut output, None, None)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("a success response must fail the gated session"))?;
+        assert!(
+            error.to_string().contains(
+                "expected capability rejection for \
+                workspace/textDocumentContent/refresh"
+            ),
+            "exact rejection evidence error, got {error}"
+        );
+
+        // A rejection with the wrong evidence message is named exactly.
+        let mut input = Vec::new();
+        for message in [&initialize, &initialized] {
+            write_message(&mut input, message)?;
+        }
+        write_message(
+            &mut input,
+            &json!({"jsonrpc":"2.0","id":41,"error":{"code":-32601,"message":"unrelated"}}),
+        )?;
+        let mut output = Cursor::new(Vec::new());
+        let error = run(&mut Cursor::new(input), &mut output, None, None)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("a wrong-evidence rejection must fail the session"))?;
+        assert!(
+            error.to_string().contains(
+                "missing capability evidence for \
+                workspace/textDocumentContent/refresh"
+            ),
+            "exact evidence error, got {error}"
+        );
+
+        // A response with a foreign id is named exactly.
+        let mut input = Vec::new();
+        for message in [&initialize, &initialized] {
+            write_message(&mut input, message)?;
+        }
+        write_message(
+            &mut input,
+            &json!({"jsonrpc":"2.0","id":77,"error":{"code":-32601,"message":"Client capability not advertised: x"}}),
+        )?;
+        let mut output = Cursor::new(Vec::new());
+        let error = run(&mut Cursor::new(input), &mut output, None, None)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("a foreign-id response must fail the session"))?;
+        assert!(
+            error
+                .to_string()
+                .starts_with("response id mismatch for workspace/textDocumentContent/refresh:"),
+            "exact id mismatch error, got {error}"
+        );
+
+        // Post-completion traffic discipline: an unknown method and a
+        // method-less message are both named exactly.
+        for (extra, expected) in [
+            (
+                json!({"jsonrpc":"2.0","method":"totally/unknown"}),
+                "unexpected client message totally/unknown",
+            ),
+            (json!({"jsonrpc":"2.0","result":null}), "client message has no method:"),
+        ] {
+            let mut input = Vec::new();
+            for message in [&initialize, &initialized, &rejection, &second_rejection, &extra] {
+                write_message(&mut input, message)?;
+            }
+            let mut output = Cursor::new(Vec::new());
+            let error = run(&mut Cursor::new(input), &mut output, None, None)
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("unexpected post-completion traffic must fail"))?;
+            assert!(
+                error.to_string().starts_with(expected),
+                "exact post-completion error for {extra}, got {error}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The advertised didClose round trip names its exact evidence error when
+    /// the registration response is anything but the accepted envelope.
+    #[test]
+    fn did_close_advertised_mode_names_invalid_envelopes_exactly() -> Result<()> {
+        let initialize = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}});
+        let initialized = json!({"jsonrpc":"2.0","method":"initialized"});
+        for wrong in [
+            json!({"jsonrpc":"2.0","id":"other","result":null}),
+            json!({"jsonrpc":"2.0","id":"did-close-registration","error":{"code":-32601,"message":"Client capability not advertised: x"}}),
+        ] {
+            let mut input = Vec::new();
+            for message in [&initialize, &initialized, &wrong] {
+                write_message(&mut input, message)?;
+            }
+            let mut output = Cursor::new(Vec::new());
+            let error = run(&mut Cursor::new(input), &mut output, None, Some("advertised"))
+                .err()
+                .ok_or_else(|| {
+                anyhow::anyhow!("a wrong advertised registration must fail the session")
+            })?;
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("expected successful didClose registration with exact id:"),
+                "exact didClose evidence error, got {error}"
+            );
         }
         Ok(())
     }
