@@ -190,17 +190,20 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
     if review.status != "present" {
         next_actions.push(ripr_review_receipt_action(&review, head, args));
     }
+    // Applied static-limitation credit for this evaluation. Defaults to zero:
+    // arms that never run the clearing (unknown or zero count) must not
+    // report clearing.
+    let mut clearing = StaticLimitationClearing::default();
     if ripr_pr.status == "present" {
         match ripr_pr.new_unresolved {
             Some(count) if count > 0 && !review.is_nonproduction_only_scope() => {
-                let (blocking_count, static_limitation_cleared) =
-                    blocking_new_gap_count(count, &review);
-                if blocking_count > 0 {
+                clearing = blocking_new_gap_count(count, &ripr_pr, &review);
+                if clearing.remaining > 0 {
                     next_actions.push(new_ripr_gap_action(
-                        blocking_count,
+                        clearing.remaining,
                         &ripr_pr,
                         &review,
-                        &static_limitation_cleared,
+                        &clearing.applied,
                         args,
                     ));
                     if review.status == "present"
@@ -210,7 +213,8 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
                         next_actions.push(ripr_review_guidance_gap_action(&review, head, args));
                     }
                 } else {
-                    next_actions.push(static_limitation_gap_cleared_action(&review, args));
+                    next_actions
+                        .push(static_limitation_gap_cleared_action(&clearing, &review, args));
                 }
             }
             None => next_actions.push(new_ripr_gap_unknown_action(&ripr_pr, args)),
@@ -265,7 +269,8 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
             "base_sha": ripr_pr.base_sha,
             "new_unresolved": ripr_pr.new_unresolved,
             "non_production_excluded": ripr_pr.non_production_excluded,
-            "static_limitation_cleared": review.clearable_static_limitations().len(),
+            "static_limitation_cleared": clearing.applied.len(),
+            "static_limitation_unspent": clearing_gap_ids(&clearing.unspent),
         },
         "review_guidance": {
             "status": review.status,
@@ -414,17 +419,20 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
         next_actions.push(ripr_review_receipt_action(&review, head, args));
     }
 
+    // Applied static-limitation credit for this evaluation. Defaults to zero:
+    // arms that never run the clearing (unknown or zero count) must not
+    // report clearing.
+    let mut clearing = StaticLimitationClearing::default();
     if ripr_pr.status == "present" {
         match ripr_pr.new_unresolved {
             Some(count) if count > 0 && !review.is_nonproduction_only_scope() => {
-                let (blocking_count, static_limitation_cleared) =
-                    blocking_new_gap_count(count, &review);
-                if blocking_count > 0 {
+                clearing = blocking_new_gap_count(count, &ripr_pr, &review);
+                if clearing.remaining > 0 {
                     next_actions.push(new_ripr_gap_action(
-                        blocking_count,
+                        clearing.remaining,
                         &ripr_pr,
                         &review,
-                        &static_limitation_cleared,
+                        &clearing.applied,
                         args,
                     ));
                     // An incomplete receipt that still names actionable seams
@@ -445,7 +453,8 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
                         next_actions.push(ripr_review_receipt_action(&review, head, args));
                     }
                 } else {
-                    next_actions.push(static_limitation_gap_cleared_action(&review, args));
+                    next_actions
+                        .push(static_limitation_gap_cleared_action(&clearing, &review, args));
                 }
             }
             None => next_actions.push(new_ripr_gap_unknown_action(&ripr_pr, args)),
@@ -480,7 +489,8 @@ fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluatio
             "base_sha": ripr_pr.base_sha,
             "new_unresolved": ripr_pr.new_unresolved,
             "non_production_excluded": ripr_pr.non_production_excluded,
-            "static_limitation_cleared": review.clearable_static_limitations().len(),
+            "static_limitation_cleared": clearing.applied.len(),
+            "static_limitation_unspent": clearing_gap_ids(&clearing.unspent),
         },
         "review_guidance": {
             "status": review.status,
@@ -555,6 +565,11 @@ struct ReviewGuidanceReceipt {
     production_files_considered: Option<u64>,
     changed_production_files: Option<Vec<String>>,
     top_gaps: Vec<Value>,
+    /// Normalized gap identities the producer already excluded from the counted
+    /// basis (`suppressed` entries: path/classification suppressions the
+    /// producer applied before counting). A disposition naming one of these
+    /// IDs spends no credit — the seam was never in the blocking basis.
+    suppressed_gap_ids: BTreeSet<String>,
     /// Producer items the hosted guidance itself classified
     /// `static_limitation` (#15630): seams whose boundary operands are local
     /// or computed, where the analyzer states it cannot judge the seam and
@@ -1082,6 +1097,7 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
             changed_production_files: None,
             top_gaps: Vec::new(),
             static_limitation_gaps: Vec::new(),
+            suppressed_gap_ids: BTreeSet::new(),
             unavailable_reason: None,
         },
         JsonReceipt::Invalid => ReviewGuidanceReceipt {
@@ -1093,6 +1109,7 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
             changed_production_files: None,
             top_gaps: Vec::new(),
             static_limitation_gaps: Vec::new(),
+            suppressed_gap_ids: BTreeSet::new(),
             unavailable_reason: None,
         },
         JsonReceipt::Present(payload) => {
@@ -1118,6 +1135,7 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
                             changed_production_files: None,
                             top_gaps: Vec::new(),
                             static_limitation_gaps: Vec::new(),
+                            suppressed_gap_ids: BTreeSet::new(),
                             unavailable_reason: None,
                         };
                     }
@@ -1165,10 +1183,40 @@ fn read_review_guidance_receipt(path: &Path, expected_head: &str) -> ReviewGuida
                 changed_production_files,
                 top_gaps,
                 static_limitation_gaps,
+                suppressed_gap_ids: suppressed_gap_ids(&payload),
                 unavailable_reason,
             }
         }
     }
+}
+
+/// Normalized gap identities the producer already excluded from the counted
+/// basis via its `suppressed` list. Entries are resolved with the same
+/// identity pointers as counted items ([`review_guidance_item`]), and plain
+/// string entries are taken as identities directly; entries with no
+/// resolvable identity contribute nothing — an unjoinable exclusion cannot
+/// name a seam out of (or into) the credit pool.
+fn suppressed_gap_ids(payload: &Value) -> BTreeSet<String> {
+    payload
+        .get("suppressed")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    if let Some(id) = entry.as_str() {
+                        let id = id.trim();
+                        if id.is_empty() { None } else { Some(id.to_owned()) }
+                    } else {
+                        review_guidance_item("suppressed", entry)
+                            .get("gap_id")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn review_guidance_items(value: &Value, limit: usize) -> (Vec<Value>, Vec<Value>) {
@@ -1768,24 +1816,86 @@ fn new_ripr_gap_unknown_action(ripr_pr: &RiprPrReceipt, args: &QualityGateArgs) 
     })
 }
 
+/// Result of honoring earned `static_limitation` dispositions (#15630).
+#[derive(Default)]
+struct StaticLimitationClearing {
+    /// Counted gaps still blocking after credit.
+    remaining: u64,
+    /// Dispositions actually spent against the counted basis. Only these may
+    /// be reported as cleared — in actions, receipts, and Markdown alike.
+    applied: Vec<Value>,
+    /// Eligible dispositions with no counted slot to spend against
+    /// (identity-excluded or surplus). Stays visible under its own receipt
+    /// field so unspent evidence is never reported as clearing.
+    unspent: Vec<Value>,
+}
+
 /// Blocking new-gap count after honoring earned `static_limitation`
 /// dispositions (#15630).
 ///
-/// Returns the remaining blocking count and the cleared evidence list. The
-/// credit is bounded twice so the clearing can never mask a genuine gap:
+/// Credit is bound to the counted seam identities under the same evaluation
+/// subject, never to the number of guidance records:
 ///
-/// - only producer-classified items from a `present` guidance receipt count
-///   (see [`ReviewGuidanceReceipt::clearable_static_limitations`]); and
-/// - the credit never exceeds `count - named_actionable_gaps`. Named
-///   actionable gaps are definitively part of the blocking basis (the
-///   producer emitted a repair packet for them), so a receipt naming more
-///   static limitations than there are unaccounted seams cannot spend their
-///   slots.
-fn blocking_new_gap_count(count: u64, review: &ReviewGuidanceReceipt) -> (u64, Vec<Value>) {
-    let cleared = review.clearable_static_limitations();
+/// - the guidance receipt must be `present` (see
+///   [`ReviewGuidanceReceipt::clearable_static_limitations`]);
+/// - both receipts must pin the same `base_sha`: a guidance receipt for
+///   another base/scope — or one naming no base at all — earns nothing, and
+///   the gate fails closed when that membership is unavailable;
+/// - a disposition whose gap identity is already accounted for earns
+///   nothing: seams named actionable in `top_gaps`, and seams the producer
+///   already excluded via `suppressed`, were never unaccounted slots; and
+/// - the credit never exceeds `count - named_actionable_gaps`, so a receipt
+///   naming more static limitations than there are unaccounted seams cannot
+///   spend their slots.
+///
+/// Returns the remaining blocking count plus the applied and unspent
+/// evidence lists, so callers report actual applied credit instead of all
+/// eligible records.
+fn blocking_new_gap_count(
+    count: u64,
+    ripr_pr: &RiprPrReceipt,
+    review: &ReviewGuidanceReceipt,
+) -> StaticLimitationClearing {
+    let eligible = review.clearable_static_limitations();
+    let same_subject = match (&ripr_pr.base_sha, &review.base_sha) {
+        (Some(pr_base), Some(review_base)) => pr_base == review_base,
+        _ => false,
+    };
+    let actionable_ids: BTreeSet<&str> = review
+        .top_gaps
+        .iter()
+        .filter_map(|gap| gap.get("gap_id").and_then(Value::as_str))
+        .collect();
+    let is_accounted = |item: &Value| {
+        item.get("gap_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| actionable_ids.contains(id) || review.suppressed_gap_ids.contains(id))
+    };
     let actionable_named = review.top_gaps.len() as u64;
-    let credit = (cleared.len() as u64).min(count.saturating_sub(actionable_named));
-    (count.saturating_sub(credit), cleared.to_vec())
+    let slots = if same_subject {
+        (eligible.iter().filter(|item| !is_accounted(item)).count() as u64)
+            .min(count.saturating_sub(actionable_named))
+    } else {
+        0
+    };
+    // Single ordered pass so `unspent` preserves the receipt's evidence
+    // order: identity-excluded items and surplus share one list.
+    let (mut applied, mut unspent) = (Vec::new(), Vec::new());
+    let mut spent = 0;
+    for item in eligible {
+        if !is_accounted(item) && spent < slots {
+            applied.push(item.clone());
+            spent += 1;
+        } else {
+            unspent.push(item.clone());
+        }
+    }
+    StaticLimitationClearing { remaining: count.saturating_sub(spent), applied, unspent }
+}
+
+/// Gap identities a clearing actually spent, for receipt-level audit fields.
+fn clearing_gap_ids(items: &[Value]) -> Vec<Value> {
+    items.iter().filter_map(|item| item.get("gap_id").cloned()).collect()
 }
 
 fn new_ripr_gap_action(
@@ -1849,6 +1959,7 @@ fn new_ripr_gap_action(
 /// clear these seams, so they must not wedge the PR — but they stay on the
 /// receipt so the gap remains visible and auditable.
 fn static_limitation_gap_cleared_action(
+    clearing: &StaticLimitationClearing,
     review: &ReviewGuidanceReceipt,
     args: &QualityGateArgs,
 ) -> Value {
@@ -1858,7 +1969,7 @@ fn static_limitation_gap_cleared_action(
         "path": display_path(&args.review_receipt),
         "reason": "every counted new RIPR gap is a producer-classified static_limitation seam; it stays visible here but cannot be closed by candidate-side proof (#15630)",
         "receipt_head_sha": review.receipt_head_sha,
-        "static_limitation_gaps": review.clearable_static_limitations(),
+        "static_limitation_gaps": clearing.applied,
         "verify": ripr_review_command(args, true),
         "receipt": ripr_review_command(args, false),
     })
@@ -2704,6 +2815,7 @@ mod tests {
                 changed_production_files: None,
                 top_gaps: Vec::new(),
                 static_limitation_gaps: vec![item.clone()],
+                suppressed_gap_ids: BTreeSet::new(),
                 unavailable_reason: None,
             };
             assert_eq!(
@@ -2760,45 +2872,307 @@ mod tests {
 
     #[test]
     fn blocking_new_gap_count_clears_only_earned_static_limitations() {
+        fn ripr_pr(base_sha: Option<&str>) -> RiprPrReceipt {
+            RiprPrReceipt {
+                status: "present".to_string(),
+                receipt_head_sha: None,
+                base: None,
+                base_sha: base_sha.map(ToOwned::to_owned),
+                new_unresolved: None,
+                non_production_excluded: None,
+            }
+        }
         fn review(
             status: &str,
-            top_gaps: usize,
-            static_limitations: usize,
+            top_gap_ids: &[&str],
+            static_ids: &[&str],
+            base_sha: Option<&str>,
+            suppressed: &[&str],
         ) -> ReviewGuidanceReceipt {
             ReviewGuidanceReceipt {
                 status: status.to_string(),
                 receipt_head_sha: None,
                 base: None,
-                base_sha: None,
+                base_sha: base_sha.map(ToOwned::to_owned),
                 production_files_considered: None,
                 changed_production_files: None,
-                top_gaps: vec![json!({"gap_id": "g"}); top_gaps],
-                static_limitation_gaps: vec![json!({"gap_id": "s"}); static_limitations],
+                top_gaps: top_gap_ids.iter().map(|id| json!({"gap_id": id})).collect(),
+                static_limitation_gaps: static_ids.iter().map(|id| json!({"gap_id": id})).collect(),
+                suppressed_gap_ids: suppressed.iter().map(|id| id.to_string()).collect(),
                 unavailable_reason: None,
             }
         }
+        fn applied_ids(clearing: &StaticLimitationClearing) -> Vec<&str> {
+            clearing
+                .applied
+                .iter()
+                .filter_map(|item| item.get("gap_id").and_then(Value::as_str))
+                .collect()
+        }
+        /// Every case must account for the original count exactly: what is
+        /// not reported as applied credit must still block.
+        fn assert_accounted(original: u64, clearing: &StaticLimitationClearing) {
+            assert_eq!(
+                original,
+                clearing.remaining + clearing.applied.len() as u64,
+                "original_count = remaining_count + applied_credit"
+            );
+        }
+
+        let pr = ripr_pr(Some("base-sha"));
+        let present =
+            |top: &[&str], ids: &[&str]| review("present", top, ids, Some("base-sha"), &[]);
 
         // The #15630 shape: 5 counted new gaps, named evidence holds one
-        // actionable and two static_limitation seams — 3 must still block.
-        let (remaining, cleared) = blocking_new_gap_count(5, &review("present", 1, 2));
-        assert_eq!(remaining, 3);
-        assert_eq!(cleared.len(), 2);
+        // actionable and two static_limitation seams — 3 must still block,
+        // and only the 2 spent dispositions report as cleared.
+        let clearing = blocking_new_gap_count(5, &pr, &present(&["g"], &["s1", "s2"]));
+        assert_eq!(clearing.remaining, 3);
+        assert_eq!(applied_ids(&clearing), vec!["s1", "s2"]);
+        assert!(clearing.unspent.is_empty());
+        assert_accounted(5, &clearing);
 
         // All counted gaps are earned static_limitation seams — nothing blocks.
-        let (remaining, cleared) = blocking_new_gap_count(2, &review("present", 0, 2));
-        assert_eq!(remaining, 0);
-        assert_eq!(cleared.len(), 2);
+        let clearing = blocking_new_gap_count(2, &pr, &present(&[], &["s1", "s2"]));
+        assert_eq!(clearing.remaining, 0);
+        assert_eq!(applied_ids(&clearing), vec!["s1", "s2"]);
+        assert_accounted(2, &clearing);
 
         // Credit can never consume a named actionable gap's slot: with one
         // counted gap that is already named actionable, two claimed static
-        // limitations must not clear it.
-        let (remaining, cleared) = blocking_new_gap_count(1, &review("present", 1, 2));
-        assert_eq!(remaining, 1);
-        assert_eq!(cleared.len(), 2, "the evidence stays visible even when unspent");
+        // limitations spend nothing and report zero applied credit.
+        let clearing = blocking_new_gap_count(1, &pr, &present(&["g"], &["s1", "s2"]));
+        assert_eq!(clearing.remaining, 1);
+        assert!(clearing.applied.is_empty(), "zero credit must report zero cleared");
+        assert_eq!(clearing.unspent.len(), 2, "the evidence stays visible even when unspent");
+        assert_accounted(1, &clearing);
 
-        // Saturating: more claimed credit than counted gaps cannot go negative.
-        let (remaining, _) = blocking_new_gap_count(1, &review("present", 0, 2));
-        assert_eq!(remaining, 0);
+        // Saturating: more claimed credit than counted gaps cannot go
+        // negative, and only the spent slot reports as cleared.
+        let clearing = blocking_new_gap_count(1, &pr, &present(&[], &["s1", "s2"]));
+        assert_eq!(clearing.remaining, 0);
+        assert_eq!(applied_ids(&clearing), vec!["s1"]);
+        assert_eq!(clearing.unspent.len(), 1);
+        assert_accounted(1, &clearing);
+
+        // A disposition naming a seam that is already actionable spends no
+        // credit on it: the applied identity must be the unaccounted seam.
+        let clearing = blocking_new_gap_count(2, &pr, &present(&["g"], &["g", "s"]));
+        assert_eq!(clearing.remaining, 1);
+        assert_eq!(applied_ids(&clearing), vec!["s"]);
+        assert_accounted(2, &clearing);
+
+        // A disposition naming a producer-suppressed seam spends nothing: the
+        // seam was already excluded from the counted basis.
+        let suppressed = review("present", &[], &["x"], Some("base-sha"), &["x"]);
+        let clearing = blocking_new_gap_count(1, &pr, &suppressed);
+        assert_eq!(clearing.remaining, 1);
+        assert!(clearing.applied.is_empty());
+        assert_accounted(1, &clearing);
+
+        // Same head but another base/scope earns nothing — fail closed.
+        let other_base = review("present", &[], &["s"], Some("other-base"), &[]);
+        let clearing = blocking_new_gap_count(1, &pr, &other_base);
+        assert_eq!(clearing.remaining, 1);
+        assert!(clearing.applied.is_empty());
+        assert_accounted(1, &clearing);
+
+        // Membership unavailable earns nothing: a missing base on either
+        // side fails closed.
+        for (pr_base, review_base) in
+            [(Some("base-sha"), None), (None, Some("base-sha")), (None, None)]
+        {
+            let clearing = blocking_new_gap_count(
+                1,
+                &ripr_pr(pr_base),
+                &review("present", &[], &["s"], review_base, &[]),
+            );
+            assert_eq!(clearing.remaining, 1, "pr_base={pr_base:?} review_base={review_base:?}");
+            assert!(clearing.applied.is_empty());
+            assert_accounted(1, &clearing);
+        }
+
+        // Unpresent guidance earns nothing even on the same subject.
+        let clearing = blocking_new_gap_count(
+            1,
+            &pr,
+            &review("incomplete", &[], &["s"], Some("base-sha"), &[]),
+        );
+        assert_eq!(clearing.remaining, 1);
+        assert!(clearing.applied.is_empty());
+        assert_accounted(1, &clearing);
+    }
+
+    fn gap_action(evaluation: &GateEvaluation, kind: &str) -> Value {
+        evaluation
+            .receipt
+            .get("next_actions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|action| action.get("kind").and_then(Value::as_str) == Some(kind))
+            .unwrap_or_default()
+    }
+
+    /// P1 routed negative control: a guidance receipt for the same head but
+    /// another base/scope — naming a disjoint static-limitation ID plus one
+    /// already-excluded (producer-suppressed) ID, and no actionable packets
+    /// — must not reduce the blocker count.
+    #[test]
+    fn cross_base_guidance_earns_no_clearing_credit() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "review-head";
+        fs::write(
+            dir.path().join("ripr-plus.json"),
+            json!({ "head": head, "unresolved": 0 }).to_string(),
+        )?;
+        fs::write(
+            dir.path().join("repo-exposure.json"),
+            json!({
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-A",
+                "summary": { "severe_gaps": 1, "reachable_unrevealed": 1, "no_static_path": 0 }
+            })
+            .to_string(),
+        )?;
+        fs::write(
+            dir.path().join("comments.json"),
+            json!({
+                "head_sha": head,
+                "base": "origin/other",
+                "base_sha": "base-B",
+                "comments": [
+                    static_limitation_guidance_item(
+                        "disjoint-s",
+                        "src/other.rs",
+                        10,
+                        "predicate_boundary",
+                    ),
+                    static_limitation_guidance_item(
+                        "excluded-x",
+                        "src/x.rs",
+                        20,
+                        "predicate_boundary",
+                    ),
+                ],
+                "summary_only": [],
+                "suppressed": [
+                    static_limitation_guidance_item(
+                        "excluded-x",
+                        "src/x.rs",
+                        20,
+                        "predicate_boundary",
+                    ),
+                ],
+                "warnings": []
+            })
+            .to_string(),
+        )?;
+        let args = new_ripr_args(dir.path())?;
+
+        let evaluation = evaluate_new_ripr(head, &args)?;
+
+        assert!(evaluation.failed, "the counted gap must still block");
+        let gap = gap_action(&evaluation, "new_ripr_gap");
+        assert_eq!(gap.get("new_unresolved"), Some(&json!(1)));
+        assert_eq!(
+            gap.get("static_limitation_cleared").and_then(Value::as_array).map(Vec::len),
+            Some(0),
+            "the action must not list unspent dispositions as subtracted"
+        );
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_pr/static_limitation_cleared"),
+            Some(&json!(0)),
+            "zero credit must report zero cleared"
+        );
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_pr/static_limitation_unspent"),
+            Some(&json!(["disjoint-s", "excluded-x"])),
+            "unspent evidence stays visible under its own name"
+        );
+        Ok(())
+    }
+
+    /// P2 routed positive control: same-subject earned dispositions clear the
+    /// basis and the receipt, action, and Markdown all report the applied
+    /// credit — with `original = remaining + applied`.
+    #[test]
+    fn same_subject_clearing_reports_applied_credit_everywhere() -> Result<()> {
+        let dir = tempdir()?;
+        let head = "review-head";
+        fs::write(
+            dir.path().join("ripr-plus.json"),
+            json!({ "head": head, "unresolved": 0 }).to_string(),
+        )?;
+        fs::write(
+            dir.path().join("repo-exposure.json"),
+            json!({
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-A",
+                "summary": { "severe_gaps": 1, "reachable_unrevealed": 1, "no_static_path": 0 }
+            })
+            .to_string(),
+        )?;
+        fs::write(
+            dir.path().join("comments.json"),
+            json!({
+                "head_sha": head,
+                "base": "origin/main",
+                "base_sha": "base-A",
+                "comments": [
+                    static_limitation_guidance_item(
+                        "earned-s",
+                        "src/a.rs",
+                        10,
+                        "predicate_boundary",
+                    ),
+                ],
+                "summary_only": [],
+                "suppressed": [],
+                "warnings": []
+            })
+            .to_string(),
+        )?;
+        let args = new_ripr_args(dir.path())?;
+
+        let evaluation = evaluate_new_ripr(head, &args)?;
+
+        assert!(!evaluation.failed, "{:?}", evaluation.receipt["next_actions"]);
+        let original = evaluation
+            .receipt
+            .pointer("/ripr_pr/new_unresolved")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let applied = evaluation
+            .receipt
+            .pointer("/ripr_pr/static_limitation_cleared")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        assert_eq!(
+            (original, applied),
+            (1, 1),
+            "original = remaining + applied with zero remaining"
+        );
+        assert_eq!(
+            evaluation.receipt.pointer("/ripr_pr/static_limitation_unspent"),
+            Some(&json!([]))
+        );
+        let cleared = gap_action(&evaluation, "ripr_static_limitation_gaps_cleared");
+        assert_eq!(
+            cleared.get("static_limitation_gaps").and_then(Value::as_array).map(Vec::len),
+            Some(1)
+        );
+        assert!(
+            evaluation.markdown.contains(
+                "- producer-classified static_limitation seams cleared from the basis (#15630): `1`"
+            ),
+            "Markdown must report the applied credit: {}",
+            evaluation.markdown
+        );
+        Ok(())
     }
 
     // ── #10054 fallback guidance: named seams from the raw check ────────────
