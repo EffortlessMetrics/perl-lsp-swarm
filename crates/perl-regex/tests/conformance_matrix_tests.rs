@@ -31,7 +31,7 @@ use perl_regex::{
         CaptureMode, CharacterSetMode, ExtendedMode, FeatureState, ModifierSequence, PerlVersion,
         RegexLanguageProfile, RegexOperator,
     },
-    conformance::SCHEMA_VERSION,
+    conformance::{ConformanceCompleteness, OracleDisposition, SCHEMA_VERSION},
     validator::RegexDiagnosticCode,
 };
 use serde::Deserialize;
@@ -223,6 +223,35 @@ fn rows_belong_to_declared_file_family() {
     }
 }
 
+/// Every fixture file on disk must be loaded by [`all_fixtures`], so a new
+/// fixture family cannot silently bypass the schema and bulk-assertion tests
+/// by forgetting to wire it into the harness.
+#[test]
+fn all_fixture_files_on_disk_are_loaded() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/conformance");
+    let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|err| panic!("failed to read fixture dir {}: {err}", dir.display()))
+        .filter_map(|entry| {
+            let path = entry.expect("fixture dir entry must be readable").path();
+            if path.extension()?.to_str()? == "json" {
+                Some(path.file_name()?.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    on_disk.sort_unstable();
+
+    let mut loaded: Vec<String> =
+        all_fixtures().into_iter().map(|(label, _)| format!("{label}.json")).collect();
+    loaded.sort_unstable();
+
+    assert_eq!(
+        on_disk, loaded,
+        "fixture files on disk and harness-loaded fixtures diverge; wire new files into all_fixtures()"
+    );
+}
+
 #[test]
 fn fixture_schema_is_load_bearing() {
     for (file, fixture) in all_fixtures() {
@@ -232,8 +261,21 @@ fn fixture_schema_is_load_bearing() {
         for row in &fixture.rows {
             assert!(!row.authority.trim().is_empty(), "fixture {file}/{} has no authority", row.id);
             assert_eq!(row.owner_issue, 7036, "fixture {file}/{}", row.id);
-            assert_eq!(row.completeness, "proven", "fixture {file}/{}", row.id);
-            assert_eq!(row.oracle_disposition, "not_applicable", "fixture {file}/{}", row.id);
+            // Completeness and oracle disposition must be recognized vocabulary
+            // tokens, compared against the public `as_str()` contract so the
+            // enums stay wired to the fixture schema.
+            assert_eq!(
+                row.completeness,
+                ConformanceCompleteness::Proven.as_str(),
+                "fixture {file}/{}",
+                row.id
+            );
+            assert_eq!(
+                row.oracle_disposition,
+                OracleDisposition::NotApplicable.as_str(),
+                "fixture {file}/{}",
+                row.id
+            );
             assert!(
                 row.positive_source.is_none(),
                 "fixture {file}/{} unexpectedly claims positive oracle source",
