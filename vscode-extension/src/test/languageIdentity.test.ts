@@ -108,6 +108,42 @@ describe('Perl language identity authority (#7699)', () => {
       }),
     ).toBeUndefined();
   });
+
+  test('alias configuration revives JSON patterns to RegExp for setLanguageConfiguration', () => {
+    // Regression: passing the raw JSON strings crashes activation with
+    // `TypeError: r.exec is not a function` inside setLanguageConfiguration.
+    const config = loadPerlAliasLanguageConfiguration(EXT_ROOT, (file) =>
+      fs.readFileSync(file, 'utf-8'),
+    );
+    expect(config?.wordPattern).toBeInstanceOf(RegExp);
+    expect(
+      (config?.indentationRules as { increaseIndentPattern?: unknown } | undefined)
+        ?.increaseIndentPattern,
+    ).toBeInstanceOf(RegExp);
+    expect(
+      (config?.indentationRules as { decreaseIndentPattern?: unknown } | undefined)
+        ?.decreaseIndentPattern,
+    ).toBeInstanceOf(RegExp);
+    expect((config?.wordPattern as RegExp).exec('foo')).not.toBeNull();
+  });
+
+  test('alias configuration with unrevivable patterns fails closed', () => {
+    expect(
+      parsePerlAliasLanguageConfiguration(JSON.stringify({ wordPattern: '([' })),
+    ).toBeUndefined();
+    expect(
+      parsePerlAliasLanguageConfiguration(JSON.stringify({ wordPattern: 42 })),
+    ).toBeUndefined();
+    expect(
+      parsePerlAliasLanguageConfiguration(
+        JSON.stringify({ indentationRules: { increaseIndentPattern: '([' } }),
+      ),
+    ).toBeUndefined();
+    // Absent patterns stay absent: a minimal configuration still parses.
+    expect(parsePerlAliasLanguageConfiguration(JSON.stringify({ comments: {} }))).toEqual({
+      comments: {},
+    });
+  });
 });
 
 describe('language-ID manifest contract (#7699)', () => {
