@@ -34,14 +34,15 @@ use tasks::ux_scorecard::UxScorecardFormat;
 use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
-    active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
-    agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks,
-    build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
-    check_tautology, check_test_wiring, check_toolchain, check_version_sync, ci,
-    ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
-    ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
-    code_action_generation_ledger, command_evidence, compare, compat_inventory,
-    compiler_lexical_cutline, compiler_upstream_status, corpus_audit, count_ratchet, cpan_corpus,
+    activation, active_goal_manifest, agent_capability_policy, agent_flow,
+    agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
+    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
+    check, check_agent_context, check_lint_policy, check_tautology, check_test_wiring,
+    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_cache_inventory, ci_contract,
+    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
+    ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
+    compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
+    compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
     critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
     devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
     features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
@@ -97,6 +98,15 @@ enum Commands {
         command: Option<CiSubcommand>,
     },
 
+    /// Prove one exact parent-head -> child-head stack increment (#11229 S1).
+    #[command(name = "ci-stack")]
+    StackIncrement {
+        /// Sub-command selecting subject assembly, plan selection, artifact
+        /// validation, or advisory explanation.
+        #[command(subcommand)]
+        command: tasks::ci_stack_increment::StackIncrementCommand,
+    },
+
     /// Run format and clippy checks only (no tests)
     CheckOnly,
 
@@ -149,6 +159,18 @@ enum Commands {
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
 
+    /// Generate, validate, and list the versioned activation inventory
+    /// (`activation_inventory.v1`, #9204): a deterministic classified catalog
+    /// of product, preview, compatibility-shim, test-api, lab, oracle,
+    /// benchmark, and gate surfaces derived from existing authorities plus a
+    /// narrow, typed, owner/expiry-bound override ledger. Does not implement
+    /// activation checking (#9205).
+    Activation {
+        /// Operation to run against the activation inventory.
+        #[command(subcommand)]
+        command: tasks::activation::ActivationSubcommand,
+    },
+
     /// List, validate, and explain the compiler lexical cut-line cases
     /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
     CompilerLexicalCutline {
@@ -177,6 +199,9 @@ enum Commands {
 
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
+
+    /// Validate the compiler performance receipt schema, its vocabularies, and every committed fixture.
+    CheckCompilerPerformanceReceipt,
 
     /// Validate the shared typed train edge and claim-profile contract
     /// (train_edge_contract.v1), its programme-neutral fixtures, and the
@@ -373,6 +398,16 @@ enum Commands {
         /// Validate only, and require the checked-in projection to be current.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Reconcile `policy/completion-candidate-producers.toml` against the live
+    /// `textDocument/completion` candidate producers and hold the finalizer
+    /// route closed (#10949).
+    #[command(name = "completion-candidates")]
+    CompletionCandidates {
+        /// Operation to run against the inventory.
+        #[command(subcommand)]
+        command: completion_candidates::CompletionCandidatesSubcommand,
     },
 
     /// Generate or check the protocol-type substrate and migration-denominator
@@ -1156,6 +1191,34 @@ enum Commands {
 
     /// Audit CI workflows for PR-safety and spend-risk controls.
     CiAuditWorkflows,
+
+    /// Derive the active CI cache inventory + `ci_cache_receipt.v1` (#9177).
+    ///
+    /// Diagnostic: classifies reachability, save authority, and byte
+    /// provenance for every `Swatinem/rust-cache`/`actions/cache` step
+    /// already in source. Changes no cache behavior and grants no save
+    /// authority.
+    CiCacheInventory {
+        /// Diff the derived inventory against the checked-in manifest and
+        /// fail on drift, instead of (re)writing it.
+        #[arg(long)]
+        check: bool,
+
+        /// Write the receipt JSON to this path instead of stdout.
+        /// Rejected alongside `--check`, which never writes a receipt.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+
+        /// Checked-in manifest path (defaults to `ci_cache_inventory::MANIFEST`).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Schema version this producer must emit and validate. Only
+        /// `v1` is supported; anything else fails loudly instead of
+        /// emitting a shape the caller does not parse.
+        #[arg(long, default_value = "v1")]
+        api_version: String,
+    },
 
     /// Classify credential derivation kinds in `.github/workflows/*.yml` (#14867).
     ///
@@ -2491,6 +2554,13 @@ enum Commands {
         /// commit` (issue #3786).
         #[arg(long)]
         staged: bool,
+
+        /// Published `ci_route_plan.v1` (#10179) to consume and validate
+        /// before execution; when set, one normalized `routed_gate_result.v1`
+        /// (#9156) is emitted per executed planned `run` row under
+        /// target/receipts/routed-results/.
+        #[arg(long, requires = "subject")]
+        route_plan: Option<PathBuf>,
     },
 
     /// Ergonomic alias for `gates --tier commit --staged` (issue #3786).
@@ -5128,6 +5198,11 @@ enum AgentLedgersCommand {
         /// Output format: `human` (default) or `json`.
         #[arg(long, default_value = "human")]
         format: String,
+        /// Require every ledger file to declare this schema id (e.g.
+        /// `workflow-outcome.v1`). Without it, each file is validated against the
+        /// schema it declares.
+        #[arg(long, value_name = "ID")]
+        expected_schema: Option<String>,
     },
 }
 
@@ -5202,6 +5277,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 ci_explain::run(receipt, run_id, base)
             }
         },
+        Commands::StackIncrement { command } => tasks::ci_stack_increment::run(command),
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckAgentContext => check_agent_context::run(),
         Commands::CheckLintPolicy => check_lint_policy::run(),
@@ -5214,10 +5290,12 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::Activation { command } => activation::run(command),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckCompilerPerformanceReceipt => compiler_performance_receipt::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CandidateSecurityContract { contract } => {
             tasks::candidate_security_contract::run(&contract)
@@ -5603,6 +5681,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
+        Commands::CompletionCandidates { command } => completion_candidates::run(command),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
         }
@@ -6018,6 +6097,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::TestEdgeCases { bench, coverage, test } => edge_cases::run(bench, coverage, test),
         Commands::CiAuditWorkflows => ci_audit_workflows::run(),
+        Commands::CiCacheInventory { check, receipt, manifest, api_version } => {
+            ci_cache_inventory::run(check, receipt, manifest, &api_version)
+        }
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)
         }
@@ -6777,15 +6859,18 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             },
             AgentCommand::Ledgers { command } => match command {
-                AgentLedgersCommand::Validate { dir, format } => {
-                    let fmt = if format == "json" {
-                        tasks::agent_ledgers::ValidateFormat::Json
-                    } else {
-                        tasks::agent_ledgers::ValidateFormat::Human
+                AgentLedgersCommand::Validate { dir, format, expected_schema } => {
+                    let fmt = match format.as_str() {
+                        "json" => tasks::agent_ledgers::ValidateFormat::Json,
+                        "human" => tasks::agent_ledgers::ValidateFormat::Human,
+                        other => color_eyre::eyre::bail!(
+                            "unknown --format `{other}`; expected `human` or `json`"
+                        ),
                     };
                     tasks::agent_ledgers::validate(tasks::agent_ledgers::ValidateConfig {
                         ledger_dir: dir,
                         format: fmt,
+                        expected_schema,
                     })
                 }
             },
@@ -6954,6 +7039,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             parallel,
             verbose,
             staged,
+            route_plan,
         } => gates::run(gates::GateRunnerConfig {
             tier,
             gate_policy: Some(gate_policy),
@@ -6971,6 +7057,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             parallel,
             verbose,
             staged,
+            route_plan_path: route_plan,
         }),
         Commands::Precommit { format, receipt } => gates::run(gates::GateRunnerConfig {
             tier: GateTier::Commit,
@@ -7466,6 +7553,66 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    fn parse_completion_candidates(
+        args: &[&str],
+    ) -> TestResult<completion_candidates::CompletionCandidatesSubcommand> {
+        match Cli::try_parse_from(args)?.command {
+            Commands::CompletionCandidates { command } => Ok(command),
+            _ => Err(std::io::Error::other("expected completion-candidates command").into()),
+        }
+    }
+
+    /// The inventory's four verbs are its whole interface (#10949). A wrong
+    /// clap name, a missing `#[command(subcommand)]`, or an argument declared
+    /// as a flag instead of a positional all compile cleanly and break the CLI,
+    /// so each shape is parsed here and each wrong shape is refused.
+    #[test]
+    fn completion_candidates_cli_shapes_parse() -> TestResult {
+        use completion_candidates::CompletionCandidatesSubcommand as Sub;
+
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "check"])?,
+            Sub::Check
+        ));
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "list"])?,
+            Sub::List
+        ));
+
+        let explain = parse_completion_candidates(&[
+            "xtask",
+            "completion-candidates",
+            "explain",
+            "some::producer::id",
+        ])?;
+        match explain {
+            Sub::Explain { producer_id } => assert_eq!(producer_id, "some::producer::id"),
+            other => {
+                return Err(
+                    std::io::Error::other(format!("expected explain, got {other:?}")).into()
+                );
+            }
+        }
+
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "graph"])?,
+            Sub::Graph { stdout: false }
+        ));
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "graph", "--stdout"])?,
+            Sub::Graph { stdout: true }
+        ));
+
+        // A verb is required, `explain` needs its producer id, and the
+        // subcommand name is `completion-candidates` rather than the Rust
+        // identifier — each is a regression clap would otherwise accept.
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates", "explain"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion_candidates", "check"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates", "chekc"]).is_err());
+        Ok(())
+    }
 
     #[test]
     fn candidate_security_contract_command_requires_and_preserves_path() -> TestResult {
