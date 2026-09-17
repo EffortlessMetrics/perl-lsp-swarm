@@ -335,3 +335,49 @@ fn comment_for_text_does_not_steal_statement_position() {
         "comment `for (` must not suppress statement-only `package`"
     );
 }
+
+/// A statement label (`LABEL:`) is followed by another statement, not a value.
+/// `LABEL: wh|` must offer `while` (statement-only) the same way `foo; wh|`
+/// does, and must not switch into anonymous-`sub` value-position insertion
+/// just because the trailing character before the prefix is a colon (#15806).
+#[test]
+fn statement_label_colon_keeps_statement_keywords() {
+    let source = "LABEL: wh";
+    let completions = completions_at(source);
+    let labels = keyword_labels(&completions);
+    assert!(
+        has_keyword(&completions, "while"),
+        "after `LABEL:` prefix `wh` must still reach statement-only `while`; keyword labels ({}) {labels:?}",
+        labels.len()
+    );
+    assert!(
+        has_keyword(&completions, "package"),
+        "after `LABEL:` statement-only `package` must still be offered; keyword labels ({}) {labels:?}",
+        labels.len()
+    );
+}
+
+/// Empty prefix after `LABEL:` exposes the full statement-only set, mirroring
+/// the after-`;` contract. Without the fix the trailing `:` was classified as
+/// an expression indicator and `package`/`while`/`for`/… disappeared.
+#[test]
+fn statement_label_colon_empty_prefix_offers_full_statement_set() {
+    let source = "foo(); LABEL: ";
+    let completions = completions_at(source);
+    let labels = keyword_labels(&completions);
+    assert!(
+        has_keyword(&completions, "while"),
+        "after `LABEL:` empty prefix must offer statement-only `while`; keyword labels ({}) {labels:?}",
+        labels.len()
+    );
+    assert!(
+        has_keyword(&completions, "for"),
+        "after `LABEL:` empty prefix must offer statement-only `for`; keyword labels ({}) {labels:?}",
+        labels.len()
+    );
+    assert!(
+        has_keyword(&completions, "package"),
+        "after `LABEL:` empty prefix must offer statement-only `package`; keyword labels ({}) {labels:?}",
+        labels.len()
+    );
+}
