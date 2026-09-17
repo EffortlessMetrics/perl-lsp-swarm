@@ -1735,6 +1735,22 @@ jobs:
       - name: Direct command guidance contract (required merge surface)
         run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture
 
+      # The active cache denominator (#9177) is derived from workflow source, so it
+      # silently rots whenever a cache step, trigger, or save guard moves. This
+      # contract lives as the xtask binary's own unit tests (tasks::ci_cache_inventory),
+      # and the merge gate runs `cargo test --workspace --lib`, which never compiles or
+      # runs the xtask *binary*'s unit tests — so keep this step required here.
+      - name: CI cache inventory contract (required merge surface)
+        run: cargo test -p xtask --bin xtask tasks::ci_cache_inventory --locked -- --nocapture
+
+      # The unit tests above prove the deriver's logic; this proves the
+      # *producer* against the live workflow tree: the checked-in manifest
+      # `.ci/ci-cache/cache-inventory.v1.json` must equal what
+      # `ci-cache-inventory` derives right now, or the drift gate fails the
+      # merge surface instead of letting the manifest rot silently.
+      - name: CI cache inventory manifest drift gate (required merge surface)
+        run: cargo run --locked --package xtask -- ci-cache-inventory --check
+
       # Same reasoning as the Emacs contract above: the merge gate runs
       # `cargo test --workspace --lib`, so this integration test would otherwise
       # only execute via advisory pr-smoke. It guards the publish path that can
@@ -1748,12 +1764,19 @@ jobs:
       - name: Publish-provenance contract (required merge surface)
         run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
 
+      # Same reasoning as the contracts above: the #11377 semantic-facade
+      # recurrence guard otherwise only executes through diff-routed advisory
+      # lanes, so stale facade imports could merge without it ever running.
+      - name: Semantic facade consumer contract (required merge surface)
+        run: cargo test -p xtask --test parser_semantic_facade_consumers --locked -- --nocapture
+
       # Same reasoning as the contracts above: the #11389 workspace/index
       # facade recurrence guard otherwise only executes through diff-routed
       # advisory lanes, so stale facade imports could merge without it ever
       # running.
       - name: Workspace/index facade consumer contract (required merge surface)
         run: cargo test -p xtask --test parser_workspace_index_facade_consumers --locked -- --nocapture
+
       # Same reasoning as the contracts above: the #11382 TDD-facade
       # recurrence guard otherwise only executes through diff-routed advisory
       # lanes, so stale facade imports could merge without it ever running.
@@ -1860,6 +1883,18 @@ jobs:
       # runs when only `.ci/` changes.
       - name: Freshness-gate cfg-binding contract (required merge surface)
         run: cargo test -p xtask --test gate_policy_profile_tests --locked -- freshness_gate_commands_satisfy_every_named_suite_cfg --nocapture
+      # #13491: identical reasoning to the contracts above. The staged
+      # product-topology contract lives in `xtask/src/bin/product-topology.rs`
+      # (unit tests) and `xtask/tests/product_topology_cli.rs` (current-tree
+      # reachability). The merge gate runs `cargo test --workspace --lib`,
+      # which builds neither `--bin` nor `tests/` targets, and no workflow
+      # names either one — so as authored the whole contract would compile and
+      # never execute, the exact state #14585 found `file_policy` in. A
+      # topology guard that cannot go red does not guard the topology.
+      - name: Product-topology staged contract (required merge surface)
+        run: |
+          cargo test -p xtask --bin product-topology --locked -- --nocapture
+          cargo test -p xtask --test product_topology_cli --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke

@@ -109,7 +109,7 @@ pub use engine::pragma_tracker;
 pub use engine::quote_parser;
 /// Parser entry points that retain source-generation-bound regex analysis.
 pub use engine::regex_retention::{
-    RegexParseOutput, parse_source_with_cancellation_and_regex_analysis,
+    RegexParseOutput, RetainedRegexSession, parse_source_with_cancellation_and_regex_analysis,
     parse_source_with_regex_analysis, parse_tokens_with_regex_analysis,
 };
 /// Legacy module aliases for moved engine components.
