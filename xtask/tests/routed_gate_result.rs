@@ -723,6 +723,31 @@ fn validation_rejects_rows_outside_the_authority_projection() {
 }
 
 #[test]
+fn timing_must_agree_with_whether_the_command_started() {
+    // `check_timing` only proves the window is internally coherent. An empty
+    // window on a started command, and a full window on one that never
+    // started, are each coherent in isolation and contradictory in fact.
+    let plan = compiled_plan();
+
+    let mut result = build_success(&plan);
+    result.timing =
+        ObservationTiming { started_at_unix_ms: None, ended_at_unix_ms: None, duration_ms: 0 };
+    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+    assert!(
+        result.validate().is_err(),
+        "a started command with no observation window must fail validation"
+    );
+
+    let mut result = build_success(&plan);
+    result.command_started = false;
+    result.result_fingerprint = result.semantic_fingerprint_of().expect("re-seal");
+    assert!(
+        result.validate().is_err(),
+        "a never-started command carrying an observation window must fail validation"
+    );
+}
+
+#[test]
 fn validation_rejects_success_with_timeout_or_cancellation_flags() {
     let plan = compiled_plan();
     for (timed_out, cancelled) in [(true, false), (false, true)] {
@@ -835,11 +860,13 @@ fn explicit_null_hosted_identity_fails_closed() {
         "explicit null hosted must fail closed"
     );
 
-    // The same rule holds on the runner-supplied observation.
+    // The same rule holds on the runner-supplied observation. The status
+    // spelling is the Serde-valid `Pass` (the enum carries no `rename_all`),
+    // and prerequisites are valid, so `hosted: null` is the refusal cause.
     let observation_bytes = serde_json::to_vec(&serde_json::json!({
-        "runner_status": "pass",
+        "runner_status": "Pass",
         "hosted": null,
-        "prerequisites": null,
+        "prerequisites": {"state": "ready", "missing_artifacts": [], "dependency_gates": {}},
         "command_started": true,
         "child": {
             "exit_code": 0,

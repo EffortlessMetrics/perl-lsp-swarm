@@ -1634,6 +1634,14 @@ fn run_gate_plan(
                 &compiled,
                 &config.tier,
                 &resolved_base,
+                |revision| {
+                    cmd!("git", "rev-parse", "--verify", format!("{revision}^{{commit}}"))
+                        .dir(&root)
+                        .stderr_null()
+                        .read()
+                        .ok()
+                        .map(|sha| sha.trim().to_string())
+                },
             )?;
             let output_dir = root.join(routed_result_adapter::ROUTED_RESULTS_DIR);
             fs::create_dir_all(&output_dir).context("Failed to create routed-results directory")?;

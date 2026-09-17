@@ -267,6 +267,11 @@ fn parse_indirect_receiver(source: &str, from: usize) -> Option<String> {
 /// there; expression-capable keywords (anonymous `sub`, `do`, `eval`) remain
 /// admissible. Returns true if the text immediately before the prefix suggests
 /// an expression context. (UX_GAP_02 / #14844)
+///
+/// A trailing `:` is treated as a statement-label colon (`LABEL:`) when the
+/// identifier preceding it sits at statement-start, and as an expression
+/// position otherwise (ternary `? :`, package separator `::`). The same
+/// trailing character therefore splits into two syntactic roles (#15806).
 fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     if prefix_start == 0 {
         return false; // start of file — statement position
@@ -285,6 +290,12 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
     // which are still term positions.
     if last_char == ';' {
         return c_style_for_header_owns_semicolon(trimmed);
+    }
+    if last_char == ':' {
+        // Distinguish statement-label `LABEL:` from ternary `? :` and the
+        // package separator `Foo::`. Only the label form sits at
+        // statement-start; the others are expression positions.
+        return !is_statement_label_colon(trimmed);
     }
     matches!(
         last_char,
@@ -308,6 +319,42 @@ fn is_in_expression_position(source: &str, prefix_start: usize) -> bool {
             | '~'
             | '\\'
     )
+}
+
+/// True when a prefix ending in `:` is a statement label (`LABEL:`) rather
+/// than a ternary else (`? :`) or the package separator (`Foo::`).
+///
+/// Statement labels are an identifier followed by exactly one colon, sitting
+/// at statement-start. The trailing `::` form is always the package separator
+/// and stays in expression position. For a single-colon suffix we walk back
+/// over the trailing identifier, then over any separating whitespace, and
+/// check whether the character before it is a statement boundary (`;`, `{`,
+/// `}`, or another label's `:`). Anything else — operator, operand, comment
+/// ending, etc. — means the `:` is part of a larger expression, not a label.
+///
+/// This is intentionally a prefix heuristic. Labels that appear inside an
+/// argument list (`foo(\n  LABEL: ...)`) are still surfaced here; if that
+/// ever matters the caller can layer a real parser classification on top.
+fn is_statement_label_colon(trimmed: &str) -> bool {
+    // Trailing `::` is always the package separator, never a label.
+    if trimmed.ends_with("::") {
+        return false;
+    }
+    let bytes = trimmed.as_bytes();
+    // Walk back over the trailing identifier (the label name).
+    let mut ident_end = bytes.len().saturating_sub(1); // skip the trailing `:`
+    while ident_end > 0
+        && (bytes[ident_end - 1].is_ascii_alphanumeric() || bytes[ident_end - 1] == b'_')
+    {
+        ident_end -= 1;
+    }
+    let before_ident = &trimmed[..ident_end];
+    let before_trimmed = before_ident.trim_end();
+    let Some(prev) = before_trimmed.chars().next_back() else {
+        // Nothing before the label — start of line/statement.
+        return true;
+    };
+    matches!(prev, ';' | '{' | '}' | ':')
 }
 
 /// True when `trimmed` ends at a `;` that separates C-style `for`/`foreach`
@@ -677,7 +724,7 @@ fn complete_general_context(
 mod indirect_helper_tests {
     use super::{
         indirect_word_end, is_in_expression_position, is_indirect_method_word,
-        parse_indirect_receiver,
+        is_statement_label_colon, parse_indirect_receiver,
     };
 
     #[test]
@@ -877,5 +924,70 @@ mod indirect_helper_tests {
         assert!(!is_in_expression_position(quoted_for, quoted_for.len()));
         let comment_for = "# for (\nmy $x = 1;";
         assert!(!is_in_expression_position(comment_for, comment_for.len()));
+    }
+
+    #[test]
+    fn statement_label_colon_recognizes_label_forms() {
+        // Pure label at start of input.
+        assert!(is_statement_label_colon("LABEL:"));
+        // Label after a semicolon (statement terminator).
+        assert!(is_statement_label_colon("foo; LABEL:"));
+        // Label after a closing brace.
+        assert!(is_statement_label_colon("sub bar { 1 } LABEL:"));
+        // Label after another label.
+        assert!(is_statement_label_colon("FOO: BAR:"));
+        // Label with underscores and digits.
+        assert!(is_statement_label_colon("loop_42:"));
+    }
+
+    #[test]
+    fn statement_label_colon_rejects_ternary_else() {
+        // `cond ? a :` is the ternary else branch — expression position.
+        assert!(!is_statement_label_colon("cond ? a :"));
+        // `cond ?: ` (flush ternary) — still expression position.
+        assert!(!is_statement_label_colon("cond ?:"));
+        // `: ` standalone after an expression fragment — ternary.
+        assert!(!is_statement_label_colon("x ? y :"));
+    }
+
+    #[test]
+    fn statement_label_colon_rejects_package_separator() {
+        // Trailing `::` is the package separator, always expression.
+        assert!(!is_statement_label_colon("Foo::"));
+        assert!(!is_statement_label_colon("Foo::bar::"));
+        assert!(!is_statement_label_colon("::"));
+    }
+
+    #[test]
+    fn statement_label_colon_rejects_label_after_expression() {
+        // An identifier with whitespace before `:` is not a label (Perl requires
+        // the colon to be flush), and treating it as a label would swallow
+        // expression-position keyword completion.
+        assert!(!is_statement_label_colon("x = LABEL"));
+        assert!(!is_statement_label_colon("return foo"));
+    }
+
+    #[test]
+    fn label_colon_makes_cursor_a_statement_position() {
+        // `LABEL: wh|` — the fix from #15806.
+        assert!(!is_in_expression_position("LABEL: ", 7));
+        // `LABEL:` at start of file.
+        assert!(!is_in_expression_position("FOO:", 4));
+        // After `;`.
+        assert!(!is_in_expression_position("foo(); LABEL: ", 14));
+    }
+
+    #[test]
+    fn ternary_else_stays_an_expression_position() {
+        // The `:` in `? :` must still be an expression position.
+        assert!(is_in_expression_position("cond ? a : ", 10));
+        assert!(is_in_expression_position("$x ? 1 : ", 9));
+    }
+
+    #[test]
+    fn package_separator_stays_an_expression_position() {
+        // The `::` in `Foo::bar` must still be an expression position.
+        assert!(is_in_expression_position("Foo::", 5));
+        assert!(is_in_expression_position("my $x = Foo::", 13));
     }
 }
