@@ -22,13 +22,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::sync_channel;
 
-use super::sync_utils::EventSender;
+use super::sync_utils::{EventDrainLatch, EventSender};
 use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
 mod perl_spawn;
 
 use super::variable_cache::VariableCache;
+use crate::reload::RuntimeModuleGenerationClock;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
@@ -52,27 +53,77 @@ const DEBUGGER_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Poll interval while a capability-probe child is still running.
 const DEBUGGER_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Cached perl5db capability verdicts, keyed by
-/// [`DebugAdapter::capability_probe_cache_key`]. Both verdicts are cached —
-/// a pass skips the probe on every subsequent launch, and a fail avoids
-/// re-paying a doomed slow probe per retry. A poisoned lock only bypasses
-/// the cache (the probe is re-run); it never fails a launch.
+/// Cached affirmative perl5db capability verdicts, keyed by
+/// [`DebugAdapter::capability_probe_cache_key`]. Only passes are cached —
+/// a pass skips the probe on every subsequent launch. A failure or an
+/// inconclusive probe is not retained: a failure describes mutable
+/// installation state (perl5db.pl can be installed in place between
+/// launches), and an inconclusive probe is no verdict at all. The probe is
+/// deadline-bounded, so a re-probe on the next launch is cheap. A poisoned
+/// lock only bypasses the cache (the probe is re-run); it never fails a
+/// launch.
 static DEBUGGER_PROBE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, Result<(), String>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Read one probe pipe to EOF on a dedicated thread, returning its decoded
-/// contents. Used instead of blocking `Command::output()` so the probe can be
-/// bounded by a deadline rather than waiting indefinitely on the child.
+/// The success marker the capability probe's perl expression prints after
+/// `require "perl5db.pl"` resolves and compiles. A clean child exit alone
+/// does not certify capability: an interpreter shim named `perl` may ignore
+/// the `-e` payload and exit 0 without ever loading the module.
+const DEBUGGER_PROBE_SUCCESS_MARKER: &str = "OK";
+
+/// One capability probe conclusion. Only [`Self::Capable`] is a measured,
+/// cacheable verdict; [`Self::Incapable`] is reported but not retained, and
+/// [`Self::Inconclusive`] keeps the launch-continue disposition.
+enum DebuggerCapabilityProbe {
+    /// The child loaded `perl5db.pl`, printed the success marker, and
+    /// exited successfully.
+    Capable,
+    /// The child ran and answered negatively; the payload is the probe's
+    /// diagnostic detail for the user-facing remediation message.
+    Incapable(String),
+    /// Spawn failure, observation failure, or deadline: the probe could not
+    /// measure anything, so there is no verdict to report or cache.
+    Inconclusive,
+}
+
+/// Read one probe pipe to EOF on a dedicated thread, delivering its decoded
+/// contents through a channel. Used instead of blocking `Command::output()`
+/// so the probe can be bounded by a deadline rather than waiting indefinitely
+/// on the child; the caller collects each drain with
+/// [`join_probe_drain_within`] against the remaining probe budget.
 fn spawn_probe_pipe_drain<R: Read + Send + 'static>(
     pipe: Option<R>,
-) -> Option<thread::JoinHandle<String>> {
+) -> Option<std::sync::mpsc::Receiver<String>> {
     pipe.map(|mut pipe| {
+        let (sender, receiver) = std::sync::mpsc::channel();
         thread::spawn(move || {
             let mut bytes = Vec::new();
             let _ = pipe.read_to_end(&mut bytes);
-            String::from_utf8_lossy(&bytes).into_owned()
-        })
+            let _ = sender.send(String::from_utf8_lossy(&bytes).into_owned());
+        });
+        receiver
     })
+}
+
+/// Collect one bounded pipe drain: `Some(decoded text)` when the drainer
+/// reached EOF and delivered within `budget`, `None` when the budget ran out
+/// or the drainer died without delivering. The budget matters after the
+/// direct child exits: a shim that leaves a pipe-inheriting descendant behind
+/// never delivers EOF, so the drain is abandoned (the drainer thread ends
+/// whenever the descendant exits) instead of joined forever.
+fn join_probe_drain_within(
+    drain: Option<std::sync::mpsc::Receiver<String>>,
+    budget: Duration,
+) -> Option<String> {
+    drain.and_then(|receiver| receiver.recv_timeout(budget).ok())
+}
+
+/// Whether the probe's stdout carries the success marker the probe
+/// expression prints on its own line. Matching the whole trimmed line keeps
+/// an incidental "OK" substring in unrelated child output from certifying a
+/// pass.
+fn has_probe_success_marker(stdout: &str) -> bool {
+    stdout.lines().any(|line| line.trim() == DEBUGGER_PROBE_SUCCESS_MARKER)
 }
 
 /// Apply the Windows debugger-console transport environment to a child
@@ -432,19 +483,14 @@ impl DebugAdapter {
                 user_cwd,
                 debuggee_timeout_secs,
             ) {
-                Ok(thread_id) => {
-                    // Send stopped event if stop on entry
-                    if stop_on_entry {
-                        self.send_event(
-                            "stopped",
-                            Some(json!({
-                                "reason": "entry",
-                                "threadId": thread_id,
-                                "allThreadsStopped": true
-                            })),
-                        );
-                    }
-
+                Ok(_) => {
+                    // #15637: no eager `stopped(reason=entry)` here. At this
+                    // point the session is still `Running` with no frame
+                    // authority, so an entry event would announce a stop the
+                    // very next `stackTrace` cannot observe (empty frames).
+                    // The session is created with `entry_stop_pending` set and
+                    // the output reader emits exactly one `stopped(reason=entry)`
+                    // from the first real debugger suspension instead.
                     DapMessage::Response {
                         seq,
                         request_seq,
@@ -764,7 +810,9 @@ impl DebugAdapter {
                     debuggee_cwd: debuggee_cwd.clone(),
                     last_resume_mode: ResumeMode::Unknown,
                     initial_stop_pending: !stop_on_entry,
+                    entry_stop_pending: stop_on_entry,
                     stopped_generation: 0,
+                    module_generation: RuntimeModuleGenerationClock::new(),
                 };
 
                 if let Ok(mut guard) = self.session.lock() {
@@ -876,10 +924,12 @@ impl DebugAdapter {
     /// instrument failure, not a capability verdict, so it is skipped and the
     /// real `perl -d` launch surfaces its own canonical error.
     ///
-    /// The verdict is cached per (interpreter, probe cwd, launch env) for the
-    /// life of the adapter process: a passing interpreter must not pay a
-    /// fresh perl spawn on every launch, and a failing one must not re-pay a
-    /// doomed multi-second probe each retry either.
+    /// Only an affirmative verdict is cached, keyed per (interpreter, probe
+    /// cwd, launch env) for the life of the adapter process: a passing
+    /// interpreter must not pay a fresh perl spawn on every launch. A
+    /// failure describes mutable installation state — perl5db.pl can be
+    /// installed in place — and an inconclusive probe is no verdict at all,
+    /// so neither is retained and the next launch re-probes.
     fn check_debugger_capability(
         perl_interpreter: &str,
         env_overrides: &HashMap<String, String>,
@@ -893,40 +943,59 @@ impl DebugAdapter {
             return cached.clone();
         }
 
-        let verdict =
-            Self::run_debugger_capability_probe(perl_interpreter, env_overrides, probe_cwd);
-        if let Ok(mut cache) = DEBUGGER_PROBE_CACHE.lock() {
-            cache.insert(cache_key, verdict.clone());
+        match Self::run_debugger_capability_probe(perl_interpreter, env_overrides, probe_cwd) {
+            DebuggerCapabilityProbe::Capable => {
+                if let Ok(mut cache) = DEBUGGER_PROBE_CACHE.lock() {
+                    cache.insert(cache_key, Ok(()));
+                }
+                Ok(())
+            }
+            DebuggerCapabilityProbe::Incapable(detail) => Err(format!(
+                "Selected interpreter cannot host the debugger (perl5db.pl not loadable): \
+                 {perl_interpreter}. Install a full Perl distribution that ships the core \
+                 debugger module, or point launch.json `perlPath` at one (e.g. \
+                 {{\"perlPath\": \"/path/to/full/perl\"}}). Detail: {detail}"
+            )),
+            DebuggerCapabilityProbe::Inconclusive => Ok(()),
         }
-        verdict
     }
 
     /// Cache key for one probe verdict: interpreter, effective probe cwd, and
     /// the launch.json `env` entries that could steer `@INC`/module loading.
-    /// Byte-exact on env values — a conservative key can only cost a re-probe,
-    /// never serve a verdict measured under a different environment.
+    /// Every component is length-prefixed, so no delimiter appearing inside
+    /// an interpreter path, cwd, env name, or env value can splice two
+    /// launches into one key — distinct launches always serialize to
+    /// distinct keys. A conservative key can only cost a re-probe, never
+    /// serve a verdict measured under a different launch configuration.
     fn capability_probe_cache_key(
         perl_interpreter: &str,
         env_overrides: &HashMap<String, String>,
         probe_cwd: &Path,
     ) -> String {
-        let mut env_entries: Vec<String> =
-            env_overrides.iter().map(|(key, value)| format!("{key}={value}")).collect();
+        let length_prefixed = |value: &str| format!("{}:{value}", value.len());
+        let mut env_entries: Vec<String> = env_overrides
+            .iter()
+            .map(|(key, value)| format!("{}={}", length_prefixed(key), length_prefixed(value)))
+            .collect();
         env_entries.sort();
         format!(
-            "{perl_interpreter}@{cwd}@{env}",
-            cwd = probe_cwd.display(),
+            "{interpreter}@{cwd}@{env}",
+            interpreter = length_prefixed(perl_interpreter),
+            cwd = length_prefixed(&probe_cwd.to_string_lossy()),
             env = env_entries.join(";")
         )
     }
 
     /// Run one bounded perl5db.pl loadability probe. See
-    /// [`Self::check_debugger_capability`] for the contract.
+    /// [`Self::check_debugger_capability`] for the contract. A measured
+    /// verdict additionally requires the probe expression's own success
+    /// marker on stdout — exit status alone can be produced by an
+    /// interpreter shim that never evaluated the expression.
     fn run_debugger_capability_probe(
         perl_interpreter: &str,
         env_overrides: &HashMap<String, String>,
         probe_cwd: &Path,
-    ) -> Result<(), String> {
+    ) -> DebuggerCapabilityProbe {
         let mut oracle = perl_lsp_rs_core::config::PerlOracleEnv::for_version_probe(
             PathBuf::from(perl_interpreter),
             probe_cwd.to_path_buf(),
@@ -934,10 +1003,8 @@ impl DebugAdapter {
         oracle.extra_env.extend(env_overrides.iter().map(|(k, v)| (k.clone(), v.clone())));
         let mut cmd = oracle.into_command();
         cmd.arg("-e")
-            .arg("require \"perl5db.pl\"; print \"OK\\n\";")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .arg(format!("require \"perl5db.pl\"; print \"{DEBUGGER_PROBE_SUCCESS_MARKER}\\n\";"));
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // Run under the same debugger-transport environment the real `perl -d`
         // launch uses, so the probe measures perl5db.pl loading under launch
         // parity. EMACS=1 and PERLDB_OPTS only select the debugger's runtime
@@ -956,7 +1023,7 @@ impl DebugAdapter {
                     "perl5db capability probe could not run '{perl_interpreter}' \
                      (will attempt the launch anyway): {e}"
                 );
-                return Ok(());
+                return DebuggerCapabilityProbe::Inconclusive;
             }
         };
 
@@ -983,7 +1050,7 @@ impl DebugAdapter {
                         "perl5db capability probe of '{perl_interpreter}' could not be \
                          observed (will attempt the launch anyway): {e}"
                     );
-                    return Ok(());
+                    return DebuggerCapabilityProbe::Inconclusive;
                 }
             }
         };
@@ -999,42 +1066,62 @@ impl DebugAdapter {
                  {} budget (will attempt the launch anyway)",
                 DEBUGGER_PROBE_TIMEOUT.as_secs()
             );
-            return Ok(());
+            return DebuggerCapabilityProbe::Inconclusive;
         };
 
-        // The child has exited, so both drain threads reach EOF and join
-        // deterministically. A panicked drainer contributes empty text rather
-        // than blocking the verdict.
-        let raw_stdout =
-            stdout_drain.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
-        let raw_stderr =
-            stderr_drain.map(|handle| handle.join().unwrap_or_default()).unwrap_or_default();
+        // The child has exited, so both drains usually reach EOF immediately.
+        // But a shim that spawned a pipe-inheriting descendant before exiting
+        // never delivers EOF, so each drain is collected against the
+        // remaining probe deadline instead of being joined forever; the
+        // drainer thread is abandoned (it ends whenever the descendant
+        // exits) and its pipe yields no observation.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let raw_stdout = join_probe_drain_within(stdout_drain, remaining);
+        let raw_stderr = join_probe_drain_within(stderr_drain, remaining);
 
+        // Both drains have been collected before any verdict is decided, so
+        // the join stays deterministic. A measured pass requires the marker
+        // the probe expression prints: a shim that ignores the `-e` payload
+        // and exits 0 never loads perl5db.pl, so exit status alone cannot
+        // certify capability. A stdout drain abandoned to an inheriting
+        // descendant is unobservable rather than marker-free, so it stays
+        // inconclusive instead of failing a possibly capable interpreter.
         if status.success() {
-            return Ok(());
+            return match raw_stdout {
+                Some(stdout) if has_probe_success_marker(&stdout) => {
+                    DebuggerCapabilityProbe::Capable
+                }
+                Some(_) => DebuggerCapabilityProbe::Incapable(
+                    "exited successfully but did not evaluate the probe expression \
+                     (interpreter shim?)"
+                        .to_string(),
+                ),
+                None => DebuggerCapabilityProbe::Inconclusive,
+            };
         }
 
         // The "Can't locate perl5db.pl in @INC" report arrives on stderr, but
         // a non-perl binary selected as the interpreter may report on either
         // stream; merge for the diagnostic detail.
-        let detail =
-            if raw_stderr.trim().is_empty() { raw_stdout.trim() } else { raw_stderr.trim() };
-        let detail = if detail.is_empty() {
-            // Report a bare exit code as a number; a child killed by a signal
-            // has no code and says so instead of rendering `Some(...)`/`None`.
-            match status.code() {
-                Some(code) => format!("exit status {code}"),
-                None => "process terminated by a signal (no exit status)".to_string(),
+        let reported = raw_stderr
+            .as_deref()
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+            .or_else(|| raw_stdout.as_deref().map(str::trim))
+            .filter(|detail| !detail.is_empty());
+        let detail = match reported {
+            Some(detail) => detail.to_string(),
+            None => {
+                // Report a bare exit code as a number; a child killed by a
+                // signal has no code and says so instead of rendering
+                // `Some(...)`/`None`.
+                match status.code() {
+                    Some(code) => format!("exit status {code}"),
+                    None => "process terminated by a signal (no exit status)".to_string(),
+                }
             }
-        } else {
-            detail.to_string()
         };
-        Err(format!(
-            "Selected interpreter cannot host the debugger (perl5db.pl not loadable): \
-             {perl_interpreter}. Install a full Perl distribution that ships the core \
-             debugger module, or point launch.json `perlPath` at one (e.g. \
-             {{\"perlPath\": \"/path/to/full/perl\"}}). Detail: {detail}"
-        ))
+        DebuggerCapabilityProbe::Incapable(detail)
     }
 
     /// Run `perl -c <script>` and return `Ok(())` if the syntax is valid,
@@ -1128,18 +1215,22 @@ impl DebugAdapter {
         // shims, fat binaries, and environment layers may re-case the line.
         // Match the prefix case-insensitively so the typed module remediation
         // still fires; `str::get` declines non-char boundaries, so slicing
-        // below cannot panic on non-ASCII output.
+        // below cannot panic on non-ASCII output. The ` in @INC` separator is
+        // matched case-insensitively for the same reason: a recased
+        // `IN @INC` must still terminate the module path instead of being
+        // swallowed into a corrupted module name.
         const MISSING_MODULE_PREFIX: &str = "Can't locate ";
+        const MISSING_MODULE_SEPARATOR: &str = " in @INC";
         detail.lines().find_map(|line| {
             let trimmed = line.trim();
             let head = trimmed.get(..MISSING_MODULE_PREFIX.len())?;
             if !head.eq_ignore_ascii_case(MISSING_MODULE_PREFIX) {
                 return None;
             }
-            let module_path = trimmed[MISSING_MODULE_PREFIX.len()..]
-                .split(" in @INC")
-                .next()?
-                .trim_end_matches('.');
+            let body = &trimmed[MISSING_MODULE_PREFIX.len()..];
+            let separator_lower = MISSING_MODULE_SEPARATOR.to_ascii_lowercase();
+            let separator_at = body.to_ascii_lowercase().find(separator_lower.as_str())?;
+            let module_path = body[..separator_at].trim_end_matches('.');
             let module_name = module_path_to_name(module_path);
             (!module_name.is_empty()).then_some(module_name)
         })
@@ -1167,6 +1258,7 @@ impl DebugAdapter {
         let attached_pid = self.attached_pid.clone();
         let termination_state = self.termination_state.clone();
         let operation_broker = self.operation_broker.clone();
+        let event_drain = self.event_drain.clone();
         let session_generation = self.current_session_generation();
         // The reader's session epoch in the broker's own id space. The
         // launch-failure/EOF/read-error settles below are gated on it, so a
@@ -1215,6 +1307,7 @@ impl DebugAdapter {
                         &termination_state,
                         Some(session_generation),
                         Some(json!({"reason": "no_debugger_stream"})),
+                        Some(&event_drain),
                     );
                 }
                 DebugAdapter::clear_active_session_state_for_generation(
@@ -1276,6 +1369,7 @@ impl DebugAdapter {
                                 &termination_state,
                                 Some(session_generation),
                                 Some(json!({"reason": "debugger_eof"})),
+                                Some(&event_drain),
                             );
                         }
                         DebugAdapter::clear_active_session_state_for_generation(
@@ -1453,6 +1547,7 @@ impl DebugAdapter {
                                         &termination_state,
                                         Some(session_generation),
                                         Some(json!({"reason": "debugger_frame_limit"})),
+                                        Some(&event_drain),
                                     );
                                 }
                                 break;
@@ -1486,6 +1581,7 @@ impl DebugAdapter {
                                     &termination_state,
                                     Some(session_generation),
                                     Some(json!({ "reason": "debuggee_exit" })),
+                                    Some(&event_drain),
                                 );
                             }
                             continue;
@@ -1677,7 +1773,23 @@ impl DebugAdapter {
                                         s.stack_frame_arguments.clear();
                                     }
 
-                                    if was_running
+                                    if was_running && s.entry_stop_pending {
+                                        // #15637: a `stopOnEntry` launch owes the
+                                        // client its entry stop only from the
+                                        // first real debugger suspension. The
+                                        // context line above just established the
+                                        // stopped frame authority for exactly
+                                        // that suspension, so publish the entry
+                                        // stop from here and consume the pending
+                                        // reason — a later stop must report its
+                                        // own cause, and exactly one entry stop
+                                        // may ever be emitted per session.
+                                        s.state = DebugState::Stopped;
+                                        s.last_resume_mode = ResumeMode::Unknown;
+                                        s.entry_stop_pending = false;
+                                        should_emit_stopped = true;
+                                        stop_reason = "entry".to_string();
+                                    } else if was_running
                                         && s.initial_stop_pending
                                         && matches!(s.last_resume_mode, ResumeMode::Unknown)
                                     {
@@ -1689,9 +1801,7 @@ impl DebugAdapter {
                                         s.state = DebugState::Stopped;
                                         s.last_resume_mode = ResumeMode::Unknown;
                                         continue;
-                                    }
-
-                                    if was_running {
+                                    } else if was_running {
                                         should_emit_stopped = true;
                                         let resume_mode = s.last_resume_mode.clone();
 
@@ -1878,7 +1988,7 @@ impl DebugAdapter {
                         // Detect debugger prompt (stopped state) with enhanced pattern matching
                         if prompt_re().is_some_and(|re| re.is_match(&sanitized_text)) {
                             _debugger_ready = true;
-                            let thread_id = {
+                            let (thread_id, prompt_stops_entry) = {
                                 let Ok(mut guard) = session.lock() else {
                                     tracing::warn!(
                                         "Failed to lock session when processing debugger prompt"
@@ -1948,20 +2058,30 @@ impl DebugAdapter {
                                         s.stack_frame_arguments.clear();
                                     }
                                     s.state = DebugState::Stopped;
-                                    s.thread_id
+                                    // #15637: a prompt can be the first observed
+                                    // authority for the entry suspension (context
+                                    // output may never parse). Consume a pending
+                                    // entry reason here so the first prompt stop
+                                    // still honors a `stopOnEntry` launch exactly
+                                    // once; later prompts report `step` as before.
+                                    let prompt_stops_entry = s.entry_stop_pending;
+                                    s.entry_stop_pending = false;
+                                    (s.thread_id, prompt_stops_entry)
                                 } else {
                                     continue;
                                 }
                             };
 
                             // Send stopped event with robust error handling
+                            let prompt_stop_reason =
+                                if prompt_stops_entry { "entry" } else { "step" };
                             if let Some(ref sender) = sender
                                 && !emit_event_safe(
                                     sender,
                                     &seq,
                                     "stopped",
                                     Some(json!({
-                                        "reason": "step",
+                                        "reason": prompt_stop_reason,
                                         "threadId": thread_id,
                                         "allThreadsStopped": true
                                     })),
@@ -1996,6 +2116,7 @@ impl DebugAdapter {
                                 &termination_state,
                                 Some(session_generation),
                                 Some(json!({"reason": "read_error", "error": e.to_string()})),
+                                Some(&event_drain),
                             );
                         }
                         DebugAdapter::clear_active_session_state_for_generation(
@@ -2034,6 +2155,7 @@ impl DebugAdapter {
         let sender = self.event_sender.clone();
         let termination_state = self.termination_state.clone();
         let operation_broker = self.operation_broker.clone();
+        let event_drain = self.event_drain.clone();
         let session_generation = self.current_session_generation();
         let broker_session_generation = operation_broker.current_session_generation();
         let timeout = Duration::from_secs(timeout_secs);
@@ -2148,7 +2270,11 @@ impl DebugAdapter {
                 && let Some(ref sender) = sender
                 && terminated_delivery_is_current(&termination_state, Some(session_generation))
             {
-                let _ = deliver_reserved_terminated_event(
+                // The reserved timeout event joins the drain latch like
+                // every other terminal emission, so a response cannot
+                // overtake it on the wire.
+                event_drain.enqueue(1);
+                let delivered = deliver_reserved_terminated_event(
                     sender,
                     &seq,
                     &termination_state,
@@ -2156,6 +2282,9 @@ impl DebugAdapter {
                     Some(json!({"reason": "debuggee_timeout"})),
                     &|| false,
                 );
+                if !delivered {
+                    event_drain.complete(1);
+                }
             }
         });
     }
@@ -2267,6 +2396,12 @@ impl DebugAdapter {
 
                 // Reset existing process/tcp attachment state before switching to PID mode.
                 self.begin_session_generation();
+                // Debuggee replacement invalidates the reload family's
+                // session identities (#10102, R03): a PID attach is a
+                // replacement session like launch/TCP attach, so the prior
+                // reload epoch, negotiation, subjects, and operation
+                // identities must not survive it.
+                self.reset_reload_route_for_replacement_session();
                 if !self.clear_active_session_state() {
                     return DapMessage::Response {
                         seq,
@@ -2452,6 +2587,7 @@ impl DebugAdapter {
                         let seq_counter = self.seq.clone();
                         let event_sender = self.event_sender.clone();
                         let termination_state = self.termination_state.clone();
+                        let event_drain = self.event_drain.clone();
                         let session_generation = self.current_session_generation();
                         spawn_tcp_attach_event_forwarder(
                             rx,
@@ -2459,6 +2595,7 @@ impl DebugAdapter {
                             seq_counter,
                             termination_state,
                             session_generation,
+                            event_drain,
                         );
 
                         tracing::info!(host, port, stop_on_entry, "TCP attach successful");
@@ -2595,6 +2732,11 @@ impl DebugAdapter {
     /// protocol state while retaining process ownership for retry.
     fn prepare_replacement_session(&self) -> bool {
         self.begin_session_generation();
+        // Debuggee replacement invalidates the reload family's session
+        // identities (#10102): a new epoch refuses prior family/operation
+        // claims, and the runtime-module generation resets with the new
+        // debuggee process (it lives on `DebugSession`).
+        self.reset_reload_route_for_replacement_session();
         self.clear_active_session_state()
     }
 
@@ -2748,7 +2890,14 @@ impl DebugAdapter {
             && !terminal_committed
             && let Some(ref sender) = self.event_sender
         {
-            emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
+            emit_terminated_event(
+                sender,
+                &self.seq,
+                &self.termination_state,
+                None,
+                None,
+                Some(&self.event_drain),
+            );
         }
         let cleanup_succeeded = self.clear_active_session_state();
         self.close_terminal_session_generation("disconnect");
@@ -2788,6 +2937,7 @@ impl DebugAdapter {
                 &self.termination_state,
                 None,
                 terminated_body,
+                Some(&self.event_drain),
             );
         }
         let cleanup_succeeded = self.clear_active_session_state();
@@ -2893,8 +3043,12 @@ impl DebugAdapter {
                 // The implicit startup pause already corresponds to an
                 // acknowledged breakpoint. Publish it without sending `c`.
             } else if stop_on_entry {
-                // The entry stopped event was already emitted during launch.
-                // List the current source location so the IDE can display it.
+                // #15637: the entry stop is emitted by the output reader at the
+                // first real debugger suspension, so by configurationDone time it
+                // may already have been published — or the reader may still be
+                // waiting for the bootstrap output. List the current source
+                // location so the debugger re-reports it either way and the
+                // reader can observe an authoritative frame for the entry stop.
                 let _ = stdin.write_all(b"l\n");
                 let _ = stdin.flush();
             } else {
@@ -3200,6 +3354,7 @@ pub(super) fn emit_terminated_event(
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
     body: Option<Value>,
+    drain: Option<&EventDrainLatch>,
 ) -> bool {
     emit_terminated_event_guarded(
         sender,
@@ -3208,6 +3363,7 @@ pub(super) fn emit_terminated_event(
         expected_generation,
         body,
         &|| false,
+        drain,
     )
 }
 
@@ -3220,6 +3376,13 @@ pub(super) fn emit_terminated_event(
 /// commit attempt, so a replacement session retires a blocked stale terminal
 /// event instead of an unbounded blocking send publishing it into the
 /// replacement's conversation after validation passed.
+///
+/// The emission joins the `event_drain` latch contract (FC-TERMINATED-
+/// DRAIN-BYPASS): the latch is reserved before the guarded dispatch and
+/// retained only when the dispatch reports `Sent`, so `run_with_io`
+/// observes an accepted terminal event before the response that follows
+/// it. Reservation, currentness, stale, and disconnected outcomes all
+/// complete the reservation instead of retaining it.
 pub(super) fn emit_terminated_event_guarded(
     sender: &EventSender,
     seq: &Mutex<i64>,
@@ -3227,13 +3390,28 @@ pub(super) fn emit_terminated_event_guarded(
     expected_generation: Option<u64>,
     body: Option<Value>,
     stale: &dyn Fn() -> bool,
+    drain: Option<&EventDrainLatch>,
 ) -> bool {
     let generation = expected_generation
         .unwrap_or_else(|| lock_or_recover(termination_state, "terminal.generation").generation);
     if !reserve_terminated_event(termination_state, Some(generation)) {
         return false;
     }
-    deliver_reserved_terminated_event(sender, seq, termination_state, generation, body, stale)
+    // Join the drain latch (FC-TERMINATED-DRAIN-BYPASS): reserve before
+    // the delivery attempt and retain only when the event was accepted
+    // into the outbound channel; stale, replaced-generation, and
+    // disconnected outcomes complete the reservation instead.
+    if let Some(drain) = drain {
+        drain.enqueue(1);
+    }
+    let delivered =
+        deliver_reserved_terminated_event(sender, seq, termination_state, generation, body, stale);
+    if let Some(drain) = drain
+        && !delivered
+    {
+        drain.complete(1);
+    }
+    delivered
 }
 
 fn deliver_reserved_terminated_event(
@@ -3271,13 +3449,16 @@ fn deliver_reserved_terminated_event(
 
 #[cfg(test)]
 mod tests {
+    use super::super::sync_utils::EventDrainLatch;
     use super::super::sync_utils::EventSender;
     use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use super::{
         DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
-        emit_terminated_event, format_perl_spawn_error, is_valid_perl_interpreter, lock_or_recover,
-        reserve_terminated_event, terminated_delivery_is_current,
+        emit_terminated_event, format_perl_spawn_error, has_probe_success_marker,
+        is_valid_perl_interpreter, lock_or_recover, reserve_terminated_event,
+        terminated_delivery_is_current,
     };
+    use crate::reload::RuntimeModuleGenerationClock;
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
     use std::collections::HashMap;
@@ -3583,10 +3764,12 @@ mod tests {
                 &first_guard,
                 Some(1),
                 Some(serde_json::json!({"reason": "debugger_eof"})),
+                None,
             )
         });
         let second_sender = EventSender::new(sender.clone());
-        let second = emit_terminated_event(&second_sender, &seq, &termination_state, None, None);
+        let second =
+            emit_terminated_event(&second_sender, &seq, &termination_state, None, None, None);
         let first = first.join().map_err(|_| "termination worker panicked".to_string())?;
         if first == second {
             return Err(format!(
@@ -3632,6 +3815,7 @@ mod tests {
                 &adapter.termination_state,
                 Some(generation),
                 Some(json!({"reason": "debugger_eof"})),
+                None,
             ) {
                 return Err("current async terminal source did not emit".to_string());
             }
@@ -3728,6 +3912,7 @@ mod tests {
                     Some(generation),
                     body,
                     &stale,
+                    None,
                 )
             };
             let _ = finished_sender.send(emitted);
@@ -3822,6 +4007,7 @@ mod tests {
             Some(adapter.current_session_generation()),
             None,
             &|| true,
+            None,
         );
         if receiver.try_recv().is_ok() {
             return Err("stale emitter published an event".to_string());
@@ -3852,6 +4038,7 @@ mod tests {
             &adapter.termination_state,
             Some(adapter.current_session_generation()),
             None,
+            None,
         ) {
             return Err("closed channel reported terminal delivery".to_string());
         }
@@ -3871,6 +4058,7 @@ mod tests {
             &termination_state,
             Some(1),
             Some(serde_json::json!({"reason": "stale_reader"})),
+            None,
         ) {
             return Err("stale reader unexpectedly emitted termination".to_string());
         }
@@ -3884,6 +4072,7 @@ mod tests {
             &termination_state,
             Some(2),
             Some(serde_json::json!({"reason": "current_session"})),
+            None,
         ) {
             return Err("current session failed to emit termination".to_string());
         }
@@ -3928,6 +4117,7 @@ mod tests {
             &termination_state,
             Some(4),
             Some(serde_json::json!({"reason": "current_generation"})),
+            None,
         ) {
             return Err("current-generation emission was suppressed".into());
         }
@@ -3949,6 +4139,80 @@ mod tests {
             Err(error) => Err(format!("termination channel error: {error}")),
             Ok(other) => Err(format!("stale reservation leaked a duplicate event: {other:?}")),
         }
+    }
+
+    #[test]
+    fn terminated_emission_holds_the_drain_latch_only_when_sent() -> Result<(), String> {
+        use std::time::Duration;
+        // A sent terminal event retains its drain reservation for the
+        // transport consumer, so `run_with_io` observes it before the
+        // response that follows.
+        let (sender, _receiver) = sync_channel(64);
+        let seq = Arc::new(Mutex::new(0));
+        let termination_state = Arc::new(Mutex::new(super::TerminationState {
+            generation: 1,
+            emitted: false,
+            terminal_committed: false,
+        }));
+        let drain = EventDrainLatch::default();
+        if !emit_terminated_event(
+            &EventSender::new(sender),
+            &seq,
+            &termination_state,
+            Some(1),
+            None,
+            Some(&drain),
+        ) {
+            return Err("a live terminal emission must report delivery".to_string());
+        }
+        if drain.wait_until_drained(Duration::from_millis(0)) {
+            return Err("a sent terminal event must retain its drain reservation".to_string());
+        }
+        // A stale guarded dispatch retires without retaining anything.
+        let (sender, _receiver) = sync_channel(64);
+        let stale_state = Arc::new(Mutex::new(super::TerminationState {
+            generation: 1,
+            emitted: false,
+            terminal_committed: false,
+        }));
+        let stale_drain = EventDrainLatch::default();
+        if super::emit_terminated_event_guarded(
+            &EventSender::new(sender),
+            &seq,
+            &stale_state,
+            Some(1),
+            None,
+            &|| true,
+            Some(&stale_drain),
+        ) {
+            return Err("a stale dispatch must retire without reporting delivery".to_string());
+        }
+        if !stale_drain.wait_until_drained(Duration::from_millis(0)) {
+            return Err("a stale terminal emission must not retain a reservation".to_string());
+        }
+        // A disconnected channel completes its reservation as well.
+        let (sender, _receiver) = sync_channel(64);
+        let closed = EventSender::new(sender);
+        closed.close();
+        let closed_drain = EventDrainLatch::default();
+        if emit_terminated_event(
+            &closed,
+            &seq,
+            &Arc::new(Mutex::new(super::TerminationState {
+                generation: 7,
+                emitted: false,
+                terminal_committed: false,
+            })),
+            Some(7),
+            None,
+            Some(&closed_drain),
+        ) {
+            return Err("emission on a closed channel must report failure".to_string());
+        }
+        if !closed_drain.wait_until_drained(Duration::from_millis(0)) {
+            return Err("a disconnected emission must not retain a reservation".to_string());
+        }
+        Ok(())
     }
 
     #[test]
@@ -4117,6 +4381,301 @@ mod tests {
         assert!(message.contains("Module Some::Missing::Module not found"));
         assert!(message.contains("cpan Some::Missing::Module"));
         assert!(message.contains("metacpan.org/pod/Some::Missing::Module"));
+    }
+
+    /// A wrapper shim may uppercase the whole diagnostic; the recased
+    /// `IN @INC` separator must still terminate the module path so the
+    /// remediation names the module verbatim instead of the diagnostic tail.
+    #[test]
+    fn missing_module_name_preserves_module_when_diagnostic_is_recased() {
+        let detail = "CAN'T LOCATE SOME/MISSING/MODULE IN @INC (@INC CONTAINS: C:/PERL/LIB .)";
+
+        let module = DebugAdapter::missing_module_name(detail);
+
+        assert_eq!(module.as_deref(), Some("SOME::MISSING::MODULE"));
+    }
+
+    /// Mixed recasing keeps the module's own case: only the separators are
+    /// matched case-insensitively, the module name is preserved verbatim.
+    #[test]
+    fn missing_module_name_preserves_module_case_under_partial_recasing() {
+        let detail = "Can't locate Some/Missing/Module.pm IN @INC (you may need to install \
+                      the Some::Missing::Module module)";
+
+        let module = DebugAdapter::missing_module_name(detail);
+
+        assert_eq!(module.as_deref(), Some("Some::Missing::Module"));
+    }
+
+    /// `{"A": "x;B=y"}` and `{"A": "x", "B": "y"}` serialized identically
+    /// under the old delimiter join; the length-prefixed encoding must keep
+    /// them distinct so neither launch inherits the other's verdict.
+    #[test]
+    fn capability_probe_cache_key_distinguishes_env_delimiter_collisions() {
+        let joined = HashMap::from([("A".to_string(), "x;B=y".to_string())]);
+        let split =
+            HashMap::from([("A".to_string(), "x".to_string()), ("B".to_string(), "y".to_string())]);
+        let cwd = PathBuf::from(".");
+
+        let joined_key = DebugAdapter::capability_probe_cache_key("perl", &joined, &cwd);
+        let split_key = DebugAdapter::capability_probe_cache_key("perl", &split, &cwd);
+
+        assert_ne!(joined_key, split_key);
+    }
+
+    /// The same collision class applies to the interpreter/cwd boundary:
+    /// `@` inside a path must not splice two launches into one key.
+    #[test]
+    fn capability_probe_cache_key_distinguishes_delimiters_inside_components() {
+        let env = HashMap::new();
+
+        let spliced = DebugAdapter::capability_probe_cache_key("a@b", &env, &PathBuf::from("c"));
+        let honest = DebugAdapter::capability_probe_cache_key("a", &env, &PathBuf::from("b@c"));
+
+        assert_ne!(spliced, honest);
+    }
+
+    /// A pipe whose write end a descendant inherited never reaches EOF, so
+    /// the drain wait must expire on budget and abandon the pipe instead of
+    /// hanging the launch past the probe deadline.
+    #[test]
+    fn bounded_probe_drain_abandons_pipe_that_never_reaches_eof() {
+        let (_sender, receiver) = std::sync::mpsc::channel::<String>();
+        let started = Instant::now();
+
+        let text = super::join_probe_drain_within(Some(receiver), Duration::from_millis(50));
+
+        assert_eq!(text, None, "an abandoned drain must not deliver text");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "drain collection must stay bounded, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A drain that reaches EOF in time delivers its decoded contents.
+    #[test]
+    fn bounded_probe_drain_delivers_text_when_eof_arrives() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = sender.send("OK".to_string());
+
+        let text = super::join_probe_drain_within(Some(receiver), Duration::from_secs(5));
+
+        assert_eq!(text.as_deref(), Some("OK"));
+    }
+
+    /// `spawn_probe_pipe_drain` grips both arms: no pipe yields no drain, and
+    /// a pipe that reaches EOF delivers its decoded contents through the
+    /// drain (ripr discriminator for the spawn seam).
+    #[test]
+    fn probe_pipe_drain_spawns_only_for_a_live_pipe() {
+        use std::io::Cursor;
+
+        assert!(super::spawn_probe_pipe_drain(None::<Cursor<Vec<u8>>>).is_none());
+
+        let drain = super::spawn_probe_pipe_drain(Some(Cursor::new(b"hello".to_vec())));
+        let text = super::join_probe_drain_within(drain, Duration::from_secs(5));
+
+        assert_eq!(text.as_deref(), Some("hello"));
+    }
+
+    /// Only the marker's own trimmed line certifies a pass; incidental
+    /// "OK" substrings elsewhere in child output must not.
+    #[test]
+    fn probe_success_marker_requires_its_own_line() {
+        assert!(has_probe_success_marker("OK\n"));
+        assert!(has_probe_success_marker("noise\nOK\nmore noise"));
+        assert!(has_probe_success_marker("  OK  \n"));
+        assert!(!has_probe_success_marker(""));
+        assert!(!has_probe_success_marker("OKAY\n"));
+        assert!(!has_probe_success_marker("the OK substring alone\n"));
+        // A doubled marker on one line still is not the marker's own line.
+        assert!(!has_probe_success_marker("OK OK\n"));
+        // Windows-style probe output carries CRLF: the trim must still
+        // isolate the marker's own line.
+        assert!(has_probe_success_marker("noise\r\nOK\r\n"));
+        assert!(!has_probe_success_marker("OKAY\r\n"));
+    }
+
+    /// Boundary inputs the own-line rule leaves open: a bare marker with no
+    /// trailing newline, tab padding, and whitespace-only lines, which trim
+    /// to empty and must never certify. Return values are asserted with
+    /// `assert_eq!` so the true/false outcome per boundary input is exact:
+    /// the oracle gap grammar matches `assert_eq!` return-value assertions,
+    /// which is why the `bool_assert_comparison` lint is allowed here.
+    /// (ripr discriminator for the
+    /// `line.trim() == DEBUGGER_PROBE_SUCCESS_MARKER` seam.)
+    #[test]
+    #[allow(clippy::bool_assert_comparison)]
+    fn has_probe_success_marker_boundary_discriminator() {
+        assert_eq!(has_probe_success_marker("OK"), true);
+        assert_eq!(has_probe_success_marker("\tOK\t\n"), true);
+        assert_eq!(has_probe_success_marker("   \n"), false);
+        assert_eq!(has_probe_success_marker("\t \r\n"), false);
+    }
+
+    /// Write an executable shell probe double: `body` runs with the probe's
+    /// argv, so activation tests can observe the exact spawn.
+    #[cfg(unix)]
+    fn write_probe_double(dir: &std::path::Path, name: &str, body: &str) -> Result<String, String> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n"))
+            .map_err(|error| format!("writing probe double: {error}"))?;
+        let mut perms = std::fs::metadata(&path)
+            .map_err(|error| format!("reading probe double metadata: {error}"))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms)
+            .map_err(|error| format!("chmod probe double: {error}"))?;
+        path.to_str()
+            .map(str::to_string)
+            .ok_or_else(|| "probe double path is not UTF-8".to_string())
+    }
+
+    /// Exact error variant for a measured incapable verdict: an interpreter
+    /// that exits 0 without evaluating the probe expression (silent stdout)
+    /// must surface the full incapable message verbatim — interpreter path,
+    /// remediation, and measured detail. Every word is literal in this test
+    /// so a reworded variant fails. The `expect_err` shape is what the
+    /// oracle gap grammar matches for error-variant assertions, hence the
+    /// targeted `expect_used` allow. (ripr discriminator for the
+    /// `run_debugger_capability_probe` match seam.)
+    #[cfg(unix)]
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn check_debugger_capability_exact_error_variant() -> Result<(), String> {
+        use super::DebuggerCapabilityProbe;
+        let dir = tempfile::tempdir().map_err(|error| format!("tempdir: {error}"))?;
+        let script = write_probe_double(dir.path(), "silent-probe-4f2a.sh", "exit 0")?;
+        let expected_detail =
+            "exited successfully but did not evaluate the probe expression (interpreter shim?)";
+        let expected = format!(
+            "Selected interpreter cannot host the debugger (perl5db.pl not loadable): {script}. Install a full Perl distribution that ships the core debugger module, or point launch.json `perlPath` at one (e.g. {{\"perlPath\": \"/path/to/full/perl\"}}). Detail: {expected_detail}"
+        );
+        // The silent double cannot verify capable, so an inconclusive
+        // measurement (drain starved under load) re-measures instead of
+        // failing: only a measured verdict is asserted. A reworded variant
+        // never matches and fails immediately.
+        for _ in 0..3 {
+            let probe =
+                DebugAdapter::run_debugger_capability_probe(&script, &HashMap::new(), dir.path());
+            if matches!(&probe, DebuggerCapabilityProbe::Inconclusive) {
+                continue;
+            }
+            // The exact error variant is asserted with `matches!` so the
+            // oracle gap grammar observes the measured `Incapable` verdict.
+            assert!(
+                matches!(&probe, DebuggerCapabilityProbe::Incapable(_)),
+                "silent probe must measure the incapable error variant"
+            );
+            let detail = match probe {
+                DebuggerCapabilityProbe::Incapable(detail) => detail,
+                DebuggerCapabilityProbe::Capable => {
+                    return Err("silent probe must measure incapable, not capable".to_string());
+                }
+                DebuggerCapabilityProbe::Inconclusive => {
+                    continue;
+                }
+            };
+            assert_eq!(
+                detail, expected_detail,
+                "incapable detail must carry the measured probe diagnosis"
+            );
+            let err = DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path())
+                .expect_err("silent probe must report incapable");
+            assert_eq!(err, expected, "incapable verdict must carry the exact error variant");
+            // The assertion text names the arm's remediation literal so the
+            // static exposure tracer can observe the `Incapable => Err`
+            // construction it guards.
+            assert!(
+                err.contains(
+                    "Selected interpreter cannot host the debugger (perl5db.pl not loadable)"
+                ),
+                "incapable verdict must carry the remediation literal, got: {err:?}"
+            );
+            return Ok(());
+        }
+        Err("silent probe stayed inconclusive across re-measures; exact variant unobserved"
+            .to_string())
+    }
+
+    /// Call-observation proof that the probe activates the interpreter with
+    /// the perl5db.pl load expression: the double records its argv and
+    /// prints the marker, so a skipped or reworded spawn fails the
+    /// observation even when the verdict stays `Ok`. (ripr discriminator
+    /// for the probe-spawn seam.)
+    #[cfg(unix)]
+    #[test]
+    fn run_debugger_capability_probe_call_presence_observer() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|error| format!("tempdir: {error}"))?;
+        let record = dir.path().join("probe-argv-9d1c.txt");
+        let record_str = record.to_str().ok_or("record path is not UTF-8")?.to_string();
+        let script = write_probe_double(
+            dir.path(),
+            "recording-probe-9d1c.sh",
+            &format!("printf '%s\\n' \"$@\" >> '{record_str}'\nprintf 'OK\\n'"),
+        )?;
+        let verdict = DebugAdapter::check_debugger_capability(&script, &HashMap::new(), dir.path());
+        if verdict != Ok(()) {
+            return Err(format!("recording probe must verify capable, got: {verdict:?}"));
+        }
+        let argv = std::fs::read_to_string(&record)
+            .map_err(|error| format!("reading argv record: {error}"))?;
+        if !argv.contains("-e") || !argv.contains("require \"perl5db.pl\"") {
+            return Err(format!(
+                "probe must spawn the perl5db load expression, recorded argv: {argv:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// A probe that could not run (spawn failure) keeps the launch-continue
+    /// disposition but must not be cached as a pass: the next launch has to
+    /// probe again instead of trusting an instrument failure.
+    #[test]
+    fn inconclusive_probe_spawn_failure_is_not_cached_as_a_pass() {
+        let interpreter = "perl-lsp-missing-probe-interpreter-9e2f1";
+        let env = HashMap::new();
+        let cwd = std::env::temp_dir();
+        let key = DebugAdapter::capability_probe_cache_key(interpreter, &env, &cwd);
+        if let Ok(cache) = super::DEBUGGER_PROBE_CACHE.lock() {
+            assert!(cache.get(&key).is_none(), "precondition: key must start absent");
+        }
+
+        let verdict = DebugAdapter::check_debugger_capability(interpreter, &env, &cwd);
+
+        assert!(verdict.is_ok(), "spawn failure is launch-continue, got: {verdict:?}");
+        if let Ok(cache) = super::DEBUGGER_PROBE_CACHE.lock() {
+            assert!(
+                cache.get(&key).is_none(),
+                "an inconclusive probe must not be cached as a pass"
+            );
+        }
+    }
+
+    /// A cached verdict is served without spawning a new probe: the cache-hit
+    /// seam returns the stored verdict for the exact launch key. The sentinel
+    /// is an `Err`, so the test fails if the lookup is skipped and the bogus
+    /// interpreter is re-probed instead (that path yields launch-continue
+    /// `Ok`). (ripr discriminator for the cache-hit seam.)
+    #[test]
+    fn cached_verdict_is_served_without_reprobing() {
+        let interpreter = "perl-lsp-cached-probe-interpreter-7c3e9";
+        let env = HashMap::new();
+        let cwd = std::env::temp_dir();
+        let key = DebugAdapter::capability_probe_cache_key(interpreter, &env, &cwd);
+        if let Ok(mut cache) = super::DEBUGGER_PROBE_CACHE.lock() {
+            cache.insert(key, Err("cached probe failure sentinel".to_string()));
+        }
+
+        let verdict = DebugAdapter::check_debugger_capability(interpreter, &env, &cwd);
+
+        assert_eq!(
+            verdict,
+            Err("cached probe failure sentinel".to_string()),
+            "the stored verdict must come back verbatim, without re-probing"
+        );
     }
 
     /// Verify that `detect_perl_info()` runs without panicking.
@@ -4487,7 +5046,9 @@ mod tests {
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
+            entry_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
@@ -4790,6 +5351,310 @@ mod tests {
         result
     }
 
+    /// Spawn a controllable fake debugger for the #15637 entry-stop proofs.
+    ///
+    /// `mode` selects the stderr bootstrap script. After it, the fixture loops
+    /// on stdin answering framed `T` queries exactly like the reader fixture
+    /// above, so an immediate `stackTrace` observes real frame authority.
+    fn spawn_entry_stop_fixture_child(mode: &str) -> Result<super::Child, String> {
+        std::process::Command::new("perl")
+            .arg("-e")
+            .arg(r##"
+                my $mode = shift;
+                select STDERR; $|=1; select STDOUT; $|=1;
+                if ($mode eq 'delayed_context') {
+                    select undef, undef, undef, 0.6;
+                    print STDERR "main::(entry_fixture.pl:2):\tuse strict;\n";
+                    print STDERR "DB<1>\n";
+                    print STDERR "ENTRY_FIXTURE_BOOTSTRAP_DONE\n";
+                } elsif ($mode eq 'prompt_only') {
+                    select undef, undef, undef, 0.2;
+                    print STDERR "DB<1>\n";
+                    print STDERR "ENTRY_FIXTURE_BOOTSTRAP_DONE\n";
+                } elsif ($mode eq 'context_retained') {
+                    print STDERR "main::(entry_fixture.pl:2):\tuse strict;\n";
+                    print STDERR "ENTRY_FIXTURE_BOOTSTRAP_DONE\n";
+                } elsif ($mode eq 'eof_before_stop') {
+                    print STDERR "bootstrap chatter without any debugger context\n";
+                    exit 0;
+                }
+                while (<STDIN>) {
+                    if (/DAP_BEGIN_(\d+)/) {
+                        print STDERR "DAP_BEGIN_$1\n";
+                        print STDERR q{$ = main::entry_fixture called from file `entry_fixture.pl' line 2}, "\n";
+                    } elsif (/DAP_END_(\d+)/) {
+                        print STDERR "DAP_END_$1\nDB<1>\n";
+                    }
+                }
+            "##)
+            .arg(mode)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("failed to spawn entry-stop fixture: {error}"))
+    }
+
+    /// Launch-shaped #15637 fixture: a `Running` session with empty frames —
+    /// exactly what `handle_launch` leaves behind — plus the pending-stop flags
+    /// a `stopOnEntry`/plain launch would install, and a live output reader.
+    fn entry_stop_fixture(
+        mode: &str,
+        entry_stop_pending: bool,
+        initial_stop_pending: bool,
+    ) -> Result<(Arc<DebugAdapter>, std::sync::mpsc::Receiver<DapMessage>), String> {
+        use super::{DebugSession, ResumeMode, VariableCache};
+
+        let child = spawn_entry_stop_fixture_child(mode)?;
+        let (sender, receiver) = sync_channel(64);
+        let mut adapter = DebugAdapter::new();
+        adapter.set_event_sender(sender);
+        let adapter = Arc::new(adapter);
+        adapter.operation_broker.open_session();
+        {
+            let mut guard = lock_or_recover(&adapter.session, "test.entry_fixture");
+            *guard = Some(DebugSession {
+                process: child,
+                state: DebugState::Running,
+                stack_frames: Vec::new(),
+                stack_frame_arguments: HashMap::new(),
+                variable_cache: VariableCache::default(),
+                thread_id: 1,
+                debuggee_cwd: PathBuf::from("."),
+                last_resume_mode: ResumeMode::Unknown,
+                initial_stop_pending,
+                entry_stop_pending,
+                stopped_generation: 0,
+                module_generation: crate::reload::RuntimeModuleGenerationClock::new(),
+            });
+        }
+        adapter.start_output_reader(PathBuf::from("."));
+        Ok((adapter, receiver))
+    }
+
+    /// Collect `stopped` reasons until `deadline`, failing if the wait errors.
+    fn stopped_reasons_within(
+        receiver: &std::sync::mpsc::Receiver<DapMessage>,
+        window: Duration,
+    ) -> Result<Vec<String>, String> {
+        let deadline = Instant::now() + window;
+        let mut reasons = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(reasons);
+            }
+            match receiver.recv_timeout(remaining) {
+                Ok(DapMessage::Event { event, body, .. }) => {
+                    if event == "stopped" {
+                        reasons.push(
+                            body.as_ref()
+                                .and_then(|value| value.get("reason"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string(),
+                        );
+                    }
+                }
+                Ok(_) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(reasons),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("event channel disconnected while waiting for stopped".to_string());
+                }
+            }
+        }
+    }
+
+    /// Wait for the first `stopped` event and return its reason.
+    fn first_stopped_reason(
+        receiver: &std::sync::mpsc::Receiver<DapMessage>,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("no stopped event arrived within 5s".to_string());
+            }
+            match receiver.recv_timeout(remaining) {
+                Ok(DapMessage::Event { event, body, .. }) => {
+                    if event == "stopped" {
+                        return Ok(body
+                            .as_ref()
+                            .and_then(|value| value.get("reason"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown")
+                            .to_string());
+                    }
+                }
+                Ok(_) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("no stopped event arrived within 5s".to_string());
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("event channel disconnected while waiting for stopped".to_string());
+                }
+            }
+        }
+    }
+
+    /// #15637 regression: a `stopOnEntry` launch must NOT emit its entry stop
+    /// eagerly. While the debuggee is still booting (session `Running`, no
+    /// frames), no stopped event may exist; the entry stop is published exactly
+    /// once, from the first real debugger suspension whose frames a subsequent
+    /// `stackTrace` can immediately observe.
+    #[test]
+    fn stop_on_entry_launch_defers_entry_stop_to_first_real_suspension() -> Result<(), String> {
+        let (adapter, receiver) = entry_stop_fixture("delayed_context", true, false)?;
+
+        // The fixture stays silent for 600ms after spawn. The old eager launch
+        // emission would have delivered `stopped(reason=entry)` long before any
+        // debugger output existed; it must not appear in that window.
+        let early = stopped_reasons_within(&receiver, Duration::from_millis(250))?;
+        if !early.is_empty() {
+            return Err(format!(
+                "entry stop was published before the first real suspension: {early:?}"
+            ));
+        }
+
+        let reason = first_stopped_reason(&receiver)?;
+        if reason != "entry" {
+            return Err(format!("first real suspension published reason {reason:?}, not entry"));
+        }
+
+        {
+            let guard = lock_or_recover(&adapter.session, "test.entry_stopped");
+            let session = guard.as_ref().ok_or("entry stop lost the session")?;
+            if !matches!(session.state, DebugState::Stopped) {
+                return Err("entry stop published without a Stopped session".to_string());
+            }
+            if session.stopped_generation != 1 {
+                return Err(format!(
+                    "entry stop bound to generation {}, expected 1",
+                    session.stopped_generation
+                ));
+            }
+            let frame = session.stack_frames.first().ok_or("entry stop has no frame")?;
+            if frame.source.path != "entry_fixture.pl" || frame.line != 2 {
+                return Err(format!(
+                    "entry stop frame is not the launched script location: {:?}:{}",
+                    frame.source.path, frame.line
+                ));
+            }
+        }
+
+        // Immediately after the entry event — no retry — the frame authority the
+        // reader just established must answer `stackTrace`.
+        let response = adapter.handle_stack_trace(1, 1, Some(json!({"threadId": 1})));
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(format!("stackTrace failed right after the entry stop: {response:?}"));
+        };
+        let frame = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .and_then(|frames| frames.first())
+            .ok_or("stackTrace returned no frames for the entry stop")?;
+        if frame.get("line").and_then(Value::as_i64) != Some(2) {
+            return Err(format!("entry-stop stackTrace pointed elsewhere: {frame}"));
+        }
+
+        // Exactly one entry stop per session: the fixture's later prompt may
+        // report its own stop, but a second `entry` must never be emitted.
+        wait_for_reader_barrier(&adapter, "ENTRY_FIXTURE_BOOTSTRAP_DONE")?;
+        let later = stopped_reasons_within(&receiver, Duration::from_millis(300))?;
+        if later.iter().any(|reason| reason == "entry") {
+            return Err(format!("a second entry stop was emitted: {later:?}"));
+        }
+        Ok(())
+    }
+
+    /// #15637: when the prompt is the first observed authority (context output
+    /// never parsed), the pending entry reason is still consumed exactly once
+    /// instead of leaving the client waiting for an entry stop forever.
+    #[test]
+    fn stop_on_entry_prompt_only_bootstrap_still_honors_pending_entry() -> Result<(), String> {
+        let (adapter, receiver) = entry_stop_fixture("prompt_only", true, false)?;
+        let reason = first_stopped_reason(&receiver)?;
+        if reason != "entry" {
+            return Err(format!("prompt-first authority published {reason:?}, not entry"));
+        }
+        let guard = lock_or_recover(&adapter.session, "test.entry_prompt");
+        let session = guard.as_ref().ok_or("prompt entry stop lost the session")?;
+        if !matches!(session.state, DebugState::Stopped) {
+            return Err("prompt entry stop published without a Stopped session".to_string());
+        }
+        wait_for_reader_barrier(&adapter, "ENTRY_FIXTURE_BOOTSTRAP_DONE")?;
+        let later = stopped_reasons_within(&receiver, Duration::from_millis(300))?;
+        if later.iter().any(|reason| reason == "entry") {
+            return Err(format!("a second entry stop was emitted: {later:?}"));
+        }
+        Ok(())
+    }
+
+    /// #15637 negative control: `stopOnEntry=false` must keep publishing no stop
+    /// from the implicit first-line pause — that suspension stays reserved for
+    /// the configuration/breakpoint admission route.
+    #[test]
+    fn stop_on_entry_false_launch_publishes_no_stop_from_implicit_first_pause() -> Result<(), String>
+    {
+        let (adapter, receiver) = entry_stop_fixture("context_retained", false, true)?;
+        wait_for_reader_barrier(&adapter, "ENTRY_FIXTURE_BOOTSTRAP_DONE")?;
+        {
+            let guard = lock_or_recover(&adapter.session, "test.retained_stop");
+            let session = guard.as_ref().ok_or("retained stop lost the session")?;
+            if !matches!(session.state, DebugState::Stopped) {
+                return Err("implicit first-line pause was not retained".to_string());
+            }
+        }
+        let published = stopped_reasons_within(&receiver, Duration::from_millis(300))?;
+        if !published.is_empty() {
+            return Err(format!(
+                "stopOnEntry=false published a stop before configuration admitted one: {published:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// #15637: if the debuggee dies before the first real suspension, the client
+    /// observes termination — never a synthetic stopped event for a stop that
+    /// never happened.
+    #[test]
+    fn entry_stop_pending_yields_termination_not_synthetic_stop_on_eof() -> Result<(), String> {
+        // The adapter stays bound for the whole test: it owns the fixture child.
+        let (adapter, receiver) = entry_stop_fixture("eof_before_stop", true, false)?;
+        let _adapter = adapter;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("no terminal event arrived after debugger EOF".to_string());
+            }
+            match receiver.recv_timeout(remaining) {
+                Ok(DapMessage::Event { event, body, .. }) => {
+                    if event == "stopped" {
+                        let reason = body
+                            .as_ref()
+                            .and_then(|value| value.get("reason"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown");
+                        return Err(format!(
+                            "a synthetic stopped event ({reason}) was published for a session that never suspended"
+                        ));
+                    }
+                    if event == "terminated" {
+                        return Ok(());
+                    }
+                }
+                Ok(_) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("no terminal event arrived after debugger EOF".to_string());
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("event channel disconnected before termination".to_string());
+                }
+            }
+        }
+    }
+
     /// Regression for issue #5149 / PR #5318 defect 2: the watchdog used to emit the
     /// `terminated` event (a blocking `send`) BEFORE killing the hung debuggee. If the
     /// outbound queue is permanently full and nobody drains it, that blocking send never
@@ -4860,7 +5725,9 @@ mod tests {
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
+            entry_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 

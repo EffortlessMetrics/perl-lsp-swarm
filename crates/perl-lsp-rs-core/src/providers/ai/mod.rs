@@ -6,6 +6,7 @@
 
 pub mod budget;
 pub mod destination;
+pub mod inflight;
 pub mod openai;
 pub mod prompt;
 pub mod rate_limiter;
@@ -17,5 +18,6 @@ pub use destination::{
     validate_endpoint_with_resolver, validate_tcp_attach_host,
     validate_tcp_attach_host_with_resolver,
 };
+pub use inflight::{InflightCounters, InflightGate, InflightPermit};
 pub use openai::{OpenAiConfig, OpenAiProvider};
 pub use rate_limiter::RateLimiter;
