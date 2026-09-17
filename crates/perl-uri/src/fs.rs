@@ -50,12 +50,39 @@ pub fn uri_to_fs_path(uri: &str) -> Option<PathBuf> {
     // Convert to filesystem path using the url crate's built-in method.
     // On Windows, accept rooted file URIs like file:///tmp/test.pl as \tmp\test.pl
     // so cross-platform tests and internal helpers stay permissive.
-    let path = url
-        .to_file_path()
-        .ok()
+    // On Windows, `Url::to_file_path()` PANICS — it does not return Err — for
+    // host-less file URLs whose path lacks a drive letter (the url crate's
+    // `file_url_segments_to_pathbuf_windows` asserts "expected an absolute
+    // path"; `file://localhost` normalizes its host away, so the form is
+    // reachable). Such forms route to the non-panicking rooted fallback
+    // instead (#15722).
+    #[cfg(windows)]
+    let direct_path =
+        if windows_to_file_path_wont_panic(&url) { url.to_file_path().ok() } else { None };
+    #[cfg(not(windows))]
+    let direct_path = url.to_file_path().ok();
+    let path = direct_path
         .or_else(|| local_authority_file_uri_to_path(&url))
         .or_else(|| windows_rooted_file_uri_to_path(&url))?;
     Some(repair_path_mojibake(path))
+}
+
+/// Whether `Url::to_file_path()` is safe to call on this URL without
+/// panicking. Only Windows restricts this: the url crate asserts an absolute
+/// (drive-letter) path there, so host-less or rooted-but-driveless forms
+/// must use the non-panicking fallbacks (#15722).
+#[cfg(windows)]
+fn windows_to_file_path_wont_panic(url: &Url) -> bool {
+    let path = url.path();
+    path.len() > 3
+        && path.starts_with('/')
+        && path.as_bytes()[1].is_ascii_alphabetic()
+        && path.as_bytes()[2] == b':'
+}
+
+#[cfg(not(windows))]
+fn windows_to_file_path_wont_panic(_url: &Url) -> bool {
+    true
 }
 
 /// Convert either a `file://` URI or absolute filesystem path to a source path.
@@ -154,6 +181,9 @@ fn local_authority_file_uri_to_path(url: &Url) -> Option<PathBuf> {
     }
 
     let canonical = Url::parse(&format!("file://{}", url.path())).ok()?;
+    if !windows_to_file_path_wont_panic(&canonical) {
+        return None;
+    }
     canonical.to_file_path().ok()
 }
 
