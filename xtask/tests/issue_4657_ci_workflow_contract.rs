@@ -384,6 +384,117 @@ fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// #15638: the bit-rot property must have exactly one shard-era owner.
+///
+/// The meta shard used to execute `compile_all_targets` beside the required
+/// `Compile All Targets (bit-rot guard)` job. The duplicated ~19-minute
+/// workspace compile deterministically exceeded the shard's shared budget
+/// (exit 124, twice on the same PR #15621 commit) while the standalone owner
+/// passed on the identical tree, so the merge-blocking shard reported red for
+/// a property it did not own — and while that shard stayed red on `main`, the
+/// recorded main-red refusals suppressed downstream Rust test lanes. This
+/// contract keeps the retirement load-bearing: re-adding the gate to any
+/// shard, its execution-policy row, or the ci-gate job mapping must confront
+/// this test, and deleting the standalone owner must fail the ownership half.
+#[test]
+fn compile_all_targets_is_owned_by_the_dedicated_job_not_a_shard()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+
+    let shard_region = ci
+        .split_once("  merge-gate-shards:\n")
+        .map(|(_, rest)| rest)
+        .ok_or("ci.yml no longer defines merge-gate-shards")?;
+    let shard_region = shard_region
+        .split_once("\n    permissions:\n")
+        .map(|(region, _)| region)
+        .ok_or("merge-gate-shards block has no permissions key; extractor needs review")?;
+
+    let mut saw_gates_line = false;
+    let mut saw_clippy_full = false;
+    for line in shard_region.lines() {
+        let stripped = line.trim_start();
+        if let Some(gates) = stripped.strip_prefix("gates: ") {
+            saw_gates_line = true;
+            if gates.split_whitespace().any(|gate| gate == "clippy_full") {
+                saw_clippy_full = true;
+            }
+            assert!(
+                !gates.split_whitespace().any(|gate| gate == "compile_all_targets"),
+                "a merge-gate shard still hosts `compile_all_targets` (#15638): the \
+                 required `Compile All Targets (bit-rot guard)` job owns the bit-rot \
+                 property, and the shard copy duplicated a ~19-minute workspace \
+                 compile that deterministically timed out inside the shared shard \
+                 budget. Gate line: {stripped}"
+            );
+        }
+    }
+    assert!(
+        saw_gates_line && saw_clippy_full,
+        "shard extraction saw no gate lists or lost the clippy_full control; the \
+         contract is not load-bearing"
+    );
+
+    // Retirement is only valid while the standalone job still owns the
+    // property through the exact recipe the budget pins describe.
+    let job = job_block(&ci, "check-all-targets").ok_or(
+        "ci.yml no longer defines the `check-all-targets` job that owns the \
+         bit-rot property",
+    )?;
+    assert!(
+        job.contains("name: Compile All Targets (bit-rot guard)")
+            && job.contains("\n        run: just check-all-targets\n"),
+        "the standalone bit-rot owner must keep executing `just \
+         check-all-targets`: dropping the shard copy is only valid while this \
+         required job owns the property. Extracted job:\n{job}"
+    );
+
+    // Shard execution rows must match the workflow matrix exactly.
+    let execution: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join(".ci/gate-shard-execution.json"))?)?;
+    assert!(
+        execution.get("gates").and_then(|gates| gates.get("compile_all_targets")).is_none(),
+        "`.ci/gate-shard-execution.json` still carries a `compile_all_targets` \
+         row (#15638): shard rows must match the workflow matrix, so a retired \
+         matrix gate cannot keep a committed execution row"
+    );
+
+    // The gate row itself stays for local pr-fast and advisory pr-smoke
+    // shift-left; only shard/matrix claims retire.
+    let policy = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?.replace("\r\n", "\n");
+    let gate = policy_gate_block(&policy, "compile_all_targets").ok_or(
+        "`.ci/gate-policy.yaml` no longer defines a `compile_all_targets` gate; \
+         local pr-fast shift-left and the gate->lane mapping expect the row to \
+         remain",
+    )?;
+    assert!(
+        gate.contains("\n    tier: pr_fast\n")
+            && gate.contains("\n    command: just check-all-targets\n"),
+        "the retained `compile_all_targets` gate row drifted from tier pr_fast / \
+         `just check-all-targets`, so the shift-left execution and the \
+         gate->lane mapping no longer describe the same command. Extracted \
+         gate:\n{gate}"
+    );
+
+    let mapping_region = policy
+        .split_once("  job_mapping:\n")
+        .map(|(_, rest)| rest)
+        .ok_or("`.ci/gate-policy.yaml` no longer defines workflow_integration.job_mapping")?;
+    let mapping_region = mapping_region
+        .split_once("\n    release-gate:\n")
+        .map(|(region, _)| region)
+        .ok_or("job_mapping has no release-gate key; extractor needs review")?;
+    assert!(
+        !mapping_region.lines().any(|line| line.trim() == "- compile_all_targets"),
+        "`workflow_integration.job_mapping` still claims `compile_all_targets` \
+         for the ci-gate matrix (#15638): the mapping must not claim matrix \
+         execution that no longer exists, mirroring the #9959 fmt rule"
+    );
+
+    Ok(())
+}
+
 /// #14355: the Windows portability lane must admit integration targets.
 ///
 /// The release-artifact smoke target is intentionally Unix-only at runtime,
