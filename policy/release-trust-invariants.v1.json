@@ -1,0 +1,1624 @@
+{
+  "$schema": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/release_trust_invariants.v1.schema.json",
+  "schema_version": "release_trust_invariants.v1",
+  "registry": "release-trust-invariants",
+  "issue": 9392,
+  "parent_issue": 8507,
+  "owner": "release/ci",
+  "updated": "2026-09-06",
+  "claim_boundary": "This registry names every currently mandatory #4343/#5900/#4346/#4350 trust invariant plus the #8507 initial families that those controllers do not yet spell. It validates closed vocabularies and owner/producer/denominator currentness against committed authorities. It does not consume live candidate receipts, execute falsifiers, aggregate evidence, or change release controllers.",
+  "owner_authorities": [
+    {
+      "issue": 3099,
+      "status": "current",
+      "title": "provider readiness honesty and no-fake-empty / unsafe-edit policy"
+    },
+    {
+      "issue": 4343,
+      "status": "current",
+      "title": "v0.18 public-beta release controller"
+    },
+    {
+      "issue": 4346,
+      "status": "current",
+      "title": "exact installed v0.18 public-beta daily-driver acceptance"
+    },
+    {
+      "issue": 4350,
+      "status": "current",
+      "title": "exact no-publish v0.18 candidate packet"
+    },
+    {
+      "issue": 4351,
+      "status": "current",
+      "title": "authorized publication and public verification"
+    },
+    {
+      "issue": 5900,
+      "status": "current",
+      "title": "public-beta daily-driver experience contract"
+    },
+    {
+      "issue": 5903,
+      "status": "current",
+      "title": "install, upgrade, recovery, and rollback"
+    },
+    {
+      "issue": 6055,
+      "status": "current",
+      "title": "release-integrity closeout and attested publication ordering"
+    },
+    {
+      "issue": 6355,
+      "status": "current",
+      "title": "public install, support, and preview claims"
+    },
+    {
+      "issue": 6744,
+      "status": "current",
+      "title": "product, binary, crate, extension, and artifact identity"
+    },
+    {
+      "issue": 7765,
+      "status": "current",
+      "title": "VS Code contribution ownership and installed reachability"
+    },
+    {
+      "issue": 8507,
+      "status": "current",
+      "title": "mandatory trust-invariant producer authority and aggregation"
+    },
+    {
+      "issue": 8576,
+      "status": "current",
+      "title": "no-publish rehearsal mutation authority"
+    },
+    {
+      "issue": 8630,
+      "status": "current",
+      "title": "exact-process edit currentness and lifecycle profiles"
+    },
+    {
+      "issue": 9380,
+      "status": "current",
+      "title": "atomic full-document didChange transaction"
+    },
+    {
+      "issue": 9382,
+      "status": "current",
+      "title": "full resynchronization after ranged input"
+    },
+    {
+      "issue": 9392,
+      "status": "current",
+      "title": "trust-invariant registry schema and model"
+    },
+    {
+      "issue": 9396,
+      "status": "current",
+      "title": "load-bearing falsifier catalog for mandatory invariants"
+    }
+  ],
+  "producer_authorities": [
+    {
+      "producer_kind": "first_ten_minutes_receipt",
+      "status": "current",
+      "owner_issue": 5900,
+      "command_or_workflow": "cargo run -p xtask --example first_ten_minutes \u2014 named only; not executed by this registry"
+    },
+    {
+      "producer_kind": "full_document_sync_receipt",
+      "status": "current",
+      "owner_issue": 9380,
+      "command_or_workflow": "exact perllsp/VSIX full-document UTF-16 receipt owned by #9380/#9382 \u2014 named only"
+    },
+    {
+      "producer_kind": "install_transition_receipt",
+      "status": "current",
+      "owner_issue": 5903,
+      "command_or_workflow": "cargo run -p xtask --example install_transition \u2014 named only; not executed by this registry"
+    },
+    {
+      "producer_kind": "installed_public_beta_receipt",
+      "status": "current",
+      "owner_issue": 4346,
+      "command_or_workflow": "installed_public_beta.v1 candidate packet \u2014 named only; not executed by this registry"
+    },
+    {
+      "producer_kind": "manifest_reachability_receipt",
+      "status": "current",
+      "owner_issue": 7765,
+      "command_or_workflow": "manifest contribution inventory plus installed reachability \u2014 named only"
+    },
+    {
+      "producer_kind": "no_publish_side_effects_receipt",
+      "status": "current",
+      "owner_issue": 8576,
+      "command_or_workflow": "no_publish_side_effects.v1 \u2014 named only; not executed by this registry"
+    },
+    {
+      "producer_kind": "process_lifecycle_receipt",
+      "status": "current",
+      "owner_issue": 4346,
+      "command_or_workflow": "process, request-terminal, DAP, restart, and shutdown receipts \u2014 named only"
+    },
+    {
+      "producer_kind": "provider_decision_receipt",
+      "status": "current",
+      "owner_issue": 3099,
+      "command_or_workflow": "provider decision receipts owned by #3099 \u2014 named only; not executed by this registry"
+    },
+    {
+      "producer_kind": "provider_edit_receipt",
+      "status": "current",
+      "owner_issue": 3099,
+      "command_or_workflow": "provider edit-authorizing receipts owned by #3099 \u2014 named only"
+    },
+    {
+      "producer_kind": "public_beta_experience_fan_in",
+      "status": "current",
+      "owner_issue": 5900,
+      "command_or_workflow": "cargo run -p xtask --example public_beta_experience \u2014 named only; not executed by this registry"
+    },
+    {
+      "producer_kind": "public_claim_catalog_receipt",
+      "status": "current",
+      "owner_issue": 6355,
+      "command_or_workflow": "candidate-bound public_release_claims.v1 catalog \u2014 named only"
+    },
+    {
+      "producer_kind": "release_integrity_closeout",
+      "status": "current",
+      "owner_issue": 6055,
+      "command_or_workflow": "release_integrity_closeout.v1 \u2014 named only; not executed by this registry"
+    }
+  ],
+  "negative_control_catalog": [
+    {
+      "id": "before_after_public_state_changed",
+      "owner_issue": 8576,
+      "description": "Public state changed during publish=false rehearsal."
+    },
+    {
+      "id": "checksum_invalid_or_partial_install_accepted",
+      "owner_issue": 5903,
+      "description": "Checksum-invalid or partial install is accepted as ready."
+    },
+    {
+      "id": "claim_differs_from_reviewed_catalog",
+      "owner_issue": 6355,
+      "description": "Public claim text differs from the reviewed catalog."
+    },
+    {
+      "id": "duplicate_or_late_outcome_after_cancellation",
+      "owner_issue": 3099,
+      "description": "A duplicate or late terminal outcome is published after cancellation."
+    },
+    {
+      "id": "known_false_exact_admitted",
+      "owner_issue": 3099,
+      "description": "A known-false exact result is admitted as current."
+    },
+    {
+      "id": "missing_health_evidence_fabricated_as_diagnosis",
+      "owner_issue": 4346,
+      "description": "Missing health evidence is represented as a specific repair diagnosis."
+    },
+    {
+      "id": "not_ready_flattened_to_successful_empty",
+      "owner_issue": 3099,
+      "description": "Not-ready is flattened to successful empty."
+    },
+    {
+      "id": "old_generation_result_published",
+      "owner_issue": 3099,
+      "description": "An old-generation result or effect is published as current."
+    },
+    {
+      "id": "optional_tool_absent_native_health_fails",
+      "owner_issue": 4346,
+      "description": "Optional tools absent cause native product health to fail."
+    },
+    {
+      "id": "partial_edit_authorized",
+      "owner_issue": 3099,
+      "description": "A partial or unsafe edit is authorized."
+    },
+    {
+      "id": "process_cleanup_omitted",
+      "owner_issue": 4346,
+      "description": "Process cleanup is omitted and an orphan remains."
+    },
+    {
+      "id": "producer_removed_while_schema_field_remains",
+      "owner_issue": 8507,
+      "description": "A producer is removed while the count field remains and defaults clean."
+    },
+    {
+      "id": "publisher_authority_exposed_in_rehearsal",
+      "owner_issue": 8576,
+      "description": "Publisher authority is reachable during no-publish rehearsal."
+    },
+    {
+      "id": "ranged_input_mutates_last_good_source",
+      "owner_issue": 9382,
+      "description": "Ranged input mutates last-good source under full-sync."
+    },
+    {
+      "id": "required_archive_attestation_subject_omitted",
+      "owner_issue": 6055,
+      "description": "A required archive, SBOM, or attestation subject is omitted."
+    },
+    {
+      "id": "server_dap_pair_partially_promoted",
+      "owner_issue": 5903,
+      "description": "A server/DAP pair is partially promoted while UI reports ready."
+    },
+    {
+      "id": "startup_lifecycle_omitted",
+      "owner_issue": 5900,
+      "description": "Startup lifecycle evidence is omitted while providers appear to respond."
+    },
+    {
+      "id": "static_registration_without_installed_reachability",
+      "owner_issue": 7765,
+      "description": "An installed-required contribution is only statically registered."
+    },
+    {
+      "id": "unsupported_architecture_silently_selected",
+      "owner_issue": 5903,
+      "description": "An unsupported architecture silently selects another target."
+    },
+    {
+      "id": "workspace_path_binary_substituted",
+      "owner_issue": 6744,
+      "description": "A workspace or PATH binary substitutes for the candidate."
+    }
+  ],
+  "controller_requirements": [
+    {
+      "controller_issue": 4343,
+      "mandatory_invariant_ids": [
+        "blocked_or_not_proven_child_as_pass",
+        "broken_documented_install",
+        "false_exact",
+        "false_repair_diagnosis",
+        "missing_required_subject",
+        "mixed_generation_or_root_result",
+        "mixed_version_readiness",
+        "optional_tool_false_requirement",
+        "orphaned_candidate_process",
+        "orphaned_server_or_debuggee",
+        "partial_artifact_promotion",
+        "partial_or_checksum_invalid_install",
+        "silent_startup_failure",
+        "stale_exact",
+        "unapproved_public_mutation",
+        "unexplained_success_empty",
+        "unreachable_required_manifest_surface",
+        "unreviewed_public_claim",
+        "unsafe_edit",
+        "wrong_binary_or_artifact",
+        "wrong_binary_or_version",
+        "wrong_target_or_silent_fallback",
+        "wrong_target_or_version"
+      ]
+    },
+    {
+      "controller_issue": 4346,
+      "mandatory_invariant_ids": [
+        "blocked_or_not_proven_child_as_pass",
+        "broken_documented_install",
+        "false_exact",
+        "false_repair_diagnosis",
+        "mixed_generation_or_root_result",
+        "mixed_version_readiness",
+        "optional_tool_false_requirement",
+        "orphaned_server_or_debuggee",
+        "partial_artifact_promotion",
+        "silent_startup_failure",
+        "stale_exact",
+        "unexplained_success_empty",
+        "unsafe_edit",
+        "unreachable_required_manifest_surface",
+        "wrong_binary_or_version",
+        "wrong_target_or_silent_fallback"
+      ]
+    },
+    {
+      "controller_issue": 4350,
+      "mandatory_invariant_ids": [
+        "false_exact",
+        "missing_required_subject",
+        "mixed_generation_or_root_result",
+        "mixed_version_readiness",
+        "orphaned_candidate_process",
+        "partial_or_checksum_invalid_install",
+        "stale_exact",
+        "unapproved_public_mutation",
+        "unexplained_success_empty",
+        "unsafe_edit",
+        "unreviewed_public_claim",
+        "wrong_binary_or_artifact",
+        "wrong_target_or_version"
+      ]
+    },
+    {
+      "controller_issue": 5900,
+      "mandatory_invariant_ids": [
+        "broken_documented_install",
+        "false_exact",
+        "orphaned_server_or_debuggee",
+        "silent_startup_failure",
+        "stale_exact",
+        "unexplained_success_empty",
+        "unsafe_edit",
+        "wrong_binary_or_version"
+      ]
+    }
+  ],
+  "invariants": [
+    {
+      "invariant_id": "blocked_or_not_proven_child_as_pass",
+      "release_claim": "aggregation_honesty",
+      "owner_issue": 5900,
+      "producer_kind": "public_beta_experience_fan_in",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "every required child receipt and journey cell exactly once",
+        "completeness_rule": "missing, skipped, stale, or instrument-failed children cannot flatten to pass or zero"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "not_ready_flattened_to_successful_empty",
+        "producer_removed_while_schema_field_remains"
+      ],
+      "release_consumers": [
+        4343,
+        5900,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Aggregation honesty only: a child not_proven or blocked result cannot appear as a clean fan-in. Does not consume live receipts."
+    },
+    {
+      "invariant_id": "broken_documented_install",
+      "release_claim": "install_integrity",
+      "owner_issue": 5903,
+      "producer_kind": "install_transition_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "topology-selected path x platform x transition/scenario, including real-host rows where claimed",
+        "completeness_rule": "unsupported or skipped architecture rows cannot be represented as selected success"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey",
+          "candidate_packet"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "workspace_path_binary_substituted"
+      ],
+      "release_consumers": [
+        4343,
+        5900,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Documented install route integrity for the topology-selected path. Does not prove public-channel currentness."
+    },
+    {
+      "invariant_id": "duplicate_or_late_terminal_outcome",
+      "release_claim": "lifecycle_cleanup",
+      "owner_issue": 3099,
+      "producer_kind": "process_lifecycle_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "every accepted process, request, and session through one terminal outcome and cleanup",
+        "completeness_rule": "omitted cleanup or late/duplicate terminal outcomes remain visible"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "duplicate_or_late_outcome_after_cancellation"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Request/lifecycle uniqueness: one terminal outcome per accepted request. Seeded from the #8507 process family; not a live receipt."
+    },
+    {
+      "invariant_id": "false_exact",
+      "release_claim": "provider_exactness",
+      "owner_issue": 3099,
+      "producer_kind": "provider_decision_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "reviewed release-profile provider cases, policy identity, and lifecycle/currentness strata",
+        "completeness_rule": "every applicable child terminal state is present; skipped or empty populations are not_proven, not zero"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "known_false_exact_admitted",
+        "producer_removed_while_schema_field_remains"
+      ],
+      "release_consumers": [
+        4343,
+        5900,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Provider/currentness truth: a confident wrong exact answer. Not broad feature correctness."
+    },
+    {
+      "invariant_id": "false_repair_diagnosis",
+      "release_claim": "startup_honesty",
+      "owner_issue": 4346,
+      "producer_kind": "installed_public_beta_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "complete startup, readiness, repair, and first-mile cells",
+        "completeness_rule": "null or omitted lifecycle evidence cannot become a specific diagnosis or successful empty"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "missing_health_evidence_fabricated_as_diagnosis",
+        "startup_lifecycle_omitted"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Startup diagnosis must follow evidence. Missing health evidence cannot become a fabricated repair class."
+    },
+    {
+      "invariant_id": "missing_required_publication_subject",
+      "release_claim": "release_integrity",
+      "owner_issue": 6055,
+      "producer_kind": "release_integrity_closeout",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "exact topology artifact, checksum, SBOM, attestation, and channel subject set",
+        "completeness_rule": "missing, extra, or cross-SHA subjects cannot serialize complete"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "required_archive_attestation_subject_omitted"
+      ],
+      "release_consumers": [
+        4343,
+        4350,
+        4351
+      ],
+      "claim_boundary": "Release-integrity subject completeness. Seeded from the #8507 publication family; no live closeout is consumed."
+    },
+    {
+      "invariant_id": "missing_required_subject",
+      "release_claim": "release_integrity",
+      "owner_issue": 6055,
+      "producer_kind": "release_integrity_closeout",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "exact topology artifact, checksum, SBOM, attestation, and channel subject set",
+        "completeness_rule": "missing, extra, or cross-SHA subjects cannot serialize complete"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "required_archive_attestation_subject_omitted"
+      ],
+      "release_consumers": [
+        4343,
+        4350
+      ],
+      "claim_boundary": "Candidate-controller spelling from #4350 for a missing required subject. Distinct from missing_required_publication_subject; later producer-binding may alias them."
+    },
+    {
+      "invariant_id": "mixed_generation_or_root_result",
+      "release_claim": "provider_exactness",
+      "owner_issue": 3099,
+      "producer_kind": "provider_decision_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "reviewed release-profile provider cases, policy identity, and lifecycle/currentness strata",
+        "completeness_rule": "every applicable child terminal state is present; skipped or empty populations are not_proven, not zero"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "old_generation_result_published"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "One root/generation cannot supply another root's or generation's answer."
+    },
+    {
+      "invariant_id": "mixed_version_readiness",
+      "release_claim": "artifact_identity",
+      "owner_issue": 5903,
+      "producer_kind": "install_transition_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "topology-selected path x platform x transition/scenario, including real-host rows where claimed",
+        "completeness_rule": "unsupported or skipped architecture rows cannot be represented as selected success"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey",
+          "candidate_packet"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "server_dap_pair_partially_promoted"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Mismatched VSIX/server/DAP versions or hashes cannot report ready."
+    },
+    {
+      "invariant_id": "no_publish_external_mutation",
+      "release_claim": "publication_authority",
+      "owner_issue": 8576,
+      "producer_kind": "no_publish_side_effects_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "every topology-selected external surface with before/after observations",
+        "completeness_rule": "inaccessible observations are not_proven; unchanged cannot be assumed"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "before_after_public_state_changed",
+        "publisher_authority_exposed_in_rehearsal"
+      ],
+      "release_consumers": [
+        4343,
+        4350,
+        4351
+      ],
+      "claim_boundary": "No-publish rehearsal public-state stability. Seeded from the #8507 authority family; observers are not executed here."
+    },
+    {
+      "invariant_id": "optional_tool_false_requirement",
+      "release_claim": "startup_honesty",
+      "owner_issue": 4346,
+      "producer_kind": "installed_public_beta_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "complete startup, readiness, repair, and first-mile cells",
+        "completeness_rule": "null or omitted lifecycle evidence cannot become a specific diagnosis or successful empty"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "optional_tool_absent_native_health_fails"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Optional external tools absent must not fail native product health unless that path is selected."
+    },
+    {
+      "invariant_id": "orphaned_candidate_process",
+      "release_claim": "lifecycle_cleanup",
+      "owner_issue": 4350,
+      "producer_kind": "process_lifecycle_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "every accepted process, request, and session through one terminal outcome and cleanup",
+        "completeness_rule": "omitted cleanup or late/duplicate terminal outcomes remain visible"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "process_cleanup_omitted"
+      ],
+      "release_consumers": [
+        4343,
+        4350
+      ],
+      "claim_boundary": "Candidate rehearsal process cleanup. Distinct from installed-server/debuggee cleanup."
+    },
+    {
+      "invariant_id": "orphaned_server_or_debuggee",
+      "release_claim": "lifecycle_cleanup",
+      "owner_issue": 4346,
+      "producer_kind": "process_lifecycle_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "every accepted process, request, and session through one terminal outcome and cleanup",
+        "completeness_rule": "omitted cleanup or late/duplicate terminal outcomes remain visible"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "process_cleanup_omitted"
+      ],
+      "release_consumers": [
+        4343,
+        5900,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Installed server/debuggee process cleanup after shutdown."
+    },
+    {
+      "invariant_id": "partial_artifact_promotion",
+      "release_claim": "install_integrity",
+      "owner_issue": 5903,
+      "producer_kind": "install_transition_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "topology-selected path x platform x transition/scenario, including real-host rows where claimed",
+        "completeness_rule": "unsupported or skipped architecture rows cannot be represented as selected success"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey",
+          "candidate_packet"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "server_dap_pair_partially_promoted"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Partial or unpaired artifact promotion cannot report ready."
+    },
+    {
+      "invariant_id": "partial_or_checksum_invalid_install",
+      "release_claim": "install_integrity",
+      "owner_issue": 5903,
+      "producer_kind": "install_transition_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "topology-selected path x platform x transition/scenario, including real-host rows where claimed",
+        "completeness_rule": "unsupported or skipped architecture rows cannot be represented as selected success"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey",
+          "candidate_packet"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "checksum_invalid_or_partial_install_accepted"
+      ],
+      "release_consumers": [
+        4343,
+        4350
+      ],
+      "claim_boundary": "Candidate-controller spelling from #4350 for checksum-invalid or partial install acceptance."
+    },
+    {
+      "invariant_id": "partial_release_promotion",
+      "release_claim": "release_integrity",
+      "owner_issue": 6055,
+      "producer_kind": "release_integrity_closeout",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "exact topology artifact, checksum, SBOM, attestation, and channel subject set",
+        "completeness_rule": "missing, extra, or cross-SHA subjects cannot serialize complete"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "required_archive_attestation_subject_omitted"
+      ],
+      "release_consumers": [
+        4343,
+        4350,
+        4351
+      ],
+      "claim_boundary": "Partial artifact or channel set promotion. Seeded from the #8507 publication family."
+    },
+    {
+      "invariant_id": "partial_text_transaction_commit",
+      "release_claim": "text_synchronization",
+      "owner_issue": 9380,
+      "producer_kind": "full_document_sync_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "all applicable full/ranged/resynchronization transactions for the selected full-document UTF-16 envelope",
+        "completeness_rule": "ranged or partial members cannot commit while the session advertises full-sync"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "partial_edit_authorized"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Full-document transaction atomicity. Seeded from the #8507 text-sync family; producers are not wired here."
+    },
+    {
+      "invariant_id": "ranged_change_while_desynchronized",
+      "release_claim": "text_synchronization",
+      "owner_issue": 9382,
+      "producer_kind": "full_document_sync_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "all applicable full/ranged/resynchronization transactions for the selected full-document UTF-16 envelope",
+        "completeness_rule": "ranged or partial members cannot commit while the session advertises full-sync"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "ranged_input_mutates_last_good_source"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Ranged input must not mutate last-good source under the selected full-document UTF-16 envelope."
+    },
+    {
+      "invariant_id": "silent_startup_failure",
+      "release_claim": "startup_honesty",
+      "owner_issue": 5900,
+      "producer_kind": "first_ten_minutes_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "complete startup, readiness, repair, and first-mile cells",
+        "completeness_rule": "null or omitted lifecycle evidence cannot become a specific diagnosis or successful empty"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey",
+          "first_ten_minutes"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "startup_lifecycle_omitted"
+      ],
+      "release_consumers": [
+        4343,
+        5900,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Startup must not fail silently. First-ten-minutes and installed journey share this zero-budget ID."
+    },
+    {
+      "invariant_id": "stale_effect_after_generation",
+      "release_claim": "provider_exactness",
+      "owner_issue": 8630,
+      "producer_kind": "provider_decision_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "reviewed release-profile provider cases, policy identity, and lifecycle/currentness strata",
+        "completeness_rule": "every applicable child terminal state is present; skipped or empty populations are not_proven, not zero"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "old_generation_result_published"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Old-generation effects cannot publish after an accepted newer generation. Seeded from the #8507 process/currentness family."
+    },
+    {
+      "invariant_id": "stale_exact",
+      "release_claim": "provider_exactness",
+      "owner_issue": 3099,
+      "producer_kind": "provider_decision_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "reviewed release-profile provider cases, policy identity, and lifecycle/currentness strata",
+        "completeness_rule": "every applicable child terminal state is present; skipped or empty populations are not_proven, not zero"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "old_generation_result_published"
+      ],
+      "release_consumers": [
+        4343,
+        5900,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Exact answers that survive an edit/delete/rename of their subject."
+    },
+    {
+      "invariant_id": "unapproved_public_mutation",
+      "release_claim": "publication_authority",
+      "owner_issue": 8576,
+      "producer_kind": "no_publish_side_effects_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "every topology-selected external surface with before/after observations",
+        "completeness_rule": "inaccessible observations are not_proven; unchanged cannot be assumed"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "publisher_authority_exposed_in_rehearsal"
+      ],
+      "release_consumers": [
+        4343,
+        4350,
+        4351
+      ],
+      "claim_boundary": "Effective public mutation authority during no-publish rehearsal."
+    },
+    {
+      "invariant_id": "unexplained_success_empty",
+      "release_claim": "provider_exactness",
+      "owner_issue": 3099,
+      "producer_kind": "provider_decision_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "reviewed release-profile provider cases, policy identity, and lifecycle/currentness strata",
+        "completeness_rule": "every applicable child terminal state is present; skipped or empty populations are not_proven, not zero"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "not_ready_flattened_to_successful_empty"
+      ],
+      "release_consumers": [
+        4343,
+        5900,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Not-ready, dynamic, or instrument-failed empty cannot flatten to legitimate successful empty."
+    },
+    {
+      "invariant_id": "unreachable_required_manifest_surface",
+      "release_claim": "installed_reachability",
+      "owner_issue": 7765,
+      "producer_kind": "manifest_reachability_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "every installed-required manifest contribution",
+        "completeness_rule": "static package.json registration cannot satisfy installed reachability"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "static_registration_without_installed_reachability"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Installed-required package contributions must be reached in the exact VSIX journey, not only statically registered."
+    },
+    {
+      "invariant_id": "unreviewed_public_claim",
+      "release_claim": "public_claim_truth",
+      "owner_issue": 6355,
+      "producer_kind": "public_claim_catalog_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "complete candidate-bound public-claim catalog",
+        "completeness_rule": "unreviewed or drifted claims cannot serialize as reviewed"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "claim_differs_from_reviewed_catalog"
+      ],
+      "release_consumers": [
+        4343,
+        4350,
+        4351
+      ],
+      "claim_boundary": "Public claims must match the reviewed candidate-bound catalog. No live catalog execution here."
+    },
+    {
+      "invariant_id": "unsafe_edit",
+      "release_claim": "provider_edit_safety",
+      "owner_issue": 3099,
+      "producer_kind": "provider_edit_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "every applicable edit-authorizing operation and complete exact-current/refusal population",
+        "completeness_rule": "every authorizing path is represented; partial or prior facts cannot serialize as authorized"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "partial_edit_authorized"
+      ],
+      "release_consumers": [
+        4343,
+        5900,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Edit-authorizing operations require complete exact current facts. Partial or prior facts cannot authorize."
+    },
+    {
+      "invariant_id": "wrong_binary_or_artifact",
+      "release_claim": "artifact_identity",
+      "owner_issue": 6744,
+      "producer_kind": "installed_public_beta_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "every required child receipt and journey cell exactly once",
+        "completeness_rule": "missing, skipped, stale, or instrument-failed children cannot flatten to pass or zero"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "workspace_path_binary_substituted"
+      ],
+      "release_consumers": [
+        4343,
+        4350
+      ],
+      "claim_boundary": "Candidate-controller spelling from #4350 for wrong binary/artifact identity. Distinct from installed wrong_binary_or_version."
+    },
+    {
+      "invariant_id": "wrong_binary_or_version",
+      "release_claim": "artifact_identity",
+      "owner_issue": 6744,
+      "producer_kind": "install_transition_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "topology-selected path x platform x transition/scenario, including real-host rows where claimed",
+        "completeness_rule": "unsupported or skipped architecture rows cannot be represented as selected success"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey",
+          "candidate_packet"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "workspace_path_binary_substituted"
+      ],
+      "release_consumers": [
+        4343,
+        5900,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Installed identity: the executed binary/version must be the candidate, not workspace/PATH/stale-cache."
+    },
+    {
+      "invariant_id": "wrong_or_cross_sha_subject",
+      "release_claim": "release_integrity",
+      "owner_issue": 6055,
+      "producer_kind": "release_integrity_closeout",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "exact topology artifact, checksum, SBOM, attestation, and channel subject set",
+        "completeness_rule": "missing, extra, or cross-SHA subjects cannot serialize complete"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "required_archive_attestation_subject_omitted"
+      ],
+      "release_consumers": [
+        4343,
+        4350,
+        4351
+      ],
+      "claim_boundary": "Checksum/SBOM/attestation subjects must bind the exact candidate SHA. Seeded from the #8507 publication family."
+    },
+    {
+      "invariant_id": "wrong_target_or_silent_fallback",
+      "release_claim": "install_integrity",
+      "owner_issue": 5903,
+      "producer_kind": "install_transition_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "topology-selected path x platform x transition/scenario, including real-host rows where claimed",
+        "completeness_rule": "unsupported or skipped architecture rows cannot be represented as selected success"
+      },
+      "applicability": {
+        "platforms": [
+          "topology_selected"
+        ],
+        "profiles": [
+          "public_beta",
+          "installed_journey",
+          "candidate_packet"
+        ],
+        "supported_envelope_ref": 4343
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "unsupported_architecture_silently_selected"
+      ],
+      "release_consumers": [
+        4343,
+        4346,
+        4350
+      ],
+      "claim_boundary": "Unsupported architecture cannot silently select another target."
+    },
+    {
+      "invariant_id": "wrong_target_or_version",
+      "release_claim": "artifact_identity",
+      "owner_issue": 5903,
+      "producer_kind": "install_transition_receipt",
+      "subject_identity": {
+        "source_sha": "required",
+        "candidate_digest": "required",
+        "artifact_hashes": "required"
+      },
+      "denominator": {
+        "authority": "topology-selected path x platform x transition/scenario, including real-host rows where claimed",
+        "completeness_rule": "unsupported or skipped architecture rows cannot be represented as selected success"
+      },
+      "applicability": {
+        "platforms": [
+          "linux_x64",
+          "windows_x64",
+          "macos_bounded"
+        ],
+        "profiles": [
+          "candidate_packet",
+          "publication_rehearsal"
+        ],
+        "supported_envelope_ref": 4350
+      },
+      "terminal_input_states": {
+        "success": "count",
+        "failure": "count",
+        "not_proven": "blocks"
+      },
+      "negative_control_ids": [
+        "unsupported_architecture_silently_selected"
+      ],
+      "release_consumers": [
+        4343,
+        4350
+      ],
+      "claim_boundary": "Candidate-controller spelling from #4350 for wrong target/version selection. Distinct from wrong_target_or_silent_fallback."
+    }
+  ]
+}

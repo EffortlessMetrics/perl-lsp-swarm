@@ -366,10 +366,35 @@ impl Coordinator {
     /// iff this call newly claimed `active` ownership of the URI (nothing
     /// was queued or in-flight for it) -- see the doc comment on
     /// `ParseWorker::enqueue`, the public wrapper this backs.
-    fn enqueue(&self, job: ParseJob) -> bool {
+    /// Enqueue only while the coordinator is still accepting asynchronous
+    /// work. The shutdown flag is checked under the same lock that orders
+    /// `take_next`'s final empty-queue check, so a caller cannot select a
+    /// worker, lose the last worker to shutdown, and then strand a job in a
+    /// queue that no thread will drain.
+    ///
+    /// The atomicity is against *shutdown*, the pool's only designed path to
+    /// zero live workers. Thread death without shutdown — a panic escaping
+    /// both `catch_unwind` and `FinishGuard` in the worker loop — is not
+    /// ordered by this lock; that case is covered by `ParseWorker::try_enqueue`'s
+    /// `is_operational()` pre-check, which is a sample rather than an
+    /// interlock. Stated so the next reader need not re-derive which
+    /// transition the lock actually orders.
+    fn try_enqueue(&self, job: ParseJob) -> Result<bool, ParseJob> {
+        let mut state = self.state.lock();
+        if self.shutdown.load(Ordering::SeqCst) {
+            return Err(job);
+        }
+        let newly_active = self.enqueue_locked(&mut state, job);
+        drop(state);
+        if newly_active {
+            self.cvar.notify_one();
+        }
+        Ok(newly_active)
+    }
+
+    fn enqueue_locked(&self, state: &mut QueueState, job: ParseJob) -> bool {
         self.metrics.jobs_enqueued.fetch_add(1, Ordering::SeqCst);
         let uri = job.normalized_uri.clone();
-        let mut state = self.state.lock();
         let replaced = state.pending.insert(uri.clone(), job).is_some();
         self.metrics.bump_queue_depth(state.pending.len());
         let newly_active = state.active.insert(uri.clone());
@@ -393,8 +418,6 @@ impl Coordinator {
             // `on_settled` decrement for this same lifecycle, full stop --
             // not merely "before `notify_one()`, which is usually enough."
             (self.on_activated)(&uri);
-            drop(state);
-            self.cvar.notify_one();
         } else if replaced {
             // Already owned by a worker (queued or in-flight); this enqueue
             // replaced a not-yet-started job that was waiting behind it.
@@ -763,6 +786,31 @@ impl ParseWorker {
     /// callers are this module's own unit tests; production code
     /// (`LspServer::install_default_parse_worker`) calls
     /// `spawn_with_pending_count_hooks` directly to wire the real hooks.
+    /// A pool with no live worker threads, standing in for the
+    /// resource-exhaustion case where every `thread::Builder::spawn` returned
+    /// `Err`. Mirrors `FileWatcherDebouncer::unavailable_for_test` so callers
+    /// outside this module can exercise the not-operational install path
+    /// (#10024).
+    ///
+    /// Shutdown is signalled before the handles are dropped so the real
+    /// threads exit on their own -- nothing is enqueued, so this is immediate
+    /// -- rather than leaking live OS threads that nothing ever joins.
+    /// A freshly spawned pool over an empty document store, for callers
+    /// outside this module that only need an operational worker to occupy a
+    /// slot (#10024).
+    #[cfg(test)]
+    pub(crate) fn operational_for_test() -> Self {
+        Self::spawn(Arc::new(Mutex::new(HashMap::new())), Arc::new(|_: PublishedParseTicket| {}))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn non_operational_for_test() -> Self {
+        let worker = Self::operational_for_test();
+        worker.coordinator.request_shutdown();
+        worker.handles.lock().clear();
+        worker
+    }
+
     #[cfg(test)]
     pub(crate) fn spawn(
         documents: Arc<Mutex<HashMap<String, DocumentState>>>,
@@ -982,6 +1030,26 @@ impl ParseWorker {
         handles.iter().any(|h| !h.is_finished())
     }
 
+    /// Ask every worker thread to stop, without joining.
+    ///
+    /// Stopping means "stop once the ready queue is drained", NOT "stop after
+    /// the current job": `Coordinator::take_next` pops `ready` before it
+    /// consults the shutdown flag, so already-queued jobs still run. That
+    /// drain is the deliberate, tested contract -- see
+    /// `shutdown_drains_a_coalesced_job_never_itself_dequeued_before_the_request`
+    /// -- and this method does not change it.
+    ///
+    /// Joining stays in [`Drop`], which owns the ordering hazards (self-join,
+    /// test-barrier release). This is the cooperative-stop half that
+    /// `RuntimeServices::request_cancel` forwards to, so an application
+    /// shutdown can signal the pool before waiting on settlement; because the
+    /// drain can outlast a deadline, settlement observes real exit via
+    /// `is_operational` rather than assuming this call stopped anything
+    /// (#10024).
+    pub(crate) fn request_shutdown(&self) {
+        self.coordinator.request_shutdown();
+    }
+
     /// Enqueue (or coalesce-replace) a parse job for `normalized_uri`.
     ///
     /// Returns `true` if this call established a NEW pending-parse lifecycle
@@ -993,6 +1061,16 @@ impl ParseWorker {
     /// burst increments the counter once per coalesced-away edit but only
     /// ever decrements it once (when the *one* surviving job eventually
     /// publishes), permanently over-counting (#3660).
+    /// Test-only admission that goes through the production path and asserts
+    /// the job was accepted.
+    ///
+    /// Deliberately a delegate rather than a second admission function. The
+    /// coalescing, settlement, metrics, and panic-recovery tests below are the
+    /// proof that those invariants hold for the admission production actually
+    /// uses; a parallel `enqueue` skipping `try_enqueue`'s shutdown and
+    /// liveness checks would leave every one of them green against a path no
+    /// caller takes.
+    #[cfg(test)]
     pub(crate) fn enqueue(
         &self,
         uri: String,
@@ -1001,14 +1079,38 @@ impl ParseWorker {
         generation_handle: Arc<AtomicU32>,
         text: Arc<str>,
     ) -> bool {
-        self.coordinator.enqueue(ParseJob {
-            uri,
-            normalized_uri,
-            generation,
-            generation_handle,
-            text,
-            enqueued_at: Instant::now(),
-        })
+        let admitted = self.try_enqueue(uri, normalized_uri, generation, generation_handle, text);
+        assert!(
+            admitted.is_ok(),
+            "test enqueue refused: the pool must be operational and not shut down here"
+        );
+        admitted.unwrap_or(false)
+    }
+
+    /// Try to enqueue a job, rejecting it when shutdown has already won the
+    /// admission race. The caller owns the synchronous fallback for a
+    /// rejected job.
+    pub(crate) fn try_enqueue(
+        &self,
+        uri: String,
+        normalized_uri: String,
+        generation: u32,
+        generation_handle: Arc<AtomicU32>,
+        text: Arc<str>,
+    ) -> Result<bool, ()> {
+        if !self.is_operational() {
+            return Err(());
+        }
+        self.coordinator
+            .try_enqueue(ParseJob {
+                uri,
+                normalized_uri,
+                generation,
+                generation_handle,
+                text,
+                enqueued_at: Instant::now(),
+            })
+            .map_err(|_| ())
     }
 
     /// Test-API-only consumer (`test_parse_worker_metrics`); dead in the
@@ -1127,26 +1229,34 @@ fn process_job(
     // errors, so a cache hit was forced to synthesize an empty error list --
     // live semantic corruption for recovery-bearing source (#11215). Every
     // live parse path now runs the full parser unconditionally.
-    let (ast, errors) = {
+    // The parse runs inside a `RetainedRegexSession` (#7024) so the one canonical
+    // regex analysis for this exact source is retained as the parse happens. It
+    // costs no extra parse: the session records the geometry the parser already
+    // computes, and suppresses the legacy per-operator scan while it is active.
+    let (ast, errors, regex_analysis) = {
         let code_text = crate::util::code_slice(&job.text);
+        let session = perl_parser_core::RetainedRegexSession::begin(code_text);
         let mut parser = perl_parser::Parser::new(code_text);
         match parser.parse() {
-            Ok(ast) => {
+            Ok(mut ast) => {
+                let table = session.finish(Some(&mut ast));
                 let errors = parser.errors().to_vec();
                 let arc_ast = Arc::new(ast);
-                (Some(arc_ast), errors)
+                (Some(arc_ast), errors, Arc::new(table))
             }
             // A parse failure still produces a snapshot -- `ast: None` maps
             // to `DegradationTier::Minimal` inside `from_parse_result`, and
             // that failure snapshot still needs to reach the publish gate
             // below so it can correctly supersede an older successful one.
-            Err(e) => (None, vec![e]),
+            Err(e) => (None, vec![e], Arc::new(session.finish(None))),
         }
     };
     let is_failure = ast.is_none();
 
-    let snapshot =
-        Arc::new(ParsedSnapshot::from_parse_result(job.generation, &job.text, ast.clone(), errors));
+    let snapshot = Arc::new(
+        ParsedSnapshot::from_parse_result(job.generation, &job.text, ast.clone(), errors)
+            .with_regex_analysis(regex_analysis),
+    );
 
     if crate::runtime::timing::is_enabled() {
         crate::runtime::timing::emit(crate::runtime::timing::TimingSpan::labeled(
@@ -2291,6 +2401,24 @@ mod tests {
             !worker.is_operational(),
             "a pool with only finished (dead) handles must report not-operational (#3664)"
         );
+    }
+
+    #[test]
+    fn try_enqueue_rejects_after_shutdown_without_retaining_a_job() {
+        let uri = "file:///rejected-after-shutdown.pl";
+        let (documents, generation_handle) = one_doc(uri, "my $x = 1;\n");
+        let (callback, _calls) = counting_callback();
+        let worker = ParseWorker::spawn(documents, callback);
+        worker.coordinator.request_shutdown();
+
+        let result = worker.try_enqueue(
+            uri.to_string(),
+            uri.to_string(),
+            1,
+            generation_handle,
+            Arc::from("my $x = 2;\n"),
+        );
+        assert!(result.is_err(), "shutdown must reject new async work");
     }
 
     // ---- Lifecycle: LspServer <-> ParseWorker must not form an Arc cycle -

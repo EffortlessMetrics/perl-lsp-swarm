@@ -18,6 +18,11 @@ pub use legacy::{
     slice_in_range, slice_until_stmt_end, smart_arg_anchor, token_under_cursor, uri,
 };
 
+// Crate-internal only, so the facade's public API surface does not grow for a
+// helper the runtime uses to classify a cursor. Re-exported separately from the
+// `pub use` above for exactly that reason.
+pub(crate) use legacy::line_window_around_offset;
+
 #[path = "util/source_decoding.rs"]
 mod source_decoding;
 

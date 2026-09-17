@@ -139,6 +139,87 @@
       "production_eligible": true
     },
     {
+      "name": "geometry_attachment::SOURCE_GEOMETRY_ATTACHMENT_SCHEMA_VERSION",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the schema identity of the snapshot geometry attachment; becomes production-eligible only once the partition producer publishes a complete attachment.",
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryAttachment",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Reachable from the production ParseSnapshot::source_geometry accessor; becomes production-eligible only once it can publish a complete partition rather than only unavailable.",
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryAttachmentState",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the unavailable/partial/complete discriminant; becomes production-eligible with the attachment it describes.",
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryInstrumentFailureReason",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the typed instrument-failure cause; becomes production-eligible with the attachment it describes.",
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryLimitation",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the partial-attachment limitation vocabulary; becomes production-eligible with the attachment it describes.",
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryPayload",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Placeholder payload seam for the partition producer; becomes production-eligible only when it carries the canonical byte partition.",
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometrySubject",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the generation-bound geometry subject that makes cross-generation attachment impossible; becomes production-eligible with the attachment it identifies.",
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryUnavailableReason",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Retain as the typed unavailable cause published by current constructors; becomes production-eligible with the attachment it describes.",
+      "production_eligible": false
+    },
+    {
+      "name": "geometry_attachment::SourceGeometryValidationError",
+      "classification": "incremental_parser",
+      "disposition": "review",
+      "owner": "#13976",
+      "target_owner": "#7101",
+      "exit_condition": "Reachable from the production ParseSnapshotValidationError::SourceGeometry variant; becomes production-eligible with the attachment it validates.",
+      "production_eligible": false
+    },
+    {
       "name": "lex::MAX_STORED_LEX_CHECKPOINTS",
       "classification": "experimental",
       "disposition": "review",

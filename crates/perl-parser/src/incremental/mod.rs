@@ -11,6 +11,7 @@ mod reparse;
 mod snapshot;
 mod state;
 mod strategy;
+mod whitespace_geometry;
 
 use anyhow::Result;
 
@@ -33,6 +34,9 @@ pub use snapshot::{
 };
 pub use state::IncrementalState;
 pub use strategy::MAX_EDIT_SIZE;
+
+/// Small edit batches keep fast-path validation linear and cheap; larger batches fall back to a full parse.
+pub(crate) const MAX_INCREMENTAL_EDIT_BATCH: usize = 10;
 
 // Keep the raw engine private; the public facade normalizes complete-tree accounting.
 /// Canonical advanced-reuse analyzer and public accounting types.
@@ -121,6 +125,7 @@ fn unchanged_result(state: &IncrementalState) -> ReparseResult {
     ReparseResult {
         changed_ranges: Vec::new(),
         snapshot: state.snapshot().clone(),
+        #[cfg(feature = "lsp-compat")]
         diagnostics: Vec::new(),
         lex_restart,
         reparsed_bytes: 0,
@@ -188,6 +193,7 @@ pub fn apply_edits(state: &mut IncrementalState, edits: &[Edit]) -> Result<Repar
         let result = ReparseResult {
             changed_ranges: vec![reparse.range],
             snapshot: candidate.snapshot().clone(),
+            #[cfg(feature = "lsp-compat")]
             diagnostics: vec![],
             lex_restart: reparse.lex_restart,
             reparsed_bytes: candidate.source().len(),
