@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::print_stderr,
+    reason = "Scenario 16 reports a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 //! Scenario 16 — workspace folder removal updates workspace-symbol results.
 //!
@@ -43,10 +45,10 @@ fn contains_symbol_in_folder(symbols: &[Value], symbol_name: &str, folder_fragme
 }
 
 #[test]
-fn scenario_16_removed_workspace_folder_symbols_disappear() {
+fn scenario_16_removed_workspace_folder_symbols_disappear() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_16: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
@@ -57,7 +59,7 @@ fn scenario_16_removed_workspace_folder_symbols_disappear() {
             .with_file("svc-a/lib/ModuleA.pm", MODULE_A)
             .with_file("svc-b/lib/ModuleB.pm", MODULE_B),
     )
-    .expect("Failed to create UX harness");
+    .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
     assert!(
         harness.wait_for_index_ready(Duration::from_secs(20)),
@@ -69,7 +71,7 @@ fn scenario_16_removed_workspace_folder_symbols_disappear() {
     while Instant::now() < before_deadline {
         symbols_before_a = harness
             .workspace_symbols("ModuleA")
-            .expect("workspace/symbol must not error before folder removal");
+            .map_err(|error| format!("workspace/symbol failed before folder removal: {error}"))?;
         if contains_symbol_in_folder(&symbols_before_a, "ModuleA", "/svc-a/") {
             break;
         }
@@ -87,7 +89,7 @@ fn scenario_16_removed_workspace_folder_symbols_disappear() {
     while Instant::now() < before_deadline {
         symbols_before_b = harness
             .workspace_symbols("ModuleB")
-            .expect("workspace/symbol must not error before folder removal");
+            .map_err(|error| format!("workspace/symbol failed before folder removal: {error}"))?;
         if contains_symbol_in_folder(&symbols_before_b, "ModuleB", "/svc-b/") {
             break;
         }
@@ -102,14 +104,14 @@ fn scenario_16_removed_workspace_folder_symbols_disappear() {
 
     harness
         .change_workspace_folders(&[], &[("svc-b", "svc-b")])
-        .expect("workspace folder removal notification must not fail");
+        .map_err(|error| format!("workspace folder removal notification failed: {error}"))?;
 
     let after_deadline = Instant::now() + Duration::from_secs(10);
     let mut symbols_after_b = Vec::new();
     while Instant::now() < after_deadline {
         symbols_after_b = harness
             .workspace_symbols("ModuleB")
-            .expect("workspace/symbol must not error after folder removal");
+            .map_err(|error| format!("workspace/symbol failed after folder removal: {error}"))?;
 
         if !contains_symbol_in_folder(&symbols_after_b, "ModuleB", "/svc-b/") {
             break;
@@ -119,7 +121,7 @@ fn scenario_16_removed_workspace_folder_symbols_disappear() {
 
     let symbols_after_a = harness
         .workspace_symbols("ModuleA")
-        .expect("workspace/symbol must not error after folder removal");
+        .map_err(|error| format!("workspace/symbol failed after folder removal: {error}"))?;
     assert!(
         contains_symbol_in_folder(&symbols_after_a, "ModuleA", "/svc-a/"),
         "Expected ModuleA to remain after removing svc-b, got: {:?}",
@@ -132,4 +134,5 @@ fn scenario_16_removed_workspace_folder_symbols_disappear() {
     );
 
     harness.assert_no_crash();
+    Ok(())
 }
