@@ -214,6 +214,8 @@ pub perl_parser_core::engine::error::ParseError::Advisory
 pub perl_parser_core::engine::error::ParseError::Advisory::location: usize
 pub perl_parser_core::engine::error::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::engine::error::ParseError::Cancelled
+pub perl_parser_core::engine::error::ParseError::DoWhileTrailingBlock
+pub perl_parser_core::engine::error::ParseError::DoWhileTrailingBlock::location: usize
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::engine::error::ParseError::HeredocBudgetExhausted::location: usize
@@ -689,6 +691,8 @@ pub perl_parser_core::error::ParseError::Advisory
 pub perl_parser_core::error::ParseError::Advisory::location: usize
 pub perl_parser_core::error::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::error::ParseError::Cancelled
+pub perl_parser_core::error::ParseError::DoWhileTrailingBlock
+pub perl_parser_core::error::ParseError::DoWhileTrailingBlock::location: usize
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::error::ParseError::HeredocBudgetExhausted::location: usize
@@ -3335,6 +3339,8 @@ pub perl_parser_core::syntax::error::ParseError::Advisory
 pub perl_parser_core::syntax::error::ParseError::Advisory::location: usize
 pub perl_parser_core::syntax::error::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::syntax::error::ParseError::Cancelled
+pub perl_parser_core::syntax::error::ParseError::DoWhileTrailingBlock
+pub perl_parser_core::syntax::error::ParseError::DoWhileTrailingBlock::location: usize
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::syntax::error::ParseError::HeredocBudgetExhausted::location: usize
@@ -4160,6 +4166,8 @@ pub perl_parser_core::ParseError::Advisory
 pub perl_parser_core::ParseError::Advisory::location: usize
 pub perl_parser_core::ParseError::Advisory::message: alloc::string::String
 pub perl_parser_core::ParseError::Cancelled
+pub perl_parser_core::ParseError::DoWhileTrailingBlock
+pub perl_parser_core::ParseError::DoWhileTrailingBlock::location: usize
 pub perl_parser_core::ParseError::HeredocBudgetExhausted
 pub perl_parser_core::ParseError::HeredocBudgetExhausted::limit: usize
 pub perl_parser_core::ParseError::HeredocBudgetExhausted::location: usize
