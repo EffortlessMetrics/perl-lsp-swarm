@@ -1049,10 +1049,10 @@
       "id": "docs-pr-build/build/0",
       "workflow": "docs-pr-build.yml",
       "job": "build",
-      "step_name": "Cache mdBook",
-      "action": "actions/cache",
+      "step_name": "Restore mdBook cache",
+      "action": "actions/cache/restore",
       "action_ref": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
-      "capability": "restore_and_save",
+      "capability": "restore_only",
       "trigger_event_set": [
         "pull_request"
       ],
@@ -1076,11 +1076,11 @@
         ]
       },
       "key_authority": "mixed",
-      "cached_byte_provenance": "candidate_tree",
+      "cached_byte_provenance": "not_proven",
       "artifact_provenance": null,
-      "writer_disposition": "candidate_writer_violation",
-      "repair_owner": "needs-follow-up-issue",
-      "notes": "no save guard on a candidate-reachable writer; recorded honestly, not repaired here (#9177)"
+      "writer_disposition": "restore_only",
+      "repair_owner": null,
+      "notes": null
     },
     {
       "id": "em-ci-routed-rust/rust-small-fallback/0",
@@ -1901,8 +1901,8 @@
       "executed_subject": "candidate",
       "job_condition": null,
       "step_condition": null,
-      "save_condition": null,
-      "save_authority_source": "absent",
+      "save_condition": "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}",
+      "save_authority_source": "ref_guard",
       "payload_class": "cargo_target",
       "cached_paths": [],
       "key_dimensions": {
@@ -1911,11 +1911,11 @@
         "restore_keys": null
       },
       "key_authority": "mixed",
-      "cached_byte_provenance": "candidate_tree",
+      "cached_byte_provenance": "trusted_tree",
       "artifact_provenance": null,
-      "writer_disposition": "candidate_writer_violation",
-      "repair_owner": "needs-follow-up-issue",
-      "notes": "no save guard on a candidate-reachable writer; recorded honestly, not repaired here (#9177)"
+      "writer_disposition": "trusted_guarded",
+      "repair_owner": null,
+      "notes": null
     },
     {
       "id": ".github/actions/setup-rust/action.yml/0",

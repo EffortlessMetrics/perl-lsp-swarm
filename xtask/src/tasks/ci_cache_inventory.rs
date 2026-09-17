@@ -2211,27 +2211,32 @@ mod tests {
     }
 
     #[test]
-    fn docs_pr_build_unguarded_cache_is_recorded_as_a_violation() {
+    fn docs_pr_build_restore_only_cache_is_not_a_violation() {
+        // #15590 (fixed by #15754) made docs-pr-build restore-only:
+        // `actions/cache/restore` on a pull_request-reachable job can never
+        // enter a save path, so it is `restore_only` with `not_proven`
+        // byte provenance — recorded honestly, not a violation.
         let root = project_root();
         let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
             .expect("derive inventory");
         let row = find_row(&inventory.families, "docs-pr-build.yml", "build");
         assert_eq!(
             row.writer_disposition,
-            WriterDisposition::CandidateWriterViolation,
-            "docs-pr-build.yml's unguarded actions/cache must be recorded honestly: {row:#?}"
+            WriterDisposition::RestoreOnly,
+            "docs-pr-build.yml's restore-only mdBook cache must not read as a violation: {row:#?}"
         );
+        assert_eq!(row.capability, Capability::RestoreOnly);
+        assert_eq!(row.cached_byte_provenance, CachedByteProvenance::NotProven);
         assert_eq!(row.save_authority_source, SaveAuthoritySource::Absent);
     }
 
     #[test]
-    fn vscode_current_source_linux_smoke_unguarded_cache_is_a_true_violation() {
-        // pull_request-reachable (branches+paths) + workflow_dispatch, no
-        // job/step `if:`, Swatinem with no `save-if`, checking out
-        // `${{ env.PERL_LSP_SMOKE_SUBJECT_SHA }}` — candidate content on a
-        // PR. Same class as docs-pr-build: pull_request demonstrably makes
-        // the candidate tree the executed subject, so an unguarded writer
-        // here is a real, not a crying-wolf, violation.
+    fn vscode_current_source_linux_smoke_ref_guard_is_trusted_guarded() {
+        // #15590 (fixed by #15754) added a canonical default-branch ref
+        // guard (`github.ref == 'refs/heads/master' || github.ref ==
+        // 'refs/heads/main'`) to the Swatinem step's `save-if`: every
+        // top-level `||` branch establishes the equality, so the row
+        // carries both dimensions as `trusted_guarded`, not a violation.
         let root = project_root();
         let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
             .expect("derive inventory");
@@ -2242,10 +2247,10 @@ mod tests {
         );
         assert_eq!(
             row.writer_disposition,
-            WriterDisposition::CandidateWriterViolation,
-            "vscode-current-source-linux-smoke.yml's unguarded Swatinem cache on a pull_request-reachable job must be a true violation: {row:#?}"
+            WriterDisposition::TrustedGuarded,
+            "vscode-current-source-linux-smoke.yml's ref-guarded Swatinem cache must be trusted_guarded: {row:#?}"
         );
-        assert_eq!(row.save_authority_source, SaveAuthoritySource::Absent);
+        assert_eq!(row.save_authority_source, SaveAuthoritySource::RefGuard);
     }
 
     #[test]
@@ -2600,10 +2605,25 @@ jobs:
     /// rejected as drift, not accepted as a laundering of candidate bytes.
     #[test]
     fn negative_control_7_fabricated_trusted_provenance_is_rejected() {
-        let root = project_root();
-        let inventory = derive_families_in_dirs(&root.join(".github/workflows"), None)
-            .expect("derive inventory");
-        let row = find_row(&inventory.families, "docs-pr-build.yml", "build");
+        // Anchor on a fixture-derived violation row, not a live workflow:
+        // the live docs-pr-build row stopped being a violation when #15754
+        // made it restore-only, and a negative control must not depend on
+        // the live tree's repair state.
+        let workflow = r#"
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+"#;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workflows = fixture_workflows_dir(&tmp, "unguarded.yml", workflow);
+        let inventory = derive_families_in_dirs(&workflows, None).expect("derive inventory");
+        let row = &inventory.families[0];
+        assert_eq!(row.writer_disposition, WriterDisposition::CandidateWriterViolation);
         assert_eq!(row.cached_byte_provenance, CachedByteProvenance::CandidateTree);
 
         let mut laundered = serde_json::to_value(row).expect("serialize row");
