@@ -769,7 +769,11 @@ jobs:
       needs.route-ripr.outputs.target == 'github' &&
       needs.route-ripr.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # 120 min: the repo-wide baseline receipt alone measured 25 min on an
+    # unloaded hosted runner (run 35224968168) and 43 min on a loaded one
+    # (run 35234008311), so the prior 75-min lane budget cancelled evidence
+    # lanes mid-guidance before the 1800s guidance budget could be spent.
+    timeout-minutes: 120
     env:
       RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
