@@ -427,6 +427,28 @@ pub enum FrameworkKind {
     ClassTiny,
 }
 
+/// Classify a `use`d module name as an object-framework activation.
+///
+/// This is the single mapping from module spelling to [`FrameworkKind`]. Other
+/// analyses that need to know whether a package activated Moo/Moose/Role::Tiny
+/// must call this rather than re-testing module spellings, so one authority
+/// decides what counts as activation.
+///
+/// Returns `None` for modules that do not activate an object framework,
+/// including `Class::Tiny` and `Class::Accessor`, which are tracked separately
+/// because they do not import the Moo/Moose DSL keywords.
+pub fn classify_framework_module(module: &str) -> Option<FrameworkKind> {
+    match module {
+        "Moo" | "Mouse" => Some(FrameworkKind::Moo),
+        "Moo::Role" | "Mouse::Role" => Some(FrameworkKind::MooRole),
+        "Moose" => Some(FrameworkKind::Moose),
+        "Moose::Role" => Some(FrameworkKind::MooseRole),
+        "Role::Tiny" => Some(FrameworkKind::RoleTiny),
+        "Role::Tiny::With" => Some(FrameworkKind::RoleTinyWith),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Web framework variant detected via `use` statements during Parse/Analyze workflows.
 pub enum WebFrameworkKind {
@@ -878,7 +900,7 @@ impl SymbolExtractor {
                 // Cross-construct sub resolver (#3108): `*foo = sub { ... }` creates a
                 // callable named `foo`.  Synthesize a Subroutine symbol so workspace-index
                 // cross-file lookup can find it even without an explicit `sub foo {}`.
-                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind
+                if let NodeKind::Typeglob { name: glob_name, .. } = &lhs.kind
                     && matches!(rhs.kind, NodeKind::Subroutine { .. })
                 {
                     let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
@@ -2529,15 +2551,7 @@ impl SymbolExtractor {
     fn update_framework_context(&mut self, module: &str, args: &[String]) {
         let pkg = self.table.current_package.clone();
 
-        let framework_kind = match module {
-            "Moo" | "Mouse" => Some(FrameworkKind::Moo),
-            "Moo::Role" | "Mouse::Role" => Some(FrameworkKind::MooRole),
-            "Moose" => Some(FrameworkKind::Moose),
-            "Moose::Role" => Some(FrameworkKind::MooseRole),
-            "Role::Tiny" => Some(FrameworkKind::RoleTiny),
-            "Role::Tiny::With" => Some(FrameworkKind::RoleTinyWith),
-            _ => None,
-        };
+        let framework_kind = classify_framework_module(module);
 
         if let Some(kind) = framework_kind {
             let flags = self.framework_flags.entry(pkg.clone()).or_default();

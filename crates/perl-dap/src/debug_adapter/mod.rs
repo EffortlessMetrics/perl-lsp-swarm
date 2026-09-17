@@ -13,6 +13,7 @@ mod operation_broker;
 mod output;
 mod patterns;
 mod process;
+mod reload_route;
 mod variables;
 
 #[cfg(test)]
@@ -81,6 +82,8 @@ use crate::debug_adapter::variable_cache::CachedVariable;
 #[cfg(any(test, feature = "test-helpers"))]
 use crate::debug_adapter::variable_cache::VariableCache;
 use crate::debug_adapter::variable_cache::{VariableCacheKind, slice_variables};
+#[cfg(any(test, feature = "test-helpers"))]
+use crate::reload::RuntimeModuleGenerationClock;
 use crate::security;
 use patterns::{
     DEBUG_SESSION_TERMINATE_WAIT_MS, DEBUGGER_QUERY_WAIT_MS, EVENT_QUEUE_CAPACITY,
@@ -96,6 +99,7 @@ use sync_utils::{EventSender, lock_or_recover};
 struct TerminationState {
     generation: u64,
     emitted: bool,
+    terminal_committed: bool,
 }
 
 /// Check if the match is an escape sequence (preceded by backslash)
@@ -127,6 +131,9 @@ pub(super) fn parse_dap_arguments<T: serde::de::DeserializeOwned>(
 
 /// DAP server that handles debug sessions
 pub struct DebugAdapter {
+    /// Whether this adapter is serving the proven native stdio transport.
+    /// Direct/in-process and peer frontends remain fail-closed for cancellation.
+    native_stdio_transport: bool,
     /// Sequence number for messages
     seq: Arc<Mutex<i64>>,
     /// Active debug session (process-based)
@@ -186,11 +193,20 @@ pub struct DebugAdapter {
     workspace_root: Arc<Mutex<Option<PathBuf>>>,
     /// Transport broken flag: set by the event handler on the first write or flush failure
     transport_broken: Arc<AtomicBool>,
+    /// Events enqueued but not yet written by the transport's event
+    /// consumer; the request loop waits on it (bounded) before each
+    /// response so handler-emitted events precede the response on the wire.
+    event_drain: sync_utils::EventDrainLatch,
     /// Test-only fault injection for exercising retained cleanup ownership.
     #[cfg(test)]
     cleanup_failure_for_test: Arc<AtomicBool>,
     /// Tracks whether initialize request has been received (state machine validation)
     initialized: Arc<AtomicBool>,
+    /// Reload-family route state (R03, #10102): the exact preview/test
+    /// profile gate, session epoch, negotiated family wiring, and
+    /// subject bindings. Absent behavior (the default) leaves the family
+    /// request unavailable.
+    reload_route: Arc<Mutex<reload_route::ReloadRouteState>>,
     /// Typed, generation-aware broker for framed debugger operations (#8564).
     /// Wraps the begin/end-marker query primitive; direct writes elsewhere
     /// remain registered migration debt.
@@ -261,6 +277,7 @@ impl DebugAdapter {
     /// Create a new debug adapter
     pub fn new() -> Self {
         Self {
+            native_stdio_transport: false,
             seq: Arc::new(Mutex::new(0)),
             session: Arc::new(Mutex::new(None)),
             rejected_child: Arc::new(Mutex::new(None)),
@@ -285,9 +302,11 @@ impl DebugAdapter {
             next_goto_target_id: Arc::new(Mutex::new(1)),
             workspace_root: Arc::new(Mutex::new(None)),
             transport_broken: Arc::new(AtomicBool::new(false)),
+            event_drain: sync_utils::EventDrainLatch::default(),
             #[cfg(test)]
             cleanup_failure_for_test: Arc::new(AtomicBool::new(false)),
             initialized: Arc::new(AtomicBool::new(false)),
+            reload_route: Arc::new(Mutex::new(reload_route::ReloadRouteState::default())),
             operation_broker: Arc::new(operation_broker::OperationBroker::new()),
         }
     }
@@ -383,6 +402,21 @@ impl DebugAdapter {
     /// reset it (`clear_active_session_state` does not touch the gate).
     pub(super) fn close_terminal_session_generation(&self, reason: &'static str) {
         self.begin_session_generation_with_reason(reason);
+    }
+
+    pub(super) fn retire_pending_terminal_before_request(&self, command: &str) {
+        if !matches!(command, "disconnect" | "terminate") {
+            return;
+        }
+        let mut state = lock_or_recover(&self.termination_state, "terminal_request");
+        state.generation = state.generation.saturating_add(1);
+        if !state.terminal_committed {
+            state.emitted = false;
+        }
+    }
+
+    fn admit_terminal_lifecycle(&self) {
+        lock_or_recover(&self.termination_state, "terminal_lifecycle").terminal_committed = false;
     }
 
     /// Return the current session generation for event-handler threads.
@@ -654,7 +688,21 @@ impl DebugAdapter {
     /// when the queue is full); all other events apply backpressure.
     fn send_event(&self, event: &str, body: Option<Value>) {
         if let Some(ref sender) = self.event_sender {
-            let _ = sender.send_event(&self.seq, event, body);
+            // Reserve the latch count before publishing: the transport's request
+            // loop waits on this latch before writing a response so accepted
+            // events are observed first (bounded, fail-open on timeout).
+            // Reserving first closes the race where a fast consumer drains
+            // and completes before the increment lands, which left phantom
+            // residue that pushed every later response through the full
+            // timeout; a refused or dropped dispatch rolls its reservation
+            // back below.
+            self.event_drain.enqueue(1);
+            if !matches!(
+                sender.send_event(&self.seq, event, body),
+                crate::debug_adapter::sync_utils::EventDispatchResult::Sent
+            ) {
+                self.event_drain.complete(1);
+            }
         }
     }
 
@@ -718,6 +766,27 @@ impl DebugAdapter {
             suspension_generation,
             expected_session_generation,
             None,
+            None,
+        )
+    }
+
+    fn send_framed_debugger_query_bound_for_request(
+        &self,
+        stdin: &mut impl Write,
+        commands: &[String],
+        timeout_ms: u64,
+        suspension_generation: Option<u64>,
+        expected_session_generation: Option<operation_broker::SessionGeneration>,
+        request_seq: i64,
+    ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
+        self.send_framed_debugger_query_bound_with_token(
+            stdin,
+            commands,
+            timeout_ms,
+            suspension_generation,
+            expected_session_generation,
+            Some(request_seq),
+            None,
         )
     }
 
@@ -728,14 +797,17 @@ impl DebugAdapter {
         timeout_ms: u64,
         suspension_generation: Option<u64>,
         expected_session_generation: Option<operation_broker::SessionGeneration>,
+        request_seq: Option<i64>,
         cancellation: Option<operation_broker::CancellationToken>,
     ) -> Result<(operation_broker::BrokerOperation, String, String), String> {
         self.debugger_query_count.fetch_add(1, Ordering::Relaxed);
+        let cancellation = cancellation
+            .or_else(|| request_seq.map(|_| operation_broker::CancellationToken::new()));
         let marker_id = self.next_debugger_marker_id();
         let begin_marker = format!("DAP_BEGIN_{marker_id}");
         let end_marker = format!("DAP_END_{marker_id}");
         let spec = operation_broker::BrokerOperationSpec {
-            request_seq: None,
+            request_seq,
             class: operation_broker::OperationClass::Query,
             session_generation: expected_session_generation
                 .unwrap_or_else(|| self.operation_broker.current_session_generation()),
@@ -956,7 +1028,9 @@ impl DebugAdapter {
                 debuggee_cwd: std::path::PathBuf::from("."),
                 last_resume_mode: ResumeMode::Continue,
                 initial_stop_pending: false,
+                entry_stop_pending: false,
                 stopped_generation: 0,
+                module_generation: RuntimeModuleGenerationClock::new(),
             });
         }
     }
@@ -990,7 +1064,9 @@ impl DebugAdapter {
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
+            entry_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
         Ok(())
     }
@@ -1097,7 +1173,9 @@ impl DebugAdapter {
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
             initial_stop_pending: false,
+            entry_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
     }
 

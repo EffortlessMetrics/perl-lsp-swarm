@@ -9,6 +9,7 @@ use clap::{Parser, ValueEnum};
 use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -23,6 +24,7 @@ const EXIT_NOT_PROVEN: i32 = 3;
 const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FIXTURE_BYTES: usize = 512 * 1024;
 const MAX_PR_BODY_BYTES: usize = 128 * 1024;
+const MAX_PR_TITLE_BYTES: usize = 4 * 1024;
 const MAX_ISSUE_BODY_BYTES: usize = 256 * 1024;
 const MAX_GITHUB_OUTPUT_BYTES: usize = 512 * 1024;
 const MAX_RELATIONS: usize = 32;
@@ -247,6 +249,10 @@ struct Report {
     aggregate_code: ResultCode,
     semantic_completion_proven: bool,
     rows: Vec<RelationResult>,
+    /// Present only for live evaluation (#15640): the captured
+    /// `pulls_api` snapshot the verdict was computed from. Fixture reports
+    /// carry `None` because fixture provenance lives in the fixture itself.
+    subject_snapshot: Option<SubjectSnapshot>,
 }
 
 impl Report {
@@ -278,7 +284,7 @@ struct RelationResult {
 #[derive(Debug, Deserialize)]
 struct GithubEvent {
     repository: GithubRepository,
-    pull_request: GithubPullRequest,
+    pull_request: GithubPullRequestLocator,
 }
 
 #[derive(Debug, Deserialize)]
@@ -286,11 +292,51 @@ struct GithubRepository {
     full_name: String,
 }
 
+/// #15640: reruns replay the original event payload, so the event's PR
+/// title/body can never observe a later body correction. The event supplies
+/// only the immutable locator plus audit metadata; the semantic subject is
+/// built exclusively from a live `GET /repos/{owner}/{repo}/pulls/{number}`
+/// snapshot. The locator struct deliberately has no title/body fields, so the
+/// stale event prose cannot be read even by accident.
 #[derive(Debug, Deserialize)]
-struct GithubPullRequest {
+struct GithubPullRequestLocator {
     number: u64,
-    title: String,
-    body: Option<String>,
+    base: GithubPullRequestBase,
+    head: GithubPullRequestHeadRef,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestBase {
+    repo: GithubRepository,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestHeadRef {
+    #[serde(default)]
+    sha: Option<String>,
+}
+
+/// Provenance receipt for the semantic subject (#15640): the report proves
+/// what it actually evaluated — one captured live snapshot — instead of
+/// merely saying "current body".
+#[derive(Clone, Debug, Serialize)]
+struct SubjectSnapshot {
+    /// Where the subject bytes came from. Only `pulls_api` subjects reach
+    /// live evaluation; fixtures carry their own provenance block.
+    source: &'static str,
+    /// GitHub `updated_at` of the fetched pull request.
+    pr_updated_at: String,
+    /// Head SHA recorded by the originating event (audit; "unknown" when
+    /// absent). Comparing it with `head_sha` shows whether the live snapshot
+    /// sits at the event's head or a push landed in between.
+    event_head_sha: String,
+    /// Live head SHA of the fetched pull request ("unknown" when absent).
+    head_sha: String,
+    /// SHA-256 over the evaluated title bytes, a NUL separator, and the
+    /// evaluated body bytes (hex).
+    title_body_sha256: String,
+    title_bytes: usize,
+    body_bytes: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -399,26 +445,156 @@ fn run_cli() -> Result<()> {
     Ok(())
 }
 
+/// #15640: the event payload supplies only the immutable locator; the
+/// semantic subject always comes from one live pulls-API snapshot captured in
+/// this run. A fetch failure is an instrument failure — there is no fallback
+/// to the event's stale title/body, because stale prose is never current
+/// proof.
 fn evaluate_live_event(path: &Path) -> Result<Report> {
     let raw = read_bounded(path, MAX_EVENT_BYTES, "GitHub event payload")?;
-    let event: GithubEvent =
-        serde_json::from_slice(&raw).context("parsing pull_request_target event payload")?;
-    let pull = PullRequestSubject {
-        repository: canonical_repository(&event.repository.full_name)?,
-        number: event.pull_request.number,
-        title: event.pull_request.title,
-        body: event.pull_request.body.unwrap_or_default(),
-    };
+    let locator = parse_event_locator(&raw)?;
+    let (pull, snapshot) = fetch_live_subject(&locator)?;
 
     let mut cache: BTreeMap<IssueKey, IssueEvidence> = BTreeMap::new();
-    evaluate(&pull, |key| {
+    let mut report = evaluate(&pull, |key| {
         if let Some(cached) = cache.get(key) {
             return cached.clone();
         }
         let evidence = fetch_issue_live(key);
         cache.insert(key.clone(), evidence.clone());
         evidence
+    })?;
+    report.subject_snapshot = Some(snapshot);
+    Ok(report)
+}
+
+/// Immutable identity of the pull request to evaluate, extracted from the
+/// `pull_request_target` event payload: repository identity, PR number, base
+/// repository, and head SHA (audit only).
+#[derive(Clone, Debug)]
+struct EventLocator {
+    repository: String,
+    number: u64,
+    head_sha: String,
+}
+
+fn parse_event_locator(raw: &[u8]) -> Result<EventLocator> {
+    let event: GithubEvent =
+        serde_json::from_slice(raw).context("parsing pull_request_target event payload")?;
+    let repository = canonical_repository(&event.repository.full_name)?;
+    let base = canonical_repository(&event.pull_request.base.repo.full_name)
+        .context("canonicalizing event base repository")?;
+    if base != repository {
+        bail!(
+            "event repository {repository} does not match event base repository \
+             {base}; refusing to evaluate across a locator mismatch"
+        );
+    }
+    Ok(EventLocator {
+        repository,
+        number: event.pull_request.number,
+        head_sha: event.pull_request.head.sha.unwrap_or_else(|| "unknown".to_string()),
     })
+}
+
+fn fetch_live_subject(locator: &EventLocator) -> Result<(PullRequestSubject, SubjectSnapshot)> {
+    let raw = fetch_pull_request_json(locator)?;
+    validate_live_snapshot(&raw, locator)
+}
+
+/// One bounded `gh api` call with the existing read-only token. Exactly one
+/// fetch per evaluation: a body edit during the run starts a newer run rather
+/// than invalidating this snapshot.
+fn fetch_pull_request_json(locator: &EventLocator) -> Result<Vec<u8>> {
+    let endpoint = format!("repos/{}/pulls/{}", locator.repository, locator.number);
+    let output = Command::new("gh")
+        .args(["api", "--method", "GET", &endpoint])
+        .output()
+        .context("failed to start gh api for the live pull request snapshot")?;
+    if !output.status.success() {
+        bail!(
+            "live pull request fetch failed: gh api exited with status {} \
+             (no event-payload fallback is permitted; rerun event prose is \
+             never current proof)",
+            output.status
+        );
+    }
+    if output.stdout.len() > MAX_GITHUB_OUTPUT_BYTES {
+        bail!("live pull request response exceeded the bounded containment input");
+    }
+    Ok(output.stdout)
+}
+
+#[derive(Debug, Deserialize)]
+struct LivePullRequest {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    updated_at: String,
+    head: GithubPullRequestHeadRef,
+    base: GithubPullRequestBase,
+}
+
+/// Validate the fetched snapshot against the event locator, apply the
+/// subject bounds, and derive the snapshot receipt. Locator mismatch,
+/// malformed data, and oversized title/body fail closed as instrument
+/// failures (exit 3) — they are never semantic verdicts.
+fn validate_live_snapshot(
+    raw: &[u8],
+    locator: &EventLocator,
+) -> Result<(PullRequestSubject, SubjectSnapshot)> {
+    let payload: LivePullRequest =
+        serde_json::from_slice(raw).context("parsing live pull request response")?;
+    if payload.number != locator.number {
+        bail!(
+            "live pull request response returned number {} but the event locator \
+             is {}",
+            payload.number,
+            locator.number
+        );
+    }
+    let base = canonical_repository(&payload.base.repo.full_name)
+        .context("canonicalizing live pull request base repository")?;
+    if base != locator.repository {
+        bail!(
+            "live pull request base repository {base} does not match the event \
+             locator {}",
+            locator.repository
+        );
+    }
+    if payload.title.len() > MAX_PR_TITLE_BYTES {
+        bail!("live pull request title exceeds the bounded containment input");
+    }
+    let body = payload.body.unwrap_or_default();
+    if body.len() > MAX_PR_BODY_BYTES {
+        bail!("live pull request body exceeds the bounded containment input");
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(payload.title.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(body.as_bytes());
+    let title_body_sha256 =
+        hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let snapshot = SubjectSnapshot {
+        source: "pulls_api",
+        pr_updated_at: payload.updated_at,
+        event_head_sha: locator.head_sha.clone(),
+        head_sha: payload.head.sha.unwrap_or_else(|| "unknown".to_string()),
+        title_body_sha256,
+        title_bytes: payload.title.len(),
+        body_bytes: body.len(),
+    };
+    Ok((
+        PullRequestSubject {
+            repository: locator.repository.clone(),
+            number: locator.number,
+            title: payload.title,
+            body,
+        },
+        snapshot,
+    ))
 }
 
 fn load_fixture(path: &Path) -> Result<Fixture> {
@@ -554,6 +730,7 @@ where
             aggregate_code: ResultCode::PassNotApplicable,
             semantic_completion_proven: false,
             rows: Vec::new(),
+            subject_snapshot: None,
         });
     }
 
@@ -580,6 +757,7 @@ where
         aggregate_code,
         semantic_completion_proven: false,
         rows,
+        subject_snapshot: None,
     })
 }
 
@@ -1150,7 +1328,25 @@ fn proof_level_is_explicitly_excluded(
     }
     PROOF_LEVEL_TERMS.iter().any(|term| {
         issue_requires_proof_level_term(&issue_requirements, term)
-            && contains_proof_level_term(&exclusions_lower, term)
+            && proof_level_term_is_excluded(&exclusions_lower, term)
+    })
+}
+
+/// Returns true when `text` (already known to contain at least one explicit-
+/// exclusion marker from [`contains_explicit_exclusion`]) excludes the proof-
+/// level `term` somewhere in the same sentence/list-item/clause.
+///
+/// This mirrors `unit_requires_proof_level_term`'s clause-scoping for the PR
+/// side. The earlier section-wide `contains_proof_level_term` allowed any
+/// mention of `public`/`installed`/`packaged`/`presentation`/`release`/
+/// `actual host` to satisfy the rule as long as the section also contained
+/// any exclusion marker — so a Claim Boundary that *asserted* the public
+/// surface was covered still armed CP00 whenever a sibling sentence said
+/// "Not claimed: foo.". See #15627.
+fn proof_level_term_is_excluded(text: &str, term: &str) -> bool {
+    requirement_units(text).iter().flat_map(|unit| split_coordinated_clauses(unit)).any(|unit| {
+        let lower = unit.to_ascii_lowercase();
+        contains_explicit_exclusion(&lower) && contains_proof_level_term(&lower, term)
     })
 }
 
@@ -1334,14 +1530,18 @@ fn word_match_indices(text: &str, word: &str) -> Vec<usize> {
 }
 
 fn word_boundaries_hold(text: &str, index: usize, len: usize) -> bool {
-    let before_ok = text
-        .get(..index)
-        .and_then(|prefix| prefix.chars().next_back())
-        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
-    let after_ok = text
-        .get(index + len..)
-        .and_then(|suffix| suffix.chars().next())
-        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
+    // A hyphenated compound (`source-release`) must not donate its trailing
+    // term (`release`) as a standalone proof-level mention (#15505): `-`
+    // joins identifier characters for proof-level matching, alongside
+    // alphanumerics and `_`.
+    let before_ok =
+        text.get(..index).and_then(|prefix| prefix.chars().next_back()).is_none_or(|character| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        });
+    let after_ok =
+        text.get(index + len..).and_then(|suffix| suffix.chars().next()).is_none_or(|character| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        });
     before_ok && after_ok
 }
 
@@ -1960,6 +2160,22 @@ fn print_human(report: &Report) {
         report.pull_request_number,
         sanitize_for_output(&report.pull_request_title, 512)
     );
+    // #15640: prove what this run actually evaluated — one captured live
+    // snapshot — so a rerun verdict can be tied to the exact subject bytes.
+    // Printed before any early return: a no-relation verdict still carries
+    // its subject receipt.
+    if let Some(snapshot) = &report.subject_snapshot {
+        println!(
+            "  subject snapshot: {} updated_at={} event_head={} live_head={} title/body sha256={} ({}+{} bytes)",
+            snapshot.source,
+            snapshot.pr_updated_at,
+            snapshot.event_head_sha,
+            snapshot.head_sha,
+            snapshot.title_body_sha256,
+            snapshot.title_bytes,
+            snapshot.body_bytes
+        );
+    }
     if report.rows.is_empty() {
         println!("  no automatic closing relation; issue/domain lookup skipped");
         return;
@@ -1994,7 +2210,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 24] = [
+    const FIXTURES: [(&str, &str); 25] = [
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2056,6 +2272,13 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/invalid-proof-level-required-release.json"
+            )),
+        ),
+        (
+            "valid-proof-level-hyphenated-compound-source-release",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-hyphenated-compound-source-release.json"
             )),
         ),
         (
@@ -2493,6 +2716,192 @@ mod tests {
         let unchanged = "## Acceptance\nThe actual host surface remains unchanged.\n";
         assert!(!proof_level_from_bodies(unchanged, pr)?);
         Ok(())
+    }
+
+    // PR-side polarity: the section-wide "term appears anywhere" check is
+    // loosened so a sentence that *asserts* a public/installed/packaged/released
+    // surface does not arm the rule merely because another sentence in the same
+    // section contains an exclusion marker. The PR side now requires the term
+    // and the exclusion marker to share a sentence/list-item/clause. See #15627.
+
+    #[test]
+    fn proof_level_pr_assertion_does_not_arm_when_exclusion_is_in_a_separate_sentence() -> Result<()>
+    {
+        // Reproducer from #15627 against #7129: the Claim Boundary contains an
+        // explicit-exclusion marker ("Not claimed:") for an unrelated surface and
+        // an assertion that the public formatter surface is covered. The
+        // existing issue acceptance requires "public" proof.
+        let issue = "## Acceptance\nRemove compat from public configuration.\n";
+        let pr = "## Claim Boundary\nNot claimed: the legacy compat engine shim.\n\
+                  Provably true: no public formatter surface offers compat as an engine.\n\n\
+                  Closes #7129\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in one sentence must not arm the rule because another \
+             sentence excludes an unrelated surface"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_exclusion_in_same_sentence_still_arms() -> Result<()> {
+        // Negative control: the exclusion marker and the term live in the same
+        // sentence, so the term genuinely is being excluded.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\nPublic evidence is explicitly out of scope.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an exclusion that names the term in the same sentence must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_exclusion_via_does_not_prove_in_same_sentence_still_arms() -> Result<()> {
+        // A second exclusion-marker style in the same sentence still arms.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\nThe release train does not prove public surface parity.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "an exclusion that names the term in the same sentence via a different marker must still arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_assertion_in_markdown_table_cell_does_not_arm() -> Result<()> {
+        // Markdown-table reproducer from the #15627 comment about #15633/#7588:
+        // the table cell quotes the issue's acceptance criterion verbatim while
+        // asserting it is satisfied; the exclusion marker lives in a separate
+        // paragraph. The check must not arm on the cell mention.
+        let issue = "## Acceptance\nPublic docs/API make the per-file claim explicit.\n";
+        let pr = "## Claim Boundary\n\
+                  | Acceptance criterion | Evidence |\n\
+                  | --- | --- |\n\
+                  | Public docs/API make the per-file claim explicit | rewritten module docs |\n\
+                  \n\
+                  Not claimed: the per-file proof in legacy 5.8 branches.\n\n\
+                  Closes #7588\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "a Markdown-table cell that quotes the issue's acceptance criterion must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_exclusion_clause_of_split_sentence_arms() -> Result<()> {
+        // The exclusion marker and the term live in the same coordinate clause,
+        // even when the sentence also contains an assertion for another term.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  Public evidence is explicitly out of scope, but installed proof is asserted.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a clause that excludes the term must still arm even when another clause asserts a different term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_different_coordinate_clause_does_not_arm() -> Result<()> {
+        // Coordinate-clause scoping (#15627 review): the exclusion marker
+        // lives in one coordinate ("Not claimed: the legacy shim") while the
+        // term is asserted in the other ("the public formatter surface is
+        // covered"). The marker must not leak across the "but" boundary.
+        // Inverse of proof_level_pr_term_in_exclusion_clause_of_split_sentence_arms.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  Not claimed: the legacy shim, but the public formatter surface is covered.\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in a different coordinate clause from the exclusion marker must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_in_different_list_item_from_marker_does_not_arm() -> Result<()> {
+        // List-item clause scoping: the exclusion marker is in one bullet, the
+        // term appears in a different bullet asserting coverage.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  - Not claimed: the legacy compat shim.\n\
+                  - The public formatter surface is provably covered.\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "an assertion in a different list item from the exclusion marker must not arm"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_and_marker_in_same_list_item_arm() -> Result<()> {
+        // Negative control for list-item clause scoping.
+        let issue = "## Acceptance\nPublic proof is required.\n";
+        let pr = "## Claim Boundary\n\
+                  - Public evidence is explicitly out of scope.\n\
+                  - Installed proof is asserted.\n\
+                  Closes #1\n";
+        assert!(
+            proof_level_from_bodies(issue, pr)?,
+            "a list item that excludes the term must arm even when another list item asserts a different term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_template_claim_boundary_does_not_arm_per_template_vocabulary() -> Result<()> {
+        // Reproducer for the .github/PULL_REQUEST_TEMPLATE.md vocabulary path:
+        // the template's "Claim Boundary" heading contains "out of scope" as
+        // section vocabulary, but the body itself contains no actual
+        // exclusion. The rule must not arm merely because the section name
+        // carries exclusion vocabulary.
+        let issue = "## Acceptance\nPublic docs carry the per-file claim.\n";
+        let pr = "## Claim Boundary\n\
+                  ## What becomes provably true\n\
+                  The public formatter surface is covered by the rewritten module docs.\n\
+                  ## What is explicitly out of scope\n\
+                  The 5.8-era per-file parity test bench.\n\n\
+                  Closes #1\n";
+        assert!(
+            !proof_level_from_bodies(issue, pr)?,
+            "the template's Claim Boundary vocabulary must not arm when no clause excludes the term"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn proof_level_pr_term_local_requirement_only_false_counts_as_excluded() {
+        // The PR-side helper mirrors unit_requires_proof_level_term but counts
+        // a term as excluded when its local polarity is negative (Some(false))
+        // rather than when it is positive (Some(true)).
+        // "Public evidence is explicitly out of scope." has no polarity
+        // marker in the negative-polarity list, but the section-level
+        // explicit-exclusion marker carries it. The helper checks
+        // (contains_explicit_exclusion && contains_proof_level_term) at the
+        // sentence granularity produced by requirement_units.
+        assert!(proof_level_term_is_excluded(
+            "Public evidence is explicitly out of scope.",
+            "public"
+        ));
+        assert!(!proof_level_term_is_excluded(
+            "Provably true: no public formatter surface offers compat as an engine.",
+            "public"
+        ));
+        assert!(proof_level_term_is_excluded(
+            "Public evidence is explicitly out of scope, but installed proof is asserted.",
+            "public"
+        ));
+        assert!(!proof_level_term_is_excluded(
+            "Not claimed: the legacy shim. The public surface is covered.",
+            "public"
+        ));
     }
 
     #[test]
@@ -3407,6 +3816,163 @@ mod tests {
             MAX_PR_BODY_BYTES,
         )?;
         assert!(has_semantic_close_packet(&packet, &key, current_repository));
+        Ok(())
+    }
+
+    /// #15640: the event payload is parsed for the locator only. A stale
+    /// event title/body (the rerun payload) must not be bound anywhere the
+    /// evaluator can reach.
+    #[test]
+    fn event_payload_supplies_a_locator_never_a_semantic_subject() -> Result<()> {
+        let raw = br#"{
+          "repository": {"full_name": "EffortlessMetrics/perl-lsp-swarm"},
+          "pull_request": {
+            "number": 15605,
+            "title": "stale rerun title",
+            "body": "Closes #12905 on merge",
+            "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}},
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+          }
+        }"#;
+        let locator = parse_event_locator(raw)?;
+        assert_eq!(locator.repository, "effortlessmetrics/perl-lsp-swarm");
+        assert_eq!(locator.number, 15605);
+        assert_eq!(locator.head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        Ok(())
+    }
+
+    #[test]
+    fn event_base_repository_mismatch_fails_closed() -> Result<()> {
+        let raw = br#"{
+          "repository": {"full_name": "EffortlessMetrics/perl-lsp-swarm"},
+          "pull_request": {
+            "number": 1,
+            "base": {"repo": {"full_name": "OtherOrg/OtherRepo"}},
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+          }
+        }"#;
+        assert!(parse_event_locator(raw).is_err());
+        Ok(())
+    }
+
+    /// #15640 required control: the live snapshot must agree with the event
+    /// locator (repository, PR number, base repository) before use.
+    #[test]
+    fn live_snapshot_locator_mismatch_fails_closed() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "unknown".into(),
+        };
+        let different_number = br#"{
+          "number": 999,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        assert!(validate_live_snapshot(different_number, &locator).is_err());
+
+        let different_base = br#"{
+          "number": 15605,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "OtherOrg/OtherRepo"}}
+        }"#;
+        assert!(validate_live_snapshot(different_base, &locator).is_err());
+
+        let malformed = br#"{"number": 15605, "title": "t""#;
+        assert!(validate_live_snapshot(malformed, &locator).is_err());
+        Ok(())
+    }
+
+    /// The subject comes from the live snapshot (title/body), the snapshot
+    /// receipt records `updated_at`/head/digest, and the digest changes when
+    /// the evaluated prose changes — the property that makes a stale rerun
+    /// verdict detectable.
+    #[test]
+    fn live_snapshot_builds_subject_and_stable_digest() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        };
+        let raw = br#"{
+          "number": 15605,
+          "title": "fix(ci): live subject",
+          "body": "Fixes #15641",
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (pull, snapshot) = validate_live_snapshot(raw, &locator)?;
+        assert_eq!(pull.title, "fix(ci): live subject");
+        assert_eq!(pull.body, "Fixes #15641");
+        assert_eq!(snapshot.source, "pulls_api");
+        assert_eq!(snapshot.pr_updated_at, "2026-09-12T12:26:40Z");
+        assert_eq!(snapshot.event_head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(snapshot.head_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(snapshot.title_bytes, "fix(ci): live subject".len());
+        assert_eq!(snapshot.body_bytes, "Fixes #15641".len());
+        assert_eq!(snapshot.title_body_sha256.len(), 64);
+        assert!(snapshot.title_body_sha256.chars().all(|character| character.is_ascii_hexdigit()));
+
+        let edited = br#"{
+          "number": 15605,
+          "title": "fix(ci): live subject",
+          "body": "Advances #15641",
+          "updated_at": "2026-09-12T12:30:00Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (_, edited_snapshot) = validate_live_snapshot(edited, &locator)?;
+        assert_ne!(
+            snapshot.title_body_sha256, edited_snapshot.title_body_sha256,
+            "a body edit must change the snapshot digest"
+        );
+
+        // Deterministic: the same bytes produce the same digest.
+        let (_, replayed) = validate_live_snapshot(raw, &locator)?;
+        assert_eq!(snapshot.title_body_sha256, replayed.title_body_sha256);
+        Ok(())
+    }
+
+    /// A null live body is an empty description, not unavailable data; an
+    /// oversized live body or title fails closed (#15640).
+    #[test]
+    fn live_snapshot_bounds_fail_closed() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "unknown".into(),
+        };
+        let null_body = br#"{
+          "number": 15605,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": null},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (pull, snapshot) = validate_live_snapshot(null_body, &locator)?;
+        assert_eq!(pull.body, "");
+        assert_eq!(snapshot.head_sha, "unknown");
+        assert_eq!(snapshot.body_bytes, 0);
+
+        let oversized_body = format!(
+            r#"{{"number":15605,"title":"t","body":"{}","updated_at":"2026-09-12T12:26:40Z","head":{{"sha":null}},"base":{{"repo":{{"full_name":"EffortlessMetrics/perl-lsp-swarm"}}}}}}"#,
+            "x".repeat(MAX_PR_BODY_BYTES + 1)
+        );
+        assert!(validate_live_snapshot(oversized_body.as_bytes(), &locator).is_err());
+
+        let oversized_title = format!(
+            r#"{{"number":15605,"title":"{}","body":"b","updated_at":"2026-09-12T12:26:40Z","head":{{"sha":null}},"base":{{"repo":{{"full_name":"EffortlessMetrics/perl-lsp-swarm"}}}}}}"#,
+            "x".repeat(MAX_PR_TITLE_BYTES + 1)
+        );
+        assert!(validate_live_snapshot(oversized_title.as_bytes(), &locator).is_err());
         Ok(())
     }
 }
