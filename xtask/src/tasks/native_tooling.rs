@@ -761,9 +761,22 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
     let diagnostics_source = read_source(root, "crates/perl-lsp-rs/src/runtime/diagnostics.rs")?;
     let configuration_docs = read_source(root, "docs/reference/CONFIGURATION.md")?;
 
-    let native_critic_skip_count = diagnostics_source
-        .matches("critic_engine == perl_lsp_rs_core::config::CriticEngine::Native")
+    // Service-owned native route (#9062/#15418): the diagnostics runtime no
+    // longer carries per-collector `critic_engine == ...Native` skip guards.
+    // It seals one accepted critic snapshot per subject, evaluates through
+    // the protocol-neutral CriticService, and commits or withholds at the
+    // publication boundary. Match over comment-blanked production code (before
+    // the trailing test module) so a retired guard surviving in a comment or
+    // a test-only reference cannot satisfy the check, and deleting or
+    // disconnecting any leg of the route fails it.
+    let executable_diagnostics = blank_comments(&diagnostics_source);
+    let production_diagnostics = production_prefix(&executable_diagnostics);
+
+    let native_service_count = production_diagnostics
+        .matches("NativeCriticService::analyze(NativeCriticSubject::accepted(")
         .count();
+    let accepted_capture_count = production_diagnostics.matches("capture_accepted_critic(").count();
+    let finalize_critic_count = production_diagnostics.matches("finalize_pending_critic(").count();
 
     Ok(vec![
         DefaultCheck {
@@ -808,10 +821,12 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
             detail: "perltidy formatter calls are isolated behind ExternalLegacy".to_string(),
         },
         DefaultCheck {
-            name: "native_critic_skips_external_collectors",
-            passed: native_critic_skip_count >= 2,
+            name: "native_critic_routes_through_accepted_service",
+            passed: native_service_count >= 1
+                && accepted_capture_count >= 1
+                && finalize_critic_count >= 1,
             detail: format!(
-                "found {native_critic_skip_count} native critic skip guards in diagnostics runtime"
+                "native critic service entry={native_service_count} accepted-capture={accepted_capture_count} finalize={finalize_critic_count} in diagnostics runtime production code"
             ),
         },
         DefaultCheck {
@@ -840,6 +855,103 @@ fn native_tooling_default_checks(root: &Path) -> Result<Vec<DefaultCheck>> {
 fn read_source(root: &Path, relative: &str) -> Result<String> {
     let path = root.join(relative);
     fs::read_to_string(&path).wrap_err_with(|| format!("failed to read {}", path.display()))
+}
+
+/// Comment-blanked copy of Rust source, preserving length and offsets so a
+/// retired route surviving only in a comment cannot satisfy a structural
+/// check. String literals are preserved; `//` line comments and (nestable)
+/// `/* */` block comments are blanked. Single quotes are deliberately inert:
+/// character literals cannot contain comment initiators, and tracking them
+/// as a state mistakes Rust lifetimes (`'a`, `'static`) for literals — a
+/// lifetime tick with no closing tick would hold the scanner past the next
+/// comment, leaving a retired route unblanked. This mirrors the code-action
+/// ledger's scanner so both guards treat comments identically.
+fn blank_comments(source: &str) -> String {
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Code,
+        LineComment,
+        BlockComment,
+        Str,
+        StrEscape,
+    }
+
+    let bytes = source.as_bytes();
+    let mut out_bytes = bytes.to_vec();
+    let mut state = State::Code;
+    let mut block_depth = 0usize;
+    let mut index = 0;
+
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let next = bytes.get(index + 1).copied();
+        match state {
+            State::Code => match (byte, next) {
+                (b'/', Some(b'/')) => {
+                    state = State::LineComment;
+                    out_bytes[index] = b' ';
+                }
+                (b'/', Some(b'*')) => {
+                    state = State::BlockComment;
+                    block_depth = 1;
+                    out_bytes[index] = b' ';
+                }
+                (b'"', _) => state = State::Str,
+                _ => {}
+            },
+            State::LineComment => {
+                if byte == b'\n' {
+                    state = State::Code;
+                } else {
+                    out_bytes[index] = b' ';
+                }
+            }
+            State::BlockComment => {
+                if byte == b'/' && next == Some(b'*') {
+                    block_depth += 1;
+                    out_bytes[index] = b' ';
+                    out_bytes[index + 1] = b' ';
+                    index += 2;
+                    continue;
+                }
+                if byte == b'*' && next == Some(b'/') {
+                    out_bytes[index] = b' ';
+                    if index + 1 < out_bytes.len() {
+                        out_bytes[index + 1] = b' ';
+                    }
+                    index += 2;
+                    block_depth = block_depth.saturating_sub(1);
+                    if block_depth == 0 {
+                        state = State::Code;
+                    }
+                    continue;
+                }
+                if byte != b'\n' {
+                    out_bytes[index] = b' ';
+                }
+            }
+            State::Str => match byte {
+                b'\\' => state = State::StrEscape,
+                b'"' => state = State::Code,
+                _ => {}
+            },
+            State::StrEscape => state = State::Str,
+        }
+        index += 1;
+    }
+
+    String::from_utf8(out_bytes).unwrap_or_else(|_| source.to_string())
+}
+
+/// Production prefix of a Rust source file: everything before the trailing
+/// test module. Structural checks scope to this so test-only references
+/// cannot satisfy production edges.
+fn production_prefix(executable: &str) -> &str {
+    const TEST_MODULE: &str = "#[cfg(test)]\nmod tests";
+    match executable.find(TEST_MODULE) {
+        Some(at) => &executable[..at],
+        None => executable,
+    }
 }
 
 fn formatter_status(
@@ -2088,13 +2200,17 @@ color = 1
                 .iter()
                 .any(|check| check.name == "external_formatter_requires_external_legacy_mode")
         );
-        assert!(checks.iter().any(|check| check.name == "native_critic_skips_external_collectors"));
+        assert!(
+            checks
+                .iter()
+                .any(|check| check.name == "native_critic_routes_through_accepted_service")
+        );
 
         Ok(())
     }
 
     #[test]
-    fn native_tooling_default_checks_fail_when_native_critic_skip_guard_is_missing() -> Result<()> {
+    fn native_tooling_default_checks_fail_when_native_service_route_is_missing() -> Result<()> {
         let temp = tempfile::tempdir()?;
         write_default_guard_sources(temp.path())?;
         fs::write(
@@ -2105,10 +2221,125 @@ color = 1
         let checks = native_tooling_default_checks(temp.path())?;
         let critic_guard = checks
             .iter()
-            .find(|check| check.name == "native_critic_skips_external_collectors")
+            .find(|check| check.name == "native_critic_routes_through_accepted_service")
             .ok_or_else(|| eyre!("missing native critic guard check"))?;
 
         assert!(!critic_guard.passed);
+        Ok(())
+    }
+
+    /// Each leg of the service route is necessary: capture and finalization
+    /// without the service entry must still fail.
+    #[test]
+    fn native_tooling_default_checks_fail_when_service_entry_is_removed() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_default_guard_sources(temp.path())?;
+        fs::write(
+            temp.path().join("crates/perl-lsp-rs/src/runtime/diagnostics.rs"),
+            r#"
+fn push_diagnostics(&self, uri: &str) {
+    let accepted_critic = self.capture_accepted_critic(uri);
+    if self.finalize_pending_critic(&mut diagnostics, pending) {
+    }
+}
+"#,
+        )?;
+
+        let checks = native_tooling_default_checks(temp.path())?;
+        let critic_guard = checks
+            .iter()
+            .find(|check| check.name == "native_critic_routes_through_accepted_service")
+            .ok_or_else(|| eyre!("missing native critic guard check"))?;
+
+        assert!(!critic_guard.passed, "service entry removal must fail: {critic_guard:?}");
+        Ok(())
+    }
+
+    /// A service entry surviving only in a comment must not satisfy the guard.
+    #[test]
+    fn native_tooling_default_checks_reject_a_comment_only_service_decoy() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_default_guard_sources(temp.path())?;
+        fs::write(
+            temp.path().join("crates/perl-lsp-rs/src/runtime/diagnostics.rs"),
+            r#"
+fn push_diagnostics(&self, uri: &str) {
+    let accepted_critic = self.capture_accepted_critic(uri);
+    // NativeCriticService::analyze(NativeCriticSubject::accepted( was removed here
+    if self.finalize_pending_critic(&mut diagnostics, pending) {
+    }
+}
+"#,
+        )?;
+
+        let checks = native_tooling_default_checks(temp.path())?;
+        let critic_guard = checks
+            .iter()
+            .find(|check| check.name == "native_critic_routes_through_accepted_service")
+            .ok_or_else(|| eyre!("missing native critic guard check"))?;
+
+        assert!(!critic_guard.passed, "comment-only service decoy must fail: {critic_guard:?}");
+        Ok(())
+    }
+
+    /// A lifetime tick before a comment decoy must not hold the comment
+    /// scanner open: single quotes are inert, so the retired route stays
+    /// blanked even with an odd tick count above it (#15744 review).
+    #[test]
+    fn native_tooling_default_checks_reject_a_lifetime_before_comment_decoy() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_default_guard_sources(temp.path())?;
+        fs::write(
+            temp.path().join("crates/perl-lsp-rs/src/runtime/diagnostics.rs"),
+            r#"
+fn gate(x: &'a str) {
+    let accepted_critic = self.capture_accepted_critic(x);
+    // NativeCriticService::analyze(NativeCriticSubject::accepted( was removed here
+    if self.finalize_pending_critic(&mut diagnostics, pending) {
+    }
+}
+"#,
+        )?;
+
+        let checks = native_tooling_default_checks(temp.path())?;
+        let critic_guard = checks
+            .iter()
+            .find(|check| check.name == "native_critic_routes_through_accepted_service")
+            .ok_or_else(|| eyre!("missing native critic guard check"))?;
+
+        assert!(!critic_guard.passed, "lifetime-plus-comment decoy must fail: {critic_guard:?}");
+        Ok(())
+    }
+
+    /// Restoring the obsolete pre-#15418 skip-guard literals must not satisfy
+    /// the service-owned guard. This is the decoy the issue explicitly
+    /// forbids: obsolete code literals appeasing a grep-based check.
+    #[test]
+    fn native_tooling_default_checks_reject_obsolete_skip_guard_literals() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        write_default_guard_sources(temp.path())?;
+        fs::write(
+            temp.path().join("crates/perl-lsp-rs/src/runtime/diagnostics.rs"),
+            r#"
+if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
+    return;
+}
+if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
+    return;
+}
+"#,
+        )?;
+
+        let checks = native_tooling_default_checks(temp.path())?;
+        let critic_guard = checks
+            .iter()
+            .find(|check| check.name == "native_critic_routes_through_accepted_service")
+            .ok_or_else(|| eyre!("missing native critic guard check"))?;
+
+        assert!(
+            !critic_guard.passed,
+            "obsolete skip-guard literals must not satisfy the service guard: {critic_guard:?}"
+        );
         Ok(())
     }
 
@@ -2176,11 +2407,12 @@ match self.mode {
         fs::write(
             diagnostics_path,
             r#"
-if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
-    return;
-}
-if !enabled || critic_engine == perl_lsp_rs_core::config::CriticEngine::Native {
-    return;
+fn push_diagnostics(&self, uri: &str) {
+    let accepted_critic = self.capture_accepted_critic(uri);
+    let pending = self.evaluate_native_critic(ast, text, uri, identity, accepted_critic.clone(), &diagnostics);
+    let run = NativeCriticService::analyze(NativeCriticSubject::accepted(subject, identity, ast, text, state, observations, gate, current));
+    if self.finalize_pending_critic(&mut diagnostics, pending) {
+    }
 }
 "#,
         )?;
