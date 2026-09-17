@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-16"
+updated = "2026-09-17"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -4525,3 +4525,29 @@ created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-10-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports a no_static_path seam in this file outside the two listed probe identities."
+
+# -----------------------------------------------------------------------------
+# Writer-preflight pure-domain declarations (PR #12059 / #11633): the new
+# xtask/src/writer_preflight/ module is a pure typed domain (subject,
+# observation, decision, reason). All 95 diff-scoped no_static_path probes
+# are field_construction declaration lines the tracer cannot connect to a
+# covering test (ripr#1429 class): struct field declarations have no body to
+# trace. The module carries 45 focused tests including the 14 shift-left
+# falsifiers named by #11633; constructor-only tests for the field
+# declarations would be proof theatre, which the gate's own guidance forbids
+# for this class. Scoped to the one new directory and the no_static_path
+# classification only: any reachable_unrevealed, weakly_exposed, or
+# behavioral seam in these files stays visible and blocking.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-writer-preflight-domain-declarations"
+kind = "declaration_line_no_static_path"
+paths = ["xtask/src/writer_preflight/*", "xtask/src/writer_preflight/**"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#11633"
+reason = "PR #12059 defines the typed writer-preflight domain (#11633): pure subject/observation/decision/reason types with a total decision core, covered by 45 focused tests including all 14 shift-left falsifiers. The 95 diff-scoped no_static_path findings are field_construction declaration lines (pub struct fields) the tracer cannot link to covering tests — the same ripr#1429 declaration-line limitation class as the DAP capability-probe and compiler-upstream-status entries. Behavior is proven by the module's decision-table and falsifier tests; constructor-only oracle tests for field declarations would be proof theatre. Scoped to the one new directory and classification; behavioral seams in these files remain blocking."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-10-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces field_construction declaration lines to the tests that exercise their owning type, when the module gains a live adapter with traceable call seams and the declaration suppressions can narrow, or at expiry. Narrow immediately if a receipt reports a reachable_unrevealed or other-classified seam under xtask/src/writer_preflight/. Evidence basis: ripr run 35195292770 quality-gate receipt (95 no_static_path, 0 reachable_unrevealed on this diff)."
