@@ -924,6 +924,10 @@ gates:
     #     inherited debt. So this row ratchets the measured surface only, and
     #     does not assert that perl-lsp-rs-core is free of the panic family.
     #     Removing those masks is a separate tranche on #11688.
+    # SUPERSEDED ADMISSION: the 2026-09-05 batch also added -p perl-lsp-rs-core
+    # to the strict list below, but main's stack-increment admission boundary
+    # (#15677) now classifies it in CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES; the
+    # residual lane owns its clippy status, so that selector is not restored.
     command: >-
       cargo clippy
       -p perl-token
@@ -962,7 +966,6 @@ gates:
       -p perllsp
       -p perl-lexer
       -p perl-ci-hygiene
-      -p perl-lsp-rs-core
       --all-targets --locked
       -- -D warnings -A missing_docs
     # Budget: measured ~80s locally with warm dependencies and cold check
