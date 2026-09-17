@@ -363,6 +363,27 @@ created = "2026-05-07"
 review_after = "2026-12-07"
 
 # =============================================================================
+# Active CI cache inventory + receipt (#9177)
+# =============================================================================
+
+[[allow]]
+id = "non-rust-ci-cache-receipt-schema"
+path = "schemas/ci_cache_receipt.v1.schema.json"
+kind = "ci_policy_config"
+language = "json"
+surface = "ci"
+classification = "config"
+owner = "release/ci"
+reason = "Versioned receipt schema for the derived active CI cache inventory (#9177): cache consumer/writer identity, reachability, and save-authority evidence. Grants no save authority and changes no cache behavior."
+covered_by = [
+  "cargo test -p xtask --bin xtask tasks::ci_cache_inventory --locked",
+  "cargo run --locked --package xtask -- ci-cache-inventory --check",
+  "cargo xtask check-file-policy",
+]
+created = "2026-09-14"
+review_after = "2026-12-13"
+
+# =============================================================================
 # Policy ledgers
 # =============================================================================
 
@@ -1834,6 +1855,51 @@ covered_by = [
 ]
 created = "2026-08-16"
 review_after = "2026-11-16"
+
+[[allow]]
+id = "non-rust-compiler-performance-receipt-schema"
+path = "schemas/compiler_performance_receipt.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "JSON Schema for the compiler_performance_receipt.v1 work and timing contract (#9311). It is the structural authority for the rule that missing instrumentation is not zero, and it is applied rather than merely stored: the validator evaluates every committed fixture against it."
+covered_by = [
+  "cargo xtask check-compiler-performance-receipt",
+]
+created = "2026-09-05"
+review_after = "2026-12-05"
+
+[[allow]]
+id = "non-rust-compiler-performance-receipt-fixture-measured"
+path = "xtask/fixtures/compiler_performance_receipt.v1.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "compiler"
+reason = "Fully instrumented compiler_performance_receipt.v1 fixture: the positive control that a measured run with a validated cache hit conforms to schema, typed model, and cross-field rules."
+covered_by = [
+  "cargo xtask check-compiler-performance-receipt",
+]
+created = "2026-09-05"
+review_after = "2026-12-05"
+
+[[allow]]
+id = "non-rust-compiler-performance-receipt-fixture-uninstrumented"
+path = "xtask/fixtures/compiler_performance_receipt.v1.uninstrumented.json"
+kind = "test_fixture"
+language = "json"
+surface = "fixtures"
+classification = "test"
+owner = "compiler"
+reason = "Uninstrumented compiler_performance_receipt.v1 fixture: the control for the contract's headline claim, carrying not_proven work with no counters at all, an explicit required_missing stage, and an unproven cache outcome. Without it the receipt would never demonstrate that missing evidence is distinct from zero."
+covered_by = [
+  "cargo xtask check-compiler-performance-receipt",
+]
+created = "2026-09-05"
+review_after = "2026-12-05"
 
 # =============================================================================
 # Kubernetes DAP workspace profiles (#10112)
@@ -3935,6 +4001,22 @@ covered_by = [
 ]
 created = "2026-08-26"
 review_after = "2026-11-26"
+
+[[allow]]
+id = "non-rust-activation-inventory-schema"
+path = "schemas/activation_inventory.v1.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "activation"
+classification = "config"
+owner = "architecture/activation"
+reason = "JSON Schema for the activation_inventory.v1 classified surface inventory (#9204); policy/** already covers the generated artifact and the hand-maintained override ledger via non-rust-policy-ledgers, so only the schema file (outside policy/) needs its own row."
+covered_by = [
+  "cargo xtask activation validate",
+  "cargo test -p xtask --locked --test activation",
+]
+created = "2026-09-02"
+review_after = "2026-12-01"
 
 [[allow]]
 id = "non-rust-critic-rule-proof-manifest"
