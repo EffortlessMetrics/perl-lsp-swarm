@@ -15,8 +15,8 @@ name = "perl_lsp_ux_tests"
 path = "src/lib.rs"
 
 [[bin]]
-name = "ux_server_request_fixture"
-path = "src/bin/ux_server_request_fixture.rs"
+name = "ux_reverse_request_fixture"
+path = "src/bin/ux_reverse_request_fixture.rs"
 
 [dependencies]
 serde.workspace = true

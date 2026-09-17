@@ -9,7 +9,7 @@ fn active_client_round_trips_two_gated_requests_through_a_child_process() -> Res
     let workspace = FakeWorkspace::new()?;
     let config = ScenarioConfig { timeout: Duration::from_secs(5), ..Default::default() };
     let client =
-        UxClient::spawn(env!("CARGO_BIN_EXE_ux_server_request_fixture"), &workspace, &config)?;
+        UxClient::spawn(env!("CARGO_BIN_EXE_ux_reverse_request_fixture"), &workspace, &config)?;
     let deadline = Instant::now() + Duration::from_secs(5);
 
     let requests = loop {
@@ -80,7 +80,7 @@ fn did_close_registration_round_trip(advertised: bool) -> Result<()> {
         ..Default::default()
     };
     let client =
-        UxClient::spawn(env!("CARGO_BIN_EXE_ux_server_request_fixture"), &workspace, &config)?;
+        UxClient::spawn(env!("CARGO_BIN_EXE_ux_reverse_request_fixture"), &workspace, &config)?;
     let deadline = Instant::now() + Duration::from_secs(5);
     while !client.peek_raw_events().iter().any(|event| {
         event.get("method") == Some(&json!("test/ux-round-trip-complete"))
@@ -143,7 +143,7 @@ fn assert_protocol_failure(mode: &str, expected: &str) -> Result<()> {
         ..Default::default()
     };
     let client =
-        UxClient::spawn(env!("CARGO_BIN_EXE_ux_server_request_fixture"), &workspace, &config)?;
+        UxClient::spawn(env!("CARGO_BIN_EXE_ux_reverse_request_fixture"), &workspace, &config)?;
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if let Some(error) = client.peek_transport_error() {
