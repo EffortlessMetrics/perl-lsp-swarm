@@ -783,8 +783,10 @@ fn build_dev_environment_report_in(temp_base: &Path) -> DevEnvironmentReport {
     // repository the verdicts label: rustup selects toolchains by working
     // directory, and probing from the caller's directory can report another
     // project's toolchain against this repo's pin. `None` outside a checkout
-    // keeps the historical caller-directory behavior; the emitted cwd field
-    // always records where the probe actually ran.
+    // keeps the historical caller-directory behavior; the native
+    // classification context reflects the probe directory (relative
+    // CARGO_HOME resolves where cargo actually ran). The public report
+    // carries no cwd field.
     let probe_root = std::env::current_dir().ok().and_then(|cwd| locate_repo_root(&cwd));
     let native_cargo = probe_native_cargo(probe_root.as_deref());
     let git_bash_executable = if windows_host { resolve_git_bash_executable() } else { None };
@@ -1068,10 +1070,17 @@ struct CargoProbeContext {
 }
 
 impl CargoProbeContext {
-    fn native() -> Self {
+    /// Native context for a probe executed under `probe_root`: `cargo` and
+    /// `rustup` run with that directory as cwd, so relative `CARGO_HOME`
+    /// resolution must use it rather than the process cwd. `None` keeps the
+    /// historical caller-directory behavior. The context cwd is a
+    /// classification input only; the public report carries no cwd field.
+    fn native_in(probe_root: Option<&Path>) -> Self {
         Self {
             path_style: if cfg!(windows) { CargoPathStyle::Windows } else { CargoPathStyle::Posix },
-            cwd: std::env::current_dir().ok().and_then(|path| path.to_str().map(str::to_owned)),
+            cwd: probe_root.and_then(|root| root.to_str().map(str::to_owned)).or_else(|| {
+                std::env::current_dir().ok().and_then(|path| path.to_str().map(str::to_owned))
+            }),
             home: native_home(),
             cargo_home: std::env::var("CARGO_HOME").ok(),
         }
@@ -1215,6 +1224,7 @@ fn probe_native_cargo(probe_root: Option<&Path>) -> CargoToolchainReport {
             FLAVOR_NATIVE_SHELL,
             binary,
             run_command_with_timeout(command, DEV_ENV_PROBE_TIMEOUT_SECS),
+            probe_root,
         ),
         probe_root,
     )
@@ -1314,8 +1324,8 @@ fn bash_quote_path(path: &Path) -> String {
 /// WSL flavor of the checkout-root rule: map the Windows checkout root into
 /// the distribution with `wslpath` and run the probe there. When no root is
 /// located, or the mapping itself fails, the probe keeps its historical
-/// distribution-default-directory behavior; the emitted cwd field always
-/// records where it actually ran.
+/// distribution-default-directory behavior; the shell-emitted PWD keeps the
+/// verdict honest.
 fn probe_wsl_cargo_in(probe_root: Option<&Path>) -> CargoToolchainReport {
     let Some(wsl_exe) = resolve_tool_on_path("wsl") else {
         return unreachable_cargo_report(FLAVOR_WSL, "wsl.exe not found on PATH");
@@ -1338,7 +1348,7 @@ fn probe_wsl_cargo_in(probe_root: Option<&Path>) -> CargoToolchainReport {
 
 /// Map a Windows checkout root into WSL path space for the cargo probe.
 /// `None` on any mapping failure; callers fall back to the distribution
-/// default directory and the emitted cwd keeps the verdict honest.
+/// default directory and the shell-emitted PWD keeps the verdict honest.
 fn map_windows_path_for_wsl(wsl_exe: &Path, windows_root: &Path) -> Option<String> {
     let mut command = Command::new(wsl_exe);
     command.args(["wslpath", "-a", "-u", &windows_root.display().to_string()]);
@@ -1830,13 +1840,17 @@ fn cargo_report_from_output(
     flavor: &'static str,
     binary: PathBuf,
     output: ProbeOutput,
+    probe_root: Option<&Path>,
 ) -> CargoToolchainReport {
     match output {
-        Ok(process_output) if process_output.status.success() => finish_reachable_cargo_report(
-            flavor,
-            Some(binary),
-            &decode_shell_output(&process_output.stdout),
-        ),
+        Ok(process_output) if process_output.status.success() => {
+            finish_reachable_cargo_report_with_context(
+                flavor,
+                Some(binary),
+                &decode_shell_output(&process_output.stdout),
+                &CargoProbeContext::native_in(probe_root),
+            )
+        }
         Ok(_) | Err(_) => failed_probe_cargo_report(flavor, Some(binary), output),
     }
 }
@@ -1964,19 +1978,6 @@ fn failed_probe_cargo_report(
         error: Some(detail),
         fix: None,
     }
-}
-
-fn finish_reachable_cargo_report(
-    flavor: &'static str,
-    binary: Option<PathBuf>,
-    version_output: &str,
-) -> CargoToolchainReport {
-    finish_reachable_cargo_report_with_context(
-        flavor,
-        binary,
-        version_output,
-        &CargoProbeContext::native(),
-    )
 }
 
 fn finish_reachable_cargo_report_with_context(
@@ -3584,10 +3585,11 @@ mod tests {
 
     #[test]
     fn successful_unparseable_cargo_probe_is_red_with_bounded_evidence() -> TestResult {
-        let report = finish_reachable_cargo_report(
+        let report = finish_reachable_cargo_report_with_context(
             FLAVOR_NATIVE_SHELL,
             Some(PathBuf::from(r"C:\Users\dev\.cargo\bin\cargo.exe")),
             "cargo development-build 2026-09-08",
+            &CargoProbeContext::native_in(None),
         );
 
         assert_eq!(report.status, STATUS_PROBE_ERROR);
@@ -4359,6 +4361,49 @@ mod tests {
             != Some(CargoProvenance::RustupShim)
         {
             return Err("Windows default cargo home comparison was case-sensitive".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_probe_context_reflects_probe_root_for_relative_cargo_home() -> TestResult {
+        let probe_root = if cfg!(windows) {
+            Path::new(r"C:\repo\checkout")
+        } else {
+            Path::new("/repo/checkout")
+        };
+        let context = CargoProbeContext::native_in(Some(probe_root));
+        if context.cwd != Some(probe_root.to_string_lossy().into_owned()) {
+            return Err("native probe context did not stamp the probe root".into());
+        }
+        // A relative CARGO_HOME resolves where cargo ran, not where the
+        // process started: the probe-root context and the process-cwd
+        // context must disagree whenever the two directories differ.
+        let mut rooted = context.clone();
+        rooted.home = None;
+        rooted.cargo_home = Some("cache/cargo-home".to_string());
+        let resolved = effective_cargo_home(&rooted)
+            .ok_or("relative CARGO_HOME did not resolve under the probe root")?;
+        if !resolved.ends_with("/cache/cargo-home") {
+            return Err(
+                format!("relative CARGO_HOME resolved outside the probe root: {resolved}").into()
+            );
+        }
+        let process_cwd = std::env::current_dir()
+            .ok()
+            .and_then(|path| path.to_str().map(str::to_owned))
+            .unwrap_or_default();
+        if normalize_cargo_path(&process_cwd, rooted.path_style)
+            != normalize_cargo_path(&probe_root.to_string_lossy(), rooted.path_style)
+        {
+            let mut caller = CargoProbeContext::native_in(None);
+            caller.home = None;
+            caller.cargo_home = Some("cache/cargo-home".to_string());
+            if effective_cargo_home(&caller) == effective_cargo_home(&rooted) {
+                return Err(
+                    "probe-root context resolved identically to the process-cwd context".into()
+                );
+            }
         }
         Ok(())
     }
