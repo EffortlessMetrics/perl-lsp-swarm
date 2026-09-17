@@ -511,6 +511,22 @@ fn complete_general_context(
         return CompletionFlow::Cancelled;
     }
 
+    // Document lexicals at a non-sigil (typically empty) prefix. The sigil
+    // path (`complete_sigil_context`) owns `$`/`@`/`%`-prefixed requests, so
+    // without this admission the file's own variables only reach the page
+    // through the interpolation-context inventory (`add_all_variables`,
+    // sort tier `5x_`), which ranks below builtins and keywords and falls
+    // past the runtime page cap — the #11858 contract says document
+    // variables must appear at an empty prefix. Same lexical-visibility
+    // admission (#8941) as the sigil path; the identity merge keeps the
+    // better-ranked candidate when both inventories produce one label.
+    for kind in [SymbolKind::scalar(), SymbolKind::array(), SymbolKind::hash()] {
+        variables::add_variable_completions(completions, context, kind, &provider.symbol_table);
+        if is_cancelled() {
+            return CompletionFlow::Cancelled;
+        }
+    }
+
     variables::add_all_variables(completions, context, &provider.symbol_table);
     if is_cancelled() {
         return CompletionFlow::Cancelled;
