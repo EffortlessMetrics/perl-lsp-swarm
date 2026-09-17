@@ -3612,7 +3612,7 @@ fn deliver_reserved_terminated_event(
 mod tests {
     use super::super::sync_utils::EventDrainLatch;
     use super::super::sync_utils::EventSender;
-    use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
+    use super::{DapMessage, Duration, Instant, Stdio, Value, json, thread};
     use super::{
         DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, has_probe_success_marker,
