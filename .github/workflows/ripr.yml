@@ -935,7 +935,11 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+        # 1800s: the diff-scoped review-guidance pass needs the indexed tree and
+        # regularly exceeds 600s on the 4-core hosted runner (run 35214056262
+        # and its attempt 2 both hit `ripr timed out after 600s`, forcing the
+        # quality gate to fail closed on an incomplete guidance receipt).
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 1800
 
       - name: Generate impacted evidence
         if: always()
@@ -1151,7 +1155,11 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+        # 1800s: the diff-scoped review-guidance pass needs the indexed tree and
+        # regularly exceeds 600s on the 4-core hosted runner (run 35214056262
+        # and its attempt 2 both hit `ripr timed out after 600s`, forcing the
+        # quality gate to fail closed on an incomplete guidance receipt).
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 1800
 
       - name: Generate impacted evidence
         if: always()

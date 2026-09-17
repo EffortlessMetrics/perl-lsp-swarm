@@ -1248,4 +1248,28 @@ mod tests {
         }
         Ok(())
     }
+
+    /// The `count == 0` boundary: completing nothing is a no-op — no
+    /// reservation may be consumed and no waiter woken (the consumer's
+    /// batch-completion fast path must not be able to eat tickets).
+    #[test]
+    fn complete_zero_consumes_nothing() -> Result<(), String> {
+        let latch = EventDrainLatch::default();
+        let ticket = latch.reserve();
+        latch.complete(0);
+        if !latch.has_outstanding() {
+            return Err("complete(0) must not consume the outstanding reservation".to_string());
+        }
+        if latch.wait_for_ticket(ticket, Duration::from_millis(0)) {
+            return Err(
+                "complete(0) must not release a waiter on an outstanding ticket".to_string()
+            );
+        }
+        // And the latch stays usable afterwards.
+        latch.complete(1);
+        if !latch.wait_for_ticket(ticket, Duration::from_millis(0)) {
+            return Err("the ticket must drain after a real completion".to_string());
+        }
+        Ok(())
+    }
 }
