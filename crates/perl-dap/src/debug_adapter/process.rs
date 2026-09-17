@@ -555,7 +555,7 @@ impl DebugAdapter {
     ///    default so the launch still produces the usual "perl not on PATH"
     ///    diagnostic.
     ///
-    /// [`LaunchConfiguration`]: perl_dap_config::LaunchConfiguration
+    /// [`LaunchConfiguration`]: crate::config::LaunchConfiguration
     /// [`PerlToolchainProfile`]: perl_lsp_rs_core::config::PerlToolchainProfile
     fn resolve_launch_interpreter(args: &Value) -> String {
         let explicit = args
