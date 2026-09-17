@@ -2044,7 +2044,7 @@ fn yaml_mapping_entry<'a>(value: &'a Value, key: &str) -> Result<&'a Value> {
 /// - `xtask/src/tasks/ci_route.rs` (Rust producer) — emits
 ///   `schema_version: "ci-route.v1"` at the `CiRouteReceipt` emission site.
 /// - `scripts/ci/route-codecov-packs.py` (Python producer) — emits
-///   `"schema_version": "ci_route.v1"` at the `receipt = { ... }` site.
+///   `"schema_version": "ci-route.v1"` at the `receipt = { ... }` site.
 ///
 /// Both producers write to the same file path consumed by `ci-nightly.yml`,
 /// `justfile`, and `scripts/ci/generate-coverage-pack-commands.py`; a literal
