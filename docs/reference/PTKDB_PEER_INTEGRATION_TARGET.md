@@ -6,11 +6,13 @@ cooperate with `perl-dap` without making ptkdb implement DAP.
 **Current status**: the host protocol is implemented. The repository's Perl
 reference fixture now also contains an authenticated, headless-tested mirror
 adapter for an explicitly marked, ptkdb-shaped `Devel::ptkdb 1.1091` reference
-harness. The adapter pins the CPAN distribution by SHA-256
-`889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e` and
-verifies a loaded `ptkdb.pm` against SHA-256
-`2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab`.
-The headless harness carries the same digest as an explicit test contract.
+harness. The adapter pins the CPAN distribution identity by SHA-256
+`889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e` and the
+module digest
+`2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab` as an
+explicit harness contract only. It never hashes or verifies a loaded
+`ptkdb.pm`: it refuses any present `%INC{'Devel/ptkdb.pm'}` entry (including
+false-valued ones) because Perl does not expose already-executed bytes.
 This is not stock-ptkdb + Tk support; issue #4786 owns that live receipt.
 
 ## Product boundary
@@ -64,7 +66,10 @@ rendezvous in `mirror` mode, sends an empty capability set, and uses deadline-gu
   nonblocking sockets where the Perl platform exposes that mode). It wraps the
   explicitly marked reference harness's `Devel::ptkdb::set_file` while preserving
   the original method and emits `debugger/stopped` only when that method is
-  reached from `DB::DB`. An `END` hook emits one best-effort, bounded
+  reached from `DB::DB` (a depth-1 caller gate). That gate is an explicit
+  constraint of this marked reference harness, not evidence that real ptkdb
+  wrappers preserve stopped events at other caller depths; the depth-independent
+  live stop authority remains #7349. An `END` hook emits one best-effort, bounded
   `debugger/terminated` event.
 
 A `.ptkdbrc` can load the reference adapter by absolute path. The path is

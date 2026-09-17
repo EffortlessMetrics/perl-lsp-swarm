@@ -78,6 +78,12 @@ fn accept_plugin(
     child: &mut Child,
     timeout: Duration,
 ) -> Result<TcpStream, Box<dyn std::error::Error>> {
+    // The accept bound must stay generous on slow hosts: several tests spawn
+    // `perl` concurrently, and parallel interpreter startup (module loading,
+    // antivirus scanning) can exceed ten seconds on Windows even though a
+    // single spawn takes well under one second. The bound stays bounded
+    // (#14088) and genuine failures still short-circuit through the child-exit
+    // check below.
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + timeout;
     loop {
@@ -210,7 +216,7 @@ exit 0;
         .spawn()?;
     let mut child = ChildCleanup::new(child, Vec::<PathBuf>::new());
 
-    let stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
+    let stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
     let token = PeerSessionToken::try_from(PEER_TOKEN)?;
     let mut backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
         stream,
@@ -365,7 +371,7 @@ exit 0;
         Vec::<PathBuf>::new(),
     );
 
-    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
+    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut hello = [0_u8; 4096];
     let read = stream.read(&mut hello)?;
@@ -439,7 +445,7 @@ exit 0;
         Vec::<PathBuf>::new(),
     );
 
-    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
+    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut hello = [0_u8; 4096];
     let read = stream.read(&mut hello)?;
@@ -473,6 +479,134 @@ exit 0;
 }
 
 #[test]
+fn reference_ptkdb_adapter_fails_closed_on_incomplete_accepted_hello_subject()
+-> Result<(), Box<dyn std::error::Error>> {
+    // #14088 falsifier 2: the pinned adapter binds only to the complete
+    // accepted hello subject. A success response whose accepted
+    // protocolVersion is missing/mismatched, whose capabilities report is
+    // missing, non-object, boolean-lookalike, or capability-widened must fail
+    // closed before any wrap, leaving set_file untouched. The valid
+    // all-wants* host default is exercised positively by the real-backend
+    // transcript test above.
+    let valid_caps = r#""capabilities":{"wantsBreakpoints":true,"wantsStack":true,"wantsVariables":true,"wantsOutput":true,"wantsSourceFacts":true}"#;
+    let cases = [
+        (
+            "missing protocolVersion",
+            format!(r#"{{"sessionId":"test",{valid_caps}}}"#),
+            "invalid protocolVersion",
+        ),
+        (
+            "mismatched protocolVersion",
+            format!(
+                r#"{{"protocolVersion":"perl-debug-peer-v2","sessionId":"test",{valid_caps}}}"#
+            ),
+            "invalid protocolVersion",
+        ),
+        (
+            "missing capabilities",
+            format!(r#"{{"protocolVersion":"perl-debug-peer-v1","sessionId":"test"}}"#),
+            "must contain a capabilities object",
+        ),
+        (
+            "non-object capabilities",
+            format!(
+                r#"{{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":[]}}"#
+            ),
+            "must contain a capabilities object",
+        ),
+        (
+            "capability-widened hello",
+            format!(
+                r#"{{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":{{"wantsBreakpoints":true,"wantsEditorControl":true}}}}"#
+            ),
+            "unrecognized capability",
+        ),
+        (
+            "numeric boolean lookalike capability",
+            format!(
+                r#"{{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":{{"wantsOutput":1}}}}"#
+            ),
+            "is not a strict JSON boolean",
+        ),
+    ];
+
+    let plugin = repo_root().join("fixtures/debug-peer/perl/minimal_ptkdb_peer.pl");
+    let harness = r#"
+package Devel::ptkdb;
+our $VERSION = '1.1091';
+our $PERL_DAP_MIRROR_SOURCE = 'CPAN:AEPAGE/Devel-ptkdb-1.1091';
+our $PERL_DAP_MIRROR_SHA256 = '2da4a792a732c134f8f4fa3b6b482da9e5df8dec8cd7ae424ad3b6e06c0bceab';
+our $PERL_DAP_MIRROR_DIST_SHA256 = '889bfc25d107f46718963023cc9662d3d779896a48d729d0327beec0502c226e';
+sub set_file { return "original:$_[2]"; }
+package main;
+my $loaded = do $ENV{PTKDB_PLUGIN_UNDER_TEST};
+die "plugin load failed: " . ($@ || $!) unless $loaded;
+my $window = bless {}, 'Devel::ptkdb';
+my $value = $window->set_file('/work/rejected.pl', 13);
+die "invalid hello touched set_file: $value" unless $value eq 'original:13';
+exit 0;
+"#;
+
+    for (name, body, expected_diagnostic) in cases {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let peer_addr = listener.local_addr()?;
+        let response = format!(
+            r#"{{"type":"response","requestSeq":1,"command":"peer/hello","success":true,"body":{body}}}"#
+        );
+
+        let mut child = ChildCleanup::new(
+            Command::new("perl")
+                .arg("-e")
+                .arg(harness)
+                .env("PERL_DAP_PEER", peer_addr.to_string())
+                .env("PERL_DAP_PEER_TOKEN", PEER_TOKEN)
+                .env("PERL_DAP_PEER_MODE", "mirror")
+                .env("PTKDB_PLUGIN_UNDER_TEST", &plugin)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()?,
+            Vec::<PathBuf>::new(),
+        );
+
+        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut hello = [0_u8; 4096];
+        let read = stream.read(&mut hello)?;
+        assert!(
+            std::str::from_utf8(&hello[..read])?.contains("peer/hello"),
+            "{name}: plugin did not send peer/hello"
+        );
+        write!(stream, "Content-Length: {}\r\n\r\n", response.len())?;
+        stream.write_all(response.as_bytes())?;
+        drop(stream);
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                break child.child.wait()?;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let stderr = child_stderr(&mut child.child);
+        assert!(status.success(), "{name} harness failed: {stderr}");
+        assert!(
+            stderr.contains("invalid peer/hello response:") && stderr.contains(expected_diagnostic),
+            "{name} missing fail-closed diagnostic {expected_diagnostic:?}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("reference mirror connected"),
+            "{name} must not go live on an incomplete hello subject: {stderr}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn reference_peer_rejects_non_object_post_handshake_frame_without_terminating()
 -> Result<(), Box<dyn std::error::Error>> {
     for malformed in [b"[]".as_slice(), b"1".as_slice()] {
@@ -490,12 +624,12 @@ fn reference_peer_rejects_non_object_post_handshake_frame_without_terminating()
             Vec::<PathBuf>::new(),
         );
 
-        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
+        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         let mut hello = [0_u8; 4096];
         let read = stream.read(&mut hello)?;
         assert!(std::str::from_utf8(&hello[..read])?.contains("peer/hello"));
-        let response = br#"{"type":"response","requestSeq":1,"command":"peer/hello","success":true,"body":{"sessionId":"test"}}"#;
+        let response = br#"{"type":"response","requestSeq":1,"command":"peer/hello","success":true,"body":{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":{"wantsBreakpoints":true,"wantsStack":true,"wantsVariables":true,"wantsOutput":true,"wantsSourceFacts":true}}}"#;
         write!(stream, "Content-Length: {}\r\n\r\n", response.len())?;
         stream.write_all(response)?;
         let mut events = Vec::new();
@@ -551,7 +685,7 @@ fn reference_peer_fails_closed_cleanly_on_handshake_failures()
             Vec::<PathBuf>::new(),
         );
 
-        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
+        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         let mut hello = [0_u8; 4096];
         let read = stream.read(&mut hello)?;
@@ -565,7 +699,7 @@ fn reference_peer_fails_closed_cleanly_on_handshake_failures()
             }
             ("EOF handshake", None) => drop(stream),
             ("timeout handshake", None) => {
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now() + Duration::from_secs(30);
                 while child.child.try_wait()?.is_none() && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(10));
                 }
@@ -573,7 +707,7 @@ fn reference_peer_fails_closed_cleanly_on_handshake_failures()
             _ => return Err("handshake case setup must be internally consistent".into()),
         }
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         let status = loop {
             if let Some(status) = child.child.try_wait()? {
                 break status;
@@ -878,7 +1012,7 @@ exit 0;
         .spawn()?;
     let mut child = ChildCleanup::new(child, [release.clone(), survived.clone()]);
 
-    let stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(10))?;
+    let stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
     let token = PeerSessionToken::try_from(PEER_TOKEN)?;
     let mut backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
         stream,

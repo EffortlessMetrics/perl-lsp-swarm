@@ -190,6 +190,26 @@ sub _validate_hello_response {
         unless defined $response->{body}{sessionId}
             && !ref($response->{body}{sessionId})
             && length $response->{body}{sessionId};
+    # The complete accepted hello subject (#14088): the pinned adapter binds to
+    # the exact protocol version and capability shape the host negotiated, so a
+    # mismatched version, a missing/non-object capability report, a numeric or
+    # string boolean lookalike, or an unrecognized capability key fails closed
+    # instead of leaving the mirror live under an unverified session contract.
+    return (0, 'peer/hello response body has an invalid protocolVersion')
+        unless defined $response->{body}{protocolVersion}
+            && !ref($response->{body}{protocolVersion})
+            && $response->{body}{protocolVersion} eq PROTOCOL_VERSION;
+    my $capabilities = $response->{body}{capabilities};
+    return (0, 'peer/hello response body must contain a capabilities object')
+        unless ref($capabilities) eq 'HASH';
+    for my $name (sort keys %{$capabilities}) {
+        my $value = $capabilities->{$name};
+        return (0, "peer/hello response capability '$name' is not a strict JSON boolean")
+            unless ref($value) eq 'JSON::PP::Boolean'
+                && ("$value" eq '0' || "$value" eq '1');
+        return (0, "peer/hello response body has an unrecognized capability '$name'")
+            unless $name =~ /\Awants(?:Breakpoints|Stack|Variables|Output|SourceFacts)\z/;
+    }
     return (1, undef);
 }
 
@@ -405,6 +425,11 @@ sub _check_ptkdb_provenance {
 
 sub _after_set_file {
     my ($state, $caller_sub, $path, $line) = @_;
+    # Explicit marked-harness constraint (#14088): stop emission requires the
+    # immediate caller to be 'DB::DB' (caller depth 1). This is a property of
+    # this reference harness's call shape only; it is NOT evidence that real
+    # ptkdb wrappers preserve stopped events at other caller depths. The
+    # depth-independent live stop authority remains issue #7349.
     return unless $caller_sub eq 'DB::DB';
     _emit_stopped($state, $path, $line);
 }
@@ -454,6 +479,9 @@ sub install_ptkdb_mirror {
         no warnings 'redefine';
         *Devel::ptkdb::set_file = sub {
             my @arguments = @_;
+            # Depth-1 caller gate: only a 'DB::DB' immediate caller produces
+            # stopped events (see _after_set_file). Marked-harness constraint,
+            # not a real-ptkdb wrapper guarantee (#7349 owns live stop truth).
             my $caller_sub = (caller(1))[3] // '';
             my $wantarray = wantarray;
 
