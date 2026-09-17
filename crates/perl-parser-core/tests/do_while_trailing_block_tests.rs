@@ -91,7 +91,8 @@ fn do_while_rejects_trailing_block() -> Result<(), String> {
         r#"do { $i++; } while ($h{k}) { $i++; }"#,
         // Post-`)` bypasses through the other direct-`{` postfix arms: the
         // loop-top gate covers slices and block-call forms too, not just the
-        // hash-subscript arm (real `perl -c` rejects both near `") {"`).
+        // hash-subscript arm (real `perl -c` rejects both near `") {"`,
+        // #15719 review).
         r#"do { $s++; } while (@h) { $s++; }"#,
         r#"do { $s++; } while (foo) { $s++; }"#,
     ] {

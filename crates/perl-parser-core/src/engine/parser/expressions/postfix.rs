@@ -80,6 +80,26 @@ impl<'a> Parser<'a> {
                 break;
             }
             // --------------------------------------------------------------------
+            // Do-while closed-group guard — must precede every `{`-consuming
+            // arm below (slices, bareword block calls, hash subscripts), or
+            // shapes like `while (@h) { 2 }` and `while (foo) { 2 }` leak
+            // their trailing block into those arms: parenthesized conditions
+            // preserve their inner node kind, so the slice/block-call
+            // detectors see a Variable/Identifier and consume the brace.
+            // When the do-while condition's own `(...)` group is closed
+            // (reject armed, depth 0), a following `{` is the trailing block
+            // real Perl rejects near ") {" — leave it for
+            // `parse_statement_modifier` (#15649, #15719 review).
+            // --------------------------------------------------------------------
+            if self.in_do_while_condition
+                && self.do_while_paren_reject
+                && self.do_while_paren_depth == 0
+                && self.peek_kind() == Some(TokenKind::LeftBrace)
+            {
+                break;
+            }
+
+            // --------------------------------------------------------------------
             // Hash/array slice without arrow: @hash{...} or %hash{...}
             //
             // In Perl, `@hash{...}` and `%hash{...}` are valid hash/array slice
