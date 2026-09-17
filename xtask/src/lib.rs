@@ -46,6 +46,7 @@ pub mod routed_result;
 pub mod rust_hygiene;
 pub mod schema_apply;
 pub mod source_authority;
+pub mod stack_increment;
 pub mod utils;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
