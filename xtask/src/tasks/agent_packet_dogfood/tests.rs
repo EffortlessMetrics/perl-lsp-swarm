@@ -404,8 +404,11 @@ fn negative_machine_local_path_in_payload_fails_closed() {
         "\\\\build-server\\share\\secret.log",
         "//build-server/share/secret.log",
         "//build-server.example/share/secret.log",
-        "//build-server.example/C:/secret.log",
-        "//example.test/C:/tmp",
+        // NOTE: `//dotted-host/C:/...` is deliberately a protocol-relative URL
+        // exemption (see `protocol_relative_url_start` and the
+        // `positive_uri_text_is_not_misclassified_as_a_drive_path` pin), so
+        // those forms must not appear in this reject list. `//cdn/C:/tmp`
+        // stays: an undotted host is not a URL and remains UNC evidence.
         "//cdn/C:/tmp",
         "file:///tmp/agent-secret.json",
         "../private/secret.json",

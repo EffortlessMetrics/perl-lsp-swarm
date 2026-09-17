@@ -1316,10 +1316,6 @@ impl<'de, 'a> Visitor<'de> for ScanVisitor<'a> {
         Ok(())
     }
 
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-        self.visit_str(&value)
-    }
-
     fn visit_bytes<E>(self, _value: &[u8]) -> Result<Self::Value, E> {
         Ok(())
     }
