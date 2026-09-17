@@ -686,7 +686,7 @@ fn disconnect_terminal_successful_replacement_reopens_lifecycle() -> TestResult 
             "launch",
             true,
         )?;
-        let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
         loop {
             match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
                 Ok(DapMessage::Event { event, .. }) if event == "terminated" => {

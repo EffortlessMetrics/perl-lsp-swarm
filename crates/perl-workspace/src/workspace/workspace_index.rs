@@ -6700,7 +6700,7 @@ fn canonical_ref_for_node(node: &Node) -> Option<perl_symbol::surface::r#ref::Sy
                 anchor_span: Some((node.location.start, node.location.end)),
             })
         }
-        NodeKind::Typeglob { name } => {
+        NodeKind::Typeglob { name, .. } => {
             if name.starts_with('{') {
                 return None;
             }
