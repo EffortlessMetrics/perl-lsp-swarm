@@ -78,8 +78,7 @@ fn later_uninitialized_binding_wins_lookup() -> TestResult {
 /// the lookup switches to the later binding.
 #[test]
 fn earlier_reference_uses_earlier_binding_later_uses_later() -> TestResult {
-    let issues =
-        analyze("use strict;\nmy $x;\nprint $x;\nmy $x = 2;\nprint $x;\n")?;
+    let issues = analyze("use strict;\nmy $x;\nprint $x;\nmy $x = 2;\nprint $x;\n")?;
     let uninit: Vec<_> = issues
         .iter()
         .filter(|i| i.kind == IssueKind::UninitializedVariable && i.variable_name == "$x")
@@ -94,12 +93,7 @@ fn earlier_reference_uses_earlier_binding_later_uses_later() -> TestResult {
         .iter()
         .filter(|i| i.kind == IssueKind::VariableRedeclaration && i.variable_name == "$x")
         .collect();
-    assert_eq!(
-        redecls.len(),
-        1,
-        "exactly one redeclaration; got: {:?}",
-        issues
-    );
+    assert_eq!(redecls.len(), 1, "exactly one redeclaration; got: {:?}", issues);
     Ok(())
 }
 
@@ -108,9 +102,7 @@ fn earlier_reference_uses_earlier_binding_later_uses_later() -> TestResult {
 /// inner binding; outside, they hit the outer.
 #[test]
 fn nested_shadowing_unaffected() -> TestResult {
-    let issues = analyze(
-        "use strict;\nmy $x = 1;\n{ my $x = 2; print $x; }\nprint $x;\n",
-    )?;
+    let issues = analyze("use strict;\nmy $x = 1;\n{ my $x = 2; print $x; }\nprint $x;\n")?;
     assert!(
         !has_issue(&issues, IssueKind::UndeclaredVariable, "$x"),
         "nested shadowing should remain clean; got: {:?}",
