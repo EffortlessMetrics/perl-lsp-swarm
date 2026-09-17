@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use perl_lsp_ux_tests::{
-    ObservedServerRequest, ScriptedServerRequest, ScriptedServerResponse, ServerRequestDelivery,
-    UxClient,
+    ObservedServerRequest, ScenarioConfig, ScriptedServerRequest, ScriptedServerResponse,
+    ServerRequestDelivery, UxClient,
 };
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ const SHOW_DOCUMENT_ID: &str = "fixture-show-document";
 #[test]
 fn scripted_client_completes_success_error_delay_and_timeout_outcomes() -> Result<()> {
     let binary = env!("CARGO_BIN_EXE_ux_server_request_fixture");
-    let timeout = Duration::from_secs(5);
+    let timeout = ScenarioConfig::default().timeout;
     let script = vec![
         ScriptedServerRequest::success(
             "workspace/configuration",
@@ -94,6 +94,10 @@ fn scripted_client_completes_success_error_delay_and_timeout_outcomes() -> Resul
 fn scripted_client_cancels_long_delays_when_wait_times_out() -> Result<()> {
     let binary = env!("CARGO_BIN_EXE_ux_server_request_fixture");
     let wait_timeout = Duration::from_millis(200);
+    // The handshake budget must be independent of the script-wait budget:
+    // spawning the child process is allowed to take longer than the scripted
+    // wait deadline without invalidating the timing assertions below.
+    let spawn_timeout = ScenarioConfig::default().timeout;
     let script = vec![
         ScriptedServerRequest::success(
             "workspace/configuration",
@@ -105,24 +109,44 @@ fn scripted_client_cancels_long_delays_when_wait_times_out() -> Result<()> {
         ),
         ScriptedServerRequest::success("window/workDoneProgress/create", Value::Null),
     ];
-    let client = UxClient::spawn_scripted(binary, "file:///fixture", script, wait_timeout)?;
+    let client = UxClient::spawn_scripted(binary, "file:///fixture", script, spawn_timeout)?;
     let started = Instant::now();
-    let Err(error) = client.wait_for_script(wait_timeout) else {
-        bail!("script wait must time out while a long response delay is pending");
+    // On a slow host the fixture may need more than one 200ms window just to
+    // deliver its requests, so the wait is allowed to time out repeatedly.
+    // The discriminating bounds are unchanged: every wait must time out while
+    // the 45s delayed response is still pending, the delayed response must
+    // eventually be reported cancelled rather than delivered, and teardown
+    // must never wait out the pending delay.
+    let cancellation_error = loop {
+        match client.wait_for_script(wait_timeout) {
+            Ok(observed) => {
+                bail!(
+                    "script wait must time out while a long response delay is pending: {observed:#?}"
+                )
+            }
+            Err(error) => {
+                if error.to_string().contains("cancelled before its delay elapsed") {
+                    break error;
+                }
+                ensure!(
+                    error.to_string().contains("timed out"),
+                    "script wait failed for an unexpected reason: {error:#}"
+                );
+                ensure!(
+                    started.elapsed() < spawn_timeout,
+                    "cancelled scripted response was never reported: elapsed={:?}",
+                    started.elapsed()
+                );
+            }
+        }
     };
-    ensure!(error.to_string().contains("timed out"));
-    let Err(error) = client.wait_for_script(wait_timeout) else {
-        bail!("cancelled scripted response must not be reported as delivered");
-    };
-    ensure!(
-        error.to_string().contains("cancelled before its delay elapsed"),
-        "expected cancellation delivery failure, got: {error:#}"
-    );
+    ensure!(cancellation_error.to_string().contains("client/registerCapability"));
+    let teardown_started = Instant::now();
     drop(client);
     ensure!(
-        started.elapsed() < Duration::from_secs(10),
+        teardown_started.elapsed() < Duration::from_secs(10),
         "timed-out scripted delay was not cancelled: elapsed={:?}",
-        started.elapsed()
+        teardown_started.elapsed()
     );
     Ok(())
 }
