@@ -104,6 +104,7 @@ required_receipts = [
   "docs/project/status/provider_confidence_matrix.md",
   "docs/project/status/real_perl_editor_trust_v1.md",
   "crates/perl-workspace/tests/quickorm_generated_member.rs",
+  "crates/perl-lsp-rs-core/tests/quickorm_completion_tests.rs",
 ]
 
 [[provider_class]]

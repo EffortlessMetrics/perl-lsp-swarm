@@ -55,14 +55,15 @@ pub mod generated_member_extractor {
     pub(crate) use super::generated_member_extractor_core::GeneratedMemberFact;
 
     /// Extract generated-member facts from the canonical framework producers.
+    ///
+    /// QuickORM table members are separator-sensitive: a source-free walk can
+    /// never establish their import authority, so they are extracted only by
+    /// [`extract_generated_member_facts_with_source`].
     pub(crate) fn extract_generated_member_facts(
         ast: &Node,
         file_id: FileId,
     ) -> Vec<GeneratedMemberFact> {
-        let mut facts =
-            super::generated_member_extractor_core::extract_generated_member_facts(ast, file_id);
-        facts.extend(super::quickorm::extract_generated_member_facts(ast, file_id));
-        facts
+        super::generated_member_extractor_core::extract_generated_member_facts(ast, file_id)
     }
 
     /// Extract generated members with the source text available to adapters

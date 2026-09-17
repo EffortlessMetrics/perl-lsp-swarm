@@ -120,6 +120,38 @@ fn classify_import_shape_key_cross_extractor_disagreement_is_dynamic()
 }
 
 #[test]
+fn classify_import_shape_source_pair_boundary_discriminators()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Each input isolates exactly one rejection boundary of the exact
+    // source-pair comparison in `classify_import_shape`.
+    assert_eq!(
+        classify_import_shape(
+            &["type".to_string(), "'table'".to_string()],
+            Some("use DBIx::QuickORM kind => 'table';"),
+        ),
+        QuickOrmImportShape::Dynamic,
+        "input that hits the boundary: source_key != \"type\""
+    );
+    assert_eq!(
+        classify_import_shape(
+            &["kind".to_string(), "'table'".to_string()],
+            Some("use DBIx::QuickORM type => 'table';"),
+        ),
+        QuickOrmImportShape::Dynamic,
+        "input that hits the boundary: key != source_key"
+    );
+    assert_eq!(
+        classify_import_shape(
+            &["type".to_string(), "'orm'".to_string()],
+            Some("use DBIx::QuickORM type => 'table';"),
+        ),
+        QuickOrmImportShape::Dynamic,
+        "input that hits the boundary: value != source_value"
+    );
+    Ok(())
+}
+
+#[test]
 fn semantic_facade_wrappers_compose_core_and_quickorm_facts()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = "\

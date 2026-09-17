@@ -88,14 +88,8 @@ fn normalize_import_specs_at_node(node: &Node, specs: &mut [ImportSpec], source:
 }
 
 /// Extract the fixed `qorm_table` member installed by a direct, unfiltered
-/// QuickORM table-package `table` or `view` builder.
-pub(super) fn extract_generated_member_facts(
-    ast: &Node,
-    file_id: FileId,
-) -> Vec<GeneratedMemberFact> {
-    extract_generated_member_facts_from_source(ast, file_id, None)
-}
-
+/// QuickORM table-package `table` or `view` builder, using the source text to
+/// establish exact import authority.
 pub(super) fn extract_generated_member_facts_with_source(
     ast: &Node,
     file_id: FileId,
