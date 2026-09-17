@@ -4539,8 +4539,10 @@ removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-l
 # reproduced receipt at the same head with the identical summary; the
 # review-binding repair commit 12ab3e0d8 added the builder_packet field
 # declarations, whose two probes were reported on CI run 35259555456 job
-# 105331572297 at head b83e9e073):
-# no_static_path = 45 there, plus the 46th through 49th below,
+# 105331572297 at head b83e9e073; the review-hygiene repair commit
+# 7b614df3 added the FixtureTree guard declaration, whose probe was
+# reported on CI run 35280300752 job 105419235350 at head 7b614df39):
+# no_static_path = 45 there, plus the 46th through 50th below,
 # reachable_unrevealed = 0, all severity info:
 #   - 39 field_construction on declaration lines of the new E06 adapter
 #     (emacs_train_packet.rs): the BUILDER_CONTRACT / REVIEW_CONTRACT /
@@ -4552,19 +4554,20 @@ removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-l
 #     string literals and the pub(crate) mod test_support declaration;
 #   - 1 call_deletion probe on the clap Packet(EmacsTrainPacketCommand)
 #     enum variant declaration in the xtask dispatch enum at main.rs:4696;
-#   - 1 call_deletion probe on the tests.rs use-import line at tests.rs:27.
+#   - 2 call_deletion probes on the tests.rs use-import line and the
+#     FixtureTree drop-guard tuple declaration (review-hygiene repair).
 #
 # Declaration lines have no function body for ripr to trace into, and a
 # constructor-only test for a const or struct field is the receipt's own
 # named anti-pattern ("say so in the PR instead of adding proof theatre").
 # The executable behavior is not unproven: the same receipts classify the
 # module's real seams exposed/weakly_exposed with reachable_unrevealed = 0,
-# and the covering proof is the 34-falsifier inline #[cfg(test)] suite
+# and the covering proof is the 37-falsifier inline #[cfg(test)] suite
 # (xtask/src/tasks/emacs_train_packet/tests.rs) composing packets from
 # synthetic fixture trees, plus the shared-contract zero-drift checks and
 # the emacs-train-packet-contract lane.
 #
-# Identity key: gap_ids lists the 49 probe identities from those receipts.
+# Identity key: gap_ids lists the 50 probe identities from those receipts.
 # Path + classification are additional filters, not the selector. A future
 # executable no_static_path seam in these files with a different probe id
 # stays visible. kind remains descriptive metadata, not a declaration
@@ -4630,14 +4633,15 @@ gap_ids = [
   "probe:xtask_src_tasks_emacs_train_packet_tests.rs:call_deletion:010a891f",
   "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:5eeb2d23",
   "probe:xtask_src_tasks_emacs_train_packet.rs:field_construction:b7932d22",
+  "probe:xtask_src_tasks_emacs_train_packet_tests.rs:call_deletion:01660a2b",
 ]
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1429"
-reason = "PR #15573 (same-root transplant of #12277): all 49 no_static_path probes are the enforce-new-ripr gate's entire blocking basis on run 35105086795 (job 104844800697) at head 82a3328372 (45) plus the locally reproduced receipt at the same head (the 46th and 47th) and follow-up run 35259555456 (job 105331572297) at head b83e9e073 (the 48th and 49th) - 39 field_construction probes on declaration lines of the new E06 adapter (BUILDER_CONTRACT / REVIEW_CONTRACT / BUILDER_DISPOSITIONS / BLOCKING_DISPOSITIONS / BOUNDED_ROLES consts, LiveObservation and ReviewFacts struct field declarations including the builder_packet fields added by the review-binding repair 12ab3e0d8, clap arg struct fields), 8 call_deletion probes on the REVIEWER_CHALLENGE_QUESTIONS tuple string literals and the pub(crate) mod test_support declaration, 1 call_deletion probe on the clap Packet(EmacsTrainPacketCommand) enum variant declaration in the xtask dispatch enum at main.rs:4696, and 1 call_deletion probe on the tests.rs use-import line at tests.rs:27 (the test file's own import plumbing, never production behavior - same test-scaffolding class as ripr-suppress-goals-next-json-cli-test). All 49 carry severity info. Declaration and import lines have no function body to trace into; constructor-only tests would be proof theatre. Executable behavior is not unproven: the same receipts report the module's real seams exposed/weakly_exposed with reachable_unrevealed = 0, and the focused suite is 34/34 green at that head. Same ripr#1429 declaration-line class as ripr-suppress-15604-compiler-upstream-status-declaration-probes, ripr-suppress-14958-startup-inc-snapshot-declarations, ripr-suppress-compiler-transformation-contract-declarations, and ripr-suppress-quality-baseline-cfg-test-scanner. Selector is the 49 gap_ids from those receipts, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in these files with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
+reason = "PR #15573 (same-root transplant of #12277): all 50 no_static_path probes are the enforce-new-ripr gate's entire blocking basis on run 35105086795 (job 104844800697) at head 82a3328372 (45) plus the locally reproduced receipt at the same head (the 46th and 47th), follow-up run 35259555456 (job 105331572297) at head b83e9e073 (the 48th and 49th), and review-hygiene run 35280300752 (job 105419235350) at head 7b614df39 (the 50th) - 39 field_construction probes on declaration lines of the new E06 adapter (BUILDER_CONTRACT / REVIEW_CONTRACT / BUILDER_DISPOSITIONS / BLOCKING_DISPOSITIONS / BOUNDED_ROLES consts, LiveObservation and ReviewFacts struct field declarations including the builder_packet fields added by the review-binding repair 12ab3e0d8, clap arg struct fields), 8 call_deletion probes on the REVIEWER_CHALLENGE_QUESTIONS tuple string literals and the pub(crate) mod test_support declaration, 1 call_deletion probe on the clap Packet(EmacsTrainPacketCommand) enum variant declaration in the xtask dispatch enum at main.rs:4696, and 2 call_deletion probes on the tests.rs use-import line and the FixtureTree drop-guard tuple declaration added by the review-hygiene repair 7b614df3 (test-file plumbing and guard declaration, never production behavior - same test-scaffolding class as ripr-suppress-goals-next-json-cli-test). All 50 carry severity info. Declaration and import lines have no function body to trace into; constructor-only tests would be proof theatre. Executable behavior is not unproven: the same receipts report the module's real seams exposed/weakly_exposed with reachable_unrevealed = 0, and the focused suite is 37/37 green at that head. Same ripr#1429 declaration-line class as ripr-suppress-15604-compiler-upstream-status-declaration-probes, ripr-suppress-14958-startup-inc-snapshot-declarations, ripr-suppress-compiler-transformation-contract-declarations, and ripr-suppress-quality-baseline-cfg-test-scanner. Selector is the 50 gap_ids from those receipts, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in these files with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
 created = "2026-09-16"
 review_after = "2026-10-16"
 expires = "2026-12-31"
-removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable (non-declaration) no_static_path seam in xtask/src/tasks/emacs_train_packet.rs, its tests submodule, or xtask/src/main.rs outside the 49 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable (non-declaration) no_static_path seam in xtask/src/tasks/emacs_train_packet.rs, its tests submodule, or xtask/src/main.rs outside the 50 identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
 
 # -----------------------------------------------------------------------------
 # Moose/Moose::Role activation substrate (#7788): a checked activation detector
