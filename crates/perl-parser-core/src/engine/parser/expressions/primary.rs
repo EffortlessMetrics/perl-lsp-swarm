@@ -48,10 +48,7 @@ impl<'a> Parser<'a> {
     fn record_unclosed_interpolation_delimiter(&mut self, text: &str, token_start: usize) {
         if let Some(delim) = Self::find_unclosed_interpolation_delimiter(text) {
             self.record_error(ParseError::syntax(
-                format!(
-                    "Unclosed {} delimiter in interpolated string before closing quote",
-                    delim
-                ),
+                format!("Unclosed {} delimiter in interpolated string before closing quote", delim),
                 token_start,
             ));
         }
@@ -79,8 +76,9 @@ impl<'a> Parser<'a> {
                 }
 
                 if bytes[i] == b'{' {
-                    if !Self::consume_balanced_in_interpolated_string(bytes, i, b'{', b'}', quote_end)
-                    {
+                    if !Self::consume_balanced_in_interpolated_string(
+                        bytes, i, b'{', b'}', quote_end,
+                    ) {
                         return Some('{');
                     }
                     continue;
@@ -205,10 +203,7 @@ impl<'a> Parser<'a> {
                     || !bytes[after].is_ascii_alphanumeric() && bytes[after] != b'_';
                 if before_ok && after_ok {
                     *search_offset = after;
-                    return SourceLocation {
-                        start: token_start + index,
-                        end: token_start + after,
-                    };
+                    return SourceLocation { start: token_start + index, end: token_start + after };
                 }
             }
             index += 1;
@@ -918,14 +913,17 @@ impl<'a> Parser<'a> {
                 // This prevents the indirect-call heuristic from firing on
                 // builtins like `shift`/`pop` inside `(shift @arr)->method()`.
                 self.mark_not_stmt_start();
+                self.enter_paren_group();
 
                 // Check for empty list
                 if self.peek_kind() == Some(TokenKind::RightParen) {
                     let end_token = self.tokens.next()?;
-                    return Ok(Node::new(
+                    let group = Node::new(
                         NodeKind::ArrayLiteral { elements: vec![] },
                         SourceLocation { start, end: end_token.end() },
-                    ));
+                    );
+                    self.leave_paren_group();
+                    return Ok(group);
                 }
 
                 // Check if we might have a simple parenthesized expression
@@ -1087,10 +1085,13 @@ impl<'a> Parser<'a> {
                     let end = self.previous_position();
 
                     // Only convert to hash if we saw a fat comma
-                    Ok(Self::build_list_or_hash(elements, saw_fat_comma, start, end))
+                    let group = Self::build_list_or_hash(elements, saw_fat_comma, start, end);
+                    self.leave_paren_group();
+                    Ok(group)
                 } else {
                     // It's a parenthesized expression
                     self.expect_closing_delimiter(TokenKind::RightParen)?;
+                    self.leave_paren_group();
                     Ok(first)
                 }
             }
@@ -1100,72 +1101,7 @@ impl<'a> Parser<'a> {
                 // depth units (this check plus parse_primary's own guard) so that
                 // deep array-ref nesting hits MAX_RECURSION_DEPTH before the OS stack
                 // overflows — symmetric with the double-guard used by hash literals.
-                self.check_recursion()?;
-
-                // Array reference constructor: [ LIST ]
-                //
-                // Inside [...] the content is always list context. Fat arrow (=>)
-                // acts as a comma with auto-quoting of the left-hand bareword — it
-                // does NOT introduce a hash literal. We parse element-by-element
-                // using parse_assignment so that comma / fat-arrow separators are
-                // consumed at this level rather than being swallowed into a single
-                // inner expression by parse_expression -> parse_comma.
-                let start_token = self.tokens.next()?; // consume [
-                let start = start_token.start();
-
-                let mut elements = Vec::new();
-
-                while self.peek_kind() != Some(TokenKind::RightBracket) && !self.tokens.is_eof() {
-                    let mut elem = self.parse_assignment()?;
-
-                    // Fat arrow: auto-quote bare identifiers and consume the =>
-                    if self.peek_kind() == Some(TokenKind::FatArrow) {
-                        Self::autoquote_fat_arrow_key(&mut elem);
-                        self.consume_token()?; // consume =>
-                        elements.push(elem);
-                        // Parse the value that follows =>
-                        if self.peek_kind() != Some(TokenKind::RightBracket) {
-                            elements.push(self.parse_assignment()?);
-                        }
-                    } else {
-                        elements.push(elem);
-                    }
-
-                    // Consume comma separator; a fat-arrow separator is left
-                    // for the top of the next iteration to handle as a key.
-                    // e.g. `[a => b => c]` — after pushing `a` and `b`, the
-                    // next peek is `=>`, so we do NOT break; we let the loop
-                    // re-enter and treat `b` (already pushed) as the key for
-                    // the implicit next pair.  Actually `b` is already in
-                    // elements — the chained `=>` makes `c` a new element too.
-                    // We consume `=>` here so the loop-top `parse_assignment`
-                    // picks up `c` as the value.
-                    if self.peek_kind() == Some(TokenKind::Comma) {
-                        self.consume_token()?; // consume ,
-                        self.consume_redundant_commas()?;
-                    } else if self.peek_kind() == Some(TokenKind::FatArrow) {
-                        // Chained fat arrow: the value we just pushed becomes
-                        // the auto-quoted key for the next pair.  Autoquote the
-                        // last element and consume the `=>`.
-                        if let Some(last) = elements.last_mut() {
-                            Self::autoquote_fat_arrow_key(last);
-                        }
-                        self.consume_token()?; // consume chained =>
-                        // Parse the value that follows the chained =>
-                        if self.peek_kind() != Some(TokenKind::RightBracket) && !self.tokens.is_eof() {
-                            elements.push(self.parse_assignment()?);
-                        }
-                        // Continue loop — there may be more separators
-                    } else {
-                        break;
-                    }
-                }
-
-                self.expect_closing_delimiter(TokenKind::RightBracket)?;
-                let end = self.previous_position();
-
-                self.exit_recursion();
-                Ok(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end }))
+                self.with_depth(|s| s.parse_array_literal_contents())
             }
 
             // Handle & as sigil when at primary position
@@ -1341,6 +1277,73 @@ impl<'a> Parser<'a> {
             }
         }
     }
+
+    /// Array reference constructor: `[ LIST ]`.
+    ///
+    /// Called under an extra [`Parser::with_depth`] so each `[...]` nesting
+    /// level consumes two depth units with parse_primary's own guard.
+    fn parse_array_literal_contents(&mut self) -> ParseResult<Node> {
+        // Inside [...] the content is always list context. Fat arrow (=>)
+        // acts as a comma with auto-quoting of the left-hand bareword — it
+        // does NOT introduce a hash literal. We parse element-by-element
+        // using parse_assignment so that comma / fat-arrow separators are
+        // consumed at this level rather than being swallowed into a single
+        // inner expression by parse_expression -> parse_comma.
+        let start_token = self.tokens.next()?; // consume [
+        let start = start_token.start();
+
+        let mut elements = Vec::new();
+
+        while self.peek_kind() != Some(TokenKind::RightBracket) && !self.tokens.is_eof() {
+            let mut elem = self.parse_assignment()?;
+
+            // Fat arrow: auto-quote bare identifiers and consume the =>
+            if self.peek_kind() == Some(TokenKind::FatArrow) {
+                Self::auto_quote_bareword_before_fat_comma(&mut elem);
+                self.consume_token()?; // consume =>
+                elements.push(elem);
+                // Parse the value that follows =>
+                if self.peek_kind() != Some(TokenKind::RightBracket) {
+                    elements.push(self.parse_assignment()?);
+                }
+            } else {
+                elements.push(elem);
+            }
+
+            // Consume comma separator; a fat-arrow separator is left
+            // for the top of the next iteration to handle as a key.
+            // e.g. `[a => b => c]` — after pushing `a` and `b`, the
+            // next peek is `=>`, so we do NOT break; we let the loop
+            // re-enter and treat `b` (already pushed) as the key for
+            // the implicit next pair.  Actually `b` is already in
+            // elements — the chained `=>` makes `c` a new element too.
+            // We consume `=>` here so the loop-top `parse_assignment`
+            // picks up `c` as the value.
+            if self.peek_kind() == Some(TokenKind::Comma) {
+                self.consume_token()?; // consume ,
+                self.consume_redundant_commas()?;
+            } else if self.peek_kind() == Some(TokenKind::FatArrow) {
+                // Chained fat arrow: the value we just pushed becomes
+                // the auto-quoted key for the next pair.  Autoquote the
+                // last element and consume the `=>`.
+                if let Some(last) = elements.last_mut() {
+                    Self::auto_quote_bareword_before_fat_comma(last);
+                }
+                self.consume_token()?; // consume chained =>
+                // Parse the value that follows the chained =>
+                if self.peek_kind() != Some(TokenKind::RightBracket) && !self.tokens.is_eof() {
+                    elements.push(self.parse_assignment()?);
+                }
+                // Continue loop — there may be more separators
+            } else {
+                break;
+            }
+        }
+
+        self.expect_closing_delimiter(TokenKind::RightBracket)?;
+        let end = self.previous_position();
+        Ok(Node::new(NodeKind::ArrayLiteral { elements }, SourceLocation { start, end }))
+    }
 }
 
 /// Returns `true` if `pattern` is a *simple scalar variable* of the form
@@ -1440,7 +1443,10 @@ mod balanced_segment_conformance {
     #[test]
     fn simple_parens_balanced() {
         // "(a b c)" — one level, no escapes
-        assert!(is_balanced(b"(a b c)", 0, b'(', b')'), "parser-core: '(a b c)' should be balanced");
+        assert!(
+            is_balanced(b"(a b c)", 0, b'(', b')'),
+            "parser-core: '(a b c)' should be balanced"
+        );
     }
 
     #[test]
@@ -1462,13 +1468,19 @@ mod balanced_segment_conformance {
     #[test]
     fn nested_parens_balanced() {
         // "(a (b) c)" — depth 2 then back to 1 then 0
-        assert!(is_balanced(b"(a (b) c)", 0, b'(', b')'), "parser-core: '(a (b) c)' should be balanced");
+        assert!(
+            is_balanced(b"(a (b) c)", 0, b'(', b')'),
+            "parser-core: '(a (b) c)' should be balanced"
+        );
     }
 
     #[test]
     fn nested_braces_balanced() {
         // "{ {x} {y} }" — two inner braces
-        assert!(is_balanced(b"{ {x} {y} }", 0, b'{', b'}'), "parser-core: '{{ {{x}} {{y}} }}' should be balanced");
+        assert!(
+            is_balanced(b"{ {x} {y} }", 0, b'{', b'}'),
+            "parser-core: '{{ {{x}} {{y}} }}' should be balanced"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1478,13 +1490,19 @@ mod balanced_segment_conformance {
     #[test]
     fn escaped_close_in_middle_balanced() {
         // "(a \) b)" — \) is escaped, real close is at end
-        assert!(is_balanced(b"(a \\) b)", 0, b'(', b')'), "parser-core: escaped close '\\\\)' does not close; ')' at end closes");
+        assert!(
+            is_balanced(b"(a \\) b)", 0, b'(', b')'),
+            "parser-core: escaped close '\\\\)' does not close; ')' at end closes"
+        );
     }
 
     #[test]
     fn escaped_open_in_middle_balanced() {
         // "(a \( b)" — \( is escaped so depth does NOT increase
-        assert!(is_balanced(b"(a \\( b)", 0, b'(', b')'), "parser-core: escaped open '\\\\(' does not nest; one close suffices");
+        assert!(
+            is_balanced(b"(a \\( b)", 0, b'(', b')'),
+            "parser-core: escaped open '\\\\(' does not nest; one close suffices"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1499,13 +1517,19 @@ mod balanced_segment_conformance {
     #[test]
     fn backslash_at_eof_unbalanced() {
         // "(a \" — backslash is the last byte; nothing to escape; never closes
-        assert!(!is_balanced(b"(a \\", 0, b'(', b')'), "parser-core: trailing backslash at EOF → unbalanced");
+        assert!(
+            !is_balanced(b"(a \\", 0, b'(', b')'),
+            "parser-core: trailing backslash at EOF → unbalanced"
+        );
     }
 
     #[test]
     fn escaped_close_only_unbalanced() {
         // "(\)" — the ')' is escaped, so the segment never receives a real close
-        assert!(!is_balanced(b"(\\)", 0, b'(', b')'), "parser-core: '(\\\\)' has only an escaped close → unbalanced");
+        assert!(
+            !is_balanced(b"(\\)", 0, b'(', b')'),
+            "parser-core: '(\\\\)' has only an escaped close → unbalanced"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1515,7 +1539,10 @@ mod balanced_segment_conformance {
     #[test]
     fn unbalanced_open_only_no_close() {
         // "(a b c" — no closing paren anywhere
-        assert!(!is_balanced(b"(a b c", 0, b'(', b')'), "parser-core: '(a b c' (no close) → unbalanced");
+        assert!(
+            !is_balanced(b"(a b c", 0, b'(', b')'),
+            "parser-core: '(a b c' (no close) → unbalanced"
+        );
     }
 
     // -----------------------------------------------------------------------

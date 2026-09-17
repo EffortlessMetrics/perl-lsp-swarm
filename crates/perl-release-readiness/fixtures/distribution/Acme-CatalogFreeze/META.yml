@@ -1,0 +1,16 @@
+---
+abstract: 'Minimal catalog v1 control distribution'
+author:
+  - 'Catalog Freeze <devnull@example.com>'
+build_requires: {}
+dynamic_config: 0
+generated_by: 'hand-authored for perl-kwalitee catalog v1'
+license: perl
+meta-spec:
+  url: http://module-build.sourceforge.net/META-spec-v1.4.html
+  version: '1.4'
+name: Acme-CatalogFreeze
+requires:
+  perl: '5.008'
+resources: {}
+version: '0.001'

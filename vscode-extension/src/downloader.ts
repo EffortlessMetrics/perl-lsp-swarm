@@ -5,11 +5,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as os from 'os';
-import { promisify } from 'util';
 import * as child_process from 'child_process';
-import * as tar from 'tar';
-import AdmZip from 'adm-zip';
 import { BoundedJsonStatusError, fetchBoundedJson } from './boundedHttpJson';
+import { downloadBoundedFile, unlinkPartialDownloadDest } from './boundedFileDownload';
+import { extractManagedArchive } from './managedArchiveExtract';
+import {
+  MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+  MANAGED_CHECKSUM_FILE_MAX_BYTES,
+} from './managedArchiveSafetyPolicy';
 import type { ManagedCandidateManifest } from './managedCacheProtocol';
 import {
   collectStaleManagedCandidates,
@@ -38,8 +41,6 @@ import {
   LEGACY_UPDATE_CHECK_STATE_KEY,
   type ManagedEmulation,
 } from './managedStorageIdentity';
-
-const execFile = promisify(child_process.execFile);
 
 interface ReleaseAsset {
   name: string;
@@ -274,15 +275,70 @@ export async function copyManagedFileWithRetry(
   }
 }
 
-function githubApiHeaders(url: string, includeAuth = true): Record<string, string> {
+/** Only requests to this origin may carry the GitHub API bearer credential. */
+const GITHUB_API_ORIGIN = 'https://api.github.com/';
+
+/**
+ * Why a managed-release request did or did not carry GitHub API credentials.
+ *
+ * Certificate validation (`http.proxyStrictSSL`) and credential attachment are
+ * two separate policies. They used to share one boolean by accident: the
+ * strict-TLS flag was passed positionally into an `includeAuth` parameter, so
+ * editing either policy silently moved the other and nothing in the code named
+ * the rule being applied (#15493). Resolving the decision into this disposition
+ * keeps the two policies independent and lets callers explain the outcome.
+ */
+export type GitHubAuthDisposition =
+  | 'sent'
+  | 'no_token'
+  | 'not_github_api_host'
+  | 'withheld_unverified_tls';
+
+/** The GitHub token this host offers, if any. */
+export function readGitHubToken(): string | undefined {
+  return process.env.GITHUB_TOKEN || process.env.GH_TOKEN || undefined;
+}
+
+/**
+ * Decide whether one managed-release request may carry the GitHub credential.
+ *
+ * `withheld_unverified_tls` is a deliberate refusal, not a side effect: with
+ * `http.proxyStrictSSL` disabled the connection's certificate is not validated,
+ * so any host able to intercept it could read a bearer token. The request still
+ * proceeds, unauthenticated and subject to the anonymous rate limit.
+ */
+export function resolveGitHubAuthDisposition(params: {
+  readonly url: string;
+  readonly hasToken: boolean;
+  readonly strictTls: boolean;
+}): GitHubAuthDisposition {
+  if (!params.url.startsWith(GITHUB_API_ORIGIN)) {
+    return 'not_github_api_host';
+  }
+  if (!params.hasToken) {
+    return 'no_token';
+  }
+  if (!params.strictTls) {
+    return 'withheld_unverified_tls';
+  }
+  return 'sent';
+}
+
+/**
+ * Headers for one managed-release API request. The credential rides on the
+ * already-resolved disposition, so this builder makes no policy decision.
+ */
+function githubApiHeaders(authDisposition: GitHubAuthDisposition): Record<string, string> {
   const headers: Record<string, string> = {
     'User-Agent': 'vscode-perl-lsp',
     Accept: 'application/vnd.github+json',
   };
 
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (includeAuth && token && url.startsWith('https://api.github.com/')) {
-    headers.Authorization = `Bearer ${token}`;
+  if (authDisposition === 'sent') {
+    const token = readGitHubToken();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
   }
 
   return headers;
@@ -322,6 +378,81 @@ export function findReleaseAssetName(
   }
 
   return undefined;
+}
+
+/**
+ * Result of looking an asset up in a `sha256sum(1)`-format SHA256SUMS manifest
+ * (#9839). `absent` means no well-formed entry names the requested asset;
+ * `conflicting` means several well-formed entries name it; both are fail-closed
+ * outcomes for the caller.
+ */
+export type Sha256SumsLookup =
+  | { status: 'found'; digest: string }
+  | { status: 'absent' }
+  | { status: 'malformed' }
+  | { status: 'conflicting' };
+
+// A genuine `sha256sum` entry anchors the 64-hex digest at the start of the
+// line, requires whitespace between digest and file field, and optionally
+// carries coreutils' binary-mode marker (outside the file field). Anything
+// else never supplies a digest (#9839).
+const SHA256_SUMS_ENTRY = /^(\S+)[ \t]+(?:\*?)(.*)$/;
+const SHA256_DIGEST = /^[0-9a-f]{64}$/;
+
+/**
+ * Resolve the expected SHA-256 digest for `assetName` from a SHA256SUMS text.
+ *
+ * Anchored whole-token verification (#9839): an entry counts only when its
+ * leading token is exactly a SHA-256 digest and its file field exactly equals
+ * `assetName`. Lines that merely contain the asset name or a digest string as
+ * a substring cannot satisfy verification.
+ */
+export function lookupSha256SumsDigest(checksums: string, assetName: string): Sha256SumsLookup {
+  const digests = new Set<string>();
+  let matchingEntries = 0;
+  let malformedEntries = 0;
+
+  for (const rawLine of checksums.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    const entry = SHA256_SUMS_ENTRY.exec(line);
+
+    if (!entry) {
+      continue;
+    }
+
+    const [, digestToken, fileName] = entry;
+
+    if (!digestToken || fileName !== assetName) {
+      continue;
+    }
+
+    matchingEntries += 1;
+    if (!SHA256_DIGEST.test(digestToken)) {
+      malformedEntries += 1;
+      continue;
+    }
+    digests.add(digestToken.toLowerCase());
+  }
+
+  if (matchingEntries === 0) {
+    return { status: 'absent' };
+  }
+
+  if (matchingEntries > 1) {
+    return { status: 'conflicting' };
+  }
+
+  if (malformedEntries > 0) {
+    return { status: 'malformed' };
+  }
+
+  const [resolvedDigest] = digests;
+
+  if (!resolvedDigest) {
+    return { status: 'absent' };
+  }
+
+  return { status: 'found', digest: resolvedDigest };
 }
 
 /**
@@ -610,6 +741,21 @@ export class BinaryDownloader {
   /** Release metadata envelope. Real GitHub release JSON is far below this. */
   private static readonly MAX_RELEASE_METADATA_BYTES = 1024 * 1024;
   private lastErrorMessage: string | undefined;
+  /**
+   * The credential disposition of a release-metadata request that was refused
+   * with HTTP 403, if one was. Only that request can carry credentials, so only
+   * it can produce a credential-related remedy.
+   */
+  private releaseMetadata403Disposition: GitHubAuthDisposition | undefined;
+  /**
+   * True only while this instance is inside its own download run.
+   *
+   * `checkForUpdateSilent` reaches `fetchReleaseMetadata` too, outside the
+   * singleflight contract. Today every caller builds it a fresh downloader, so
+   * it cannot reach another run's record — but that is an accident of call-site
+   * arrangement, not a rule. Gating the write on the owned run makes it one.
+   */
+  private ownedDownloadRunActive = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -622,6 +768,34 @@ export class BinaryDownloader {
 
   getLastErrorMessage(): string | undefined {
     return this.lastErrorMessage;
+  }
+
+  /** The GitHub API endpoint that lists this product's releases. */
+  private static releasesApiUrl(): string {
+    return `${GITHUB_API_ORIGIN}repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
+  }
+
+  /**
+   * Remedy sentence for an HTTP 403 from the release API.
+   *
+   * "Set GITHUB_TOKEN" is wrong advice for a user who already set one and had
+   * it withheld because certificate validation is off (#15493): the setting to
+   * change is `http.proxyStrictSSL`, not the environment.
+   *
+   * The remedy follows the request that was actually refused, not the current
+   * settings. A 403 can also come from the archive or checksum download, which
+   * never carry credentials; re-enabling certificate validation would not
+   * change those, so they keep the generic advice.
+   */
+  private rateLimitRemedy(): string {
+    if (this.releaseMetadata403Disposition === 'withheld_unverified_tls') {
+      return (
+        'The release check ran without your GitHub token because "http.proxyStrictSSL" is disabled, ' +
+        'which turns off certificate validation; re-enable it so the token can be used over a verified connection.'
+      );
+    }
+
+    return 'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit.';
   }
 
   async ensureBinary(forceDownload = false): Promise<string | null> {
@@ -647,6 +821,11 @@ export class BinaryDownloader {
       );
     }
 
+    // Clear the 403 record here rather than on entry: a force call that joins
+    // an in-flight ensure sits in the await above while that other run records
+    // its own metadata disposition. Resetting on entry would both leak that
+    // value into this run's remedy and wipe the in-flight run's own record.
+    this.releaseMetadata403Disposition = undefined;
     const promise = this.runEnsureBinary(forceDownload);
     activeManagedInstall = { promise, reason: myReason };
     try {
@@ -659,6 +838,15 @@ export class BinaryDownloader {
   }
 
   private async runEnsureBinary(forceDownload: boolean): Promise<string | null> {
+    this.ownedDownloadRunActive = true;
+    try {
+      return await this.runEnsureBinaryInner(forceDownload);
+    } finally {
+      this.ownedDownloadRunActive = false;
+    }
+  }
+
+  private async runEnsureBinaryInner(forceDownload: boolean): Promise<string | null> {
     const config = vscode.workspace.getConfiguration('perl-lsp');
     const channel = config.get<string>('channel', 'latest');
     const versionTag = config.get<string>('versionTag', '');
@@ -737,11 +925,14 @@ export class BinaryDownloader {
         }
         buttons = ['Install Manually'];
       } else if (errorMsg.includes('HTTP 403')) {
-        // GitHub rate limit or auth failure
-        message =
-          'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit). ' +
-          'Wait a few minutes, or set the GITHUB_TOKEN environment variable to increase your rate limit. ' +
-          manualInstallNote;
+        // GitHub rate limit or auth failure. The banner follows the remedy: a
+        // withheld credential is not a rate-limit story, so it must not be
+        // labelled as one.
+        const withheldCredential = this.releaseMetadata403Disposition === 'withheld_unverified_tls';
+        const banner = withheldCredential
+          ? 'perl-lsp: Download blocked (HTTP 403 — request was unauthenticated).'
+          : 'perl-lsp: Download blocked (HTTP 403 — GitHub rate limit).';
+        message = `${banner} ${this.rateLimitRemedy()} ${manualInstallNote}`;
         buttons = ['Install Manually', 'View Logs'];
       } else if (errorMsg.includes('HTTP 404')) {
         // Release or asset not found
@@ -883,7 +1074,14 @@ export class BinaryDownloader {
         try {
           // Download binary archive
           progress.report({ increment: 10, message: 'Downloading binary...' });
-          await this.downloadFile(asset.browser_download_url, archivePath);
+          await this.downloadFile(
+            asset.browser_download_url,
+            archivePath,
+            30000,
+            5,
+            MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+            token,
+          );
 
           if (token.isCancellationRequested) {
             throw new Error('Download cancelled');
@@ -896,24 +1094,38 @@ export class BinaryDownloader {
 
           progress.report({ increment: 40, message: 'Verifying checksum...' });
           const checksumPath = path.join(tempDir, 'SHA256SUMS');
-          await this.downloadFile(checksumAsset.browser_download_url, checksumPath);
+          await this.downloadFile(
+            checksumAsset.browser_download_url,
+            checksumPath,
+            30000,
+            5,
+            MANAGED_CHECKSUM_FILE_MAX_BYTES,
+            token,
+          );
 
-          // Find the checksum line for our file
-          const checksums = fs.readFileSync(checksumPath, 'utf8');
-          const lines = checksums.split('\n');
-          const checksumLine = lines.find((line) => line.includes(assetName));
+          // Find the checksum entry for our file
+          const sumsEntry = lookupSha256SumsDigest(
+            fs.readFileSync(checksumPath, 'utf8'),
+            assetName,
+          );
 
-          if (!checksumLine) {
-            throw new Error(
-              `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
-            );
-          }
-
-          const expectedChecksum = checksumLine.split(/\s+/)[0]?.toLowerCase();
-          if (!expectedChecksum) {
-            throw new Error(
-              `Security check failed: Checksum for ${assetName} is malformed in SHA256SUMS.`,
-            );
+          let expectedChecksum: string;
+          switch (sumsEntry.status) {
+            case 'found':
+              expectedChecksum = sumsEntry.digest;
+              break;
+            case 'conflicting':
+              throw new Error(
+                `Security check failed: Conflicting checksum entries for ${assetName} in SHA256SUMS.`,
+              );
+            case 'malformed':
+              throw new Error(
+                `Security check failed: Malformed checksum entry for ${assetName} in SHA256SUMS.`,
+              );
+            case 'absent':
+              throw new Error(
+                `Security check failed: Checksum for ${assetName} not found in SHA256SUMS file.`,
+              );
           }
           const actualChecksum = await this.calculateSHA256(archivePath);
 
@@ -924,46 +1136,28 @@ export class BinaryDownloader {
           }
           this.outputChannel.appendLine('Checksum verified successfully');
 
-          // Extract archive
+          // Inspect then extract only the documented executables (#7432).
           progress.report({ increment: 30, message: 'Extracting binary...' });
           const extractDir = path.join(tempDir, 'extracted');
-          fs.mkdirSync(extractDir);
-
-          // Choose extraction method based on file extension
-          if (assetName.endsWith('.tar.gz')) {
-            await tar.x({
-              file: archivePath,
-              cwd: extractDir,
-            });
-          } else if (assetName.endsWith('.zip')) {
-            await new Promise<void>((resolve, reject) => {
-              const zip = new AdmZip(archivePath);
-              zip.extractAllToAsync(extractDir, true, true, (error) => {
-                if (error) {
-                  reject(error);
-                } else {
-                  resolve();
-                }
-              });
-            });
-          } else if (assetName.endsWith('.tar.xz')) {
-            // Fallback to system tar for .tar.xz (node-tar doesn't support xz)
-            await execFile('tar', ['-xJf', archivePath, '-C', extractDir]);
-          } else {
+          const format = assetName.endsWith('.zip')
+            ? 'zip'
+            : assetName.endsWith('.tar.gz')
+              ? 'tar.gz'
+              : null;
+          if (format === null) {
             throw new Error(`Unsupported archive format: ${assetName}`);
           }
-
-          // Find the binary
-          const binaryNames =
-            process.platform === 'win32'
-              ? ['perllsp.exe', 'perl-lsp.exe']
-              : ['perllsp', 'perl-lsp'];
-          const extractedBinary =
-            binaryNames.map((name) => this.findBinary(extractDir, name)).find(Boolean) ?? null;
-
-          if (!extractedBinary) {
-            throw new Error('Binary not found in archive');
+          if (token.isCancellationRequested) {
+            throw new Error('Download cancelled');
           }
+          const extracted = await extractManagedArchive({
+            archivePath,
+            extractDir,
+            format,
+            windows: format === 'zip',
+            cancellationToken: token,
+          });
+          const extractedBinary = extracted.serverPath;
 
           // Move to final location. Each install lands in a unique
           // versioned dir so a forced reinstall while perllsp.exe is
@@ -992,9 +1186,9 @@ export class BinaryDownloader {
             fs.chmodSync(finalPath, 0o755);
           }
 
-          // Best-effort: copy perl-dap if found in archive
+          // Best-effort: copy perl-dap when the archive carried exactly one.
           const dapName = process.platform === 'win32' ? 'perl-dap.exe' : 'perl-dap';
-          const extractedDap = this.findBinary(extractDir, dapName);
+          const extractedDap = extracted.dapPath;
           let installedDapPath: string | null = null;
           if (extractedDap) {
             const dapDest = path.join(installDir, dapName);
@@ -1104,13 +1298,13 @@ export class BinaryDownloader {
       if (versionTag) {
         // Get specific release by tag. The tag is user configuration, so it is
         // encoded before it reaches the API path.
-        url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases/tags/${encodeURIComponent(versionTag)}`;
+        url = `${BinaryDownloader.releasesApiUrl()}/tags/${encodeURIComponent(versionTag)}`;
       }
       // A tag channel without versionTag performs no fetch: the selector's
       // closed policy owns that refusal instead of a silent channel fallback.
     } else {
       // One list endpoint feeds the selector for both stable and latest.
-      url = `https://api.github.com/repos/${BinaryDownloader.REPO_OWNER}/${BinaryDownloader.REPO_NAME}/releases`;
+      url = BinaryDownloader.releasesApiUrl();
     }
 
     let releases: Release[] = [];
@@ -1201,8 +1395,20 @@ export class BinaryDownloader {
     const isHttps = url.startsWith('https:');
     const httpConfig = vscode.workspace.getConfiguration('http');
     const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+    const authDisposition = resolveGitHubAuthDisposition({
+      url,
+      hasToken: readGitHubToken() !== undefined,
+      strictTls: proxyStrictSSL,
+    });
+    if (authDisposition === 'withheld_unverified_tls') {
+      // Record the reason, never the credential.
+      this.outputChannel.appendLine(
+        'Managed release metadata: GitHub credentials withheld because "http.proxyStrictSSL" is disabled, ' +
+          'which turns off certificate validation. The request proceeds unauthenticated under the anonymous rate limit.',
+      );
+    }
     const options = {
-      headers: githubApiHeaders(url, proxyStrictSSL),
+      headers: githubApiHeaders(authDisposition),
       rejectUnauthorized: proxyStrictSSL,
     };
 
@@ -1219,6 +1425,18 @@ export class BinaryDownloader {
       // Preserve the established message for a missing release.
       if (error instanceof BoundedJsonStatusError && error.statusCode === 404) {
         throw new Error('No releases found');
+      }
+      if (
+        error instanceof BoundedJsonStatusError &&
+        error.statusCode === 403 &&
+        this.ownedDownloadRunActive
+      ) {
+        // Remember the credential decision this refused request actually used.
+        // A later 403 from the archive or checksum download is a different
+        // request that never carries credentials, so it must not inherit this.
+        // Only a download run reports a remedy, so only a download run records
+        // one: a silent update check must not write into that run's state.
+        this.releaseMetadata403Disposition = authDisposition;
       }
       throw error;
     }
@@ -1276,137 +1494,81 @@ export class BinaryDownloader {
     dest: string,
     timeoutMs = 30000,
     maxRedirects = 5,
+    maxBytes = MANAGED_ARCHIVE_MAX_COMPRESSED_BYTES,
+    cancellationToken?: vscode.CancellationToken,
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      // Security check: Enforce HTTPS for remote URLs to prevent MITM attacks
-      try {
-        const parsedUrl = new URL(url);
+    try {
+      const parsedUrl = new URL(url);
 
-        // Only allow http: and https: protocols
-        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-          reject(
-            new Error(
-              `Unsupported protocol: ${parsedUrl.protocol}. Only HTTP and HTTPS are allowed.`,
-            ),
-          );
-          return;
-        }
-
-        // Check for local addresses (full IPv4 loopback range 127.0.0.0/8)
-        // Note: URL.hostname normalizes IPv6 addresses and never includes brackets
-        const ipv4LoopbackRegex = /^127(?:\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/;
-        const isLocal =
-          ['localhost', '::1'].includes(parsedUrl.hostname) ||
-          parsedUrl.hostname.endsWith('.localhost') ||
-          ipv4LoopbackRegex.test(parsedUrl.hostname);
-
-        if (parsedUrl.protocol === 'http:' && !isLocal) {
-          reject(
-            new Error(
-              `Security violation: Insecure HTTP download prevented for remote host: ${parsedUrl.hostname}. Use HTTPS or a local server.`,
-            ),
-          );
-          return;
-        }
-      } catch (e) {
-        reject(
-          new Error(
-            `Invalid URL format: ${url}. Error: ${e instanceof Error ? e.message : String(e)}`,
-          ),
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        throw new Error(
+          `Unsupported protocol: ${parsedUrl.protocol}. Only HTTP and HTTPS are allowed.`,
         );
-        return;
       }
 
-      const file = this.createWriteStream(dest);
-      let timedOut = false;
-      let timeout: NodeJS.Timeout | undefined;
+      // Check for local addresses (full IPv4 loopback range 127.0.0.0/8)
+      // Note: URL.hostname normalizes IPv6 addresses and never includes brackets
+      const ipv4LoopbackRegex = /^127(?:\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}$/;
+      const isLocal =
+        ['localhost', '::1'].includes(parsedUrl.hostname) ||
+        parsedUrl.hostname.endsWith('.localhost') ||
+        ipv4LoopbackRegex.test(parsedUrl.hostname);
 
-      // Install the listener before any request activity. A refused request
-      // can destroy the stream before a response callback runs; leaving the
-      // stream unobserved turns a normal download failure into an unhandled
-      // ENOENT when a caller cleans up its temporary directory.
-      file.once('error', (err: NodeJS.ErrnoException) => {
-        if (timeout) {
-          clearTimeout(timeout);
+      if (parsedUrl.protocol === 'http:' && !isLocal) {
+        throw new Error(
+          `Security violation: Insecure HTTP download prevented for remote host: ${parsedUrl.hostname}. Use HTTPS or a local server.`,
+        );
+      }
+    } catch (e) {
+      if (
+        e instanceof Error &&
+        (e.message.startsWith('Unsupported protocol') || e.message.startsWith('Security violation'))
+      ) {
+        throw e;
+      }
+      throw new Error(
+        `Invalid URL format: ${url}. Error: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
+    const httpConfig = vscode.workspace.getConfiguration('http');
+    const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
+    const options = {
+      headers: { 'User-Agent': 'vscode-perl-lsp' },
+      rejectUnauthorized: proxyStrictSSL,
+    };
+    const isHttps = url.startsWith('https:');
+    const bounded: Parameters<typeof downloadBoundedFile>[0] = {
+      requestFactory: (listener) => this.httpGet(isHttps, url, options, listener),
+      dest,
+      timeoutMs,
+      maxBytes,
+      operationName: 'Archive download',
+      maxRedirects,
+      followRedirect: async (location, remainingRedirects) => {
+        if (
+          isHttps &&
+          location.toLowerCase().startsWith('http:') &&
+          !location.toLowerCase().startsWith('https:')
+        ) {
+          throw new Error('Security violation: Redirect from HTTPS to HTTP prevented');
         }
-        this.removePartialFile(dest);
-        reject(err);
-      });
-
-      // Set timeout
-      timeout = setTimeout(() => {
-        timedOut = true;
-        file.destroy();
-        reject(new Error(`Download timeout after ${timeoutMs / 1000} seconds`));
-      }, timeoutMs);
-
-      // Honor VS Code proxy settings
-      const httpConfig = vscode.workspace.getConfiguration('http');
-      const proxyStrictSSL = httpConfig.get<boolean>('proxyStrictSSL', true);
-
-      const options = {
-        headers: { 'User-Agent': 'vscode-perl-lsp' },
-        rejectUnauthorized: proxyStrictSSL,
-      };
-
-      // Use appropriate module based on URL protocol
-      const isHttps = url.startsWith('https:');
-      const request = this.httpGet(isHttps, url, options, (response) => {
-        // Handle redirects
-        if (response.statusCode === 301 || response.statusCode === 302) {
-          clearTimeout(timeout);
-          file.destroy();
-          const newUrl = response.headers.location;
-          if (newUrl) {
-            // Security check: Prevent downgrade from HTTPS to HTTP
-            if (
-              isHttps &&
-              newUrl.toLowerCase().startsWith('http:') &&
-              !newUrl.toLowerCase().startsWith('https:')
-            ) {
-              reject(new Error('Security violation: Redirect from HTTPS to HTTP prevented'));
-              return;
-            }
-            if (maxRedirects <= 0) {
-              reject(new Error('Too many redirects'));
-              return;
-            }
-            this.downloadFile(newUrl, dest, timeoutMs, maxRedirects - 1)
-              .then(resolve)
-              .catch(reject);
-            return;
-          }
-        }
-
-        if (response.statusCode !== 200) {
-          clearTimeout(timeout);
-          file.destroy();
-          reject(new Error(`Failed to download: HTTP ${response.statusCode}`));
-          return;
-        }
-
-        response.pipe(file);
-
-        file.on('finish', () => {
-          if (!timedOut) {
-            clearTimeout(timeout);
-            file.close();
-            resolve();
-          }
-        });
-      });
-
-      request.on('error', (err) => {
-        clearTimeout(timeout);
-        file.destroy();
-        reject(err);
-      });
-
-      request.on('timeout', () => {
-        request.destroy();
-        reject(new Error('Request timeout'));
-      });
-    });
+        await this.downloadFile(
+          location,
+          dest,
+          timeoutMs,
+          remainingRedirects,
+          maxBytes,
+          cancellationToken,
+        );
+      },
+      createWriteStream: (filePath) => this.createWriteStream(filePath),
+      removePartialFile: (filePath) => this.removePartialFile(filePath),
+    };
+    if (cancellationToken !== undefined) {
+      bounded.cancellationToken = cancellationToken;
+    }
+    await downloadBoundedFile(bounded);
   }
 
   /**
@@ -1428,8 +1590,8 @@ export class BinaryDownloader {
     return fs.createWriteStream(dest);
   }
 
-  private removePartialFile(dest: string): void {
-    fs.unlink(dest, () => {});
+  private async removePartialFile(dest: string): Promise<void> {
+    unlinkPartialDownloadDest(dest);
   }
 
   private async calculateSHA256(filePath: string): Promise<string> {
@@ -1970,22 +2132,5 @@ export class BinaryDownloader {
         resolve(parseLocalVersion(stdout));
       });
     });
-  }
-
-  private findBinary(dir: string, name: string): string | null {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-
-      if (entry.isDirectory()) {
-        const found = this.findBinary(fullPath, name);
-        if (found) return found;
-      } else if (entry.name === name) {
-        return fullPath;
-      }
-    }
-
-    return null;
   }
 }

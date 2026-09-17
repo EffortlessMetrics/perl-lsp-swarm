@@ -216,6 +216,16 @@ pub struct SymbolTable {
     current_package: String,
 }
 
+/// Return `true` if `name` introduces a Moo/Moose method modifier.
+///
+/// This module mints the synthetic modifier symbols, so it owns the keyword set.
+/// Consumers that need to recognise those symbols later (for example definition
+/// redirection in `analysis::semantic`) share this predicate rather than
+/// repeating the list and drifting from it.
+pub(crate) fn is_method_modifier_keyword(name: &str) -> bool {
+    matches!(name, "before" | "after" | "around" | "override" | "augment")
+}
+
 /// Return `true` if the method is one of Perl's always-available `UNIVERSAL` methods.
 ///
 /// Used in analyze/index workflow stages to keep method lookup behavior
@@ -359,23 +369,23 @@ impl SymbolTable {
         while let Some(scope_id) = current_scope_id {
             if let Some(scope) = self.scopes.get(&scope_id) {
                 // Check if symbol is defined in this scope
-                if scope.symbols.contains(name) {
-                    if let Some(symbols) = self.symbols.get(name) {
-                        for symbol in symbols {
-                            if symbol.scope_id == scope_id && symbol.kind == kind {
-                                results.push(symbol);
-                            }
+                if scope.symbols.contains(name)
+                    && let Some(symbols) = self.symbols.get(name)
+                {
+                    for symbol in symbols {
+                        if symbol.scope_id == scope_id && symbol.kind == kind {
+                            results.push(symbol);
                         }
                     }
                 }
 
                 // For 'our' variables, also check package scope
-                if scope.kind != ScopeKind::Package {
-                    if let Some(symbols) = self.symbols.get(name) {
-                        for symbol in symbols {
-                            if symbol.declaration.as_deref() == Some("our") && symbol.kind == kind {
-                                results.push(symbol);
-                            }
+                if scope.kind != ScopeKind::Package
+                    && let Some(symbols) = self.symbols.get(name)
+                {
+                    for symbol in symbols {
+                        if symbol.declaration.as_deref() == Some("our") && symbol.kind == kind {
+                            results.push(symbol);
                         }
                     }
                 }
@@ -415,6 +425,28 @@ pub enum FrameworkKind {
     RoleTinyWith,
     /// `use Class::Tiny;` or `use Class::Tiny::RW;`
     ClassTiny,
+}
+
+/// Classify a `use`d module name as an object-framework activation.
+///
+/// This is the single mapping from module spelling to [`FrameworkKind`]. Other
+/// analyses that need to know whether a package activated Moo/Moose/Role::Tiny
+/// must call this rather than re-testing module spellings, so one authority
+/// decides what counts as activation.
+///
+/// Returns `None` for modules that do not activate an object framework,
+/// including `Class::Tiny` and `Class::Accessor`, which are tracked separately
+/// because they do not import the Moo/Moose DSL keywords.
+pub fn classify_framework_module(module: &str) -> Option<FrameworkKind> {
+    match module {
+        "Moo" | "Mouse" => Some(FrameworkKind::Moo),
+        "Moo::Role" | "Mouse::Role" => Some(FrameworkKind::MooRole),
+        "Moose" => Some(FrameworkKind::Moose),
+        "Moose::Role" => Some(FrameworkKind::MooseRole),
+        "Role::Tiny" => Some(FrameworkKind::RoleTiny),
+        "Role::Tiny::With" => Some(FrameworkKind::RoleTinyWith),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,6 +509,69 @@ pub struct FrameworkFlags {
     pub catalyst_controller: bool,
 }
 
+/// Source-side canonical admission set for the #8928 Dancer2 retirement.
+///
+/// A route declaration is admitted when the canonical route-context
+/// extractor returns it in a package whose `use Dancer2` activation site
+/// is source-exact (default DSL, no unmodeled import options) and whose
+/// route keyword the activating import did not exclude. The file id is a
+/// fixed local identity: admission compares package names and keyword
+/// anchor start bytes, both file-local.
+fn canonical_dancer2_route_admission(node: &Node) -> HashSet<(String, u32)> {
+    use crate::analysis::dancer2_activation::extract_dancer2_activation_sites;
+    use crate::analysis::dancer2_routes::extract_dancer2_route_contexts;
+    use perl_semantic_facts::framework_adapters::dancer2::DslSelection;
+
+    let file_id = perl_semantic_facts::FileId(0);
+    // Activation sites first: files without a `use Dancer2` site admit
+    // nothing, so the (heavier) route-context walk is skipped entirely for
+    // the common non-Dancer2 file.
+    let sites = extract_dancer2_activation_sites(node, file_id);
+    if sites.is_empty() {
+        return HashSet::new();
+    }
+    let contexts = extract_dancer2_route_contexts(node, file_id);
+    if contexts.routes.is_empty() {
+        return HashSet::new();
+    }
+
+    // Per-package exclusions from the first source-exact activation site
+    // (the canonical activation walk also resolves per-package state from
+    // the first site).
+    let mut exact_packages: HashMap<String, Vec<String>> = HashMap::new();
+    for site in &sites {
+        let package = site.package.clone().unwrap_or_else(|| "main".to_string());
+        if exact_packages.contains_key(&package) {
+            continue;
+        }
+        let source_exact =
+            site.evidence.dsl.as_ref().is_none_or(|dsl| matches!(dsl, DslSelection::Default))
+                && site.evidence.unmodeled_options.is_empty();
+        if source_exact {
+            exact_packages.insert(package, site.evidence.excluded_keywords.clone());
+        }
+    }
+
+    let route_keywords: std::collections::HashSet<&str> =
+        perl_semantic_facts::framework_adapters::dancer2_routes::DANCER2_ROUTE_KEYWORDS
+            .iter()
+            .copied()
+            .collect();
+    let mut admitted = HashSet::new();
+    for declaration in &contexts.routes {
+        let Some(package) = &declaration.package else { continue };
+        let Some(exclusions) = exact_packages.get(package) else { continue };
+        let keyword = declaration.route.keyword.as_str();
+        if !route_keywords.contains(keyword)
+            || exclusions.iter().any(|excluded| excluded == keyword)
+        {
+            continue;
+        }
+        admitted.insert((package.clone(), declaration.route.keyword_anchor.start_byte));
+    }
+    admitted
+}
+
 /// Extract symbols from an AST for Parse/Index workflows.
 pub struct SymbolExtractor {
     table: SymbolTable,
@@ -488,6 +583,11 @@ pub struct SymbolExtractor {
     const_fast_enabled: bool,
     /// Whether `use Readonly` has been seen in the current compilation unit.
     readonly_enabled: bool,
+    /// Dancer2 route declarations admitted by the canonical extractor
+    /// (#8928 retirement): `(package, keyword anchor start byte)` pairs for
+    /// which the canonical facts own route identity and the legacy
+    /// route-path `Subroutine` synthesis must stay retired.
+    dancer2_canonical_routes: HashSet<(String, u32)>,
 }
 
 impl Default for SymbolExtractor {
@@ -507,6 +607,7 @@ impl SymbolExtractor {
             framework_flags: HashMap::new(),
             const_fast_enabled: false,
             readonly_enabled: false,
+            dancer2_canonical_routes: HashSet::new(),
         }
     }
 
@@ -520,11 +621,17 @@ impl SymbolExtractor {
             framework_flags: HashMap::new(),
             const_fast_enabled: false,
             readonly_enabled: false,
+            dancer2_canonical_routes: HashSet::new(),
         }
     }
 
     /// Extract symbols from an AST node for Index/Analyze workflows.
     pub fn extract(mut self, node: &Node) -> SymbolTable {
+        // #8928 retirement: source-side canonical admission for Dancer2
+        // route declarations. The canonical extractor and activation walk
+        // decide which declarations the canonical facts own; the legacy
+        // route-path synthesis stays retired for exactly that set.
+        self.dancer2_canonical_routes = canonical_dancer2_route_admission(node);
         self.visit_node(node);
         self.upgrade_package_symbols_from_framework_flags();
         self.table
@@ -793,29 +900,29 @@ impl SymbolExtractor {
                 // Cross-construct sub resolver (#3108): `*foo = sub { ... }` creates a
                 // callable named `foo`.  Synthesize a Subroutine symbol so workspace-index
                 // cross-file lookup can find it even without an explicit `sub foo {}`.
-                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind {
-                    if matches!(rhs.kind, NodeKind::Subroutine { .. }) {
-                        let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
-                        if !bare.is_empty() {
-                            // For `*Pkg::foo = sub {}` use the package from the glob name;
-                            // for unqualified `*foo = sub {}` (or `*::foo` where "::"
-                            // is shorthand for "main::") fall back to the current package.
-                            let pkg = match glob_name.rfind("::") {
-                                Some(pos) if pos > 0 => &glob_name[..pos],
-                                _ => self.table.current_package.as_str(),
-                            };
-                            let sym = Symbol {
-                                name: bare.to_string(),
-                                qualified_name: format!("{pkg}::{bare}"),
-                                kind: SymbolKind::Subroutine,
-                                location: node.location,
-                                scope_id: self.table.current_scope(),
-                                declaration: None,
-                                documentation: None,
-                                attributes: vec![],
-                            };
-                            self.table.add_symbol(sym);
-                        }
+                if let NodeKind::Typeglob { name: glob_name, .. } = &lhs.kind
+                    && matches!(rhs.kind, NodeKind::Subroutine { .. })
+                {
+                    let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
+                    if !bare.is_empty() {
+                        // For `*Pkg::foo = sub {}` use the package from the glob name;
+                        // for unqualified `*foo = sub {}` (or `*::foo` where "::"
+                        // is shorthand for "main::") fall back to the current package.
+                        let pkg = match glob_name.rfind("::") {
+                            Some(pos) if pos > 0 => &glob_name[..pos],
+                            _ => self.table.current_package.as_str(),
+                        };
+                        let sym = Symbol {
+                            name: bare.to_string(),
+                            qualified_name: format!("{pkg}::{bare}"),
+                            kind: SymbolKind::Subroutine,
+                            location: node.location,
+                            scope_id: self.table.current_scope(),
+                            declaration: None,
+                            documentation: None,
+                            attributes: vec![],
+                        };
+                        self.table.add_symbol(sym);
                     }
                 }
                 // Mark LHS as write reference
@@ -1298,10 +1405,10 @@ impl SymbolExtractor {
         let is_moo = flags.is_some_and(|f| f.moo);
         let is_class_tiny = flags.is_some_and(|f| f.kind == Some(FrameworkKind::ClassTiny));
 
-        if is_moo || is_class_tiny {
-            if let Some(consumed) = self.try_extract_moo_has_declaration(statements, idx) {
-                return Some(consumed);
-            }
+        if (is_moo || is_class_tiny)
+            && let Some(consumed) = self.try_extract_moo_has_declaration(statements, idx)
+        {
+            return Some(consumed);
         }
 
         if is_moo {
@@ -1324,10 +1431,10 @@ impl SymbolExtractor {
             return Some(1);
         }
 
-        if flags.is_some_and(|f| f.web_framework.is_some()) {
-            if let Some(consumed) = self.try_extract_web_route_declaration(statements, idx) {
-                return Some(consumed);
-            }
+        if flags.is_some_and(|f| f.web_framework.is_some())
+            && let Some(consumed) = self.try_extract_web_route_declaration(statements, idx)
+        {
+            return Some(consumed);
         }
 
         None
@@ -1357,39 +1464,37 @@ impl SymbolExtractor {
                     if matches!(&expression.kind, NodeKind::Identifier { name } if name == "has")
             );
 
-            if is_has_marker {
-                if let NodeKind::ExpressionStatement { expression } = &second.kind {
-                    let has_location =
-                        SourceLocation { start: first.location.start, end: second.location.end };
+            if is_has_marker && let NodeKind::ExpressionStatement { expression } = &second.kind {
+                let has_location =
+                    SourceLocation { start: first.location.start, end: second.location.end };
 
-                    match &expression.kind {
-                        NodeKind::HashLiteral { pairs } => {
-                            self.synthesize_moo_has_pairs(pairs, has_location, false);
-                            self.visit_node(second);
-                            return Some(2);
-                        }
-                        NodeKind::ArrayLiteral { elements } => {
-                            if let Some(Node { kind: NodeKind::HashLiteral { pairs }, .. }) =
-                                elements.last()
-                            {
-                                // Extract the names from the preceding elements
-                                let mut names = Vec::new();
-                                for el in elements.iter().take(elements.len() - 1) {
-                                    names.extend(Self::collect_symbol_names(el));
-                                }
-                                if !names.is_empty() {
-                                    self.synthesize_moo_has_attrs_with_options(
-                                        &names,
-                                        pairs,
-                                        has_location,
-                                    );
-                                    self.visit_node(second);
-                                    return Some(2);
-                                }
+                match &expression.kind {
+                    NodeKind::HashLiteral { pairs } => {
+                        self.synthesize_moo_has_pairs(pairs, has_location, false);
+                        self.visit_node(second);
+                        return Some(2);
+                    }
+                    NodeKind::ArrayLiteral { elements } => {
+                        if let Some(Node { kind: NodeKind::HashLiteral { pairs }, .. }) =
+                            elements.last()
+                        {
+                            // Extract the names from the preceding elements
+                            let mut names = Vec::new();
+                            for el in elements.iter().take(elements.len() - 1) {
+                                names.extend(Self::collect_symbol_names(el));
+                            }
+                            if !names.is_empty() {
+                                self.synthesize_moo_has_attrs_with_options(
+                                    &names,
+                                    pairs,
+                                    has_location,
+                                );
+                                self.visit_node(second);
+                                return Some(2);
                             }
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
             }
         }
@@ -1543,7 +1648,7 @@ impl SymbolExtractor {
     }
 
     fn is_moose_method_modifier(name: &str) -> bool {
-        matches!(name, "before" | "after" | "around" | "override" | "augment")
+        is_method_modifier_keyword(name)
     }
 
     /// Detect Moo/Moose `extends 'Parent'` and `with 'Role'` declarations.
@@ -1866,6 +1971,25 @@ impl SymbolExtractor {
             .and_then(|flags| flags.web_framework);
         let first = &statements[idx];
 
+        // #8928 retirement: a Dancer2 route declaration the canonical
+        // extractor admits under a source-exact activation is owned by the
+        // canonical facts. The legacy route-path `Subroutine` synthesis is
+        // retired for exactly this set: children are still visited so
+        // handler-local symbols stay indexed, but no route-path symbol is
+        // synthesized (one authority, never a union). Dancer v1,
+        // Mojolicious::Lite, non-activated packages, custom/dynamic DSLs,
+        // excluded keywords, and forms outside the canonical grammar keep
+        // the legacy path with this recorded boundary.
+        if web_framework == Some(WebFrameworkKind::Dancer2)
+            && u32::try_from(first.location.start).is_ok_and(|keyword_start| {
+                self.dancer2_canonical_routes
+                    .contains(&(self.table.current_package.clone(), keyword_start))
+            })
+        {
+            self.visit_node(first);
+            return Some(1);
+        }
+
         // FunctionCall form: `get '/path' => sub { }` parsed as a bare call.
         if let NodeKind::ExpressionStatement { expression } = &first.kind
             && let NodeKind::FunctionCall { name, args } = &expression.kind
@@ -1873,56 +1997,53 @@ impl SymbolExtractor {
         {
             let method_name = name.as_str();
             // args[0] is the route path (String), rest is the handler
-            if let Some(path_node) = args.first() {
-                if let NodeKind::String { value, .. } = &path_node.kind {
-                    if let Some(path) = Self::normalize_symbol_name(value) {
-                        let http_method = match method_name {
-                            "get" => "GET",
-                            "post" => "POST",
-                            "put" => "PUT",
-                            "del" | "delete" => "DELETE",
-                            "patch" => "PATCH",
-                            "any" => "ANY",
-                            _ => method_name,
-                        };
-                        let scope_id = self.table.current_scope();
-                        self.table.add_symbol(Symbol {
-                            name: path.clone(),
-                            qualified_name: path.clone(),
-                            kind: SymbolKind::Subroutine,
-                            location: first.location,
-                            scope_id,
-                            declaration: Some(method_name.to_string()),
-                            documentation: Some(format!("{http_method} {path}")),
-                            attributes: vec![format!("http_method={http_method}")],
-                        });
+            if let Some(path_node) = args.first()
+                && let NodeKind::String { value, .. } = &path_node.kind
+                && let Some(path) = Self::normalize_symbol_name(value)
+            {
+                let http_method = match method_name {
+                    "get" => "GET",
+                    "post" => "POST",
+                    "put" => "PUT",
+                    "del" | "delete" => "DELETE",
+                    "patch" => "PATCH",
+                    "any" => "ANY",
+                    _ => method_name,
+                };
+                let scope_id = self.table.current_scope();
+                self.table.add_symbol(Symbol {
+                    name: path.clone(),
+                    qualified_name: path.clone(),
+                    kind: SymbolKind::Subroutine,
+                    location: first.location,
+                    scope_id,
+                    declaration: Some(method_name.to_string()),
+                    documentation: Some(format!("{http_method} {path}")),
+                    attributes: vec![format!("http_method={http_method}")],
+                });
 
-                        // Legacy string-target -> Subroutine reference synthesis is
-                        // Dancer v1 only: upstream Dancer v1 allows an action to be
-                        // the name of a subroutine, while Dancer2 route construction
-                        // requires a CodeRef handler (#8910 containment). This whole
-                        // legacy route path is temporary pending the #8909 provider
-                        // cutover (retirement gated on #8928).
-                        if matches!(web_framework, Some(WebFrameworkKind::Dancer))
-                            && let Some(target_node) = args.get(1)
-                        {
-                            if let Some(target_name) =
-                                Self::collect_symbol_names(target_node).first().cloned()
-                            {
-                                self.table.add_reference(SymbolReference {
-                                    name: target_name,
-                                    kind: SymbolKind::Subroutine,
-                                    location: target_node.location,
-                                    scope_id: self.table.current_scope(),
-                                    is_write: false,
-                                });
-                            }
-                        }
-
-                        self.visit_node(first);
-                        return Some(1);
-                    }
+                // Legacy string-target -> Subroutine reference synthesis is
+                // Dancer v1 only: upstream Dancer v1 allows an action to be
+                // the name of a subroutine, while Dancer2 route construction
+                // requires a CodeRef handler (#8910 containment). This whole
+                // legacy route path is temporary pending the #8909 provider
+                // cutover (retirement gated on #8928).
+                if matches!(web_framework, Some(WebFrameworkKind::Dancer))
+                    && let Some(target_node) = args.get(1)
+                    && let Some(target_name) =
+                        Self::collect_symbol_names(target_node).first().cloned()
+                {
+                    self.table.add_reference(SymbolReference {
+                        name: target_name,
+                        kind: SymbolKind::Subroutine,
+                        location: target_node.location,
+                        scope_id: self.table.current_scope(),
+                        is_write: false,
+                    });
                 }
+
+                self.visit_node(first);
+                return Some(1);
             }
         }
 
@@ -2430,15 +2551,7 @@ impl SymbolExtractor {
     fn update_framework_context(&mut self, module: &str, args: &[String]) {
         let pkg = self.table.current_package.clone();
 
-        let framework_kind = match module {
-            "Moo" | "Mouse" => Some(FrameworkKind::Moo),
-            "Moo::Role" | "Mouse::Role" => Some(FrameworkKind::MooRole),
-            "Moose" => Some(FrameworkKind::Moose),
-            "Moose::Role" => Some(FrameworkKind::MooseRole),
-            "Role::Tiny" => Some(FrameworkKind::RoleTiny),
-            "Role::Tiny::With" => Some(FrameworkKind::RoleTinyWith),
-            _ => None,
-        };
+        let framework_kind = classify_framework_module(module);
 
         if let Some(kind) = framework_kind {
             let flags = self.framework_flags.entry(pkg.clone()).or_default();
@@ -2899,7 +3012,13 @@ impl SymbolExtractor {
         }
 
         let search_start = object.location.end.min(self.source.len());
-        let search_end = search_start.saturating_add(160).min(self.source.len());
+        let mut search_end = search_start.saturating_add(160).min(self.source.len());
+        // Keep both window edges on char boundaries. `search_start` comes from a
+        // node span; clamp the window end down when needed so method-token lookup
+        // remains available.
+        while search_end > search_start && !self.source.is_char_boundary(search_end) {
+            search_end -= 1;
+        }
         if search_start >= search_end || !self.source.is_char_boundary(search_start) {
             return call_node.location;
         }
@@ -3317,8 +3436,19 @@ impl SymbolExtractor {
             Err(_) => return, // Skip variable extraction if regex fails
         };
 
-        // The value includes quotes, so strip them
-        let content = if value.len() >= 2 { &value[1..value.len() - 1] } else { value };
+        // The value includes quotes, so strip them. Quote characters are
+        // single-byte ASCII, so only strip when both boundary bytes actually
+        // are quote bytes — a blind `[1..len-1]` panics when either edge lands
+        // inside a multi-byte char (found by the parser_integration fuzzer).
+        let (content, content_offset) = if value.len() >= 2 {
+            let bytes = value.as_bytes();
+            let first = bytes.first().copied();
+            let last = bytes.last().copied();
+            let quoted = matches!(first, Some(b'"' | b'\'')) && matches!(last, Some(b'"' | b'\''));
+            if quoted { (&value[1..value.len() - 1], 1) } else { (value, 0) }
+        } else {
+            (value, 0)
+        };
 
         for cap in scalar_re.captures_iter(content) {
             if let Some(m) = cap.get(0) {
@@ -3332,7 +3462,7 @@ impl SymbolExtractor {
 
                 // Calculate the location within the original string
                 // This is approximate - in the actual string location
-                let start_offset = string_location.start + 1 + m.start(); // +1 for opening quote
+                let start_offset = string_location.start + content_offset + m.start();
                 let end_offset = start_offset + m.len();
 
                 let reference = SymbolReference {
@@ -4556,6 +4686,72 @@ sub jump {
         assert!(
             !has_lowercase_foo_subroutine,
             "should NOT have Subroutine symbol for lowercase 'foo'"
+        );
+    }
+
+    /// Regression for the parser_integration/structured_perl_programs fuzz
+    /// panics (nightly run 33230657955): quote stripping in
+    /// `extract_vars_from_string` sliced `[1..len-1]` unconditionally, which
+    /// panics when either edge lands inside a multi-byte char. Quote
+    /// characters are ASCII, so stripping must only fire on actual quote
+    /// bytes.
+    #[test]
+    fn extract_vars_from_string_multibyte_edges_do_not_panic() {
+        let mut extractor = SymbolExtractor::new_with_source("");
+        let loc = SourceLocation { start: 0, end: 0 };
+
+        // Start edge mid-char: byte index 1 lands inside U+FFFD (bytes 0..3),
+        // the exact shape of the CI panic.
+        extractor.extract_vars_from_string("\u{FFFD}$trigger", loc);
+        assert_eq!(
+            extractor.table.references["trigger"][0].location,
+            SourceLocation { start: 3, end: 11 },
+            "reference must span `$trigger`, not shift by a stripped quote"
+        );
+
+        // End edge mid-char: value starts with a quote byte but ends inside a
+        // multi-byte char, so the closing quote check must reject the strip.
+        let mut extractor_end = SymbolExtractor::new_with_source("");
+        extractor_end.extract_vars_from_string("\"$ok\u{FFFD}", loc);
+        assert_eq!(
+            extractor_end.table.references["ok"][0].location,
+            SourceLocation { start: 1, end: 4 },
+            "reference must span `$ok`, not shift from malformed quote stripping"
+        );
+
+        // Behavior guard: real quoted values are still stripped before the
+        // regex scan.
+        let mut extractor_quoted = SymbolExtractor::new_with_source("");
+        extractor_quoted.extract_vars_from_string("\"$quoted\"", loc);
+        assert_eq!(
+            extractor_quoted.table.references["quoted"][0].location,
+            SourceLocation { start: 1, end: 8 },
+            "reference must span `$quoted`, accounting for the stripped opening quote"
+        );
+    }
+
+    /// Regression for the semantic_model fuzz panic (nightly run 33230657955):
+    /// the 160-byte method-name search window in
+    /// `method_reference_location` checked `search_start` for a char boundary
+    /// but not `search_end`, so `start + 160` landing inside a multi-byte
+    /// char panicked on the window slice.
+    #[test]
+    fn method_reference_window_end_respects_char_boundary() {
+        // Layout relative to search_start (end of `$obj`, byte 4): the window
+        // spans 160 bytes, ending inside the multi-byte `ü` after the padding.
+        let padding = "a".repeat(149);
+        let code = format!("$obj->method(\"{padding}\u{FC}\");");
+        assert_eq!(code.chars().count(), 4 + 10 + 149 + 1 + 3);
+
+        let mut parser = Parser::new(&code);
+        let ast = must(parser.parse());
+        let extractor = SymbolExtractor::new_with_source(&code);
+        let table = extractor.extract(&ast);
+
+        assert_eq!(
+            table.references["method"][0].location,
+            SourceLocation { start: 6, end: 12 },
+            "method reference must span the method token, not the whole call"
         );
     }
 }

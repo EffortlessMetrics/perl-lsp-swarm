@@ -90,7 +90,8 @@ pub fn extract_pod(source: &str) -> PodDoc {
     for line in source.lines() {
         // Detect POD start directives. Use exact command-word matching to avoid
         // false positives like `=cutlery` matching `=cut` or `=headache`
-        // matching `=head` (#4971).
+        // matching `=head` (narrow command-map slice: #13575; broader POD
+        // parser authority: #4971).
         if pod_command(line).is_some() {
             in_pod = true;
         }
@@ -212,39 +213,34 @@ pub fn extract_pod(source: &str) -> PodDoc {
 /// Recognized POD commands. Returns the command name (without `=`) when `line`
 /// starts with `=` followed by exactly one of the known command identifiers and
 /// a word boundary (space, tab, or end-of-line). This prevents `=cutlery` from
-/// matching `=cut` and `=headache` from matching `=head` (#4971).
+/// matching `=cut` and `=headache` from matching `=head` (narrow command-map
+/// slice: #13575; broader POD parser authority: #4971).
 fn pod_command(line: &str) -> Option<&'static str> {
     let rest = line.strip_prefix('=')?;
     // The command is the leading alphanumeric run (e.g. `head1`, `head2`).
     let cmd_end = rest.find(|c: char| !c.is_ascii_alphanumeric()).unwrap_or(rest.len());
-    let cmd = &rest[..cmd_end];
+    let cmd = rest.get(..cmd_end)?;
+    let after = rest.get(cmd_end..)?;
     // After the command, the next char must be whitespace or end-of-line.
-    if cmd_end < rest.len() && !rest[cmd_end..].starts_with(char::is_whitespace) {
+    if !after.is_empty() && !after.starts_with(char::is_whitespace) {
         return None;
     }
     match cmd {
-        "pod" | "cut" | "head1" | "head2" | "head3" | "head4" | "head5" | "head6" | "over"
-        | "back" | "item" | "begin" | "end" | "for" | "encoding" => Some(
-            // Safety: `cmd` is a substring of a static match arm.
-            match cmd {
-                "pod" => "pod",
-                "cut" => "cut",
-                "head1" => "head1",
-                "head2" => "head2",
-                "head3" => "head3",
-                "head4" => "head4",
-                "head5" => "head5",
-                "head6" => "head6",
-                "over" => "over",
-                "back" => "back",
-                "item" => "item",
-                "begin" => "begin",
-                "end" => "end",
-                "for" => "for",
-                "encoding" => "encoding",
-                _ => unreachable!(),
-            },
-        ),
+        "pod" => Some("pod"),
+        "cut" => Some("cut"),
+        "head1" => Some("head1"),
+        "head2" => Some("head2"),
+        "head3" => Some("head3"),
+        "head4" => Some("head4"),
+        "head5" => Some("head5"),
+        "head6" => Some("head6"),
+        "over" => Some("over"),
+        "back" => Some("back"),
+        "item" => Some("item"),
+        "begin" => Some("begin"),
+        "end" => Some("end"),
+        "for" => Some("for"),
+        "encoding" => Some("encoding"),
         _ => None,
     }
 }
@@ -307,10 +303,18 @@ fn flush_section(doc: &mut PodDoc, section: &Option<Section>, body: &str, in_ove
 
     match section {
         Section::Name => {
-            doc.name = Some(cleaned);
+            // NAME renders links as plain display text, not markdown — its
+            // consumer is plain perldoc text, and percent-encoded link
+            // targets made a cleaned NAME longer than its source (#12824).
+            doc.name = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Synopsis => {
-            doc.synopsis = Some(cleaned);
+            // Synopsis feeds the same plain-text hover/virtual-content
+            // surfaces as NAME, so links render as display text there too.
+            // The markdown `L<>` rendering percent-encodes link targets and
+            // made a cleaned synopsis longer than its source, tripping the
+            // `pod_extraction` fuzz invariant (#12824 family).
+            doc.synopsis = Some(strip_pod_formatting_display_text(trimmed));
         }
         Section::Description => {
             // Take only the first paragraph
@@ -368,6 +372,26 @@ pub fn strip_pod_formatting(text: &str) -> String {
     strip_pod_formatting_depth(text, 0)
 }
 
+/// Like [`strip_pod_formatting`], but renders `L<...>` links as their plain
+/// display text only — no markdown `[text](url)` wrapper, no percent-encoded
+/// target. Used for the NAME and SYNOPSIS fields (#12824, #14171): their
+/// consumers render them as plain perldoc text, so link markup is noise, and
+/// the percent-encoding expansion made a cleaned field longer than its source,
+/// violating the extraction invariant the `pod_extraction` fuzz target asserts.
+pub fn strip_pod_formatting_display_text(text: &str) -> String {
+    strip_pod_formatting_depth_links(text, 0, LinkRendering::DisplayText)
+}
+
+/// How `L<...>` links render while stripping formatting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinkRendering {
+    /// `[text](perldoc://target)` with percent-encoded target.
+    Markdown,
+    /// Bare display text only — explicit `text|target` keeps `text`,
+    /// `Module/section` keeps `Module`, `Module::Name` keeps `Module::Name`.
+    DisplayText,
+}
+
 /// Depth-bounded implementation of [`strip_pod_formatting`].
 ///
 /// `depth` tracks how many levels of formatting-code recursion have already
@@ -375,6 +399,10 @@ pub fn strip_pod_formatting(text: &str) -> String {
 /// emitted verbatim instead of recursing, guarding against stack overflow on
 /// adversarially deep input such as `B<I<B<I<...>>>>`.
 fn strip_pod_formatting_depth(text: &str, depth: usize) -> String {
+    strip_pod_formatting_depth_links(text, depth, LinkRendering::Markdown)
+}
+
+fn strip_pod_formatting_depth_links(text: &str, depth: usize, links: LinkRendering) -> String {
     if depth >= MAX_POD_FORMATTING_DEPTH {
         return text.to_string();
     }
@@ -434,9 +462,12 @@ fn strip_pod_formatting_depth(text: &str, depth: usize) -> String {
             }
 
             let display = match code_char {
-                'L' => extract_link_display(&inner_str, depth + 1),
+                'L' => match links {
+                    LinkRendering::Markdown => extract_link_display(&inner_str, depth + 1),
+                    LinkRendering::DisplayText => extract_link_display_text(&inner_str, depth + 1),
+                },
                 'E' => decode_pod_entity(&inner_str),
-                _ => strip_pod_formatting_depth(&inner_str, depth + 1),
+                _ => strip_pod_formatting_depth_links(&inner_str, depth + 1, links),
             };
 
             result.push_str(&display);
@@ -504,12 +535,25 @@ fn escape_markdown_link_text(text: &str) -> String {
 /// - `L<text|Module::Name>` → `[text](perldoc://Module::Name)`
 /// - `L<Module::Name/section>` → `[Module::Name](perldoc://Module::Name/section)`
 /// - `L<text|Module::Name/section>` → `[text](perldoc://Module::Name/section)`
+///
+/// The empty-label form `L<|Target>` renders the bare target as plain text:
+/// an empty display label would otherwise produce a dead `[](perldoc://...)`
+/// link with nothing to click.
 fn extract_link_display(link: &str, depth: usize) -> String {
     // L<text|target> — explicit display text before the pipe
     if let Some(pipe_pos) = link.find('|') {
         let display =
             escape_markdown_link_text(&strip_pod_formatting_depth(link[..pipe_pos].trim(), depth));
         let target = encode_pod_link_target(link[pipe_pos + 1..].trim());
+        // `L<|Target>` with an empty display label has no link text to show;
+        // emit the bare target as plain text instead of a dead
+        // `[](perldoc://target)` empty-label link. Plain text wants the raw
+        // target — percent-encoding is a link-href concern — but a target
+        // containing `[`/`]` must not inject Markdown structure into the
+        // rendered output, so label delimiters stay escaped.
+        if display.is_empty() {
+            return escape_markdown_link_text(link[pipe_pos + 1..].trim());
+        }
         return format!("[{display}](perldoc://{target})");
     }
     // L<Module/section> — module + section, display is just the module part
@@ -523,6 +567,43 @@ fn extract_link_display(link: &str, depth: usize) -> String {
     let display = escape_markdown_link_text(&strip_pod_formatting_depth(link.trim(), depth));
     let target = encode_pod_link_target(link.trim());
     format!("[{display}](perldoc://{target})")
+}
+
+/// Display-text-only link rendering for the NAME field (#12824): keeps the
+/// human-readable half of every link form and drops the target entirely —
+/// `L<text|target>` → `text`, `L<Module/section>` → `Module`,
+/// `L<Module::Name>` → `Module::Name`. No markdown wrapper, no
+/// percent-encoding, so the result can never exceed the source link text by
+/// more than the formatting codes it removes. URL links render verbatim and
+/// local-section links render their section label — the unconditional
+/// module/section split would otherwise reduce `L<https://example.com/a>` to
+/// `https:` and `L</section>` to an empty name (#12824 review).
+fn extract_link_display_text(link: &str, depth: usize) -> String {
+    let trimmed = link.trim();
+    let display = if let Some(pipe_pos) = trimmed.find('|') {
+        // Explicit display text wins for every link form.
+        &trimmed[..pipe_pos]
+    } else if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("ftp://")
+        || trimmed.starts_with("mailto:")
+    {
+        // URL link: render the URL itself, as Pod::Simple::Text does.
+        trimmed
+    } else if let Some(section) = trimmed.strip_prefix('/') {
+        // Local-section link L</section>: the display is the section label.
+        section.trim_matches('"')
+    } else if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+        // Quoted section link L<"Section With Spaces">.
+        trimmed.trim_matches('"')
+    } else {
+        match trimmed.find('/') {
+            // L<Module/section>: display is the module part.
+            Some(slash_pos) => &trimmed[..slash_pos],
+            None => trimmed,
+        }
+    };
+    strip_pod_formatting_depth_links(display.trim(), depth, LinkRendering::DisplayText)
 }
 
 /// Decodes a POD E<> entity to its corresponding character.
@@ -666,6 +747,27 @@ mod tests {
     }
 
     #[test]
+    fn link_empty_label_renders_plain_target() {
+        // `L<|Target>` has no display text; rendering the target as plain text
+        // keeps the reference readable without publishing a dead
+        // `[](perldoc://Target)` empty-label link.
+        assert_eq!(strip_pod_formatting("L<|Local::EmptyLabel>"), "Local::EmptyLabel");
+    }
+
+    #[test]
+    fn link_empty_label_escapes_markdown_without_percent_encoding() {
+        // Bracket-injection pin (#15776 review): the empty-label path is plain
+        // text, so `[`/`]` must be escaped to avoid injecting a live markdown
+        // link, while spaces stay readable (percent-encoding is a href
+        // concern, not plain text).
+        assert_eq!(
+            strip_pod_formatting("L<|[click](https://x.test)>"),
+            "\\[click\\](https://x.test)"
+        );
+        assert_eq!(strip_pod_formatting("L<|My Target>"), "My Target");
+    }
+
+    #[test]
     fn link_slash_form_trims_module_display() {
         // L<Module/section> — the module display part is trimmed so no trailing
         // space leaks into the rendered link text (#2482).
@@ -729,31 +831,53 @@ mod tests {
         assert_eq!(doc.methods.len(), 1, "expected exactly one method section");
     }
 
-    // ── POD command-prefix matching (#4971) ────────────────────────────────
+    // ── POD command-prefix matching (#13575; broader authority #4971) ─────
 
     #[test]
-    fn pod_command_matches_exact_names() {
-        assert_eq!(pod_command("=head1 NAME"), Some("head1"));
-        assert_eq!(pod_command("=head2 Method"), Some("head2"));
-        assert_eq!(pod_command("=head3 Sub"), Some("head3"));
-        assert_eq!(pod_command("=cut"), Some("cut"));
-        assert_eq!(pod_command("=over 4"), Some("over"));
-        assert_eq!(pod_command("=back"), Some("back"));
-        assert_eq!(pod_command("=item * foo"), Some("item"));
-        assert_eq!(pod_command("=pod"), Some("pod"));
-        assert_eq!(pod_command("=encoding utf-8"), Some("encoding"));
+    fn pod_command_maps_complete_closed_vocabulary() {
+        for command in [
+            "pod", "cut", "head1", "head2", "head3", "head4", "head5", "head6", "over", "back",
+            "item", "begin", "end", "for", "encoding",
+        ] {
+            let bare = format!("={command}");
+            let spaced = format!("={command} value");
+            let tabbed = format!("={command}\tvalue");
+
+            assert_eq!(pod_command(&bare), Some(command), "bare directive {command}");
+            assert_eq!(pod_command(&spaced), Some(command), "spaced directive {command}");
+            assert_eq!(pod_command(&tabbed), Some(command), "tabbed directive {command}");
+        }
     }
 
     #[test]
     fn pod_command_rejects_prefix_only_matches() {
-        // #4971: `=cutlery` must NOT match `=cut`, `=headache` must NOT match
-        // `=head`, `=overboard` must NOT match `=over`.
-        assert_eq!(pod_command("=cutlery"), None);
-        assert_eq!(pod_command("=headache"), None);
-        assert_eq!(pod_command("=overboard"), None);
-        assert_eq!(pod_command("=backspace"), None);
-        assert_eq!(pod_command("=items"), None);
-        assert_eq!(pod_command("=podcast"), None);
+        // #13575: lookalikes must not match a shorter recognized directive.
+        for line in [
+            "=cutlery",
+            "=headache",
+            "=head7",
+            "=head10",
+            "=head1:",
+            "=cut!",
+            "=heаd1 confusable",
+            "=overboard",
+            "=backspace",
+            "=items",
+            "=podcast",
+            "=beginner",
+            "=ending",
+            "=forward",
+            "=encodingx",
+        ] {
+            assert_eq!(pod_command(line), None, "lookalike directive {line}");
+        }
+    }
+
+    #[test]
+    fn pod_command_rejects_malformed_empty_and_no_argument_inputs() {
+        for line in ["", "=", "= ", "=\t", "==", "==pod", "=☃", " =head1 NAME"] {
+            assert_eq!(pod_command(line), None, "malformed directive {line:?}");
+        }
     }
 
     #[test]

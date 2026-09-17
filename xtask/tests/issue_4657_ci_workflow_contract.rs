@@ -3,11 +3,45 @@
 use std::fs;
 use std::path::PathBuf;
 
+const CACHE_HARNESS_COMMAND: &str =
+    "        run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture";
+const CACHE_HARNESS_STEP: &str =
+    "      - name: Direct command guidance contract (required merge surface)";
+const WORKFLOW_POLICY_COMMAND: &str =
+    "        run: cargo test -p xtask --bin xtask --locked -- workflow_policy_lint";
+const WORKFLOW_POLICY_STEP: &str =
+    "      - name: Workflow policy CLI wiring (required merge surface)";
+const REQUIRED_JOB_IF: &str = "    if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'";
+
+use serde_yaml_ng::Value;
+
 fn project_root() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or("CARGO_MANIFEST_DIR has no parent")?
         .to_path_buf())
+}
+
+/// Extract one gate row from `.ci/gate-policy.yaml`.
+///
+/// Gates are two-space-indented `- name:` list entries under `gates:`; the
+/// block runs until the next sibling entry. Returns `None` when the gate is
+/// absent so callers can fail loudly rather than assert against an empty
+/// string.
+fn policy_gate_block<'a>(policy: &'a str, gate: &str) -> Option<&'a str> {
+    let header = format!("\n  - name: {gate}\n");
+    let start = policy.find(&header)? + 1;
+    let rest = &policy[start..];
+    let body_offset = rest.find('\n')? + 1;
+    let end = rest[body_offset..]
+        .match_indices('\n')
+        .find(|(idx, _)| {
+            let line = &rest[body_offset + idx + 1..];
+            // Next sibling gate row: exactly two spaces of indent, `- name:`.
+            line.starts_with("  - name:")
+        })
+        .map_or(rest.len(), |(idx, _)| body_offset + idx + 1);
+    Some(&rest[..end])
 }
 
 /// Extract one top-level job block from a workflow file.
@@ -29,6 +63,154 @@ fn job_block<'a>(workflow: &'a str, job: &str) -> Option<&'a str> {
         })
         .map_or(rest.len(), |(idx, _)| body_offset + idx + 1);
     Some(&rest[..end])
+}
+
+fn yaml_key(line: &str) -> Option<&str> {
+    let (key, _) = line.trim_start().split_once(':')?;
+    Some(key.trim().trim_matches(['\"', '\'']))
+}
+
+fn cache_harness_wiring(workflow: &str) -> Result<(), &'static str> {
+    required_step_wiring(workflow, CACHE_HARNESS_STEP, CACHE_HARNESS_COMMAND)
+}
+
+fn required_step_wiring(
+    workflow: &str,
+    expected_step: &str,
+    expected_command: &str,
+) -> Result<(), &'static str> {
+    let job = job_block(workflow, "check-all-targets").ok_or("required job is absent")?;
+    if job.lines().filter(|line| *line == REQUIRED_JOB_IF).count() != 1 {
+        return Err("required job reachability changed");
+    }
+    if job.lines().any(|line| {
+        line.starts_with("    ")
+            && !line.starts_with("      ")
+            && yaml_key(line) == Some("continue-on-error")
+    }) {
+        return Err("required job became optional");
+    }
+
+    let lines = job.lines().collect::<Vec<_>>();
+    let starts = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.starts_with("      - ").then_some(index))
+        .collect::<Vec<_>>();
+    let matching = starts
+        .iter()
+        .enumerate()
+        .filter_map(|(position, start)| {
+            let end = starts.get(position + 1).copied().unwrap_or(lines.len());
+            let step = &lines[*start..end];
+            (step.first() == Some(&expected_step)).then_some(step)
+        })
+        .collect::<Vec<_>>();
+    let [step] = matching.as_slice() else {
+        return Err("required contract step must be unique");
+    };
+    let run_fields = step
+        .iter()
+        .filter(|line| {
+            line.starts_with("        ")
+                && !line.starts_with("          ")
+                && yaml_key(line) == Some("run")
+        })
+        .collect::<Vec<_>>();
+    if run_fields.len() != 1 || *run_fields[0] != expected_command {
+        return Err("required contract run command changed");
+    }
+    if step.iter().any(|line| {
+        line.starts_with("        ")
+            && !line.starts_with("          ")
+            && matches!(yaml_key(line), Some("if" | "continue-on-error"))
+    }) {
+        return Err("required contract step became conditional or optional");
+    }
+    Ok(())
+}
+
+#[test]
+fn workflow_policy_cli_wiring_is_required() -> Result<(), Box<dyn std::error::Error>> {
+    let ci =
+        fs::read_to_string(project_root()?.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    required_step_wiring(&ci, WORKFLOW_POLICY_STEP, WORKFLOW_POLICY_COMMAND)?;
+
+    let removed_step =
+        ci.replace(&format!("{WORKFLOW_POLICY_STEP}\n{WORKFLOW_POLICY_COMMAND}\n"), "");
+    let removed_filter = ci.replace(WORKFLOW_POLICY_COMMAND, "        run: echo no-proof");
+    let compile_only = ci.replace(
+        WORKFLOW_POLICY_COMMAND,
+        "        run: cargo test -p xtask --bin xtask --locked --no-run -- workflow_policy_lint",
+    );
+    let unreachable_job = ci.replace(REQUIRED_JOB_IF, "    if: false");
+    let optional_job = ci.replacen(
+        "  check-all-targets:\n",
+        "  check-all-targets:\n    continue-on-error: true\n",
+        1,
+    );
+    let mut mutants =
+        vec![removed_step, removed_filter, compile_only, unreachable_job, optional_job];
+    for field in ["        if: false", "        continue-on-error: true"] {
+        mutants.push(
+            ci.replace(WORKFLOW_POLICY_COMMAND, &format!("{field}\n{WORKFLOW_POLICY_COMMAND}")),
+        );
+    }
+    for mutant in mutants {
+        if mutant == ci {
+            return Err("workflow-policy wiring mutation did not change the workflow".into());
+        }
+        if required_step_wiring(&mutant, WORKFLOW_POLICY_STEP, WORKFLOW_POLICY_COMMAND).is_ok() {
+            return Err("disabled workflow-policy execution was accepted".into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn required_cache_harness_wiring_is_independently_enforced()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    assert_eq!(cache_harness_wiring(&ci), Ok(()));
+
+    let job = job_block(&ci, "check-all-targets").ok_or("required job is absent")?;
+    let mutated_job = job.replacen(
+        REQUIRED_JOB_IF,
+        "    if: false\n        if: needs.draft-pr-check.outputs.run_ci == 'true' && needs.preflight-latest-check.outputs.is_latest == 'true'",
+        1,
+    );
+    let copied_if = ci.replacen(job, &mutated_job, 1);
+    assert!(cache_harness_wiring(&copied_if).is_err());
+    let orphaned = ci.replace(CACHE_HARNESS_COMMAND, "        run: echo orphaned");
+    assert!(cache_harness_wiring(&orphaned).is_err());
+    let block_scalar = ci.replace(
+        CACHE_HARNESS_COMMAND,
+        "        run: |\n          cargo test -p xtask --test direct_command_guidance --locked -- --nocapture",
+    );
+    assert!(cache_harness_wiring(&block_scalar).is_err());
+    for field in [
+        "        if: false",
+        "        continue-on-error: true",
+        "        continue-on-error : true",
+        "        \"continue-on-error\": true",
+        "        \"continue-on-error\" : true",
+    ] {
+        let mutant =
+            ci.replacen(CACHE_HARNESS_COMMAND, &format!("{field}\n{CACHE_HARNESS_COMMAND}"), 1);
+        assert!(cache_harness_wiring(&mutant).is_err());
+    }
+    for field in [
+        "    continue-on-error: true",
+        "    continue-on-error : true",
+        "    \"continue-on-error\": true",
+        "    \"continue-on-error\" : true",
+    ] {
+        let mutant =
+            ci.replacen("  check-all-targets:\n", &format!("  check-all-targets:\n{field}\n"), 1);
+        assert!(cache_harness_wiring(&mutant).is_err());
+    }
+    Ok(())
 }
 
 /// #9594: the bit-rot guard must not pin the pull-request head SHA.
@@ -89,8 +271,8 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
     );
     assert!(
         routed_rust.contains("if [ \"$ROUTE_RESULT\" = \"skipped\" ]; then")
-            && routed_rust.contains("required check is neutral/pass"),
-        "Rust Small result aggregation must treat an intentionally skipped draft route as neutral"
+            && routed_rust.contains("RUST_SMALL_GATE_VERDICT=draft-no-proof"),
+        "Rust Small result aggregation must refuse proof for an intentionally skipped draft route"
     );
     assert!(
         title_check
@@ -109,4 +291,262 @@ fn ci_workflows_keep_issue_4657_hardening() -> Result<(), Box<dyn std::error::Er
     );
 
     Ok(())
+}
+
+/// #12693/#12752 residual: the bit-rot guard's budget envelope must stay
+/// witnessed.
+///
+/// The required `Compile All Targets (bit-rot guard)` job runs the guarded
+/// recipe `just check-all-targets`, which grew a third compile-only pass
+/// (`cargo test --workspace --examples --no-run --locked`, #12650) and later
+/// added two parser-profile checks. That changed the cost shape of the whole
+/// chain — justfile recipe →
+/// `.ci/gate-policy.yaml` `compile_all_targets` row → `ci.yml` job watchdog —
+/// while every prior contract in this file pinned only presence, name, and
+/// checkout shape. A budget move therefore lands silently, exactly when the
+/// envelope is least likely to have spare headroom. These exact-value pins do
+/// not set budgets; they witness them, so any future change must confront and
+/// consciously update this contract instead of drifting past review.
+///
+/// Enforcement lives on the required `Compile All Targets (bit-rot guard)`
+/// lane itself (`ci.yml` executes this test as a required merge surface): no
+/// gate row or other workflow ran this binary before #12863, so an unenforced
+/// witness would have been indistinguishable from none.
+#[test]
+fn compile_all_targets_budget_envelope_stays_witnessed() -> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    // Normalize to LF for the same `job_block` CRLF reason as above; both
+    // reads feed new-line-anchored assertions.
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    let policy = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?.replace("\r\n", "\n");
+
+    let gate = policy_gate_block(&policy, "compile_all_targets")
+        .ok_or(".ci/gate-policy.yaml no longer defines a `compile_all_targets` gate")?;
+    // Guard the extractor itself: an empty or wrong slice would make the
+    // field pins below pass (or fail) for the wrong reason.
+    assert!(
+        gate.contains("\n    budgets:\n"),
+        "`compile_all_targets` block was not extracted correctly; got:\n{gate}"
+    );
+
+    // Budget numbers hold only for this recipe invocation; if the command
+    // changes shape, its budget envelope must be re-derived, not inherited.
+    assert!(
+        gate.contains("\n    command: just check-all-targets\n"),
+        "gate `compile_all_targets.command` must invoke `just check-all-targets`: \
+         the timeout_seconds/max_duration_ms pins below describe exactly this \
+         recipe chain. Extracted gate:\n{gate}"
+    );
+    // The runner-enforced hard timeout for the complete five-command recipe.
+    assert!(
+        gate.contains("\n    timeout_seconds: 900\n"),
+        "gate `compile_all_targets.timeout_seconds` drifted from 900: this is \
+         the only budget the gate runner enforces, sized from hosted receipts \
+         for the two workspace checks, example-test compilation, and two \
+         parser-profile checks. Lowering it below the measured chain reopens \
+         the cancel-at-timeout family. Extracted gate:\n{gate}"
+    );
+    // The declared soft budget reviewers cite as the shared ceiling
+    // (clippy_tests_kernel explicitly stays "below the compile_all_targets
+    // ceiling").
+    assert!(
+        gate.contains("\n      max_duration_ms: 780000\n"),
+        "gate `compile_all_targets.budgets.max_duration_ms` drifted from 780000: \
+         other lanes derive their ceilings from this constant. Extracted \
+         gate:\n{gate}"
+    );
+
+    // GitHub cancels the whole job at this ceiling regardless of inner gate
+    // math; the four xtask merge-surface contract steps ride the same window,
+    // so shrinking it resurrects the cancelled-contract-step family seen at
+    // the previous 15m ceiling (#12650/#12712).
+    let job = job_block(&ci, "check-all-targets")
+        .ok_or("ci.yml no longer defines a `check-all-targets` job")?;
+    assert!(
+        job.contains("name: Compile All Targets (bit-rot guard)")
+            && job.contains("\n    timeout-minutes: 25\n"),
+        "job `check-all-targets.timeout-minutes` drifted from 25 (the wrapper \
+         watchdog raised from 15 for the grown bit-rot guard); name stays \
+         pinned because branch protection depends on it. Extracted job:\n{job}"
+    );
+    // The required job does not reach this recipe through the gate runner; it
+    // has an independent `run:` step (#12863 P2). Pin that invocation too, or
+    // a ci.yml-only edit could redirect the compile step while the policy row
+    // — and every pin above — stays unchanged and green.
+    assert!(
+        job.contains("\n        run: just check-all-targets\n"),
+        "job `check-all-targets` compile step drifted from `just \
+         check-all-targets`: the gate-row budget pins above describe exactly \
+         this invocation, so the required job must not silently execute a \
+         different command under the same watchdog. Extracted job:\n{job}"
+    );
+
+    Ok(())
+}
+
+/// #15638: the bit-rot property must have exactly one shard-era owner.
+///
+/// The meta shard used to execute `compile_all_targets` beside the required
+/// `Compile All Targets (bit-rot guard)` job. The duplicated ~19-minute
+/// workspace compile deterministically exceeded the shard's shared budget
+/// (exit 124, twice on the same PR #15621 commit) while the standalone owner
+/// passed on the identical tree, so the merge-blocking shard reported red for
+/// a property it did not own — and while that shard stayed red on `main`, the
+/// recorded main-red refusals suppressed downstream Rust test lanes. This
+/// contract keeps the retirement load-bearing: re-adding the gate to any
+/// shard, its execution-policy row, or the ci-gate job mapping must confront
+/// this test, and deleting the standalone owner must fail the ownership half.
+#[test]
+fn compile_all_targets_is_owned_by_the_dedicated_job_not_a_shard()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+
+    let shard_region = ci
+        .split_once("  merge-gate-shards:\n")
+        .map(|(_, rest)| rest)
+        .ok_or("ci.yml no longer defines merge-gate-shards")?;
+    let shard_region = shard_region
+        .split_once("\n    permissions:\n")
+        .map(|(region, _)| region)
+        .ok_or("merge-gate-shards block has no permissions key; extractor needs review")?;
+
+    let mut saw_gates_line = false;
+    let mut saw_clippy_full = false;
+    for line in shard_region.lines() {
+        let stripped = line.trim_start();
+        if let Some(gates) = stripped.strip_prefix("gates: ") {
+            saw_gates_line = true;
+            if gates.split_whitespace().any(|gate| gate == "clippy_full") {
+                saw_clippy_full = true;
+            }
+            assert!(
+                !gates.split_whitespace().any(|gate| gate == "compile_all_targets"),
+                "a merge-gate shard still hosts `compile_all_targets` (#15638): the \
+                 required `Compile All Targets (bit-rot guard)` job owns the bit-rot \
+                 property, and the shard copy duplicated a ~19-minute workspace \
+                 compile that deterministically timed out inside the shared shard \
+                 budget. Gate line: {stripped}"
+            );
+        }
+    }
+    assert!(
+        saw_gates_line && saw_clippy_full,
+        "shard extraction saw no gate lists or lost the clippy_full control; the \
+         contract is not load-bearing"
+    );
+
+    // Retirement is only valid while the standalone job still owns the
+    // property through the exact recipe the budget pins describe.
+    let job = job_block(&ci, "check-all-targets").ok_or(
+        "ci.yml no longer defines the `check-all-targets` job that owns the \
+         bit-rot property",
+    )?;
+    assert!(
+        job.contains("name: Compile All Targets (bit-rot guard)")
+            && job.contains("\n        run: just check-all-targets\n"),
+        "the standalone bit-rot owner must keep executing `just \
+         check-all-targets`: dropping the shard copy is only valid while this \
+         required job owns the property. Extracted job:\n{job}"
+    );
+
+    // Shard execution rows must match the workflow matrix exactly.
+    let execution: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(root.join(".ci/gate-shard-execution.json"))?)?;
+    assert!(
+        execution.get("gates").and_then(|gates| gates.get("compile_all_targets")).is_none(),
+        "`.ci/gate-shard-execution.json` still carries a `compile_all_targets` \
+         row (#15638): shard rows must match the workflow matrix, so a retired \
+         matrix gate cannot keep a committed execution row"
+    );
+
+    // The gate row itself stays for local pr-fast and advisory pr-smoke
+    // shift-left; only shard/matrix claims retire.
+    let policy = fs::read_to_string(root.join(".ci/gate-policy.yaml"))?.replace("\r\n", "\n");
+    let gate = policy_gate_block(&policy, "compile_all_targets").ok_or(
+        "`.ci/gate-policy.yaml` no longer defines a `compile_all_targets` gate; \
+         local pr-fast shift-left and the gate->lane mapping expect the row to \
+         remain",
+    )?;
+    assert!(
+        gate.contains("\n    tier: pr_fast\n")
+            && gate.contains("\n    command: just check-all-targets\n"),
+        "the retained `compile_all_targets` gate row drifted from tier pr_fast / \
+         `just check-all-targets`, so the shift-left execution and the \
+         gate->lane mapping no longer describe the same command. Extracted \
+         gate:\n{gate}"
+    );
+
+    let mapping_region = policy
+        .split_once("  job_mapping:\n")
+        .map(|(_, rest)| rest)
+        .ok_or("`.ci/gate-policy.yaml` no longer defines workflow_integration.job_mapping")?;
+    let mapping_region = mapping_region
+        .split_once("\n    release-gate:\n")
+        .map(|(region, _)| region)
+        .ok_or("job_mapping has no release-gate key; extractor needs review")?;
+    assert!(
+        !mapping_region.lines().any(|line| line.trim() == "- compile_all_targets"),
+        "`workflow_integration.job_mapping` still claims `compile_all_targets` \
+         for the ci-gate matrix (#15638): the mapping must not claim matrix \
+         execution that no longer exists, mirroring the #9959 fmt rule"
+    );
+
+    Ok(())
+}
+
+/// #14355: the Windows portability lane must admit integration targets.
+///
+/// The release-artifact smoke target is intentionally Unix-only at runtime,
+/// but its crate-root cfg must still be compiled on Windows. The Windows lane
+/// therefore retains its library execution and adds a narrow compile-only
+/// command for this integration target.
+#[test]
+fn windows_platform_smoke_compiles_integration_targets_without_running_them()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = project_root()?;
+    let ci = fs::read_to_string(root.join(".github/workflows/ci.yml"))?.replace("\r\n", "\n");
+    let workflow: Value = serde_yaml_ng::from_str(&ci)?;
+    let run = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("windows-platform-smoke"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Value::as_sequence)
+        .and_then(|steps| {
+            steps.iter().find_map(|step| {
+                let name = step.get("name")?.as_str()?;
+                (name == "Run Windows portability smoke")
+                    .then(|| step.get("run")?.as_str().map(str::to_owned))
+                    .flatten()
+            })
+        })
+        .ok_or("windows platform smoke has no named run command")?;
+    assert!(
+        !run.contains("Conflict-marker guard"),
+        "run extraction must stop at the end of the YAML block scalar; command: {run}"
+    );
+
+    assert!(
+        run.contains("cargo test $WINDOWS_TEST_CRATES --locked --lib"),
+        "Windows portability smoke must retain its library execution; command: {run}"
+    );
+    assert!(
+        run.contains(
+            "cargo test -p xtask --test release_artifact_size_smoke_script --locked --no-run"
+        ),
+        "Windows portability smoke must compile the Unix-only integration target without running it; command: {run}"
+    );
+    Ok(())
+}
+
+#[path = "support/draft_routed_result.rs"]
+mod draft_routed_result;
+
+#[test]
+fn rust_small_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
+    draft_routed_result::check_contract(
+        &project_root()?.join(".github/workflows/em-ci-routed-rust.yml"),
+        "rust-small-result",
+        "RUST_SMALL_GATE_VERDICT=draft-no-proof",
+    )
 }

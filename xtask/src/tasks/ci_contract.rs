@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::tasks::change_set::{self, ArtifactIdentity};
 use crate::tasks::ci_scope::{self, ScopeOutput};
+use crate::tasks::ci_subject;
 use crate::tasks::repo_hygiene;
 use crate::utils::project_root;
 
@@ -73,6 +74,7 @@ pub struct ContractReceipt {
 pub struct CiContractConfig {
     pub base: String,
     pub head: String,
+    pub subject: Option<PathBuf>,
     pub receipt: PathBuf,
     pub summary: PathBuf,
 }
@@ -87,10 +89,32 @@ struct CheckSpec {
 
 pub fn run(config: CiContractConfig) -> Result<()> {
     let root = project_root()?;
-    let mut resolved = change_set::resolve_change_set(
-        ArtifactIdentity::CommitRange { base: config.base, head: config.head },
-        &root,
-    )?;
+    let has_subject = config.subject.is_some();
+    let (mut resolved, subject_diff_base) = match config.subject {
+        Some(path) => {
+            let subject = ci_subject::load_and_resolve(&path, &root)?;
+            let receipt = subject.receipt;
+            (
+                change_set::ChangeSet {
+                    identity: ArtifactIdentity::CommitRange {
+                        base: receipt.base_sha.clone(),
+                        head: receipt.head_sha.clone(),
+                    },
+                    base_sha: Some(receipt.base_sha),
+                    head_sha: Some(receipt.head_sha),
+                    changed_paths: subject.changed_paths,
+                },
+                Some(receipt.diff_base_sha),
+            )
+        }
+        None => (
+            change_set::resolve_change_set(
+                ArtifactIdentity::CommitRange { base: config.base, head: config.head },
+                &root,
+            )?,
+            None,
+        ),
+    };
     if !matches!(resolved.identity, ArtifactIdentity::CommitRange { .. }) {
         bail!("ci-contract requires a commit range");
     }
@@ -99,8 +123,11 @@ pub fn run(config: CiContractConfig) -> Result<()> {
     // opened would then appear as reverse-diffs, polluting both the changed-file
     // list and `git diff --check`. The candidate's own commits are exactly
     // merge-base(base, head)..head, so every diff-facing consumer uses that.
-    let diff_base = merge_base_sha(&root, &base_sha, &head_sha)?;
-    if diff_base != base_sha {
+    let diff_base = match subject_diff_base {
+        Some(diff_base) => diff_base,
+        None => merge_base_sha(&root, &base_sha, &head_sha)?,
+    };
+    if !has_subject && diff_base != base_sha {
         println!(
             "ci-contract: caller base {base_sha} is not the merge-base; using {diff_base} for diff semantics"
         );

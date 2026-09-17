@@ -66,13 +66,64 @@
 "   VimLspHostServerInitCount()     how many lsp_server_init events fired
 "                                   (process-generation observation)
 "   VimLspHostBufferEnabledCount()  how many lsp_buffer_enabled events fired
+"   VimLspHostServerExitCount()     how many lsp_server_exit events fired
+"                                   (generation-end observation; the crash
+"                                   stimulus and every stop land here, #11398)
 "   VimLspHostUpdateWorkspaceConfig(paths)
 "                                   the stable public settings channel:
 "                                   lsp#update_workspace_config over a
 "                                   comma-separated relative include-path list
+"   VimLspHostStartPendingDocumentSymbol()
+"                                   start one deterministic pending request
+"                                   through the client's public request path
+"                                   (lsp#request_with_context over
+"                                   textDocument/documentSymbol) (#11401)
+"   VimLspHostPendingRequestId()    the started request's wire identity, 0
+"                                   until the client assigns one (#11401)
+"   VimLspHostPendingNotificationCount()
+"                                   how many results the client delivered to
+"                                   the started request's subscription (#11401)
+"   VimLspHostPendingDone()         whether the client settled the started
+"                                   request (done) (#11401)
+"   VimLspHostCancelPendingDocumentSymbol()
+"                                   cancel the started request by identity
+"                                   through the client's own public
+"                                   lsp#cancel_request ($/cancelRequest with
+"                                   the exact request id) (#11401)
 "   VimLspHostStopServer()          stop the server through vim-lsp
 "   VimLspHostStopServerAndWait()   stop + bounded wait for client exit
 "                                   evidence (one bounded stop re-issue)
+"   VimLspHostConfigureSaveOwner(t) arm exactly one documented save-format
+"                                   owner: BufWritePre *.pl delegating to the
+"                                   canonical sync action, bounded by
+"                                   g:lsp_format_sync_timeout = t (#11396)
+"   VimLspHostRemoveSaveOwners()    disarm every journey save owner
+"   VimLspHostDuplicateSaveOwner(t) arm a SECOND identical owner (the
+"                                   duplicate-owner negative control only)
+"   VimLspHostSaveOwnerCount()      how many journey save owners are armed
+"   VimLspHostOrdinaryWrite()       an ordinary Vim write (`:w`) — the only
+"                                   save action the journey performs
+"   VimLspHostManualComparatorFormat() run LspDocumentFormatSync manually
+"                                   (comparator control only, never a save)
+"   VimLspHostWireRequestCount(m)   outgoing (`--->`) request count for a
+"                                   method on the client's own protocol log
+"   VimLspHostWireResponseCount(m)  settled (`<---`) response count for a
+"                                   method (the envelope echoes the request)
+"   VimLspHostWireErrorResponseCount(m)
+"                                   settled responses carrying a JSON-RPC
+"                                   error for a method
+"   VimLspHostWireEmptyResponseCount(m)
+"                                   settled responses whose result is an
+"                                   empty edit list
+"   VimLspHostWireEditsResponseCount(m)
+"                                   settled responses carrying at least one
+"                                   edit
+"   VimLspHostWaitForWireRequestCount(m, n, ms)
+"                                   bounded barrier until n outgoing requests
+"   VimLspHostWaitForWireResponseCount(m, n, ms)
+"                                   bounded barrier until n settled responses
+"   VimLspHostBufferTextSha256()    sha256 of the current buffer's exact bytes
+"   VimLspHostFileTextSha256(path)  sha256 of a file's exact bytes
 "   VimLspHostQuit()                exit the editor
 
 set nocompatible
@@ -109,6 +160,24 @@ if !filereadable(s:vim_lsp_dir . '/plugin/lsp.vim')
   echoerr 'vim-lsp adapter: pinned checkout has no plugin/lsp.vim entry: ' . s:vim_lsp_dir
   cquit 3
 endif
+
+" vim-lsp's public root helper decides file-vs-directory by spelling alone:
+" a marker ending in `/` or `\` is searched with finddir(), every other marker
+" with findfile(). The cross-editor #7762 contract deliberately keeps the
+" semantic name `.git`, so adapt it here into both client spellings. `.git/`
+" covers ordinary repositories; `.git` covers linked worktrees and submodules
+" where Git writes a gitdir file instead of a directory.
+function! VimLspHostClientRootMarkers() abort
+  let l:markers = []
+  for l:marker in s:root_markers
+    if l:marker ==# '.git'
+      call extend(l:markers, ['.git/', '.git'])
+    else
+      call add(l:markers, l:marker)
+    endif
+  endfor
+  return l:markers
+endfunction
 
 " State counters over public vim-lsp User events (the same proven event
 " surface the #7810 harness mined).
@@ -154,12 +223,14 @@ endfunction
 
 function! s:RootUri(_server_info) abort
   " #7762 consumption: nearest parent marker from the environment-delivered
-  " list, cwd fallback. No second marker policy lives here.
+  " list, cwd fallback. Client-specific directory syntax is projected at this
+  " boundary; no second semantic marker policy lives here.
   let l:root = lsp#utils#find_nearest_parent_file_directory(
-        \ expand('%:p'), s:root_markers)
+        \ expand('%:p'), VimLspHostClientRootMarkers())
   if empty(l:root)
     let l:root = getcwd()
   endif
+  let g:perllsp_vim_host_root_callback = fnamemodify(l:root, ':p')
   return lsp#utils#path_to_uri(l:root)
 endfunction
 
@@ -368,6 +439,13 @@ function! VimLspHostBufferEnabledCount() abort
   return g:perllsp_vim_host_buffer_enabled
 endfunction
 
+function! VimLspHostServerExitCount() abort
+  " How many times the client emitted its public server-exit event: the
+  " generation-end observation for crash-stimulus and restart routes (#11398).
+  " Read-only — this adapter never terminates a process.
+  return g:perllsp_vim_host_server_exit
+endfunction
+
 function! VimLspHostUpdateWorkspaceConfig(include_paths_csv) abort
   " The stable public settings channel (#11369-classified
   " lsp#update_workspace_config): merges the delivered include-path list into
@@ -447,6 +525,74 @@ function! VimLspHostStopServer() abort
   return v:true
 endfunction
 
+" ---------------------------------------------------------------------------
+" #11401 pending-request surface (thin wrappers over the client's public
+" request path). One pending request slot per session: the driver starts,
+" observes, and optionally cancels or leaves in flight. The wrapper, its
+" context handle, and the disposal function stay in adapter script scope; the
+" driver observes only through the bounded read functions below, and the
+" admission counter counts exactly what the client itself delivered to the
+" subscription.
+let s:pending_wrapper = v:null
+let s:pending_dispose = v:null
+let g:perllsp_vim_host_pending_notifications = 0
+
+function! VimLspHostStartPendingDocumentSymbol() abort
+  " Reset the slot: a prior completed request's delivery count must never
+  " leak into the next observation.
+  if !empty(s:pending_dispose)
+    try
+      call s:pending_dispose()
+    catch
+      " A prior request already settled server-side; its disposal is
+      " contained and the new slot starts from zero either way.
+    endtry
+  endif
+  let s:pending_dispose = v:null
+  let g:perllsp_vim_host_pending_notifications = 0
+  let s:pending_wrapper = lsp#request_with_context(s:server_name, {
+        \ 'method': 'textDocument/documentSymbol',
+        \ 'params': {'textDocument': lsp#get_text_document_identifier()},
+        \ })
+  let s:pending_dispose = lsp#callbag#pipe(
+        \ s:pending_wrapper.callbag,
+        \ lsp#callbag#subscribe({
+        \   'next': {d -> execute('let g:perllsp_vim_host_pending_notifications += 1')},
+        \   'error': {e -> 0},
+        \   'complete': {-> 0},
+        \ }))
+  return v:true
+endfunction
+
+function! VimLspHostPendingRequestId() abort
+  if empty(s:pending_wrapper)
+    return 0
+  endif
+  return get(s:pending_wrapper.ctx, 'request_id', 0)
+endfunction
+
+function! VimLspHostPendingNotificationCount() abort
+  return g:perllsp_vim_host_pending_notifications
+endfunction
+
+function! VimLspHostPendingDone() abort
+  if empty(s:pending_wrapper)
+    return 0
+  endif
+  return get(s:pending_wrapper.ctx, 'done', 0)
+endfunction
+
+function! VimLspHostCancelPendingDocumentSymbol() abort
+  " Identity-bound cancellation through the client's own public path: the
+  " client sends $/cancelRequest carrying the exact request id and suppresses
+  " any late delivery to the cancelled subscription.
+  if empty(s:pending_wrapper)
+    return 0
+  endif
+  call lsp#cancel_request(s:pending_wrapper.ctx)
+  return 1
+endfunction
+
 " Stop the server through the public vim-lsp stop path and boundedly wait for
 " the client's own exit evidence (`User lsp_server_exit`, or the server state
 " leaving `running`). Some Vim builds lose the job exit callback when the kill
@@ -481,4 +627,219 @@ endfunction
 
 function! VimLspHostQuit() abort
   qa!
+endfunction
+
+" ---------------------------------------------------------------- #11396 save
+" format surface. The owner is the documented route the pinned client itself
+" recommends for format-on-save (doc/vim-lsp.txt, :LspDocumentFormatSync:
+" "Useful when running |:autocmd| commands such as formatting before save";
+" README.md's `autocmd! BufWritePre *.rs,*.go call execute('LspDocument
+" FormatSync')`): one BufWritePre autocmd delegating to the canonical sync
+" action, bounded by the documented g:lsp_format_sync_timeout option. This
+" adapter owns only the mechanism; the journey owns when and how often it is
+" armed, and the negative controls own the ownerless and duplicate shapes.
+
+function! s:SaveOwnerAugroup() abort
+  return 'perllsp_vim_host_save_owner'
+endfunction
+
+function! VimLspHostConfigureSaveOwner(timeout_ms) abort
+  augroup perllsp_vim_host_save_owner
+    autocmd!
+    autocmd BufWritePre *.pl call execute('LspDocumentFormatSync')
+  augroup END
+  let g:lsp_format_sync_timeout = a:timeout_ms
+  return VimLspHostSaveOwnerCount()
+endfunction
+
+function! VimLspHostRemoveSaveOwners() abort
+  augroup perllsp_vim_host_save_owner
+    autocmd!
+  augroup END
+  return VimLspHostSaveOwnerCount()
+endfunction
+
+function! VimLspHostDuplicateSaveOwner(timeout_ms) abort
+  " The duplicate-owner negative control: a second, identical owner in its
+  " own augroup, so one save must issue two formatting invocations.
+  augroup perllsp_vim_host_save_owner_duplicate
+    autocmd!
+    autocmd BufWritePre *.pl call execute('LspDocumentFormatSync')
+  augroup END
+  let g:lsp_format_sync_timeout = a:timeout_ms
+  return VimLspHostSaveOwnerCount()
+endfunction
+
+function! VimLspHostSaveOwnerCount() abort
+  let l:total = 0
+  for l:group in [s:SaveOwnerAugroup(), s:SaveOwnerAugroup() . '_duplicate']
+    try
+      let l:rules = execute('autocmd ' . l:group . ' BufWritePre')
+    catch
+      continue
+    endtry
+    for l:line in split(l:rules, "\n")
+      if l:line =~# 'LspDocumentFormatSync'
+        let l:total += 1
+      endif
+    endfor
+  endfor
+  return l:total
+endfunction
+
+function! VimLspHostOrdinaryWrite() abort
+  " The ordinary user save action: nothing more than `:w`. Every save-trigger
+  " fact is observed from the wire, never manufactured here.
+  silent write
+  return v:true
+endfunction
+
+function! VimLspHostManualComparatorFormat() abort
+  " Comparator control ONLY (#11380 manual_comparator action): the identical
+  " canonical command run manually. A journey may never label this
+  " save-triggered; only the duplicate/manual negative variants call it.
+  execute 'LspDocumentFormatSync'
+  return v:true
+endfunction
+
+" Direction-aware wire counting over the client's own protocol log: outgoing
+" requests are `["--->", ...]` envelopes whose payload carries the method;
+" settled responses are `["<---", ...]` envelopes whose payload carries both
+" the response and the echoed request (so the method appears on both lines
+" and only direction separates them — the #12660 mining law).
+
+function! s:WireCountCore(marker, needle, require_error) abort
+  if !filereadable(s:client_log)
+    return 0
+  endif
+  let l:count = 0
+  try
+    for l:line in readfile(s:client_log, 'b')
+      if stridx(l:line, a:marker) < 0
+        continue
+      endif
+      if stridx(l:line, a:needle) < 0
+        continue
+      endif
+      if a:require_error && stridx(l:line, '"error":{') < 0
+        continue
+      endif
+      let l:count += 1
+    endfor
+  catch
+    return 0
+  endtry
+  return l:count
+endfunction
+
+function! VimLspHostWireRequestCount(method) abort
+  return s:WireCountCore('["--->"', '"method":"' . a:method . '"', 0)
+endfunction
+
+function! VimLspHostWireResponseCount(method) abort
+  return s:WireCountCore('["<---"', '"method":"' . a:method . '"', 0)
+endfunction
+
+function! VimLspHostWireErrorResponseCount(method) abort
+  return s:WireCountCore('["<---"', '"method":"' . a:method . '"', 1)
+endfunction
+
+function! s:WireCountBoth(marker, needle_a, needle_b) abort
+  " Lines carrying the direction marker and BOTH needles. The response and
+  " the echoed request live in one envelope, so a settled formatting response
+  " with an empty result is a `<---` line carrying both the method echo and
+  " `"result":[]` regardless of key order.
+  if !filereadable(s:client_log)
+    return 0
+  endif
+  let l:count = 0
+  try
+    for l:line in readfile(s:client_log, 'b')
+      if stridx(l:line, a:marker) < 0
+        continue
+      endif
+      if stridx(l:line, a:needle_a) < 0
+        continue
+      endif
+      if stridx(l:line, a:needle_b) < 0
+        continue
+      endif
+      let l:count += 1
+    endfor
+  catch
+    return 0
+  endtry
+  return l:count
+endfunction
+
+function! VimLspHostWireEmptyResponseCount(method) abort
+  return s:WireCountBoth('["<---"', '"method":"' . a:method . '"', '"result":[]')
+endfunction
+
+function! VimLspHostWireEditsResponseCount(method) abort
+  " Settled responses whose result carries at least one edit: settled
+  " formatting responses that are neither error nor empty-result.
+  return VimLspHostWireResponseCount(a:method)
+        \ - VimLspHostWireErrorResponseCount(a:method)
+        \ - VimLspHostWireEmptyResponseCount(a:method)
+endfunction
+
+function! VimLspHostWaitForWireRequestCount(method, min_count, timeout_ms) abort
+  let s:wire_needle = '"method":"' . a:method . '"'
+  let s:wire_needle_min = a:min_count
+  return VimLspHostWaitFor(
+        \ 'filereadable(s:client_log) && s:OutgoingNeedleCount() >= s:wire_needle_min',
+        \ a:timeout_ms)
+endfunction
+
+function! s:OutgoingNeedleCount() abort
+  return s:WireCountCore('["--->"', s:wire_needle, 0)
+endfunction
+
+function! VimLspHostWaitForWireResponseCount(method, min_count, timeout_ms) abort
+  let s:wire_needle = '"method":"' . a:method . '"'
+  let s:wire_needle_min = a:min_count
+  return VimLspHostWaitFor(
+        \ 'filereadable(s:client_log) && s:IncomingNeedleCount() >= s:wire_needle_min',
+        \ a:timeout_ms)
+endfunction
+
+function! s:IncomingNeedleCount() abort
+  return s:WireCountCore('["<---"', s:wire_needle, 0)
+endfunction
+
+" Exact-bytes identities (#12763 thread 3864145199): each surface reconstructs
+" its exact bytes without collapsing trailing newline states — a text and that
+" same text plus one more blank line must hash differently, while the same
+" bytes read through either surface hash identically.
+
+" The buffer stores line CONTENT only: the document-final newline lives in
+" end-of-line state (never as a trailing empty item), and a genuine blank
+" final line IS a content item. Joining the content lines with newline
+" separators and appending the terminator therefore round-trips the exact
+" buffer bytes and keeps both trailing states distinct.
+function! s:BufferTextSha256(lines) abort
+  return sha256(join(a:lines, "\n") . "\n")
+endfunction
+
+" Binary-mode reads keep a trailing empty item as the final-newline artifact,
+" so the item list itself encodes whether the file ends in a newline:
+" joining with newline separators and appending the terminator only when the
+" final item carries content reconstructs the exact bytes — the identity the
+" buffer helper assigns to the same loaded text.
+function! s:FileTextSha256(path) abort
+  let l:lines = readfile(a:path, 'b')
+  let l:text = join(l:lines, "\n")
+  if !empty(l:lines) && l:lines[-1] !=# ''
+    let l:text .= "\n"
+  endif
+  return sha256(l:text)
+endfunction
+
+function! VimLspHostBufferTextSha256() abort
+  return s:BufferTextSha256(getline(1, '$'))
+endfunction
+
+function! VimLspHostFileTextSha256(path) abort
+  return s:FileTextSha256(a:path)
 endfunction

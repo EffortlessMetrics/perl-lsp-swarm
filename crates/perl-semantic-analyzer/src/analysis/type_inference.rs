@@ -572,28 +572,24 @@ impl TypeInferenceEngine {
                 let func_name = name.clone();
 
                 // Check built-in functions
-                if let Some(sig) = self.builtins.get(&func_name) {
-                    if let Subroutine { returns, .. } = sig {
-                        if returns.len() == 1 {
-                            return Ok(returns[0].clone());
-                        } else if returns.is_empty() {
-                            return Ok(Void);
-                        } else {
-                            return Ok(Array(Box::new(returns[0].clone())));
-                        }
+                if let Some(Subroutine { returns, .. }) = self.builtins.get(&func_name) {
+                    if returns.len() == 1 {
+                        return Ok(returns[0].clone());
+                    } else if returns.is_empty() {
+                        return Ok(Void);
+                    } else {
+                        return Ok(Array(Box::new(returns[0].clone())));
                     }
                 }
 
                 // Check user-defined functions
-                if let Some(ty) = env.get_subroutine(&func_name) {
-                    if let Subroutine { returns, .. } = ty {
-                        if returns.len() == 1 {
-                            return Ok(returns[0].clone());
-                        } else if returns.is_empty() {
-                            return Ok(Void);
-                        } else {
-                            return Ok(Array(Box::new(returns[0].clone())));
-                        }
+                if let Some(Subroutine { returns, .. }) = env.get_subroutine(&func_name) {
+                    if returns.len() == 1 {
+                        return Ok(returns[0].clone());
+                    } else if returns.is_empty() {
+                        return Ok(Void);
+                    } else {
+                        return Ok(Array(Box::new(returns[0].clone())));
                     }
                 }
 
@@ -696,10 +692,10 @@ impl TypeInferenceEngine {
 
             NodeKind::MethodCall { object, method, .. } => {
                 // Detect ClassName->new() pattern and return Object("ClassName")
-                if method == "new" {
-                    if let NodeKind::Identifier { name } = &object.kind {
-                        return Ok(Object(name.clone()));
-                    }
+                if method == "new"
+                    && let NodeKind::Identifier { name } = &object.kind
+                {
+                    return Ok(Object(name.clone()));
                 }
                 // Consult the same accessor/method return-fact tables used by
                 // `infer_expr_fact_in_env` so that type inference for method calls
@@ -922,14 +918,22 @@ impl TypeInferenceEngine {
             };
             rhs_fact.evidence.push(slot_evidence);
             let mut hash_fact = env.get_fact_at(&hash_name).unwrap_or_else(TypeFact::unknown_hash);
-            let mut shape = match hash_fact.shape.take() {
-                Some(ShapeFact::Hash(shape)) => shape,
-                _ => HashShape::new(BTreeMap::new(), None),
-            };
-            shape.slots.insert(key, rhs_fact.clone());
-            hash_fact.ty = hash_type_from_slot_facts(shape.slots.values());
-            hash_fact.confidence = Confidence::High;
-            hash_fact.shape = Some(ShapeFact::Hash(shape));
+            match hash_fact.shape.take() {
+                Some(ShapeFact::Object(mut shape)) if is_hashref_slot => {
+                    shape.fields.insert(key, rhs_fact.clone());
+                    hash_fact.shape = Some(ShapeFact::Object(shape));
+                }
+                existing_shape => {
+                    let mut shape = match existing_shape {
+                        Some(ShapeFact::Hash(shape)) => shape,
+                        _ => HashShape::new(BTreeMap::new(), None),
+                    };
+                    shape.slots.insert(key, rhs_fact.clone());
+                    hash_fact.ty = hash_type_from_slot_facts(shape.slots.values());
+                    hash_fact.confidence = Confidence::High;
+                    hash_fact.shape = Some(ShapeFact::Hash(shape));
+                }
+            }
             env.set_variable_fact(hash_name, hash_fact);
             return rhs_fact;
         }

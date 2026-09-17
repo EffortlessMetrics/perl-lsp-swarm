@@ -53,7 +53,10 @@ fn test_evaluate_safe_mode_blocks_iterator_and_io() -> Result<(), Box<dyn std::e
         let args = json!({
             "expression": op,
             "allowSideEffects": false,
-            "context": "hover"
+            // `watch`, not `hover`: this test is about safe-mode *screening*,
+            // and hover is refused before screening now (#9573). Keeping
+            // `hover` here would make the assertion below vacuous.
+            "context": "watch"
         });
         let response = adapter.handle_request(1, "evaluate", Some(args));
 
@@ -85,7 +88,10 @@ fn test_evaluate_safe_mode_allows_comparisons_and_lookups() -> Result<(), Box<dy
         let args = json!({
             "expression": op,
             "allowSideEffects": false,
-            "context": "hover"
+            // `watch`, not `hover`: hover is refused before screening (#9573),
+            // which would make "was not blocked by safe mode" trivially true
+            // and stop this test proving that safe operations are admitted.
+            "context": "watch"
         });
         let response = adapter.handle_request(1, "evaluate", Some(args));
 

@@ -52,63 +52,63 @@ pub fn check_common_mistakes(
             }
 
             // Check for == or != with undef
-            NodeKind::Binary { op, left, right } => {
+            NodeKind::Binary { op, left, right }
                 if (op == "==" || op == "!=")
-                    && (might_be_undef(left, symbol_table) || might_be_undef(right, symbol_table))
-                {
-                    // The emitter chooses the reviewed PL404 shape at the
-                    // syntax branch that observed it (#11918): a literal
-                    // `undef` operand is the literal shape (the reviewed
-                    // native alias `native.common.undef_comparison` covers
-                    // exactly that); an unresolved-variable operand is the
-                    // data-flow shape, which deliberately has no native
-                    // alias and stays a distinct finding.
-                    let literal_undef = matches!(left.kind, NodeKind::Undef)
-                        || matches!(right.kind, NodeKind::Undef);
-                    let range = (n.location.start, n.location.end);
-                    let message = format!(
-                        "Using '{}' with potentially undefined value -- use 'defined()' to check first",
-                        op
-                    );
-                    const UNDEF_GUARD_SUGGESTION: &str =
-                        "Guard with 'defined($var)' or use the '//' (defined-or) operator";
-                    const UNDEF_RELATED_EXPLANATION: &str =
-                        "Consider using 'defined' check or '//' operator";
-                    let observation = if literal_undef {
-                        BuiltInCriticObservation::pl404_literal_undef_comparison(
-                            Severity::Stern,
-                            range,
-                            message.clone(),
-                            Some(UNDEF_RELATED_EXPLANATION.to_string()),
-                        )
-                    } else {
-                        BuiltInCriticObservation::pl404_potentially_undef_comparison(
-                            Severity::Stern,
-                            range,
-                            message.clone(),
-                            Some(UNDEF_RELATED_EXPLANATION.to_string()),
-                        )
-                    }
-                    // #12004: the observation carries the ordinary row's
-                    // exact user-visible remediation so retirement cannot
-                    // drop it. Shared bindings keep the copies identical.
-                    .with_suggestion(UNDEF_GUARD_SUGGESTION)
-                    .with_related_information(range, UNDEF_RELATED_EXPLANATION.to_string());
-                    diagnostics.push(Diagnostic {
+                    && (might_be_undef(left, symbol_table)
+                        || might_be_undef(right, symbol_table)) =>
+            {
+                // The emitter chooses the reviewed PL404 shape at the
+                // syntax branch that observed it (#11918): a literal
+                // `undef` operand is the literal shape (the reviewed
+                // native alias `native.common.undef_comparison` covers
+                // exactly that); an unresolved-variable operand is the
+                // data-flow shape, which deliberately has no native
+                // alias and stays a distinct finding.
+                let literal_undef =
+                    matches!(left.kind, NodeKind::Undef) || matches!(right.kind, NodeKind::Undef);
+                let range = (n.location.start, n.location.end);
+                let message = format!(
+                    "Using '{}' with potentially undefined value -- use 'defined()' to check first",
+                    op
+                );
+                const UNDEF_GUARD_SUGGESTION: &str =
+                    "Guard with 'defined($var)' or use the '//' (defined-or) operator";
+                const UNDEF_RELATED_EXPLANATION: &str =
+                    "Consider using 'defined' check or '//' operator";
+                let observation = if literal_undef {
+                    BuiltInCriticObservation::pl404_literal_undef_comparison(
+                        Severity::Stern,
                         range,
-                        severity: DiagnosticSeverity::Warning,
-                        code: Some(DiagnosticCode::NumericComparisonWithUndef.as_str().to_string()),
-                        message,
-                        related_information: vec![RelatedInformation {
-                            location: range,
-                            message: UNDEF_RELATED_EXPLANATION.to_string(),
-                        }],
-                        tags: Vec::new(),
-                        fixable: false,
-                        critic_observation: Some(observation),
-                        suggestion: Some(UNDEF_GUARD_SUGGESTION.to_string()),
-                    });
+                        message.clone(),
+                        Some(UNDEF_RELATED_EXPLANATION.to_string()),
+                    )
+                } else {
+                    BuiltInCriticObservation::pl404_potentially_undef_comparison(
+                        Severity::Stern,
+                        range,
+                        message.clone(),
+                        Some(UNDEF_RELATED_EXPLANATION.to_string()),
+                    )
                 }
+                // #12004: the observation carries the ordinary row's
+                // exact user-visible remediation so retirement cannot
+                // drop it. Shared bindings keep the copies identical.
+                .with_suggestion(UNDEF_GUARD_SUGGESTION)
+                .with_related_information(range, UNDEF_RELATED_EXPLANATION.to_string());
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: DiagnosticSeverity::Warning,
+                    code: Some(DiagnosticCode::NumericComparisonWithUndef.as_str().to_string()),
+                    message,
+                    related_information: vec![RelatedInformation {
+                        location: range,
+                        message: UNDEF_RELATED_EXPLANATION.to_string(),
+                    }],
+                    tags: Vec::new(),
+                    fixable: false,
+                    critic_observation: Some(observation),
+                    suggestion: Some(UNDEF_GUARD_SUGGESTION.to_string()),
+                });
             }
             NodeKind::FunctionCall { name, args } => {
                 check_bareword_filehandle(name, args, n, diagnostics);
@@ -222,6 +222,7 @@ mod tests {
     use perl_parser_core::parser::Parser;
     use perl_semantic_analyzer::analysis::symbol::SymbolExtractor;
     use perl_tdd_support::{must, must_some};
+    use perl_test_must::must_some_with;
 
     fn common_mistakes_diags(source: &str) -> Vec<Diagnostic> {
         let ast = must(Parser::new(source).parse());
@@ -392,24 +393,26 @@ mod tests {
         use crate::tooling::perl_critic::CriticFindingShape;
 
         let literal = common_mistakes_diags("if (5 == undef) { }");
-        let literal_observation = literal
-            .iter()
-            .find(|d| d.code.as_deref() == Some("PL404"))
-            .and_then(|d| d.critic_observation.as_ref())
-            .unwrap_or_else(|| {
-                panic!("literal undef PL404 must carry an observation: {literal:?}")
-            });
+        let literal_observation = must_some_with(
+            literal
+                .iter()
+                .find(|d| d.code.as_deref() == Some("PL404"))
+                .and_then(|d| d.critic_observation.as_ref()),
+            format!("literal undef PL404 must carry an observation: {literal:?}"),
+        );
         assert_eq!(
             literal_observation.identity().shape(),
             CriticFindingShape::LiteralUndefComparison
         );
 
         let dataflow = common_mistakes_diags("if ($undeclared_var == 5) { }");
-        let dataflow_observation = dataflow
-            .iter()
-            .find(|d| d.code.as_deref() == Some("PL404"))
-            .and_then(|d| d.critic_observation.as_ref())
-            .unwrap_or_else(|| panic!("data-flow PL404 must carry an observation: {dataflow:?}"));
+        let dataflow_observation = must_some_with(
+            dataflow
+                .iter()
+                .find(|d| d.code.as_deref() == Some("PL404"))
+                .and_then(|d| d.critic_observation.as_ref()),
+            format!("data-flow PL404 must carry an observation: {dataflow:?}"),
+        );
         assert_eq!(
             dataflow_observation.identity().shape(),
             CriticFindingShape::PotentiallyUndefComparison
@@ -419,13 +422,13 @@ mod tests {
     #[test]
     fn pl404_observations_declare_the_critic_scale_severity_the_producer_owns() {
         let diags = common_mistakes_diags("if (5 == undef) { }");
-        let observation = diags
-            .iter()
-            .find(|d| d.code.as_deref() == Some("PL404"))
-            .and_then(|d| d.critic_observation.as_ref());
-        let Some(observation) = observation else {
-            panic!("PL404 must carry an observation: {diags:?}")
-        };
+        let observation = must_some_with(
+            diags
+                .iter()
+                .find(|d| d.code.as_deref() == Some("PL404"))
+                .and_then(|d| d.critic_observation.as_ref()),
+            format!("PL404 must carry an observation: {diags:?}"),
+        );
         // Stern matches the reviewed native alias declaration; deriving it
         // from the LSP Warning instead would be an invented mapping.
         assert_eq!(observation.severity(), crate::tooling::perl_critic::Severity::Stern);
@@ -438,18 +441,18 @@ mod tests {
     fn pl404_observation_remediation_copies_match_the_ordinary_diagnostic_fields() {
         for source in ["if (5 == undef) { }", "if ($undeclared_var == 5) { }"] {
             let diags = common_mistakes_diags(source);
-            let diagnostic = diags
-                .iter()
-                .find(|d| d.code.as_deref() == Some("PL404"))
-                .unwrap_or_else(|| panic!("PL404 must be emitted for {source}"));
-            let suggestion = diagnostic
-                .suggestion
-                .as_deref()
-                .unwrap_or_else(|| panic!("PL404 must carry an ordinary suggestion"));
-            let observation = diagnostic
-                .critic_observation
-                .as_ref()
-                .unwrap_or_else(|| panic!("PL404 must carry an observation: {diags:?}"));
+            let diagnostic = must_some_with(
+                diags.iter().find(|d| d.code.as_deref() == Some("PL404")),
+                format!("PL404 must be emitted for {source}"),
+            );
+            let suggestion = must_some_with(
+                diagnostic.suggestion.as_deref(),
+                "PL404 must carry an ordinary suggestion",
+            );
+            let observation = must_some_with(
+                diagnostic.critic_observation.as_ref(),
+                format!("PL404 must carry an observation: {diags:?}"),
+            );
 
             assert_eq!(
                 observation.suggestion(),

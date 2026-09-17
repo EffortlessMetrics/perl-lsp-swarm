@@ -32,28 +32,6 @@ impl<'a> Parser<'a> {
         matches!(kind, Some(TokenKind::Increment) | Some(TokenKind::Decrement))
     }
 
-    fn peek_compound_assign_op(&mut self) -> Option<&'static str> {
-        match self.peek_kind()? {
-            TokenKind::Assign => Some("="),
-            TokenKind::PlusAssign => Some("+="),
-            TokenKind::MinusAssign => Some("-="),
-            TokenKind::StarAssign => Some("*="),
-            TokenKind::SlashAssign => Some("/="),
-            TokenKind::PercentAssign => Some("%="),
-            TokenKind::DotAssign => Some(".="),
-            TokenKind::AndAssign => Some("&="),
-            TokenKind::OrAssign => Some("|="),
-            TokenKind::XorAssign => Some("^="),
-            TokenKind::PowerAssign => Some("**="),
-            TokenKind::LeftShiftAssign => Some("<<="),
-            TokenKind::RightShiftAssign => Some(">>="),
-            TokenKind::LogicalAndAssign => Some("&&="),
-            TokenKind::LogicalOrAssign => Some("||="),
-            TokenKind::DefinedOrAssign => Some("//="),
-            _ => None,
-        }
-    }
-
     #[inline]
     fn is_variable_sigil(kind: Option<TokenKind>) -> bool {
         matches!(
@@ -121,25 +99,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Check recursion depth with optimized hot path
+    /// Enter production recursion depth through the live operation context.
+    ///
+    /// Checks the next depth before entering, then records current and maximum
+    /// depth once. This is the only production recursion-depth authority.
     #[inline(always)]
-    fn check_recursion(&mut self) -> ParseResult<()> {
-        self.recursion_depth += 1;
-        // Fast path: avoid expensive comparisons in the common case
-        if self.recursion_depth > MAX_RECURSION_DEPTH {
-            // The recursion guard keeps its own error identity so the typed
-            // stop cause preserves which guard terminated the parse instead of
-            // relabeling expression recursion as structural nesting.
-            return Err(ParseError::RecursionDepthExhausted {
-                depth: self.recursion_depth,
-                max_depth: MAX_RECURSION_DEPTH,
-            });
-        }
-        Ok(())
+    fn enter_production_depth(&mut self) -> ParseResult<()> {
+        self.operation.enter_recursion()
     }
 
-    fn exit_recursion(&mut self) {
-        self.recursion_depth = self.recursion_depth.saturating_sub(1);
+    #[inline(always)]
+    fn exit_production_depth(&mut self) {
+        self.operation.exit_recursion();
     }
 
     fn check_block_recursion(&mut self) -> ParseResult<()> {
@@ -157,45 +128,68 @@ impl<'a> Parser<'a> {
         self.block_depth = self.block_depth.saturating_sub(1);
     }
 
+    /// Run `f` inside a class grammar frame of `form`.
+    ///
+    /// Closure-based for the same reason as [`Self::with_depth`]: the context
+    /// can be restored without a `Drop` guard that aliases `&mut Parser`. The
+    /// context is restored to the depth observed on entry on success, parse
+    /// error, recovery, truncated input, cancellation, and early return, so no
+    /// caller has to remember a paired reset and no frame can leak into the
+    /// statements that follow the class body.
+    #[inline]
+    fn within_class_grammar<T>(
+        &mut self,
+        form: ClassGrammarForm,
+        f: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
+        let restore = self.class_grammar.mark();
+        self.class_grammar.enter(form);
+        let result = f(self);
+        self.class_grammar.restore(restore);
+        result
+    }
+
+    /// Run `f` under the live production recursion-depth context.
+    ///
+    /// Closure-based so the tracker can be borrowed without a `Drop` guard
+    /// that aliases `&mut Parser`. Depth is unwound on success, parse error,
+    /// recovery, cancellation, exhaustion (never entered), and early return.
+    #[inline]
+    fn with_depth<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> ParseResult<T>,
+    ) -> ParseResult<T> {
+        self.enter_production_depth()?;
+        let result = f(self);
+        self.exit_production_depth();
+        result
+    }
+
     /// Run `f` under the recursion depth budget.
     ///
-    /// - `check_recursion()` increments depth (and may error)
-    /// - depth is decremented on scope exit (even on early return / panic)
+    /// Existing recursive seams call this name. New seams should call
+    /// [`Self::with_depth`] so unwind cannot be skipped.
     #[inline]
     fn with_recursion_guard<T>(
         &mut self,
         f: impl FnOnce(&mut Self) -> ParseResult<T>,
     ) -> ParseResult<T> {
-        self.check_recursion()?;
-
-        struct Guard<'p, 'src>(&'p mut Parser<'src>);
-        impl<'p, 'src> Drop for Guard<'p, 'src> {
-            fn drop(&mut self) {
-                self.0.exit_recursion();
-            }
-        }
-
-        let guard = Guard(self);
-        f(guard.0)
+        self.with_depth(f)
     }
 
     /// Run `f` under the structural block nesting budget.
+    ///
+    /// `block_depth` is syntactic nesting for `NestingTooDeep`. It is not the
+    /// live tracker resource-control authority.
     #[inline]
     fn with_block_recursion_guard<T>(
         &mut self,
         f: impl FnOnce(&mut Self) -> ParseResult<T>,
     ) -> ParseResult<T> {
         self.check_block_recursion()?;
-
-        struct Guard<'p, 'src>(&'p mut Parser<'src>);
-        impl<'p, 'src> Drop for Guard<'p, 'src> {
-            fn drop(&mut self) {
-                self.0.exit_block_recursion();
-            }
-        }
-
-        let guard = Guard(self);
-        f(guard.0)
+        let result = f(self);
+        self.exit_block_recursion();
+        result
     }
 
     /// Check if an identifier is a builtin function that can take arguments without parens.
@@ -445,7 +439,12 @@ impl<'a> Parser<'a> {
             .is_some_and(|token| Self::is_sigil_argument_start(token.kind(), token.text.as_ref()))
     }
 
-    fn assignment_operator_text(kind: TokenKind) -> Option<&'static str> {
+    /// The single symbolic assignment-operator table.
+    ///
+    /// Contextual `x=` is not listed here: it arrives as two tokens and is
+    /// recognized only by `consume_assignment_operator`, which layers that
+    /// case on top of this table.
+    pub(super) fn assignment_operator_text(kind: TokenKind) -> Option<&'static str> {
         match kind {
             TokenKind::Assign => Some("="),
             TokenKind::PlusAssign => Some("+="),
@@ -505,12 +504,11 @@ impl<'a> Parser<'a> {
             return Ok(expr);
         }
 
-        let Some(op) = self.peek_kind().and_then(Self::assignment_operator_text) else {
+        let Some((op, op_start)) = self.consume_assignment_operator()? else {
             return Ok(expr);
         };
 
-        let op_token = self.tokens.next()?;
-        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_token.start()) {
+        let rhs = if let Some(missing) = self.recover_missing_infix_rhs(op_start) {
             missing
         } else {
             self.parse_assignment()?
@@ -638,7 +636,10 @@ impl<'a> Parser<'a> {
     }
 
     /// Auto-quote a bare identifier when it appears on the left side of `=>`.
-    fn autoquote_fat_arrow_key(node: &mut Node) {
+    /// Apply Perl's implicit string conversion to a bareword immediately left
+    /// of a fat comma. `=>` is a comma synonym, but unlike a plain comma it
+    /// also auto-quotes an otherwise bare identifier.
+    pub(crate) fn auto_quote_bareword_before_fat_comma(node: &mut Node) {
         if let NodeKind::Identifier { ref name } = node.kind {
             *node = Node::new(
                 NodeKind::String { value: name.clone(), interpolated: false },
@@ -668,7 +669,7 @@ impl<'a> Parser<'a> {
         if self.peek_kind() == Some(TokenKind::FatArrow) {
             saw_fat_arrow = true;
             if let Some(last) = expressions.last_mut() {
-                Self::autoquote_fat_arrow_key(last);
+                Self::auto_quote_bareword_before_fat_comma(last);
             }
             self.consume_token()?; // consume =>
             if self.peek_kind() == Some(TokenKind::FatArrow) {
@@ -700,7 +701,7 @@ impl<'a> Parser<'a> {
                 saw_fat_arrow = true;
                 if !was_comma
                     && let Some(last) = expressions.last_mut() {
-                        Self::autoquote_fat_arrow_key(last);
+                        Self::auto_quote_bareword_before_fat_comma(last);
                     }
                 self.consume_token()?; // consume =>
             }
@@ -722,7 +723,7 @@ impl<'a> Parser<'a> {
 
             if self.peek_kind() == Some(TokenKind::FatArrow) {
                 saw_fat_arrow = true;
-                Self::autoquote_fat_arrow_key(&mut elem);
+                Self::auto_quote_bareword_before_fat_comma(&mut elem);
                 self.consume_token()?; // consume =>
                 expressions.push(elem);
 
@@ -1222,6 +1223,40 @@ impl<'a> Parser<'a> {
         name.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
     }
 
+    /// True when this token starts a `qw` list that Perl flattens in list
+    /// context: a single `QuoteWords` token, or a split `qw` identifier waiting
+    /// for its delimiter.
+    fn token_starts_qw_list(kind: TokenKind, text: &str) -> bool {
+        kind == TokenKind::QuoteWords || (kind == TokenKind::Identifier && text == "qw")
+    }
+
+    fn peek_is_qw_list_start(&mut self) -> bool {
+        self.tokens
+            .peek()
+            .ok()
+            .is_some_and(|token| Self::token_starts_qw_list(token.kind(), token.text.as_ref()))
+    }
+
+    /// Parse the next `qw` list as bare-call arguments, flattening the words.
+    ///
+    /// Standalone `qw(a b)` remains an ArrayLiteral. List-operator calls treat the
+    /// same node as the flattened words, matching `func 'a', 'b'`.
+    ///
+    /// The returned location is the consumed qw container. Empty or
+    /// comment-only lists have no element ends, and `QuoteWords` is consumed
+    /// with `tokens.next()`, which leaves `previous_position()` stale.
+    fn parse_flattened_qw_list_argument(&mut self) -> ParseResult<(Vec<Node>, SourceLocation)> {
+        let node = self.parse_assignment_or_declaration()?;
+        Ok(Self::flatten_qw_list_argument(node))
+    }
+
+    fn flatten_qw_list_argument(node: Node) -> (Vec<Node>, SourceLocation) {
+        match node.into_parts() {
+            (NodeKind::ArrayLiteral { elements }, location) => (elements, location),
+            (kind, location) => (vec![Node::new(kind, location)], location),
+        }
+    }
+
     /// We are conservative: the identifier must be lowercase (uppercase bare
     /// identifiers are more likely to be constants or package names) and
     /// must NOT be a string comparison operator (`eq`, `ne`, `lt`, `gt`, etc.)
@@ -1264,6 +1299,12 @@ impl<'a> Parser<'a> {
             Ok(t) => t,
             Err(_) => return false,
         };
+
+        // `func qw(a b)` is one QuoteWords token; split `qw` plus a delimiter is
+        // the same list in list-operator position (#14808).
+        if Self::token_starts_qw_list(next.kind(), next.text.as_ref()) {
+            return true;
+        }
 
         match next.kind() {
             // Sigiled variables: `func $x`, `func @arr`, `func %hash`

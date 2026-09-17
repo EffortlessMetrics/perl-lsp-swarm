@@ -233,49 +233,54 @@ impl ExportSymbolExtractor {
             // the module is loaded but callers must invoke `Exporter::import` explicitly, or
             // rely on `@EXPORT` being populated before import time.  We treat both forms as
             // Exporter-based so that @EXPORT/@EXPORT_OK are still extracted.
-            NodeKind::Use { module, args, .. } if module == "Exporter" => {
+            NodeKind::Use { module, args, .. }
+                if module == "Exporter"
+                    && (args.is_empty()
+                        || args.iter().any(|arg| {
+                            let arg_stripped = arg.trim_matches('\'');
+                            arg_stripped == "import" || arg == "import"
+                        })) =>
+            {
                 // Accept `use Exporter;` (args empty) or `use Exporter 'import';`
-                if args.is_empty()
-                    || args.iter().any(|arg| {
-                        let arg_stripped = arg.trim_matches('\'');
-                        arg_stripped == "import" || arg == "import"
-                    })
-                {
-                    return Some(ExporterDetector::UseExporterImport);
-                }
+                return Some(ExporterDetector::UseExporterImport);
             }
             // Pattern 2: `use parent 'Exporter';` or `use parent qw(Exporter ...)`
             //
             // The parser stores qw-lists as a single normalised string like `"qw(Exporter)"`,
             // so we must check both single-quoted strings and the qw-expanded form.
-            NodeKind::Use { module, args, .. } if module == "parent" => {
-                if args.iter().any(|arg| Self::arg_contains_exporter(arg)) {
-                    return Some(ExporterDetector::UseParentExporter);
-                }
+            NodeKind::Use { module, args, .. }
+                if module == "parent"
+                    && args.iter().any(|arg| Self::arg_contains_exporter(arg)) =>
+            {
+                return Some(ExporterDetector::UseParentExporter);
             }
             // Pattern 3: `use base 'Exporter';` or `use base qw(Exporter ...)`
             //
             // `use base` is the older form of `use parent` and is still widely used in
             // legacy CPAN code. The same qw-normalisation applies.
-            NodeKind::Use { module, args, .. } if module == "base" => {
-                if args.iter().any(|arg| Self::arg_contains_exporter(arg)) {
-                    return Some(ExporterDetector::UseBaseExporter);
-                }
+            NodeKind::Use { module, args, .. }
+                if module == "base" && args.iter().any(|arg| Self::arg_contains_exporter(arg)) =>
+            {
+                return Some(ExporterDetector::UseBaseExporter);
             }
             // Pattern 4a: `our @ISA = qw(Exporter ...);` (declared form)
             NodeKind::VariableDeclaration { variable, initializer: Some(init), .. } => {
-                if let NodeKind::Variable { sigil, name } = &variable.kind {
-                    if sigil == "@" && name == "ISA" && Self::initializer_contains_exporter(init) {
-                        return Some(ExporterDetector::OurIsaExporter);
-                    }
+                if let NodeKind::Variable { sigil, name } = &variable.kind
+                    && sigil == "@"
+                    && name == "ISA"
+                    && Self::initializer_contains_exporter(init)
+                {
+                    return Some(ExporterDetector::OurIsaExporter);
                 }
             }
             // Pattern 4b: `@ISA = qw(Exporter ...);` (bare assignment without `our`)
             NodeKind::Assignment { lhs, rhs, .. } => {
-                if let NodeKind::Variable { sigil, name } = &lhs.kind {
-                    if sigil == "@" && name == "ISA" && Self::initializer_contains_exporter(rhs) {
-                        return Some(ExporterDetector::OurIsaExporter);
-                    }
+                if let NodeKind::Variable { sigil, name } = &lhs.kind
+                    && sigil == "@"
+                    && name == "ISA"
+                    && Self::initializer_contains_exporter(rhs)
+                {
+                    return Some(ExporterDetector::OurIsaExporter);
                 }
             }
             _ => {}
@@ -435,11 +440,11 @@ impl ExportSymbolExtractor {
                 // Check if this ArrayLiteral contains only one element which is itself an ArrayLiteral
                 // This happens with `[qw(tag_a tag_b)]` where the outer [...] creates an ArrayLiteral
                 // containing the result of qw()
-                if elements.len() == 1 {
-                    if let NodeKind::ArrayLiteral { .. } = &elements[0].kind {
-                        // Recursively parse the inner array which contains the actual strings
-                        return Self::parse_qw_array(&elements[0]);
-                    }
+                if elements.len() == 1
+                    && let NodeKind::ArrayLiteral { .. } = &elements[0].kind
+                {
+                    // Recursively parse the inner array which contains the actual strings
+                    return Self::parse_qw_array(&elements[0]);
                 }
                 // Normal case: ArrayLiteral with direct String elements
                 elements

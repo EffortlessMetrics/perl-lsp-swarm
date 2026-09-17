@@ -1,0 +1,7 @@
+---
+source: crates/perl-lsp-rs-core/tests/diag_snap.rs
+expression: snapshot
+---
+PL102 | Warning | (118, 122) | Variable '$sth' is declared but never used -- prefix with '_' or remove it | Prefix as '_sth'
+PL102 | Warning | (186, 191) | Variable '$safe' is declared but never used -- prefix with '_' or remove it | Prefix as '_safe'
+PL607 | Warning | (125, 181) | Interpolated SQL passed to ->prepare() is a SQL injection risk. Use placeholders (?) and bind values. | Use placeholders: $dbh->prepare('... WHERE id = ?')->execute($user_id)

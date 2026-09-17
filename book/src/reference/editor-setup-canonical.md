@@ -51,7 +51,7 @@ perllsp --health
 | Amazon Kiro | register a Perl LSP client using `perllsp --stdio` | [docs/EDITORS/KIRO_SETUP.md](../EDITORS/KIRO_SETUP.md) |
 | Claude Code | provide a plugin `.lsp.json` pointing to `perllsp --stdio` | [docs/EDITORS/CLAUDE_CODE_SETUP.md](../EDITORS/CLAUDE_CODE_SETUP.md) |
 | Codex CLI | configure an MCP bridge such as `lsp-mcp`; the bridge exposes tools to Codex and launches `perllsp --stdio` internally | [docs/EDITORS/CODEX_CLI_SETUP.md](../EDITORS/CODEX_CLI_SETUP.md) |
-| Codex Desktop | add a custom Perl server command `perllsp --stdio` | [docs/EDITORS/CODEX_DESKTOP_SETUP.md](../EDITORS/CODEX_DESKTOP_SETUP.md) |
+| Codex Desktop | **Not proven:** no documented custom language server surface; do not configure `perllsp` there | [docs/EDITORS/CODEX_DESKTOP_SETUP.md](../EDITORS/CODEX_DESKTOP_SETUP.md) |
 | OpenCode | configure a custom `perl-lsp` server in `opencode.json` | [docs/EDITORS/OPENCODE_SETUP.md](../EDITORS/OPENCODE_SETUP.md) |
 
 ## Minimal Configurations
@@ -346,5 +346,7 @@ push.
 
 ### Codex Desktop
 
-Configure a custom Perl language server process that runs `perllsp --stdio`.
-See the dedicated guide for the exact fields and verification steps.
+**Not proven / unsupported.** Codex Desktop exposes no documented surface for
+registering a custom language server, so there is no `perllsp` configuration to
+perform. See [CODEX_DESKTOP_SETUP.md](../EDITORS/CODEX_DESKTOP_SETUP.md) for
+the current host boundaries and the client support ledger for its earned tier.

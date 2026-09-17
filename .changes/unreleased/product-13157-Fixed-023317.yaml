@@ -1,0 +1,9 @@
+project: product
+component: Packaging and distribution
+kind: Fixed
+body: Retain META 1.x configure and build prerequisites in canonical workspace distribution facts.
+time: 2026-08-28T02:33:17Z
+custom:
+  PR: "13157"
+  Slug: meta-v1-prereq-phases
+  Breaking: "no"

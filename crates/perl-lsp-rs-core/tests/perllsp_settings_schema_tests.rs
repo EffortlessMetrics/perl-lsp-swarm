@@ -1,5 +1,6 @@
 use perl_lsp_rs_core::config::{FormatterMode, Perl5LibPrecedence, ServerConfig, WorkspaceConfig};
 use perl_lsp_rs_core::runtime::LspLimits;
+use perl_test_must::must_some_with;
 use serde_json::{Value, json};
 use std::{error::Error, time::Duration};
 
@@ -398,9 +399,10 @@ fn generic_schema_excludes_security_sensitive_lsp_settings() -> Result<(), Box<d
     // #4997: activation and selection fields remain documented for the future
     // trusted adapter but advertise no generic client transport.
     for activation_field in ["enabled", "provider", "model"] {
-        let field = ai
-            .get(activation_field)
-            .unwrap_or_else(|| panic!("aiCompletion.{activation_field} must stay documented"));
+        let field = must_some_with(
+            ai.get(activation_field),
+            format_args!("aiCompletion.{activation_field} must stay documented"),
+        );
         assert_eq!(
             field["x-perllsp-transports"],
             json!([]),
@@ -415,6 +417,55 @@ fn generic_schema_excludes_security_sensitive_lsp_settings() -> Result<(), Box<d
         json!([]),
         "streaming.enabled must not advertise client transports (#4997)",
     );
+
+    Ok(())
+}
+
+/// The published schema must advertise the same `maxInflight` bounds the
+/// runtime actually enforces (`#8300`).
+///
+/// The schema previously declared only `minimum: 1`, so a client could send
+/// `maxInflight: 128`, pass schema validation, and have the value silently
+/// discarded by `update_from_value` — validated configuration that does
+/// nothing is worse than configuration rejected up front. This pins both
+/// ends: the schema advertises `1..=64`, and the runtime agrees at each
+/// boundary.
+#[test]
+fn ai_max_inflight_schema_bounds_match_the_runtime_contract() -> Result<(), Box<dyn Error>> {
+    let schema = load_schema()?;
+    let max_inflight =
+        &schema["properties"]["perl"]["properties"]["aiCompletion"]["properties"]["maxInflight"];
+
+    if max_inflight["minimum"] != json!(1) {
+        return Err(std::io::Error::other("schema minimum must be 1").into());
+    }
+    if max_inflight["maximum"] != json!(64) {
+        return Err(std::io::Error::other("schema maximum must be 64").into());
+    }
+
+    // The runtime honours exactly the range the schema publishes: both
+    // boundaries are accepted, and the first value past each is not.
+    for (value, expected) in [(1_u64, 1_u32), (64, 64)] {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&json!({ "aiCompletion": { "maxInflight": value } }));
+        if config.ai_completion.max_inflight != expected {
+            return Err(std::io::Error::other(format!(
+                "maxInflight={value} is inside the published range and must be accepted"
+            ))
+            .into());
+        }
+    }
+
+    for rejected in [0_u64, 65] {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&json!({ "aiCompletion": { "maxInflight": 8 } }));
+        config.update_from_value(&json!({ "aiCompletion": { "maxInflight": rejected } }));
+        if config.ai_completion.max_inflight != 8 {
+            return Err(std::io::Error::other(format!(
+                "maxInflight={rejected} is outside the published range and must keep the previous value"
+            )).into());
+        }
+    }
 
     Ok(())
 }

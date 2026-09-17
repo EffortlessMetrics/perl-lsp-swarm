@@ -48,6 +48,8 @@
 
 mod capabilities;
 #[cfg(test)]
+mod effective_surface_parity_tests;
+#[cfg(test)]
 mod final_surface_census;
 pub(crate) mod inc_context;
 pub mod module_resolution;
@@ -57,7 +59,7 @@ mod workspace;
 
 use super::{LspServer, io};
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::IndexState;
+use perl_workspace::workspace_index::IndexState;
 use serde_json::json;
 
 impl LspServer {

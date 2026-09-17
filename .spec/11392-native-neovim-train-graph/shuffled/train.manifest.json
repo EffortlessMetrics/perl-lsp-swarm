@@ -1,0 +1,2352 @@
+{
+  "manifest_id": "native_neovim_train.v1",
+  "claim_profiles": [
+    {
+      "id": "native_neovim_configuration",
+      "members": [
+        "nv_config_canonical_root",
+        "nv_settings_schema_generic"
+      ],
+      "definition": "Canonical config, native filetype/root envelope, settings schema, and manual setup projection.",
+      "allowed_terminal_limitation_states": [
+        "not_proven",
+        "explicit_limitation",
+        "superseded"
+      ]
+    },
+    {
+      "universal_member_policy": "all_nodes_terminal_with_explicit_disposition",
+      "definition": "Every node/proposition terminally implemented/proven, transferred/superseded, explicitly limited with owner, or blocked on a named external stage; optional cells may legitimately end limited instead of passing.",
+      "members": [
+        "nv_closeout_terminal_composition"
+      ],
+      "allowed_terminal_limitation_states": [
+        "not_proven",
+        "pending_external_stage",
+        "explicit_limitation",
+        "out_of_scope",
+        "superseded"
+      ],
+      "id": "native_neovim_programme_closeout"
+    },
+    {
+      "definition": "Exact version/platform, public-install, upstream directory/package, progressive support, and generated documentation stages.",
+      "allowed_terminal_limitation_states": [
+        "not_proven",
+        "pending_external_stage",
+        "explicit_limitation",
+        "out_of_scope",
+        "superseded"
+      ],
+      "id": "native_neovim_first_class",
+      "members": [
+        "nv_version_matrix_decisions",
+        "nv_platform_linux",
+        "nv_platform_macos",
+        "nv_progressive_support_ledger_cell",
+        "nv_public_channels_contract",
+        "nv_channel_stable_install",
+        "nv_channel_nightly_install",
+        "nv_channel_dev_pin_install",
+        "nv_installed_binary_first_mile",
+        "nv_upstream_nvim_lspconfig_track",
+        "nv_upstream_mason_registry_track",
+        "nv_support_progressive_stages",
+        "nv_status_projection_product",
+        "nv_docs_setup_correction"
+      ]
+    },
+    {
+      "id": "native_neovim_deep_lifecycle",
+      "members": [
+        "nv_deep_atomic_branch",
+        "nv_deep_parser_artifact_branch",
+        "nv_deep_lifecycle_race_branch",
+        "nv_complete_deep_fanin"
+      ],
+      "definition": "Core plus applicable atomic sync/desync, parser-input/artifact/strategy, and asynchronous-open/race/ABA/retention propositions composed only by the complete-deep fan-in.",
+      "allowed_terminal_limitation_states": [
+        "not_proven",
+        "explicit_limitation",
+        "out_of_scope"
+      ]
+    },
+    {
+      "selection_subject": "#8129 editing scope selection",
+      "allowed_terminal_limitation_states": [
+        "not_proven",
+        "explicit_limitation",
+        "pending_external_stage"
+      ],
+      "selecting_authority": "nv_release_scope_decision",
+      "members": [
+        "nv_release_bounded_process_evidence",
+        "nv_release_bounded_v0_18_envelope",
+        "nv_core_fanin_exact_subject_receipts"
+      ],
+      "definition": "Consumes exactly one #8129 branch (selected_value=full_document_utf16) and only the Neovim cells required by the selected bounded public claim; parser-work and race propositions are never required.",
+      "id": "release_v0_18_bounded"
+    },
+    {
+      "allowed_terminal_limitation_states": [
+        "not_proven",
+        "explicit_limitation"
+      ],
+      "definition": "Exact actual-host attach/root, target diagnostics, completion, hover/navigation, safe settings effect, actual edit/current re-query, formatting application/idempotence, and graceful cleanup.",
+      "members": [
+        "nv_core_slice_attach_root_effects",
+        "nv_core_slice_target_diagnostics",
+        "nv_core_slice_completion_nav_hover",
+        "nv_core_slice_edit_requery_format_cleanup",
+        "nv_core_fanin_exact_subject_receipts"
+      ],
+      "id": "native_neovim_core"
+    }
+  ],
+  "external_authorities": [
+    {
+      "id": "ext_nvim_lspconfig_upstream",
+      "subject": "nvim-lspconfig upstream repository directory/package"
+    },
+    {
+      "id": "ext_public_package_registry",
+      "subject": "public Neovim plugin/package distribution channel feeding released-public availability"
+    },
+    {
+      "subject": "Mason.nvim public registry index",
+      "id": "ext_mason_registry"
+    }
+  ],
+  "candidate_reconciliation": [
+    {
+      "note": "canonical config/root substrate landed; probe candidate awaits current-tree confirmation",
+      "pr": 7805,
+      "disposition": "merged_current_candidate_for_probe",
+      "node_id": "nv_config_canonical_root"
+    },
+    {
+      "pr": 12638,
+      "note": "native built-in-LSP action/observation contract (#11409) is the current instrument vocabulary (native_neovim_actions.v1, ids prefixed neovim.native.)",
+      "node_id": "nv_native_action_observation_catalog",
+      "disposition": "current_candidate"
+    },
+    {
+      "pr": 7867,
+      "disposition": "merged_current_candidate_for_probe",
+      "note": "focused docs correction landed",
+      "node_id": "nv_docs_setup_correction"
+    },
+    {
+      "note": "local Mason packet landed; external checkpoints ahead",
+      "disposition": "merged_current_candidate_for_probe",
+      "node_id": "nv_upstream_mason_registry_track",
+      "pr": 7861
+    },
+    {
+      "pr": 7849,
+      "disposition": "merged_current_candidate_for_probe",
+      "note": "local nvim-lspconfig packet landed; external checkpoints ahead",
+      "node_id": "nv_upstream_nvim_lspconfig_track"
+    },
+    {
+      "disposition": "merged_current_candidate_for_probe",
+      "pr": 7843,
+      "node_id": "nv_version_matrix_decisions",
+      "note": "version-matrix mechanics landed"
+    },
+    {
+      "node_id": "nv_dap_preview_receipt_adjacent",
+      "note": "nvim-dap substrate and preview receipt landed; adjacent-only preserved",
+      "disposition": "merged_current_candidate_for_probe",
+      "pr": 7822
+    },
+    {
+      "node_id": "nv_installed_binary_first_mile",
+      "note": "installed-binary host mechanics landed",
+      "disposition": "merged_current_candidate_for_probe",
+      "pr": 7817
+    },
+    {
+      "pr": 7815,
+      "note": "virtual-content direct-server boundary landed; optional branch stays upstream-dependent",
+      "disposition": "merged_current_candidate_for_probe",
+      "node_id": "nv_direct_server_virtual_boundary"
+    },
+    {
+      "note": "generic settings schema landed",
+      "node_id": "nv_settings_schema_generic",
+      "pr": 7811,
+      "disposition": "merged_current_candidate_for_probe"
+    }
+  ],
+  "schema_version": 1,
+  "selecting_authorities": [
+    {
+      "id": "nv_release_scope_decision",
+      "allowed_values": [
+        "full_document_utf16",
+        "atomic_incremental"
+      ],
+      "controller_node": "nv_ctrl_release_decision",
+      "invalidation_rule": "the selection is re-evaluated whenever either branch materially lands; stale selections fail closed",
+      "subject": "#8129 editing scope selection"
+    }
+  ],
+  "revision_governance": {
+    "prohibition": "no scheduler, global train database, tracked live frontier, GitHub mirror, host runner, product behavior, receipt schema, support verdict, agent launch, PR creation, merge, or external mutation enters these bytes",
+    "owner_node": "nv_controlplane_this_issue",
+    "rule": "semantic revisions invalidate derived packets and claims, forcing re-derivation; format-only movement is metadata-only",
+    "owner_issue": 11392
+  },
+  "schema": "native_neovim_train.v1",
+  "authority_planes": [
+    {
+      "never_substitutes": "live branch, pull request, check, run, review, or writer activity never establishes or waives topology facts",
+      "owns": "node/proposition IDs, roles, profile membership, typed relationships, writer/conflict keys, and stop/transfer contracts",
+      "plane": "stable reviewed programme topology"
+    },
+    {
+      "never_substitutes": "instrument success never substitutes for product behavior evidence",
+      "plane": "behavior evidence and claim truth",
+      "owns": "actual-host receipts composed strictly per profile rules; core/deep boundaries are structural"
+    },
+    {
+      "never_substitutes": "this manifest never infers implementation state, derives a frontier, inspects GitHub, launches Neovim, evaluates receipts, promotes support, or embeds mutable GitHub/task/agent state",
+      "owns": "currentness probing performed by successor surfaces, never by these bytes",
+      "plane": "exact current-tree implementation state"
+    },
+    {
+      "never_substitutes": "closed issues or merged pulls never manufacture child proposition success",
+      "plane": "durable GitHub transaction history",
+      "owns": "issues and pull requests cited as provenance anchors"
+    }
+  ],
+  "nodes": [
+    {
+      "fan_in": {
+        "satisfaction_source": "independently_terminal_child_propositions",
+        "children": [
+          "nv_atomic_release_dependents_gate",
+          "nv_channel_dev_pin_install",
+          "nv_channel_nightly_install",
+          "nv_channel_stable_install",
+          "nv_ci_proof_routing_policy",
+          "nv_complete_deep_fanin",
+          "nv_config_canonical_root",
+          "nv_controlplane_this_issue",
+          "nv_core_fanin_exact_subject_receipts",
+          "nv_core_slice_attach_root_effects",
+          "nv_core_slice_completion_nav_hover",
+          "nv_core_slice_edit_requery_format_cleanup",
+          "nv_core_slice_target_diagnostics",
+          "nv_ctrl_release_decision",
+          "nv_ctrl_spec_expectations_chain",
+          "nv_dap_preview_receipt_adjacent",
+          "nv_dap_spine_adjacent_gate",
+          "nv_deep_atomic_branch",
+          "nv_deep_lifecycle_race_branch",
+          "nv_deep_parser_artifact_branch",
+          "nv_direct_server_virtual_boundary",
+          "nv_docs_setup_correction",
+          "nv_expectations_packets",
+          "nv_host_toolchain_leaf",
+          "nv_installed_binary_first_mile",
+          "nv_native_action_observation_catalog",
+          "nv_platform_linux",
+          "nv_platform_macos",
+          "nv_progressive_support_ledger_cell",
+          "nv_public_channels_contract",
+          "nv_receipt_adapter_catalog",
+          "nv_release_bounded_process_evidence",
+          "nv_release_bounded_v0_18_envelope",
+          "nv_settings_schema_generic",
+          "nv_shared_host_execution_adoption",
+          "nv_shared_mechanics_seam",
+          "nv_spec_train_durable",
+          "nv_status_projection_product",
+          "nv_support_progressive_stages",
+          "nv_thin_native_host_adapter",
+          "nv_upstream_mason_registry_track",
+          "nv_upstream_nvim_lspconfig_track",
+          "nv_version_matrix_decisions",
+          "nv_virtual_documents_optional"
+        ]
+      },
+      "evidence_stage": "not_started",
+      "claim_profiles_affected": [
+        "native_neovim_programme_closeout"
+      ],
+      "focused_proof_generation_owner": "coverage-completeness check over the full node roster",
+      "codex_stop_transfer_condition": "hands the closed programme summary to the product controller view",
+      "controller": "nv_controlplane_this_issue",
+      "lane": "closeout",
+      "forbidden_adjacent_authorities": [
+        "silent disappearance of an optional cell",
+        "composition pass manufactured from issue/PR/workflow/file state"
+      ],
+      "role": "proof",
+      "node_id": "nv_closeout_terminal_composition",
+      "buildable": true,
+      "claim_ceiling": "Universal terminal-composition proof only: each covered child either passed independently or ended explicitly limited/superseded/blocked externally with an owner; optional cells may legitimately end limited and never disappear silently.",
+      "cheapest_discriminating_falsifier": "one covered node lacking any terminal disposition while the composition reports progress",
+      "review_map_requirements": [
+        "the covered-node roster is echoed verbatim in the PR body"
+      ],
+      "proposition_family": "control_plane",
+      "negative_controls": [
+        "optional cells vanishing instead of ending limited"
+      ],
+      "rollback_shape": "withdraw the composition; individual dispositions stand on their own",
+      "writer_slot": {
+        "parallel_group": "CO",
+        "conflict_key": "neovim.train.closeout.composition"
+      },
+      "proof_spec_references": [
+        "#5205",
+        "#7739"
+      ],
+      "authorities_consumed_not_owned": [
+        "every stable node/proposition identity declared above"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.closeout.every_node_terminally_dispositioned"
+      ],
+      "one_pr_result": "Programme closeout composition requiring every node/proposition to reach a terminal disposition with a named owner."
+    },
+    {
+      "claim_profiles_not_affected": [
+        "native_neovim_core"
+      ],
+      "claim_profiles_affected": [],
+      "one_pr_result": "Landed adjacent nvim-dap preview receipt recording actual sidecar behavior (#7773).",
+      "proposition_family": "dap_sidecar",
+      "claim_ceiling": "Landed sidecar receipt anchor; adjacency preserved by construction.",
+      "lane": "dap-sidecar",
+      "role": "implementation",
+      "review_map_requirements": [
+        "landed sidecar receipt listed in candidate reconciliation"
+      ],
+      "codex_stop_transfer_condition": "no writer slot: reconciliation anchor",
+      "issue": 7773,
+      "evidence_stage": "landed_current_tree",
+      "node_id": "nv_dap_preview_receipt_adjacent",
+      "proof_spec_references": [
+        "PR #7822"
+      ],
+      "dependencies": [
+        {
+          "class": "nonblocking_sidecar",
+          "target": "nv_dap_spine_adjacent_gate",
+          "provenance": "receipt anchored to the gated sidecar only"
+        }
+      ],
+      "bdd_scenario_ids": [
+        "bdd.sidecar.receipt_isolated_from_spine"
+      ],
+      "rollback_shape": "already merged; failures escalate to the DAP lane"
+    },
+    {
+      "lane": "dap-sidecar",
+      "writer_slot": {
+        "conflict_key": "neovim.train.dap.sidecar_gate",
+        "parallel_group": "DAP"
+      },
+      "allowed_components_touch_surface": [
+        "debug adapter attach/lifecycle UX"
+      ],
+      "proposition_family": "dap_sidecar",
+      "codex_stop_transfer_condition": "closeout records DAP terminally adjacent rather than merged",
+      "evidence_stage": "not_started",
+      "claim_profiles_not_affected": [
+        "native_neovim_core",
+        "release_v0_18_bounded",
+        "native_neovim_deep_lifecycle",
+        "native_neovim_first_class"
+      ],
+      "rollback_shape": "detach sidecar rows wholesale; spine untouched",
+      "cheapest_discriminating_falsifier": "deleting every DAP row changes any non-DAP cell verdict",
+      "negative_controls": [
+        "sidecar receipt counted toward core composition"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.sidecar.never_blocks_or_satisfies_spine"
+      ],
+      "forbidden_adjacent_authorities": [
+        "DAP entering any LSP-spine dependency closure",
+        "sidecar failure failing non-DAP scenarios"
+      ],
+      "claim_ceiling": "Adjacent-only DAP work; structurally barred from every LSP-spine closure.",
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/perl_dap.lua",
+        "scripts/ux/neovim/neovim_perl_dap_smoke.lua"
+      ],
+      "role": "implementation",
+      "claim_profiles_affected": [],
+      "buildable": true,
+      "review_map_requirements": [
+        "sidecar adjacency noted wherever DAP appears"
+      ],
+      "proof_spec_references": [
+        "PR #7822"
+      ],
+      "node_id": "nv_dap_spine_adjacent_gate",
+      "dependencies": [
+        {
+          "class": "nonblocking_sidecar",
+          "provenance": "sidecar references the spine exclusively to stay non-blocking",
+          "target": "nv_core_fanin_exact_subject_receipts"
+        }
+      ],
+      "one_pr_result": "Sidecar existence gate keeping debug protocol integration structurally non-blocking (#10523).",
+      "issue": 10523,
+      "focused_proof_generation_owner": "spine-hermeticity deletion delta check"
+    },
+    {
+      "negative_controls": [
+        "hardcoded always-supported strings"
+      ],
+      "review_map_requirements": [
+        "projected surfaces enumerated exhaustively"
+      ],
+      "proposition_family": "support_docs",
+      "writer_slot": {
+        "conflict_key": "neovim.train.status.projection",
+        "parallel_group": "STAT"
+      },
+      "evidence_stage": "not_started",
+      "forbidden_adjacent_authorities": [
+        "editor polling-loop changes smuggled into this docs row",
+        "frontend display logic rewritten here"
+      ],
+      "issue": 7739,
+      "codex_stop_transfer_condition": "closeout assumes projection maintenance afterwards",
+      "cheapest_discriminating_falsifier": "copy claiming an unsupported operation for the current tier",
+      "buildable": true,
+      "allowed_components_touch_surface": [
+        "status copy tables referenced by clients"
+      ],
+      "node_id": "nv_status_projection_product",
+      "role": "docs",
+      "focused_proof_generation_owner": "copy-versus-tier cross-check",
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "dependencies": [
+        {
+          "target": "nv_docs_setup_correction",
+          "provenance": "setup instructions precede status surfacing",
+          "class": "requires_implementation"
+        },
+        {
+          "class": "requires_implementation",
+          "target": "nv_support_progressive_stages",
+          "provenance": "projection reflects the staged support tiers"
+        }
+      ],
+      "claim_ceiling": "Status wording derived from stable support staging; never embeds live runtime diagnostics.",
+      "one_pr_result": "Product-side status projection alignment surfacing staged Neovim support tiers (#7739 product view).",
+      "rollback_shape": "restore previous copy generation inputs",
+      "bdd_scenario_ids": [
+        "bdd.status.copy_matches_tier_table"
+      ],
+      "lane": "status-projection"
+    },
+    {
+      "role": "docs",
+      "fixture_expectation_ids": [
+        "docs/EDITORS/NEOVIM_SETUP.md"
+      ],
+      "focused_proof_generation_owner": "docs-versus-schema cross-check",
+      "rollback_shape": "revert the docs commit",
+      "forbidden_adjacent_authorities": [
+        "documenting unimplemented knobs",
+        "speculative roadmap prose"
+      ],
+      "cheapest_discriminating_falsifier": "a documented setting absent from the landed settings schema",
+      "node_id": "nv_docs_setup_correction",
+      "writer_slot": {
+        "parallel_group": "DOC",
+        "conflict_key": "neovim.train.docs.setup_correction"
+      },
+      "review_map_requirements": [
+        "docs diffs quote landed source paths"
+      ],
+      "buildable": true,
+      "negative_controls": [
+        "phantom key examples"
+      ],
+      "proposition_family": "support_docs",
+      "allowed_components_touch_surface": [
+        "docs/EDITORS/NEOVIM_SETUP.md corrections"
+      ],
+      "issue": 7736,
+      "claim_profiles_not_affected": [
+        "native_neovim_core"
+      ],
+      "one_pr_result": "Focused setup documentation correction reflecting actual-client evidence only (#7736).",
+      "claim_profiles_affected": [],
+      "proof_spec_references": [
+        "PR #7867"
+      ],
+      "evidence_stage": "not_started",
+      "lane": "docs-corrections",
+      "bdd_scenario_ids": [
+        "bdd.docs.every_documented_setting_exists"
+      ],
+      "dependencies": [
+        {
+          "provenance": "documented settings mirror the generic schema",
+          "target": "nv_settings_schema_generic",
+          "class": "requires_implementation"
+        },
+        {
+          "target": "nv_config_canonical_root",
+          "provenance": "docs describe the landed canonical config",
+          "class": "requires_implementation"
+        }
+      ],
+      "claim_ceiling": "Documentation aligned with landed reality; adds no behavior and deletes none.",
+      "codex_stop_transfer_condition": "correction cycle completes"
+    },
+    {
+      "buildable": true,
+      "dependencies": [
+        {
+          "class": "requires_implementation",
+          "target": "nv_progressive_support_ledger_cell",
+          "provenance": "tiers classify only facts registered in the support ledger"
+        }
+      ],
+      "cheapest_discriminating_falsifier": "claimed tier exceeds what terminal inputs justify",
+      "lane": "support-progression",
+      "node_id": "nv_support_progressive_stages",
+      "issue": 10522,
+      "forbidden_adjacent_authorities": [
+        "tier asserted with zero qualifying terminal inputs",
+        "docs manufacturing behavior"
+      ],
+      "writer_slot": {
+        "conflict_key": "neovim.train.support.progressive",
+        "parallel_group": "SUP"
+      },
+      "proposition_family": "support_docs",
+      "claim_ceiling": "Tier classification strictly from proven inputs; never manufactures behavior from code or issue state.",
+      "negative_controls": [
+        "aspirational tier over planned cells"
+      ],
+      "review_map_requirements": [
+        "tier table maps one-to-one to citations"
+      ],
+      "rollback_shape": "clamp to the prior tier and regenerate",
+      "focused_proof_generation_owner": "tier-versus-input discriminator",
+      "codex_stop_transfer_condition": "after two consecutive no-drift audits",
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.support.tier_matches_inputs_exactly"
+      ],
+      "one_pr_result": "Progressive support staging classifying the user-visible support tier unlocked by each proven cell (#10522).",
+      "role": "implementation",
+      "evidence_stage": "not_started"
+    },
+    {
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim_perldoc_virtual_document_smoke.sh",
+        "scripts/ux/neovim/neovim_perldoc_virtual_document_smoke.lua"
+      ],
+      "lane": "virtual-docs",
+      "claim_profiles_not_affected": [
+        "native_neovim_core",
+        "release_v0_18_bounded",
+        "native_neovim_deep_lifecycle"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.virtual.consumes_if_available_absent_ok"
+      ],
+      "claim_profiles_affected": [],
+      "codex_stop_transfer_condition": "long-term optional; closeout records explicit limitation rather than completion",
+      "evidence_stage": "not_started",
+      "node_id": "nv_virtual_documents_optional",
+      "review_map_requirements": [
+        "consumes_if_available/upstream_dependency mapping shown"
+      ],
+      "dependencies": [
+        {
+          "target": "ext_public_package_registry",
+          "provenance": "perldoc backend availability rides released public package channels",
+          "stage": "released_public_availability",
+          "class": "released_public"
+        },
+        {
+          "provenance": "direct-server boundary substrate when present",
+          "class": "requires_implementation",
+          "target": "nv_direct_server_virtual_boundary"
+        }
+      ],
+      "writer_slot": {
+        "conflict_key": "neovim.train.virtual.perldoc",
+        "parallel_group": "V"
+      },
+      "focused_proof_generation_owner": "eligibility-delta check with the cell deleted",
+      "allowed_components_touch_surface": [
+        "virtual document request path"
+      ],
+      "buildable": true,
+      "role": "implementation",
+      "claim_ceiling": "Optional enrichment row: presence-dependent, never blocking any core or release profile.",
+      "one_pr_result": "Optional/upstream-dependent virtual documents (perldoc) consumed only when available (#7764).",
+      "proposition_family": "virtual_documents",
+      "issue": 7764,
+      "forbidden_adjacent_authorities": [
+        "optional cell promoted to unconditional requirement",
+        "absence failing otherwise-green cores"
+      ],
+      "negative_controls": [
+        "missing perldoc binary making bounded core ineligible"
+      ],
+      "rollback_shape": "drop the row; no other cell moves",
+      "cheapest_discriminating_falsifier": "removing the optional cell entirely changes core or release eligibility"
+    },
+    {
+      "codex_stop_transfer_condition": "no writer slot: reconciliation anchor",
+      "node_id": "nv_direct_server_virtual_boundary",
+      "review_map_requirements": [
+        "merged_current_candidate_for_probe disposition recorded"
+      ],
+      "rollback_shape": "already merged; failures escalate to the owning server lane",
+      "proof_spec_references": [
+        "PR #7815"
+      ],
+      "claim_ceiling": "Landed reconciliation anchor; current currency owned by the current-tree successor.",
+      "proposition_family": "virtual_documents",
+      "one_pr_result": "Landed direct-server virtual content boundary substrate feeding optional virtual document consumers.",
+      "evidence_stage": "landed_current_tree",
+      "lane": "virtual-docs",
+      "role": "implementation",
+      "claim_profiles_affected": []
+    },
+    {
+      "one_pr_result": "Track the Mason registry package contribution through external checkpoints toward the public surface (#10514).",
+      "proof_spec_references": [
+        "PR #7861",
+        "#7730"
+      ],
+      "role": "external",
+      "cheapest_discriminating_falsifier": "acceptance inferred from local packet validity alone",
+      "fixture_expectation_ids": [
+        "integrations/neovim/mason-registry/packages/perllsp/package.yaml",
+        "integrations/neovim/mason-registry/SUBMISSION.md provenance"
+      ],
+      "claim_ceiling": "External checkpoint tracking only for Mason registry acceptance; internal packets never satisfy stages.",
+      "focused_proof_generation_owner": "monotonicity discriminator bound to the mason subject",
+      "node_id": "nv_upstream_mason_registry_track",
+      "lane": "upstream-track",
+      "forbidden_adjacent_authorities": [
+        "fork-as-submission",
+        "release checkpoint claimed at internal merge time"
+      ],
+      "codex_stop_transfer_condition": "package visible in the public registry index",
+      "review_map_requirements": [
+        "checkpoint rows mirror the lspconfig table shape"
+      ],
+      "negative_controls": [
+        "prepared fork URL satisfying submission"
+      ],
+      "issue": 10514,
+      "bdd_scenario_ids": [
+        "bdd.upstream.mason_checkpoints_monotonic"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "rollback_shape": "regress the stage on contrary observation",
+      "proposition_family": "upstream_external",
+      "dependencies": [
+        {
+          "stage": "released_public_availability",
+          "target": "ext_mason_registry",
+          "class": "released_public",
+          "provenance": "package live in the registry index"
+        },
+        {
+          "target": "ext_mason_registry",
+          "stage": "external_acceptance",
+          "class": "external_acceptance",
+          "provenance": "registry maintainers accept"
+        },
+        {
+          "stage": "external_submission",
+          "target": "ext_mason_registry",
+          "provenance": "package.yaml submitted",
+          "class": "external_submission"
+        }
+      ],
+      "evidence_stage": "not_started"
+    },
+    {
+      "evidence_stage": "not_started",
+      "proposition_family": "upstream_external",
+      "dependencies": [
+        {
+          "stage": "released_public_availability",
+          "provenance": "upstream ships the entry publicly",
+          "target": "ext_nvim_lspconfig_upstream",
+          "class": "released_public"
+        },
+        {
+          "target": "ext_nvim_lspconfig_upstream",
+          "provenance": "maintainer acceptance observed",
+          "class": "external_acceptance",
+          "stage": "external_acceptance"
+        },
+        {
+          "target": "ext_nvim_lspconfig_upstream",
+          "class": "external_submission",
+          "stage": "external_submission",
+          "provenance": "prepared packet submitted upstream"
+        }
+      ],
+      "rollback_shape": "stage regresses only on contradictory external observation",
+      "negative_controls": [
+        "prepared internal packet claimed accepted"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.upstream.lspconfig_checkpoints_monotonic"
+      ],
+      "review_map_requirements": [
+        "external checkpoint rows cite observation provenance"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "node_id": "nv_upstream_nvim_lspconfig_track",
+      "codex_stop_transfer_condition": "entry lands in the upstream released tree",
+      "proof_spec_references": [
+        "PR #7849",
+        "#7722"
+      ],
+      "claim_ceiling": "External checkpoint tracking only: submission, acceptance, and release happen externally and are never satisfied internally.",
+      "cheapest_discriminating_falsifier": "a checkpoint marked reached without the corresponding external observation",
+      "focused_proof_generation_owner": "external-stage monotonicity discriminator bound to the lspconfig subject",
+      "forbidden_adjacent_authorities": [
+        "local SUBMISSION.md counted as submission",
+        "internal merge satisfaction"
+      ],
+      "one_pr_result": "Track the nvim-lspconfig directory/package contribution through external checkpoints up to released public availability (#10511).",
+      "lane": "upstream-track",
+      "role": "external",
+      "fixture_expectation_ids": [
+        "integrations/neovim/nvim-lspconfig/SUBMISSION.md prepared-packet provenance"
+      ],
+      "issue": 10511
+    },
+    {
+      "proposition_family": "install_channels",
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "fan_in": {
+        "children": [
+          "nv_channel_stable_install",
+          "nv_channel_nightly_install",
+          "nv_channel_dev_pin_install"
+        ],
+        "satisfaction_source": "independently_terminal_child_propositions"
+      },
+      "focused_proof_generation_owner": "aggregate-without-channel discriminator",
+      "codex_stop_transfer_condition": "feeds closeout external-boundary summary",
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/neovim_installed_perllsp_smoke.sh"
+      ],
+      "lane": "install-channels",
+      "negative_controls": [
+        "local dev build smoothing over a missing public channel"
+      ],
+      "rollback_shape": "withdraw the aggregate; channels unchanged",
+      "issue": 7770,
+      "buildable": true,
+      "cheapest_discriminating_falsifier": "first-mile passes with zero available channels because local artifacts exist",
+      "evidence_stage": "not_started",
+      "node_id": "nv_installed_binary_first_mile",
+      "claim_ceiling": "Aggregation over whichever channels are available; transfers no satisfaction between siblings.",
+      "bdd_scenario_ids": [
+        "bdd.install.first_mile_aggregate_available_channel_only"
+      ],
+      "role": "proof",
+      "review_map_requirements": [
+        "the aggregate lists exactly which children contributed"
+      ],
+      "writer_slot": {
+        "parallel_group": "F",
+        "conflict_key": "neovim.train.install.first_mile"
+      },
+      "one_pr_result": "First-mile installed-artifact receipt aggregating independently observed channels (#7770).",
+      "proof_spec_references": [
+        "#7770",
+        "PR #7817"
+      ]
+    },
+    {
+      "allowed_components_touch_surface": [
+        "dev-pin installer path verification"
+      ],
+      "buildable": true,
+      "one_pr_result": "Prove public installation for the dev-pin channel end-to-end on the actual host.",
+      "review_map_requirements": [
+        "channel independence table quoted"
+      ],
+      "rollback_shape": "the dev-pin cell returns to not_proven without touching siblings",
+      "claim_profiles_not_affected": [
+        "native_neovim_core",
+        "native_neovim_deep_lifecycle"
+      ],
+      "codex_stop_transfer_condition": "feed the first-mile aggregate as evidence, never as satisfaction transfer",
+      "forbidden_adjacent_authorities": [
+        "a sibling channel satisfying or blocking this row",
+        "a local artifact substituting for the released public package"
+      ],
+      "focused_proof_generation_owner": "channel-isolation fixture set",
+      "role": "implementation",
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "negative_controls": [
+        "stale local build counting as public install"
+      ],
+      "dependencies": [
+        {
+          "provenance": "the channel requires released public package availability",
+          "stage": "released_public_availability",
+          "class": "released_public",
+          "target": "ext_public_package_registry"
+        },
+        {
+          "target": "nv_public_channels_contract",
+          "provenance": "#7730 names and independence laws",
+          "class": "requires_implementation"
+        }
+      ],
+      "node_id": "nv_channel_dev_pin_install",
+      "lane": "install-channels",
+      "evidence_stage": "not_started",
+      "controller": "nv_ctrl_release_decision",
+      "claim_ceiling": "The dev-pin channel row only; sibling channels can never block or satisfy one another.",
+      "issue": 10520,
+      "cheapest_discriminating_falsifier": "a sibling channel outcome marking this channel satisfied",
+      "writer_slot": {
+        "parallel_group": "I",
+        "conflict_key": "neovim.train.channel.dev_pin"
+      },
+      "proposition_family": "install_channels",
+      "bdd_scenario_ids": [
+        "bdd.channel.dev_pin.released_public_install"
+      ]
+    },
+    {
+      "allowed_components_touch_surface": [
+        "nightly installer path verification"
+      ],
+      "focused_proof_generation_owner": "channel-isolation fixture set",
+      "dependencies": [
+        {
+          "stage": "released_public_availability",
+          "class": "released_public",
+          "provenance": "the channel requires released public package availability",
+          "target": "ext_public_package_registry"
+        },
+        {
+          "class": "requires_implementation",
+          "provenance": "#7730 names and independence laws",
+          "target": "nv_public_channels_contract"
+        }
+      ],
+      "role": "implementation",
+      "codex_stop_transfer_condition": "feed the first-mile aggregate as evidence, never as satisfaction transfer",
+      "negative_controls": [
+        "stale local build counting as public install"
+      ],
+      "claim_profiles_not_affected": [
+        "native_neovim_core",
+        "native_neovim_deep_lifecycle"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "cheapest_discriminating_falsifier": "a sibling channel outcome marking this channel satisfied",
+      "controller": "nv_ctrl_release_decision",
+      "issue": 10518,
+      "evidence_stage": "not_started",
+      "writer_slot": {
+        "parallel_group": "I",
+        "conflict_key": "neovim.train.channel.nightly"
+      },
+      "rollback_shape": "the nightly cell returns to not_proven without touching siblings",
+      "node_id": "nv_channel_nightly_install",
+      "lane": "install-channels",
+      "one_pr_result": "Prove public installation for the nightly channel end-to-end on the actual host.",
+      "buildable": true,
+      "forbidden_adjacent_authorities": [
+        "a sibling channel satisfying or blocking this row",
+        "a local artifact substituting for the released public package"
+      ],
+      "review_map_requirements": [
+        "channel independence table quoted"
+      ],
+      "proposition_family": "install_channels",
+      "claim_ceiling": "The nightly channel row only; sibling channels can never block or satisfy one another.",
+      "bdd_scenario_ids": [
+        "bdd.channel.nightly.released_public_install"
+      ]
+    },
+    {
+      "claim_ceiling": "The stable channel row only; sibling channels can never block or satisfy one another.",
+      "review_map_requirements": [
+        "channel independence table quoted"
+      ],
+      "writer_slot": {
+        "parallel_group": "I",
+        "conflict_key": "neovim.train.channel.stable"
+      },
+      "claim_profiles_not_affected": [
+        "native_neovim_core",
+        "native_neovim_deep_lifecycle"
+      ],
+      "evidence_stage": "not_started",
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "negative_controls": [
+        "stale local build counting as public install"
+      ],
+      "dependencies": [
+        {
+          "target": "ext_public_package_registry",
+          "class": "released_public",
+          "stage": "released_public_availability",
+          "provenance": "the channel requires released public package availability"
+        },
+        {
+          "target": "nv_public_channels_contract",
+          "provenance": "#7730 names and independence laws",
+          "class": "requires_implementation"
+        }
+      ],
+      "one_pr_result": "Prove public installation for the stable channel end-to-end on the actual host.",
+      "forbidden_adjacent_authorities": [
+        "a sibling channel satisfying or blocking this row",
+        "a local artifact substituting for the released public package"
+      ],
+      "allowed_components_touch_surface": [
+        "stable installer path verification"
+      ],
+      "controller": "nv_ctrl_release_decision",
+      "cheapest_discriminating_falsifier": "a sibling channel outcome marking this channel satisfied",
+      "buildable": true,
+      "proposition_family": "install_channels",
+      "focused_proof_generation_owner": "channel-isolation fixture set",
+      "node_id": "nv_channel_stable_install",
+      "role": "implementation",
+      "issue": 10516,
+      "rollback_shape": "the stable cell returns to not_proven without touching siblings",
+      "lane": "install-channels",
+      "bdd_scenario_ids": [
+        "bdd.channel.stable.released_public_install"
+      ],
+      "codex_stop_transfer_condition": "feed the first-mile aggregate as evidence, never as satisfaction transfer"
+    },
+    {
+      "negative_controls": [
+        "implicit fourth channel satisfying coverage"
+      ],
+      "buildable": true,
+      "node_id": "nv_public_channels_contract",
+      "review_map_requirements": [
+        "channel list matches upstream ecosystem rows"
+      ],
+      "evidence_stage": "not_started",
+      "writer_slot": {
+        "conflict_key": "neovim.train.channels.contract",
+        "parallel_group": "LAW"
+      },
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "focused_proof_generation_owner": "channel-contract drift discriminator",
+      "role": "implementation",
+      "bdd_scenario_ids": [
+        "bdd.channels.independence_contract_stable"
+      ],
+      "cheapest_discriminating_falsifier": "renaming or removing a channel while any consumer stays green",
+      "forbidden_adjacent_authorities": [
+        "adding undocumented channels",
+        "merging channel identity"
+      ],
+      "one_pr_result": "Define the public-install channel contract: channel names, identities, and independence laws (#7730).",
+      "rollback_shape": "revert the contract; channel rows halt at not_proven",
+      "codex_stop_transfer_condition": "freeze once all three channels prove independent",
+      "lane": "install-channels",
+      "claim_ceiling": "Contract rows only; executes no installs and adds no channel.",
+      "issue": 7730,
+      "proposition_family": "install_channels"
+    },
+    {
+      "role": "registry",
+      "cheapest_discriminating_falsifier": "a ledger row present without its platform input proposition",
+      "lane": "version-platform",
+      "buildable": true,
+      "bdd_scenario_ids": [
+        "bdd.support.ledger_row_regression_guards_input"
+      ],
+      "claim_ceiling": "Ledger registration only; docs prose and support verdicts belong to support/docs owners.",
+      "writer_slot": {
+        "parallel_group": "P",
+        "conflict_key": "neovim.train.support.ledger_cell"
+      },
+      "issue": 7716,
+      "host_toolchain_action_receipt_roles": {
+        "instrument_role": "support_ledger"
+      },
+      "dependencies": [
+        {
+          "provenance": "the ledger registers rows strictly against pinned matrix decisions",
+          "class": "requires_implementation",
+          "target": "nv_version_matrix_decisions"
+        }
+      ],
+      "forbidden_adjacent_authorities": [
+        "the ledger manufacturing platform outcomes",
+        "platform dependencies re-entering the ledger row"
+      ],
+      "proposition_family": "support_docs",
+      "evidence_stage": "not_started",
+      "codex_stop_transfer_condition": "hand rendered facts to support tiers",
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "node_id": "nv_progressive_support_ledger_cell",
+      "focused_proof_generation_owner": "row-without-input discriminator",
+      "one_pr_result": "Register terminal platform outcomes into the machine-readable support ledger surface (#7716).",
+      "review_map_requirements": [
+        "terminal platform inputs are cited as registration provenance"
+      ],
+      "rollback_shape": "remove the row; derive again after repair",
+      "negative_controls": [
+        "platform-independent ledger certification"
+      ]
+    },
+    {
+      "controller": "nv_ctrl_release_decision",
+      "buildable": true,
+      "proposition_family": "version_platform",
+      "role": "implementation",
+      "lane": "version-platform",
+      "negative_controls": [
+        "shared cache poisoning between platform lanes"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "node_id": "nv_platform_macos",
+      "claim_profiles_not_affected": [
+        "native_neovim_core"
+      ],
+      "dependencies": [
+        {
+          "provenance": "#8531 bounded-envelope evidence precedes breadth",
+          "target": "nv_release_bounded_process_evidence",
+          "class": "requires_implementation"
+        },
+        {
+          "target": "nv_version_matrix_decisions",
+          "class": "requires_implementation",
+          "provenance": "#10508 pins feed every platform row"
+        }
+      ],
+      "cheapest_discriminating_falsifier": "a sibling platform outcome flips this macos verdict",
+      "evidence_stage": "not_started",
+      "one_pr_result": "Prove the bounded supported claim for macos against pinned matrix mechanics.",
+      "codex_stop_transfer_condition": "feed the progressive support ledger row",
+      "allowed_components_touch_surface": [
+        "macos hosted verification scenario"
+      ],
+      "focused_proof_generation_owner": "platform isolation fixture pair",
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/neovim_version_matrix.sh"
+      ],
+      "rollback_shape": "the macos cell returns to not_proven; siblings untouched",
+      "writer_slot": {
+        "conflict_key": "neovim.train.platform.macos",
+        "parallel_group": "P"
+      },
+      "claim_ceiling": "macos row only; sibling platforms stay independent subjects forever.",
+      "bdd_scenario_ids": [
+        "bdd.platform.macos.independent_subject"
+      ],
+      "forbidden_adjacent_authorities": [
+        "another platform satisfying this row",
+        "virtual documents entering platform claims"
+      ],
+      "review_map_requirements": [
+        "independence law cited per platform/channel/client/stage"
+      ]
+    },
+    {
+      "role": "implementation",
+      "dependencies": [
+        {
+          "class": "requires_implementation",
+          "target": "nv_release_bounded_process_evidence",
+          "provenance": "#8531 bounded-envelope evidence precedes breadth"
+        },
+        {
+          "target": "nv_version_matrix_decisions",
+          "class": "requires_implementation",
+          "provenance": "#10508 pins feed every platform row"
+        }
+      ],
+      "one_pr_result": "Prove the bounded supported claim for linux against pinned matrix mechanics.",
+      "codex_stop_transfer_condition": "feed the progressive support ledger row",
+      "lane": "version-platform",
+      "review_map_requirements": [
+        "independence law cited per platform/channel/client/stage"
+      ],
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/neovim_version_matrix.sh"
+      ],
+      "forbidden_adjacent_authorities": [
+        "another platform satisfying this row",
+        "virtual documents entering platform claims"
+      ],
+      "claim_profiles_not_affected": [
+        "native_neovim_core"
+      ],
+      "allowed_components_touch_surface": [
+        "linux hosted verification scenario"
+      ],
+      "focused_proof_generation_owner": "platform isolation fixture pair",
+      "rollback_shape": "the linux cell returns to not_proven; siblings untouched",
+      "negative_controls": [
+        "shared cache poisoning between platform lanes"
+      ],
+      "buildable": true,
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "proposition_family": "version_platform",
+      "claim_ceiling": "linux row only; sibling platforms stay independent subjects forever.",
+      "bdd_scenario_ids": [
+        "bdd.platform.linux.independent_subject"
+      ],
+      "node_id": "nv_platform_linux",
+      "evidence_stage": "not_started",
+      "writer_slot": {
+        "parallel_group": "P",
+        "conflict_key": "neovim.train.platform.linux"
+      },
+      "controller": "nv_ctrl_release_decision",
+      "cheapest_discriminating_falsifier": "a sibling platform outcome flips this linux verdict"
+    },
+    {
+      "negative_controls": [
+        "floating nightly satisfying an exact-version row"
+      ],
+      "one_pr_result": "Pin exact supported Neovim versions and the platform-cell layout on installed-binary and version-matrix mechanics (#10508).",
+      "codex_stop_transfer_condition": "after both platform rows consume identical pins",
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/neovim_version_matrix.sh",
+        "scripts/ux/neovim/neovim_version_row.lua"
+      ],
+      "cheapest_discriminating_falsifier": "the matrix ships with an unpinned floating version ref",
+      "claim_profiles_not_affected": [
+        "native_neovim_core"
+      ],
+      "writer_slot": {
+        "conflict_key": "neovim.train.version.pins",
+        "parallel_group": "PIN"
+      },
+      "rollback_shape": "revert pins; platform rows stay not_proven",
+      "proposition_family": "version_platform",
+      "controller": "nv_ctrl_release_decision",
+      "buildable": true,
+      "dependencies": [
+        {
+          "provenance": "pins align with the landed installed-artifact mechanics",
+          "target": "nv_config_canonical_root",
+          "class": "requires_implementation"
+        }
+      ],
+      "proof_spec_references": [
+        "PR #7843"
+      ],
+      "successors_unlocked": [
+        "nv_platform_linux",
+        "nv_platform_macos"
+      ],
+      "claim_ceiling": "Pin/layout authorship only; executes no host run itself.",
+      "claim_profiles_affected": [
+        "native_neovim_first_class"
+      ],
+      "focused_proof_generation_owner": "pin-format discriminator",
+      "bdd_scenario_ids": [
+        "bdd.version.pin_drift_detected"
+      ],
+      "node_id": "nv_version_matrix_decisions",
+      "review_map_requirements": [
+        "pin provenance quoted"
+      ],
+      "role": "implementation",
+      "issue": 10508,
+      "lane": "version-platform",
+      "evidence_stage": "not_started"
+    },
+    {
+      "cheapest_discriminating_falsifier": "complete-deep composition accepts partial or cross-family receipts",
+      "one_pr_result": "Complete deep fan-in requiring matching independent atomic, parser/artifact, and lifecycle receipts (#7124).",
+      "forbidden_adjacent_authorities": [
+        "deep fan-in feeding a core profile",
+        "external state standing in for a matching receipt"
+      ],
+      "review_map_requirements": [
+        "three-way receipt matrix in the PR body"
+      ],
+      "rollback_shape": "withdraw the composition; branch rows retain independent states",
+      "buildable": true,
+      "role": "proof",
+      "node_id": "nv_complete_deep_fanin",
+      "fan_in": {
+        "children": [
+          "nv_deep_atomic_branch",
+          "nv_deep_parser_artifact_branch",
+          "nv_deep_lifecycle_race_branch"
+        ],
+        "satisfaction_source": "independently_terminal_child_propositions"
+      },
+      "proposition_family": "control_plane",
+      "issue": 7124,
+      "evidence_stage": "not_started",
+      "lane": "deep-fanin",
+      "writer_slot": {
+        "conflict_key": "neovim.train.deep.fanin",
+        "parallel_group": "F"
+      },
+      "bdd_scenario_ids": [
+        "bdd.deep.fanin.matching_independent_receipts"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_deep_lifecycle",
+        "native_neovim_programme_closeout"
+      ],
+      "negative_controls": [
+        "two-of-three acceptance"
+      ],
+      "focused_proof_generation_owner": "cross-family substitution negative fixture",
+      "claim_ceiling": "Strict three-way composition; nothing inferred, nothing manufactured, never feeds the core profile.",
+      "codex_stop_transfer_condition": "feeds programme closeout only"
+    },
+    {
+      "dependencies": [
+        {
+          "provenance": "deep branches mount on the bounded core spine",
+          "class": "requires_implementation",
+          "target": "nv_core_fanin_exact_subject_receipts"
+        }
+      ],
+      "codex_stop_transfer_condition": "return composition receipts to the complete-deep fan-in",
+      "writer_slot": {
+        "parallel_group": "D3",
+        "conflict_key": "neovim.train.deep.lifecycle"
+      },
+      "bdd_scenario_ids": [
+        "bdd.deep.lifecycle.race_retention"
+      ],
+      "focused_proof_generation_owner": "profile-membership exclusion fixture",
+      "role": "implementation",
+      "lane": "deep-lifecycle_race_deep",
+      "one_pr_result": "Asynchronous open/race/ABA/retention lifecycle propositions (#10507).",
+      "negative_controls": [
+        "deep receipt satisfying the core fan-in"
+      ],
+      "forbidden_adjacent_authorities": [
+        "deep proposition listed as a core requirement",
+        "this proposition folded into release_v0_18_bounded"
+      ],
+      "cheapest_discriminating_falsifier": "deep cell enters a core or bounded-release requirement set",
+      "claim_profiles_not_affected": [
+        "native_neovim_core",
+        "release_v0_18_bounded"
+      ],
+      "controller": "nv_ctrl_release_decision",
+      "buildable": true,
+      "claim_ceiling": "Deep proposition evidence only; enrichment that never becomes unconditional for bounded core.",
+      "issue": 10507,
+      "proposition_family": "lifecycle_race_deep",
+      "node_id": "nv_deep_lifecycle_race_branch",
+      "rollback_shape": "withdraw the deep cell; core and bounded-release profiles unchanged",
+      "evidence_stage": "not_started",
+      "claim_profiles_affected": [
+        "native_neovim_deep_lifecycle"
+      ],
+      "review_map_requirements": [
+        "deep/core boundaries table"
+      ],
+      "proof_spec_references": [
+        "#10927"
+      ],
+      "allowed_components_touch_surface": [
+        "asynchronous open/race/aba/retention lifecycle propositions (#10507)."
+      ]
+    },
+    {
+      "claim_profiles_not_affected": [
+        "native_neovim_core",
+        "release_v0_18_bounded"
+      ],
+      "writer_slot": {
+        "conflict_key": "neovim.train.deep.parser_artifact",
+        "parallel_group": "D2"
+      },
+      "rollback_shape": "withdraw the deep cell; core and bounded-release profiles unchanged",
+      "allowed_components_touch_surface": [
+        "parser-input/artifact/strategy propositions proven offline-safe (#10506)."
+      ],
+      "codex_stop_transfer_condition": "return composition receipts to the complete-deep fan-in",
+      "review_map_requirements": [
+        "deep/core boundaries table"
+      ],
+      "role": "implementation",
+      "bdd_scenario_ids": [
+        "bdd.deep.parser.artifact_strategy"
+      ],
+      "focused_proof_generation_owner": "profile-membership exclusion fixture",
+      "controller": "nv_ctrl_release_decision",
+      "claim_ceiling": "Deep proposition evidence only; enrichment that never becomes unconditional for bounded core.",
+      "one_pr_result": "Parser-input/artifact/strategy propositions proven offline-safe (#10506).",
+      "proposition_family": "parser_artifact_deep",
+      "cheapest_discriminating_falsifier": "deep cell enters a core or bounded-release requirement set",
+      "forbidden_adjacent_authorities": [
+        "deep proposition listed as a core requirement",
+        "this proposition folded into release_v0_18_bounded"
+      ],
+      "dependencies": [
+        {
+          "target": "nv_core_fanin_exact_subject_receipts",
+          "provenance": "deep branches mount on the bounded core spine",
+          "class": "requires_implementation"
+        }
+      ],
+      "negative_controls": [
+        "deep receipt satisfying the core fan-in"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_deep_lifecycle"
+      ],
+      "node_id": "nv_deep_parser_artifact_branch",
+      "evidence_stage": "not_started",
+      "buildable": true,
+      "issue": 10506,
+      "proof_spec_references": [
+        "#10919"
+      ],
+      "lane": "deep-parser_artifact_deep"
+    },
+    {
+      "rollback_shape": "withdraw the deep cell; core and bounded-release profiles unchanged",
+      "writer_slot": {
+        "parallel_group": "D1",
+        "conflict_key": "neovim.train.deep.atomic"
+      },
+      "one_pr_result": "Atomic sync/desync incremental-editing propositions for affected selections (#10505).",
+      "lane": "deep-atomic_deep",
+      "claim_ceiling": "Deep proposition evidence only; enrichment that never becomes unconditional for bounded core.",
+      "codex_stop_transfer_condition": "return composition receipts to the complete-deep fan-in",
+      "bdd_scenario_ids": [
+        "bdd.deep.atomic.sync_desync_selection"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_deep_lifecycle"
+      ],
+      "proof_spec_references": [
+        "#10913"
+      ],
+      "review_map_requirements": [
+        "deep/core boundaries table"
+      ],
+      "focused_proof_generation_owner": "profile-membership exclusion fixture",
+      "claim_profiles_not_affected": [
+        "native_neovim_core",
+        "release_v0_18_bounded"
+      ],
+      "issue": 10505,
+      "role": "implementation",
+      "proposition_family": "atomic_deep",
+      "negative_controls": [
+        "deep receipt satisfying the core fan-in"
+      ],
+      "dependencies": [
+        {
+          "target": "nv_core_fanin_exact_subject_receipts",
+          "provenance": "deep branches mount on the bounded core spine",
+          "class": "requires_implementation"
+        }
+      ],
+      "evidence_stage": "not_started",
+      "controller": "nv_ctrl_release_decision",
+      "node_id": "nv_deep_atomic_branch",
+      "forbidden_adjacent_authorities": [
+        "deep proposition listed as a core requirement",
+        "this proposition folded into release_v0_18_bounded"
+      ],
+      "allowed_components_touch_surface": [
+        "atomic sync/desync incremental-editing propositions for affected selections (#10505)."
+      ],
+      "buildable": true,
+      "cheapest_discriminating_falsifier": "deep cell enters a core or bounded-release requirement set"
+    },
+    {
+      "role": "proof",
+      "proposition_family": "core_baseline",
+      "review_map_requirements": [
+        "children table echoed in the PR body"
+      ],
+      "claim_ceiling": "Composition of independently terminal children only; manufactures nothing and composes no deep cell.",
+      "negative_controls": [
+        "closed issue substituted for a verified child proposition"
+      ],
+      "evidence_stage": "not_started",
+      "codex_stop_transfer_condition": "once closeout consumes the terminal composition",
+      "buildable": true,
+      "claim_profiles_affected": [
+        "native_neovim_core"
+      ],
+      "issue": 10504,
+      "fan_in": {
+        "children": [
+          "nv_core_slice_attach_root_effects",
+          "nv_core_slice_target_diagnostics",
+          "nv_core_slice_completion_nav_hover",
+          "nv_core_slice_edit_requery_format_cleanup"
+        ],
+        "satisfaction_source": "independently_terminal_child_propositions"
+      },
+      "forbidden_adjacent_authorities": [
+        "child success inferred from issue, pull request, workflow, or file state"
+      ],
+      "cheapest_discriminating_falsifier": "fan-in terminal while one child lacks independently verified provenance",
+      "node_id": "nv_core_fanin_exact_subject_receipts",
+      "rollback_shape": "composition result withdrawn; children unaffected",
+      "writer_slot": {
+        "conflict_key": "neovim.train.core.fanin",
+        "parallel_group": "F"
+      },
+      "lane": "core-fanin",
+      "focused_proof_generation_owner": "closed-issue fan-in substitution negative fixture on the real graph",
+      "one_pr_result": "Fan in the four baseline host slices into exact-subject bounded-core receipt composition (#10504).",
+      "bdd_scenario_ids": [
+        "bdd.core.fanin.composition_only_terminal_children"
+      ]
+    },
+    {
+      "controller": "nv_ctrl_release_decision",
+      "dependencies": [
+        {
+          "target": "nv_thin_native_host_adapter",
+          "provenance": "thin native host adapter executes the slice",
+          "class": "requires_implementation"
+        },
+        {
+          "target": "nv_settings_schema_generic",
+          "class": "requires_implementation",
+          "provenance": "generic settings schema"
+        },
+        {
+          "target": "nv_config_canonical_root",
+          "class": "requires_implementation",
+          "provenance": "canonical config/root substrate"
+        }
+      ],
+      "claim_ceiling": "Bounded-core slice only; never deep, release-breadth, install, or support claims.",
+      "writer_slot": {
+        "parallel_group": "C",
+        "conflict_key": "neovim.train.core.edit_format"
+      },
+      "cheapest_discriminating_falsifier": "nv_core_slice_edit_requery_format_cleanup claims progress while the thin adapter is absent or stubbed",
+      "allowed_components_touch_surface": [
+        "edit injection and re-query",
+        "formatting application",
+        "session teardown"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.core.edit_format.idempotent_teardown"
+      ],
+      "role": "implementation",
+      "proposition_family": "core_baseline",
+      "node_id": "nv_core_slice_edit_requery_format_cleanup",
+      "fixture_expectation_ids": [
+        "crates/perl-lsp-rs/tests/ux_neovim_ranged_typing_latency_receipt.rs"
+      ],
+      "lane": "bounded-core",
+      "requires_actual_host": true,
+      "negative_controls": [
+        "nv_core_slice_edit_requery_format_cleanup passing on synthetic offline doubles only"
+      ],
+      "one_pr_result": "Actual edit/current re-query, formatting application and idempotence, graceful cleanup.",
+      "review_map_requirements": [
+        "instrument-success distinguishable from product-pass in the PR body"
+      ],
+      "codex_stop_transfer_condition": "one coherent PR result; never widens into another slice's conflict key",
+      "rollback_shape": "slice revert returns the cell to not_proven without disturbing siblings",
+      "proof_spec_references": [
+        "#10894 host primitives",
+        "#10527 generic actual-editor evidence hardening",
+        "#7777 actual-host receipt contract"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_core"
+      ],
+      "focused_proof_generation_owner": "actual-host focused scenario under the shared runner",
+      "evidence_stage": "not_started",
+      "buildable": true
+    },
+    {
+      "controller": "nv_ctrl_release_decision",
+      "lane": "bounded-core",
+      "codex_stop_transfer_condition": "one coherent PR result; never widens into another slice's conflict key",
+      "claim_ceiling": "Bounded-core slice only; never deep, release-breadth, install, or support claims.",
+      "review_map_requirements": [
+        "instrument-success distinguishable from product-pass in the PR body"
+      ],
+      "focused_proof_generation_owner": "actual-host focused scenario under the shared runner",
+      "bdd_scenario_ids": [
+        "bdd.core.completion_nav.round_trip"
+      ],
+      "role": "implementation",
+      "allowed_components_touch_surface": [
+        "completion provider calls",
+        "hover/navigation requests"
+      ],
+      "one_pr_result": "Completion and hover/navigation responses proven against the pinned target under safe settings.",
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/perllsp.lua"
+      ],
+      "requires_actual_host": true,
+      "writer_slot": {
+        "conflict_key": "neovim.train.core.completion_nav",
+        "parallel_group": "C"
+      },
+      "dependencies": [
+        {
+          "class": "requires_implementation",
+          "target": "nv_thin_native_host_adapter",
+          "provenance": "thin native host adapter executes the slice"
+        },
+        {
+          "class": "requires_implementation",
+          "provenance": "generic settings schema",
+          "target": "nv_settings_schema_generic"
+        },
+        {
+          "class": "requires_implementation",
+          "target": "nv_config_canonical_root",
+          "provenance": "canonical config/root substrate"
+        }
+      ],
+      "cheapest_discriminating_falsifier": "nv_core_slice_completion_nav_hover claims progress while the thin adapter is absent or stubbed",
+      "buildable": true,
+      "proposition_family": "core_baseline",
+      "claim_profiles_affected": [
+        "native_neovim_core"
+      ],
+      "negative_controls": [
+        "nv_core_slice_completion_nav_hover passing on synthetic offline doubles only"
+      ],
+      "evidence_stage": "not_started",
+      "proof_spec_references": [
+        "#10894 host primitives",
+        "#10527 generic actual-editor evidence hardening",
+        "#7777 actual-host receipt contract"
+      ],
+      "node_id": "nv_core_slice_completion_nav_hover",
+      "rollback_shape": "slice revert returns the cell to not_proven without disturbing siblings"
+    },
+    {
+      "evidence_stage": "not_started",
+      "lane": "bounded-core",
+      "proof_spec_references": [
+        "#10894 host primitives",
+        "#10527 generic actual-editor evidence hardening",
+        "#7777 actual-host receipt contract"
+      ],
+      "negative_controls": [
+        "nv_core_slice_target_diagnostics passing on synthetic offline doubles only"
+      ],
+      "allowed_components_touch_surface": [
+        "diagnostic publication surface"
+      ],
+      "writer_slot": {
+        "conflict_key": "neovim.train.core.target_diagnostics",
+        "parallel_group": "C"
+      },
+      "bdd_scenario_ids": [
+        "bdd.core.diagnostics.flow_and_clear"
+      ],
+      "node_id": "nv_core_slice_target_diagnostics",
+      "dependencies": [
+        {
+          "class": "requires_implementation",
+          "target": "nv_thin_native_host_adapter",
+          "provenance": "thin native host adapter executes the slice"
+        },
+        {
+          "provenance": "generic settings schema",
+          "target": "nv_settings_schema_generic",
+          "class": "requires_implementation"
+        },
+        {
+          "target": "nv_config_canonical_root",
+          "provenance": "canonical config/root substrate",
+          "class": "requires_implementation"
+        }
+      ],
+      "cheapest_discriminating_falsifier": "nv_core_slice_target_diagnostics claims progress while the thin adapter is absent or stubbed",
+      "focused_proof_generation_owner": "actual-host focused scenario under the shared runner",
+      "requires_actual_host": true,
+      "rollback_shape": "slice revert returns the cell to not_proven without disturbing siblings",
+      "buildable": true,
+      "claim_ceiling": "Bounded-core slice only; never deep, release-breadth, install, or support claims.",
+      "review_map_requirements": [
+        "instrument-success distinguishable from product-pass in the PR body"
+      ],
+      "proposition_family": "core_baseline",
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/neovim_activation_root_smoke.lua"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_core"
+      ],
+      "role": "implementation",
+      "controller": "nv_ctrl_release_decision",
+      "one_pr_result": "Target diagnostics flow proven on the attached actual host.",
+      "codex_stop_transfer_condition": "one coherent PR result; never widens into another slice's conflict key"
+    },
+    {
+      "claim_ceiling": "Bounded-core slice only; never deep, release-breadth, install, or support claims.",
+      "proposition_family": "core_baseline",
+      "codex_stop_transfer_condition": "one coherent PR result; never widens into another slice's conflict key",
+      "one_pr_result": "Exact actual-host attach/root with safe settings effect observable in-session.",
+      "buildable": true,
+      "role": "implementation",
+      "dependencies": [
+        {
+          "provenance": "thin native host adapter executes the slice",
+          "class": "requires_implementation",
+          "target": "nv_thin_native_host_adapter"
+        },
+        {
+          "target": "nv_settings_schema_generic",
+          "provenance": "generic settings schema",
+          "class": "requires_implementation"
+        },
+        {
+          "class": "requires_implementation",
+          "target": "nv_config_canonical_root",
+          "provenance": "canonical config/root substrate"
+        }
+      ],
+      "controller": "nv_ctrl_release_decision",
+      "proof_spec_references": [
+        "#10894 host primitives",
+        "#10527 generic actual-editor evidence hardening",
+        "#7777 actual-host receipt contract"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_core"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.core.attach_root.settings_effect"
+      ],
+      "focused_proof_generation_owner": "actual-host focused scenario under the shared runner",
+      "evidence_stage": "not_started",
+      "negative_controls": [
+        "nv_core_slice_attach_root_effects passing on synthetic offline doubles only"
+      ],
+      "cheapest_discriminating_falsifier": "nv_core_slice_attach_root_effects claims progress while the thin adapter is absent or stubbed",
+      "allowed_components_touch_surface": [
+        "editor client attach path",
+        "workspace root resolution",
+        "safe settings application"
+      ],
+      "review_map_requirements": [
+        "instrument-success distinguishable from product-pass in the PR body"
+      ],
+      "node_id": "nv_core_slice_attach_root_effects",
+      "rollback_shape": "slice revert returns the cell to not_proven without disturbing siblings",
+      "lane": "bounded-core",
+      "writer_slot": {
+        "parallel_group": "C",
+        "conflict_key": "neovim.train.core.attach_root"
+      },
+      "requires_actual_host": true,
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/neovim_installed_perllsp_smoke.sh",
+        "scripts/ux/neovim/neovim_activation_root_smoke.lua"
+      ]
+    },
+    {
+      "one_pr_result": "Create the native-Neovim CI policy leaf deciding which proof lanes run per changed surface.",
+      "writer_slot": {
+        "parallel_group": "H1",
+        "conflict_key": "neovim.train.ci_policy"
+      },
+      "focused_proof_generation_owner": "coverage-completeness check over route keys",
+      "allowed_components_touch_surface": [
+        "route table keyed by touched component classes"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.ci.route_table_covers_every_component_class"
+      ],
+      "host_toolchain_action_receipt_roles": {
+        "instrument_role": "ci_routing"
+      },
+      "rollback_shape": "policy data delete falls back to broad default routing",
+      "negative_controls": [
+        "doc-only change triggering the actual-host lane"
+      ],
+      "role": "registry",
+      "evidence_stage": "not_started",
+      "node_id": "nv_ci_proof_routing_policy",
+      "lane": "ci-policy",
+      "claim_ceiling": "Routing policy data only; mutates no workflow trigger owned by other lanes.",
+      "fixture_expectation_ids": [
+        ".github/workflows referenced read-only"
+      ],
+      "cheapest_discriminating_falsifier": "a production Neovim surface change routes zero proof lanes",
+      "forbidden_adjacent_authorities": [
+        "editing workflow yml triggers outside this leaf's data file",
+        "always-run escalation masking selective routing"
+      ],
+      "codex_stop_transfer_condition": "once two material route changes ship without table churn",
+      "review_map_requirements": [
+        "routing stays separate from severity decisions"
+      ],
+      "buildable": true,
+      "proposition_family": "control_plane"
+    },
+    {
+      "host_toolchain_action_receipt_roles": {
+        "instrument_role": "receipt_catalog"
+      },
+      "writer_slot": {
+        "parallel_group": "H1",
+        "conflict_key": "neovim.train.host.receipt_catalog"
+      },
+      "forbidden_adjacent_authorities": [
+        "receipt verdict mutation",
+        "support promotion"
+      ],
+      "focused_proof_generation_owner": "unknown-id negative fixture",
+      "review_map_requirements": [
+        "negative controls listed beside every mapping"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.receipt.unknown_id_fails_closed"
+      ],
+      "proposition_family": "host_instrument",
+      "negative_controls": [
+        "self-reported exit code treated as product pass"
+      ],
+      "rollback_shape": "table delete returns reviews to raw logs",
+      "role": "registry",
+      "cheapest_discriminating_falsifier": "an unmapped raw observation satisfies an expectation id",
+      "buildable": true,
+      "codex_stop_transfer_condition": "once mappings stabilize under three independent scenarios",
+      "lane": "host-instruments",
+      "authorities_consumed_not_owned": [
+        "ux neovim receipt suite names as stable identifiers"
+      ],
+      "node_id": "nv_receipt_adapter_catalog",
+      "fixture_expectation_ids": [
+        "crates/perl-lsp-ux-tests/tests/ux_neovim_lean_startup_trace.rs"
+      ],
+      "allowed_components_touch_surface": [
+        "id-to-expectation mapping table"
+      ],
+      "claim_ceiling": "Mapping catalog only; never judges instrument-success as product-pass.",
+      "one_pr_result": "Create the planning-pass receipt-adapter/catalog leaf mapping raw ux observations onto reviewable expectation ids.",
+      "evidence_stage": "not_started"
+    },
+    {
+      "proposition_family": "host_instrument",
+      "review_map_requirements": [
+        "optional consumption preserves bounded-core independence"
+      ],
+      "lane": "shared-mechanics-owned-elsewhere",
+      "role": "external",
+      "codex_stop_transfer_condition": "admission decided by owner lanes",
+      "node_id": "nv_shared_mechanics_seam",
+      "proof_spec_references": [
+        "#10858",
+        "#10554"
+      ],
+      "evidence_stage": "not_started",
+      "rollback_shape": "consumer drops the consumes_if_available edge",
+      "one_pr_result": "Shared mechanics seam admitted only where currently valid (#10554); consumption stays optional until admitted.",
+      "issue": 10554,
+      "claim_ceiling": "Admission-gated seam declaration; this manifest never assumes availability nor edits its owner lane."
+    },
+    {
+      "bdd_scenario_ids": [
+        "bdd.host.adapter_clean_exit"
+      ],
+      "codex_stop_transfer_condition": "transfer maintenance to the host lane after the first green composite",
+      "writer_slot": {
+        "parallel_group": "H2",
+        "conflict_key": "neovim.train.host.thin_adapter"
+      },
+      "focused_proof_generation_owner": "consecutive-scenario leak fixture",
+      "buildable": true,
+      "claim_ceiling": "Adapter plumbing only: owns no assertions about product behavior and no receipt verdicts.",
+      "dependencies": [
+        {
+          "provenance": "#10554 mechanics only where currently valid",
+          "class": "consumes_if_available",
+          "target": "nv_shared_mechanics_seam"
+        },
+        {
+          "class": "requires_implementation",
+          "provenance": "adapter sits on the shared execution authority",
+          "target": "nv_shared_host_execution_adoption"
+        }
+      ],
+      "allowed_components_touch_surface": [
+        "session spawn/bind/cleanup plumbing"
+      ],
+      "forbidden_adjacent_authorities": [
+        "adapter synthesizing observations",
+        "receipt verdict evaluation"
+      ],
+      "requires_actual_host": true,
+      "evidence_stage": "not_started",
+      "role": "implementation",
+      "node_id": "nv_thin_native_host_adapter",
+      "one_pr_result": "Thin adapter from programme intents to shared host execution mechanics for Neovim sessions (#10503).",
+      "lane": "host-adapters",
+      "review_map_requirements": [
+        "actual-host bindings present on every consuming slice"
+      ],
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/neovim_installed_perllsp_smoke.sh"
+      ],
+      "rollback_shape": "adapter revert restores direct smoke invocation",
+      "proof_spec_references": [
+        "#10894 shared fail-closed host execution",
+        "#10527 generic actual-editor evidence",
+        "#7777 actual-host receipt contract"
+      ],
+      "proposition_family": "host_instrument",
+      "issue": 10503,
+      "negative_controls": [
+        "graceful cleanup claimed while a child process survives"
+      ],
+      "cheapest_discriminating_falsifier": "the adapter leaks session state across two consecutive scenarios"
+    },
+    {
+      "fixture_expectation_ids": [
+        "xtask/tests/native_neovim_actions_contract.rs#owner-contract"
+      ],
+      "forbidden_adjacent_authorities": [
+        "duplicate action-id vocabulary",
+        "edits inside xtask/src/native_neovim_actions"
+      ],
+      "node_id": "nv_native_action_observation_catalog",
+      "proposition_family": "host_instrument",
+      "bdd_scenario_ids": [
+        "bdd.instrument.action_ids_resolvable"
+      ],
+      "claim_ceiling": "Catalog entry citing the landed contract; never mutates owner files and never launches Neovim.",
+      "role": "registry",
+      "codex_stop_transfer_condition": "catalog follows upstream schema_version bumps only",
+      "review_map_requirements": [
+        "observed actions stay adjacent to product passes"
+      ],
+      "lane": "host-instruments",
+      "authorities_consumed_not_owned": [
+        "native_neovim_actions.v1 action ids prefixed neovim.native."
+      ],
+      "proof_spec_references": [
+        "#11409",
+        "PR #12638"
+      ],
+      "dependencies": [
+        {
+          "class": "consumes_if_available",
+          "target": "nv_shared_host_execution_adoption",
+          "provenance": "actions execute through shared host execution once adopted"
+        }
+      ],
+      "rollback_shape": "catalog row removal leaves the owner contract untouched",
+      "one_pr_result": "Register the landed native built-in-LSP action/observation vocabulary as the stable instrument catalog leaf.",
+      "host_toolchain_action_receipt_roles": {
+        "instrument_role": "action_observation"
+      },
+      "allowed_components_touch_surface": [
+        "catalog reference rows only"
+      ],
+      "issue": 11409,
+      "evidence_stage": "landed_current_tree"
+    },
+    {
+      "evidence_stage": "not_started",
+      "rollback_shape": "external lane owns its own rollback",
+      "issue": 10894,
+      "node_id": "nv_shared_host_execution_adoption",
+      "role": "external",
+      "proof_spec_references": [
+        "#11766",
+        "#10899",
+        "#10894"
+      ],
+      "claim_ceiling": "Adoption seam declaration only: the implementation flies separately and this manifest owns zero of its bytes.",
+      "one_pr_result": "Consume the generic fail-closed host execution authority (#10894, recurrence #10899, durable spec #11766) for native Neovim hosting.",
+      "codex_stop_transfer_condition": "wake when #10894/#11766 merge; revisit adoption rows then",
+      "proposition_family": "host_instrument",
+      "forbidden_adjacent_authorities": [
+        "mutating shared host execution crate files from this lane",
+        "editor-specific semantics absorbed into the shared layer"
+      ],
+      "review_map_requirements": [
+        "follow-on hook: Neovim conformance wiring queued behind #10894/#11766 landing"
+      ],
+      "lane": "shared-host-lane-owned-elsewhere"
+    },
+    {
+      "codex_stop_transfer_condition": "transfer to shared host execution adoption once #11766/#10894 land their conformance lane",
+      "bdd_scenario_ids": [
+        "bdd.host.toolchain_absent_fails_closed"
+      ],
+      "host_toolchain_action_receipt_roles": {
+        "instrument_role": "toolchain"
+      },
+      "buildable": true,
+      "cheapest_discriminating_falsifier": "a missing or broken toolchain reports success anywhere downstream",
+      "successors_unlocked": [
+        "shared host execution adoption/conformance follow-up note on issue #11392"
+      ],
+      "writer_slot": {
+        "conflict_key": "neovim.train.host.toolchain",
+        "parallel_group": "H1"
+      },
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim_lean_smoke.sh"
+      ],
+      "proposition_family": "host_instrument",
+      "node_id": "nv_host_toolchain_leaf",
+      "rollback_shape": "delete descriptor; probes report unavailable",
+      "negative_controls": [
+        "provisioning run counted as a behavioral pass"
+      ],
+      "claim_ceiling": "Host provisioning instrument only; structurally barred from being required as LSP-core behavior or satisfying it.",
+      "allowed_components_touch_surface": [
+        "host toolchain inventory descriptor"
+      ],
+      "focused_proof_generation_owner": "absent-host negative fixture",
+      "authorities_consumed_not_owned": [
+        "#10894 shared host execution primitives by name, not bytes"
+      ],
+      "evidence_stage": "not_started",
+      "forbidden_adjacent_authorities": [
+        "toolchain provisioning presented as product behavior",
+        "edits inside xtask/src/native_neovim_actions owner files"
+      ],
+      "review_map_requirements": [
+        "instrument rows excluded from behavioral profiles"
+      ],
+      "role": "registry",
+      "one_pr_result": "Create the planning-pass native Neovim toolchain leaf provisioning nvim binaries/versions for instrument use.",
+      "lane": "host-instruments"
+    },
+    {
+      "proof_spec_references": [
+        "PR #7811"
+      ],
+      "claim_ceiling": "Landed schema substrate; currency owned by the current-tree successor.",
+      "one_pr_result": "Generic perllsp settings schema surfaced to native clients, consumed by safe-settings-effect slices.",
+      "role": "implementation",
+      "node_id": "nv_settings_schema_generic",
+      "review_map_requirements": [
+        "merged_current_candidate_for_probe disposition recorded"
+      ],
+      "codex_stop_transfer_condition": "no writer slot: landed reconciliation entry",
+      "rollback_shape": "schema revert coordinated with editor-client owners",
+      "lane": "landed-config",
+      "proposition_family": "core_baseline",
+      "evidence_stage": "landed_current_tree",
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/perllsp.lua"
+      ],
+      "dependencies": [
+        {
+          "target": "nv_config_canonical_root",
+          "provenance": "settings layering rides on the canonical root substrate",
+          "class": "requires_implementation"
+        }
+      ],
+      "issue": 7811,
+      "allowed_components_touch_surface": [
+        "schemas/perllsp-settings.schema.json consumer shape"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_configuration"
+      ]
+    },
+    {
+      "lane": "landed-config",
+      "fixture_expectation_ids": [
+        "scripts/ux/neovim/neovim_activation_root_smoke.lua"
+      ],
+      "evidence_stage": "landed_current_tree",
+      "claim_ceiling": "Landed substrate; the current-tree successor owns currency. Never resolves live editor state here.",
+      "allowed_components_touch_surface": [
+        "editor client config",
+        "workspace root detection contract"
+      ],
+      "rollback_shape": "substrate already merged; regressions escalate to owning editor-client lanes",
+      "issue": 7805,
+      "proof_spec_references": [
+        "#10502",
+        "PR #7805"
+      ],
+      "role": "implementation",
+      "node_id": "nv_config_canonical_root",
+      "codex_stop_transfer_condition": "no writer slot: landed historical candidate reconciled, not current truth",
+      "bdd_scenario_ids": [
+        "bdd.config.activation_root_pinned"
+      ],
+      "claim_profiles_affected": [
+        "native_neovim_core",
+        "native_neovim_configuration"
+      ],
+      "review_map_requirements": [
+        "candidate disposition recorded in candidate_reconciliation"
+      ],
+      "one_pr_result": "Canonical native config, filetype/root envelope, and manual setup projection substrate feeding every actual-host slice.",
+      "proposition_family": "core_baseline"
+    },
+    {
+      "negative_controls": [
+        "full_document_utf16 selection unlocking atomic requirements"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.gate.atomic_required_only_when_selected"
+      ],
+      "lane": "deep-atomic",
+      "focused_proof_generation_owner": "conditional-gate fail-closed fixture",
+      "one_pr_result": "Route affected release/version rows through the atomic branch so they require #10913/#10505 exactly while atomic_incremental stays selected.",
+      "issue": 10913,
+      "rollback_shape": "revert routing metadata; dependencies collapse back to explicit edges",
+      "proposition_family": "atomic_deep",
+      "codex_stop_transfer_condition": "successor: affected release/version rows re-derived after any branch change",
+      "role": "implementation",
+      "authorities_consumed_not_owned": [
+        "nv_release_scope_decision: selected_value atomic_incremental subject editing scope"
+      ],
+      "writer_slot": {
+        "parallel_group": "D1",
+        "conflict_key": "neovim.train.atomic_dependents_route"
+      },
+      "evidence_stage": "not_started",
+      "release_gates": [
+        {
+          "active_predecessor": "nv_deep_atomic_branch",
+          "selection_subject": "#8129 editing scope selection",
+          "invalidation_rule": "gate closes when the release scope selection changes or expires",
+          "selecting_authority": "nv_release_scope_decision",
+          "provenance": "#8129 atomic_incremental -> #10913/#10505 required for affected release/version rows",
+          "selected_value": "atomic_incremental"
+        }
+      ],
+      "node_id": "nv_atomic_release_dependents_gate",
+      "claim_ceiling": "Gate routing declaration only; implements no incremental editing behavior itself.",
+      "review_map_requirements": [
+        "selection change closes the gate"
+      ],
+      "cheapest_discriminating_falsifier": "an affected release/version row proves out while the atomic branch is inactive",
+      "proof_spec_references": [
+        "#10505"
+      ],
+      "buildable": true,
+      "allowed_components_touch_surface": [
+        "manifest gate metadata for affected release/version rows"
+      ]
+    },
+    {
+      "focused_proof_generation_owner": "single-selected-branch discriminator fixture",
+      "controller": "nv_ctrl_release_decision",
+      "evidence_stage": "not_started",
+      "role": "implementation",
+      "proposition_family": "release_envelope",
+      "claim_ceiling": "Bounded envelope composition over already-typed cells only; adds no behavior cell of its own.",
+      "lane": "release-envelope",
+      "dependencies": [
+        {
+          "target": "nv_core_fanin_exact_subject_receipts",
+          "provenance": "bounded public claim rides exact-subject core receipts",
+          "class": "requires_implementation"
+        },
+        {
+          "class": "requires_implementation",
+          "target": "nv_release_bounded_process_evidence",
+          "provenance": "#8531 process/host evidence"
+        }
+      ],
+      "release_gates": [
+        {
+          "active_predecessor": "nv_release_bounded_process_evidence",
+          "invalidation_rule": "gate closes when the release scope selection changes or expires",
+          "selecting_authority": "nv_release_scope_decision",
+          "selection_subject": "#8129 editing scope selection",
+          "selected_value": "full_document_utf16",
+          "provenance": "release_v0_18_bounded consumes exactly one #8129 branch; parser-work and race propositions never required"
+        }
+      ],
+      "one_pr_result": "Assemble the bounded v0.18 public release claim from exactly the cells admitted by the selected full-document branch.",
+      "review_map_requirements": [
+        "admitted-cell table echoed in PR body"
+      ],
+      "cheapest_discriminating_falsifier": "envelope admits a deep proposition or both branch values simultaneously",
+      "rollback_shape": "withdraw envelope; cells retain independent states",
+      "node_id": "nv_release_bounded_v0_18_envelope",
+      "writer_slot": {
+        "conflict_key": "neovim.train.release.bounded_v018",
+        "parallel_group": "RE"
+      },
+      "codex_stop_transfer_condition": "feeds version/platform breadth rows",
+      "negative_controls": [
+        "envelope mutation unlocking atomic requirements"
+      ],
+      "claim_profiles_affected": [
+        "release_v0_18_bounded"
+      ],
+      "bdd_scenario_ids": [
+        "bdd.release.v018_envelope_exactly_one_branch"
+      ],
+      "claim_profiles_not_affected": [
+        "native_neovim_deep_lifecycle"
+      ],
+      "buildable": true,
+      "allowed_components_touch_surface": [
+        "bounded claim packet contents listing admitted cells"
+      ],
+      "forbidden_adjacent_authorities": [
+        "atomic_incremental selection value entering this envelope",
+        "deep propositions folded into the bounded claim"
+      ]
+    },
+    {
+      "role": "implementation",
+      "bdd_scenario_ids": [
+        "bdd.release.bounded_requires_selected_branch"
+      ],
+      "evidence_stage": "not_started",
+      "cheapest_discriminating_falsifier": "bounded release advances while the selected-branch gate is unqualified",
+      "rollback_shape": "mark evidence not_proven; dependent ceilings return to bounded core only",
+      "codex_stop_transfer_condition": "stop at evidence assembly; promotion belongs to version/platform rows",
+      "node_id": "nv_release_bounded_process_evidence",
+      "focused_proof_generation_owner": "gate qualification negative fixture",
+      "buildable": true,
+      "review_map_requirements": [
+        "#8129/#8531/#10913 branch table quoted verbatim"
+      ],
+      "one_pr_result": "Assemble process/host evidence required before bounded-release rows may cite the selected branch (#8531).",
+      "proposition_family": "release_envelope",
+      "issue": 8531,
+      "authorities_consumed_not_owned": [
+        "#8129 selected branch value via conditional gate"
+      ],
+      "negative_controls": [
+        "unselected atomic branch satisfying full-document claims"
+      ],
+      "allowed_components_touch_surface": [
+        "process evidence receipt content referencing existing ux suites"
+      ],
+      "claim_ceiling": "Process/host evidence assembly only; never flips behavior propositions or issues releases.",
+      "forbidden_adjacent_authorities": [
+        "issue closure used as behavior evidence"
+      ],
+      "writer_slot": {
+        "conflict_key": "neovim.train.release_process_evidence",
+        "parallel_group": "R"
+      },
+      "lane": "release-envelope"
+    },
+    {
+      "focused_proof_generation_owner": "deterministic render comparison test",
+      "rollback_shape": "regenerate packets after revert",
+      "codex_stop_transfer_condition": "none beyond deterministic rendering",
+      "evidence_stage": "not_started",
+      "allowed_components_touch_surface": [
+        "expectation packet generation"
+      ],
+      "lane": "spec-docs",
+      "issue": 10903,
+      "proposition_family": "support_docs",
+      "controller": "nv_ctrl_spec_expectations_chain",
+      "bdd_scenario_ids": [
+        "bdd.expectations.packet_render_deterministic"
+      ],
+      "claim_ceiling": "Packet rendering only; never observes live GitHub or evaluates receipts.",
+      "cheapest_discriminating_falsifier": "two renders from one manifest revision disagree byte-for-byte",
+      "forbidden_adjacent_authorities": [
+        "GitHub mirror state",
+        "frontier inference"
+      ],
+      "buildable": true,
+      "negative_controls": [
+        "render seeded by mutable remote state"
+      ],
+      "one_pr_result": "Render current-tree expectation packets deterministically from the stable manifest vocabulary (#10903).",
+      "review_map_requirements": [
+        "packets remain derivable artifacts, never sources"
+      ],
+      "writer_slot": {
+        "conflict_key": "neovim.train.expectation_packets",
+        "parallel_group": "S2"
+      },
+      "dependencies": [
+        {
+          "class": "requires_implementation",
+          "provenance": "#10888 -> #10903",
+          "target": "nv_spec_train_durable"
+        }
+      ],
+      "node_id": "nv_expectations_packets",
+      "role": "docs"
+    },
+    {
+      "fixture_expectation_ids": [
+        "fixtures/train_edge_contract/neovim_examples.v1.json#shared-kind-alignment"
+      ],
+      "allowed_components_touch_surface": [
+        "docs/integrations/neovim spec bundle"
+      ],
+      "codex_stop_transfer_condition": "transfer to #10903 packets when expectation rendering starts",
+      "one_pr_result": "Keep the durable native-Neovim training/specification source current (#10888).",
+      "issue": 10888,
+      "role": "docs",
+      "review_map_requirements": [
+        "spec deltas map one-to-one onto manifest rows"
+      ],
+      "buildable": true,
+      "proposition_family": "support_docs",
+      "rollback_shape": "revert the spec commit; derived consumers re-render deterministically",
+      "dependencies": [
+        {
+          "class": "requires_implementation",
+          "provenance": "#10888 spec is the durable source the chain navigates",
+          "target": "nv_ctrl_spec_expectations_chain"
+        }
+      ],
+      "evidence_stage": "not_started",
+      "focused_proof_generation_owner": "focused manifest round-trip plus canonical serialization check",
+      "writer_slot": {
+        "parallel_group": "S",
+        "conflict_key": "neovim.train.spec_source"
+      },
+      "controller": "nv_ctrl_spec_expectations_chain",
+      "lane": "spec-docs",
+      "bdd_scenario_ids": [
+        "bdd.spec.neovim.train_revision_roundtrip"
+      ],
+      "node_id": "nv_spec_train_durable",
+      "negative_controls": [
+        "stale ceiling citation after revision"
+      ],
+      "claim_ceiling": "Specification authorship only; never encodes live status or promotes evidence.",
+      "authorities_consumed_not_owned": [
+        "#10858 typed edge meanings",
+        "#10554 mechanics only where current"
+      ],
+      "cheapest_discriminating_falsifier": "a spec revision silently changes a claim ceiling without a train-manifest semantic revision"
+    },
+    {
+      "proposition_family": "control_plane",
+      "successors_unlocked": [
+        "current-tree projection successor surface",
+        "frontier/packets successor surface",
+        "live observer successor surface"
+      ],
+      "one_pr_result": "Declare the control-plane handoff boundary; current-tree projection, frontier/packet rendering, and live observation stay owned by successor surfaces.",
+      "issue": 11392,
+      "node_id": "nv_controlplane_this_issue",
+      "evidence_stage": "not_started",
+      "controller": "nv_ctrl_spec_expectations_chain",
+      "role": "controller",
+      "forbidden_adjacent_authorities": [
+        "live frontier or packet projection embedded as manifest bytes",
+        "agent topology or retry state"
+      ],
+      "claim_ceiling": "Never embeds live GitHub, task, agent, frontier, or packet state in these stable bytes."
+    },
+    {
+      "evidence_stage": "not_started",
+      "lane": "controllers",
+      "role": "controller",
+      "codex_stop_transfer_condition": "retire when #10903 packets consume the train manifest directly",
+      "claim_ceiling": "Chain navigation only; never writes expectation content or manufactures support truth.",
+      "node_id": "nv_ctrl_spec_expectations_chain",
+      "one_pr_result": "Navigate the durable specification chain #10888 -> #10903 defining product expectations for native Neovim claims.",
+      "proof_spec_references": [
+        "#10903",
+        "#10888"
+      ],
+      "proposition_family": "control_plane",
+      "rollback_shape": "navigational controller removal cannot change landed behavior bytes",
+      "review_map_requirements": [
+        "expectation vocabulary flows into support/docs rows as references only"
+      ]
+    },
+    {
+      "rollback_shape": "decision metadata revert; no derived artifact depends on decision bytes alone",
+      "lane": "controllers",
+      "codex_stop_transfer_condition": "hand off once a successor consumes the exact selected value under conditional-gate semantics",
+      "role": "controller",
+      "node_id": "nv_ctrl_release_decision",
+      "evidence_stage": "not_started",
+      "review_map_requirements": [
+        "branch ownership #8129 versus #8531/#10913 stays visible to every consumer"
+      ],
+      "authorities_consumed_not_owned": [
+        "editing-scope selection values full_document_utf16 | atomic_incremental"
+      ],
+      "issue": 8129,
+      "claim_ceiling": "Decision ownership only: never emits builder work, never infers current implementation state.",
+      "one_pr_result": "Own the stable #8129 editing-scope decision envelope and its two named branches; navigation and selection authority only.",
+      "proposition_family": "control_plane",
+      "proof_spec_references": [
+        "#10913",
+        "#8531"
+      ]
+    }
+  ],
+  "programme": {
+    "shared_mechanics_seam": "#10554 consumed only where current",
+    "product_controller_issue": 7739,
+    "name": "native-neovim-train",
+    "generic_editor_evidence_issues": [
+      7777,
+      10527
+    ],
+    "shared_host_execution_issues": [
+      10894,
+      10899
+    ],
+    "governance_issue": 5205,
+    "train_controller_issue": 10501,
+    "specification_issues": [
+      10888,
+      10903
+    ],
+    "planning_issue": 11392,
+    "typed_edge_contract": "train_edge_contract.v1 (#10858)"
+  }
+}

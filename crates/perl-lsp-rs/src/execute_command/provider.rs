@@ -150,6 +150,38 @@ struct ExplainProviderDecisionRequest {
     request_receipt: Option<Value>,
     #[serde(default)]
     request_position: Option<ProviderDecisionRequestPosition>,
+    /// Optional exact JSON-RPC request ID used to select the latest matching
+    /// provider trace. Numeric and string IDs remain distinct.
+    #[serde(default)]
+    request_id: Option<crate::protocol::JsonRpcId>,
+}
+
+/// Maximum accepted length of one client-supplied identifier echo field
+/// (`receipt_id`, `scenario`) in `perl.explainProviderDecision` (#2758).
+///
+/// The bound applies after the generic request has been materialized. It limits
+/// the response/explanation amplification from these fields, not the transport
+/// frame or the initial JSON deserialization allocation.
+const MAX_EXPLANATION_ECHO_LENGTH: usize = 1024;
+
+/// Fail closed on an empty or oversized client-supplied identifier echo field,
+/// naming the offending field in the diagnostic (#2758). The v1 schema treats
+/// these fields as caller-preserved strings, so this validation deliberately
+/// does not impose a narrower lexical vocabulary or rewrite their contents.
+fn validate_explanation_echo(value: &str, field: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!(
+            "Invalid explain-provider-decision argument: {field} must not be empty"
+        ));
+    }
+    if value.len() > MAX_EXPLANATION_ECHO_LENGTH {
+        return Err(format!(
+            "Invalid explain-provider-decision argument: {field} too long ({}, max \
+             {MAX_EXPLANATION_ECHO_LENGTH})",
+            value.len()
+        ));
+    }
+    Ok(())
 }
 
 impl Default for ExecuteCommandProvider {
@@ -332,15 +364,35 @@ impl ExecuteCommandProvider {
         let request_value = arguments
             .first()
             .ok_or_else(|| "Missing explain-provider-decision argument".to_string())?;
+        if request_value.get("request_id").is_some_and(Value::is_null) {
+            return Err(
+                "Invalid explain-provider-decision argument: request_id must be a JSON-RPC string or number"
+                    .to_string(),
+            );
+        }
         let request: ExplainProviderDecisionRequest = serde_json::from_value(request_value.clone())
             .map_err(|error| format!("Invalid explain-provider-decision argument: {error}"))?;
+        if request.request_id.is_some() && request.request_receipt.is_some() {
+            return Err(
+                "Invalid explain-provider-decision argument: request_id cannot be combined with request_receipt"
+                    .to_string(),
+            );
+        }
 
         let mut explanation = default_provider_decision_explanation(request.provider);
+        // Capture only the defaults. Caller context and request details belong
+        // outside the policy heading, even though the shared formatter supports both.
+        let policy_summary = format_provider_decision_explanation(&explanation);
+        let mut request_context = String::new();
 
         if let Some(receipt_id) = request.receipt_id {
+            validate_explanation_echo(&receipt_id, "receipt_id")?;
+            request_context.push_str(&format!("\nReceipt: {receipt_id}."));
             explanation = explanation.with_receipt_id(receipt_id);
         }
         if let Some(scenario) = request.scenario {
+            validate_explanation_echo(&scenario, "scenario")?;
+            request_context.push_str(&format!("\nScenario: {scenario}."));
             explanation = explanation.with_scenario(scenario);
         }
         if let Some(request_receipt) = request.request_receipt {
@@ -354,7 +406,29 @@ impl ExecuteCommandProvider {
         }
 
         let request_position = request.request_position;
-        let user_message = format_provider_decision_explanation(&explanation);
+        // These top-level defaults describe provider policy, not a recorded
+        // request outcome. Keep attached evidence distinct in the editor message.
+        let request_evidence = if let Some(receipt) = &explanation.request_receipt {
+            let freshness = receipt.get("freshness").and_then(|value| {
+                serde_json::from_value::<ProviderDecisionFreshness>(value.clone()).ok()
+            });
+            let label = match freshness {
+                Some(ProviderDecisionFreshness::Fresh) => "fresh",
+                Some(ProviderDecisionFreshness::Stale) => "stale",
+                Some(ProviderDecisionFreshness::NotApplicable) => "not applicable",
+                _ => "unknown",
+            };
+            let mut evidence = format!("Attached request freshness: {label}.");
+            if let Some(detail) = receipt.get("user_message").and_then(Value::as_str) {
+                evidence.push_str(&format!("\nRequest detail: {detail}"));
+            }
+            evidence
+        } else {
+            "No request evidence is attached.".to_string()
+        };
+        let user_message = format!(
+            "{request_evidence}{request_context}\nProvider policy summary:\n{policy_summary}"
+        );
         explanation = explanation.with_user_message(user_message);
         let copyable_payload = ProviderDecisionCopyablePayload::from_explanation(
             &explanation,
@@ -1752,8 +1826,30 @@ pub(crate) fn select_test_runner(
 }
 
 /// Check whether a command exists in the current PATH.
+///
+/// Empty PATH entries are stripped before delegating to the `which` crate:
+/// `which` 8.x emulates the Unix `which` command, which interprets an empty
+/// entry as the current directory, so a binary planted in the CWD would
+/// otherwise satisfy an availability probe even with an effectively empty
+/// PATH (the CWD-first admission seam, cf. #3028). When nothing searchable
+/// remains, the lookup fails closed.
 pub fn command_exists(command: &str) -> bool {
-    which::which(command).is_ok()
+    match std::env::var_os("PATH") {
+        None => which::which(command).is_ok(),
+        Some(path) => {
+            let dirs: Vec<std::path::PathBuf> =
+                std::env::split_paths(&path).filter(|dir| !dir.as_os_str().is_empty()).collect();
+            if dirs.is_empty() {
+                return false;
+            }
+            match std::env::join_paths(dirs.iter()) {
+                Ok(filtered) => std::env::current_dir()
+                    .map(|cwd| which::which_in(command, Some(&filtered), cwd).is_ok())
+                    .unwrap_or(false),
+                Err(_) => which::which(command).is_ok(),
+            }
+        }
+    }
 }
 
 /// Return the supported executeCommand identifiers.

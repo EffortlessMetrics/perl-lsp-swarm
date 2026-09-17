@@ -135,10 +135,8 @@ impl TestGenerator {
             | NodeKind::Default { body } => {
                 self.find_subroutines_recursive(body, subs);
             }
-            NodeKind::Package { block, .. } => {
-                if let Some(blk) = block {
-                    self.find_subroutines_recursive(blk, subs);
-                }
+            NodeKind::Package { block: Some(blk), .. } => {
+                self.find_subroutines_recursive(blk, subs);
             }
             NodeKind::Class { body, .. } => {
                 self.find_subroutines_recursive(body, subs);
@@ -269,10 +267,8 @@ impl RefactoringAnalyzer {
             | NodeKind::Class { body, .. } => {
                 self.analyze_recursive(body, source, suggestions);
             }
-            NodeKind::Package { block, .. } => {
-                if let Some(blk) = block {
-                    self.analyze_recursive(blk, source, suggestions);
-                }
+            NodeKind::Package { block: Some(blk), .. } => {
+                self.analyze_recursive(blk, source, suggestions);
             }
             _ => {
                 // Other node types don't need analysis

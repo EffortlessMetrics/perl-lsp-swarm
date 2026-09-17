@@ -1,6 +1,8 @@
 //! Exact normalized membership comparison between two runner plans.
 
-use crate::build::{runner_plan_digest, validate_runner_plan, validate_runner_plan_against};
+use crate::build::{
+    DeclaredPlanInputs, runner_plan_digest, validate_runner_plan, validate_runner_plan_against,
+};
 use crate::model::UpstreamTargetMatrix;
 use crate::runner_model::{
     InvocationCaptureStatus, MembershipParityStatus, RUNNER_PARITY_SCHEMA_VERSION, RunnerKind,
@@ -89,15 +91,21 @@ pub(crate) fn compare_runner_plans(
     Ok(report)
 }
 
+/// Compare two plans after independently reconstructing each side (#7737).
+///
+/// Each side carries its own declared reconstruction inputs so neither
+/// candidate can supply the authority that validates it.
 pub(crate) fn compare_runner_plans_against(
     matrix: &UpstreamTargetMatrix,
+    left_declared: &DeclaredPlanInputs,
     left: &RunnerPlan,
     left_raw_discovery: &[u8],
+    right_declared: &DeclaredPlanInputs,
     right: &RunnerPlan,
     right_raw_discovery: &[u8],
 ) -> Result<RunnerParityReport, String> {
-    validate_runner_plan_against(matrix, left_raw_discovery, left)?;
-    validate_runner_plan_against(matrix, right_raw_discovery, right)?;
+    validate_runner_plan_against(matrix, left_raw_discovery, left_declared, left)?;
+    validate_runner_plan_against(matrix, right_raw_discovery, right_declared, right)?;
     compare_runner_plans(left, right)
 }
 
@@ -224,10 +232,38 @@ fn validate_stable_id(value: &str, label: &str) -> Result<(), String> {
     }
 }
 
+// #7725 intake law, restated locally because this file is included verbatim
+// by several crate roots (lib, runner-plan binary, integration proof); the
+// canonical definition lives in the library root next to `validate_digest`.
+fn is_lower_case_hex_byte(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')
+}
+
 fn validate_sha256(value: &str, label: &str) -> Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Err(format!("{label} must be a 64-character hexadecimal digest: {value}"))
+    if !(value.len() == 64 && value.bytes().all(is_lower_case_hex_byte)) {
+        Err(format!(
+            "{label} must be a 64-character hexadecimal digest ([0-9a-f] lower-case): {value}"
+        ))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod digest_intake_case_tests {
+    //! #7725: parity receipts must keep exactly one canonical serialized
+    //! spelling of each compared identity: lower-case hexadecimal.
+
+    use super::{validate_sha256, validate_stable_id};
+
+    #[test]
+    fn parity_receipt_digests_accept_only_canonical_lower_case_hex() {
+        assert!(validate_sha256(&"ab".repeat(32), "parity receipt").is_ok());
+        assert!(validate_sha256(&"AB".repeat(32), "parity receipt").is_err());
+        assert!(validate_sha256(&"aB".repeat(32), "parity receipt").is_err());
+        assert!(validate_sha256(&"zz".repeat(32), "parity receipt").is_err());
+        assert!(validate_sha256(&"ab".repeat(31), "parity receipt").is_err());
+        // The neighboring lowercase identifier law stays unchanged.
+        assert!(validate_stable_id("plan_v1", "stable id").is_ok());
     }
 }

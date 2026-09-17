@@ -1,0 +1,983 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/EffortlessMetrics/perl-lsp-swarm/main/schemas/import_cleanup_train.v1.schema.json",
+  "title": "import_cleanup_train.v1",
+  "description": "Canonical imports-cleanup train manifest (#11084, control plane #11081). Structural contract only: topology, identities, closed vocabularies, promotion lattice, ceilings, supersession. No readiness, liveness, live GitHub state, behavior evidence, or support claims belong in documents of this schema. Cross-checks against pinned constants run via `cargo test -p xtask --locked import_cleanup_train_manifest`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schema_version",
+    "planning_basis",
+    "programme",
+    "authority_planes",
+    "role_vocabulary",
+    "operation_family_vocabulary",
+    "product_context_vocabulary",
+    "wire_kind_vocabulary",
+    "application_ceiling_ladder",
+    "claim_ceiling_ladder",
+    "dependency_classes",
+    "dependency_class_semantics",
+    "edge_role_lattice_note",
+    "edge_role_lattice",
+    "stage_transfer_bans",
+    "role_claim_caps",
+    "external_authorities",
+    "evidence_semantics",
+    "omission_policy",
+    "refusal_surfaces",
+    "verification_surface",
+    "revision_governance",
+    "contained_legacy_rows",
+    "nodes",
+    "limitations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "import_cleanup_train.v1"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "planning_basis": {
+      "type": "string",
+      "minLength": 1
+    },
+    "programme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_programme_issue",
+        "controller_issue",
+        "evidence_controller_issue",
+        "home_programme",
+        "method_authority"
+      ],
+      "properties": {
+        "parent_programme_issue": {
+          "const": 8277
+        },
+        "controller_issue": {
+          "const": 11081
+        },
+        "evidence_controller_issue": {
+          "const": 8336
+        },
+        "home_programme": {
+          "type": "string",
+          "minLength": 1
+        },
+        "method_authority": {
+          "type": "string",
+          "pattern": "^#"
+        }
+      }
+    },
+    "authority_planes": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "plane",
+          "owns",
+          "never_substitutes"
+        ],
+        "properties": {
+          "plane": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owns": {
+            "type": "string",
+            "minLength": 1
+          },
+          "never_substitutes": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "role_vocabulary": {
+      "type": "array",
+      "minItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "owns"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owns": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "operation_family_vocabulary": {
+      "$ref": "#/definitions/valueVocabulary"
+    },
+    "product_context_vocabulary": {
+      "$ref": "#/definitions/valueVocabulary"
+    },
+    "wire_kind_vocabulary": {
+      "$ref": "#/definitions/valueVocabulary"
+    },
+    "application_ceiling_ladder": {
+      "$ref": "#/definitions/ladder"
+    },
+    "claim_ceiling_ladder": {
+      "$ref": "#/definitions/ladder"
+    },
+    "dependency_classes": {
+      "type": "array",
+      "const": [
+        "hard",
+        "evidence",
+        "external",
+        "optional"
+      ]
+    },
+    "dependency_class_semantics": {
+      "type": "object",
+      "minProperties": 4,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "edge_role_lattice_note": {
+      "type": "string",
+      "minLength": 1
+    },
+    "edge_role_lattice": {
+      "type": "array",
+      "minItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from_role",
+          "to_role"
+        ],
+        "properties": {
+          "from_role": {
+            "type": "string",
+            "enum": [
+              "controller",
+              "containment",
+              "fact_projection",
+              "geometry_binding",
+              "barrier_classification",
+              "semantic_contract",
+              "framework_evidence",
+              "semantic_assessment",
+              "diagnostic_projection",
+              "candidate_discovery",
+              "semantic_decision",
+              "product_admission",
+              "shared_plan",
+              "pure_transform",
+              "code_action_adapter",
+              "completion_adapter",
+              "authority_guard",
+              "proof_harness",
+              "exact_process",
+              "actual_client",
+              "installed_replay",
+              "representative_corpus",
+              "claim_closeout",
+              "train_control",
+              "external_compatibility"
+            ]
+          },
+          "to_role": {
+            "type": "string",
+            "enum": [
+              "controller",
+              "containment",
+              "fact_projection",
+              "geometry_binding",
+              "barrier_classification",
+              "semantic_contract",
+              "framework_evidence",
+              "semantic_assessment",
+              "diagnostic_projection",
+              "candidate_discovery",
+              "semantic_decision",
+              "product_admission",
+              "shared_plan",
+              "pure_transform",
+              "code_action_adapter",
+              "completion_adapter",
+              "authority_guard",
+              "proof_harness",
+              "exact_process",
+              "actual_client",
+              "installed_replay",
+              "representative_corpus",
+              "claim_closeout",
+              "train_control",
+              "external_compatibility"
+            ]
+          }
+        }
+      }
+    },
+    "stage_transfer_bans": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "note",
+        "bans"
+      ],
+      "properties": {
+        "note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bans": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "rule",
+              "encodes"
+            ],
+            "properties": {
+              "rule": {
+                "type": "string",
+                "minLength": 1
+              },
+              "encodes": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "role_claim_caps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "max_claim"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "minLength": 1
+          },
+          "max_claim": {
+            "type": "string",
+            "enum": [
+              "manifest_only",
+              "reviewed_contract",
+              "implementation",
+              "operation_behavior",
+              "context_behavior",
+              "client_verified",
+              "installed_replay",
+              "corpus_measured",
+              "support_claimed"
+            ]
+          }
+        }
+      }
+    },
+    "external_authorities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "subject"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^#"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "evidence_semantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "not_proven_law",
+        "optional_visibility",
+        "metadata_only_rule",
+        "issue_identity_rule"
+      ],
+      "properties": {
+        "not_proven_law": {
+          "type": "string",
+          "minLength": 1
+        },
+        "optional_visibility": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata_only_rule": {
+          "type": "string",
+          "minLength": 1
+        },
+        "issue_identity_rule": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "omission_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "refusal_surfaces": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z0-9]+$"
+      }
+    },
+    "verification_surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "note",
+        "allowed_command_prefixes"
+      ],
+      "properties": {
+        "note": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed_command_prefixes": {
+          "type": "array",
+          "minItems": 5,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "revision_governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_node",
+        "owner_issue",
+        "invalidates",
+        "never",
+        "metadata_only"
+      ],
+      "properties": {
+        "owner_node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner_issue": {
+          "const": 11081
+        },
+        "invalidates": {
+          "type": "string",
+          "minLength": 1
+        },
+        "never": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata_only": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "contained_legacy_rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "row",
+          "absorbed_by",
+          "disposition"
+        ],
+        "properties": {
+          "row": {
+            "type": "string",
+            "minLength": 1
+          },
+          "absorbed_by": {
+            "type": "string",
+            "minLength": 1
+          },
+          "disposition": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 60,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "adjacent_defect_transfer",
+          "allowed_components",
+          "application_ceiling",
+          "authorities_consumed",
+          "authority_after",
+          "authority_before",
+          "changelog_disposition",
+          "claim_ceiling",
+          "conflict_key",
+          "controller_chain",
+          "dependencies",
+          "docs_owner",
+          "documentation_impact",
+          "expansion_policy",
+          "first_falsifier",
+          "focused_proof_owner",
+          "forbidden_adjacent",
+          "issue",
+          "lane",
+          "limitations",
+          "next_consumers",
+          "node_id",
+          "observations",
+          "one_pr_outcome",
+          "operation_family",
+          "owned_paths",
+          "plausible_wrong_implementation",
+          "pr_contract",
+          "probe_owner",
+          "product_context",
+          "programme_phase",
+          "proof_command_templates",
+          "proofs",
+          "return_to_issue",
+          "review_forward_questions",
+          "role",
+          "rollback_unit",
+          "spec",
+          "status",
+          "stop_conditions",
+          "superseded_by",
+          "title",
+          "transferred_to",
+          "wire_kind",
+          "writer_slot"
+        ],
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "pattern": "^[A-Z0-9]+$"
+          },
+          "issue": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "controller",
+              "containment",
+              "fact_projection",
+              "geometry_binding",
+              "barrier_classification",
+              "semantic_contract",
+              "framework_evidence",
+              "semantic_assessment",
+              "diagnostic_projection",
+              "candidate_discovery",
+              "semantic_decision",
+              "product_admission",
+              "shared_plan",
+              "pure_transform",
+              "code_action_adapter",
+              "completion_adapter",
+              "authority_guard",
+              "proof_harness",
+              "exact_process",
+              "actual_client",
+              "installed_replay",
+              "representative_corpus",
+              "claim_closeout",
+              "train_control",
+              "external_compatibility"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "superseded"
+            ]
+          },
+          "operation_family": {
+            "type": "string",
+            "enum": [
+              "none",
+              "organize",
+              "remove_explicit_symbol",
+              "remove_module_load",
+              "consolidate_duplicate",
+              "add_missing",
+              "external_candidate",
+              "all_operations"
+            ]
+          },
+          "product_context": {
+            "type": "string",
+            "enum": [
+              "none",
+              "code_action",
+              "completion_item",
+              "diagnostic",
+              "internal_plan",
+              "external_compatibility",
+              "all_contexts"
+            ]
+          },
+          "wire_kind": {
+            "type": "string",
+            "enum": [
+              "none",
+              "workspace_edit",
+              "completion_item"
+            ]
+          },
+          "application_ceiling": {
+            "type": "string",
+            "enum": [
+              "none",
+              "returned",
+              "reference_applied",
+              "actual_client_applied",
+              "installed_applied"
+            ]
+          },
+          "claim_ceiling": {
+            "type": "string",
+            "enum": [
+              "manifest_only",
+              "reviewed_contract",
+              "implementation",
+              "operation_behavior",
+              "context_behavior",
+              "client_verified",
+              "installed_replay",
+              "corpus_measured",
+              "support_claimed"
+            ]
+          },
+          "programme_phase": {
+            "type": "string",
+            "minLength": 1
+          },
+          "controller_chain": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "lane": {
+            "type": "string",
+            "minLength": 1
+          },
+          "one_pr_outcome": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rollback_unit": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "target",
+                "class",
+                "provenance"
+              ],
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "class": {
+                  "type": "string",
+                  "enum": [
+                    "hard",
+                    "evidence",
+                    "external",
+                    "optional"
+                  ]
+                },
+                "provenance": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "authorities_consumed": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^#"
+            }
+          },
+          "authority_before": {
+            "type": "string",
+            "minLength": 1
+          },
+          "authority_after": {
+            "type": "string",
+            "minLength": 1
+          },
+          "writer_slot": {
+            "type": "string",
+            "enum": [
+              "none",
+              "A",
+              "B",
+              "C",
+              "D"
+            ]
+          },
+          "conflict_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "allowed_components": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "owned_paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "forbidden_adjacent": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "component",
+                "owner_node"
+              ],
+              "properties": {
+                "component": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "owner_node": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "spec": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "requirement",
+              "owner",
+              "packet",
+              "stale_check"
+            ],
+            "properties": {
+              "requirement": {
+                "type": "string",
+                "enum": [
+                  "none",
+                  "issue_plan_sufficient",
+                  "existing_contract_sufficient",
+                  "generated_spec",
+                  "ADR_or_spec_update"
+                ]
+              },
+              "owner": {
+                "type": "string",
+                "pattern": "^#"
+              },
+              "packet": {
+                "type": "string",
+                "minLength": 1
+              },
+              "stale_check": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "first_falsifier": {
+            "type": "string",
+            "minLength": 1
+          },
+          "plausible_wrong_implementation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "proofs": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "positive",
+              "negative"
+            ],
+            "properties": {
+              "positive": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "negative": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "focused_proof_owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "proof_command_templates": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "observations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "review_forward_questions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "documentation_impact": {
+            "type": "string",
+            "enum": [
+              "none",
+              "generated",
+              "authored_bounded"
+            ]
+          },
+          "docs_owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changelog_disposition": {
+            "type": "string",
+            "minLength": 1
+          },
+          "adjacent_defect_transfer": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "subject",
+              "first_divergence",
+              "owner"
+            ],
+            "properties": {
+              "subject": {
+                "type": "string",
+                "minLength": 1
+              },
+              "first_divergence": {
+                "type": "string",
+                "minLength": 1
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "stop_conditions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "return_to_issue": {
+            "type": "boolean"
+          },
+          "next_consumers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "superseded_by": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "transferred_to": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expansion_policy": {
+            "type": "string",
+            "minLength": 1
+          },
+          "probe_owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "pr_contract": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title_prefix",
+              "handoff_fields"
+            ],
+            "properties": {
+              "title_prefix": {
+                "type": "string",
+                "minLength": 1
+              },
+              "handoff_fields": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "definitions": {
+    "valueVocabulary": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "value",
+          "owns"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owns": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "ladder": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rank",
+          "value",
+          "owns"
+        ],
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owns": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

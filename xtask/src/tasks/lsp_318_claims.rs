@@ -17,6 +17,7 @@ const SCHEMA_VALIDATION_TEST: &str = "crates/perl-lsp-rs/tests/lsp_schema_valida
 const SEMANTIC_LEGEND_TEST: &str = "crates/perl-lsp-rs/tests/lsp_semantic_legend_contract_tests.rs";
 const COMPLETION_TEST: &str = "crates/perl-lsp-rs/tests/lsp_completion_tests.rs";
 const CODE_LENS_TEST: &str = "crates/perl-lsp-rs/tests/lsp_codelens_tests.rs";
+const COMMAND_TOOLTIP_TEST: &str = "crates/perl-lsp-rs/tests/lsp_command_tooltip_tests.rs";
 const WINDOW_TEST: &str = "crates/perl-lsp-rs/tests/lsp_window_tests.rs";
 const CLIENT_REQUESTS: &str = "crates/perl-lsp-rs/src/runtime/client_requests.rs";
 const LIFECYCLE_CAPABILITIES: &str = "crates/perl-lsp-rs/src/runtime/lifecycle/capabilities.rs";
@@ -66,9 +67,25 @@ const MATRIX_MARKERS: &[RequiredMarker] = &[
         marker: "`negative-gated+documented`",
     },
     RequiredMarker { label: "matrix notebook classification", marker: "Notebook 3.18 additions" },
+    RequiredMarker {
+        label: "matrix document-filter relative-pattern row (#8897)",
+        marker: "Document-filter `relative pattern`",
+    },
+    RequiredMarker {
+        label: "matrix notebook document-filter relative-pattern row (#8897)",
+        marker: "Notebook document-filter `relative pattern`",
+    },
 ];
 
 const NEGATIVE_TEST_MARKERS: &[RequiredMarker] = &[
+    RequiredMarker {
+        label: "document-filter relative-pattern negative gate (#8897)",
+        marker: "document_filter_relative_pattern_is_never_emitted",
+    },
+    RequiredMarker {
+        label: "notebook document-filter relative-pattern negative gate (#8897)",
+        marker: "notebook_document_filter_relative_pattern_is_never_emitted",
+    },
     RequiredMarker {
         label: "StringValue object-form negative receipt",
         marker: "inline_completion_does_not_emit_object_form_string_value",
@@ -128,8 +145,8 @@ const NEGATIVE_TEST_MARKERS: &[RequiredMarker] = &[
         marker: "window_message_type_does_not_emit_debug_level",
     },
     RequiredMarker {
-        label: "non-CodeLens Command.tooltip gate",
-        marker: "assert_no_command_tooltip",
+        label: "reachable Command.tooltip totality gate",
+        marker: "assert_command_objects_carry_tooltip",
     },
     RequiredMarker {
         label: "trusted markdown command/theme-icon gate",
@@ -193,6 +210,10 @@ const FEATURE_CATALOG_MARKERS: &[RequiredMarker] = &[
     RequiredMarker {
         label: "ApplyWorkspaceEditParams.metadata feature catalog row",
         marker: "id = \"lsp.apply_edit_metadata\"",
+    },
+    RequiredMarker {
+        label: "Command.tooltip feature catalog row",
+        marker: "id = \"lsp.command_tooltip\"",
     },
 ];
 
@@ -281,6 +302,29 @@ const CODE_LENS_TEST_MARKERS: &[RequiredMarker] = &[
     },
 ];
 
+const COMMAND_TOOLTIP_TEST_MARKERS: &[RequiredMarker] = &[
+    RequiredMarker {
+        label: "generate-test Command.tooltip positive receipt",
+        marker: "generate_test_command_includes_lsp_318_tooltip",
+    },
+    RequiredMarker {
+        label: "explain-diagnostic Command.tooltip positive receipt",
+        marker: "explain_diagnostic_command_includes_lsp_318_tooltip",
+    },
+    RequiredMarker {
+        label: "CodeAction.documentation Command.tooltip positive receipt",
+        marker: "code_action_documentation_commands_include_lsp_318_tooltip",
+    },
+    RequiredMarker {
+        label: "completion and document-link Command absence receipt",
+        marker: "completion_and_document_link_do_not_produce_lsp_commands",
+    },
+    RequiredMarker {
+        label: "inline-completion Command absence receipt",
+        marker: "inline_completion_items_do_not_produce_lsp_commands",
+    },
+];
+
 const WINDOW_TEST_MARKERS: &[RequiredMarker] = &[
     RequiredMarker { label: "MessageType.Debug discriminant", marker: "MessageType::Debug, 5" },
     RequiredMarker {
@@ -356,7 +400,6 @@ const FEATURE_CATALOG_FORBIDDEN_PATTERNS: &[RawPatternCheck] = &[
         label: "experimental inline-completion provider feature claim",
     },
     RawPatternCheck { needle: "CodeAction.tags", label: "CodeAction.tags feature claim" },
-    RawPatternCheck { needle: "Command.tooltip", label: "Command.tooltip feature claim" },
     RawPatternCheck { needle: "RelativePattern", label: "RelativePattern feature claim" },
     RawPatternCheck { needle: "supportThemeIcons", label: "markdown theme-icon feature claim" },
     RawPatternCheck { needle: "enabledCommands", label: "trusted markdown command feature claim" },
@@ -419,6 +462,12 @@ pub fn run() -> Result<()> {
     check_required_markers(&root, SEMANTIC_LEGEND_TEST, semantic_legend_markers, &mut violations)?;
     check_required_markers(&root, COMPLETION_TEST, COMPLETION_TEST_MARKERS, &mut violations)?;
     check_required_markers(&root, CODE_LENS_TEST, CODE_LENS_TEST_MARKERS, &mut violations)?;
+    check_required_markers(
+        &root,
+        COMMAND_TOOLTIP_TEST,
+        COMMAND_TOOLTIP_TEST_MARKERS,
+        &mut violations,
+    )?;
     check_required_markers(&root, WINDOW_TEST, WINDOW_TEST_MARKERS, &mut violations)?;
     check_feature_catalog(&root, &mut violations)?;
     check_matrix_closeout_statuses(&root, &mut violations)?;
@@ -436,7 +485,7 @@ pub fn run() -> Result<()> {
 
     if violations.is_empty() {
         println!(
-            "LSP 3.18 claim guard OK: {} capability snapshots, {} feature markers, {} negative-test markers, {} positive refresh markers, {} RelativePattern registration markers, {} diagnostic markers, {} schema markers, {} semantic legend markers, {} completion markers, {} CodeLens markers, {} window markers, {} spec markers checked",
+            "LSP 3.18 claim guard OK: {} capability snapshots, {} feature markers, {} negative-test markers, {} positive refresh markers, {} RelativePattern registration markers, {} diagnostic markers, {} schema markers, {} semantic legend markers, {} completion markers, {} CodeLens markers, {} Command.tooltip markers, {} window markers, {} spec markers checked",
             CAPABILITY_SNAPSHOTS.len(),
             FEATURE_CATALOG_MARKERS.len(),
             NEGATIVE_TEST_MARKERS.len(),
@@ -447,6 +496,7 @@ pub fn run() -> Result<()> {
             SEMANTIC_LEGEND_TEST_MARKERS.len(),
             COMPLETION_TEST_MARKERS.len(),
             CODE_LENS_TEST_MARKERS.len(),
+            COMMAND_TOOLTIP_TEST_MARKERS.len(),
             WINDOW_TEST_MARKERS.len(),
             SPEC_MARKERS.len()
         );
@@ -600,6 +650,22 @@ fn check_folding_range_refresh_guard(root: &Path, violations: &mut Vec<Violation
 }
 
 fn check_relative_pattern_guard(root: &Path, violations: &mut Vec<Violation>) -> Result<()> {
+    // #8897: the watcher relative-pattern surface (LSP 3.17 watcher globs) and
+    // the document-filter/notebook-filter surfaces (LSP 3.18) must keep
+    // separate stable feature identities in the catalog.
+    let features_catalog = read_required(root, FEATURE_CATALOG)?;
+    require_all(
+        FEATURE_CATALOG,
+        &features_catalog,
+        &[
+            "id = \"lsp.file_watcher_relative_pattern\"",
+            "id = \"lsp.document_filter_relative_pattern\"",
+            "id = \"lsp.notebook_document_filter_relative_pattern\"",
+        ],
+        "separate relative-pattern feature identities (watcher 3.17 vs document/notebook 3.18)",
+        violations,
+    );
+
     let state_document = read_required(root, STATE_DOCUMENT)?;
     let lifecycle_capabilities = read_required(root, LIFECYCLE_CAPABILITIES)?;
     let lifecycle_watchers = read_required(root, LIFECYCLE_WATCHERS)?;

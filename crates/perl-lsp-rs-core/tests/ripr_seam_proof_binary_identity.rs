@@ -69,88 +69,25 @@ fn assert_reason_admitted_by_schema_token(
     Ok(())
 }
 
-/// Every current Rust reason, including the field-specific partial reasons.
-fn all_reasons() -> Vec<BinaryCompatibilityReason> {
-    use BinaryCompatibilityReason::*;
-    vec![
-        ServerProductMismatch,
-        ProductRepositoryMismatch,
-        PacketSchemaUnsupported,
-        ProductIdentityVersionUnsupported,
-        DapPostureMismatch,
-        ExtensionPublisherMismatch,
-        ExtensionPackageMismatch,
-        ExtensionIdentityMismatch,
-        ExtensionAuthorityNotProven,
-        ExtensionPackageDigestNotProven,
-        VersionMismatch,
-        TargetMismatch,
-        TargetNotProven,
-        SourceRevisionMismatch,
-        SourceRevisionNotProven,
-        SourceTreeDigestMismatch,
-        SourceTreeDigestNotProven,
-        ProfileMismatch,
-        ProfileNotProven,
-        CandidateMismatch,
-        CandidateNotProven,
-        ArtifactRoleMismatch,
-        ArtifactRoleNotProven,
-        ArtifactDigestMismatch,
-        ArtifactDigestNotProven,
-        DapRoleMismatch,
-        DapIdentityAbsent,
-        BuildIdentityPartial,
-        BuildIdentityNotProven,
-        PayloadNotRedacted,
-        ServerInstanceStale,
-        EnvironmentSnapshotStale,
-        FeatureVersionUnsupported,
-        ExactIdentityMatch,
-    ]
-}
-
-/// Compile-time exhaustiveness guard for `all_reasons`: a new variant that is
-/// not listed there fails THIS match, so neither the TypeScript projection
-/// ratchet nor the schema-token ratchet can silently go stale.
-fn every_reason_is_listed_by_all_reasons(specimen: BinaryCompatibilityReason) {
-    use BinaryCompatibilityReason::*;
-    match specimen {
-        ServerProductMismatch => {}
-        ProductRepositoryMismatch => {}
-        PacketSchemaUnsupported => {}
-        ProductIdentityVersionUnsupported => {}
-        DapPostureMismatch => {}
-        ExtensionPublisherMismatch => {}
-        ExtensionPackageMismatch => {}
-        ExtensionIdentityMismatch => {}
-        ExtensionAuthorityNotProven => {}
-        ExtensionPackageDigestNotProven => {}
-        VersionMismatch => {}
-        TargetMismatch => {}
-        TargetNotProven => {}
-        SourceRevisionMismatch => {}
-        SourceRevisionNotProven => {}
-        SourceTreeDigestMismatch => {}
-        SourceTreeDigestNotProven => {}
-        ProfileMismatch => {}
-        ProfileNotProven => {}
-        CandidateMismatch => {}
-        CandidateNotProven => {}
-        ArtifactRoleMismatch => {}
-        ArtifactRoleNotProven => {}
-        ArtifactDigestMismatch => {}
-        ArtifactDigestNotProven => {}
-        DapRoleMismatch => {}
-        DapIdentityAbsent => {}
-        BuildIdentityPartial => {}
-        BuildIdentityNotProven => {}
-        PayloadNotRedacted => {}
-        ServerInstanceStale => {}
-        EnvironmentSnapshotStale => {}
-        FeatureVersionUnsupported => {}
-        ExactIdentityMatch => {}
+/// Observable oracle for reason parity: returns the drift message instead of
+/// panicking inline so the missing-reason failure variant is assertable.
+///
+/// The enumeration is [`BinaryCompatibilityReason::ALL`], which the enum's own
+/// declaration generates from the same list that names the variants. There is no
+/// second copy here to fall behind it, so a newly added reason is covered by this
+/// check from the moment the variant exists.
+fn assert_projection_declares_every_reason(
+    typescript: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for &reason in BinaryCompatibilityReason::ALL {
+        let name = serde_name(reason)?;
+        if !typescript_declares(typescript, &name) {
+            return Err(
+                format!("TypeScript projection is missing compatibility reason {name:?}").into()
+            );
+        }
     }
+    Ok(())
 }
 
 #[test]
@@ -197,14 +134,47 @@ fn checked_typescript_projection_contains_every_current_literal()
         );
     }
 
-    for reason in all_reasons() {
+    assert_projection_declares_every_reason(&typescript)?;
+    assert_projection_bounds_unknown_reasons_and_redaction(&typescript)?;
+    Ok(())
+}
+
+#[test]
+fn every_reason_dropped_from_the_projection_is_reported() -> Result<(), Box<dyn std::error::Error>>
+{
+    // Negative control for the parity oracle, run once per reason. A green
+    // `checked_typescript_projection_contains_every_current_literal` only means
+    // "no reason the check walked is missing"; on its own it cannot distinguish a
+    // complete projection from a short enumeration. Removing each reason in turn
+    // and requiring it to be named proves the walk is not vacuous for any of
+    // them, so a reason that exists but is skipped would surface here.
+    let root = repository_root()?;
+    let typescript = read(&root.join("vscode-extension/src/binaryIdentityProtocol.generated.ts"))?;
+    let placeholder = "reason_withheld_by_this_control";
+
+    for &reason in BinaryCompatibilityReason::ALL {
         let name = serde_name(reason)?;
+        let doctored = typescript
+            .replace(&format!("'{name}'"), &format!("'{placeholder}'"))
+            .replace(&format!("\"{name}\""), &format!("\"{placeholder}\""));
         assert!(
-            typescript_declares(&typescript, &name),
-            "TypeScript projection is missing compatibility reason {name:?}"
+            !typescript_declares(&doctored, &name),
+            "the control must actually withhold reason {name:?} from the projection"
+        );
+
+        let error = match assert_projection_declares_every_reason(&doctored) {
+            Err(error) => error.to_string(),
+            Ok(()) => {
+                return Err(
+                    format!("a projection withholding reason {name:?} must be rejected").into()
+                );
+            }
+        };
+        assert!(
+            error.contains(&name),
+            "the withheld reason must be named in the report, got: {error}"
         );
     }
-    assert_projection_bounds_unknown_reasons_and_redaction(&typescript)?;
     Ok(())
 }
 
@@ -278,9 +248,119 @@ fn response_schema_preserves_mismatch_and_redaction_semantics()
             "schema compatibility enum is missing state {name:?}"
         );
     }
-    for reason in all_reasons() {
+    for &reason in BinaryCompatibilityReason::ALL {
         let name = serde_name(reason)?;
         assert_reason_admitted_by_schema_token(&schema, &name)?;
+    }
+    Ok(())
+}
+
+/// Assert the wire schema's `reasons` array bounds admit the worst-case response.
+///
+/// The union return path (#10184) lets one response carry every collected reason
+/// at once, and the Rust type system does not bound the array. The schema's
+/// `minItems`/`maxItems`/`uniqueItems` are therefore the sole enforcer that a
+/// worst-case response stays admissible, so bind them to the real inventory.
+fn assert_reason_array_bounds_admit_the_union(
+    schema: &Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let reasons = &schema["properties"]["reasons"];
+    let inventory = BinaryCompatibilityReason::ALL.len();
+
+    let max_items =
+        reasons["maxItems"].as_u64().ok_or("schema reasons array declares no maxItems")? as usize;
+    if inventory > max_items {
+        return Err(format!(
+            "the union path can emit {inventory} reasons, exceeding schema maxItems {max_items}"
+        )
+        .into());
+    }
+
+    // Every terminal branch of `evaluate_compatibility` returns at least one
+    // reason (`ExactMatch` returns exactly one), so the schema must demand
+    // exactly that: `minItems: 1` in both directions. Accepting `0` would let
+    // the schema stop enforcing the production invariant that every response
+    // carries a reason (#15571 FC6).
+    let min_items =
+        reasons["minItems"].as_u64().ok_or("schema reasons array declares no minItems")? as usize;
+    if min_items != 1 {
+        return Err(format!(
+            "schema minItems must be exactly 1 (one reason per response, ExactMatch minimum); found {min_items}"
+        )
+        .into());
+    }
+
+    if reasons["uniqueItems"] != Value::Bool(true) {
+        return Err("schema reasons array no longer declares uniqueItems".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn schema_bounds_reject_a_doctored_zero_minimum() -> Result<(), Box<dyn std::error::Error>> {
+    // Negative control for the minItems bind (#15571 FC6): if the schema
+    // stopped enforcing `minItems: 1`, the bound check must fail rather than
+    // let responses without reasons validate.
+    let root = repository_root()?;
+    let mut schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+    schema["properties"]["reasons"]["minItems"] = serde_json::json!(0);
+    assert!(
+        assert_reason_array_bounds_admit_the_union(&schema).is_err(),
+        "the minItems bind must reject a schema that stops requiring a reason"
+    );
+    Ok(())
+}
+
+#[test]
+fn response_reason_array_bounds_admit_the_worst_case_union()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = repository_root()?;
+    let schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+    assert_reason_array_bounds_admit_the_union(&schema)
+}
+
+#[test]
+fn reason_array_bound_drift_is_reported() -> Result<(), Box<dyn std::error::Error>> {
+    // Observes each bound error variant so the oracle above is not vacuous: a
+    // schema that could not admit the union must be rejected, not passed over.
+    let root = repository_root()?;
+    let schema: Value = serde_json::from_str(&read(
+        &root.join("schemas/binary_identity_protocol.v1.schema.json"),
+    )?)?;
+
+    let mut narrowed = schema.clone();
+    narrowed["properties"]["reasons"]["maxItems"] = Value::from(1);
+    match assert_reason_array_bounds_admit_the_union(&narrowed) {
+        Err(error) => assert!(
+            error.to_string().contains("exceeding schema maxItems 1"),
+            "maxItems drift must name the offending bound, got {error}"
+        ),
+        Ok(()) => return Err("a maxItems below the inventory must be rejected".into()),
+    }
+
+    let mut demanding = schema.clone();
+    demanding["properties"]["reasons"]["minItems"] = Value::from(2);
+    match assert_reason_array_bounds_admit_the_union(&demanding) {
+        Err(error) => assert!(
+            error.to_string().contains("must be exactly 1")
+                && error.to_string().contains("found 2"),
+            "minItems drift must name the offending bound, got {error}"
+        ),
+        Ok(()) => return Err("a minItems above the ExactMatch arity must be rejected".into()),
+    }
+
+    let mut duplicable = schema;
+    duplicable["properties"]["reasons"]["uniqueItems"] = Value::Bool(false);
+    match assert_reason_array_bounds_admit_the_union(&duplicable) {
+        Err(error) => assert!(
+            error.to_string().contains("uniqueItems"),
+            "uniqueItems drift must be reported, got {error}"
+        ),
+        Ok(()) => return Err("a schema dropping uniqueItems must be rejected".into()),
     }
     Ok(())
 }

@@ -6,13 +6,15 @@
 //! effective-state store.
 //!
 //! Explicit non-registration dispositions (#7054): parsed settings that
-//! deliberately carry no authority row are limited to
-//! `ProjectPerlConfig.version` (parsed from `.perl-lsp.toml`, documented as
-//! reserved and ignored — no effective field exists to own) and the internal
+//! deliberately carry no authority row are limited to the internal
 //! `LspLimits` fields listed in `INTERNAL_UNPARSED_LIMIT_FIELDS` (compiled
 //! defaults with no external configuration channel).
+//! `ProjectPerlConfig.version` is intentionally a derived folder-scoped PL900
+//! input and is not merged into the global authority catalog.
 
 #![allow(dead_code)]
+
+use serde::{Deserialize, Serialize};
 
 mod catalog;
 
@@ -38,7 +40,7 @@ pub(crate) enum ConfigScope {
 }
 
 /// Input authority, ordered from lowest to highest precedence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum ConfigSource {
     CompiledDefault,
     InitializationOptions,
@@ -81,7 +83,7 @@ pub(crate) enum ConfigValueKind {
 }
 
 /// Validation rule applied before an input can become authoritative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ConfigValidation {
     Boolean,
     NonEmptyString,
@@ -117,7 +119,7 @@ pub(crate) enum InvalidValueFallback {
 }
 
 /// Sensitivity and trust class for configuration evidence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ConfigSensitivity {
     Ordinary,
     Path,
@@ -128,7 +130,7 @@ pub(crate) enum ConfigSensitivity {
 }
 
 /// How the value may appear in logs, receipts, and generated status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum EvidencePolicy {
     SafeValue,
     BoundedValue,
@@ -205,6 +207,8 @@ pub(crate) fn authority_by_id(id: &str) -> Option<&'static FieldAuthority> {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::{must_some_with, must_with};
+
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -272,8 +276,8 @@ mod tests {
 
     fn public_fields(source: &str, struct_name: &str) -> BTreeSet<String> {
         let marker = format!("pub struct {struct_name} {{");
-        let body = source.split_once(&marker).unwrap_or_else(|| panic!("missing {struct_name}")).1;
-        let body = body.split_once("\n}").unwrap_or_else(|| panic!("unterminated {struct_name}")).0;
+        let body = must_some_with(source.split_once(&marker), format!("missing {struct_name}")).1;
+        let body = must_some_with(body.split_once("\n}"), format!("unterminated {struct_name}")).0;
 
         body.lines()
             .filter_map(|line| {
@@ -346,10 +350,10 @@ mod tests {
     #[test]
     fn dropping_a_limit_row_fails_the_machine_check() {
         let mut rows = CONFIGURATION_AUTHORITY.to_vec();
-        let position = rows
-            .iter()
-            .position(|field| field.id == "limits.workspace_symbol_cap")
-            .expect("limits row present");
+        let position = must_some_with(
+            rows.iter().position(|field| field.id == "limits.workspace_symbol_cap"),
+            "limits row present",
+        );
         let removed = rows.remove(position);
 
         let drift = leaf_drift(&rows);
@@ -457,7 +461,7 @@ mod tests {
         ];
 
         for id in restricted {
-            let field = authority_by_id(id).unwrap_or_else(|| panic!("missing {id}"));
+            let field = must_some_with(authority_by_id(id), format!("missing {id}"));
             assert!(
                 !field.sources.iter().any(|source| matches!(
                     source,
@@ -488,7 +492,7 @@ mod tests {
         ];
 
         for id in ARM_SELECT_ROWS {
-            let field = authority_by_id(id).unwrap_or_else(|| panic!("missing {id}"));
+            let field = must_some_with(authority_by_id(id), format!("missing {id}"));
             for source in field.sources {
                 assert!(
                     matches!(
@@ -502,8 +506,8 @@ mod tests {
 
         // The derived effective flag may additionally be reduced by the
         // project file, but still cannot be armed by any client channel.
-        let effective = authority_by_id("ai.effective_enabled")
-            .unwrap_or_else(|| panic!("missing ai.effective_enabled"));
+        let effective =
+            must_some_with(authority_by_id("ai.effective_enabled"), "missing ai.effective_enabled");
         for source in effective.sources {
             assert!(
                 matches!(
@@ -544,15 +548,17 @@ mod tests {
 
     #[test]
     fn limits_authority_matches_the_generic_settings_schema_exactly() {
-        let schema: serde_json::Value =
-            serde_json::from_str(include_str!("../../../../schemas/perllsp-settings.schema.json"))
-                .expect("valid perllsp settings schema");
-        let schema_keys = schema["properties"]["perl"]["properties"]["limits"]["properties"]
-            .as_object()
-            .expect("schema declares a perl.limits section")
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
+        let schema: serde_json::Value = must_with(
+            serde_json::from_str(include_str!("../../../../schemas/perllsp-settings.schema.json")),
+            "valid perllsp settings schema",
+        );
+        let schema_keys = must_some_with(
+            schema["properties"]["perl"]["properties"]["limits"]["properties"].as_object(),
+            "schema declares a perl.limits section",
+        )
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
 
         let catalog_keys = CONFIGURATION_AUTHORITY
             .iter()

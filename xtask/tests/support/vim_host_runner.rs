@@ -25,9 +25,11 @@
 //!   root markers and filetype policy; the driver observes native Vim
 //!   detection and this substrate rejects pre-forced filetypes.
 //! - The generic process-tree cleanup boundary (#8734) and the shared
-//!   fail-closed host primitives (#10894, open) stay consumed-not-duplicated:
-//!   this substrate keeps the same fail-closed semantics the Emacs runner
-//!   landed, and #10894 may extract them unchanged later.
+//!   host-execution/receipt primitives (#10894) are consumed, not duplicated:
+//!   bounded execution, process-ledger comparison, redaction/bounding,
+//!   receipt-freshness refusal, and cleanup laws live in
+//!   `xtask::editor_host` and this substrate keeps only Vim-specific subject,
+//!   event, and journey knowledge.
 //!
 //! Fail-closed laws:
 //!
@@ -43,19 +45,14 @@
 //! - a receipt whose registration detail does not bind the planned candidate
 //!   digest, or whose buffer attachment was pre-forced, cannot pass.
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
-use std::fmt::Write as _;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
 use xtask::editor_client_compat::{
     ArtifactKind, CANONICAL_EXPECTATION_SET_ID, CapabilityIdentity, CleanupResult,
     ClientSourceState, DiagnosticMode, DiagnosticsIdentity, EditorClientCompatReceipt,
@@ -64,10 +61,19 @@ use xtask::editor_client_compat::{
     RegistrationState, SCHEMA_VERSION as RECEIPT_SCHEMA_VERSION, ServerIdentity,
     WorkspaceFixtureIdentity, canonical_expectation_set_digest, fixture_digest,
 };
+use xtask::editor_host::{
+    BoundedRun, HostProcessLedger, PathRedaction, ProbeCapture, judge_cleanup,
+    validate_safe_identity, write_artifact,
+};
+
+// The shared #10894 mechanics this substrate consumes from one authority.
+pub use xtask::editor_host::{
+    ProcessProbeLine, parse_process_snapshot, parse_windows_process_snapshot, probe_process_table,
+    render_process_snapshot, surviving_processes,
+};
 
 pub const RUN_PLAN_SCHEMA_VERSION: &str = "vim_host_run_plan.v1";
 pub const DRIVER_SCHEMA_VERSION: &str = "vim_host_driver.v1";
-const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 
 /// The one exact client subject this runner can execute today: the pinned
 /// `prabirshrestha/vim-lsp` upstream commit selected by #11369. A newer
@@ -756,6 +762,59 @@ pub enum DriverEventKind {
     StaleGenerationHeld,
     ClientMaterializationApplied,
     GenerationCurrentObserved,
+    /// #11398 server-generation recovery events. Like the #11390 freshness
+    /// kinds, these may repeat within one journey: the recovery journey walks
+    /// multiple server-process generations (explicit restart, unexpected-exit
+    /// stimulus plus manual-route recovery, shutdown-during-pending) in a
+    /// single host run. Each repeating kind carries a monotone 1-based index
+    /// detail with a per-kind cap, so an unordered, duplicated, or overlong
+    /// barrier stream is rejected here even before the scenario judgment
+    /// checks the exact phase sequence. No earlier journey emits them.
+    ServerRestartApplied,
+    RecoveryStimulusApplied,
+    RecoveryDispositionObserved,
+    GenerationReplayObserved,
+    OldGenerationRejected,
+    /// The #11398 shutdown-during-pending observation: emitted once, strictly
+    /// before the shutdown barriers, when the host exits while a recovery is
+    /// pending (old generation dead, replacement not started).
+    ShutdownDuringPendingObserved,
+    /// #11396 save-format events. Same repeating law as the #11390 kinds: the
+    /// save journey walks several ordinary saves in one host run, each with
+    /// exactly one configured-owner settlement, plus stale-result holds. Each
+    /// carries a monotone 1-based per-kind index with a cap; the earlier
+    /// journeys never emit them.
+    SaveOwnerConfigured,
+    SaveSettlementObserved,
+    StaleResultHoldObserved,
+    /// #11401 host-reopen lifecycle events. Like the freshness kinds these may
+    /// repeat within one host session, with monotone 1-based indexes and
+    /// per-kind caps enforced here. The buffer kinds bind the same-host
+    /// close/wipe+reopen chain (old and new buffer numbers, unchanged server
+    /// generation); the pending kinds bind a started pending action's wire
+    /// identity, its identity-bound cancellation, and the observed rejection
+    /// of a late old result against the replacement document instance. The
+    /// earlier journeys never emit them.
+    BufferWiped,
+    BufferReopened,
+    PendingActionStarted,
+    PendingActionCancelled,
+    LateResultRejected,
+    /// The #11401 exit-boundary in-flight observation: emitted once by the
+    /// full-lifecycle session, immediately before the shutdown barriers, when
+    /// the client's own delivery counters (read synchronously — no event-loop
+    /// yield can deliver the in-flight response between its wire-bound send
+    /// and the read) still show the pending action unanswered. A response the
+    /// client processes during the orderly teardown after this boundary cannot
+    /// retroactively make the request answered at the boundary.
+    PendingInflightAtBoundary,
+    /// One #11401 host session settled its own product result (the repeated
+    /// denominator's per-iteration observation) and is about to exit through
+    /// its designed exit path.
+    SessionIterationSettled,
+    /// The #11401 driver initiated the user-equivalent host exit (`:qa!`);
+    /// the supervisor owns the actual exit observation.
+    HostExitInitiated,
     ShutdownStarted,
     ShutdownCompleted,
     DriverFailed,
@@ -803,6 +862,26 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
     let mut freshness_hold_index = 0_u32;
     let mut freshness_materialization_index = 0_u32;
     let mut freshness_generation_index = 0_u32;
+    // Monotone last-seen indexes for the #11398 repeating recovery kinds.
+    let mut recovery_restart_index = 0_u32;
+    let mut recovery_stimulus_index = 0_u32;
+    let mut recovery_disposition_index = 0_u32;
+    let mut recovery_replay_index = 0_u32;
+    let mut recovery_rejection_index = 0_u32;
+    // The single active server generation the recovery chain must agree on: the
+    // first launch is generation 1, and only an observed restart advances it.
+    let mut active_generation = 1_u32;
+    // Monotone last-seen indexes for the #11396 repeating save-format kinds.
+    let mut save_owner_index = 0_u32;
+    let mut save_settlement_index = 0_u32;
+    let mut save_hold_index = 0_u32;
+    // Monotone last-seen indexes for the #11401 repeating lifecycle kinds.
+    let mut lifecycle_wipe_index = 0_u32;
+    let mut lifecycle_reopen_index = 0_u32;
+    let mut lifecycle_pending_index = 0_u32;
+    let mut lifecycle_pending_cancel_index = 0_u32;
+    let mut lifecycle_late_result_index = 0_u32;
+    let mut lifecycle_pending_boundary_index = 0_u32;
 
     for (index, event) in events.iter().enumerate() {
         ensure!(event.schema_version == DRIVER_SCHEMA_VERSION, "unexpected driver event schema");
@@ -1016,6 +1095,567 @@ pub fn validate_driver_events(events: &[DriverEvent], require_complete: bool) ->
                 );
                 update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
             }
+            DriverEventKind::ServerRestartApplied => {
+                validate_repeating_event(
+                    event,
+                    "recovery",
+                    "restart_index",
+                    SERVER_RESTART_CAP,
+                    &mut recovery_restart_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("route").map(String::as_str),
+                        Some("public_stop_reopen") | Some("manual_reopen_after_exit")
+                    ),
+                    "server_restart_applied must name the public_stop_reopen or the \
+                     manual_reopen_after_exit route; a private launch path is not a restart route"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("old_init_generation")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|generation| generation >= 1)
+                        && event
+                            .details
+                            .get("new_init_generation")
+                            .and_then(|value| value.parse::<u32>().ok())
+                            .is_some_and(|generation| generation >= 2),
+                    "server_restart_applied must bind numeric old/new process generations"
+                );
+                let old_generation = event
+                    .details
+                    .get("old_init_generation")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or_default();
+                let new_generation = event
+                    .details
+                    .get("new_init_generation")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .unwrap_or_default();
+                ensure!(
+                    old_generation < new_generation,
+                    "server_restart_applied new generation must exceed the old generation; a clean \
+                     first launch has no old generation and cannot pose as a restart"
+                );
+                ensure!(
+                    old_generation == active_generation,
+                    "server_restart_applied must restart the generation currently serving \
+                     ({active_generation}), not {old_generation}; a repeated or backward restart \
+                     chain is not one recovery"
+                );
+                active_generation = new_generation;
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::RecoveryStimulusApplied => {
+                validate_repeating_event(
+                    event,
+                    "recovery",
+                    "stimulus_index",
+                    RECOVERY_STIMULUS_CAP,
+                    &mut recovery_stimulus_index,
+                )?;
+                ensure!(
+                    event.details.get("stimulus") == Some(&"terminate_server_process".to_string()),
+                    "recovery_stimulus_applied must bind the terminate_server_process stimulus"
+                );
+                ensure!(
+                    event.details.contains_key("marker")
+                        && event.details.contains_key("serving_generation"),
+                    "recovery_stimulus_applied must name its marker and serving generation"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("serving_generation")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        == Some(active_generation),
+                    "recovery_stimulus_applied must terminate the generation currently serving \
+                     ({active_generation}); a stimulus against another generation proves nothing \
+                     about this chain"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::RecoveryDispositionObserved => {
+                validate_repeating_event(
+                    event,
+                    "recovery",
+                    "disposition_index",
+                    RECOVERY_DISPOSITION_CAP,
+                    &mut recovery_disposition_index,
+                )?;
+                ensure!(
+                    event.details.get("stimulus") == Some(&"unexpected_exit".to_string()),
+                    "recovery_disposition_observed must classify the unexpected_exit stimulus"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("disposition").map(String::as_str),
+                        Some("manual_restart_required")
+                            | Some("automatic_bounded_recovery")
+                            | Some("client_not_exposed")
+                            | Some("not_proven")
+                    ),
+                    "recovery_disposition_observed must name a #11386 disposition token"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("retry_count")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some(),
+                    "recovery_disposition_observed must report a numeric retry count"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("window_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|window| window >= MIN_STALE_WINDOW_MS),
+                    "recovery_disposition_observed must carry a bounded observation window of at \
+                     least {MIN_STALE_WINDOW_MS}ms"
+                );
+                ensure!(
+                    event.details.get("exit_observed") == Some(&"1".to_string()),
+                    "recovery_disposition_observed must prove the client observed the exit"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::GenerationReplayObserved => {
+                validate_repeating_event(
+                    event,
+                    "recovery",
+                    "replay_index",
+                    GENERATION_REPLAY_CAP,
+                    &mut recovery_replay_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("initialize_generation")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|generation| generation >= 2),
+                    "generation_replay_observed must bind the replaying initialize generation"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("initialize_generation")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        == Some(active_generation),
+                    "generation_replay_observed must replay into the generation the observed \
+                     restart produced ({active_generation}); a skipped generation is not a replay"
+                );
+                ensure!(
+                    event.details.contains_key("document") && event.details.contains_key("root"),
+                    "generation_replay_observed must name the replayed document and root"
+                );
+                ensure!(
+                    event.details.get("did_open_replayed") == Some(&"1".to_string()),
+                    "generation_replay_observed must prove the didOpen replay"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("client_init_events")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|count| count >= active_generation)
+                        && event
+                            .details
+                            .get("buffer_enabled_events")
+                            .and_then(|value| value.parse::<u32>().ok())
+                            .is_some_and(|count| count >= active_generation),
+                    "generation_replay_observed must bind the replacement generation's readiness \
+                     counts (client init and buffer-enabled events) to the active generation \
+                     ({active_generation}); a bare new PID, or a declared generation the readiness \
+                     counts never reached, is not readiness"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::OldGenerationRejected => {
+                validate_repeating_event(
+                    event,
+                    "recovery",
+                    "rejection_index",
+                    OLD_GENERATION_REJECTION_CAP,
+                    &mut recovery_rejection_index,
+                )?;
+                ensure!(
+                    event.details.contains_key("held_generation")
+                        && event.details.contains_key("released_after_generation")
+                        && event.details.contains_key("held_result"),
+                    "old_generation_rejected must name the held generation, its releasing \
+                     replacement, and the held result"
+                );
+                ensure!(
+                    event.details.get("old_signature_settled") == Some(&"0".to_string()),
+                    "old_generation_rejected must prove the old signature never settled; an \
+                     admitted old-generation effect is a failure, never a pass"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::ShutdownDuringPendingObserved => {
+                ensure!(
+                    singleton.insert(DriverEventKind::ShutdownDuringPendingObserved),
+                    "duplicate shutdown_during_pending_observed event"
+                );
+                ensure!(
+                    event.details.get("old_generation_dead") == Some(&"1".to_string())
+                        && event.details.get("new_generation_started") == Some(&"0".to_string()),
+                    "shutdown_during_pending_observed must bind the pending recovery state: old \
+                     generation dead, replacement not started"
+                );
+                ensure!(
+                    event.details.contains_key("recovery_route"),
+                    "shutdown_during_pending_observed must name the pending recovery route"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::SaveOwnerConfigured => {
+                validate_repeating_save_event(
+                    event,
+                    "owner_index",
+                    SAVE_OWNER_CONFIGURED_CAP,
+                    &mut save_owner_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("owner_count")
+                        .is_some_and(|value| value.parse::<u32>().is_ok()),
+                    "save_owner_configured must report a numeric owner_count"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("route").map(String::as_str),
+                        Some("bufwritepre_autocmd") | Some("none")
+                    ),
+                    "save_owner_configured must name the bufwritepre_autocmd route or its absence"
+                );
+                ensure!(
+                    event.details.get("action").map(String::as_str)
+                        == Some("lsp_document_format_sync")
+                        || event.details.get("route").map(String::as_str) == Some("none"),
+                    "save_owner_configured must delegate to the canonical sync format action"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("timeout_ms")
+                        .is_some_and(|value| value.parse::<u64>().is_ok()),
+                    "save_owner_configured must report a numeric bounded sync timeout"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::SaveSettlementObserved => {
+                validate_repeating_save_event(
+                    event,
+                    "save_index",
+                    SAVE_SETTLEMENT_CAP,
+                    &mut save_settlement_index,
+                )?;
+                ensure!(
+                    matches!(
+                        event.details.get("trigger").map(String::as_str),
+                        Some("bufwritepre_save") | Some("manual_comparator") | Some("none")
+                    ),
+                    "save_settlement_observed must name the bufwritepre_save, manual_comparator, \
+                     or no trigger"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("disposition").map(String::as_str),
+                        Some("applied")
+                            | Some("no_change")
+                            | Some("disabled")
+                            | Some("refused")
+                            | Some("failure")
+                            | Some("stale_rejected")
+                    ),
+                    "save_settlement_observed must name a declared save disposition"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("response_kind").map(String::as_str),
+                        Some("edits") | Some("empty") | Some("error") | Some("absent")
+                    ),
+                    "save_settlement_observed must name the settled response kind"
+                );
+                for key in ["requests_before", "requests_after", "owner_count"] {
+                    ensure!(
+                        event.details.get(key).is_some_and(|value| value.parse::<u32>().is_ok()),
+                        "save_settlement_observed must report a numeric {key}"
+                    );
+                }
+                for key in ["buffer_sha256", "file_sha256"] {
+                    ensure!(
+                        event
+                            .details
+                            .get(key)
+                            .is_some_and(|value| validate_sha256(value, key).is_ok()),
+                        "save_settlement_observed must report the exact {key} bytes identity"
+                    );
+                }
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::StaleResultHoldObserved => {
+                validate_repeating_save_event(
+                    event,
+                    "hold_index",
+                    STALE_RESULT_HOLD_CAP,
+                    &mut save_hold_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("window_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|window| window >= MIN_STALE_WINDOW_MS),
+                    "stale_result_hold_observed must carry a bounded observation window of at \
+                     least {MIN_STALE_WINDOW_MS}ms"
+                );
+                ensure!(
+                    event.details.get("bytes_held") == Some(&"1".to_string()),
+                    "stale_result_hold_observed must prove the byte state held for the whole window"
+                );
+                ensure!(
+                    event.details.get("late_response_rejected") == Some(&"1".to_string()),
+                    "stale_result_hold_observed must prove the late result was released and \
+                     never applied"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::BufferWiped => {
+                validate_repeating_lifecycle_event(
+                    event,
+                    "wipe_index",
+                    BUFFER_WIPE_CAP,
+                    &mut lifecycle_wipe_index,
+                )?;
+                ensure!(
+                    event.details.get("didclose_sent") == Some(&"1".to_string()),
+                    "buffer_wiped must bind the real client didClose flush path"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("bufnr")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some(),
+                    "buffer_wiped must report the wiped buffer number"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::BufferReopened => {
+                validate_repeating_lifecycle_event(
+                    event,
+                    "reopen_index",
+                    BUFFER_REOPEN_CAP,
+                    &mut lifecycle_reopen_index,
+                )?;
+                ensure!(
+                    event.details.get("same_path") == Some(&"1".to_string()),
+                    "buffer_reopened must bind the same governed path"
+                );
+                let old_bufnr =
+                    event.details.get("old_bufnr").and_then(|value| value.parse::<u32>().ok());
+                let new_bufnr =
+                    event.details.get("new_bufnr").and_then(|value| value.parse::<u32>().ok());
+                ensure!(
+                    old_bufnr.is_some() && new_bufnr.is_some(),
+                    "buffer_reopened must report numeric old and new buffer numbers"
+                );
+                ensure!(
+                    old_bufnr != new_bufnr,
+                    "buffer_reopened must bind a changed document instance; a same-buffer \
+                     observation is not a reopen"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("server_init_count")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some(),
+                    "buffer_reopened must report the server init generation at the reopen (the \
+                     same-host law: no server restart may hide inside a buffer reopen)"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::PendingActionStarted => {
+                validate_repeating_lifecycle_event(
+                    event,
+                    "pending_index",
+                    PENDING_ACTION_CAP,
+                    &mut lifecycle_pending_index,
+                )?;
+                ensure!(
+                    event.details.get("method") == Some(&"textDocument/documentSymbol".to_string()),
+                    "pending_action_started must name the deterministic pending observation \
+                     method"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("request_id")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0),
+                    "pending_action_started must bind the positive wire request identity"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("target_bufnr")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some(),
+                    "pending_action_started must report the target buffer number"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::PendingActionCancelled => {
+                validate_referencing_lifecycle_event(
+                    event,
+                    "cancel_index",
+                    "pending_index",
+                    PENDING_CANCEL_CAP,
+                    &mut lifecycle_pending_cancel_index,
+                    lifecycle_pending_index,
+                )?;
+                ensure!(
+                    event.details.get("cancel_sent") == Some(&"1".to_string()),
+                    "pending_action_cancelled must bind the identity-bound cancellation send"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("request_id")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0),
+                    "pending_action_cancelled must bind the cancelled request identity"
+                );
+                ensure!(
+                    event.details.get("notification_count") == Some(&"0".to_string()),
+                    "pending_action_cancelled must prove zero admissions after cancellation; a \
+                     cancelled result that was delivered is a contract violation, never a pass"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::LateResultRejected => {
+                validate_referencing_lifecycle_event(
+                    event,
+                    "late_index",
+                    "pending_index",
+                    LATE_RESULT_CAP,
+                    &mut lifecycle_late_result_index,
+                    lifecycle_pending_index,
+                )?;
+                ensure!(
+                    event.details.get("response_delivered") == Some(&"1".to_string()),
+                    "late_result_rejected must prove the old operation completed (the response \
+                     arrived); an uncompleted observation is not a late result"
+                );
+                ensure!(
+                    event.details.get("held_notification_count") == Some(&"1".to_string()),
+                    "late_result_rejected must hold the old subscription's admission count at \
+                     exactly the one late delivery across the bounded window; a state the \
+                     delivery can move must actually be observed, never a vacuous watch"
+                );
+                ensure!(
+                    event.details.get("replacement_state_unchanged") == Some(&"1".to_string()),
+                    "late_result_rejected must prove the replacement instance stayed unchanged \
+                     across the bounded observation window"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("window_ms")
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .is_some_and(|window| window >= MIN_STALE_WINDOW_MS),
+                    "late_result_rejected must carry a bounded observation window of at least \
+                     {MIN_STALE_WINDOW_MS}ms"
+                );
+                ensure!(
+                    event
+                        .details
+                        .get("request_id")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0),
+                    "late_result_rejected must bind the late request identity"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::PendingInflightAtBoundary => {
+                ensure!(
+                    singleton.insert(DriverEventKind::PendingInflightAtBoundary),
+                    "duplicate singleton driver event"
+                );
+                validate_referencing_lifecycle_event(
+                    event,
+                    "boundary_index",
+                    "pending_index",
+                    PENDING_INFLIGHT_BOUNDARY_CAP,
+                    &mut lifecycle_pending_boundary_index,
+                    lifecycle_pending_index,
+                )?;
+                ensure!(
+                    event
+                        .details
+                        .get("request_id")
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .is_some_and(|id| id > 0),
+                    "pending_inflight_at_boundary must bind the in-flight request identity"
+                );
+                ensure!(
+                    event.details.get("pending_done") == Some(&"0".to_string()),
+                    "pending_inflight_at_boundary must observe the request still unsettled at \
+                     the exit boundary; a done context is not an in-flight request"
+                );
+                ensure!(
+                    event.details.get("notification_count") == Some(&"0".to_string()),
+                    "pending_inflight_at_boundary must observe zero admissions at the exit \
+                     boundary; a delivered result was never in flight across the boundary"
+                );
+                ensure!(
+                    event.details.get("boundary") == Some(&"shutdown_started".to_string()),
+                    "pending_inflight_at_boundary must bind the shutdown boundary it observed"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::SessionIterationSettled => {
+                ensure!(
+                    singleton.insert(DriverEventKind::SessionIterationSettled),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    matches!(
+                        event.details.get("session_role").map(String::as_str),
+                        Some("full_lifecycle_session")
+                            | Some("replacement_host_session")
+                            | Some("assertion_failure_session")
+                            | Some("timeout_interruption_session")
+                            | Some("server_restart_relabel_session")
+                    ),
+                    "session_iteration_settled must name its exact designed session role"
+                );
+                ensure!(
+                    event.details.contains_key("iteration_index")
+                        && event.details.contains_key("product_result"),
+                    "session_iteration_settled must bind its iteration denominator index and \
+                     product result"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
+            DriverEventKind::HostExitInitiated => {
+                ensure!(
+                    singleton.insert(DriverEventKind::HostExitInitiated),
+                    "duplicate singleton driver event"
+                );
+                ensure!(
+                    event.details.get("exit_path") == Some(&"user_qa".to_string()),
+                    "host_exit_initiated must bind the user-equivalent exit path"
+                );
+                update_lifecycle_rank(event.kind, &mut last_lifecycle_rank)?;
+            }
             kind => {
                 ensure!(singleton.insert(kind), "duplicate singleton driver event");
                 let rank = lifecycle_rank(kind);
@@ -1070,18 +1710,54 @@ fn lifecycle_rank(kind: DriverEventKind) -> u8 {
         DriverEventKind::DefectStateObserved => 41,
         DriverEventKind::DefectFixApplied => 42,
         DriverEventKind::CurrentStateObserved => 43,
-        // The #11390 freshness-generation tier: the four repeating kinds share
-        // one rank (their phases interleave legitimately — a mutation, its
+        // The #11390 freshness-generation tier: the repeating kinds share one
+        // rank because their phases legitimately interleave (a mutation, its
         // stale-hold window, its materialization, its current observation),
-        // with per-kind monotone indexes carrying the order. All strictly
-        // before shutdown.
+        // with per-kind monotone indexes carrying the order. The #11396
+        // save-format kinds and the #11401 host-reopen kinds join the same
+        // tier for the same reason: source/config mutations, materializations,
+        // save settlements, pending actions, and buffer wipes/reopens all
+        // interleave inside one journey. All strictly before the session
+        // settlement and shutdown tiers.
         DriverEventKind::ExternalMutationApplied
         | DriverEventKind::StaleGenerationHeld
         | DriverEventKind::ClientMaterializationApplied
-        | DriverEventKind::GenerationCurrentObserved => 44,
+        | DriverEventKind::GenerationCurrentObserved
+        | DriverEventKind::BufferWiped
+        | DriverEventKind::BufferReopened
+        | DriverEventKind::PendingActionStarted
+        | DriverEventKind::PendingActionCancelled
+        | DriverEventKind::LateResultRejected
+        | DriverEventKind::SaveOwnerConfigured
+        | DriverEventKind::SaveSettlementObserved
+        | DriverEventKind::StaleResultHoldObserved => 44,
+        // The #11398 recovery kinds share that same tier: the recovery
+        // journey legitimately interleaves its restarts, stimuli,
+        // dispositions, replays, and rejections with the shared
+        // generation-current observations, with per-kind monotone indexes
+        // carrying the order. No driver emits both families, so the shared
+        // rank keeps every authored journey's order valid; all strictly
+        // before shutdown.
+        DriverEventKind::ServerRestartApplied
+        | DriverEventKind::RecoveryStimulusApplied
+        | DriverEventKind::RecoveryDispositionObserved
+        | DriverEventKind::GenerationReplayObserved
+        | DriverEventKind::OldGenerationRejected
+        | DriverEventKind::ShutdownDuringPendingObserved => 44,
+        // The session's own product result settles strictly before its
+        // terminal path (orderly stop, forced failure, or the indefinite
+        // barrier of the timeout shape). The #11401 exit-boundary in-flight
+        // observation shares this tier: it is the last synchronous read before
+        // the shutdown barriers, and the referencing law binds it to its
+        // already-started pending action, so either order within the tier is
+        // the same boundary claim.
+        DriverEventKind::SessionIterationSettled | DriverEventKind::PendingInflightAtBoundary => 49,
         DriverEventKind::ShutdownStarted => 50,
         DriverEventKind::ShutdownCompleted => 51,
         DriverEventKind::DriverFailed => 51,
+        // The user-equivalent exit initiation is the last driver-side event of
+        // an orderly session (the supervisor owns the exit observation).
+        DriverEventKind::HostExitInitiated => 52,
     }
 }
 
@@ -1094,6 +1770,38 @@ pub const EXTERNAL_MUTATION_CAP: u32 = 6;
 pub const STALE_GENERATION_HOLD_CAP: u32 = 6;
 pub const CLIENT_MATERIALIZATION_CAP: u32 = 10;
 pub const GENERATION_CURRENT_CAP: u32 = 12;
+/// Per-kind occurrence caps for the #11398 repeating recovery events. The
+/// caps bound the authored journey (one public restart plus two
+/// manual-route recoveries; three terminate stimuli; one disposition window
+/// per exit stimulus; one replay per replacement generation; the held-result
+/// rejection); a stream exceeding a cap is an instrument fault, never
+/// evidence.
+pub const SERVER_RESTART_CAP: u32 = 4;
+pub const RECOVERY_STIMULUS_CAP: u32 = 3;
+pub const RECOVERY_DISPOSITION_CAP: u32 = 3;
+pub const GENERATION_REPLAY_CAP: u32 = 4;
+pub const OLD_GENERATION_REJECTION_CAP: u32 = 2;
+/// Per-kind occurrence caps for the #11396 repeating save-format events: the
+/// authored journey re-arms the owner a bounded number of times (single,
+/// removed for the disabled leg, re-armed after each restart) and walks seven
+/// settlements plus one stale-result hold.
+pub const SAVE_OWNER_CONFIGURED_CAP: u32 = 8;
+pub const SAVE_SETTLEMENT_CAP: u32 = 10;
+pub const STALE_RESULT_HOLD_CAP: u32 = 4;
+/// Per-kind occurrence caps for the #11401 repeating lifecycle events: one
+/// wipe/reopen chain, up to three pending actions (identity-bound cancel,
+/// late-result document route, in-flight-at-exit host route), one observed
+/// late rejection per journey shape. A stream exceeding a cap is an
+/// instrument fault, never evidence.
+pub const BUFFER_WIPE_CAP: u32 = 2;
+pub const BUFFER_REOPEN_CAP: u32 = 2;
+pub const PENDING_ACTION_CAP: u32 = 3;
+pub const PENDING_CANCEL_CAP: u32 = 2;
+pub const LATE_RESULT_CAP: u32 = 2;
+/// The exit-boundary in-flight observation is emitted exactly once per
+/// journey shape (the full-lifecycle session's single pending action left in
+/// flight); more than one is an instrument fault, never evidence.
+pub const PENDING_INFLIGHT_BOUNDARY_CAP: u32 = 1;
 /// The minimum honest absence-observation window for a stale-generation hold:
 /// below this the "no spontaneous republish" claim carries no observation.
 pub const MIN_STALE_WINDOW_MS: u64 = 2000;
@@ -1107,18 +1815,100 @@ fn validate_repeating_freshness_event(
     cap: u32,
     last_index: &mut u32,
 ) -> Result<()> {
+    validate_repeating_index(event, index_key, cap, last_index)
+}
+
+/// Validate one repeating #11396 save-format event with the same law.
+fn validate_repeating_save_event(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    validate_repeating_index(event, index_key, cap, last_index)
+}
+
+/// Validate one repeating event with a monotone, gap-free, capped index.
+fn validate_repeating_event(
+    event: &DriverEvent,
+    family: &str,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
     let index = event
         .details
         .get(index_key)
         .and_then(|value| value.parse::<u32>().ok())
-        .with_context(|| format!("freshness event omitted a numeric {index_key}"))?;
+        .with_context(|| format!("{family} event omitted a numeric {index_key}"))?;
     ensure!(
         index == *last_index + 1,
-        "freshness event {index_key} {} is not exactly one greater than the last seen {}",
+        "{family} event {index_key} {index} is not exactly one greater than the last seen {}",
+        *last_index
+    );
+    ensure!(index <= cap, "{family} event {index_key} {index} exceeds the journey cap {cap}");
+    *last_index = index;
+    Ok(())
+}
+
+/// Validate one repeating #11401 lifecycle event: same monotone, gap-free,
+/// capped index law as the freshness kinds.
+fn validate_repeating_lifecycle_event(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    validate_repeating_index(event, index_key, cap, last_index)
+}
+
+/// Validate one #11401 lifecycle event that references an already-started
+/// pending action (a cancellation or a late-result observation of pending
+/// action N): its per-kind occurrence index (`occurrence_key`) is monotone,
+/// gap-free, and capped, and its referenced pending index
+/// (`reference_key`) must name a pending action that already started — the
+/// pending-action namespace is shared with `pending_action_started`, so a
+/// cancel or late claim for an unstarted action is rejected here.
+fn validate_referencing_lifecycle_event(
+    event: &DriverEvent,
+    occurrence_key: &str,
+    reference_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+    started_index: u32,
+) -> Result<()> {
+    let referenced =
+        event
+            .details
+            .get(reference_key)
+            .and_then(|value| value.parse::<u32>().ok())
+            .with_context(|| format!("lifecycle event omitted a numeric {reference_key}"))?;
+    ensure!(
+        referenced >= 1 && referenced <= started_index,
+        "lifecycle event {reference_key} {referenced} references a pending action that has not \
+         started (started so far: {started_index})"
+    );
+    validate_repeating_index(event, occurrence_key, cap, last_index)
+}
+
+fn validate_repeating_index(
+    event: &DriverEvent,
+    index_key: &str,
+    cap: u32,
+    last_index: &mut u32,
+) -> Result<()> {
+    let index = event
+        .details
+        .get(index_key)
+        .and_then(|value| value.parse::<u32>().ok())
+        .with_context(|| format!("repeating event omitted a numeric {index_key}"))?;
+    ensure!(
+        index == *last_index + 1,
+        "repeating event {index_key} {} is not exactly one greater than the last seen {}",
         index,
         *last_index
     );
-    ensure!(index <= cap, "freshness event {index_key} {index} exceeds the journey cap {cap}");
+    ensure!(index <= cap, "repeating event {index_key} {index} exceeds the journey cap {cap}");
     *last_index = index;
     Ok(())
 }
@@ -1135,121 +1925,8 @@ fn update_lifecycle_rank(kind: DriverEventKind, last_lifecycle_rank: &mut u8) ->
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic process-set comparison
+// Owned-process supervision (mechanics owned by `xtask::editor_host`)
 // ---------------------------------------------------------------------------
-
-/// One observed process line from the platform probe.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ProcessProbeLine {
-    pub pid: u32,
-    pub args: String,
-}
-
-/// Parse a `ps -eo pid=,args=` style snapshot into deterministic lines.
-/// Lines not matching the `pid args` shape are rejected: an unparseable
-/// process probe is evidence failure, not a silent empty set.
-pub fn parse_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let mut split = trimmed.splitn(2, char::is_whitespace);
-        let pid = split.next().unwrap_or_default();
-        let args = split.next().unwrap_or_default().trim();
-        let pid: u32 = pid
-            .parse()
-            .with_context(|| format!("process snapshot line is not `pid args`: {trimmed:?}"))?;
-        lines.push(ProcessProbeLine { pid, args: args.to_string() });
-    }
-    lines.sort();
-    Ok(lines)
-}
-
-/// Probe the current process table through the platform command. `None` means
-/// the platform probe is unavailable — a typed limitation, never a pass.
-pub fn probe_process_table() -> Option<Result<String>> {
-    let output = if cfg!(windows) {
-        Command::new("tasklist").arg("/FO").arg("CSV").arg("/NH").stdin(Stdio::null()).output()
-    } else {
-        Command::new("ps").args(["-eo", "pid=,args="]).stdin(Stdio::null()).output()
-    };
-    match output {
-        Ok(output) if output.status.success() => {
-            Some(Ok(String::from_utf8_lossy(&output.stdout).into_owned()))
-        }
-        Ok(output) => {
-            Some(Err(anyhow::anyhow!("process probe failed with status {}", output.status)))
-        }
-        Err(error) => Some(Err(anyhow::Error::new(error))),
-    }
-}
-
-/// Parse a Windows `tasklist /FO CSV /NH` snapshot into the same
-/// `pid args` lines.
-pub fn parse_windows_process_snapshot(text: &str) -> Result<Vec<ProcessProbeLine>> {
-    let mut lines = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = trimmed.split("\",\"").collect();
-        if fields.len() < 2 {
-            bail!("windows process snapshot row is not CSV: {trimmed:?}");
-        }
-        let image = fields[0].trim_start_matches('"');
-        let pid: u32 = fields[1]
-            .trim_end_matches('"')
-            .parse()
-            .with_context(|| format!("windows process snapshot pid is not numeric: {trimmed:?}"))?;
-        lines.push(ProcessProbeLine { pid, args: image.to_string() });
-    }
-    lines.sort();
-    Ok(lines)
-}
-
-/// The deterministic comparison: which `after` probe lines matching `needle`
-/// were not present in the `before` probe. A survivor means the run leaked a
-/// process it was responsible for.
-pub fn surviving_processes(
-    before: &[ProcessProbeLine],
-    after: &[ProcessProbeLine],
-    needle: &str,
-) -> Vec<ProcessProbeLine> {
-    let before_matching: BTreeSet<&ProcessProbeLine> =
-        before.iter().filter(|line| line.args.contains(needle)).collect();
-    after
-        .iter()
-        .filter(|line| line.args.contains(needle) && !before_matching.contains(line))
-        .cloned()
-        .collect()
-}
-
-// ---------------------------------------------------------------------------
-// Owned-process supervision
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct ProcessLedger {
-    pid: u32,
-    timed_out: bool,
-    kill_requested: bool,
-    exit_code: Option<i32>,
-    cleanup: CleanupResult,
-    cleanup_detail: String,
-    event_count: usize,
-    driver_complete: bool,
-    process_probe: String,
-    surviving_processes: Vec<ProcessProbeLineLedger>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct ProcessProbeLineLedger {
-    pid: u32,
-    args: String,
-}
 
 #[derive(Debug, Clone)]
 pub struct ProcessObservation {
@@ -1274,8 +1951,10 @@ impl ProcessObservation {
 
 /// Execute one owned host process under a parent-owned hard deadline with a
 /// deterministic before/after process-set comparison for the exact candidate
-/// executable. Missing process probes degrade the cleanup judgment to
-/// `not_proven` with a typed detail — never to `pass`.
+/// executable. The mechanics — parent-owned deadline, separated captures,
+/// numeric set comparison, forced-kill classification, orderly-exit law — are
+/// owned by [`xtask::editor_host`]; this binding keeps only the Vim run plan,
+/// needle policy, and evidence retention.
 pub fn run_owned_process(
     command: &mut Command,
     plan: &VimHostRunPlan,
@@ -1297,140 +1976,34 @@ pub fn run_owned_process(
     } else {
         vim_path(&plan.paths.candidate_executable).to_string_lossy().into_owned()
     };
-    let probe_before = probe_process_table();
-    // A before-probe that cannot be parsed is recorded: treating it as an
-    // empty set would fabricate survivors later (every candidate process in
-    // the after-probe would look new). The comparison below refuses to judge
-    // cleanup when the before snapshot is unusable.
-    let before_parse_failed = probe_before.as_ref().is_some_and(|result| match result {
-        Ok(text) => if cfg!(windows) {
-            parse_windows_process_snapshot(text)
-        } else {
-            parse_process_snapshot(text)
-        }
-        .is_err(),
-        Err(_) => true,
-    });
-    let before_lines = match &probe_before {
-        Some(Ok(text)) => {
-            let parsed = if cfg!(windows) {
-                parse_windows_process_snapshot(text)
-            } else {
-                parse_process_snapshot(text)
-            };
-            parsed.unwrap_or_default()
-        }
-        _ => Vec::new(),
-    };
 
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().context("spawning the Vim host subject")?;
-    let pid = child.id();
-    let mut stdout = child.stdout.take().context("capturing host stdout")?;
-    let mut stderr = child.stderr.take().context("capturing host stderr")?;
-    let stdout_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
-    let stderr_reader = thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes)?;
-        Ok(bytes)
-    });
+    let probe_before = ProbeCapture::take();
+    let bounded: BoundedRun =
+        xtask::editor_host::bounded_run(command, plan.identity.timeout_ms, "the Vim host subject")?;
+    let probe_after = ProbeCapture::take();
+    let probes_available = matches!(probe_before, ProbeCapture::Captured(_))
+        && matches!(probe_after, ProbeCapture::Captured(_));
+    let judgment = judge_cleanup(
+        &probe_before,
+        &probe_after,
+        &needle,
+        cfg!(windows),
+        bounded.orderly_success(),
+    );
 
-    let deadline = Instant::now() + Duration::from_millis(plan.identity.timeout_ms);
-    let mut timed_out = false;
-    let mut kill_requested = false;
-    let status: ExitStatus = loop {
-        if let Some(status) = child.try_wait().context("polling the Vim host process")? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            timed_out = true;
-            child.kill().context("killing the timed-out Vim host process")?;
-            kill_requested = true;
-            break child.wait().context("reaping the timed-out Vim host process")?;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-
-    let stdout = join_reader(stdout_reader, "host stdout")?;
-    let stderr = join_reader(stderr_reader, "host stderr")?;
-
-    // Deterministic cleanup comparison. A survivor that matches the exact
-    // candidate needle and was absent before the run is an observed leak:
-    // `fail`. An unavailable or unparseable probe leaves the judgment
-    // `not_proven` with the typed detail naming the missing evidence.
-    let probe_after = probe_process_table();
-    let (mut cleanup, mut cleanup_detail, survivors) = if before_parse_failed {
-        (
-            CleanupResult::NotProven,
-            "before-process probe unparseable; cleanup comparison refused".to_string(),
-            Vec::new(),
-        )
-    } else {
-        match (&probe_before, &probe_after) {
-            (Some(Ok(_)), Some(Ok(after_text))) => {
-                let parsed = if cfg!(windows) {
-                    parse_windows_process_snapshot(after_text)
-                } else {
-                    parse_process_snapshot(after_text)
-                };
-                match parsed {
-                    Ok(after_lines) => {
-                        let survivors = surviving_processes(&before_lines, &after_lines, &needle);
-                        if survivors.is_empty() {
-                            (
-                                CleanupResult::Pass,
-                                "process-set comparison clean".to_string(),
-                                survivors,
-                            )
-                        } else {
-                            (
-                                CleanupResult::Fail,
-                                format!(
-                                    "process-set comparison observed {} surviving candidate process(es) \
-                                 after the run",
-                                    survivors.len()
-                                ),
-                                survivors,
-                            )
-                        }
-                    }
-                    Err(error) => (
-                        CleanupResult::NotProven,
-                        format!("after-process probe unparseable: {error}"),
-                        Vec::new(),
-                    ),
-                }
-            }
-            _ => (
-                CleanupResult::NotProven,
-                "process probe unavailable on this platform; cleanup not observed".to_string(),
-                Vec::new(),
-            ),
-        }
-    };
     // Retain both raw snapshots as run evidence even when the comparison
-    // itself could not be made.
-    let _ = fs::write(layout.process_snapshot_before(), render_process_snapshot(&before_lines));
+    // itself could not be made. Retention is deliberately best-effort: a
+    // locked or unwritable snapshot target must not abort the run before a
+    // receipt exists — every run that reaches the process stage emits one,
+    // and a post-launch retention failure stays distinguishable from a run
+    // that never launched.
+    if let Some(before_text) = &judgment.before_snapshot {
+        let _ = fs::write(layout.process_snapshot_before(), before_text);
+    }
     let _ = fs::write(
         layout.process_snapshot_after(),
-        match &probe_after {
-            Some(Ok(text)) => text.clone(),
-            _ => String::new(),
-        },
+        judgment.after_snapshot.clone().unwrap_or_default(),
     );
-    if (timed_out || kill_requested || status.code() != Some(0)) && cleanup == CleanupResult::Pass {
-        // A forced kill or abnormal exit skipped the driver's own shutdown
-        // path; even a clean process-set cannot attest the client's own
-        // orderly LSP shutdown, so the judgment degrades to not-proven.
-        cleanup = CleanupResult::NotProven;
-        cleanup_detail =
-            "host exit skipped the driver shutdown path; orderly client shutdown not observed"
-                .to_string();
-    }
 
     let event_bytes = fs::read(layout.event_file()).unwrap_or_default();
     let events = parse_driver_events(&event_bytes, false).unwrap_or_default();
@@ -1441,7 +2014,7 @@ pub fn run_owned_process(
         &layout.artifact_directory,
         "vim/driver-stdout.log",
         ArtifactKind::DriverOutput,
-        &stdout,
+        &bounded.stdout,
         plan,
         layout,
     )?);
@@ -1449,7 +2022,7 @@ pub fn run_owned_process(
         &layout.artifact_directory,
         "vim/driver-stderr.log",
         ArtifactKind::DriverOutput,
-        &stderr,
+        &bounded.stderr,
         plan,
         layout,
     )?);
@@ -1497,41 +2070,27 @@ pub fn run_owned_process(
         }
     }
 
-    let ledger = ProcessLedger {
-        pid,
-        timed_out,
-        kill_requested,
-        exit_code: status.code(),
-        cleanup,
-        cleanup_detail: cleanup_detail.clone(),
-        event_count: events.len(),
-        driver_complete,
-        process_probe: if probe_before.is_some() && probe_after.is_some() {
-            "available".to_string()
-        } else {
-            "unavailable".to_string()
-        },
-        surviving_processes: survivors
-            .iter()
-            .map(|line| ProcessProbeLineLedger { pid: line.pid, args: line.args.clone() })
-            .collect(),
-    };
-    let ledger_bytes = serde_json::to_vec_pretty(&ledger)?;
-    artifacts.push(write_sanitized_artifact(
-        &layout.artifact_directory,
-        "vim/process-ledger.json",
-        ArtifactKind::ProcessLedger,
-        &ledger_bytes,
-        plan,
-        layout,
-    )?);
+    artifacts.push(
+        HostProcessLedger::record(
+            &bounded,
+            events.len(),
+            driver_complete,
+            probes_available,
+            &judgment,
+        )
+        .artifact(
+            &layout.artifact_directory,
+            "vim/process-ledger.json",
+            &vim_redactions(plan, layout),
+        )?,
+    );
 
     Ok(ProcessObservation {
-        status_code: status.code(),
-        timed_out,
-        kill_requested,
-        cleanup,
-        cleanup_detail,
+        status_code: bounded.status_code,
+        timed_out: bounded.timed_out,
+        kill_requested: bounded.kill_requested,
+        cleanup: judgment.result,
+        cleanup_detail: judgment.detail,
         events,
         driver_complete,
         artifacts,
@@ -1565,25 +2124,27 @@ fn resolve_server_trace(layout: &HermeticVimLayout) -> Option<(PathBuf, String)>
     Some((path, format!("vim/{name}")))
 }
 
-fn render_process_snapshot(lines: &[ProcessProbeLine]) -> String {
-    let mut text = String::new();
-    for line in lines {
-        let _ = writeln!(text, "{} {}", line.pid, line.args);
-    }
-    text
+/// The Vim run plan's capture redaction map. Every absolute path the run plan
+/// accepts must appear here: captures are written as sanitized artifacts that
+/// may be uploaded, and an omitted path leaks the checkout or user directory
+/// it came from.
+fn vim_redactions(plan: &VimHostRunPlan, layout: &HermeticVimLayout) -> Vec<PathRedaction> {
+    vec![
+        PathRedaction { path: layout.root.clone(), token: "<RUN_ROOT>" },
+        PathRedaction { path: plan.paths.artifact_root.clone(), token: "<ARTIFACT_ROOT>" },
+        PathRedaction { path: plan.paths.fixture_root.clone(), token: "<WORKSPACE>" },
+        PathRedaction { path: plan.paths.candidate_executable.clone(), token: "<CANDIDATE>" },
+        PathRedaction { path: plan.paths.vim_executable.clone(), token: "<VIM>" },
+        PathRedaction { path: plan.paths.vim_lsp_checkout.clone(), token: "<VIM_LSP_CHECKOUT>" },
+        PathRedaction { path: plan.paths.driver.clone(), token: "<DRIVER>" },
+        PathRedaction { path: plan.paths.adapter.clone(), token: "<ADAPTER>" },
+    ]
 }
 
-fn join_reader(
-    handle: thread::JoinHandle<std::io::Result<Vec<u8>>>,
-    label: &str,
-) -> Result<Vec<u8>> {
-    handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("{label} reader thread panicked"))?
-        .with_context(|| format!("reading {label}"))
-}
-
-fn write_sanitized_artifact(
+/// Write one sanitized, bounded run artifact through the shared substrate.
+/// Public for scenario modules that retain their own artifact surfaces
+/// (#11398 recovery stimulus ledger).
+pub fn write_sanitized_artifact(
     artifact_root: &Path,
     id: &str,
     kind: ArtifactKind,
@@ -1591,45 +2152,7 @@ fn write_sanitized_artifact(
     plan: &VimHostRunPlan,
     layout: &HermeticVimLayout,
 ) -> Result<EvidenceArtifact> {
-    validate_safe_identity(id, "artifact id")?;
-    let sanitized = sanitize_text(bytes, plan, layout);
-    let bounded = bound_capture(sanitized.as_bytes());
-    let destination = artifact_root.join(id);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&destination, bounded)
-        .with_context(|| format!("writing sanitized artifact {}", destination.display()))?;
-    Ok(EvidenceArtifact { kind, id: id.to_string(), sha256: file_sha256(&destination)? })
-}
-
-fn sanitize_text(bytes: &[u8], plan: &VimHostRunPlan, layout: &HermeticVimLayout) -> String {
-    let mut text = String::from_utf8_lossy(bytes).into_owned();
-    // Every absolute path the run plan accepts must appear here: captures are
-    // written as sanitized artifacts that may be uploaded, and an omitted
-    // path leaks the checkout or user directory it came from.
-    let mut replacements = vec![
-        (&layout.root, "<RUN_ROOT>"),
-        (&plan.paths.artifact_root, "<ARTIFACT_ROOT>"),
-        (&plan.paths.fixture_root, "<WORKSPACE>"),
-        (&plan.paths.candidate_executable, "<CANDIDATE>"),
-        (&plan.paths.vim_executable, "<VIM>"),
-        (&plan.paths.vim_lsp_checkout, "<VIM_LSP_CHECKOUT>"),
-        (&plan.paths.driver, "<DRIVER>"),
-        (&plan.paths.adapter, "<ADAPTER>"),
-    ];
-    replacements.sort_by_key(|(path, _)| std::cmp::Reverse(path.as_os_str().len()));
-    for (path, token) in replacements {
-        if let Some(value) = path.to_str() {
-            text = text.replace(value, token);
-            text = text.replace(&value.replace('\\', "/"), token);
-        }
-    }
-    text
-}
-
-fn bound_capture(bytes: &[u8]) -> &[u8] {
-    if bytes.len() <= MAX_CAPTURE_BYTES { bytes } else { &bytes[..MAX_CAPTURE_BYTES] }
+    write_artifact(artifact_root, id, kind, bytes, &vim_redactions(plan, layout))
 }
 
 // ---------------------------------------------------------------------------
@@ -1747,10 +2270,11 @@ fn walk_wire_value(
                             evidence.publish_diagnostics_batches.push(batch);
                         }
                     }
+                    // Set-once latch on the FIRST didChange line: `get_or_insert`
+                    // is the shape #12910 asks for here, and states the
+                    // keep-the-earliest intent the nested `if` only implied.
                     "textDocument/didChange" => {
-                        if evidence.did_change_line.is_none() {
-                            evidence.did_change_line = Some(line_index);
-                        }
+                        evidence.did_change_line.get_or_insert(line_index);
                     }
                     _ => {}
                 }
@@ -2023,62 +2547,27 @@ pub fn validate_receipt_binding(
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers (mirroring the Emacs substrate contracts)
+// Shared helpers (one-line delegates to the #10894 authority)
 // ---------------------------------------------------------------------------
 
 pub fn file_sha256(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    bytes_sha256(&bytes)
+    xtask::editor_host::sha256_file(path)
 }
 
 fn verify_file_sha256(path: &Path, expected: &str, label: &str) -> Result<()> {
-    let actual = file_sha256(path)?;
-    ensure!(actual == expected, "{label} hash mismatch");
-    Ok(())
+    xtask::editor_host::verify_sha256_file(path, expected, label)
 }
 
 pub fn bytes_sha256(bytes: &[u8]) -> Result<String> {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    let mut identity = String::with_capacity("sha256:".len() + 64);
-    identity.push_str("sha256:");
-    for byte in hasher.finalize() {
-        write!(&mut identity, "{byte:02x}")?;
-    }
-    Ok(identity)
+    xtask::editor_host::sha256_bytes(bytes)
 }
 
 fn validate_sha256(value: &str, field: &str) -> Result<()> {
-    let Some(hex) = value.strip_prefix("sha256:") else {
-        bail!("{field} must use sha256:<64 lowercase hex> identity");
-    };
-    ensure!(is_lower_hex(hex, 64), "{field} must use sha256:<64 lowercase hex> identity");
-    Ok(())
-}
-
-fn validate_safe_identity(value: &str, field: &str) -> Result<()> {
-    let value = value.trim();
-    ensure!(!value.is_empty(), "{field} cannot be empty");
-    ensure!(!value.starts_with('/'), "{field} must not expose an absolute path");
-    ensure!(!value.starts_with('~'), "{field} must not expose a home-relative path");
-    ensure!(!value.contains('\\'), "{field} must use normalized separators");
-    ensure!(!value.contains("://"), "{field} must not expose a URI-qualified path");
-    ensure!(
-        !(value.len() >= 3
-            && value.as_bytes()[0].is_ascii_alphabetic()
-            && value.as_bytes()[1] == b':'
-            && value.as_bytes()[2] == b'/'),
-        "{field} must not expose a drive-qualified path"
-    );
-    ensure!(
-        !value.split('/').any(|component| component == ".."),
-        "{field} must not contain parent traversal"
-    );
-    Ok(())
+    xtask::editor_host::validate_sha256_field(value, field)
 }
 
 pub fn is_lower_hex(value: &str, len: usize) -> bool {
-    value.len() == len && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    xtask::editor_host::is_lower_hex(value, len)
 }
 
 pub fn is_reason_token(value: &str) -> bool {

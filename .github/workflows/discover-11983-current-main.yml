@@ -1,0 +1,49 @@
+name: Rebuild #11983 on current main
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/discover-11983-current-main.yml
+      - scripts/maintenance/rebuild_11983_current_main.sh
+      - scripts/maintenance/verify_11983_reject_identities.py
+      - scripts/tests/test-rebuild-11983-reject-identities.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rebuild-11983-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    if: >-
+      github.repository == 'EffortlessMetrics/perl-lsp-swarm' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.head_ref == 'repair/11983-current-main' ||
+       github.head_ref == 'codex/12975-reject-identity')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout pull-request head revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reconstruct, strengthen, verify, and prove containment candidate
+        env:
+          REBUILD_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/maintenance/rebuild_11983_current_main.sh
+
+      - name: Upload reconstruction evidence (read-only lane)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rebuild-11983-evidence-${{ github.event.pull_request.head.sha }}
+          path: target/receipts/rebuild-11983/
+          retention-days: 30

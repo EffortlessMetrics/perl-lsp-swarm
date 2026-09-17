@@ -1,3 +1,4 @@
+#![deny(clippy::map_err_ignore)] // Cohort C1 activation (#12598): all production rows exact-excepted; new findings move the crate back to non-C1.
 use perl_semantic_analyzer::analysis::type_facts::{DynamicBoundary, ShapeFact, TypeEvidence};
 use perl_semantic_analyzer::analysis::type_inference::{PerlType, TypeInferenceEngine};
 use perl_semantic_analyzer::{Node, NodeKind, Parser};

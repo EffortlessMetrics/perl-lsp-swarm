@@ -35,7 +35,13 @@ pub struct DocumentSymbol {
     pub selection_range: WireRange,
     /// Nested source-backed symbols.
     pub children: Vec<DocumentSymbol>,
+    /// Internal assembler ordering fact; never emitted on the LSP wire.
+    #[serde(skip)]
+    pub(crate) sort_priority: u8,
 }
+
+/// Assembler priority shared by source-backed callables and synthesized subtests.
+pub(crate) const CALLABLE_DOCUMENT_SYMBOL_PRIORITY: u8 = 3;
 
 /// Source-backed document-symbol live result.
 #[derive(Debug, Clone)]
@@ -166,6 +172,7 @@ fn source_backed_document_symbol(
         range: symbol_range(source, symbol),
         selection_range: symbol_name_range(source, symbol),
         children,
+        sort_priority: document_symbol_priority(symbol),
     })
 }
 
@@ -186,6 +193,7 @@ fn source_backed_leaf_symbol(
         range: symbol_range(source, symbol),
         selection_range: symbol_name_range(source, symbol),
         children: Vec::new(),
+        sort_priority: document_symbol_priority(symbol),
     })
 }
 
@@ -282,7 +290,7 @@ fn document_symbol_priority(symbol: &Symbol) -> u8 {
     } else if matches!(symbol.kind, SymbolKind::Package | SymbolKind::Class | SymbolKind::Role) {
         1
     } else if symbol.kind.is_callable() {
-        3
+        CALLABLE_DOCUMENT_SYMBOL_PRIORITY
     } else {
         4
     }

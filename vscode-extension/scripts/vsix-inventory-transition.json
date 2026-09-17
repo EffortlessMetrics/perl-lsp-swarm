@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 6116,
-  "reason": "Repairs the grammar regression from #6116's landed change (2a0497a8a): the trailing-comma fix leaves the grammar at 13660 bytes (was recorded 13346 from the broken state) and the vsix baseline reconciles to total 1711981 (1711667 + 314 + total_bytes correction). Size-only delta: no file added, removed, or loosened; out/extension.js unchanged; grammar scope fixes restore #6116's intended anchoring. Composed on top of the accepted #7845/#9842/#11985 baselines.",
-  "base_baseline_file_sha256": "5c173b406230338b16676a0795ad19242ae3817f96b7d390c60d23300f5b96e9",
-  "candidate_baseline_file_sha256": "18c71611c572f227fff586fed8e8a8f85f9cedabd7c9f5febe72464c09e6f7f5",
-  "base_inventory_sha256": "3e26c061c62287bf6bb97092be08fe450d0ed6bd1a347141c3acccd40c806d3f",
-  "candidate_inventory_sha256": "124e8ae60936f4b50e724e0d6341bb662818dc3324c3790cb08e03bac854b655"
+  "owner_issue": 15503,
+  "reason": "Issue #15503 records the migration-registry historical-era slice of #7837: era bounds become a comparable closed grammar, genuinely overlapping eras are rejected, and row selection is disambiguated by the registry envelope's own source_public_release, failing closed when no era at the value's scope covers it. After #15494 landed, the exact binaryless Linux combined package measures out/extension.js at 1687306 bytes, a declared +5118-byte size-only transition from the accepted #15494 base. No packaged file is added, removed, or renamed.",
+  "base_baseline_file_sha256": "18b0841c20e13679581d5e63fd0de300dc0d435852f63e422b6454e84b87c360",
+  "candidate_baseline_file_sha256": "4975456bf6937f17c1ebdb1d947103ebd3773cf2d455f5b2aa2475aa551b249a",
+  "base_inventory_sha256": "40c1690a3bf0175ee2dcfff78f4d6a72ff5d64322285cc5c2ed0fd91a7936442",
+  "candidate_inventory_sha256": "d45b4db58d565d8473bdbac8140ebaec65dec3624ae2151f2a82b4bdef7db9f1"
 }

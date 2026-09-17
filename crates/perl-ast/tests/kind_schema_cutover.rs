@@ -8,8 +8,8 @@
 //! - treating `source_boundary` as production authority
 //! - leaving FieldId::ALL membership out of the registry
 //!
-//! They do not cover S-expression redesign, generated status, fingerprint, or
-//! parser semantics.
+//! They do not cover S-expression redesign, schema identity, generated status,
+//! or parser semantics.
 
 use perl_ast::kind_schema::{
     FieldCardinality, KIND_SCHEMA_MODE, NODE_KIND_STRUCTURAL_REGISTRY, check_current_kind_schema,

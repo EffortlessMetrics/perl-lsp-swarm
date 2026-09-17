@@ -1,8 +1,9 @@
 //! `NodeKind` structural registry.
 //!
 //! One row per primary variant. This table is production authority for
-//! [`crate::FieldId`] set membership and field-aware child traversal. It does
-//! not drive rendering, status, fingerprint, or `source_boundary` classification.
+//! [`crate::FieldId`] set membership and field-aware child traversal, and the
+//! input to schema identity / NodeKind inventory. It does not drive rendering
+//! or `source_boundary` classification.
 
 use super::{
     ChildFieldSpec, FieldCardinality, GrammarNameSpec, KindBody, KindStructuralRow,
@@ -86,7 +87,7 @@ pub const NODE_KIND_STRUCTURAL_REGISTRY: &[KindStructuralRow<'static>] = &[
     kind_row!("Undef", Leaf, recovery = false, boundary = false, children = [], static "undef"),
     kind_row!("Readline", Leaf, recovery = false, boundary = false, children = [], static "readline"),
     kind_row!("Glob", Leaf, recovery = false, boundary = false, children = [], static "glob"),
-    kind_row!("Typeglob", Leaf, recovery = false, boundary = false, children = [], static "typeglob"),
+    kind_row!("Typeglob", ChildBearing, recovery = false, boundary = false, children = [BODY: Optional], static "typeglob"),
     kind_row!("Number", Leaf, recovery = false, boundary = false, children = [], static "number"),
     kind_row!("String", Leaf, recovery = false, boundary = false, children = [], runtime ["interpolated"]),
     kind_row!("VString", Leaf, recovery = false, boundary = false, children = [], static "vstring"),
