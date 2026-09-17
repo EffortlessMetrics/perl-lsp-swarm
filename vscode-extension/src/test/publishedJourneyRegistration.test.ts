@@ -171,8 +171,18 @@ function fakeVscode(
     ConfigurationTarget: { Global: 1 },
     WorkspaceEdit,
     Position,
+    // The packaged journey (`packagedBundleJourney.test.ts`) reaches for
+    // `vscode.Uri.file(...)` from its cleanup path (#15558, #15572). The local
+    // double must keep the `Uri` surface in lock-step with the shared mock
+    // (`src/test/__mocks__/vscode.ts`); otherwise a future journey change can
+    // silently outrun the registration test's double again.
     Uri: {
-      file: (fsPath: string) => ({ fsPath, toString: () => `file://${fsPath}` }),
+      parse: (value: string) => ({ toString: () => value, fsPath: value }),
+      file: (fsPath: string) => ({
+        fsPath,
+        toString: () => `file://${fsPath}`,
+        scheme: 'file',
+      }),
     },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: workspacePath } }],
@@ -606,4 +616,46 @@ describe('registered packaged journey readiness contract', () => {
     },
     transpileTimeoutMs,
   );
+
+  // Regression guard for #15572 / #15558: the registration test's local
+  // `vscode` double must keep the same surface the published journey reaches
+  // for at runtime. Asserting the shape here means a future journey change
+  // that reaches for a new `vscode.*` member fails this unit test with a
+  // clear pointer to the missing mock, rather than as an opaque
+  // `TypeError: Cannot read properties of undefined (reading '...')` from
+  // inside the transpiled journey at the next CI run.
+  test('local vscode double exposes the Uri and WorkspaceEdit surface the journey uses', () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-shape-workspace-'));
+    const extensionPath = fs.mkdtempSync(path.join(os.tmpdir(), 'perl-lsp-4346-shape-extension-'));
+    try {
+      const shape = fakeVscode(
+        extensionPath,
+        workspacePath,
+        Promise.resolve(),
+        [],
+        () => undefined,
+        () => undefined,
+        [],
+        true,
+        0,
+        1,
+      );
+      expect(shape.Uri).toBeDefined();
+      const uri = shape.Uri as {
+        file: (p: string) => unknown;
+        parse: (value: string) => unknown;
+      };
+      expect(typeof uri.file).toBe('function');
+      expect(typeof uri.parse).toBe('function');
+      const probeUri = uri.file('C:/probe');
+      expect(probeUri).toMatchObject({ fsPath: 'C:/probe' });
+      const edit = new (shape.WorkspaceEdit as new () => {
+        deleteFile: (uri: { fsPath: string }) => void;
+      })();
+      expect(typeof edit.deleteFile).toBe('function');
+    } finally {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+      fs.rmSync(extensionPath, { recursive: true, force: true });
+    }
+  });
 });

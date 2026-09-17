@@ -49,7 +49,7 @@ controlling_issue = "#10949"
 route_owner = "#10229"
 finalizer_owner = "#10914"
 outcome_owner = "#10230"
-source_digest = "sha256:ed395e7f84b6f6bf2b9fbfddfdf168a1e15343cf4213fd90677d3b45a714e2dc"
+source_digest = "sha256:a1182c1cd06b5714f1efa48eb313a45938943ab6f3829ff5761e36e721324c62"
 
 [[delegations]]
 module = "dancer2"
