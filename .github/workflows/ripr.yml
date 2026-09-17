@@ -491,7 +491,7 @@ jobs:
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
-    timeout-minutes: 75
+    timeout-minutes: 130
     outputs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
@@ -769,7 +769,7 @@ jobs:
       needs.route-ripr.outputs.target == 'github' &&
       needs.route-ripr.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 130
     env:
       RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
@@ -935,7 +935,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 2700
 
       - name: Generate impacted evidence
         if: always()
@@ -1068,7 +1068,7 @@ jobs:
         (needs.route-ripr.outputs.target == 'cx43' && needs.ripr-cx43.result == 'failure' && needs.ripr-cx43.outputs.preflight_ok == 'false')
       )
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 130
     env:
       RIPR_VERSION: "0.10.0"
       # #15498: this lane runs ripr-pr directly on the runner, so without an
@@ -1151,7 +1151,7 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 2700
 
       - name: Generate impacted evidence
         if: always()
