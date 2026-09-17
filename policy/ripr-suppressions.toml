@@ -11,7 +11,7 @@ schema_version = 1
 policy = "ripr-suppressions"
 owner = "EffortlessMetrics"
 status = "advisory"
-updated = "2026-09-13"
+updated = "2026-09-17"
 
 # -----------------------------------------------------------------------------
 # Generated status docs: validated through status-generation checks, not
@@ -3676,3 +3676,45 @@ created = "2026-09-13"
 review_after = "2026-10-13"
 expires = "2026-12-31"
 removal_criteria = "Remove when #13238 lands the exact installed-name state that replaces this containment, or when the candidate gains its first production consumer (then re-scope the suppression to that consumer's seams and require activation evidence through it), or when ripr#1429 resolves activation tracing for modules with no production entry point. Narrow immediately if any seam unrelated to the containment predicates lands in this file."
+
+# -----------------------------------------------------------------------------
+# host_work_status pure domain (WIP-01 of #11664): whole-module no_static_path.
+#
+# PR #11995 adds xtask/src/host_work_status/ as a pure typed domain with no
+# production consumer by design: the module is reachable from tests only until
+# #11666 wires the live read-only observation command. ripr 0.10.x reports 134
+# no_static_path seams (0 reachable_unrevealed) across the six module files —
+# almost entirely non-executable declarations (pub struct fields, enum variant
+# fields, constant constructors) plus closed-vocabulary match arms whose
+# activation the diff-scoped tracer cannot connect to the covering tests in
+# the module's own tests.rs. This is the ripr#1428/#1429 static-tracing class;
+# the gate's own guidance (ripr#1429 class) says to state this in the PR
+# instead of adding proof theatre. Coverage evidence: 34 focused tests in
+# xtask/src/host_work_status/tests.rs (cargo test -p xtask --bins --locked
+# host_work_status) exercise every classifier, adapter, aggregation law, and
+# negative falsifier (F1-F18, plus F1b/F3b/F13b/F14b-e/F15b-d review
+# falsifiers); serde byte-equality and insertion-order-permutation tests pin
+# the aggregate identity. Suppression is narrow: exactly the six module files,
+# classification no_static_path only. Remove when #11666 gives the module a
+# production entry point (then RIPR can trace activation through the command)
+# or when ripr#1428/#1429 are fixed upstream.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-host-work-status-pure-domain"
+kind = "predicate_infection_untraceable"
+paths = [
+  "xtask/src/host_work_status/mod.rs",
+  "xtask/src/host_work_status/subject.rs",
+  "xtask/src/host_work_status/dimension.rs",
+  "xtask/src/host_work_status/lifecycle.rs",
+  "xtask/src/host_work_status/status.rs",
+  "xtask/src/host_work_status/adapter.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#11664"
+reason = "PR #11995 (WIP-01 of #11664) adds the pure typed host-work-status domain with no production consumer by design until #11666 lands the live read-only command. ripr 0.10.x reports 134 no_static_path seams (reachable_unrevealed = 0) across the six module files, dominated by non-executable declarations (pub struct fields, enum variant fields, constructors) and closed-vocabulary match arms whose activation the diff-scoped tracer cannot connect to the covering tests. All seams are exercised by 34 focused tests in the module's own tests.rs (classifiers, adapters, aggregation laws, F1-F18 negative falsifiers plus review falsifiers F1b/F3b/F13b/F14b-e/F15b-d, serde byte-equality and insertion-order-permutation identity tests). Same ripr#1428/#1429 static-tracing class as sibling suppressions. Remove when #11666 provides a production entry point or ripr#1428/#1429 are fixed upstream."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-12-31"
+removal_criteria = "Remove when #11666 wires the live command (RIPR can then trace activation through the command surface), or when ripr#1428/#1429 fix upstream tracing for declaration-only modules. Narrow immediately if any seam unrelated to the pure domain lands in these files."
