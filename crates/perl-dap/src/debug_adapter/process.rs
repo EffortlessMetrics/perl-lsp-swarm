@@ -22,13 +22,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::sync_channel;
 
-use super::sync_utils::EventSender;
+use super::sync_utils::{EventDrainLatch, EventSender};
 use super::tcp_attach_forwarder::{TCP_ATTACH_EVENT_CAPACITY, spawn_tcp_attach_event_forwarder};
 
 mod perl_info;
 mod perl_spawn;
 
 use super::variable_cache::VariableCache;
+use crate::reload::RuntimeModuleGenerationClock;
 use perl_info::detect_perl_info;
 use perl_spawn::{format_perl_spawn_error, is_valid_perl_interpreter};
 
@@ -811,6 +812,7 @@ impl DebugAdapter {
                     initial_stop_pending: !stop_on_entry,
                     entry_stop_pending: stop_on_entry,
                     stopped_generation: 0,
+                    module_generation: RuntimeModuleGenerationClock::new(),
                 };
 
                 if let Ok(mut guard) = self.session.lock() {
@@ -1256,6 +1258,7 @@ impl DebugAdapter {
         let attached_pid = self.attached_pid.clone();
         let termination_state = self.termination_state.clone();
         let operation_broker = self.operation_broker.clone();
+        let event_drain = self.event_drain.clone();
         let session_generation = self.current_session_generation();
         // The reader's session epoch in the broker's own id space. The
         // launch-failure/EOF/read-error settles below are gated on it, so a
@@ -1304,6 +1307,7 @@ impl DebugAdapter {
                         &termination_state,
                         Some(session_generation),
                         Some(json!({"reason": "no_debugger_stream"})),
+                        Some(&event_drain),
                     );
                 }
                 DebugAdapter::clear_active_session_state_for_generation(
@@ -1365,6 +1369,7 @@ impl DebugAdapter {
                                 &termination_state,
                                 Some(session_generation),
                                 Some(json!({"reason": "debugger_eof"})),
+                                Some(&event_drain),
                             );
                         }
                         DebugAdapter::clear_active_session_state_for_generation(
@@ -1542,6 +1547,7 @@ impl DebugAdapter {
                                         &termination_state,
                                         Some(session_generation),
                                         Some(json!({"reason": "debugger_frame_limit"})),
+                                        Some(&event_drain),
                                     );
                                 }
                                 break;
@@ -1575,6 +1581,7 @@ impl DebugAdapter {
                                     &termination_state,
                                     Some(session_generation),
                                     Some(json!({ "reason": "debuggee_exit" })),
+                                    Some(&event_drain),
                                 );
                             }
                             continue;
@@ -2109,6 +2116,7 @@ impl DebugAdapter {
                                 &termination_state,
                                 Some(session_generation),
                                 Some(json!({"reason": "read_error", "error": e.to_string()})),
+                                Some(&event_drain),
                             );
                         }
                         DebugAdapter::clear_active_session_state_for_generation(
@@ -2147,6 +2155,7 @@ impl DebugAdapter {
         let sender = self.event_sender.clone();
         let termination_state = self.termination_state.clone();
         let operation_broker = self.operation_broker.clone();
+        let event_drain = self.event_drain.clone();
         let session_generation = self.current_session_generation();
         let broker_session_generation = operation_broker.current_session_generation();
         let timeout = Duration::from_secs(timeout_secs);
@@ -2261,7 +2270,11 @@ impl DebugAdapter {
                 && let Some(ref sender) = sender
                 && terminated_delivery_is_current(&termination_state, Some(session_generation))
             {
-                let _ = deliver_reserved_terminated_event(
+                // The reserved timeout event joins the drain latch like
+                // every other terminal emission, so a response cannot
+                // overtake it on the wire.
+                event_drain.enqueue(1);
+                let delivered = deliver_reserved_terminated_event(
                     sender,
                     &seq,
                     &termination_state,
@@ -2269,6 +2282,9 @@ impl DebugAdapter {
                     Some(json!({"reason": "debuggee_timeout"})),
                     &|| false,
                 );
+                if !delivered {
+                    event_drain.complete(1);
+                }
             }
         });
     }
@@ -2380,6 +2396,12 @@ impl DebugAdapter {
 
                 // Reset existing process/tcp attachment state before switching to PID mode.
                 self.begin_session_generation();
+                // Debuggee replacement invalidates the reload family's
+                // session identities (#10102, R03): a PID attach is a
+                // replacement session like launch/TCP attach, so the prior
+                // reload epoch, negotiation, subjects, and operation
+                // identities must not survive it.
+                self.reset_reload_route_for_replacement_session();
                 if !self.clear_active_session_state() {
                     return DapMessage::Response {
                         seq,
@@ -2565,6 +2587,7 @@ impl DebugAdapter {
                         let seq_counter = self.seq.clone();
                         let event_sender = self.event_sender.clone();
                         let termination_state = self.termination_state.clone();
+                        let event_drain = self.event_drain.clone();
                         let session_generation = self.current_session_generation();
                         spawn_tcp_attach_event_forwarder(
                             rx,
@@ -2572,6 +2595,7 @@ impl DebugAdapter {
                             seq_counter,
                             termination_state,
                             session_generation,
+                            event_drain,
                         );
 
                         tracing::info!(host, port, stop_on_entry, "TCP attach successful");
@@ -2708,6 +2732,11 @@ impl DebugAdapter {
     /// protocol state while retaining process ownership for retry.
     fn prepare_replacement_session(&self) -> bool {
         self.begin_session_generation();
+        // Debuggee replacement invalidates the reload family's session
+        // identities (#10102): a new epoch refuses prior family/operation
+        // claims, and the runtime-module generation resets with the new
+        // debuggee process (it lives on `DebugSession`).
+        self.reset_reload_route_for_replacement_session();
         self.clear_active_session_state()
     }
 
@@ -2861,7 +2890,14 @@ impl DebugAdapter {
             && !terminal_committed
             && let Some(ref sender) = self.event_sender
         {
-            emit_terminated_event(sender, &self.seq, &self.termination_state, None, None);
+            emit_terminated_event(
+                sender,
+                &self.seq,
+                &self.termination_state,
+                None,
+                None,
+                Some(&self.event_drain),
+            );
         }
         let cleanup_succeeded = self.clear_active_session_state();
         self.close_terminal_session_generation("disconnect");
@@ -2901,6 +2937,7 @@ impl DebugAdapter {
                 &self.termination_state,
                 None,
                 terminated_body,
+                Some(&self.event_drain),
             );
         }
         let cleanup_succeeded = self.clear_active_session_state();
@@ -3317,6 +3354,7 @@ pub(super) fn emit_terminated_event(
     termination_state: &Mutex<TerminationState>,
     expected_generation: Option<u64>,
     body: Option<Value>,
+    drain: Option<&EventDrainLatch>,
 ) -> bool {
     emit_terminated_event_guarded(
         sender,
@@ -3325,6 +3363,7 @@ pub(super) fn emit_terminated_event(
         expected_generation,
         body,
         &|| false,
+        drain,
     )
 }
 
@@ -3337,6 +3376,13 @@ pub(super) fn emit_terminated_event(
 /// commit attempt, so a replacement session retires a blocked stale terminal
 /// event instead of an unbounded blocking send publishing it into the
 /// replacement's conversation after validation passed.
+///
+/// The emission joins the `event_drain` latch contract (FC-TERMINATED-
+/// DRAIN-BYPASS): the latch is reserved before the guarded dispatch and
+/// retained only when the dispatch reports `Sent`, so `run_with_io`
+/// observes an accepted terminal event before the response that follows
+/// it. Reservation, currentness, stale, and disconnected outcomes all
+/// complete the reservation instead of retaining it.
 pub(super) fn emit_terminated_event_guarded(
     sender: &EventSender,
     seq: &Mutex<i64>,
@@ -3344,13 +3390,28 @@ pub(super) fn emit_terminated_event_guarded(
     expected_generation: Option<u64>,
     body: Option<Value>,
     stale: &dyn Fn() -> bool,
+    drain: Option<&EventDrainLatch>,
 ) -> bool {
     let generation = expected_generation
         .unwrap_or_else(|| lock_or_recover(termination_state, "terminal.generation").generation);
     if !reserve_terminated_event(termination_state, Some(generation)) {
         return false;
     }
-    deliver_reserved_terminated_event(sender, seq, termination_state, generation, body, stale)
+    // Join the drain latch (FC-TERMINATED-DRAIN-BYPASS): reserve before
+    // the delivery attempt and retain only when the event was accepted
+    // into the outbound channel; stale, replaced-generation, and
+    // disconnected outcomes complete the reservation instead.
+    if let Some(drain) = drain {
+        drain.enqueue(1);
+    }
+    let delivered =
+        deliver_reserved_terminated_event(sender, seq, termination_state, generation, body, stale);
+    if let Some(drain) = drain
+        && !delivered
+    {
+        drain.complete(1);
+    }
+    delivered
 }
 
 fn deliver_reserved_terminated_event(
@@ -3388,6 +3449,7 @@ fn deliver_reserved_terminated_event(
 
 #[cfg(test)]
 mod tests {
+    use super::super::sync_utils::EventDrainLatch;
     use super::super::sync_utils::EventSender;
     use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use super::{
@@ -3396,6 +3458,7 @@ mod tests {
         is_valid_perl_interpreter, lock_or_recover, reserve_terminated_event,
         terminated_delivery_is_current,
     };
+    use crate::reload::RuntimeModuleGenerationClock;
     use crate::tcp_attach::DapEvent;
     use perl_test_must::must_some_with;
     use std::collections::HashMap;
@@ -3701,10 +3764,12 @@ mod tests {
                 &first_guard,
                 Some(1),
                 Some(serde_json::json!({"reason": "debugger_eof"})),
+                None,
             )
         });
         let second_sender = EventSender::new(sender.clone());
-        let second = emit_terminated_event(&second_sender, &seq, &termination_state, None, None);
+        let second =
+            emit_terminated_event(&second_sender, &seq, &termination_state, None, None, None);
         let first = first.join().map_err(|_| "termination worker panicked".to_string())?;
         if first == second {
             return Err(format!(
@@ -3750,6 +3815,7 @@ mod tests {
                 &adapter.termination_state,
                 Some(generation),
                 Some(json!({"reason": "debugger_eof"})),
+                None,
             ) {
                 return Err("current async terminal source did not emit".to_string());
             }
@@ -3846,6 +3912,7 @@ mod tests {
                     Some(generation),
                     body,
                     &stale,
+                    None,
                 )
             };
             let _ = finished_sender.send(emitted);
@@ -3940,6 +4007,7 @@ mod tests {
             Some(adapter.current_session_generation()),
             None,
             &|| true,
+            None,
         );
         if receiver.try_recv().is_ok() {
             return Err("stale emitter published an event".to_string());
@@ -3970,6 +4038,7 @@ mod tests {
             &adapter.termination_state,
             Some(adapter.current_session_generation()),
             None,
+            None,
         ) {
             return Err("closed channel reported terminal delivery".to_string());
         }
@@ -3989,6 +4058,7 @@ mod tests {
             &termination_state,
             Some(1),
             Some(serde_json::json!({"reason": "stale_reader"})),
+            None,
         ) {
             return Err("stale reader unexpectedly emitted termination".to_string());
         }
@@ -4002,6 +4072,7 @@ mod tests {
             &termination_state,
             Some(2),
             Some(serde_json::json!({"reason": "current_session"})),
+            None,
         ) {
             return Err("current session failed to emit termination".to_string());
         }
@@ -4046,6 +4117,7 @@ mod tests {
             &termination_state,
             Some(4),
             Some(serde_json::json!({"reason": "current_generation"})),
+            None,
         ) {
             return Err("current-generation emission was suppressed".into());
         }
@@ -4067,6 +4139,80 @@ mod tests {
             Err(error) => Err(format!("termination channel error: {error}")),
             Ok(other) => Err(format!("stale reservation leaked a duplicate event: {other:?}")),
         }
+    }
+
+    #[test]
+    fn terminated_emission_holds_the_drain_latch_only_when_sent() -> Result<(), String> {
+        use std::time::Duration;
+        // A sent terminal event retains its drain reservation for the
+        // transport consumer, so `run_with_io` observes it before the
+        // response that follows.
+        let (sender, _receiver) = sync_channel(64);
+        let seq = Arc::new(Mutex::new(0));
+        let termination_state = Arc::new(Mutex::new(super::TerminationState {
+            generation: 1,
+            emitted: false,
+            terminal_committed: false,
+        }));
+        let drain = EventDrainLatch::default();
+        if !emit_terminated_event(
+            &EventSender::new(sender),
+            &seq,
+            &termination_state,
+            Some(1),
+            None,
+            Some(&drain),
+        ) {
+            return Err("a live terminal emission must report delivery".to_string());
+        }
+        if drain.wait_until_drained(Duration::from_millis(0)) {
+            return Err("a sent terminal event must retain its drain reservation".to_string());
+        }
+        // A stale guarded dispatch retires without retaining anything.
+        let (sender, _receiver) = sync_channel(64);
+        let stale_state = Arc::new(Mutex::new(super::TerminationState {
+            generation: 1,
+            emitted: false,
+            terminal_committed: false,
+        }));
+        let stale_drain = EventDrainLatch::default();
+        if super::emit_terminated_event_guarded(
+            &EventSender::new(sender),
+            &seq,
+            &stale_state,
+            Some(1),
+            None,
+            &|| true,
+            Some(&stale_drain),
+        ) {
+            return Err("a stale dispatch must retire without reporting delivery".to_string());
+        }
+        if !stale_drain.wait_until_drained(Duration::from_millis(0)) {
+            return Err("a stale terminal emission must not retain a reservation".to_string());
+        }
+        // A disconnected channel completes its reservation as well.
+        let (sender, _receiver) = sync_channel(64);
+        let closed = EventSender::new(sender);
+        closed.close();
+        let closed_drain = EventDrainLatch::default();
+        if emit_terminated_event(
+            &closed,
+            &seq,
+            &Arc::new(Mutex::new(super::TerminationState {
+                generation: 7,
+                emitted: false,
+                terminal_committed: false,
+            })),
+            Some(7),
+            None,
+            Some(&closed_drain),
+        ) {
+            return Err("emission on a closed channel must report failure".to_string());
+        }
+        if !closed_drain.wait_until_drained(Duration::from_millis(0)) {
+            return Err("a disconnected emission must not retain a reservation".to_string());
+        }
+        Ok(())
     }
 
     #[test]
@@ -4902,6 +5048,7 @@ mod tests {
             initial_stop_pending: false,
             entry_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
@@ -5278,6 +5425,7 @@ mod tests {
                 initial_stop_pending,
                 entry_stop_pending,
                 stopped_generation: 0,
+                module_generation: crate::reload::RuntimeModuleGenerationClock::new(),
             });
         }
         adapter.start_output_reader(PathBuf::from("."));
@@ -5579,6 +5727,7 @@ mod tests {
             initial_stop_pending: false,
             entry_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         };
         *lock_or_recover(&adapter.session, "test.session") = Some(session);
 
