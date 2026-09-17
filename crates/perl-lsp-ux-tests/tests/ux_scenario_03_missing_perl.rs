@@ -42,13 +42,11 @@ fn scenario_03_server_starts_without_perl() {
             let harness = UxHarness::new(config_without_perl())
                 .context("Failed to create UX harness without perl")?;
 
-            harness
-                .open_file("no_perl.pl", source)
-                .context("didOpen should succeed without perl")?;
-            recorder.check("didOpen accepted without perl", true)?;
+            let open_result = harness.open_file("no_perl.pl", source);
+            recorder.check("didOpen accepted without perl", open_result.is_ok())?;
+            open_result.context("didOpen should succeed without perl")?;
 
             harness.assert_no_crash();
-            recorder.check("no crash signatures in event log", true)?;
             Ok(())
         },
     );
@@ -72,14 +70,14 @@ fn scenario_03_degraded_mode_hover_does_not_crash() {
             let harness = UxHarness::new(config_without_perl())
                 .context("Failed to create UX harness without perl")?;
 
-            harness.open_file("degraded.pl", source).context("didOpen should succeed")?;
-            harness
-                .hover("degraded.pl", 0, 3)
-                .context("hover should not return a transport error in degraded mode")?;
-            recorder.check("hover transport completed without perl", true)?;
+            let open_result = harness.open_file("degraded.pl", source);
+            recorder.check("didOpen accepted without perl", open_result.is_ok())?;
+            open_result.context("didOpen should succeed")?;
+            let hover_result = harness.hover("degraded.pl", 0, 3);
+            recorder.check("hover transport completed without perl", hover_result.is_ok())?;
+            hover_result.context("hover should not return a transport error in degraded mode")?;
 
             harness.assert_no_crash();
-            recorder.check("no crash signatures in event log", true)?;
             Ok(())
         },
     );
@@ -103,14 +101,16 @@ fn scenario_03_degraded_mode_completion_does_not_crash() {
             let harness = UxHarness::new(config_without_perl())
                 .context("Failed to create UX harness without perl")?;
 
-            harness.open_file("complete.pl", source).context("didOpen should succeed")?;
-            harness
-                .completion("complete.pl", 0, 7)
+            let open_result = harness.open_file("complete.pl", source);
+            recorder.check("didOpen accepted without perl", open_result.is_ok())?;
+            open_result.context("didOpen should succeed")?;
+            let completion_result = harness.completion("complete.pl", 0, 7);
+            recorder
+                .check("completion transport completed without perl", completion_result.is_ok())?;
+            completion_result
                 .context("completion should not return a transport error in degraded mode")?;
-            recorder.check("completion transport completed without perl", true)?;
 
             harness.assert_no_crash();
-            recorder.check("no crash signatures in event log", true)?;
             Ok(())
         },
     );
