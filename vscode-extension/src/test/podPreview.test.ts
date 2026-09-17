@@ -76,9 +76,9 @@ describe('perl-lsp.previewPod command (issue #2062)', () => {
     expect(entry).toBeDefined();
   });
 
-  test('perl-lsp.previewPod is guarded by editorLangId == perl', () => {
+  test('perl-lsp.previewPod is guarded by the perl-or-perl5 language gate', () => {
     const entry = paletteEntries.find((e: PaletteEntry) => e.command === 'perl-lsp.previewPod');
-    expect(entry?.when).toContain('editorLangId == perl');
+    expect(entry?.when).toContain('editorLangId == perl || editorLangId == perl5');
   });
 });
 
@@ -298,5 +298,66 @@ describe('podToHtml', () => {
     expect(html).not.toContain('<ul>');
     expect(html).not.toContain('<ol>');
     expect(html).toContain('<h1>NAME</h1>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Save-watcher URI scoping (#7699): with the alias widening the watcher,
+// saving an unrelated perl/perl5 file must not rebuild the panel.
+// ---------------------------------------------------------------------------
+describe('pod preview save watcher', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const vscode = require('vscode') as typeof import('vscode');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const preview = require('../podPreview') as typeof import('../podPreview');
+
+  type FakeDoc = {
+    languageId: string;
+    uri: { toString: () => string };
+    fileName: string;
+    getText: () => string;
+  };
+  const fakeDoc = (uri: string, text: string, languageId = 'perl5'): FakeDoc => ({
+    languageId,
+    uri: { toString: () => uri },
+    fileName: uri,
+    getText: () => text,
+  });
+  const fakeContext = () =>
+    ({ subscriptions: [] }) as unknown as import('vscode').ExtensionContext;
+
+  const saveListener = (): ((doc: FakeDoc) => void) => {
+    const calls = (vscode.workspace.onDidSaveTextDocument as jest.Mock).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    return calls[calls.length - 1][0] as (doc: FakeDoc) => void;
+  };
+  const panelOf = () => {
+    const results = (vscode.window.createWebviewPanel as jest.Mock).mock.results;
+    const last = results[results.length - 1];
+    if (!last) {
+      throw new Error('expected a created webview panel');
+    }
+    const panel = last.value as { webview: { html: string } } | undefined;
+    if (!panel) {
+      throw new Error('expected a created webview panel');
+    }
+    return panel;
+  };
+
+  test('saving an unrelated alias file leaves the previewed source alone', () => {
+    preview.showPodPreview(fakeContext(), fakeDoc('file:///a.pl', '=head1 AAA') as never);
+    preview.registerPodPreview(fakeContext());
+    const before = panelOf().webview.html;
+    expect(before).toContain('AAA');
+    saveListener()(fakeDoc('file:///b.pl', '=head1 BBB'));
+    expect(panelOf().webview.html).toBe(before);
+  });
+
+  test('saving the previewed file refreshes the preview', () => {
+    preview.showPodPreview(fakeContext(), fakeDoc('file:///a.pl', '=head1 AAA') as never);
+    preview.registerPodPreview(fakeContext());
+    const updated = fakeDoc('file:///a.pl', '=head1 AAA2');
+    saveListener()(updated);
+    expect(panelOf().webview.html).toContain('AAA2');
   });
 });

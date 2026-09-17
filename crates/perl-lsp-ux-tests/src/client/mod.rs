@@ -12,11 +12,16 @@ use crate::observation::{Inbox, StreamEnd, WaitEnd};
 use crate::{ChildExit, FakeWorkspace, ScenarioConfig, poll_child_exit};
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
+use server_request_script::{
+    ObservedServerRequest, ScriptedServerRequest, ServerRequestObserver, ServerRequestScript,
+};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+pub mod server_request_script;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(100);
 const SHUTDOWN_RUNNING: u8 = 0;
@@ -147,7 +152,7 @@ pub struct CapabilityViolation {
 /// A lightweight LSP client that speaks directly to a spawned perl-lsp process.
 pub struct UxClient {
     child: Mutex<Child>,
-    stdin: Arc<Mutex<ChildStdin>>,
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
     initialize_result: Value,
     /// The single observation substrate: buffered events, buffered responses,
     /// and the typed reason the server's output stream ended. Every wait in the
@@ -159,6 +164,7 @@ pub struct UxClient {
     capability_violations: Arc<Mutex<Vec<CapabilityViolation>>>,
     /// Stderr lines captured from the server process.
     stderr_lines: Arc<Mutex<Vec<String>>>,
+    script: Option<ServerRequestScript>,
     shutdown_state: AtomicU8,
     _stdout_thread: std::thread::JoinHandle<()>,
     _stderr_thread: std::thread::JoinHandle<()>,
@@ -171,6 +177,32 @@ impl UxClient {
         binary_path: &str,
         workspace: &FakeWorkspace,
         config: &ScenarioConfig,
+    ) -> Result<Self> {
+        let mut client = Self::spawn_process(binary_path, config, None)?;
+        let capabilities = build_client_capabilities(config);
+        client.initialize_result =
+            client.handshake(workspace, config, &capabilities, config.timeout)?;
+        Ok(client)
+    }
+
+    /// Spawn the fixture binary and install scripted responses for its
+    /// server-initiated requests.
+    pub fn spawn_scripted(
+        binary_path: &str,
+        root_uri: &str,
+        script: Vec<ScriptedServerRequest>,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let config = ScenarioConfig::default();
+        let mut client = Self::spawn_process(binary_path, &config, Some(script))?;
+        client.initialize_result = client.scripted_handshake(root_uri, timeout)?;
+        Ok(client)
+    }
+
+    fn spawn_process(
+        binary_path: &str,
+        config: &ScenarioConfig,
+        scripted_requests: Option<Vec<ScriptedServerRequest>>,
     ) -> Result<Self> {
         let mut cmd = build_command(binary_path, config)?;
 
@@ -185,6 +217,7 @@ impl UxClient {
             .stdin
             .take()
             .ok_or_else(|| anyhow!("perl-lsp stdin not available after spawn"))?;
+        let stdin = Arc::new(Mutex::new(Some(stdin)));
         let stdout = child
             .stdout
             .take()
@@ -197,12 +230,25 @@ impl UxClient {
         let inbox = Inbox::new();
         // The stdout reader also answers server-initiated requests, so the
         // writer handle is shared with that thread rather than owned alone.
-        let stdin = Arc::new(Mutex::new(stdin));
         let stderr_lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let server_requests: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let capability_violations: Arc<Mutex<Vec<CapabilityViolation>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let client_capabilities = build_client_capabilities(config);
+        // One response authority per request: when a script is installed it
+        // owns every server-request answer, so the conservative default
+        // answering is disabled rather than racing the script.
+        let answering_capabilities = if scripted_requests.is_some() {
+            None
+        } else {
+            Some(build_client_capabilities(config))
+        };
+        let (script, observer) = match scripted_requests {
+            Some(script) => {
+                let (script, observer) = ServerRequestScript::new(stdin.clone(), script)?;
+                (Some(script), Some(observer))
+            }
+            None => (None, None),
+        };
 
         // ── stdout reader thread ──────────────────────────────────────────────
         // Publishes into the inbox and, on exit, records *why* the stream ended
@@ -212,7 +258,7 @@ impl UxClient {
         let stdin_for_reader = Arc::clone(&stdin);
         let server_requests_for_reader = Arc::clone(&server_requests);
         let capability_violations_for_reader = Arc::clone(&capability_violations);
-        let reader_capabilities = client_capabilities.clone();
+        let answering_capabilities_for_reader = answering_capabilities.clone();
         let _stdout_thread = std::thread::Builder::new()
             .name("ux-lsp-stdout".into())
             .spawn(move || {
@@ -221,14 +267,19 @@ impl UxClient {
                 // from a merely silent server.
                 let mut exit = ReaderExit::new(reader_inbox.clone());
                 let mut reader = BufReader::new(stdout);
+                let observer: Option<ServerRequestObserver> = observer;
+                // The answering loop writes through the shared optional stdin
+                // handle, failing closed once that handle has been taken over.
+                let stdin_writer = Mutex::new(SharedStdinWriter(stdin_for_reader));
                 loop {
                     match read_and_route(
                         &mut reader,
-                        &stdin_for_reader,
+                        &stdin_writer,
                         &reader_inbox,
                         &server_requests_for_reader,
                         &capability_violations_for_reader,
-                        &reader_capabilities,
+                        answering_capabilities_for_reader.as_ref(),
+                        observer.as_ref(),
                     ) {
                         Ok(true) => {}
                         Ok(false) => return exit.record(StreamEnd::ServerClosed),
@@ -261,7 +312,7 @@ impl UxClient {
         // loop yet. Readiness is then established by the server's own
         // `initialize` response, which the handshake waits for — an observable
         // signal rather than a guess about process startup latency.
-        let mut client = Self {
+        let client = Self {
             child: Mutex::new(child),
             stdin,
             initialize_result: Value::Null,
@@ -269,16 +320,30 @@ impl UxClient {
             server_requests,
             capability_violations,
             stderr_lines,
+            script,
             shutdown_state: AtomicU8::new(SHUTDOWN_RUNNING),
             _stdout_thread,
             _stderr_thread,
         };
 
-        // ── LSP handshake ─────────────────────────────────────────────────────
-        client.initialize_result =
-            client.handshake(workspace, config, &client_capabilities, config.timeout)?;
-
         Ok(client)
+    }
+
+    fn scripted_handshake(&self, root_uri: &str, timeout: Duration) -> Result<Value> {
+        let init_resp = self.request(
+            "initialize",
+            json!({
+                "processId": null,
+                "rootUri": root_uri,
+                "capabilities": {}
+            }),
+            timeout,
+        )?;
+        if let Some(err) = init_resp.get("error") {
+            return Err(anyhow!("LSP initialize returned error: {}", err));
+        }
+        self.notify("initialized", json!({}))?;
+        Ok(init_resp)
     }
 
     fn handshake(
@@ -465,6 +530,22 @@ impl UxClient {
         self.stderr_lines.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// Wait for all scripted server requests to be observed and answered.
+    pub fn wait_for_script(&self, timeout: Duration) -> Result<Vec<ObservedServerRequest>> {
+        self.script
+            .as_ref()
+            .ok_or_else(|| anyhow!("client has no scripted server-request script"))?
+            .wait(timeout)
+    }
+
+    /// Fail if the server sent a server-initiated request not in the script.
+    pub fn assert_no_unscripted_requests(&self) -> Result<()> {
+        self.script
+            .as_ref()
+            .ok_or_else(|| anyhow!("client has no scripted server-request script"))?
+            .assert_no_unscripted()
+    }
+
     /// Complete the legal LSP lifecycle and prove a zero-status process exit.
     ///
     /// A successful result requires a matching JSON-RPC shutdown response with
@@ -594,7 +675,8 @@ impl UxClient {
 
     fn send_raw(&self, msg: &Value) -> Result<()> {
         let mut stdin = self.stdin.lock().unwrap_or_else(|e| e.into_inner());
-        write_lsp_message(&mut *stdin, msg)
+        let stdin = stdin.as_mut().ok_or_else(|| anyhow!("LSP client stdin is already closed"))?;
+        write_framed_to(stdin, msg)
     }
 
     /// Explain a wait outcome, folding in the child's real exit status.
@@ -683,26 +765,17 @@ fn merge_json(target: &mut Value, overlay: &Value) {
 
 impl Drop for UxClient {
     fn drop(&mut self) {
+        if let Some(script) = self.script.take() {
+            script.settle();
+        }
+
         let shutdown_state = self.shutdown_state.load(Ordering::SeqCst);
+        let mut stdin = self.stdin.lock().unwrap_or_else(|error| error.into_inner());
+        finish_stdin(&mut stdin, shutdown_state == SHUTDOWN_RUNNING);
         if shutdown_state == SHUTDOWN_COMPLETE {
             return;
         }
 
-        // Best-effort graceful shutdown only for clients that never started an
-        // explicit terminal sequence. A failed explicit sequence must not emit
-        // a second normal shutdown/exit pair and cannot become graceful proof.
-        if shutdown_state == SHUTDOWN_RUNNING {
-            let shutdown = r#"{"jsonrpc":"2.0","id":999998,"method":"shutdown","params":{}}"#;
-            let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
-            if let Ok(mut stdin) = self.stdin.lock() {
-                for body in [shutdown, exit] {
-                    let hdr = format!("Content-Length: {}\r\n\r\n", body.len());
-                    let _ = stdin.write_all(hdr.as_bytes());
-                    let _ = stdin.write_all(body.as_bytes());
-                    let _ = stdin.flush();
-                }
-            }
-        }
         // Give the server its grace period by waiting for its own end-of-stream
         // rather than polling `try_wait` on a timer: the reader records the
         // stream end the moment it happens, so an orderly exit is observed
@@ -773,6 +846,30 @@ fn reap_or_kill(child: &mut Child) {
 }
 
 // ── Message framing ───────────────────────────────────────────────────────────
+
+/// Emit the best-effort `shutdown`/`exit` pair, then close the pipe.
+///
+/// Closing must happen after the write: the frames are what let the server
+/// exit on its own terms, and an early close turns that into an EOF kill.
+fn finish_stdin<W: Write>(slot: &mut Option<W>, send_shutdown: bool) {
+    if send_shutdown && let Some(stdin) = slot.as_mut() {
+        for message in [
+            json!({"jsonrpc": "2.0", "id": 999998, "method": "shutdown", "params": {}}),
+            json!({"jsonrpc": "2.0", "method": "exit"}),
+        ] {
+            let _ = write_framed_to(stdin, &message);
+        }
+    }
+    slot.take();
+}
+
+fn write_framed_to<W: Write>(stdin: &mut W, message: &Value) -> Result<()> {
+    let body = message.to_string();
+    let header = format!("Content-Length: {}\r\n\r\n", body.len());
+    stdin.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
+    stdin.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
+    stdin.flush().context("Failed to flush LSP stdin")
+}
 
 /// The outcome of reading one LSP frame.
 ///
@@ -881,11 +978,12 @@ fn read_one_frame(reader: &mut impl BufRead) -> FrameRead {
 /// failure that the caller must record as a transport failure.
 fn read_and_route<R, W>(
     reader: &mut R,
-    stdin: &Arc<Mutex<W>>,
+    stdin: &Mutex<W>,
     inbox: &Inbox,
     server_requests: &Mutex<Vec<Value>>,
     capability_violations: &Mutex<Vec<CapabilityViolation>>,
-    capabilities: &Value,
+    capabilities: Option<&Value>,
+    observer: Option<&ServerRequestObserver>,
 ) -> Result<bool, String>
 where
     R: BufRead,
@@ -896,7 +994,15 @@ where
         FrameRead::EndOfStream => return Ok(false),
         FrameRead::Failed(detail) => return Err(detail),
     };
-    route_message(&message, stdin, inbox, server_requests, capability_violations, capabilities)?;
+    route_message(
+        &message,
+        stdin,
+        inbox,
+        server_requests,
+        capability_violations,
+        capabilities,
+        observer,
+    )?;
     Ok(true)
 }
 
@@ -905,15 +1011,19 @@ where
 /// everything else is buffered as an observable event.
 fn route_message<W>(
     message: &Value,
-    stdin: &Arc<Mutex<W>>,
+    stdin: &Mutex<W>,
     inbox: &Inbox,
     server_requests: &Mutex<Vec<Value>>,
     capability_violations: &Mutex<Vec<CapabilityViolation>>,
-    capabilities: &Value,
+    capabilities: Option<&Value>,
+    observer: Option<&ServerRequestObserver>,
 ) -> Result<(), String>
 where
     W: Write,
 {
+    if let Some(observer) = observer {
+        observer.observe(message);
+    }
     let has_id = message.get("id").is_some_and(|id| !id.is_null());
     let is_response = has_id && (message.get("result").is_some() || message.get("error").is_some());
     if is_response {
@@ -926,7 +1036,8 @@ where
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(message.clone());
-        if let Some(decision) = server_request_decision(message, capabilities) {
+        if let Some(decision) = capabilities.and_then(|caps| server_request_decision(message, caps))
+        {
             if let Some(violation) = decision.capability_violation {
                 capability_violations
                     .lock()
@@ -937,7 +1048,7 @@ where
                 message.get("method").and_then(Value::as_str).unwrap_or("<missing>").to_owned();
             let id = message.get("id").cloned().unwrap_or(Value::Null);
             let mut stdin = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            write_lsp_message(&mut *stdin, &decision.response).map_err(|error| {
+            write_framed_to(&mut *stdin, &decision.response).map_err(|error| {
                 format!("failed to answer server request method={method} id={id}: {error:#}")
             })?;
         }
@@ -946,13 +1057,30 @@ where
     inbox.push_event(message.clone());
     Ok(())
 }
-fn write_lsp_message(writer: &mut impl Write, message: &Value) -> Result<()> {
-    let body = message.to_string();
-    let header = format!("Content-Length: {}\r\n\r\n", body.len());
-    writer.write_all(header.as_bytes()).context("Failed to write LSP header to stdin")?;
-    writer.write_all(body.as_bytes()).context("Failed to write LSP body to stdin")?;
-    writer.flush().context("Failed to flush LSP stdin")?;
-    Ok(())
+
+/// A `Write` adapter over the shared optional stdin handle.
+///
+/// Each write re-locks and fails closed if the handle was already taken over,
+/// so a scripted or finished client can never hand the answering loop a stale
+/// writer.
+struct SharedStdinWriter(Arc<Mutex<Option<ChildStdin>>>);
+
+impl Write for SharedStdinWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        let stdin = guard
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("LSP client stdin is already closed"))?;
+        stdin.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        match guard.as_mut() {
+            Some(stdin) => stdin.flush(),
+            None => Err(std::io::Error::other("LSP client stdin is already closed")),
+        }
+    }
 }
 
 fn build_client_capabilities(config: &ScenarioConfig) -> Value {
@@ -1314,7 +1442,7 @@ fn build_command(binary_path: &str, config: &ScenarioConfig) -> Result<Command> 
 
 #[cfg(test)]
 mod framing_tests {
-    use super::{FrameRead, ReaderExit, read_one_frame};
+    use super::{FrameRead, ReaderExit, finish_stdin, read_one_frame};
     use crate::observation::{Inbox, StreamEnd};
     use std::io::BufReader;
 
@@ -1376,6 +1504,32 @@ mod framing_tests {
             matches!(read(""), FrameRead::EndOfStream),
             "empty input must be an orderly end of stream"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn finish_stdin_writes_shutdown_before_closing() -> anyhow::Result<()> {
+        let mut bytes = Vec::new();
+        let mut slot = Some(&mut bytes);
+        finish_stdin(&mut slot, true);
+        let framed = String::from_utf8(bytes)?;
+        anyhow::ensure!(
+            framed.matches("Content-Length: ").count() == 2,
+            "shutdown and exit must each have a Content-Length header: {framed:?}"
+        );
+        anyhow::ensure!(
+            framed.contains("\"method\":\"shutdown\""),
+            "shutdown frame must be written before closing: {framed:?}"
+        );
+        anyhow::ensure!(
+            framed.contains("\"method\":\"exit\""),
+            "exit frame must be written before closing: {framed:?}"
+        );
+
+        let mut closed_bytes = Vec::new();
+        let mut closed = Some(&mut closed_bytes);
+        finish_stdin(&mut closed, false);
+        anyhow::ensure!(closed.is_none(), "finish_stdin must close the pipe");
         Ok(())
     }
 
@@ -1682,7 +1836,7 @@ mod server_request_tests {
     use super::{
         CapabilityViolation, FrameRead, Inbox, ServerRequestDecision, build_client_capabilities,
         is_server_request, read_one_frame, route_message, server_request_decision,
-        server_request_response, write_lsp_message,
+        server_request_response, write_framed_to,
     };
     use crate::ScenarioConfig;
     use anyhow::{Result, anyhow};
@@ -1734,8 +1888,8 @@ mod server_request_tests {
             "result": { "ok": true }
         });
         let mut server_stdout = Vec::new();
-        write_lsp_message(&mut server_stdout, &server_request)?;
-        write_lsp_message(&mut server_stdout, &later_response)?;
+        write_framed_to(&mut server_stdout, &server_request)?;
+        write_framed_to(&mut server_stdout, &later_response)?;
 
         let mut reader = BufReader::new(server_stdout.as_slice());
         let stdin = Arc::new(Mutex::new(Vec::new()));
@@ -1748,8 +1902,16 @@ mod server_request_tests {
 
         for _ in 0..2 {
             let message = first_frame(&mut reader)?;
-            route_message(&message, &stdin, &inbox, &server_requests, &violations, &capabilities)
-                .map_err(|error| anyhow!("{error}"))?;
+            route_message(
+                &message,
+                &stdin,
+                &inbox,
+                &server_requests,
+                &violations,
+                Some(&capabilities),
+                None,
+            )
+            .map_err(|error| anyhow!("{error}"))?;
         }
 
         let framed_response = stdin.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1800,10 +1962,17 @@ mod server_request_tests {
             "window": { "workDoneProgress": true }
         }));
 
-        let failure =
-            route_message(&request, &stdin, &inbox, &server_requests, &violations, &capabilities)
-                .err()
-                .ok_or_else(|| anyhow!("broken writer unexpectedly accepted the response"))?;
+        let failure = route_message(
+            &request,
+            &stdin,
+            &inbox,
+            &server_requests,
+            &violations,
+            Some(&capabilities),
+            None,
+        )
+        .err()
+        .ok_or_else(|| anyhow!("broken writer unexpectedly accepted the response"))?;
         anyhow::ensure!(
             failure.contains("method=window/workDoneProgress/create id=33")
                 && failure.contains("synthetic broken pipe"),
@@ -2317,7 +2486,7 @@ mod server_request_tests {
         let body = response.to_string();
         let mut framed = Vec::new();
 
-        write_lsp_message(&mut framed, &response)?;
+        write_framed_to(&mut framed, &response)?;
 
         let expected = format!("Content-Length: {}\r\n\r\n{body}", body.len());
         assert_eq!(framed, expected.as_bytes());
