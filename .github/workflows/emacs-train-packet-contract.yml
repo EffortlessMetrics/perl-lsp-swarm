@@ -23,6 +23,12 @@ on:
       - 'schemas/agent_review_packet.v1.schema.json'
       - 'fixtures/agent_implementation_packet/**'
       - 'fixtures/agent_review_packet/**'
+      # The lane passes this fixture to the CLI and the falsifier suite
+      # asserts its content, so edits to the fixture tree must trigger it.
+      - 'fixtures/emacs_train_packet/**'
+      # The reconcile route validates candidate flags against the closed
+      # CANDIDATE_STATES vocabulary owned by this module.
+      - 'xtask/src/tasks/module_train_live.rs'
       - '.github/workflows/emacs-train-packet-contract.yml'
   workflow_dispatch: {}
 
