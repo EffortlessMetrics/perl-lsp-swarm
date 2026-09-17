@@ -234,7 +234,40 @@ pub fn run_owned_process(
             match (&probe_before, &probe_after) {
                 (Some(Ok(_)), Some(Ok(after_text))) => match parse_probe(after_text) {
                     Ok(after_lines) => {
-                        let survivors = surviving_processes(&before_lines, &after_lines, &needle);
+                        let mut survivors =
+                            surviving_processes(&before_lines, &after_lines, &needle);
+                        // Windows fallback for #15424: a detached candidate descendant
+                        // can be missing from the bulk `tasklist` snapshot even when
+                        // the per-PID kernel query still finds it. The fake host's
+                        // leak mode writes the descendant PID to a ready-marker file
+                        // next to the event file; check that PID directly and
+                        // promote cleanup to Fail when the kernel confirms a leak.
+                        // Per-PID `tasklist /FI` is the same primitive the test
+                        // already uses for `descendant_still_running`, so the
+                        // classification stays consistent with the test assertion.
+                        if survivors.is_empty() {
+                            if let Some(descendant_pid) = read_descendant_pid(layout, pid) {
+                                if descendant_pid != pid
+                                    && !survivors.iter().any(|line| line.pid == descendant_pid)
+                                {
+                                    match pid_still_alive(descendant_pid) {
+                                        Some(true) => {
+                                            survivors.push(ProcessProbeLine {
+                                                pid: descendant_pid,
+                                                args: plan
+                                                    .paths
+                                                    .candidate_executable
+                                                    .file_name()
+                                                    .and_then(OsStr::to_str)
+                                                    .unwrap_or("perllsp")
+                                                    .to_string(),
+                                            });
+                                        }
+                                        Some(false) | None => {}
+                                    }
+                                }
+                            }
+                        }
                         if survivors.is_empty() {
                             (
                                 CleanupResult::Pass,
@@ -1004,6 +1037,65 @@ fn stop_owned_pid(pid: u32) {
     }
 }
 
+/// Compute the path the fake host uses to publish its spawned descendant's
+/// PID when entering leak mode. The fake host joins
+/// `<event_file_parent>/descendant-ready-<fake_host_pid>`; the descendant
+/// writes `ready pid=<N>` there. Callers read this only when the host's
+/// supervision mode promised a leaked descendant — non-leak modes do not
+/// create the file and the reader returns `None`.
+fn descendant_ready_marker_path(
+    layout: &HermeticLayout,
+    host_pid: u32,
+) -> Option<std::path::PathBuf> {
+    layout.event_file().parent().map(|parent| parent.join(format!("descendant-ready-{host_pid}")))
+}
+
+/// Read the descendant PID the fake host's leak mode recorded for this run.
+/// The marker file is best-effort: missing files mean the host did not
+/// enter leak mode and the per-PID fallback below is skipped.
+fn read_descendant_pid(layout: &HermeticLayout, host_pid: u32) -> Option<u32> {
+    let path = descendant_ready_marker_path(layout, host_pid)?;
+    let bytes = fs::read(&path).ok()?;
+    let text = std::str::from_utf8(&bytes).ok()?;
+    // Marker format is `ready pid=<u32>` written by `descendant_sleep`.
+    let (_, after) = text.split_once("pid=")?;
+    let trimmed = after.trim().trim_end_matches(|c: char| !c.is_ascii_digit());
+    trimmed.parse::<u32>().ok()
+}
+
+/// Per-PID survival probe used as a Windows fallback when the bulk process
+/// snapshot misses a leaked candidate descendant. `tasklist /FI "PID eq X"`
+/// queries the kernel process table directly and is not subject to the
+/// bulk-enumeration races that can hide a detached candidate image.
+/// Returns `None` on probe failure (preserves the prior `Pass`/`Fail` —
+/// instrumentation errors must not silently flip cleanup).
+fn pid_still_alive(pid: u32) -> Option<bool> {
+    if cfg!(windows) {
+        let output = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let needle = format!("\"{pid}\"");
+        // `tasklist` prints a CSV header line `INFO: No tasks are running...`
+        // when no row matches; otherwise the row contains the quoted PID.
+        Some(stdout.contains(&needle) && !stdout.contains("No tasks are running"))
+    } else {
+        let status = Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .ok()?;
+        Some(status.success())
+    }
+}
+
 fn diagnostic_probe_failure(phase: &str, probe: &Option<Result<String>>) -> Option<String> {
     match probe {
         None => Some(format!(
@@ -1207,5 +1299,41 @@ mod process_tests {
             "full-stream identity must not be the hash of the retained window"
         );
         Ok(())
+    }
+
+    #[test]
+    fn descendant_pid_reader_returns_none_when_marker_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let layout = HermeticLayout::prepare(tmp.path()).expect("layout");
+        assert!(
+            read_descendant_pid(&layout, 4242).is_none(),
+            "missing ready-marker file must mean the host did not enter leak mode"
+        );
+    }
+
+    #[test]
+    fn descendant_pid_reader_parses_fake_host_marker_format() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let layout = HermeticLayout::prepare(tmp.path())?;
+        let event_file = layout.event_file();
+        let marker_parent =
+            event_file.parent().context("event file must have a parent directory")?;
+        fs::write(marker_parent.join("descendant-ready-4242"), b"ready pid=98765\n")?;
+        let pid = read_descendant_pid(&layout, 4242).context("marker must parse to a PID")?;
+        ensure!(pid == 98765, "PID must round-trip through the marker, got {pid}");
+        Ok(())
+    }
+
+    #[test]
+    fn descendant_pid_reader_rejects_garbage_marker() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let layout = HermeticLayout::prepare(tmp.path()).expect("layout");
+        let event_file = layout.event_file();
+        let marker_parent = event_file.parent().expect("event file parent");
+        fs::write(marker_parent.join("descendant-ready-1"), b"not a pid line\n").expect("write");
+        assert!(
+            read_descendant_pid(&layout, 1).is_none(),
+            "a malformed marker must not silently pass as a recorded descendant PID"
+        );
     }
 }
