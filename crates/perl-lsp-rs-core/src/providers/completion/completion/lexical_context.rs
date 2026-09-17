@@ -2128,6 +2128,19 @@ my $after = "op"#;
         assert_eq!(quote_like_closer(b'<'), Some(b'>'));
     }
 
+    /// Section-boundary discriminator for `quote_like_literal_span`: a
+    /// single-section `q{...}` never reaches `section > 0`, while a
+    /// two-section `s{...}{...}` must re-anchor on the bracketing opener for
+    /// its second section and reject anything else there. (ripr
+    /// discriminator for the `section > 0 && bracketing` seam.)
+    #[test]
+    fn quote_like_literal_span_boundary_discriminator() {
+        assert_eq!(quote_like_literal_span(b"q{abc}", 0), Some(6));
+        assert_eq!(quote_like_literal_span(b"s{aaa}{bbb}", 0), Some(11));
+        assert_eq!(quote_like_literal_span(b"s{aaa}bbb", 0), None);
+        assert_eq!(quote_like_literal_span(b"s#a#b#", 0), Some(6));
+    }
+
     #[test]
     fn quoted_heredoc_label_preserves_non_quote_escape() {
         assert_eq!(parse_quoted_heredoc_label(r#""EO\nF""#, '"'), Some(r"EO\nF".to_string()));
