@@ -2998,18 +2998,33 @@ removal_criteria = "Remove when RIPR traces declaration owners through the sibli
 id = "ripr-suppress-ux-harness-event-wait-plumbing"
 kind = "test_receipt_surface"
 paths = [
-  "crates/perl-lsp-ux-tests/src/client.rs",
+  "crates/perl-lsp-ux-tests/src/client/mod.rs",
+  "crates/perl-lsp-ux-tests/src/client/server_request_script.rs",
   "crates/perl-lsp-ux-tests/src/observation.rs",
   "crates/perl-lsp-ux-tests/src/diagnostics.rs",
 ]
 classification = ["no_static_path", "reachable_unrevealed"]
 owner = "proof-lane"
 issue = "EffortlessMetrics/ripr#1429"
-reason = "PR #15005: 71 probes inside the perl-lsp-ux-tests harness source (event-driven wait plumbing in client.rs/observation.rs/diagnostics.rs). The crate is classified as test support by the repository's own coverage gate (TEST_SUPPORT_CRATE_PREFIXES) and ships no production behavior; its tests/ tree is already suppressed as test_receipt_surface. The new synchronization behavior is proven by harness_timing_discipline.rs (including the suffixed timing disposition rejection) and the 17 UX scenario journeys that consume the harness. Per-line infection through the async/channel plumbing is untraceable from those oracles (ripr#1428/#1429 class). HONEST SCOPE NOTE: path-scoped, so future seams in these harness files are masked for this window; the harness is only ever executed by tests, so the masking cannot hide production behavior. Remove when ripr#1429 traces async plumbing or targeted mutation is scheduled per #1289."
+reason = "PR #15005: 71 probes inside the perl-lsp-ux-tests harness source (event-driven wait plumbing in client.rs/observation.rs/diagnostics.rs). The crate is classified as test support by the repository's own coverage gate (TEST_SUPPORT_CRATE_PREFIXES) and ships no production behavior; its tests/ tree is already suppressed as test_receipt_surface. The new synchronization behavior is proven by harness_timing_discipline.rs (including the suffixed timing disposition rejection) and the 17 UX scenario journeys that consume the harness. Per-line infection through the async/channel plumbing is untraceable from those oracles (ripr#1428/#1429 class). HONEST SCOPE NOTE: path-scoped, so future seams in these harness files are masked for this window; the harness is only ever executed by tests, so the masking cannot hide production behavior. PR #13199 renames client.rs to client/mod.rs and splits the scripted-request plumbing into client/server_request_script.rs; the hosted receipt from run 34740428609 (artifact 10313670834, evaluated merge head 9f8cdd9ed255abefad8210f9387c9cecc6ad7985, PR head 538f2abca) reports 2 + 31 no_static_path probes on those two files, all field_construction on struct field declarations (client/mod.rs:143 stdin: Arc<Mutex<Option<ChildStdin>>>, client/mod.rs:151 script: Option<ServerRequestScript>, server_request_script.rs:16 result: Value and siblings); the scripted behavior is proven by tests/ux_client_server_request_script.rs against a real child process, including the discriminating long-delay cancellation test, and by tests/harness_timing_discipline.rs; constructor-only tests would be proof theatre for declaration-line probes (ripr#1429). Remove when ripr#1429 traces async plumbing or targeted mutation is scheduled per #1289."
 created = "2026-09-09"
 review_after = "2026-09-16"
 expires = "2026-09-23"
 removal_criteria = "Remove when ripr#1429 traces async/channel plumbing, or narrow immediately if a future receipt reports an executable seam used outside the test harness."
+
+[[suppress]]
+id = "ripr-suppress-13199-fixture-constant-declaration-seams"
+kind = "declaration_line_no_static_path"
+paths = ["crates/perl-lsp-ux-tests/src/server_request_fixture.rs"]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #13199: the hosted receipt from run 34743834914 (artifact 10314426810, evaluated merge head ffb84b756e914b259929843719ee23760c554b03, PR head ac0841244) reports new_unresolved: 4, gap_list_proven: true, and exactly four field_construction no_static_path probes on the id-constant declarations at lines 8-11 (CONFIGURATION_ID, REGISTRATION_ID, PROGRESS_ID, SHOW_DOCUMENT_ID). The preceding increment closed all 63 reachable_unrevealed probes on this file's helpers with direct discriminator tests, so reachable_unrevealed is now 0 here and this entry masks a declaration-only remainder. The four constants' values are pinned as literals by happy_path_emits_exact_ids_and_round_trip_payload, progress_first_preserves_response_mapping_and_order, serve_until_exit_covers_shutdown_and_exit_paths, and response_validation_reports_exact_errors (whose exact error text asserts 41 and \"fixture-progress\"), and by tests/ux_client_server_request_script.rs against a real child process, so a mutated constant fails tests behaviourally even though ripr cannot trace a declaration owner to them. The crate is test support per TEST_SUPPORT_CRATE_PREFIXES and ships no production behaviour; constructor-only tests for declaration owners would be proof theatre. HONEST SCOPE NOTE: the matcher is path-scoped with no line selector, so while this window is open any future no_static_path seam anywhere in this file is masked too and must be reviewed rather than silently accepted."
+created = "2026-09-13"
+review_after = "2026-09-20"
+expires = "2026-10-13"
+removal_criteria = "Remove when ripr#1429 resolves declaration-line probes via constructor/usage paths, or narrow immediately if a receipt reports an executable no_static_path seam in this file beyond the four id constants."
+
 # Exact-tree test panic-family denominator (#13397, PR #14904): RIPR reports
 # no_static_path on non-executable struct/const/field owners in the new
 # observation module. Same-file tests construct the public DTOs, call
@@ -4091,6 +4106,57 @@ created = "2026-09-15"
 review_after = "2026-10-15"
 expires = "2026-12-31"
 removal_criteria = "Remove when ripr#1429-class tracing covers fn-pointer call sites on the deletion side of a diff, or when this PR's deletion probes age out of the diff scope. Narrow immediately if any seam unrelated to ParseFailure classification lands in this file."
+
+# -----------------------------------------------------------------------------
+# issue_controllers train validator (PR #15416, T02 of #11765): new-module
+# declarations with no static test path (ripr#1429 class).
+#
+# PR #15416 adds the independent static validator for the stable
+# issue_controller_train.v1 manifest: five production files plus an inline
+# cfg(test) falsifier suite. Diff-scoped RIPR 0.10.x reports 219
+# no_static_path seams across the module. The flagged seams are non-executable
+# declarations and fixture plumbing the analyzer cannot trace to a covering
+# test: frozen contract constants (SCHEMA_NAME, EXPECTED_NODES, LAW_EDGES,
+# vocabularies), clap-derived subcommand/field definitions in mod.rs (the same
+# proc-macro-opaque class as the xtask CLI and native_product_surface
+# suppressions), the internal Sha256Digest wrapper struct, and the cfg(test)
+# mutation-fixture builders in tests.rs.
+#
+# HONEST PROOF NOTE: the module's behavior proof is not declaration-level. It
+# is the 55-test falsifier suite that mutates the real stable manifest and
+# requires every law to reject it (cargo test -p xtask --bin xtask
+# issue_controllers), four command-level fail-closed tests (non-static refusal,
+# projection drift detection, refuse-to-project, explain-static), the
+# git_ancestry inventory contract test, and the fused CI gate
+# (issue-controller-train-contract.yml) that runs the suite, `train check
+# --static`, and `train graph --check` on every PR touching the module.
+# reachable_unrevealed findings are NOT suppressed and still block.
+#
+# HONEST SCOPE NOTE: the matcher is path-scoped, so a future no_static_path
+# seam in these files is masked for this window. That is a real cost; it is
+# accepted because every executable law in the module is falsifier-covered and
+# the fused CI gate re-proves the manifest on every touch. Narrow immediately
+# if any seam unrelated to the train validator lands in these files.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-issue-controllers-train-validator"
+kind = "predicate_infection_untraceable"
+paths = [
+  "xtask/src/tasks/issue_controllers/mod.rs",
+  "xtask/src/tasks/issue_controllers/model.rs",
+  "xtask/src/tasks/issue_controllers/validate.rs",
+  "xtask/src/tasks/issue_controllers/digest.rs",
+  "xtask/src/tasks/issue_controllers/projection.rs",
+  "xtask/src/tasks/issue_controllers/tests.rs",
+]
+classification = ["no_static_path"]
+owner = "proof-lane"
+issue = "#11765"
+reason = "PR #15416 (T02 of the issue-controller train, epic #11765) adds the independent static validator for the stable issue_controller_train.v1 manifest. Diff-scoped RIPR 0.10.x reports 219 no_static_path seams on the new module; they are non-executable declarations (frozen contract constants and vocabularies), clap-derived subcommand and field definitions, the internal Sha256Digest wrapper, and cfg(test) mutation-fixture builders — the analyzer cannot trace any of them to a static test path (ripr#1429 class, same as the xtask CLI, native_product_surface, quality_baseline, and agent_ledgers suppressions). The module's executable proof is the 55-test falsifier suite over the real stable manifest plus four command-level fail-closed tests, and the fused issue-controller-train-contract workflow re-runs the suite, `train check --static`, and `train graph --check` on every PR touching the module. Remove when ripr#1429 is fixed upstream or the module gains a registered static test mapping."
+created = "2026-09-16"
+review_after = "2026-10-16"
+expires = "2026-12-31"
+removal_criteria = "Remove when ripr#1429-class tracing maps new-module declarations to their covering falsifier suites, or when the module is deleted. Narrow immediately if any seam unrelated to the train validator lands in these files."
 
 # -----------------------------------------------------------------------------
 # xtask automation: compiler performance receipt gate module — no production
