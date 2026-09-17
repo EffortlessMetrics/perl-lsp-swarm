@@ -1141,6 +1141,7 @@ pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_lite_im
 pub fn perl_semantic_facts::framework_adapters::mojolicious::mojolicious_role_facts_from_mojo_base(mojo_base: &perl_semantic_facts::framework_adapters::mojo_base::MojoBaseActivationFacts) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousActivationFacts
 pub fn perl_semantic_facts::framework_adapters::mojolicious::parse_mojolicious_lite_import_args(args: &[alloc::string::String]) -> perl_semantic_facts::framework_adapters::mojolicious::MojoliciousLiteImportEvidence
 pub mod perl_semantic_facts::framework_adapters::moose
+#[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::moose::MooseActivationKind
 pub perl_semantic_facts::framework_adapters::moose::MooseActivationKind::Class
 pub perl_semantic_facts::framework_adapters::moose::MooseActivationKind::Role
 pub const fn perl_semantic_facts::framework_adapters::moose::MooseActivationKind::adapter_name(self) -> &'static str
@@ -1151,6 +1152,7 @@ pub fn perl_semantic_facts::framework_adapters::moose::MooseActivationKind::eq(&
 pub fn perl_semantic_facts::framework_adapters::moose::MooseActivationKind::partial_cmp(&self, other: &perl_semantic_facts::framework_adapters::moose::MooseActivationKind) -> core::option::Option<core::cmp::Ordering>
 pub fn perl_semantic_facts::framework_adapters::moose::MooseActivationKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_semantic_facts::framework_adapters::moose::MooseActivationKind::hash<__H: core::hash::Hasher>(&self, state: &mut __H)
+#[non_exhaustive] pub enum perl_semantic_facts::framework_adapters::moose::MooseImportDisposition
 pub perl_semantic_facts::framework_adapters::moose::MooseImportDisposition::Exact
 pub perl_semantic_facts::framework_adapters::moose::MooseImportDisposition::Unmodeled
 pub perl_semantic_facts::framework_adapters::moose::MooseImportDisposition::Unmodeled::arguments: alloc::vec::Vec<alloc::string::String>
@@ -1158,6 +1160,7 @@ pub const fn perl_semantic_facts::framework_adapters::moose::MooseImportDisposit
 pub fn perl_semantic_facts::framework_adapters::moose::MooseImportDisposition::clone(&self) -> perl_semantic_facts::framework_adapters::moose::MooseImportDisposition
 pub fn perl_semantic_facts::framework_adapters::moose::MooseImportDisposition::eq(&self, other: &perl_semantic_facts::framework_adapters::moose::MooseImportDisposition) -> bool
 pub fn perl_semantic_facts::framework_adapters::moose::MooseImportDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub struct perl_semantic_facts::framework_adapters::moose::MooseSiteAnchor
 pub perl_semantic_facts::framework_adapters::moose::MooseSiteAnchor::package: core::option::Option<alloc::string::String>
 pub perl_semantic_facts::framework_adapters::moose::MooseSiteAnchor::source_generation: perl_semantic_facts::SourceGeneration
 pub perl_semantic_facts::framework_adapters::moose::MooseSiteAnchor::span_end_byte: u32
