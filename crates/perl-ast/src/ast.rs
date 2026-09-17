@@ -182,7 +182,11 @@ pub struct FieldId(&'static str);
 macro_rules! define_field_ids {
     ($(($constant:ident, $name:literal)),+ $(,)?) => {
         impl FieldId {
-            $(pub const $constant: Self = Self($name);)+
+            $(
+/// Field identifier for the canonical name
+                #[doc = concat!("`", $name, "`")]
+                pub const $constant: Self = Self($name);
+            )+
 
 /// All field identifiers named by the structural registry.
             ///
