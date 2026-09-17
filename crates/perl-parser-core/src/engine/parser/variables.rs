@@ -663,11 +663,7 @@ impl<'a> Parser<'a> {
             || (matches!(sigil.as_str(), "@" | "%") && full_name == "$$"))
             && self.peek_kind().is_some_and(Self::is_variable_name_kind)
             && (full_name.is_empty()
-                || self
-                    .tokens
-                    .peek()
-                    .ok()
-                    .is_some_and(|name_token| name_token.start() == end))
+                || self.tokens.peek().ok().is_some_and(|name_token| name_token.start() == end))
         {
             let name_token = self.advance_token()?;
             full_name.push_str(&name_token.text);
@@ -695,8 +691,25 @@ impl<'a> Parser<'a> {
 
         if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&full_name);
+            // A fused `*{EXPR}` assignment token carries no parsed body yet.
+            // When normalization keeps the brace marker (a computed body),
+            // recover the inner expression so scope analysis can see the
+            // variables it uses (#15731). Recovery is best-effort: the raw
+            // braced text stays in `name`, and an inner parse failure leaves
+            // the body empty with no new diagnostics — exactly the assignment
+            // path's behavior before the body child existed.
+            //
+            // The nested parse runs under this operation's remaining core
+            // allowance and its nodes and tokens are adopted here, so a
+            // computed body cannot spend a fresh full budget (#8786).
+            // Diagnostics stay dropped, uncharged, exactly as before #15731.
+            let nested_config =
+                self.config_identity().with_budget(self.operation.remaining_core_budget());
+            let (body, usage) = fused_typeglob_body(&name, token.start(), nested_config);
+            self.operation.authorize_adopted_nodes(usage.nodes)?;
+            self.operation.authorize_adopted_tokens(usage.tokens)?;
             self.charge_node(
-                NodeKind::Typeglob { name },
+                NodeKind::Typeglob { name, body },
                 SourceLocation { start: token.start(), end },
             )
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
@@ -827,11 +840,7 @@ impl<'a> Parser<'a> {
 
     fn simple_braced_scalar_token_name(text: &str) -> Option<&str> {
         let inner = text.strip_prefix("${")?.strip_suffix('}')?;
-        if is_simple_scalar_name(inner) {
-            Some(inner)
-        } else {
-            None
-        }
+        if is_simple_scalar_name(inner) { Some(inner) } else { None }
     }
 
     /// Extract the package-qualified name from a token whose full text is a
@@ -843,11 +852,7 @@ impl<'a> Parser<'a> {
     /// case (issue #3593).
     fn qualified_braced_scalar_token_name(text: &str) -> Option<&str> {
         let inner = text.strip_prefix("${")?.strip_suffix('}')?;
-        if is_package_qualified_scalar_name(inner) {
-            Some(inner)
-        } else {
-            None
-        }
+        if is_package_qualified_scalar_name(inner) { Some(inner) } else { None }
     }
 
     fn try_parse_braced_caret_special_scalar(&mut self) -> ParseResult<Option<Node>> {
@@ -952,15 +957,38 @@ impl<'a> Parser<'a> {
             let mut name = name_token.text.to_string();
             let mut end = name_token.end();
 
+            // The lexer folds a trailing sigil+name like `@@x` into one
+            // Identifier token, so the name branch above accepts it and the
+            // else-branch rejection below never runs. A non-`$` sigil whose
+            // "name" itself starts with a sigil character is exactly the bare
+            // double-sigil shape of issue #15750: surface the UnexpectedToken
+            // diagnostic and ERROR node instead of silently building
+            // `Variable { sigil: @, name: @x }`. `$`-prefixed names stay
+            // valid here (unbraced derefs like `@$ref`).
+            if sigil != "$" && name.starts_with(['@', '%', '&', '*']) {
+                let expected = format!("identifier, '{{', or '$' after '{sigil}' sigil");
+                let node = self.recover_from_error(
+                    format!(
+                        "bare '{sigil}' sigil followed by another sigil — \
+                         not a valid Perl variable"
+                    ),
+                    expected,
+                    name,
+                    start,
+                );
+                // The fused sigil+name token is already consumed, so
+                // `current_position` ends the recovery span exactly at the
+                // bad text.
+                let mut node = node;
+                node.location.end = end;
+                return Ok(node);
+            }
+
             // `%$$slice` may arrive as `%`, `$$`, `slice`; only join an
             // adjacent tail so whitespace-delimited `$$ eq` keeps `eq` as op.
             if name == "$$"
                 && self.peek_kind() == Some(TokenKind::Identifier)
-                && self
-                    .tokens
-                    .peek()
-                    .ok()
-                    .is_some_and(|next_token| next_token.start() == end)
+                && self.tokens.peek().ok().is_some_and(|next_token| next_token.start() == end)
             {
                 let next_token = self.advance_token()?;
                 name.push_str(&next_token.text);
@@ -986,6 +1014,66 @@ impl<'a> Parser<'a> {
 
             (name, end)
         } else {
+            // Reject bare double-sigil constructs like `@@`, `%%`, `**`, `&&`
+            // when the first sigil is not `$` (issue #15750). The `$` sigil has
+            // many special-variable forms — $$ PID, $@ eval error, $! system
+            // error, $? / $^X / $# / $0 / $:: / $: — that are dispatched in
+            // the `match self.peek_kind()` arm below. For `@`, `%`, `*`, `&`,
+            // the only valid second tokens are `$` (unbraced dereference
+            // target like `@$ref`, handled in the ScalarSigil arm and at
+            // line 1189) and `{` (braced dereference, handled at line 1134
+            // and 1167). Anything else is a syntax error: surface it via
+            // UnexpectedToken + ERROR node so statement-boundary recovery
+            // can engage instead of silently misparsing garbage.
+            if sigil != "$" {
+                let bad_kind = self.peek_kind();
+                let is_bad_double_sigil = matches!(
+                    bad_kind,
+                    Some(
+                        TokenKind::ArraySigil
+                            | TokenKind::HashSigil
+                            | TokenKind::SubSigil
+                            | TokenKind::GlobSigil
+                            | TokenKind::Percent
+                            | TokenKind::BitwiseAnd
+                            | TokenKind::Star
+                    )
+                );
+                if is_bad_double_sigil {
+                    let expected = format!("identifier, '{{', or '$' after '{}' sigil", sigil);
+                    let found = self
+                        .tokens
+                        .peek()
+                        .ok()
+                        .map(|t| t.text.to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "end of input".to_string());
+                    // Consume the second sigil so the parser advances and
+                    // does not loop on the same token. Subsequent bad
+                    // sigils or following garbage will surface in their own
+                    // ERROR nodes, which is the honest shape v3 owes its
+                    // callers.
+                    let consumed = self.advance_token()?;
+                    let end = consumed.end();
+                    let node = self.recover_from_error(
+                        format!(
+                            "bare '{}' sigil followed by another sigil — \
+                             not a valid Perl variable",
+                            sigil
+                        ),
+                        expected,
+                        found,
+                        start,
+                    );
+                    // Tighten the recovered node's span to cover both
+                    // sigils so downstream tooling can localize the error
+                    // to the actual bad region.
+                    let mut node = node;
+                    node.location.end = end;
+                    return Ok(node);
+                }
+            }
+
             // Handle special variables like $$, $@, $!, $?, etc.
             match self.peek_kind() {
                 Some(TokenKind::ScalarSigil) => {
@@ -993,7 +1081,8 @@ impl<'a> Parser<'a> {
                     // dereference target that must preserve the referenced name.
                     let token = self.advance_token()?;
                     if self.tokens.peek().ok().is_some_and(|name_token| {
-                        Self::is_variable_name_kind(name_token.kind()) && name_token.start() == token.end()
+                        Self::is_variable_name_kind(name_token.kind())
+                            && name_token.start() == token.end()
                     }) {
                         let name_token = self.advance_token()?;
                         let mut name = format!("${}", name_token.text);
@@ -1153,7 +1242,13 @@ impl<'a> Parser<'a> {
                 let name = normalize_dynamic_typeglob_name(&String::from_utf8_lossy(
                     &self.src_bytes[body_start.saturating_sub(1)..end],
                 ));
-                return self.charge_node(NodeKind::Typeglob { name }, SourceLocation { start, end });
+                // A computed body keeps its braced name; retain the parsed
+                // expression as the structured body so scope analysis can see
+                // the variables it uses (#15731). A braced bareword strips to
+                // its static name and carries no body.
+                let body = name.starts_with('{').then(|| Box::new(expr));
+                return self
+                    .charge_node(NodeKind::Typeglob { name, body }, SourceLocation { start, end });
             }
             let node = self.charge_node(
                 NodeKind::Unary { op: "*{}".to_string(), operand: Box::new(expr) },
@@ -1218,7 +1313,7 @@ impl<'a> Parser<'a> {
             self.charge_node(NodeKind::AmperCall { name, args }, SourceLocation { start, end })
         } else if sigil == "*" {
             let name = normalize_dynamic_typeglob_name(&name);
-            self.charge_node(NodeKind::Typeglob { name }, SourceLocation { start, end })
+            self.charge_node(NodeKind::Typeglob { name, body: None }, SourceLocation { start, end })
         } else if matches!(sigil.as_str(), "$" | "@" | "%")
             && Self::is_unbraced_scalar_deref_name(&name)
         {
@@ -1445,11 +1540,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        end = if let Some(ref default) = default_value {
-            default.location.end
-        } else {
-            end
-        };
+        end = if let Some(ref default) = default_value { default.location.end } else { end };
 
         // Check if variable is slurpy (@args or %hash)
         let is_slurpy = matches!(&variable.kind, NodeKind::Variable { sigil, .. } if sigil == "@" || sigil == "%");
@@ -1759,6 +1850,38 @@ impl NestedParseFailure {
     }
 }
 
+/// Recover the parsed body of a fused `*{EXPR}` typeglob assignment token.
+///
+/// The lexer keeps `*{...}` as one identifier token, so a dynamic typeglob
+/// assignment reaches [`Parser::parse_variable`] with the braced body only as
+/// raw text. When normalization kept the brace marker (a computed body),
+/// re-parse the inner expression so the `Typeglob` node carries it as a
+/// structured child (#15731). Recovery is best-effort: on any inner parse
+/// failure the body stays `None` and the raw braced text in `name` remains the
+/// only representation, matching the assignment path's pre-#15731 diagnostic
+/// surface. A braced bareword (`*{name}`) strips to its static name and never
+/// gets a body.
+///
+/// The inner parse runs under the caller's remaining core allowance and its
+/// node/token usage is returned for adoption, so the body cannot spend a
+/// fresh full budget (#8786). Advisory diagnostics from the inner parse are
+/// deliberately dropped, uncharged: the assignment path never surfaced them
+/// before #15731.
+fn fused_typeglob_body(
+    name: &str,
+    token_start: usize,
+    nested_config: ParserConfigIdentity,
+) -> (Option<Box<Node>>, NestedCoreUsage) {
+    let inner = match name.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) {
+        Some(inner) => inner,
+        None => return (None, NestedCoreUsage::default()),
+    };
+    match parse_inline_expression(inner, token_start.saturating_add(2), nested_config) {
+        Ok((body, _, nodes, tokens)) => (Some(Box::new(body)), NestedCoreUsage { tokens, nodes }),
+        Err(failure) => (None, failure.usage),
+    }
+}
+
 /// Parse an expression captured inside the lexer's single `*{...}` token and
 /// restore its source offsets relative to the containing source file.
 /// Parse an expression captured inside a single `*{...}` token.
@@ -1889,11 +2012,9 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
         ParseError::Advisory { message, location } => {
             ParseError::Advisory { message, location: location.saturating_add(offset) }
         }
-        ParseError::Recovered { site, kind, location } => ParseError::Recovered {
-            site,
-            kind,
-            location: location.saturating_add(offset),
-        },
+        ParseError::Recovered { site, kind, location } => {
+            ParseError::Recovered { site, kind, location: location.saturating_add(offset) }
+        }
         other => other,
     }
 }
@@ -2021,12 +2142,11 @@ mod inline_expression_tests {
             matches!(diagnostic, ParseError::Advisory { message, .. }
                 if message.contains("Nested quantifiers detected"))
         }) {
-            return Err(ParseError::syntax(
-                "expected inline parser advisory to be forwarded",
-                17,
-            ));
+            return Err(ParseError::syntax("expected inline parser advisory to be forwarded", 17));
         }
-        if !diagnostics.iter().all(|diagnostic| diagnostic.location().is_none_or(|location| location >= 17))
+        if !diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.location().is_none_or(|location| location >= 17))
         {
             return Err(ParseError::syntax(
                 "expected forwarded inline diagnostics to retain the outer offset",
@@ -2106,7 +2226,11 @@ mod prototype_heuristic_tests {
     fn named_parameter_carries_external_name_and_default() {
         fn find_named(node: &Node, out: &mut Vec<(String, bool, bool, Option<String>)>) {
             if let NodeKind::NamedParameter {
-                external_name, default_value, required, default_operator, ..
+                external_name,
+                default_value,
+                required,
+                default_operator,
+                ..
             } = &node.kind
             {
                 out.push((
