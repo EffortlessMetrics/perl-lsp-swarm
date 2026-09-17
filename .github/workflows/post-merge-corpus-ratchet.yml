@@ -11,6 +11,8 @@ on:
     paths:
       - '.ci/cpan-top-1000-distributions.txt'
       - '.ci/cpan-top-50-distributions.txt'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
   schedule:
     - cron: '0 8 * * *'
   workflow_dispatch:
