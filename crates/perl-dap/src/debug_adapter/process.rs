@@ -3884,6 +3884,7 @@ mod tests {
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
 
@@ -4028,6 +4029,7 @@ mod tests {
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
 
@@ -4155,6 +4157,7 @@ mod tests {
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
         loop {
@@ -4226,6 +4229,7 @@ mod tests {
             entry_stop_pending: false,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
         let marker = ready_receiver
@@ -4308,6 +4312,7 @@ mod tests {
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
         let mut observed = Vec::new();
@@ -4725,6 +4730,7 @@ mod tests {
             entry_stop_pending: true,
             initial_stop_pending: false,
             stopped_generation: 0,
+            module_generation: RuntimeModuleGenerationClock::new(),
         });
         adapter.start_output_reader(PathBuf::from("/tmp"));
 
@@ -4856,6 +4862,7 @@ mod tests {
                 entry_stop_pending: true,
                 initial_stop_pending: false,
                 stopped_generation: 0,
+                module_generation: RuntimeModuleGenerationClock::new(),
             });
             adapter.start_output_reader(PathBuf::from("/tmp"));
 
