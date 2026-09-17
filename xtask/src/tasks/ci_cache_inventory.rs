@@ -1560,10 +1560,7 @@ fn save_authority_reason_str(source: SaveAuthoritySource) -> &'static str {
 fn save_config_permits_save(row: &CacheFamilyRow) -> bool {
     row.capability != Capability::RestoreOnly
         && row.candidate_event_reachability != CandidateEventReachability::StaticallyDead
-        && !row
-            .save_condition
-            .as_deref()
-            .is_some_and(|raw| strip_expr_wrapper(raw).trim() == "false")
+        && row.save_condition.as_deref().is_none_or(|raw| strip_expr_wrapper(raw).trim() != "false")
 }
 
 /// One observation per family, always defaulted `not_proven`/`unknown`/
@@ -1878,13 +1875,13 @@ pub fn run(
                     build_failed_receipt(&format!("deriving the CI cache inventory: {error}"));
                 match serde_json::to_string_pretty(&failed) {
                     Ok(failed_json) => {
-                        if let Some(parent) = path.parent() {
-                            if let Err(create_error) = fs::create_dir_all(parent) {
-                                eprintln!(
-                                    "warning: could not create {} for the ci-cache failure receipt: {create_error}",
-                                    parent.display()
-                                );
-                            }
+                        if let Some(parent) = path.parent()
+                            && let Err(create_error) = fs::create_dir_all(parent)
+                        {
+                            eprintln!(
+                                "warning: could not create {} for the ci-cache failure receipt: {create_error}",
+                                parent.display()
+                            );
                         }
                         if let Err(write_error) = fs::write(path, failed_json) {
                             eprintln!(
