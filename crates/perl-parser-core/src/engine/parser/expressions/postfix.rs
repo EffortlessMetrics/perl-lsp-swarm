@@ -1772,10 +1772,7 @@ mod do_while_brace_boundary_tests {
     }
 
     fn number_node() -> Node {
-        Node::new(
-            NodeKind::Number { value: "0".to_string() },
-            SourceLocation { start: 0, end: 1 },
-        )
+        Node::new(NodeKind::Number { value: "0".to_string() }, SourceLocation { start: 0, end: 1 })
     }
 
     fn condition_parser(unparenthesized: bool, depth: usize) -> Parser<'static> {
