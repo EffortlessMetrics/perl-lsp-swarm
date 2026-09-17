@@ -3,7 +3,7 @@ use color_eyre::eyre::{Context, Result, bail};
 use serde::Serialize;
 use serde_yaml_ng::{Mapping, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -193,8 +193,14 @@ fn lint_selected_subject(
             bail!("selected workflow-policy root has no .yml or .yaml workflows");
         }
         workflows.sort();
+        // Load the repository `justfile` once per scan so `just <recipe>`
+        // invocations inside workflow `run:` steps resolve to their recipes
+        // before the xtask-CLI wiring check fires. A missing `justfile` is
+        // not an error — it preserves the previous lint behavior for repos
+        // that do not use `just`.
+        let just_recipes = load_project_justfile(&root)?.unwrap_or_default();
         for path in workflows {
-            lint_workflow_file(&path, false, issues)?;
+            lint_workflow_file_with_just(&path, false, issues, &just_recipes)?;
             subject.workflow_file_count += 1;
         }
         if config.check_lane_whitelist {
@@ -295,6 +301,19 @@ fn run_with_default_root(
 }
 
 fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>) -> Result<()> {
+    lint_workflow_file_with_just(path, is_fixture, issues, &NoJustRecipes)
+}
+
+/// Like [`lint_workflow_file`], but lets the caller supply a parsed `justfile`
+/// so that `just <recipe>` invocations inside `run:` steps can be expanded into
+/// the recipe body before the xtask-CLI check runs. A fixture without an
+/// associated justfile calls the simpler wrapper instead.
+fn lint_workflow_file_with_just(
+    path: &Path,
+    is_fixture: bool,
+    issues: &mut Vec<LintIssue>,
+    recipes: &dyn JustRecipeLookup,
+) -> Result<()> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading workflow file {}", path.display()))?;
     let workflow: Value = serde_yaml_ng::from_str(&raw)
@@ -419,23 +438,48 @@ fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>
         }
     }
 
-    if workflow_invokes_xtask_cli(&workflow) {
-        for (trigger, paths) in triggers_with_paths_filters(&workflow) {
-            let missing = XTASK_CLI_WIRING_FILES
-                .iter()
-                .filter(|wiring| !paths_filter_covers(&paths, wiring))
-                .copied()
-                .collect::<Vec<_>>();
-            if missing.is_empty() {
-                continue;
+    match workflow_invokes_xtask_cli(&workflow, recipes) {
+        Ok(true) => {
+            for (trigger, paths) in triggers_with_paths_filters(&workflow) {
+                let missing = XTASK_CLI_WIRING_FILES
+                    .iter()
+                    .filter(|wiring| !paths_filter_covers(&paths, wiring))
+                    .copied()
+                    .collect::<Vec<_>>();
+                if missing.is_empty() {
+                    continue;
+                }
+                issues.push(LintIssue {
+                    level: "error",
+                    code: "XTASK_CLI_WIRING_PATHS",
+                    workflow: workflow_name.clone(),
+                    message: format!(
+                        "trigger '{trigger}' runs an xtask CLI subcommand but its paths filter omits {}; a change to the CLI wiring would skip this gate",
+                        missing.join(", ")
+                    ),
+                });
             }
+        }
+        Ok(false) => {}
+        Err(JustResolutionError::MissingRecipe(recipe)) => {
             issues.push(LintIssue {
                 level: "error",
-                code: "XTASK_CLI_WIRING_PATHS",
+                code: "JUST_RECIPE_UNRESOLVED",
                 workflow: workflow_name.clone(),
                 message: format!(
-                    "trigger '{trigger}' runs an xtask CLI subcommand but its paths filter omits {}; a change to the CLI wiring would skip this gate",
-                    missing.join(", ")
+                    "run: invokes `just {recipe}` but no recipe of that name is defined in justfile; \
+                     a renamed or removed recipe would silently lose xtask-CLI wiring coverage"
+                ),
+            });
+        }
+        Err(JustResolutionError::RecursionDepthExceeded { recipe, depth }) => {
+            issues.push(LintIssue {
+                level: "error",
+                code: "JUST_RECIPE_CYCLIC",
+                workflow: workflow_name.clone(),
+                message: format!(
+                    "`just {recipe}` exceeds the {depth}-level recipe indirection bound; \
+                     a cyclic recipe would otherwise lock the workflow policy lint"
                 ),
             });
         }
@@ -464,8 +508,303 @@ const COMMAND_WRAPPERS: &[&str] = &["sudo", "env", "time", "exec", "nice", "comm
 ///
 /// Known limitation: an invocation reached indirectly, through a `just` recipe
 /// or another script, is not visible here. See #14293 for the residual claim.
+/// (Partially addressed for `just` recipes by [`command_invokes_xtask_cli_with_just`];
+/// scripts other than `just` remain un-tracked.)
 fn command_invokes_xtask_cli(script: &str) -> bool {
-    shell_commands(script).iter().any(|command| command_tokens_invoke_xtask_cli(command))
+    // Without a recipe table there is nothing to resolve through. Indirection
+    // is silently untracked for that callers — same residual as before #15509.
+    command_invokes_xtask_cli_with_just(script, &NoJustRecipes).unwrap_or(false)
+}
+
+/// Maximum `just` recipe expansion depth, including the initial recipe call.
+///
+/// `just` recipes routinely chain two or three levels (`ci-full` → `_timed`
+/// → underlying lint/test recipe). Eight is well above anything the repository
+/// actually uses, and a hard cap stops a cyclic recipe from locking the lint.
+const JUST_RESOLUTION_MAX_DEPTH: usize = 8;
+
+/// Map of `recipe name → body lines`, with each body line pre-stripped of the
+/// leading `@` echo-suppression marker and surrounding whitespace.
+type JustRecipes = BTreeMap<String, Vec<String>>;
+
+/// A parser-time marker that says "no `just` indirection can be resolved",
+/// without forcing every caller to thread an `Option` they will never use.
+struct NoJustRecipes;
+
+impl JustRecipeLookup for NoJustRecipes {
+    fn recipes(&self) -> &JustRecipes {
+        static EMPTY: JustRecipes = BTreeMap::new();
+        &EMPTY
+    }
+}
+
+/// Recipe lookup the resolver can read from.
+///
+/// `NoJustRecipes` and the real `justfile`-derived `JustRecipes` both implement
+/// this so the lint and the legacy single-argument wrapper share one path.
+trait JustRecipeLookup {
+    fn recipes(&self) -> &JustRecipes;
+}
+
+impl JustRecipeLookup for JustRecipes {
+    fn recipes(&self) -> &JustRecipes {
+        self
+    }
+}
+
+/// Outcome of failing to expand a `just <recipe>` call inside a `run:` script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JustResolutionError {
+    /// The recipe is named but does not exist in the parsed `justfile`. A
+    /// silent pass here would let a typo'd recipe hide an xtask invocation;
+    /// the lint surfaces it as an unresolved-resolution finding instead.
+    MissingRecipe(String),
+    /// Recursion hit `JUST_RESOLUTION_MAX_DEPTH`. A cyclic recipe would
+    /// otherwise loop the lint; bound the depth so the lint terminates.
+    RecursionDepthExceeded { recipe: String, depth: usize },
+}
+
+impl std::fmt::Display for JustResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingRecipe(recipe) => {
+                write!(formatter, "just recipe `{recipe}` is not defined in justfile")
+            }
+            Self::RecursionDepthExceeded { recipe, depth } => write!(
+                formatter,
+                "just recipe `{recipe}` exceeds the {depth}-level indirection bound"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for JustResolutionError {}
+
+/// Whether a `run:` script invokes the default `xtask` binary's CLI, looking
+/// through `just <recipe>` indirection when a recipe table is supplied.
+///
+/// The recipe table is consulted for every segment whose first token is `just`
+/// (or a wrapper around `just`, after the existing assignment/wrapper skip).
+/// Resolution is bounded by [`JUST_RESOLUTION_MAX_DEPTH`] and returns a
+/// [`JustResolutionError`] when the named recipe is absent — both to keep the
+/// verdict falsifiable and so that a future recipe-table drift cannot quietly
+/// re-introduce the false-negative the gate exists to prevent.
+fn command_invokes_xtask_cli_with_just(
+    script: &str,
+    recipes: &dyn JustRecipeLookup,
+) -> Result<bool, JustResolutionError> {
+    for command in shell_commands(script) {
+        let expanded = expand_just_in_command(&command, recipes, 0)?;
+        for inner in expanded {
+            if command_tokens_invoke_xtask_cli(&inner) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Expand every `just <recipe>` invocation reachable from `command` into the
+/// recipe's body lines. Wrapper assignments (`RUST_LOG=…`) and command
+/// wrappers (`env`, `sudo`, …) are not followed: they do not change which
+/// command runs in command position. A `just` invocation that runs inside a
+/// body line is itself recursively expanded up to the depth bound.
+///
+/// The recursion is shallow on purpose — `just` recipe bodies are flat lists
+/// of shell commands. Recursion is only needed when one body line re-runs a
+/// `just` recipe, which happens for `_timed` and other dispatcher recipes.
+fn expand_just_in_command(
+    command: &[String],
+    recipes: &dyn JustRecipeLookup,
+    depth: usize,
+) -> Result<Vec<Vec<String>>, JustResolutionError> {
+    if depth > JUST_RESOLUTION_MAX_DEPTH {
+        if let Some(recipe) = just_recipe_invoked(command) {
+            return Err(JustResolutionError::RecursionDepthExceeded {
+                recipe,
+                depth: JUST_RESOLUTION_MAX_DEPTH,
+            });
+        }
+        return Ok(Vec::new());
+    }
+    let Some(recipe) = just_recipe_invoked(command) else {
+        return Ok(vec![command.to_vec()]);
+    };
+    let body = recipes
+        .recipes()
+        .get(&recipe)
+        .ok_or_else(|| JustResolutionError::MissingRecipe(recipe.clone()))?;
+    let mut expanded = Vec::new();
+    for body_line in body {
+        let tokens: Vec<String> = body_line.split_whitespace().map(str::to_string).collect();
+        if tokens.is_empty() {
+            continue;
+        }
+        if just_recipe_invoked(&tokens).is_some() {
+            for nested in expand_just_in_command(&tokens, recipes, depth + 1)? {
+                expanded.push(nested);
+            }
+        } else {
+            expanded.push(tokens);
+        }
+    }
+    Ok(expanded)
+}
+
+/// Return the recipe name invoked by a `just <recipe>` token sequence, if any.
+///
+/// Accepts a leading assignment (`RUST_LOG=debug just ci-fast`) and a single
+/// wrapper (`env`, `sudo`, `time`, `exec`, `nice`, `command`) because the
+/// existing `command_tokens_invoke_xtask_cli` recognises those as not changing
+/// what runs. The wrapper set is identical to [`COMMAND_WRAPPERS`] so the two
+/// paths agree on what counts as "the same `just"".
+fn just_recipe_invoked(tokens: &[String]) -> Option<String> {
+    let mut rest = tokens;
+    loop {
+        let Some(first) = rest.first().map(String::as_str) else {
+            return None;
+        };
+        if is_env_assignment(first) {
+            rest = &rest[1..];
+            continue;
+        }
+        if COMMAND_WRAPPERS.contains(&first) {
+            rest = &rest[1..];
+            while let Some(next) = rest.first().map(String::as_str) {
+                if next.starts_with('-') || is_env_assignment(next) {
+                    rest = &rest[1..];
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+        break;
+    }
+    let (command, args) = rest.split_first()?;
+    if command != "just" {
+        return None;
+    }
+    // `just` always takes one of:
+    //   - a recipe name (`just ci-fast`)
+    //   - one of its flags (`just --list`, `just --evaluate`)
+    //   - `--justfile <path> <recipe>` to point at a different file
+    // A flag-only invocation has no recipe and is not an xtask claim by itself.
+    let recipe = args.first()?;
+    if recipe.starts_with('-') {
+        return None;
+    }
+    if recipe == "--justfile" {
+        // recipe sits after the path, i.e. `args[2]`
+        return args.get(2).cloned();
+    }
+    Some(recipe.clone())
+}
+
+/// Parse a `justfile` body into a recipe map.
+///
+/// Format (https://just.systems/man/en/), in summary:
+///
+/// - lines starting with `#` are comments;
+/// - top-level `name := value` / `name = value` lines are settings or
+///   exported variables, not recipes;
+/// - a recipe header is `name [params]: [deps]` — params and deps are not
+///   modeled here, only the recipe name;
+/// - the body is the run of indented lines after the header; each body line
+///   has its leading `@` echo-suppression marker removed, since `just`
+///   strips that before exec.
+///
+/// The parser is intentionally narrow: it accepts the shape the repository's
+/// own `justfile` uses, and returns an empty map for any line it cannot
+/// classify. The lint then runs `just <recipe>` against that map; a recipe
+/// the parser cannot see cannot be expanded, and the call site gets a typed
+/// `MissingRecipe` finding.
+fn parse_justfile(content: &str) -> JustRecipes {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut recipes: JustRecipes = BTreeMap::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let raw = lines[index];
+        let leading_ws =
+            raw.chars().take_while(|character| matches!(character, ' ' | '\t')).count();
+        let stripped = raw[leading_ws..].trim_start();
+        if leading_ws > 0 || stripped.is_empty() || stripped.starts_with('#') {
+            index += 1;
+            continue;
+        }
+        // A non-indented line is either an assignment (`cargo_safe := ...` /
+        // `name = value`) or a recipe header (`name:` / `name params:` /
+        // `name: dep1 dep2`). The discriminator is whether the next non-blank
+        // line is indented: recipes always have a body, assignments never do.
+        let Some(name) = recipe_header_name(stripped) else {
+            index += 1;
+            continue;
+        };
+        if !next_non_blank_is_indented(&lines, index) {
+            // Treat as a setting or export. Skip.
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let mut body = Vec::new();
+        while index < lines.len() {
+            let inner = lines[index];
+            let inner_ws =
+                inner.chars().take_while(|character| matches!(character, ' ' | '\t')).count();
+            if inner_ws == 0 {
+                break;
+            }
+            let inner_stripped = inner[inner_ws..].trim_start();
+            if inner_stripped.is_empty() || inner_stripped.starts_with('#') {
+                index += 1;
+                continue;
+            }
+            // `just` itself strips the leading `@` (and `@-`) before exec, so
+            // removing it here keeps the existing token splitter honest.
+            let body_line = inner_stripped.strip_prefix('@').unwrap_or(inner_stripped);
+            body.push(body_line.to_string());
+            index += 1;
+        }
+        // A recipe with an empty body cannot be reached by any `run:` step,
+        // but record it so a misspelled recipe name produces a typed
+        // `MissingRecipe` rather than a silent miss.
+        recipes.insert(name.to_string(), body);
+    }
+    recipes
+}
+
+/// Extract the recipe name from a possible recipe header line.
+///
+/// `just` recipe headers are `name`, optionally followed by parameters and
+/// `:` (with optional deps). The name itself never contains whitespace or
+/// `:`. The trailing `:` is the strongest signal: assignments use `=` /
+/// `:=`, recipes use a single `:`. We accept only headers that have a `:`;
+/// assignments without `:` (e.g. `export RUST_LOG`) are not modeled.
+fn recipe_header_name(line: &str) -> Option<&str> {
+    let colon = line.find(':')?;
+    let name = line[..colon].trim();
+    if name.is_empty() {
+        return None;
+    }
+    // A `[settings]` or `export` line would also contain `:`, but those
+    // names start with a non-identifier character; gate on a valid recipe
+    // identifier so we never confuse the two.
+    if !name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// Whether the next non-blank line after `lines[index]` is indented.
+fn next_non_blank_is_indented(lines: &[&str], index: usize) -> bool {
+    lines
+        .iter()
+        .skip(index + 1)
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| line.starts_with(' ') || line.starts_with('\t'))
 }
 
 /// Split a `run:` script into candidate commands.
@@ -658,18 +997,45 @@ fn selects_another_target(args: &[String]) -> bool {
     false
 }
 
-/// Whether any step in any job of this workflow runs the `xtask` CLI.
-fn workflow_invokes_xtask_cli(workflow: &Value) -> bool {
+/// Whether any step in any job of this workflow runs the `xtask` CLI, looking
+/// through `just <recipe>` indirection when a recipe table is supplied.
+///
+/// A missing `just` recipe name produces a [`JustResolutionError::MissingRecipe`]
+/// rather than a silent false-negative. The caller is expected to surface that
+/// as a lint issue, so a recipe rename in `justfile` cannot quietly make the
+/// gate lose visibility of a step.
+fn workflow_invokes_xtask_cli(
+    workflow: &Value,
+    recipes: &dyn JustRecipeLookup,
+) -> Result<bool, JustResolutionError> {
     let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
-        return false;
+        return Ok(false);
     };
-    jobs.values().any(|job| {
-        job.get("steps").and_then(Value::as_sequence).is_some_and(|steps| {
-            steps.iter().any(|step| {
-                step.get("run").and_then(Value::as_str).is_some_and(command_invokes_xtask_cli)
-            })
-        })
-    })
+    for job in jobs.values() {
+        let Some(steps) = job.get("steps").and_then(Value::as_sequence) else {
+            continue;
+        };
+        for step in steps {
+            if let Some(run) = step.get("run").and_then(Value::as_str) {
+                if command_invokes_xtask_cli_with_just(run, recipes)? {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Load the `justfile` for a repository root, returning `Ok(None)` when the
+/// file is absent. The lint treats a missing `justfile` as "no `just` recipes
+/// to resolve through", which is the same verdict the gate had before #15509.
+fn load_project_justfile(root: &Path) -> Result<Option<JustRecipes>> {
+    let path = root.join("justfile");
+    match fs::read_to_string(&path) {
+        Ok(content) => Ok(Some(parse_justfile(&content))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("reading justfile {}", path.display())),
+    }
 }
 
 /// Filter-pattern syntax GitHub defines differently from shell globbing.
@@ -4101,6 +4467,278 @@ review_after = "2099-01-01"
         let stale: Vec<_> =
             issues.iter().filter(|issue| issue.code == "SELF_HOSTED_ISOLATION_STALE").collect();
         assert!(stale.is_empty(), "shipped isolation profiles have lapsed: {stale:?}");
+        Ok(())
+    }
+
+    /// The minimal justfile shape the lint accepts: recipe headers at column
+    /// zero, indented bodies, `@` echo-suppression stripped, comments skipped,
+    /// settings (`name := value`) and `[private]` attributes ignored.
+    #[test]
+    fn parse_justfile_accepts_minimal_recipe_shape() {
+        let justfile = "\
+# Settings first; never treated as a recipe.
+cargo_safe := \"./scripts/cargo-safe\"
+
+[private]
+_check-tools:
+    @echo tools
+
+# A recipe that runs xtask through the lint's detection rule.
+ci-fast:
+    cargo run -p xtask -- ci-fast-check
+
+# A recipe that does not, and stays unclaimed.
+devplane-init:
+    ./scripts/devplane-init
+";
+        let recipes = parse_justfile(justfile);
+        assert_eq!(
+            recipes.get("ci-fast").map(Vec::as_slice),
+            Some(["cargo run -p xtask -- ci-fast-check".to_string()].as_slice()),
+            "recipe bodies must carry the post-strip shell line"
+        );
+        assert_eq!(
+            recipes.get("devplane-init").map(Vec::as_slice),
+            Some(["./scripts/devplane-init".to_string()].as_slice()),
+            "plain-shell recipes must round-trip"
+        );
+        assert!(
+            !recipes.contains_key("cargo_safe"),
+            "settings (`name := value`) must not register as a recipe"
+        );
+        // `[private]` attributes must not steal the recipe body of the line
+        // that follows them. `_check-tools` keeps its body.
+        assert!(
+            recipes.contains_key("_check-tools"),
+            "[private] attributes must not bind a recipe body to the [private] line"
+        );
+        assert_eq!(
+            recipes["_check-tools"],
+            vec!["echo tools".to_string()],
+            "@ echo-suppression prefix must be stripped from the body line"
+        );
+    }
+
+    /// The acceptance ladder for #15509:
+    ///
+    /// 1. a `just <recipe>` whose body invokes the xtask CLI is a CLI claim;
+    /// 2. a recipe that runs `cargo test -p xtask` (a test target, not the
+    ///    dispatch) is not;
+    /// 3. a recipe that runs another binary through `--bin <other>` is not;
+    /// 4. a recipe name that does not exist in the justfile is a typed
+    ///    `MissingRecipe` finding rather than a false negative.
+    #[test]
+    fn just_recipe_invocation_classification_matches_acceptance_ladder() -> Result<()> {
+        let justfile = "\
+ci-fast:
+    cargo run -p xtask -- ci-fast-check
+
+# Compiles the test target, not the dispatch. The existing
+# `selects_another_target` rule already excludes this, so this is a regression
+# guard rather than a new exclusion.
+ci-test:
+    cargo test -p xtask --locked --test ci_test
+
+# Same exclusion path: a different `--bin` reaches a different binary.
+ci-other-bin:
+    cargo run -p xtask --bin other-bin -- check
+";
+        let recipes = parse_justfile(justfile);
+
+        // (1) positive — a recipe that reaches the CLI.
+        assert!(
+            command_invokes_xtask_cli_with_just("just ci-fast", &recipes)?,
+            "ci-fast reaches xtask/src/main.rs and must count as a CLI claim"
+        );
+
+        // (2) negative — test target, not dispatch.
+        assert!(
+            !command_invokes_xtask_cli_with_just("just ci-test", &recipes)?,
+            "ci-test compiles a test target and must not count as a CLI claim"
+        );
+
+        // (3) negative — another --bin target.
+        assert!(
+            !command_invokes_xtask_cli_with_just("just ci-other-bin", &recipes)?,
+            "ci-other-bin reaches a different --bin and must not count"
+        );
+
+        // (4) typed missing recipe.
+        let result = command_invokes_xtask_cli_with_just("just nonexistent-recipe", &recipes);
+        assert!(
+            matches!(result, Err(JustResolutionError::MissingRecipe(ref name)) if name == "nonexistent-recipe"),
+            "missing recipe must surface as typed MissingRecipe: {result:?}"
+        );
+
+        Ok(())
+    }
+
+    /// The depth bound holds. A two-recipe cycle (`a -> b -> a`) must surface
+    /// as a typed `RecursionDepthExceeded` finding rather than lock the lint
+    /// or silently miss the indirection.
+    #[test]
+    fn just_recipe_recursion_is_bounded_and_typed() {
+        let justfile = "\
+recipe-a:
+    just recipe-b
+
+recipe-b:
+    just recipe-a
+";
+        let recipes = parse_justfile(justfile);
+        let result = command_invokes_xtask_cli_with_just("just recipe-a", &recipes);
+        assert!(
+            matches!(result, Err(JustResolutionError::RecursionDepthExceeded { .. })),
+            "a cyclic recipe must surface as RecursionDepthExceeded, not silently pass: {result:?}"
+        );
+    }
+
+    /// `just` indirection survives the same wrapper-skip rules that already
+    /// apply to `cargo`. `env`, `RUST_LOG=`, and a leading wrapper option
+    /// must not make `just ci-fast` lose its xtask claim.
+    #[test]
+    fn just_invocation_survives_assignment_and_wrapper_skip() -> Result<()> {
+        let recipes = parse_justfile("ci-fast:\n    cargo run -p xtask -- ci-fast-check\n");
+        for invocation in [
+            "just ci-fast",
+            "RUST_LOG=debug just ci-fast",
+            "env RUST_LOG=debug just ci-fast",
+            "sudo -E just ci-fast",
+        ] {
+            assert!(
+                command_invokes_xtask_cli_with_just(invocation, &recipes)?,
+                "wrapping must not change the verdict: {invocation}"
+            );
+        }
+        Ok(())
+    }
+
+    /// End-to-end: a workflow whose `run:` invokes `just <recipe>`, plus a
+    /// parsed justfile, surfaces the same `XTASK_CLI_WIRING_PATHS` finding the
+    /// detector would produce for a direct `cargo xtask …` line. Without the
+    /// justfile, the same workflow would pass silently — which is exactly
+    /// the #15509 false-negative.
+    #[test]
+    fn workflow_just_invocation_is_a_cli_claim_when_justfile_resolves_it() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let workflow_path = directory.path().join("ci-fast.yml");
+        let workflow_yaml = "\
+name: just-fixture
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: just ci-fast
+";
+        fs::write(&workflow_path, workflow_yaml)?;
+        let justfile = parse_justfile("ci-fast:\n    cargo run -p xtask -- ci-fast-check\n");
+
+        let mut issues = Vec::new();
+        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &justfile)?;
+        let wiring: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+        assert_eq!(
+            wiring.len(),
+            1,
+            "a just-routed CLI claim must fire the wiring finding; got: {issues:?}"
+        );
+
+        // Same workflow, but the justfile does not resolve `ci-fast`. The
+        // wiring finding must be absent — same residual the gate had before
+        // #15509 — and no typed `JUST_RECIPE_UNRESOLVED` either, because the
+        // expanded verdict was simply "no xtask here".
+        let mut issues = Vec::new();
+        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &NoJustRecipes)?;
+        let wiring: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+        assert!(
+            wiring.is_empty(),
+            "without a recipe resolution, the old residual behavior holds: {issues:?}"
+        );
+        Ok(())
+    }
+
+    /// A `run: just <recipe>` invocation that does not appear in the justfile
+    /// surfaces as `JUST_RECIPE_UNRESOLVED` rather than silently passing. This
+    /// is the AC-3 typed-unresolved-state requirement.
+    #[test]
+    fn workflow_with_undefined_just_recipe_reports_typed_finding() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let workflow_path = directory.path().join("orphan.yml");
+        let workflow_yaml = "\
+name: just-orphan
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: just recipe-renamed-without-replacement
+";
+        fs::write(&workflow_path, workflow_yaml)?;
+        let justfile = parse_justfile("ci-fast:\n    cargo run -p xtask -- ci-fast-check\n");
+
+        let mut issues = Vec::new();
+        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &justfile)?;
+        let unresolved: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "JUST_RECIPE_UNRESOLVED").collect();
+        assert_eq!(
+            unresolved.len(),
+            1,
+            "undefined recipe must surface as JUST_RECIPE_UNRESOLVED; got: {issues:?}"
+        );
+        Ok(())
+    }
+
+    /// A cyclic just recipe (`a -> b -> a`) surfaces as `JUST_RECIPE_CYCLIC`
+    /// with a depth-bounded expansion. The lint does not lock.
+    #[test]
+    fn workflow_with_cyclic_just_recipe_reports_typed_finding() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let workflow_path = directory.path().join("cyclic.yml");
+        let workflow_yaml = "\
+name: just-cyclic
+on:
+  pull_request:
+    paths:
+      - 'xtask/src/tasks/example_contract.rs'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: just recipe-a
+";
+        fs::write(&workflow_path, workflow_yaml)?;
+        let justfile =
+            parse_justfile("recipe-a:\n    just recipe-b\n\nrecipe-b:\n    just recipe-a\n");
+
+        let mut issues = Vec::new();
+        lint_workflow_file_with_just(&workflow_path, true, &mut issues, &justfile)?;
+        let cyclic: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "JUST_RECIPE_CYCLIC").collect();
+        assert_eq!(
+            cyclic.len(),
+            1,
+            "a cyclic recipe must surface as JUST_RECIPE_CYCLIC; got: {issues:?}"
+        );
         Ok(())
     }
 }
