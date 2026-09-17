@@ -99,6 +99,36 @@ pub enum IndexCompleteness {
     NotProven(NotProvenReason),
 }
 
+/// Borrowed completeness class of one [`IndexAnswer`]: identical evidence
+/// to [`IndexCompleteness`] with lent limitation ids, so reading the class
+/// of an answer never clones them. Compares equal against the owned form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexCompletenessRef<'a, 'v> {
+    /// Every row of the admitted denominator was indexed.
+    Complete,
+    /// Rows are indexed but bounded by recorded model limitations.
+    Partial {
+        /// Stable limitation ids bounding the family, sorted and deduped.
+        limitation_ids: &'a [&'v str],
+    },
+    /// Completeness cannot be claimed; missing instrumentation is not zero.
+    NotProven(NotProvenReason),
+}
+
+impl PartialEq<IndexCompleteness> for IndexCompletenessRef<'_, '_> {
+    fn eq(&self, other: &IndexCompleteness) -> bool {
+        match (self, other) {
+            (Self::Complete, IndexCompleteness::Complete) => true,
+            (
+                Self::Partial { limitation_ids },
+                IndexCompleteness::Partial { limitation_ids: owned },
+            ) => limitation_ids.iter().copied().eq(owned.iter().map(String::as_str)),
+            (Self::NotProven(left), IndexCompleteness::NotProven(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
 /// The answer to one view lookup, pairing rows with their completeness class.
 ///
 /// An exact-empty answer is only ever delivered as [`IndexAnswer::Complete`]
@@ -119,8 +149,35 @@ pub enum IndexAnswer<'v, T> {
 }
 
 impl<'v, T> IndexAnswer<'v, T> {
-    /// The rows, if the family proved any denominator at all.
+    /// The rows together with their completeness class.
+    ///
+    /// The evidence-preserving form: a `Partial` answer never collapses
+    /// into bare rows, so an exact-capable consumer cannot silently
+    /// discard the bounding limitations. `Complete` and `Partial { rows }`
+    /// both carry their rows; only [`Self::NotProven`] has none.
     #[must_use]
+    pub fn into_parts(self) -> (IndexCompleteness, Option<T>) {
+        match self {
+            Self::Complete(rows) => (IndexCompleteness::Complete, Some(rows)),
+            Self::Partial { rows, limitation_ids } => {
+                // The owned class clones the ids: evidence preservation is
+                // the contract here; zero-alloc reads use
+                // [`Self::completeness`].
+                let owned = limitation_ids.into_iter().map(str::to_owned).collect();
+                (IndexCompleteness::Partial { limitation_ids: owned }, Some(rows))
+            }
+            Self::NotProven(reason) => (IndexCompleteness::NotProven(reason), None),
+        }
+    }
+
+    /// The rows, if the family proved any denominator at all.
+    ///
+    /// Test-only collapsing projection: it discards the `Partial`
+    /// limitation evidence by construction, so it must not be part of the
+    /// public production API. Callers use [`Self::into_parts`] (or the
+    /// family completeness accessors) and treat the outcome class as part
+    /// of the answer. Final composition semantics are tracked in #14054.
+    #[cfg(test)]
     pub fn rows(self) -> Option<T> {
         match self {
             Self::Complete(rows) | Self::Partial { rows, .. } => Some(rows),
@@ -128,15 +185,16 @@ impl<'v, T> IndexAnswer<'v, T> {
         }
     }
 
-    /// The completeness class of this answer.
+    /// The completeness class of this answer, borrowed: `limitation_ids`
+    /// are lent, never cloned.
     #[must_use]
-    pub fn completeness(&self) -> IndexCompleteness {
+    pub fn completeness(&self) -> IndexCompletenessRef<'_, 'v> {
         match self {
-            Self::Complete(_) => IndexCompleteness::Complete,
-            Self::Partial { limitation_ids, .. } => IndexCompleteness::Partial {
-                limitation_ids: limitation_ids.iter().map(|id| (*id).to_owned()).collect(),
-            },
-            Self::NotProven(reason) => IndexCompleteness::NotProven(*reason),
+            Self::Complete(_) => IndexCompletenessRef::Complete,
+            Self::Partial { limitation_ids, .. } => {
+                IndexCompletenessRef::Partial { limitation_ids: limitation_ids.as_slice() }
+            }
+            Self::NotProven(reason) => IndexCompletenessRef::NotProven(*reason),
         }
     }
 

@@ -143,8 +143,8 @@ pub use range::{SourceRange, Utf8LineIndex};
 pub use relation::{RelationFact, RelationKind};
 pub use semantic_query_view::{
     AnchorLookupWork, AnchorRow, CheckedBuildInput, DeclarationRow, FamilyWork, IndexAnswer,
-    IndexCompleteness, NotProvenReason, SemanticQueryView, ShardIdentity, SourceEntry,
-    ViewRejection, ViewWorkReceipt,
+    IndexCompleteness, IndexCompletenessRef, NotProvenReason, SemanticQueryView, ShardIdentity,
+    SourceEntry, ViewRejection, ViewWorkReceipt,
 };
 pub use shard::{ProjectDelta, ProjectFactShard, ProjectShardState, ShardError};
 pub use symbol::{SymbolFactKind, SymbolRecord, Visibility};
