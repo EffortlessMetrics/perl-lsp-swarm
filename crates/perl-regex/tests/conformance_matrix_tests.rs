@@ -546,18 +546,25 @@ fn concept_unknown_modifier_emits_diagnostic() {
 // ---------------------------------------------------------------------------
 
 /// Mutation guard: asserting the WRONG extended mode fails.
+///
+/// Deserializes a real fixture row, mutates one expected fact in memory,
+/// and proves the conformance pipeline (not a standalone `assert_eq!`)
+/// rejects the drift while naming the offending row id.  This also closes
+/// the silent-typo hole: with `deny_unknown_fields`, a misspelled key fails
+/// fixture parsing instead of silently asserting nothing.
 #[test]
-#[should_panic(expected = "extended_mode")]
+#[should_panic(expected = "modifiers.extended.x-basic")]
 fn mutation_wrong_extended_mode_detected() {
-    // Force an incorrect expected value: "x" produces `Extended`, not `Off`.
-    let analysis = run_modifier_analysis("x", 26, false, RegexOperator::Match);
-    // Deliberately assert the wrong value to prove the guard works.
-    assert_eq!(
-        analysis.effective.extended.as_str(),
-        "off",
-        "extended_mode expected \"off\", got {:?}",
-        analysis.effective.extended.as_str()
-    );
+    let f = parse_fixture(FIXTURE_EXTENDED, "modifiers_extended");
+    let mut row = f
+        .rows
+        .iter()
+        .find(|r| r.id == "modifiers.extended.x-basic")
+        .expect("fixture row modifiers.extended.x-basic must exist")
+        .clone();
+    // Mutate one expected fact in memory: "x" produces `extended`, not `off`.
+    row.expected.extended_mode = Some("off".to_owned());
+    assert_row_facts(&row, "modifiers_extended");
 }
 
 /// Mutation guard: asserting the WRONG diagnostic set fails.
