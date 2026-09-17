@@ -13,7 +13,7 @@ const SHOW_DOCUMENT_ID: &str = "fixture-show-document";
 
 #[test]
 fn scripted_client_completes_success_error_delay_and_timeout_outcomes() -> Result<()> {
-    let binary = env!("CARGO_BIN_EXE_ux_server_request_fixture");
+    let binary = env!("CARGO_BIN_EXE_ux_scripted_request_fixture");
     let timeout = ScenarioConfig::default().timeout;
     let script = vec![
         ScriptedServerRequest::success(
@@ -92,7 +92,7 @@ fn scripted_client_completes_success_error_delay_and_timeout_outcomes() -> Resul
 
 #[test]
 fn scripted_client_cancels_long_delays_when_wait_times_out() -> Result<()> {
-    let binary = env!("CARGO_BIN_EXE_ux_server_request_fixture");
+    let binary = env!("CARGO_BIN_EXE_ux_scripted_request_fixture");
     let wait_timeout = Duration::from_millis(200);
     // The handshake budget must be independent of the script-wait budget:
     // spawning the child process is allowed to take longer than the scripted
