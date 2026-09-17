@@ -630,11 +630,7 @@ impl<'a> Parser<'a> {
             || (matches!(sigil.as_str(), "@" | "%") && full_name == "$$"))
             && self.peek_kind().is_some_and(Self::is_variable_name_kind)
             && (full_name.is_empty()
-                || self
-                    .tokens
-                    .peek()
-                    .ok()
-                    .is_some_and(|name_token| name_token.start() == end))
+                || self.tokens.peek().ok().is_some_and(|name_token| name_token.start() == end))
         {
             let name_token = self.tokens.next()?;
             full_name.push_str(&name_token.text);
@@ -802,11 +798,7 @@ impl<'a> Parser<'a> {
 
     fn simple_braced_scalar_token_name(text: &str) -> Option<&str> {
         let inner = text.strip_prefix("${")?.strip_suffix('}')?;
-        if is_simple_scalar_name(inner) {
-            Some(inner)
-        } else {
-            None
-        }
+        if is_simple_scalar_name(inner) { Some(inner) } else { None }
     }
 
     /// Extract the package-qualified name from a token whose full text is a
@@ -818,11 +810,7 @@ impl<'a> Parser<'a> {
     /// case (issue #3593).
     fn qualified_braced_scalar_token_name(text: &str) -> Option<&str> {
         let inner = text.strip_prefix("${")?.strip_suffix('}')?;
-        if is_package_qualified_scalar_name(inner) {
-            Some(inner)
-        } else {
-            None
-        }
+        if is_package_qualified_scalar_name(inner) { Some(inner) } else { None }
     }
 
     fn try_parse_braced_caret_special_scalar(&mut self) -> ParseResult<Option<Node>> {
@@ -927,15 +915,38 @@ impl<'a> Parser<'a> {
             let mut name = name_token.text.to_string();
             let mut end = name_token.end();
 
+            // The lexer folds a trailing sigil+name like `@@x` into one
+            // Identifier token, so the name branch above accepts it and the
+            // else-branch rejection below never runs. A non-`$` sigil whose
+            // "name" itself starts with a sigil character is exactly the bare
+            // double-sigil shape of issue #15750: surface the UnexpectedToken
+            // diagnostic and ERROR node instead of silently building
+            // `Variable { sigil: @, name: @x }`. `$`-prefixed names stay
+            // valid here (unbraced derefs like `@$ref`).
+            if sigil != "$" && name.starts_with(['@', '%', '&', '*']) {
+                let expected = format!("identifier, '{{', or '$' after '{sigil}' sigil");
+                let node = self.recover_from_error(
+                    format!(
+                        "bare '{sigil}' sigil followed by another sigil — \
+                         not a valid Perl variable"
+                    ),
+                    expected,
+                    name,
+                    start,
+                );
+                // The fused sigil+name token is already consumed, so
+                // `current_position` ends the recovery span exactly at the
+                // bad text.
+                let mut node = node;
+                node.location.end = end;
+                return Ok(node);
+            }
+
             // `%$$slice` may arrive as `%`, `$$`, `slice`; only join an
             // adjacent tail so whitespace-delimited `$$ eq` keeps `eq` as op.
             if name == "$$"
                 && self.peek_kind() == Some(TokenKind::Identifier)
-                && self
-                    .tokens
-                    .peek()
-                    .ok()
-                    .is_some_and(|next_token| next_token.start() == end)
+                && self.tokens.peek().ok().is_some_and(|next_token| next_token.start() == end)
             {
                 let next_token = self.tokens.next()?;
                 name.push_str(&next_token.text);
@@ -961,6 +972,66 @@ impl<'a> Parser<'a> {
 
             (name, end)
         } else {
+            // Reject bare double-sigil constructs like `@@`, `%%`, `**`, `&&`
+            // when the first sigil is not `$` (issue #15750). The `$` sigil has
+            // many special-variable forms — $$ PID, $@ eval error, $! system
+            // error, $? / $^X / $# / $0 / $:: / $: — that are dispatched in
+            // the `match self.peek_kind()` arm below. For `@`, `%`, `*`, `&`,
+            // the only valid second tokens are `$` (unbraced dereference
+            // target like `@$ref`, handled in the ScalarSigil arm and at
+            // line 1189) and `{` (braced dereference, handled at line 1134
+            // and 1167). Anything else is a syntax error: surface it via
+            // UnexpectedToken + ERROR node so statement-boundary recovery
+            // can engage instead of silently misparsing garbage.
+            if sigil != "$" {
+                let bad_kind = self.peek_kind();
+                let is_bad_double_sigil = matches!(
+                    bad_kind,
+                    Some(
+                        TokenKind::ArraySigil
+                            | TokenKind::HashSigil
+                            | TokenKind::SubSigil
+                            | TokenKind::GlobSigil
+                            | TokenKind::Percent
+                            | TokenKind::BitwiseAnd
+                            | TokenKind::Star
+                    )
+                );
+                if is_bad_double_sigil {
+                    let expected = format!("identifier, '{{', or '$' after '{}' sigil", sigil);
+                    let found = self
+                        .tokens
+                        .peek()
+                        .ok()
+                        .map(|t| t.text.to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "end of input".to_string());
+                    // Consume the second sigil so the parser advances and
+                    // does not loop on the same token. Subsequent bad
+                    // sigils or following garbage will surface in their own
+                    // ERROR nodes, which is the honest shape v3 owes its
+                    // callers.
+                    let consumed = self.tokens.next()?;
+                    let end = consumed.end();
+                    let node = self.recover_from_error(
+                        format!(
+                            "bare '{}' sigil followed by another sigil — \
+                             not a valid Perl variable",
+                            sigil
+                        ),
+                        expected,
+                        found,
+                        start,
+                    );
+                    // Tighten the recovered node's span to cover both
+                    // sigils so downstream tooling can localize the error
+                    // to the actual bad region.
+                    let mut node = node;
+                    node.location.end = end;
+                    return Ok(node);
+                }
+            }
+
             // Handle special variables like $$, $@, $!, $?, etc.
             match self.peek_kind() {
                 Some(TokenKind::ScalarSigil) => {
@@ -968,7 +1039,8 @@ impl<'a> Parser<'a> {
                     // dereference target that must preserve the referenced name.
                     let token = self.tokens.next()?;
                     if self.tokens.peek().ok().is_some_and(|name_token| {
-                        Self::is_variable_name_kind(name_token.kind()) && name_token.start() == token.end()
+                        Self::is_variable_name_kind(name_token.kind())
+                            && name_token.start() == token.end()
                     }) {
                         let name_token = self.tokens.next()?;
                         let mut name = format!("${}", name_token.text);
@@ -1428,11 +1500,7 @@ impl<'a> Parser<'a> {
             None
         };
 
-        end = if let Some(ref default) = default_value {
-            default.location.end
-        } else {
-            end
-        };
+        end = if let Some(ref default) = default_value { default.location.end } else { end };
 
         // Check if variable is slurpy (@args or %hash)
         let is_slurpy = matches!(&variable.kind, NodeKind::Variable { sigil, .. } if sigil == "@" || sigil == "%");
@@ -1732,12 +1800,8 @@ fn fused_typeglob_body(name: &str, token_start: usize) -> Option<Box<Node>> {
 fn parse_inline_expression(source: &str, offset: usize) -> ParseResult<(Node, Vec<ParseError>)> {
     let mut parser = Parser::new(source);
     let ast = parser.parse().map_err(|error| offset_parse_error(error, offset))?;
-    let diagnostics = parser
-        .errors()
-        .iter()
-        .cloned()
-        .map(|error| offset_parse_error(error, offset))
-        .collect();
+    let diagnostics =
+        parser.errors().iter().cloned().map(|error| offset_parse_error(error, offset)).collect();
     let NodeKind::Program { mut statements } = ast.into_parts().0 else {
         return Err(ParseError::syntax("Expected an expression program", offset));
     };
@@ -1779,10 +1843,7 @@ fn build_deref_body(mut expressions: Vec<Node>, body_start: usize) -> ParseResul
         .into_iter()
         .map(|expression| {
             let location = expression.location;
-            Node::new(
-                NodeKind::ExpressionStatement { expression: Box::new(expression) },
-                location,
-            )
+            Node::new(NodeKind::ExpressionStatement { expression: Box::new(expression) }, location)
         })
         .collect();
     Ok(Node::new(NodeKind::Block { statements }, SourceLocation { start, end }))
@@ -1801,11 +1862,9 @@ fn offset_parse_error(error: ParseError, offset: usize) -> ParseError {
         ParseError::Advisory { message, location } => {
             ParseError::Advisory { message, location: location.saturating_add(offset) }
         }
-        ParseError::Recovered { site, kind, location } => ParseError::Recovered {
-            site,
-            kind,
-            location: location.saturating_add(offset),
-        },
+        ParseError::Recovered { site, kind, location } => {
+            ParseError::Recovered { site, kind, location: location.saturating_add(offset) }
+        }
         other => other,
     }
 }
@@ -1871,7 +1930,8 @@ mod inline_expression_tests {
     }
 
     #[test]
-    fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>> {
+    fn non_expression_after_expression_is_not_discarded() -> Result<(), Box<dyn std::error::Error>>
+    {
         let error = match parse_inline_expression("$tmp; my $name;", 17) {
             Ok(_) => return Err("expected a non-expression statement to be rejected".into()),
             Err(error) => error,
@@ -1931,12 +1991,11 @@ mod inline_expression_tests {
             matches!(diagnostic, ParseError::Advisory { message, .. }
                 if message.contains("Nested quantifiers detected"))
         }) {
-            return Err(ParseError::syntax(
-                "expected inline parser advisory to be forwarded",
-                17,
-            ));
+            return Err(ParseError::syntax("expected inline parser advisory to be forwarded", 17));
         }
-        if !diagnostics.iter().all(|diagnostic| diagnostic.location().is_none_or(|location| location >= 17))
+        if !diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.location().is_none_or(|location| location >= 17))
         {
             return Err(ParseError::syntax(
                 "expected forwarded inline diagnostics to retain the outer offset",
@@ -2016,7 +2075,11 @@ mod prototype_heuristic_tests {
     fn named_parameter_carries_external_name_and_default() {
         fn find_named(node: &Node, out: &mut Vec<(String, bool, bool, Option<String>)>) {
             if let NodeKind::NamedParameter {
-                external_name, default_value, required, default_operator, ..
+                external_name,
+                default_value,
+                required,
+                default_operator,
+                ..
             } = &node.kind
             {
                 out.push((
