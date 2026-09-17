@@ -9,7 +9,7 @@
 //! `cargo xtask integration emacs train packets --check`, not here.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use color_eyre::eyre::{Context, Result};
@@ -26,13 +26,26 @@ use crate::tasks::emacs_train_specs::DEFAULT_LEDGER_PATH as SPECS_LEDGER_RELATIV
 
 static FIXTURE_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-fn fixture_tree(label: &str) -> Result<PathBuf> {
-    let unique = FIXTURE_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let root =
-        std::env::temp_dir().join(format!("emacs-pkt-{label}-{}-{unique}", std::process::id()));
-    if root.exists() {
-        std::fs::remove_dir_all(&root)?;
+/// Synthetic fixture tree bound to a drop guard: the directory is removed
+/// when the test's `root` binding falls out of scope instead of accumulating
+/// in the OS temp directory across runs with fresh process ids.
+struct FixtureTree(tempfile::TempDir);
+
+impl std::ops::Deref for FixtureTree {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        self.0.path()
     }
+}
+
+fn fixture_tree(label: &str) -> Result<FixtureTree> {
+    let unique = FIXTURE_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("emacs-pkt-{label}-{unique}-"))
+        .tempdir()
+        .context("creating the synthetic fixture tree")?;
+    let root = dir.path();
     std::fs::create_dir_all(root.join(".spec/11716-emacs-support-architecture"))?;
     std::fs::create_dir_all(root.join(".spec/9001-sub"))?;
     std::fs::write(root.join("AGENTS.md"), "# fixture repository instructions\n")?;
@@ -40,7 +53,7 @@ fn fixture_tree(label: &str) -> Result<PathBuf> {
         root.join(".spec/11716-emacs-support-architecture/context.md"),
         "# fixture architecture\n",
     )?;
-    Ok(root)
+    Ok(FixtureTree(dir))
 }
 
 /// Deterministic fixture git identity: synthetic trees are not repositories.
