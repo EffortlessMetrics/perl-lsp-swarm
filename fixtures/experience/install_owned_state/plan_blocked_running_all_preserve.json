@@ -5,7 +5,7 @@
   "bound_subject": {
     "install_root_absolute_path": "/home/alice/.local/share/perllsp",
     "install_root_digest_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
-    "manifest_sha256": "54c6470aa0724328862e0f22055147a423a57ccd75a0fe9299581e9e6cad15c7"
+    "manifest_sha256": "00ca35df4cae117ef05cd664d0c9ae4a08ce8c7c5d5b01a7abe04588b449553d"
   },
   "lifecycle_policy": "full_removal_selected",
   "running_process_policy": "abort_on_running",
