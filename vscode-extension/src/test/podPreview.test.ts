@@ -9,6 +9,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import type * as podPreviewModule from '../podPreview';
+import type * as vscodeApi from 'vscode';
 import { podToHtml } from '../podPreview';
 
 const EXT_ROOT = path.resolve(__dirname, '..', '..');
@@ -307,9 +309,9 @@ describe('podToHtml', () => {
 // ---------------------------------------------------------------------------
 describe('pod preview save watcher', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const vscode = require('vscode') as typeof import('vscode');
+  const vscode = require('vscode') as typeof vscodeApi;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const preview = require('../podPreview') as typeof import('../podPreview');
+  const preview = require('../podPreview') as typeof podPreviewModule;
 
   type FakeDoc = {
     languageId: string;
@@ -323,8 +325,7 @@ describe('pod preview save watcher', () => {
     fileName: uri,
     getText: () => text,
   });
-  const fakeContext = () =>
-    ({ subscriptions: [] }) as unknown as import('vscode').ExtensionContext;
+  const fakeContext = () => ({ subscriptions: [] }) as unknown as vscodeApi.ExtensionContext;
 
   const saveListener = (): ((doc: FakeDoc) => void) => {
     const calls = (vscode.workspace.onDidSaveTextDocument as jest.Mock).mock.calls;
