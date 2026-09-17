@@ -615,7 +615,7 @@ fn sexp_readline_with_and_without_fh() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 fn sexp_glob_and_typeglob() -> Result<(), Box<dyn std::error::Error>> {
     let g = Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc(0, 6));
-    let tg = Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4));
+    let tg = Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4));
     assert_eq!(g.to_sexp(), "(glob (pattern *.pl))");
     assert_eq!(tg.to_sexp(), "(typeglob (name foo))");
     Ok(())
@@ -907,7 +907,12 @@ fn sexp_heredoc_variants() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn sexp_data_section() -> Result<(), Box<dyn std::error::Error>> {
     let ds = Node::new(
-        NodeKind::DataSection { marker: "__DATA__".to_string(), body: Some("stuff".to_string()) },
+        NodeKind::DataSection {
+            marker: "__DATA__".to_string(),
+            marker_span: None,
+            body: Some("stuff".to_string()),
+            body_span: None,
+        },
         loc(0, 20),
     );
     let sexp = ds.to_sexp();
@@ -1634,7 +1639,7 @@ fn kind_name_specific_variants() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(NodeKind::Readline { filehandle: None }.kind_name(), "Readline");
     assert_eq!(NodeKind::Glob { pattern: "".to_string() }.kind_name(), "Glob");
-    assert_eq!(NodeKind::Typeglob { name: "".to_string() }.kind_name(), "Typeglob");
+    assert_eq!(NodeKind::Typeglob { name: "".to_string(), body: None }.kind_name(), "Typeglob");
     Ok(())
 }
 
@@ -1777,7 +1782,7 @@ fn leaf_nodes_have_no_children() -> Result<(), Box<dyn std::error::Error>> {
         Node::new(NodeKind::UnknownRest, loc(0, 0)),
         Node::new(NodeKind::Readline { filehandle: None }, loc(0, 2)),
         Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc(0, 6)),
-        Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4)),
+        Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4)),
         Node::new(NodeKind::String { value: "hi".to_string(), interpolated: false }, loc(0, 4)),
         Node::new(
             NodeKind::Heredoc {
@@ -1808,7 +1813,15 @@ fn leaf_nodes_have_no_children() -> Result<(), Box<dyn std::error::Error>> {
             loc(0, 13),
         ),
         Node::new(NodeKind::Prototype { content: "$".to_string() }, loc(0, 3)),
-        Node::new(NodeKind::DataSection { marker: "__END__".to_string(), body: None }, loc(0, 7)),
+        Node::new(
+            NodeKind::DataSection {
+                marker: "__END__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
+            loc(0, 7),
+        ),
         Node::new(
             NodeKind::Format {
                 name: "STDOUT".to_string(),

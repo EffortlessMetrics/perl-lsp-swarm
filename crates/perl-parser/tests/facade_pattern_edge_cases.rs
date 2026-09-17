@@ -1,7 +1,7 @@
 //! Test facade pattern coverage for Wave D crate absorption.
 //!
 //! Verifies that the absorbed satellite crates (perl-quote, perl-heredoc, perl-error,
-//! perl-edit, perl-path-normalize, perl-path-security, perl-text-line, perl-percentile,
+//! perl-edit, perl-path-normalize, perl-path-security, perl-text-line,
 //! perl-source-file, perl-qualified-name, perl-ast-utils, perl-heredoc-anti-patterns)
 //! are re-exported correctly via perl-parser, and that downstream consumers relying on
 //! the new facade paths work correctly.
@@ -93,7 +93,7 @@ fn test_heredoc_antipatterns_facade_accessible() -> Result<(), Box<dyn std::erro
     let _pattern = heredoc_anti_patterns::AntiPattern::FormatHeredoc {
         location: heredoc_anti_patterns::Location { line: 1, column: 0, offset: 0 },
         format_name: "test".to_string(),
-        heredoc_delimiter: "END".to_string(),
+        heredoc_delimiter: heredoc_anti_patterns::HeredocDelimiter::Extracted("END".to_string()),
     };
 
     Ok(())

@@ -82,7 +82,6 @@ Doomed lower edges are assigned to their removal owners and are NOT part of the 
 | perl-core-test-runner| normal_chain| 3 |
 | perl-corpus| dev_only_chain| 2 |
 | perl-dap| normal_chain| 2 |
-| perl-kwalitee| dev_only_chain| 2 |
 | perl-lexer| normal_chain| 2 |
 | perl-lsp-perltidy| normal_chain| 2 |
 | perl-module| normal_chain| 2 |
@@ -91,6 +90,7 @@ Doomed lower edges are assigned to their removal owners and are NOT part of the 
 | perl-parser-core| normal_chain| 2 |
 | perl-parser-pest| dev_only_chain| 2 |
 | perl-pragma| normal_chain| 3 |
+| perl-release-readiness| dev_only_chain| 2 |
 | perl-ripr-facts| normal_chain| 2 |
 | perl-semantic-analyzer| normal_chain| 2 |
 | perl-subprocess-runtime| dev_only_chain| 2 |

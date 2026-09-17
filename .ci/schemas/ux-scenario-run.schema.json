@@ -86,6 +86,9 @@
         "ai_completion"
       ]
     },
+    "evidence_class": {
+      "$ref": "#/$defs/evidence_class"
+    },
     "ci_tier": {
       "enum": [
         "pr",
@@ -137,6 +140,41 @@
             ]
           }
         },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "timing_status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "time_to_first_useful_result_ms": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "time_to_first_useful_result_ms": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "time_to_first_useful_result_ms"
+              ]
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "timing_status"
+                ]
+              }
+            }
+          }
+        ],
         "additionalProperties": false
       }
     },
@@ -178,17 +216,13 @@
       "additionalProperties": false
     },
     "failure_class": {
-      "enum": [
-        "provider_regression",
-        "server_crash",
-        "timeout",
-        "test_race",
-        "infra",
-        "matrix_drift",
-        "baseline_drift",
-        "new_test_bug",
-        "unknown",
-        null
+      "anyOf": [
+        {
+          "$ref": "#/$defs/failure_class"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "route": {
@@ -255,18 +289,7 @@
         ],
         "properties": {
           "failure_class": {
-            "type": "string",
-            "enum": [
-              "provider_regression",
-              "server_crash",
-              "timeout",
-              "test_race",
-              "infra",
-              "matrix_drift",
-              "baseline_drift",
-              "new_test_bug",
-              "unknown"
-            ]
+            "$ref": "#/$defs/failure_class"
           }
         }
       }
@@ -291,5 +314,26 @@
       }
     }
   ],
+  "$defs": {
+    "failure_class": {
+      "enum": [
+        "provider_regression",
+        "server_crash",
+        "timeout",
+        "test_race",
+        "infra",
+        "matrix_drift",
+        "baseline_drift",
+        "new_test_bug",
+        "unknown"
+      ]
+    },
+    "evidence_class": {
+      "enum": [
+        "semantic_proof",
+        "transport_characterization"
+      ]
+    }
+  },
   "additionalProperties": false
 }

@@ -1,9 +1,18 @@
 import type {
   ConfigurationMigrationRegistry,
   ConfigurationMigrationRow,
+  CompatibilityWindow,
   MigrationScope,
 } from './configurationMigrationRegistry';
-import { findMigrationRows } from './configurationMigrationRegistry';
+import {
+  findMigrationRows,
+  isValidCompatibilityWindow,
+  migrationEraCoversVersion,
+  parseMigrationEra,
+  parseMigrationVersion,
+  validateMigrationRegistry,
+} from './configurationMigrationRegistry';
+import { compareStrictSemver } from './strictSemver';
 
 export type MigrationRuntimeStatus =
   | 'not_applicable'
@@ -11,6 +20,7 @@ export type MigrationRuntimeStatus =
   | 'compatible_current_wins'
   | 'action_required'
   | 'inert'
+  | 'expired'
   | 'invalid';
 
 export interface MigrationRuntimeInput {
@@ -20,6 +30,8 @@ export interface MigrationRuntimeInput {
   legacy_value: unknown;
   current_value_present: boolean;
   current_value: unknown;
+  /** Exact running extension version; missing input fails closed for expiry-bearing rows. */
+  extension_version?: string;
 }
 
 export interface MigrationRuntimeResult {
@@ -34,6 +46,8 @@ export interface MigrationRuntimeResult {
   reason_code: string | null;
   notice_required: boolean;
   disk_write_allowed: boolean;
+  compatibility_window: CompatibilityWindow;
+  post_expiry_disposition: 'action_required' | 'invalid' | 'inert' | null;
 }
 
 export interface SafeMigrationRuntimeSnapshot {
@@ -44,6 +58,7 @@ export interface SafeMigrationRuntimeSnapshot {
   canonical_key_or_authority: string | null;
   reason_code: string | null;
   notice_required: boolean;
+  post_expiry_disposition: 'action_required' | 'invalid' | 'inert' | null;
 }
 
 const MISSING_VALUE = Symbol('configuration-migration-missing');
@@ -67,6 +82,19 @@ export const INVALID_REASON_CODES = {
    * exists. This is a defect in the registry, not in the user's settings.
    */
   ambiguous: 'legacy_registry_ambiguous',
+  /**
+   * The key is registered at this scope, but no historical era declared at this scope
+   * covers the public release this registry migrates from. A registry that carries several
+   * eras for one key can legitimately reach this: the era covering the source release may
+   * be declared at a different scope than the one the value was found at. Applying the
+   * nearest era anyway would silently enforce a policy written for a different release, so
+   * this fails closed instead.
+   */
+  era_not_applicable: 'legacy_registry_era_not_applicable',
+  /** The registry row contains an unknown or malformed compatibility window. */
+  registry_invalid: 'legacy_registry_invalid',
+  /** The running extension version is absent or malformed, so expiry cannot be established. */
+  extension_version_invalid: 'migration_extension_version_invalid',
 } as const;
 
 function result(
@@ -77,6 +105,10 @@ function result(
   noticeRequired = false,
   reasonCode: string | null = row?.warning_reason_code ?? null,
 ): MigrationRuntimeResult {
+  const compatibilityWindow =
+    row && isValidCompatibilityWindow(row.compatibility_window)
+      ? row.compatibility_window
+      : { kind: 'no_expiry' as const };
   return {
     migration_id: row?.migration_id ?? null,
     legacy_key: input.old_key,
@@ -88,7 +120,23 @@ function result(
     reason_code: reasonCode,
     notice_required: noticeRequired,
     disk_write_allowed: row?.explicit_write_allowed ?? false,
+    compatibility_window: compatibilityWindow,
+    post_expiry_disposition:
+      compatibilityWindow.kind === 'no_expiry' ? null : compatibilityWindow.post_expiry_disposition,
   };
+}
+
+function isExpired(row: ConfigurationMigrationRow, extensionVersion: string): boolean {
+  const current = parseMigrationVersion(extensionVersion);
+  const threshold =
+    row.compatibility_window.kind === 'no_expiry'
+      ? null
+      : parseMigrationVersion(row.compatibility_window.version);
+  if (!current || !threshold) return false;
+  const comparison = compareStrictSemver(current, threshold);
+  return row.compatibility_window.kind === 'through_extension_version'
+    ? comparison > 0
+    : comparison >= 0;
 }
 
 type RowSelection =
@@ -96,11 +144,23 @@ type RowSelection =
   | { kind: keyof typeof INVALID_REASON_CODES };
 
 /**
- * The registry deliberately allows several rows per `old_key` — its uniqueness key spans
- * the version window and value shape, so one setting can carry a row per historical era.
- * This interpreter has no version input and therefore cannot choose between eras, so an
- * ambiguous match is reported as such rather than silently resolved to whichever row
- * happens to sort first.
+ * The registry deliberately allows several rows per `old_key`, one per historical era.
+ *
+ * Where several eras declare the same key at the same scope, the applicable one is chosen
+ * by the registry envelope's own `source_public_release` — the single authoritative
+ * statement of which public release this migration reads settings from. No historical
+ * identity is taken from the caller: a second source-release input could disagree with the
+ * envelope's, and there would be no way to say which of the two was policy.
+ *
+ * Era coverage is consulted whenever the *key* declares more than one era — not merely when
+ * more than one era survives the scope filter. Filtering by scope first can leave exactly one
+ * row while the era covering the source release sits at a different scope, and the live reader
+ * genuinely produces that shape: `scopeForOccurrence` derives its scope from every historical
+ * row, so it can hand this function the scope of a superseded era. Accepting that lone row
+ * would silently apply a policy written for a release this registry does not migrate from.
+ *
+ * A key with a single era carries no era choice to make, so it is selected without any release
+ * comparison and behaves exactly as it did before eras were comparable.
  */
 function selectMigrationRow(
   registry: ConfigurationMigrationRegistry,
@@ -112,14 +172,35 @@ function selectMigrationRow(
   }
 
   const scopedRows = keyRows.filter((row) => row.old_scope === input.source_scope);
-  const row = scopedRows[0];
-  if (row === undefined) {
+  const onlyScopedRow = scopedRows[0];
+  if (onlyScopedRow === undefined) {
     return { kind: 'scope_not_permitted' };
   }
-  if (scopedRows.length > 1) {
+  if (keyRows.length === 1) {
+    return { kind: 'selected', row: onlyScopedRow };
+  }
+
+  // Unreachable through `interpretLegacyConfiguration`, which validates the envelope first;
+  // retained so this function cannot silently guess if it is ever called on its own.
+  const sourceRelease = parseMigrationVersion(registry.source_public_release);
+  if (sourceRelease === null) {
+    return { kind: 'registry_invalid' };
+  }
+
+  const applicableRows = scopedRows.filter((row) => {
+    const era = parseMigrationEra(row);
+    return era !== null && migrationEraCoversVersion(era, sourceRelease);
+  });
+  const applicableRow = applicableRows[0];
+  if (applicableRows.length === 0 || applicableRow === undefined) {
+    return { kind: 'era_not_applicable' };
+  }
+  // Two eras at one key and scope both covering the source release must share that release,
+  // so registry validation rejects them. Defence in depth for an unvalidated registry.
+  if (applicableRows.length > 1) {
     return { kind: 'ambiguous' };
   }
-  return { kind: 'selected', row };
+  return { kind: 'selected', row: applicableRow };
 }
 
 export function interpretLegacyConfiguration(
@@ -128,6 +209,17 @@ export function interpretLegacyConfiguration(
 ): MigrationRuntimeResult {
   if (!input.legacy_value_present) {
     return result(input, null, 'not_applicable');
+  }
+
+  if (validateMigrationRegistry(registry).length > 0) {
+    return result(
+      input,
+      null,
+      'invalid',
+      MISSING_VALUE,
+      true,
+      INVALID_REASON_CODES.registry_invalid,
+    );
   }
 
   const selection = selectMigrationRow(registry, input);
@@ -143,6 +235,44 @@ export function interpretLegacyConfiguration(
   }
 
   const row = selection.row;
+  if (!isValidCompatibilityWindow(row.compatibility_window)) {
+    return result(
+      input,
+      row,
+      'invalid',
+      MISSING_VALUE,
+      true,
+      INVALID_REASON_CODES.registry_invalid,
+    );
+  }
+  if (
+    row.compatibility_window.kind !== 'no_expiry' &&
+    parseMigrationVersion(input.extension_version) === null
+  ) {
+    return result(
+      input,
+      row,
+      'invalid',
+      MISSING_VALUE,
+      true,
+      INVALID_REASON_CODES.extension_version_invalid,
+    );
+  }
+  if (
+    row.compatibility_window.kind !== 'no_expiry' &&
+    isExpired(row, input.extension_version ?? '')
+  ) {
+    // Expiry revokes only legacy-derived authority. A value already present at
+    // the current key remains canonical, so downstream consumers never have to
+    // choose between reporting the expired legacy row and preserving user data.
+    const currentValue =
+      input.current_value_present &&
+      row.migration_disposition !== 'removed_inert' &&
+      row.migration_disposition !== 'unsupported_legacy_value'
+        ? input.current_value
+        : MISSING_VALUE;
+    return result(input, row, 'expired', currentValue, true);
+  }
   switch (row.migration_disposition) {
     case 'unchanged':
     case 'renamed_compatible':
@@ -190,6 +320,7 @@ export function safeMigrationRuntimeSnapshot(
     canonical_key_or_authority: runtime.canonical_key_or_authority,
     reason_code: runtime.reason_code,
     notice_required: runtime.notice_required,
+    post_expiry_disposition: runtime.post_expiry_disposition,
   };
 }
 

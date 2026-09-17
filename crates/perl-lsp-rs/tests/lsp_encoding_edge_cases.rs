@@ -9,13 +9,11 @@ mod common;
 use common::{initialize_lsp, read_response, send_notification, send_request, start_lsp_server};
 
 // Helper function to compute adaptive timeout based on thread constraints (Issue #200)
-fn compute_adaptive_timeout() -> std::time::Duration {
+fn compute_adaptive_timeout(rust_test_threads: Option<&str>) -> std::time::Duration {
     use std::time::Duration;
 
-    let rust_test_threads = std::env::var("RUST_TEST_THREADS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(usize::MAX);
+    let rust_test_threads =
+        rust_test_threads.and_then(|s| s.parse::<usize>().ok()).unwrap_or(usize::MAX);
 
     if rust_test_threads <= 2 {
         Duration::from_mins(1) // High contention
@@ -217,7 +215,8 @@ fn test_emoji_and_special_unicode() -> Result<(), Box<dyn std::error::Error>> {
     let server = start_lsp_server();
 
     // Adaptive timeout based on thread constraints (Issue #200)
-    let unicode_timeout = compute_adaptive_timeout();
+    let unicode_timeout =
+        compute_adaptive_timeout(std::env::var("RUST_TEST_THREADS").ok().as_deref());
     let rust_test_threads = std::env::var("RUST_TEST_THREADS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -981,17 +980,7 @@ fn test_adaptive_timeout_calculation() -> Result<(), Box<dyn std::error::Error>>
     ];
 
     for (threads_env, expected_timeout) in test_cases {
-        // Set environment variable for this test case
-        // SAFETY: Test is single-threaded and we own the environment variable
-        unsafe {
-            if let Some(val) = threads_env {
-                std::env::set_var("RUST_TEST_THREADS", val);
-            } else {
-                std::env::remove_var("RUST_TEST_THREADS");
-            }
-        }
-
-        let actual_timeout = compute_adaptive_timeout();
+        let actual_timeout = compute_adaptive_timeout(threads_env);
 
         assert_eq!(
             actual_timeout, expected_timeout,
@@ -1003,12 +992,6 @@ fn test_adaptive_timeout_calculation() -> Result<(), Box<dyn std::error::Error>>
             "✓ Adaptive timeout test passed for RUST_TEST_THREADS={:?}: {:?}",
             threads_env, actual_timeout
         );
-    }
-
-    // Clean up environment variable
-    // SAFETY: Test is single-threaded and we own the environment variable
-    unsafe {
-        std::env::remove_var("RUST_TEST_THREADS");
     }
 
     Ok(())

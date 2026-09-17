@@ -1,6 +1,75 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+CI_CONFIG_PATH="${CI_CONFIG_PATH:-${REPO_ROOT}/.github/ci-config.yml}"
+
+public_api_metadata() {
+  python3 - "${CI_CONFIG_PATH}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+lines = text.splitlines()
+anchors = [
+    index
+    for index, line in enumerate(lines)
+    if re.fullmatch(r"  ci:public-api:\s*", line)
+]
+if len(anchors) != 1:
+    raise SystemExit("ci:public-api metadata is missing from .github/ci-config.yml")
+
+metadata = {}
+for line in lines[anchors[0] + 1 :]:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+
+    indent = len(line) - len(line.lstrip(" "))
+    if indent <= 2:
+        break
+    if indent != 4:
+        raise SystemExit("ci:public-api metadata contains an invalid indentation")
+
+    field = re.fullmatch(r" {4}([A-Za-z0-9_-]+):\s*(.*)", line)
+    if field is None:
+        raise SystemExit("ci:public-api metadata contains a malformed field")
+    key, raw_value = field.groups()
+    if key not in {"color", "description"}:
+        raise SystemExit(f"ci:public-api metadata contains unknown field: {key}")
+    if key in metadata:
+        raise SystemExit(f"ci:public-api metadata contains duplicate field: {key}")
+
+    value = re.fullmatch(r"'([^']*)'", raw_value)
+    if value is None:
+        raise SystemExit(f"ci:public-api {key} must be a single-quoted scalar")
+    metadata[key] = value.group(1)
+
+if set(metadata) != {"color", "description"}:
+    raise SystemExit("ci:public-api metadata must define exactly color and description")
+
+color = metadata["color"]
+description = metadata["description"]
+if re.fullmatch(r"[0-9a-fA-F]{6}", color) is None:
+    raise SystemExit("ci:public-api color must be exactly six hexadecimal digits")
+if not description.strip() or any(ord(char) < 32 or char == "\t" for char in description):
+    raise SystemExit("ci:public-api description must be non-empty and free of control characters")
+if len(description) > 100:
+    raise SystemExit("ci:public-api description must be at most 100 characters")
+
+print(f"{color}\t{description}")
+PY
+}
+
+IFS=$'\t' read -r PUBLIC_API_COLOR PUBLIC_API_DESCRIPTION < <(public_api_metadata)
+if [[ -z "${PUBLIC_API_COLOR}" || -z "${PUBLIC_API_DESCRIPTION}" ]]; then
+  echo "ci:public-api metadata is empty" >&2
+  exit 1
+fi
+
 # Ensure gh auth works
 gh auth status >/dev/null
 
@@ -74,7 +143,7 @@ ensure "area:semantic" "c2e0c6" "Semantic analysis"
 
 echo ""
 echo "=== Lane Trigger Labels ==="
-ensure_reconciled "ci:public-api" "0052cc" "Run public API surface validation"
+ensure_reconciled "ci:public-api" "${PUBLIC_API_COLOR}" "${PUBLIC_API_DESCRIPTION}"
 
 echo ""
 echo "=== Done ==="

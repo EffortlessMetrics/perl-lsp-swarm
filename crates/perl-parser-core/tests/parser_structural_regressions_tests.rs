@@ -34,7 +34,7 @@ fn data_section_captures_body_and_stops_parsing() -> TestResult {
     assert_eq!(statements.len(), 2, "data body should not be parsed as Perl statements");
 
     match &statements[1].kind {
-        NodeKind::DataSection { marker, body } => {
+        NodeKind::DataSection { marker, body, .. } => {
             assert_eq!(marker, "__DATA__");
             assert_eq!(body.as_deref(), Some("line one\nline two\n"));
         }
@@ -51,7 +51,7 @@ fn end_marker_without_body_is_data_section() -> TestResult {
     assert_eq!(statements.len(), 2);
 
     match &statements[1].kind {
-        NodeKind::DataSection { marker, body } => {
+        NodeKind::DataSection { marker, body, .. } => {
             assert_eq!(marker, "__END__");
             assert!(body.is_none(), "bare __END__ should not invent a body");
         }

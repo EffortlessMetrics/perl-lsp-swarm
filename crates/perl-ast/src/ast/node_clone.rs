@@ -4,8 +4,10 @@
 //! is rebuilt only after its cloned children exist. Payload and shape copy uses
 //! a one-level derived [`NodeKind`] clone behind an operation-scoped
 //! placeholder flag so child slots do not recurse on the thread stack.
+//! The same engine powers [`Node::clone_with_mapped_locations`], keeping
+//! position-only tree rewrites exhaustive and depth-safe.
 
-use super::{Node, NodeKind, SourceLocation};
+use super::{Node, NodeKind, SourceLocation, Token};
 use std::cell::Cell;
 
 thread_local! {
@@ -36,6 +38,32 @@ impl Clone for Node {
             return clone_slot_placeholder();
         }
         clone_node(self, &mut ())
+    }
+}
+
+impl Node {
+    /// Clone the full tree while replacing every source location.
+    ///
+    /// The structural walk is the same iterative canonical traversal used by
+    /// [`Clone`]. `map` is called once for every [`Node::location`], once for
+    /// every independent [`SourceLocation`] stored in a [`NodeKind`] payload,
+    /// and once for every recovery [`Token`] span. Recovery token text is
+    /// immutable, so its mapped start is used while its original byte width is
+    /// preserved.
+    /// Its invocation order is intentionally unspecified; callers should derive
+    /// each result from the supplied location rather than from traversal order.
+    ///
+    /// This is a full owned duplication, not an in-place edit or a shared view.
+    /// Returns `None` when a mapped recovery-token span cannot be represented
+    /// without losing the token's validated byte width.
+    #[must_use]
+    pub fn clone_with_mapped_locations<F>(&self, map: F) -> Option<Self>
+    where
+        F: Fn(SourceLocation) -> SourceLocation,
+    {
+        let mut failed = false;
+        let cloned = clone_node_with_location_map(self, &mut (), &map, true, &mut failed);
+        (!failed).then_some(cloned)
     }
 }
 
@@ -94,7 +122,191 @@ fn install_cloned_children(shell: &mut Node, children: Vec<Node>) {
     });
 }
 
+fn map_optional_location<F>(location: &mut Option<SourceLocation>, map: &F)
+where
+    F: Fn(SourceLocation) -> SourceLocation,
+{
+    if let Some(location) = location {
+        *location = map(*location);
+    }
+}
+
+fn map_token_span<F>(token: &mut Token, map: &F) -> bool
+where
+    F: Fn(SourceLocation) -> SourceLocation,
+{
+    let mapped = map(SourceLocation { start: token.start(), end: token.end() });
+    let Some(mapped_end) = mapped.start.checked_add(token.len()) else {
+        return false;
+    };
+    let Ok(mapped_token) = token.with_span(mapped.start, mapped_end) else {
+        return false;
+    };
+    *token = mapped_token;
+    true
+}
+
+/// Map every independent source span stored outside [`Node::location`].
+///
+/// The no-location arm is intentionally exhaustive and has no wildcard. A new
+/// `NodeKind` variant therefore fails to compile here until its payload geometry
+/// is classified. Recovery [`Token`] geometry is handled explicitly while
+/// preserving the token text's validated byte width.
+#[cfg(test)]
+fn map_payload_locations<F>(kind: &mut NodeKind, map: &F)
+where
+    F: Fn(SourceLocation) -> SourceLocation,
+{
+    let _ = map_payload_locations_with_recovery(kind, map, true);
+}
+
+fn map_payload_locations_with_recovery<F>(
+    kind: &mut NodeKind,
+    map: &F,
+    map_recovery_tokens: bool,
+) -> bool
+where
+    F: Fn(SourceLocation) -> SourceLocation,
+{
+    match kind {
+        NodeKind::Heredoc { body_span, .. } => map_optional_location(body_span, map),
+        NodeKind::DataSection { marker_span, body_span, .. } => {
+            map_optional_location(marker_span, map);
+            map_optional_location(body_span, map);
+        }
+        NodeKind::Try { catch_blocks, .. } => {
+            for (catch_variable, _) in catch_blocks {
+                if let Some((_, location)) = catch_variable {
+                    *location = map(*location);
+                }
+            }
+        }
+        NodeKind::Subroutine { name_span, .. }
+        | NodeKind::Method { name_span, .. }
+        | NodeKind::Class { name_span, .. }
+        | NodeKind::Format { name_span, .. } => map_optional_location(name_span, map),
+        NodeKind::Package { name_span, .. } => *name_span = map(*name_span),
+        NodeKind::PhaseBlock { phase_span, .. } => map_optional_location(phase_span, map),
+        NodeKind::Error { found, .. } => {
+            if map_recovery_tokens
+                && let Some(found) = found
+                && !map_token_span(found, map)
+            {
+                return false;
+            }
+        }
+        NodeKind::Program { .. }
+        | NodeKind::ExpressionStatement { .. }
+        | NodeKind::VariableDeclaration { .. }
+        | NodeKind::VariableListDeclaration { .. }
+        | NodeKind::NestedVariableList { .. }
+        | NodeKind::Variable { .. }
+        | NodeKind::VariableWithAttributes { .. }
+        | NodeKind::Assignment { .. }
+        | NodeKind::Binary { .. }
+        | NodeKind::ArraySlice { .. }
+        | NodeKind::HashSlice { .. }
+        | NodeKind::KeyValueSlice { .. }
+        | NodeKind::ChainedComparison { .. }
+        | NodeKind::Ternary { .. }
+        | NodeKind::Unary { .. }
+        | NodeKind::Diamond
+        | NodeKind::Ellipsis
+        | NodeKind::Undef
+        | NodeKind::Readline { .. }
+        | NodeKind::Glob { .. }
+        | NodeKind::Typeglob { .. }
+        | NodeKind::Number { .. }
+        | NodeKind::String { .. }
+        | NodeKind::VString { .. }
+        | NodeKind::ArrayLiteral { .. }
+        | NodeKind::HashLiteral { .. }
+        | NodeKind::Block { .. }
+        | NodeKind::Eval { .. }
+        | NodeKind::Do { .. }
+        | NodeKind::Defer { .. }
+        | NodeKind::If { .. }
+        | NodeKind::LabeledStatement { .. }
+        | NodeKind::While { .. }
+        | NodeKind::Tie { .. }
+        | NodeKind::Untie { .. }
+        | NodeKind::For { .. }
+        | NodeKind::Foreach { .. }
+        | NodeKind::Given { .. }
+        | NodeKind::When { .. }
+        | NodeKind::Default { .. }
+        | NodeKind::StatementModifier { .. }
+        | NodeKind::Prototype { .. }
+        | NodeKind::Signature { .. }
+        | NodeKind::MandatoryParameter { .. }
+        | NodeKind::OptionalParameter { .. }
+        | NodeKind::SlurpyParameter { .. }
+        | NodeKind::NamedParameter { .. }
+        | NodeKind::Return { .. }
+        | NodeKind::LoopControl { .. }
+        | NodeKind::Goto { .. }
+        | NodeKind::MethodCall { .. }
+        | NodeKind::FunctionCall { .. }
+        | NodeKind::AmperCall { .. }
+        | NodeKind::IndirectCall { .. }
+        | NodeKind::Regex { .. }
+        | NodeKind::Match { .. }
+        | NodeKind::Substitution { .. }
+        | NodeKind::Transliteration { .. }
+        | NodeKind::Use { .. }
+        | NodeKind::No { .. }
+        | NodeKind::Identifier { .. }
+        | NodeKind::MissingExpression
+        | NodeKind::MissingStatement
+        | NodeKind::MissingIdentifier
+        | NodeKind::MissingBlock
+        | NodeKind::UnknownRest => {}
+    }
+    true
+}
+
+impl NodeKind {
+    /// Map every independent source span stored outside [`Node::location`]
+    /// in place.
+    ///
+    /// This is the in-place counterpart of the clone-path mapping engine
+    /// behind [`Node::clone_with_mapped_locations`]: incremental position
+    /// shifts call it so payload sub-spans move with the shift already
+    /// applied to [`Node::location`] instead of staying at their pre-shift
+    /// offsets. `map` must derive each result from the supplied location
+    /// only; invocation order is unspecified.
+    ///
+    /// Returns `false` when a recovery [`Token`] span cannot be remapped
+    /// without losing the token's validated byte width. The caller must then
+    /// discard the mutated tree rather than accept it.
+    pub fn map_payload_locations_in_place<F>(&mut self, map: F) -> bool
+    where
+        F: Fn(SourceLocation) -> SourceLocation,
+    {
+        map_payload_locations_with_recovery(self, &map, true)
+    }
+}
+
+fn preserve_location(location: SourceLocation) -> SourceLocation {
+    location
+}
+
 pub(super) fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Node {
+    let mut failed = false;
+    clone_node_with_location_map(root, observer, &preserve_location, false, &mut failed)
+}
+
+fn clone_node_with_location_map<O, F>(
+    root: &Node,
+    observer: &mut O,
+    map: &F,
+    map_recovery_tokens: bool,
+    failed: &mut bool,
+) -> Node
+where
+    O: CloneObserver,
+    F: Fn(SourceLocation) -> SourceLocation,
+{
     enum Work<'a> {
         Enter(&'a Node),
         Assemble { source: &'a Node, child_count: usize },
@@ -119,6 +331,12 @@ pub(super) fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Nod
             Work::Assemble { source, child_count } => {
                 let cloned_children = take_last_n_reversed(&mut done, child_count);
                 let mut cloned = clone_payload_shell(source);
+                cloned.location = map(source.location);
+                if !map_payload_locations_with_recovery(&mut cloned.kind, map, map_recovery_tokens)
+                {
+                    *failed = true;
+                    return clone_slot_placeholder();
+                }
                 install_cloned_children(&mut cloned, cloned_children);
                 observer.on_rebuild();
                 done.push(cloned);
@@ -128,17 +346,18 @@ pub(super) fn clone_node<O: CloneObserver>(root: &Node, observer: &mut O) -> Nod
 
     match done.pop() {
         Some(cloned) => cloned,
-        None => clone_payload_shell(root),
+        None => clone_slot_placeholder(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CLONE_PAYLOAD_SHELL, CloneObserver, Node, NodeKind, ShellCloneGuard, SourceLocation,
+        CLONE_PAYLOAD_SHELL, CloneObserver, Node, NodeKind, ShellCloneGuard, SourceLocation, Token,
         clone_node, clone_payload_shell, clone_slot_placeholder, install_cloned_children,
-        take_last_n_reversed,
+        map_payload_locations, take_last_n_reversed,
     };
+    use perl_token::TokenKind;
     use std::cell::Cell;
 
     fn loc(start: usize, end: usize) -> SourceLocation {
@@ -211,6 +430,212 @@ mod tests {
         assert!(wide_work.max_explicit_stack_depth >= 3);
         assert_eq!(cloned_wide, wide);
         assert_eq!(wide.clone(), cloned_wide);
+    }
+
+    #[test]
+    fn mapped_location_clone_updates_every_canonical_node() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let binary = Node::new(
+            NodeKind::Binary {
+                op: "+".to_string(),
+                left: Box::new(numbered("1", 0)),
+                right: Box::new(numbered("2", 2)),
+            },
+            loc(0, 3),
+        );
+        let source = program(vec![binary]);
+        let calls = Cell::new(0_u64);
+
+        let mapped = source
+            .clone_with_mapped_locations(|location| {
+                calls.set(calls.get().saturating_add(1));
+                loc(location.start.saturating_add(10), location.end.saturating_add(10))
+            })
+            .ok_or("location mapping unexpectedly failed")?;
+
+        assert_eq!(calls.get(), 4);
+        assert_eq!(source.location, loc(0, 3), "mapping must not mutate the source tree");
+        assert_eq!(mapped.location, loc(10, 13));
+
+        let statements = match &mapped.kind {
+            NodeKind::Program { statements } => statements,
+            other => return Err(format!("expected Program, got {}", other.kind_name()).into()),
+        };
+        assert_eq!(statements.len(), 1);
+        assert_eq!(statements[0].location, loc(10, 13));
+        let (op, left, right) = match &statements[0].kind {
+            NodeKind::Binary { op, left, right } => (op, left, right),
+            other => return Err(format!("expected Binary, got {}", other.kind_name()).into()),
+        };
+        assert_eq!(op, "+");
+        assert_eq!(left.location, loc(10, 11));
+        assert_eq!(right.location, loc(12, 13));
+        assert!(matches!(&left.kind, NodeKind::Number { value } if value == "1"));
+        assert!(matches!(&right.kind, NodeKind::Number { value } if value == "2"));
+        Ok(())
+    }
+
+    #[test]
+    fn mapped_location_clone_updates_recovery_token_span() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let found = Token::new_checked(TokenKind::Semicolon, ";", 8, 9)?;
+        let source = Node::new(
+            NodeKind::Error {
+                message: "missing expression".to_string(),
+                expected: Vec::new(),
+                found: Some(found),
+                partial: None,
+            },
+            loc(8, 9),
+        );
+
+        let mapped = source
+            .clone_with_mapped_locations(|location| {
+                loc(location.start.saturating_add(10), location.end.saturating_add(10))
+            })
+            .ok_or("location mapping unexpectedly failed")?;
+
+        let rejected = source.clone_with_mapped_locations(|location| loc(usize::MAX, location.end));
+        assert!(rejected.is_none(), "invalid mapped token geometry must fail closed");
+
+        let source_found = match &source.kind {
+            NodeKind::Error { found: Some(found), .. } => found,
+            other => return Err(format!("expected Error, got {}", other.kind_name()).into()),
+        };
+        let mapped_found = match &mapped.kind {
+            NodeKind::Error { found: Some(found), .. } => found,
+            other => return Err(format!("expected Error, got {}", other.kind_name()).into()),
+        };
+
+        assert_eq!(source.location, loc(8, 9));
+        assert_eq!(source_found.start(), 8);
+        assert_eq!(source_found.end(), 9);
+        assert_eq!(mapped.location, loc(18, 19));
+        assert_eq!(mapped_found.start(), 18);
+        assert_eq!(mapped_found.end(), 19);
+        assert_eq!(mapped_found.text.as_ref(), ";");
+        Ok(())
+    }
+
+    #[test]
+    fn payload_location_map_covers_every_source_location_family() {
+        let shift = |location: SourceLocation| loc(location.start + 10, location.end + 10);
+
+        let mut heredoc = NodeKind::Heredoc {
+            delimiter: "EOF".to_string(),
+            content: "body".to_string(),
+            interpolated: false,
+            indented: false,
+            command: false,
+            body_span: Some(loc(2, 6)),
+        };
+        map_payload_locations(&mut heredoc, &shift);
+        assert!(
+            matches!(heredoc, NodeKind::Heredoc { body_span: Some(span), .. } if span == loc(12, 16))
+        );
+
+        let mut try_block = NodeKind::Try {
+            body: Box::new(numbered("1", 0)),
+            catch_blocks: vec![(Some(("e".to_string(), loc(3, 5))), Box::new(numbered("2", 6)))],
+            finally_block: None,
+        };
+        map_payload_locations(&mut try_block, &shift);
+        assert!(matches!(
+            try_block,
+            NodeKind::Try { catch_blocks, .. }
+                if matches!(&catch_blocks[0].0, Some((_, span)) if *span == loc(13, 15))
+        ));
+
+        let mut subroutine = NodeKind::Subroutine {
+            name: Some("work".to_string()),
+            name_span: Some(loc(4, 8)),
+            declarator: None,
+            prototype: None,
+            signature: None,
+            attributes: vec![],
+            body: Box::new(numbered("3", 9)),
+        };
+        map_payload_locations(&mut subroutine, &shift);
+        assert!(
+            matches!(subroutine, NodeKind::Subroutine { name_span: Some(span), .. } if span == loc(14, 18))
+        );
+
+        let mut method = NodeKind::Method {
+            name: "run".to_string(),
+            name_span: Some(loc(5, 8)),
+            signature: None,
+            attributes: vec![],
+            body: Box::new(numbered("4", 9)),
+        };
+        map_payload_locations(&mut method, &shift);
+        assert!(
+            matches!(method, NodeKind::Method { name_span: Some(span), .. } if span == loc(15, 18))
+        );
+
+        let mut package =
+            NodeKind::Package { name: "Pkg".to_string(), name_span: loc(8, 11), block: None };
+        map_payload_locations(&mut package, &shift);
+        assert!(matches!(package, NodeKind::Package { name_span, .. } if name_span == loc(18, 21)));
+
+        let mut phase = NodeKind::PhaseBlock {
+            phase: "BEGIN".to_string(),
+            phase_span: Some(loc(0, 5)),
+            block: Box::new(numbered("5", 6)),
+        };
+        map_payload_locations(&mut phase, &shift);
+        assert!(
+            matches!(phase, NodeKind::PhaseBlock { phase_span: Some(span), .. } if span == loc(10, 15))
+        );
+
+        // A data section's marker and payload spans must shift with the node.
+        // Leaving them behind would make the exact ranges the HIR shell
+        // publishes point at unrelated bytes after any remap.
+        let mut data_section = NodeKind::DataSection {
+            marker: "__DATA__".to_string(),
+            marker_span: Some(loc(0, 8)),
+            body: Some("payload\n".to_string()),
+            body_span: Some(loc(9, 17)),
+        };
+        map_payload_locations(&mut data_section, &shift);
+        assert!(matches!(
+            data_section,
+            NodeKind::DataSection { marker_span: Some(m), body_span: Some(b), .. }
+                if m == loc(10, 18) && b == loc(19, 27)
+        ));
+
+        // A marker with no payload keeps an absent payload span absent.
+        let mut data_section_no_body = NodeKind::DataSection {
+            marker: "__END__".to_string(),
+            marker_span: Some(loc(0, 7)),
+            body: None,
+            body_span: None,
+        };
+        map_payload_locations(&mut data_section_no_body, &shift);
+        assert!(matches!(
+            data_section_no_body,
+            NodeKind::DataSection { marker_span: Some(m), body_span: None, .. } if m == loc(10, 17)
+        ));
+
+        let mut class = NodeKind::Class {
+            name: "Thing".to_string(),
+            name_span: Some(loc(6, 11)),
+            parents: vec![],
+            body: Box::new(numbered("6", 12)),
+        };
+        map_payload_locations(&mut class, &shift);
+        assert!(
+            matches!(class, NodeKind::Class { name_span: Some(span), .. } if span == loc(16, 21))
+        );
+
+        let mut format = NodeKind::Format {
+            name: "STDOUT".to_string(),
+            name_span: Some(loc(7, 13)),
+            body: String::new(),
+        };
+        map_payload_locations(&mut format, &shift);
+        assert!(
+            matches!(format, NodeKind::Format { name_span: Some(span), .. } if span == loc(17, 23))
+        );
     }
 
     #[test]

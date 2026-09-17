@@ -344,7 +344,8 @@ fn test_capabilities_terminate_threads_consistent() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-// AC:17 — supportsLoadedSourcesRequest is advertised and handler always succeeds
+// AC:17 — #9581: supportsLoadedSourcesRequest=false matches loadedSources
+// always failing with the explicit unsupported disposition
 fn test_capabilities_loaded_sources_advertised_and_working()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
@@ -352,30 +353,32 @@ fn test_capabilities_loaded_sources_advertised_and_working()
     let advertised =
         caps.get("supportsLoadedSourcesRequest").and_then(Value::as_bool).unwrap_or(false);
 
-    assert!(advertised, "supportsLoadedSourcesRequest must be advertised as true");
-
-    // Handler must succeed
-    let mut adapter2 = new_adapter();
-    let body = assert_ok(adapter2.handle_request(2, "loadedSources", None), "loadedSources")?;
-    assert!(body.is_some(), "loadedSources must return a body");
     assert!(
-        body.as_ref().and_then(|b| b.get("sources")).is_some(),
-        "loadedSources body must contain 'sources'"
+        !advertised,
+        "supportsLoadedSourcesRequest must be false under the #9581 capability floor"
+    );
+
+    // Floored capability and handler must agree: explicit failure, no masquerade
+    let mut adapter2 = new_adapter();
+    let err = assert_err(adapter2.handle_request(2, "loadedSources", None), "loadedSources")?;
+    assert!(
+        err.contains("unsupported"),
+        "floored loadedSources must return the explicit unsupported disposition: {err}"
     );
     Ok(())
 }
 
 #[test]
-// AC:17 — supportsCancelRequest is advertised and cancel always succeeds
+// AC:17 — #9581: supportsCancelRequest=false matches cancel always failing
 fn test_capabilities_cancel_advertised_and_working() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let caps = get_capabilities(&mut adapter)?;
     let advertised = caps.get("supportsCancelRequest").and_then(Value::as_bool).unwrap_or(false);
 
-    assert!(advertised, "supportsCancelRequest must be advertised");
+    assert!(!advertised, "supportsCancelRequest must be false under the #9581 capability floor");
 
     let mut adapter2 = new_adapter();
-    assert_ok(adapter2.handle_request(2, "cancel", None), "cancel")?;
+    assert_err(adapter2.handle_request(2, "cancel", None), "cancel")?;
     Ok(())
 }
 
@@ -408,40 +411,77 @@ fn test_capabilities_exception_info_consistent() -> Result<(), Box<dyn std::erro
 }
 
 #[test]
-// AC:17 — supportsSetExpression is advertised and setExpression validates inputs
+// AC:17 — supportsSetExpression is floored false (#9568) and setExpression is refused
 fn test_capabilities_set_expression_advertised() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let caps = get_capabilities(&mut adapter)?;
     let advertised = caps.get("supportsSetExpression").and_then(Value::as_bool).unwrap_or(false);
 
-    assert!(advertised, "supportsSetExpression must be advertised");
+    // #9568: supportsSetExpression is authority-bound false until the exact
+    // current-frame l-value assignment proof lands (#9570 promotion boundary).
+    // It no longer rides on dap.core, so this previously-green advertisement
+    // assertion pins the floored value instead.
+    assert!(
+        !advertised,
+        "supportsSetExpression must stay false until #9568's re-enable gate (#9570) passes"
+    );
 
-    // Handler must reject missing args
+    // A well-formed request is refused with the deterministic #9568 gate
+    // message — the floor refuses after envelope validation, before any
+    // expression screening or debugger write.
     let mut adapter2 = new_adapter();
-    let err = assert_err(adapter2.handle_request(2, "setExpression", None), "setExpression")?;
+    let err = assert_err(
+        adapter2.handle_request(
+            2,
+            "setExpression",
+            Some(json!({"expression": "$x", "value": "42"})),
+        ),
+        "setExpression",
+    )?;
+    assert!(
+        err.contains("setExpression is not supported"),
+        "setExpression refusal must carry the #9568 gate reason, got: {err}"
+    );
+
+    // Missing arguments are still rejected (envelope validation), with a
+    // non-empty refusal.
+    let mut adapter3 = new_adapter();
+    let err = assert_err(adapter3.handle_request(2, "setExpression", None), "setExpression")?;
     assert!(!err.is_empty(), "missing-args error must be non-empty");
     Ok(())
 }
 
 #[test]
-// AC:17 — supportsGotoTargetsRequest is advertised and gotoTargets returns targets array
-fn test_capabilities_goto_targets_advertised_and_working() -> Result<(), Box<dyn std::error::Error>>
-{
+// AC:17 — supportsGotoTargetsRequest is fail-closed: run-to-line is not standard goto
+fn test_capabilities_goto_targets_not_advertised_and_requests_unsupported()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let caps = get_capabilities(&mut adapter)?;
     let advertised =
         caps.get("supportsGotoTargetsRequest").and_then(Value::as_bool).unwrap_or(false);
 
-    assert!(advertised, "supportsGotoTargetsRequest must be advertised");
+    assert!(
+        !advertised,
+        "supportsGotoTargetsRequest must not be advertised while the native backend only \
+         offers run-to-line (#9064)"
+    );
 
+    // gotoTargets must explicitly refuse rather than publish targets a client
+    // cannot use as standard goto.
     let mut adapter2 = new_adapter();
-    let body = assert_ok(
-        adapter2.handle_request(2, "gotoTargets", Some(json!({"source": {}, "line": 1}))),
-        "gotoTargets",
-    )?;
-    let body = body.ok_or("gotoTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "gotoTargets body must contain 'targets'");
-    assert!(body["targets"].is_array(), "gotoTargets 'targets' must be an array");
+    let msg = adapter2.handle_request(2, "gotoTargets", Some(json!({"source": {}, "line": 1})));
+    match msg {
+        DapMessage::Response { success, command, message, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised");
+            let err = message.unwrap_or_default();
+            assert!(
+                err.contains("unsupported"),
+                "gotoTargets rejection must explain that standard goto is unsupported: {err}"
+            );
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
     Ok(())
 }
 
@@ -547,13 +587,14 @@ fn test_stack_trace_response_has_stack_frames() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-// AC:17 — loadedSources response has 'sources' array in body
+// AC:17 — #9581: floored loadedSources returns explicit unsupported, no body
 fn test_loaded_sources_response_has_sources_array() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
-    let body = assert_ok(adapter.handle_request(1, "loadedSources", None), "loadedSources")?
-        .ok_or("loadedSources must return a body")?;
-    assert!(body.get("sources").is_some(), "loadedSources body must contain 'sources'");
-    assert!(body["sources"].is_array(), "'sources' must be an array");
+    let err = assert_err(adapter.handle_request(1, "loadedSources", None), "loadedSources")?;
+    assert!(
+        err.contains("unsupported") && err.contains("supportsLoadedSourcesRequest"),
+        "expected the #9581 floor rejection, got: {err}"
+    );
     Ok(())
 }
 
@@ -571,45 +612,57 @@ fn test_exception_info_response_has_required_fields() -> Result<(), Box<dyn std:
 }
 
 #[test]
-// AC:17 — gotoTargets response has 'targets' array
-fn test_goto_targets_response_has_targets_array() -> Result<(), Box<dyn std::error::Error>> {
+// AC:17 — unsupported gotoTargets must not publish a targets array body
+fn test_goto_targets_unsupported_publishes_no_targets() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
-    let body = assert_ok(
-        adapter.handle_request(1, "gotoTargets", Some(json!({"source": {}, "line": 1}))),
-        "gotoTargets",
-    )?
-    .ok_or("gotoTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "gotoTargets must include 'targets'");
-    assert!(body["targets"].is_array(), "'targets' must be an array");
+    let msg = adapter.handle_request(1, "gotoTargets", Some(json!({"source": {}, "line": 1})));
+    match msg {
+        DapMessage::Response { success, command, body, message, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised (#9064)");
+            assert!(
+                body.is_none(),
+                "unsupported gotoTargets must not publish a targets body a client could \
+                 mistake for standard goto targets"
+            );
+            assert!(
+                message.is_some_and(|m| !m.is_empty()),
+                "unsupported gotoTargets must explain why"
+            );
+        }
+        other => return Err(format!("expected Response, got {other:?}").into()),
+    }
     Ok(())
 }
 
 #[test]
-// AC:17 — stepInTargets response has 'targets' array
-fn test_step_in_targets_response_has_targets_array() -> Result<(), Box<dyn std::error::Error>> {
+// AC:17 / #9069 — unsupported stepInTargets fails honestly with no targets body
+fn test_step_in_targets_unsupported_response_has_no_targets_body()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
-    let body = assert_ok(
+    let (_, _, success, body, message) = unwrap_response(
         adapter.handle_request(1, "stepInTargets", Some(json!({"frameId": 0}))),
         "stepInTargets",
-    )?
-    .ok_or("stepInTargets must return a body")?;
-    assert!(body.get("targets").is_some(), "stepInTargets must include 'targets'");
-    assert!(body["targets"].is_array(), "'targets' must be an array");
+    )?;
+    assert!(!success, "stepInTargets must fail while unsupported (#9069)");
+    assert!(body.is_none(), "unsupported stepInTargets must not publish a targets body");
+    assert!(message.is_some(), "unsupported stepInTargets must explain its disposition");
     Ok(())
 }
 
 #[test]
-// AC:17 — breakpointLocations response has 'breakpoints' array
+// AC:17 — #9581: floored breakpointLocations returns explicit unsupported, no body
 fn test_breakpoint_locations_response_has_breakpoints_array()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
-    let body = assert_ok(
+    let err = assert_err(
         adapter.handle_request(1, "breakpointLocations", Some(json!({"source": {}, "line": 1}))),
         "breakpointLocations",
-    )?
-    .ok_or("breakpointLocations must return a body")?;
-    assert!(body.get("breakpoints").is_some(), "breakpointLocations must include 'breakpoints'");
-    assert!(body["breakpoints"].is_array(), "'breakpoints' must be an array");
+    )?;
+    assert!(
+        err.contains("unsupported") && err.contains("supportsBreakpointLocationsRequest"),
+        "expected the #9581 floor rejection, got: {err}"
+    );
     Ok(())
 }
 
@@ -627,32 +680,38 @@ fn test_set_breakpoints_response_has_breakpoints_array() -> Result<(), Box<dyn s
 }
 
 #[test]
-// AC:17 — setFunctionBreakpoints response has 'breakpoints' array
+// AC:17 — #9578: setFunctionBreakpoints is refused while the capability is
+// floored, so the empty-list no-op cannot create support evidence either.
 fn test_set_function_breakpoints_response_has_breakpoints_array()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let args = json!({"breakpoints": []});
-    let body = assert_ok(
+    let message = assert_err(
         adapter.handle_request(1, "setFunctionBreakpoints", Some(args)),
         "setFunctionBreakpoints",
-    )?
-    .ok_or("setFunctionBreakpoints must return a body")?;
-    assert!(body.get("breakpoints").is_some(), "setFunctionBreakpoints must include 'breakpoints'");
+    )?;
+    assert!(
+        message.contains("supportsFunctionBreakpoints"),
+        "refusal must name the floored capability (#9578), got {message:?}"
+    );
     Ok(())
 }
 
 #[test]
 fn test_set_function_breakpoints_rejects_overlong_name() -> Result<(), Box<dyn std::error::Error>> {
+    // #9578: the capability is floored, so an overlong name receives the same
+    // capability refusal as every other shape — before name validation runs.
     let mut adapter = new_adapter();
     let long_name = format!("Foo::{}", "A".repeat(600));
     let args = json!({"breakpoints": [{"name": long_name}]});
-    let body = assert_ok(
+    let message = assert_err(
         adapter.handle_request(1, "setFunctionBreakpoints", Some(args)),
         "setFunctionBreakpoints",
-    )?
-    .ok_or("setFunctionBreakpoints must return a body")?;
-
-    assert_eq!(body["breakpoints"][0]["verified"], json!(false));
+    )?;
+    assert!(
+        message.contains("supportsFunctionBreakpoints"),
+        "refusal must name the floored capability (#9578), got {message:?}"
+    );
     Ok(())
 }
 
@@ -690,27 +749,28 @@ fn test_set_data_breakpoints_response_has_breakpoints_array()
 }
 
 #[test]
-// AC:17 — modules response has 'modules' array and 'totalModules' count
+// AC:17 — #9581: floored modules returns explicit unsupported, no body
 fn test_modules_response_has_modules_array_and_count() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let args = json!({"startModule": 0, "moduleCount": 10});
-    let body = assert_ok(adapter.handle_request(1, "modules", Some(args)), "modules")?
-        .ok_or("modules must return a body")?;
-    assert!(body.get("modules").is_some(), "modules body must include 'modules'");
-    assert!(body["modules"].is_array(), "'modules' must be an array");
-    assert!(body.get("totalModules").is_some(), "modules body must include 'totalModules'");
+    let err = assert_err(adapter.handle_request(1, "modules", Some(args)), "modules")?;
+    assert!(
+        err.contains("unsupported") && err.contains("supportsModulesRequest"),
+        "expected the #9581 floor rejection, got: {err}"
+    );
     Ok(())
 }
 
 #[test]
-// AC:17 — completions response has 'targets' array
+// AC:17 — #9581: floored completions returns explicit unsupported, no body
 fn test_completions_response_has_targets_array() -> Result<(), Box<dyn std::error::Error>> {
     let mut adapter = new_adapter();
     let args = json!({"text": "$", "column": 1});
-    let body = assert_ok(adapter.handle_request(1, "completions", Some(args)), "completions")?
-        .ok_or("completions must return a body")?;
-    assert!(body.get("targets").is_some(), "completions body must include 'targets'");
-    assert!(body["targets"].is_array(), "'targets' must be an array");
+    let err = assert_err(adapter.handle_request(1, "completions", Some(args)), "completions")?;
+    assert!(
+        err.contains("unsupported") && err.contains("supportsCompletionsRequest"),
+        "expected the #9581 floor rejection, got: {err}"
+    );
     Ok(())
 }
 
@@ -774,41 +834,52 @@ fn test_request_seq_min_i64_is_valid() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-// AC:17 — cancel flag does not corrupt subsequent command responses on the same adapter
+// AC:17 — #9581: floored cancel never sets the cancellation flag, so subsequent
+// commands on the same adapter are unaffected
 fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dyn std::error::Error>>
 {
-    // cancel sets an internal cancel_requested flag that gotoTargets and breakpointLocations
-    // read during their inner loops. Verify that a subsequent command on the same adapter
-    // still returns a well-formed Response and doesn't panic or hang.
+    // #9581: the floored cancel disposition is returned by the dispatch gate
+    // before `handle_cancel`, so `cancel_requested` is never set. Verify that
+    // a subsequent command on the same adapter still returns a well-formed
+    // Response and doesn't panic or hang.
+    // cancel sets an internal cancel_requested flag that breakpointLocations
+    // reads during its inner loop. Verify that a subsequent command on the same
+    // adapter still returns a well-formed Response and doesn't panic or hang.
     //
-    // Note: gotoTargets with source.path=None returns early before reaching the
-    // cancel_requested check, so cancel_requested remains true after that call.
-    // Using a real source path here ensures the check fires and the flag resets.
-    // The non-existent path causes an early file-read error return, which is also
-    // fine — what matters is that a Response is returned and request_seq is echoed.
+    // Note: gotoTargets is fail-closed (#9064) and its gate consumes an armed
+    // cancel flag at the request boundary (proven by
+    // test_cancel_then_rejected_goto_targets_does_not_poison_next_request).
+    // breakpointLocations with a real source path still exercises the check
+    // and resets it. The non-existent path causes an early file-read error
+    // return, which is also fine — what matters is that a Response is
+    // returned and request_seq is echoed.
     let mut adapter = new_adapter();
 
-    // First: cancel sets cancel_requested = true
+    // First: cancel is rejected explicitly and mutates no state.
     let cancel_msg = adapter.handle_request(1, "cancel", None);
     match cancel_msg {
-        DapMessage::Response { command, success, .. } => {
+        DapMessage::Response { command, success, message, .. } => {
             assert_eq!(command, "cancel");
-            assert!(success, "cancel must succeed");
+            assert!(!success, "cancel must be floored-rejected (#9581)");
+            assert!(
+                message.is_some_and(|m| m.contains("unsupported")),
+                "expected the explicit #9581 unsupported disposition"
+            );
         }
         other => return Err(format!("cancel: expected Response, got {other:?}").into()),
     }
 
-    // Second: breakpointLocations with a source path triggers the cancel_requested check
-    // in its inner loop, resets the flag, and returns a valid Response.
+    // Second: breakpointLocations remains floored-rejected after cancel.
     let bp_msg = adapter.handle_request(
         2,
         "breakpointLocations",
         Some(json!({"source": {"path": "/nonexistent/file.pl"}, "line": 1})),
     );
     match bp_msg {
-        DapMessage::Response { command, request_seq, .. } => {
+        DapMessage::Response { command, request_seq, success, .. } => {
             assert_eq!(command, "breakpointLocations", "command must echo");
             assert_eq!(request_seq, 2, "request_seq must be echoed after cancel");
+            assert!(!success, "breakpointLocations stays floored (#9581)");
         }
         other => {
             return Err(format!(
@@ -827,6 +898,83 @@ fn test_cancel_followed_by_command_returns_valid_response() -> Result<(), Box<dy
         }
         other => {
             return Err(format!("threads after cancel: expected Response, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+// #9064 review repair, restated under the #9581 cancel floor: the fail-closed
+// `gotoTargets` refusal must not poison the next unrelated request. The
+// cancel arming path the original repair guarded is now floored — the wire
+// rejection happens before any handler — so this pins both the floor refusal
+// and the poison-free sequencing (a real source still yields non-empty
+// breakpointLocations after a refused gotoTargets).
+fn test_cancel_then_rejected_goto_targets_does_not_poison_next_request() -> TestResult<()> {
+    let mut adapter = new_adapter();
+
+    // #9581: `cancel` is floored — the dispatcher rejects it with the
+    // secondary-capability message BEFORE any handler runs, so no request
+    // path arms the shared advisory flag anymore. The rejection itself must
+    // be the deterministic floor refusal.
+    match adapter.handle_request(1, "cancel", None) {
+        DapMessage::Response { command, success, message, .. } => {
+            assert_eq!(command, "cancel");
+            assert!(!success, "floored cancel must be refused, not acknowledged");
+            let message = message.as_deref().unwrap_or("");
+            assert!(
+                message.contains("supportsCancelRequest") && message.contains("#9581"),
+                "floored cancel must carry the #9581 secondary-capability refusal: {message}"
+            );
+        }
+        other => return Err(format!("cancel: expected Response, got {other:?}").into()),
+    }
+
+    // The fail-closed gate refuses — and must consume the armed flag.
+    match adapter.handle_request(
+        2,
+        "gotoTargets",
+        Some(json!({"source": {"path": "script.pl"}, "line": 3})),
+    ) {
+        DapMessage::Response { command, success, .. } => {
+            assert_eq!(command, "gotoTargets");
+            assert!(!success, "gotoTargets must fail closed while unadvertised (#9064)");
+        }
+        other => return Err(format!("gotoTargets: expected Response, got {other:?}").into()),
+    }
+
+    // A real source with executable lines. Historically an armed cancel flag
+    // survived the refused gotoTargets and made breakpointLocations abort
+    // with an empty-but-successful list. Under the #9581 floor the request is
+    // refused outright — the poisoning symptom would surface as a *success*
+    // with an empty body or a non-floor error message; either would be a
+    // regression against the deterministic floor refusal.
+    let dir = tempfile::tempdir()?;
+    let script_path = dir.path().join("cancel_probe.pl");
+    std::fs::write(&script_path, "my $x = 1;\nmy $y = 2;\nprint $x + $y;\n")?;
+    let path = script_path.to_str().ok_or("temp path is not valid UTF-8")?;
+
+    match adapter.handle_request(
+        3,
+        "breakpointLocations",
+        Some(json!({"source": {"path": path}, "line": 1, "endLine": 3})),
+    ) {
+        DapMessage::Response { command, success, message, body, .. } => {
+            assert_eq!(command, "breakpointLocations");
+            assert!(
+                !success,
+                "breakpointLocations must be floored-refused after a refused gotoTargets, \
+                 not acknowledged with an empty location list"
+            );
+            assert!(body.is_none(), "a floored breakpointLocations refusal carries no result body");
+            let message = message.as_deref().unwrap_or("");
+            assert!(
+                message.contains("supportsBreakpointLocationsRequest") && message.contains("#9581"),
+                "the refusal must be the deterministic #9581 floor message: {message}"
+            );
+        }
+        other => {
+            return Err(format!("breakpointLocations: expected Response, got {other:?}").into());
         }
     }
     Ok(())
