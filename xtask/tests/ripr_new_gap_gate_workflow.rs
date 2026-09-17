@@ -1283,11 +1283,11 @@ fn ripr_workflow_runs_on_ready_for_review_without_path_filter()
     require_single_canonical_container_installer(&hosted_producer)?;
     assert!(
         hosted_producer.contains("docker run --rm")
-            && hosted_producer.contains("--memory=6g")
-            && hosted_producer.contains("--memory-swap=6g")
+            && hosted_producer.contains("--memory=14g")
+            && hosted_producer.contains("--memory-swap=14g")
             && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 40m")
             && hosted_producer.contains("timeout --signal=TERM --kill-after=30s 25m")
-            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=1600")
+            && hosted_producer.contains("-e RIPR_MAX_DIFF_INDEX_FILES=2560")
             && hosted_producer.contains("-e RIPR_FRESHNESS_HANDOFF=/freshness")
             && hosted_producer.contains("-v \"$RIPR_FRESHNESS_HANDOFF:/freshness\"")
             && hosted_producer.contains("--name \"$container_name\"")
@@ -2548,4 +2548,59 @@ fn ripr_draft_result_is_not_proof() -> Result<(), Box<dyn std::error::Error>> {
         "ripr",
         "RIPR_GATE_VERDICT=draft-no-proof",
     )
+}
+
+fn workflow_job_env_value(job_name: &str, env_key: &str) -> Result<String> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+    let yaml: Value = serde_yaml_ng::from_str(&workflow)?;
+    let jobs = yaml
+        .get("jobs")
+        .and_then(Value::as_mapping)
+        .ok_or_else(|| anyhow!("ripr.yml has no jobs mapping"))?;
+    let job = jobs
+        .get(Value::String(job_name.into()))
+        .ok_or_else(|| anyhow!("ripr.yml has no {job_name} job"))?;
+    job.get("env")
+        .and_then(Value::as_mapping)
+        .and_then(|env| env.get(Value::String(env_key.into())))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("{job_name} env has no {env_key}"))
+}
+
+// #15498: ripr 0.10.0 tightened the built-in diff-index refusal from 1600
+// files (0.9.0) to 800. Both GitHub-hosted lanes must therefore pin the
+// admission boundary explicitly and pair it with a container budget measured
+// to hold it (1600-file closures indexed inside 6g => <=3.75 MB/file, so
+// 2560 files needs ~9.6 GB inside a 14g container on the 16 GB runner).
+#[test]
+fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Result<()> {
+    let root = project_root()?;
+    let workflow = fs::read_to_string(root.join(".github/workflows/ripr.yml"))?;
+
+    let hosted_cap = workflow_job_env_value("ripr-fallback", "RIPR_MAX_DIFF_INDEX_FILES")?;
+    ensure!(
+        hosted_cap == "2560",
+        "ripr-fallback must pin RIPR_MAX_DIFF_INDEX_FILES=2560 explicitly; found {hosted_cap:?}.          Without the pin the lane inherits the CLI's built-in default, which ripr 0.10.0          silently tightened from 1600 to 800 (#15498)"
+    );
+
+    let script = workflow_step(&workflow, "Generate PR evidence")
+        .ok_or_else(|| anyhow!("missing Generate PR evidence step"))?;
+    for expected in [
+        "-e RIPR_MAX_DIFF_INDEX_FILES=2560",
+        "--memory=14g",
+        "--memory-swap=14g",
+        "docker_memory=14g",
+    ] {
+        ensure!(
+            script.contains(expected),
+            "ripr-github's hosted producer must carry {expected:?}; the admission boundary and              the container budget are one measured pair (#15498)"
+        );
+    }
+    ensure!(
+        !script.contains("--memory=6g") && !script.contains("RIPR_MAX_DIFF_INDEX_FILES=1600"),
+        "stale 6g/1600 hosted budgets must not survive beside the measured 14g/2560 pair"
+    );
+    Ok(())
 }

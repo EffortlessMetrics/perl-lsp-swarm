@@ -26,6 +26,7 @@ use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::emacs_train_specs::{LeafSpecDisposition, SpecsOutputFormat};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
+use tasks::issue_controllers::IssueControllersCommand;
 use tasks::issue_plan::IssuePlanOutputFormat;
 use tasks::methodology_gate::MethodologyOutputFormat;
 use tasks::targeted_checks::CheckMode;
@@ -34,23 +35,24 @@ use tasks::ux_scorecard::UxScorecardFormat;
 use tasks::workflow_trigger_lint::WorkflowTriggerLintFormat;
 use tasks::worktree_allocator::AgentWorktreeCommand;
 use tasks::{
-    active_goal_manifest, agent_capability_policy, agent_flow, agent_implementation_packet,
-    agent_lease, agent_receipt, agent_review_packet, aggregate_receipts, badges, bench, benchmarks,
-    build, build_timing, bump_version, change_set, check, check_agent_context, check_lint_policy,
-    check_tautology, check_test_wiring, check_toolchain, check_version_sync, ci,
-    ci_audit_workflows, ci_contract, ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics,
-    ci_policy, ci_pr_summary, ci_route, ci_scope, clean, clippy_cost_measure,
-    code_action_generation_ledger, command_evidence, compare, compat_inventory,
-    compiler_lexical_cutline, corpus_audit, count_ratchet, cpan_corpus, critic_rule_proof,
-    dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor, devex_plan, doc,
-    doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs, features,
-    finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts, gates,
-    generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
+    activation, active_goal_manifest, agent_capability_policy, agent_flow,
+    agent_implementation_packet, agent_lease, agent_receipt, agent_review_packet,
+    aggregate_receipts, badges, bench, benchmarks, build, build_timing, bump_version, change_set,
+    check, check_agent_context, check_lint_policy, check_tautology, check_test_wiring,
+    check_toolchain, check_version_sync, ci, ci_audit_workflows, ci_cache_inventory, ci_contract,
+    ci_doctor, ci_explain, ci_hygiene, ci_measure, ci_metrics, ci_policy, ci_pr_summary, ci_route,
+    ci_scope, clean, clippy_cost_measure, code_action_generation_ledger, command_evidence, compare,
+    compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
+    compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
+    critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
+    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
+    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
     ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
     inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
+    issue_controllers, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke,
+    memory_trends, merge_ready, methodology_gate, metrics, module_train, module_train_live,
+    native_critic, native_format, native_neovim_train, native_product_surface, native_tooling,
     oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
     parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
     perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
@@ -95,6 +97,15 @@ enum Commands {
         /// Optional sub-command; omit to run the full CI suite.
         #[command(subcommand)]
         command: Option<CiSubcommand>,
+    },
+
+    /// Prove one exact parent-head -> child-head stack increment (#11229 S1).
+    #[command(name = "ci-stack")]
+    StackIncrement {
+        /// Sub-command selecting subject assembly, plan selection, artifact
+        /// validation, or advisory explanation.
+        #[command(subcommand)]
+        command: tasks::ci_stack_increment::StackIncrementCommand,
     },
 
     /// Run format and clippy checks only (no tests)
@@ -149,6 +160,18 @@ enum Commands {
     /// Validate declared differential real-Perl oracle fixtures.
     CheckOracleFixtureManifest,
 
+    /// Generate, validate, and list the versioned activation inventory
+    /// (`activation_inventory.v1`, #9204): a deterministic classified catalog
+    /// of product, preview, compatibility-shim, test-api, lab, oracle,
+    /// benchmark, and gate surfaces derived from existing authorities plus a
+    /// narrow, typed, owner/expiry-bound override ledger. Does not implement
+    /// activation checking (#9205).
+    Activation {
+        /// Operation to run against the activation inventory.
+        #[command(subcommand)]
+        command: tasks::activation::ActivationSubcommand,
+    },
+
     /// List, validate, and explain the compiler lexical cut-line cases
     /// manifest (`compiler_lexical_cutline_cases.v1`, #12156).
     CompilerLexicalCutline {
@@ -177,6 +200,9 @@ enum Commands {
 
     /// Validate differential real-Perl oracle receipt schema.
     CheckOracleReceiptSchema,
+
+    /// Validate the compiler performance receipt schema, its vocabularies, and every committed fixture.
+    CheckCompilerPerformanceReceipt,
 
     /// Validate the shared typed train edge and claim-profile contract
     /// (train_edge_contract.v1), its programme-neutral fixtures, and the
@@ -375,6 +401,16 @@ enum Commands {
         check: bool,
     },
 
+    /// Reconcile `policy/completion-candidate-producers.toml` against the live
+    /// `textDocument/completion` candidate producers and hold the finalizer
+    /// route closed (#10949).
+    #[command(name = "completion-candidates")]
+    CompletionCandidates {
+        /// Operation to run against the inventory.
+        #[command(subcommand)]
+        command: completion_candidates::CompletionCandidatesSubcommand,
+    },
+
     /// Generate or check the protocol-type substrate and migration-denominator
     /// matrix (#11802).
     #[command(name = "generate-protocol-type-substrate-matrix")]
@@ -505,6 +541,15 @@ enum Commands {
     Integration {
         #[command(subcommand)]
         command: IntegrationCommand,
+    },
+
+    /// Issue-controller train tooling: independent static validation of the
+    /// stable `issue_controller_train.v1` manifest and its checked human
+    /// projection (#11765). Deterministic and offline only.
+    #[command(name = "issue-controllers")]
+    IssueControllers {
+        #[command(subcommand)]
+        command: IssueControllersCommand,
     },
 
     /// Writer admission — read-only pre-admission diagnostic (#3957 W1).
@@ -1157,6 +1202,34 @@ enum Commands {
     /// Audit CI workflows for PR-safety and spend-risk controls.
     CiAuditWorkflows,
 
+    /// Derive the active CI cache inventory + `ci_cache_receipt.v1` (#9177).
+    ///
+    /// Diagnostic: classifies reachability, save authority, and byte
+    /// provenance for every `Swatinem/rust-cache`/`actions/cache` step
+    /// already in source. Changes no cache behavior and grants no save
+    /// authority.
+    CiCacheInventory {
+        /// Diff the derived inventory against the checked-in manifest and
+        /// fail on drift, instead of (re)writing it.
+        #[arg(long)]
+        check: bool,
+
+        /// Write the receipt JSON to this path instead of stdout.
+        /// Rejected alongside `--check`, which never writes a receipt.
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+
+        /// Checked-in manifest path (defaults to `ci_cache_inventory::MANIFEST`).
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+
+        /// Schema version this producer must emit and validate. Only
+        /// `v1` is supported; anything else fails loudly instead of
+        /// emitting a shape the caller does not parse.
+        #[arg(long, default_value = "v1")]
+        api_version: String,
+    },
+
     /// Classify credential derivation kinds in `.github/workflows/*.yml` (#14867).
     ///
     /// Advisory inventory of the credential column. Does not change workflow
@@ -1237,7 +1310,12 @@ enum Commands {
         limit: usize,
 
         /// Output directory for ci_baseline artifacts.
-        #[arg(short, long, default_value = ".ci")]
+        ///
+        /// Defaults to `target/metrics` so the consumer in
+        /// `metrics::release_health::read_ci_baseline` finds the file at the
+        /// canonical contract path. Override to a different directory to keep
+        /// historical or per-branch baselines side by side.
+        #[arg(short, long, default_value = metrics::release_health::CI_BASELINE_OUTPUT_DIR)]
         output: PathBuf,
     },
 
@@ -1513,6 +1591,13 @@ enum Commands {
         /// Receipt JSON retained for clean and blocking verdicts.
         #[arg(long, default_value = "target/receipts/publication-drift.json")]
         out: PathBuf,
+    },
+
+    /// Enforce source-authority and instruction/data boundaries for the Zed
+    /// agent stage packets.
+    ZedTrain {
+        #[command(subcommand)]
+        command: ZedTrainCommand,
     },
 
     /// Read-only upstream refresh and drift classification for the pinned
@@ -2286,6 +2371,13 @@ enum Commands {
         command: CompilerProfileCommand,
     },
 
+    /// Upstream-derived semantic conformance surfaces (#12532).
+    #[command(name = "compiler")]
+    Compiler {
+        #[command(subcommand)]
+        command: CompilerUpstreamCommand,
+    },
+
     /// Publish structured editor UX scorecard artifact/status from harness fixtures.
     UxScorecard {
         /// Output format for stdout.
@@ -2477,6 +2569,13 @@ enum Commands {
         /// commit` (issue #3786).
         #[arg(long)]
         staged: bool,
+
+        /// Published `ci_route_plan.v1` (#10179) to consume and validate
+        /// before execution; when set, one normalized `routed_gate_result.v1`
+        /// (#9156) is emitted per executed planned `run` row under
+        /// target/receipts/routed-results/.
+        #[arg(long, requires = "subject")]
+        route_plan: Option<PathBuf>,
     },
 
     /// Ergonomic alias for `gates --tier commit --staged` (issue #3786).
@@ -2937,6 +3036,12 @@ enum VimEditorCompatCommand {
     /// legitimate no-change bytes, distinct disabled/refused/failure
     /// dispositions, and stale-result rejection — against the governed save
     /// fixture.
+    /// `host-reopen-lifecycle` (#11401) runs the eight-cell host-reopen
+    /// journey — buffer close/reopen, full host exit and replacement launch,
+    /// the workspace not-exposed disposition, identity-bound cancellation,
+    /// late-result rejection, finite repeated sessions, normal terminal
+    /// cleanup, and forced-failure cleanup — as a finite sequence of hermetic
+    /// host sessions over one shared fixture.
     Run {
         /// Exact client subject id (see
         /// `xtask::vim_host_run::VimClientSubject::known_ids`).
@@ -2944,12 +3049,12 @@ enum VimEditorCompatCommand {
         subject: String,
 
         /// Hermetic journey to execute: host-lifecycle, bootstrap-diagnostics,
-        /// freshness-generations, recovery-generations, or save-format.
+        /// freshness-generations, recovery-generations, save-format, or host-reopen-lifecycle.
         #[arg(long, default_value = "host-lifecycle")]
         journey: String,
 
         /// Fixture variant for the bootstrap-diagnostics,
-        /// freshness-generations, recovery-generations, and save-format
+        /// freshness-generations, recovery-generations, save-format, and host-reopen-lifecycle
         /// journeys. The canonical variant must reach its journey's honest
         /// top-line — `pass`, except `recovery-generations`, whose
         /// adverse-exit cell is never a passing observation, so its honest
@@ -3755,6 +3860,25 @@ enum FreshnessCheckMode {
     Block,
 }
 
+#[derive(Subcommand)]
+enum ZedTrainCommand {
+    /// Verify every stage-packet input is authority-classified, current, and
+    /// data-only, and that every packet generator is declared.
+    #[command(name = "source-check")]
+    SourceCheck {
+        /// Source-authority manifest JSON.
+        fixture: PathBuf,
+
+        /// Repository root used to resolve the packet-relative subjects.
+        #[arg(long, default_value = ".")]
+        repo_root: PathBuf,
+
+        /// Receipt JSON retained for clean and blocking verdicts.
+        #[arg(long, default_value = "target/receipts/zed-source-authority.json")]
+        out: PathBuf,
+    },
+}
+
 /// Subcommands of `cargo xtask vim-lsp-subject` (#11411).
 #[derive(Debug, Subcommand)]
 enum VimLspSubjectCommand {
@@ -4227,6 +4351,26 @@ enum CompilerProfileCommand {
 }
 
 #[derive(Subcommand)]
+enum CompilerUpstreamCommand {
+    /// Upstream-derived conformance operations (#12532).
+    #[command(name = "upstream")]
+    Upstream {
+        #[command(subcommand)]
+        command: CompilerUpstreamStatusGroup,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompilerUpstreamStatusGroup {
+    /// Exact upstream-derived conformance status packets (#12532).
+    #[command(name = "status")]
+    Status {
+        #[command(subcommand)]
+        command: tasks::compiler_upstream_status::CompilerUpstreamStatusSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
 enum MemoryTrendsCommand {
     /// Render memory plateau trends from receipts and baseline files.
     Render {
@@ -4452,6 +4596,12 @@ enum CiSubcommand {
         /// Explicit changed file path. Repeat for tests or disconnected runs; when omitted, git diff is used.
         #[arg(long = "changed-file")]
         changed_file: Vec<String>,
+
+        /// Schema version for the route receipt envelope. Must match a supported value
+        /// (currently `ci-route.v1`); an unknown version fails closed with an error so
+        /// the consumer never silently coerces a mismatched envelope.
+        #[arg(long, default_value = "ci-route.v1")]
+        envelope_version: String,
     },
 
     /// Explain the blocking CI check failure with a local reproduction path.
@@ -4519,8 +4669,17 @@ enum PrLedgerCommand {
         #[arg(long, default_value = "target/reconciliation")]
         out: PathBuf,
         /// Optional fixture JSON (for testing without live gh).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "paginated_fixture")]
         fixture: Option<PathBuf>,
+        /// Optional paginated fixture JSON: array of pages, each page an
+        /// array of PR objects. Used to drive the multi-page code path in
+        /// tests without shelling to gh.
+        #[arg(long, conflicts_with = "fixture")]
+        paginated_fixture: Option<PathBuf>,
+        /// Pin `observed_at` to a deterministic anchor. Receipts are then
+        /// byte-identical across runs over the same canonical input. Test-only.
+        #[arg(long)]
+        deterministic_clock: bool,
     },
 }
 
@@ -5066,6 +5225,11 @@ enum AgentLedgersCommand {
         /// Output format: `human` (default) or `json`.
         #[arg(long, default_value = "human")]
         format: String,
+        /// Require every ledger file to declare this schema id (e.g.
+        /// `workflow-outcome.v1`). Without it, each file is validated against the
+        /// schema it declares.
+        #[arg(long, value_name = "ID")]
+        expected_schema: Option<String>,
     },
 }
 
@@ -5127,19 +5291,26 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Ci { command } => match command {
             None => ci::run(),
             Some(CiSubcommand::Doctor) => ci_doctor::run(),
-            Some(CiSubcommand::Route { base, head, receipt, summary, changed_file }) => {
-                ci_route::run(ci_route::CiRouteArgs {
-                    base,
-                    head,
-                    receipt,
-                    summary,
-                    changed_files: changed_file,
-                })
-            }
+            Some(CiSubcommand::Route {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_file,
+                envelope_version,
+            }) => ci_route::run(ci_route::CiRouteArgs {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_files: changed_file,
+                envelope_version,
+            }),
             Some(CiSubcommand::Explain { receipt, run_id, base }) => {
                 ci_explain::run(receipt, run_id, base)
             }
         },
+        Commands::StackIncrement { command } => tasks::ci_stack_increment::run(command),
         Commands::CheckOnly => ci::check_only(),
         Commands::CheckAgentContext => check_agent_context::run(),
         Commands::CheckLintPolicy => check_lint_policy::run(),
@@ -5152,10 +5323,12 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckProviderPromotionLedger => provider_promotion_ledger::run(),
         Commands::CheckCodeActionGenerationLedger => code_action_generation_ledger::run(),
         Commands::CheckOracleFixtureManifest => oracle_fixture_manifest::run(),
+        Commands::Activation { command } => activation::run(command),
         Commands::CompilerLexicalCutline { command } => compiler_lexical_cutline::run(command),
         Commands::CriticRuleProof { command } => critic_rule_proof::run(command),
         Commands::ReleaseTrustInvariants { command } => release_trust_invariants::run(command),
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
+        Commands::CheckCompilerPerformanceReceipt => compiler_performance_receipt::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
         Commands::CandidateSecurityContract { contract } => {
             tasks::candidate_security_contract::run(&contract)
@@ -5368,6 +5541,67 @@ fn run_cli(cli: Cli) -> Result<()> {
                         }
                         return Ok(());
                     }
+                    if journey == "host-reopen-lifecycle" {
+                        // Same subject law as the host-lifecycle path: an
+                        // unknown subject id is a typed error before any run,
+                        // never a silently-accepted typo.
+                        let _ = xtask::vim_host_run::VimClientSubject::from_id(&subject)
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let variant =
+                            xtask::vim_host_lifecycle_run::LifecycleFixtureVariant::from_id(
+                                &fixture_variant,
+                            )
+                            .map_err(|error| eyre!("{error:#}"))?;
+                        let outcome = xtask::vim_host_lifecycle_run::host_lifecycle_run(
+                            &repo_root,
+                            &xtask::vim_host_run::VimHostRunInputs {
+                                vim_executable: vim,
+                                vim_lsp_checkout: vim_lsp_dir,
+                                candidate_executable: candidate,
+                                out_root: out,
+                                timeout_ms,
+                            },
+                            variant,
+                        )
+                        .map_err(|error| eyre!("{error:#}"))?;
+                        println!(
+                            "vim host-reopen-lifecycle run complete (variant {}): result={:?} \
+                             cleanup={:?} driver_complete={} failure_reason={:?} receipt={}",
+                            variant.id(),
+                            outcome.result,
+                            outcome.process_cleanup,
+                            outcome.driver_complete,
+                            outcome.failure_reason,
+                            outcome.receipt_path.display()
+                        );
+                        match (variant.expected_negative_reason(), &outcome.result) {
+                            // A negative control must fail with exactly its
+                            // typed reason: anything else (a pass, or another
+                            // failure) is an instrument/oracle fault.
+                            (Some(expected), result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Fail
+                                    || outcome.failure_reason.as_deref() != Some(expected)
+                                {
+                                    return Err(eyre!(
+                                        "negative control {variant:?} did not fail with the \
+                                         typed reason {expected}: result={result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                            (None, result) => {
+                                if *result != xtask::editor_client_compat::ObservationResult::Pass {
+                                    return Err(eyre!(
+                                        "vim host-reopen-lifecycle run did not pass: {result:?} \
+                                         failure_reason={:?}",
+                                        outcome.failure_reason
+                                    ));
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
                     if journey == "freshness-generations" {
                         // Same subject law as the host-lifecycle path: an
                         // unknown subject id is a typed error before any run,
@@ -5490,7 +5724,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                         return Err(eyre!(
                             "unknown journey {journey}: known journeys are host-lifecycle, \
                              bootstrap-diagnostics, freshness-generations, recovery-generations, \
-                             save-format"
+                             save-format, host-reopen-lifecycle"
                         ));
                     }
                     let outcome = xtask::vim_host_run::host_run_from_cli(
@@ -5541,6 +5775,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::OnelinerCapabilityMatrix { check } => oneliner_capability_matrix::run(check),
         Commands::RepoTopology { check } => repository_topology::run(check),
         Commands::CompatInventory { check } => compat_inventory::run(check),
+        Commands::CompletionCandidates { command } => completion_candidates::run(command),
         Commands::GenerateProtocolTypeSubstrateMatrix { check } => {
             protocol_type_substrate_matrix::run(check)
         }
@@ -5608,9 +5843,19 @@ fn run_cli(cli: Cli) -> Result<()> {
             Ok(())
         }
         Commands::PrLedger { command } => match command {
-            PrLedgerCommand::Generate { repos, out, fixture } => {
-                tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig { repos, out, fixture })
-            }
+            PrLedgerCommand::Generate {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            } => tasks::pr_ledger::generate(tasks::pr_ledger::GenerateConfig {
+                repos,
+                out,
+                fixture,
+                paginated_fixture,
+                deterministic_clock,
+            }),
         },
         Commands::SyncDivergence { command } => match command {
             SyncDivergenceCommand::Check { source, boundary, target, ledger, receipt } => {
@@ -5946,6 +6191,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         }
         Commands::TestEdgeCases { bench, coverage, test } => edge_cases::run(bench, coverage, test),
         Commands::CiAuditWorkflows => ci_audit_workflows::run(),
+        Commands::CiCacheInventory { check, receipt, manifest, api_version } => {
+            ci_cache_inventory::run(check, receipt, manifest, &api_version)
+        }
         Commands::WorkflowAuthorityInventory { receipt } => {
             workflow_authority_inventory::run(receipt)
         }
@@ -6172,6 +6420,11 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::PublicationDrift { input, repo_root, out } => {
             xtask::publication_drift::run_with_paths(input, repo_root, out)
         }
+        Commands::ZedTrain { command } => match command {
+            ZedTrainCommand::SourceCheck { fixture, repo_root, out } => {
+                xtask::source_authority::run_with_paths(fixture, repo_root, out)
+            }
+        },
         Commands::VimLspSubject {
             command:
                 VimLspSubjectCommand::Refresh { check, proposal, observation, allow_network, repo_root },
@@ -6700,15 +6953,18 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             },
             AgentCommand::Ledgers { command } => match command {
-                AgentLedgersCommand::Validate { dir, format } => {
-                    let fmt = if format == "json" {
-                        tasks::agent_ledgers::ValidateFormat::Json
-                    } else {
-                        tasks::agent_ledgers::ValidateFormat::Human
+                AgentLedgersCommand::Validate { dir, format, expected_schema } => {
+                    let fmt = match format.as_str() {
+                        "json" => tasks::agent_ledgers::ValidateFormat::Json,
+                        "human" => tasks::agent_ledgers::ValidateFormat::Human,
+                        other => color_eyre::eyre::bail!(
+                            "unknown --format `{other}`; expected `human` or `json`"
+                        ),
                     };
                     tasks::agent_ledgers::validate(tasks::agent_ledgers::ValidateConfig {
                         ledger_dir: dir,
                         format: fmt,
+                        expected_schema,
                     })
                 }
             },
@@ -6753,6 +7009,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Commands::Compiler { command } => match command {
+            CompilerUpstreamCommand::Upstream { command } => match command {
+                CompilerUpstreamStatusGroup::Status { command } => {
+                    compiler_upstream_status::run(command)
+                }
+            },
+        },
         Commands::Metrics { command } => match command {
             MetricsCommand::ParserStats { input, json } => metrics::parser_stats::run(input, json),
             MetricsCommand::ParserAccuracy {
@@ -6870,6 +7133,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             parallel,
             verbose,
             staged,
+            route_plan,
         } => gates::run(gates::GateRunnerConfig {
             tier,
             gate_policy: Some(gate_policy),
@@ -6887,6 +7151,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             parallel,
             verbose,
             staged,
+            route_plan_path: route_plan,
         }),
         Commands::Precommit { format, receipt } => gates::run(gates::GateRunnerConfig {
             tier: GateTier::Commit,
@@ -6991,6 +7256,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
+        Commands::IssueControllers { command } => issue_controllers::run(command),
         Commands::WriterAdmission {
             branch,
             base,
@@ -7382,6 +7648,66 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+    fn parse_completion_candidates(
+        args: &[&str],
+    ) -> TestResult<completion_candidates::CompletionCandidatesSubcommand> {
+        match Cli::try_parse_from(args)?.command {
+            Commands::CompletionCandidates { command } => Ok(command),
+            _ => Err(std::io::Error::other("expected completion-candidates command").into()),
+        }
+    }
+
+    /// The inventory's four verbs are its whole interface (#10949). A wrong
+    /// clap name, a missing `#[command(subcommand)]`, or an argument declared
+    /// as a flag instead of a positional all compile cleanly and break the CLI,
+    /// so each shape is parsed here and each wrong shape is refused.
+    #[test]
+    fn completion_candidates_cli_shapes_parse() -> TestResult {
+        use completion_candidates::CompletionCandidatesSubcommand as Sub;
+
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "check"])?,
+            Sub::Check
+        ));
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "list"])?,
+            Sub::List
+        ));
+
+        let explain = parse_completion_candidates(&[
+            "xtask",
+            "completion-candidates",
+            "explain",
+            "some::producer::id",
+        ])?;
+        match explain {
+            Sub::Explain { producer_id } => assert_eq!(producer_id, "some::producer::id"),
+            other => {
+                return Err(
+                    std::io::Error::other(format!("expected explain, got {other:?}")).into()
+                );
+            }
+        }
+
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "graph"])?,
+            Sub::Graph { stdout: false }
+        ));
+        assert!(matches!(
+            parse_completion_candidates(&["xtask", "completion-candidates", "graph", "--stdout"])?,
+            Sub::Graph { stdout: true }
+        ));
+
+        // A verb is required, `explain` needs its producer id, and the
+        // subcommand name is `completion-candidates` rather than the Rust
+        // identifier — each is a regression clap would otherwise accept.
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates", "explain"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion_candidates", "check"]).is_err());
+        assert!(Cli::try_parse_from(["xtask", "completion-candidates", "chekc"]).is_err());
+        Ok(())
+    }
 
     #[test]
     fn candidate_security_contract_command_requires_and_preserves_path() -> TestResult {

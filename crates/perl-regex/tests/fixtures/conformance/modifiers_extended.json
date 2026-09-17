@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "programme": "perl_regex_modifier_conformance",
+  "family": "modifiers.extended",
+  "owner_issue": 7036,
+  "rows": [
+    {
+      "id": "modifiers.extended.x-off",
+      "family": "modifiers.extended",
+      "authority": "perlop(1) 'Modifiers': no /x means no whitespace/comment stripping",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "extended_mode": "off",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.extended.xx-unknown-profile",
+      "family": "modifiers.extended",
+      "authority": "perl-regex profile contract: unknown version and feature state remain explicit",
+      "operator": "match",
+      "profile": { "perl_minor": null, "enhanced_xx": "unknown" },
+      "modifier_sequence": "xx",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "extended_mode": "extra_extended_unknown",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.extended.x-basic",
+      "family": "modifiers.extended",
+      "authority": "perlop(1) 'Modifiers': /x causes whitespace and comments to be ignored",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "x",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "extended_mode": "extended",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.extended.xx-perl-526",
+      "family": "modifiers.extended",
+      "authority": "perlop(1) 'Modifiers': /xx (Perl 5.26+) allows whitespace inside character classes",
+      "operator": "match",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "xx",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "extended_mode": "extra_extended_disabled",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.extended.xx-collapses-below-526",
+      "family": "modifiers.extended",
+      "authority": "perlop(1): /xx requires Perl 5.26; older Perl treats it as /x with a diagnostic",
+      "operator": "match",
+      "profile": { "perl_minor": 24, "enhanced_xx": "disabled" },
+      "modifier_sequence": "xx",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "extended_mode": "extended",
+        "diagnostic_codes": ["modifier_requires_perl_version"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.extended.xx-enhanced-enabled",
+      "family": "modifiers.extended",
+      "authority": "perlfunc(1) feature 'enhanced_xx': enables /xx extra-extended semantics on Perl 5.44+",
+      "operator": "match",
+      "profile": { "perl_minor": 44, "enhanced_xx": "enabled" },
+      "modifier_sequence": "xx",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "extended_mode": "extra_extended_enabled",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.extended.xx-enhanced-enabled-below-544",
+      "family": "modifiers.extended",
+      "authority": "perlop(1): enhanced_xx requires Perl 5.44; advertising it on 5.42 is a version mismatch",
+      "operator": "quote_regex",
+      "profile": { "perl_minor": 42, "enhanced_xx": "enabled" },
+      "modifier_sequence": "xx",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "extended_mode": "extra_extended_disabled",
+        "diagnostic_codes": ["modifier_requires_feature"]
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    },
+    {
+      "id": "modifiers.extended.qr-inherits-x",
+      "family": "modifiers.extended",
+      "authority": "perlop(1): qr// supports /x",
+      "operator": "quote_regex",
+      "profile": { "perl_minor": 26, "enhanced_xx": "disabled" },
+      "modifier_sequence": "x",
+      "positive_source": null,
+      "negative_source": null,
+      "expected": {
+        "extended_mode": "extended",
+        "diagnostic_codes": []
+      },
+      "completeness": "proven",
+      "owner_issue": 7036,
+      "oracle_disposition": "not_applicable"
+    }
+  ]
+}
