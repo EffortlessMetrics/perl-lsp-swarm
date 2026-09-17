@@ -24,7 +24,7 @@
 //! # Usage Examples
 //!
 //! ```rust,ignore
-//! use perl_parser::scope_analyzer::{ScopeAnalyzer, IssueKind};
+//! use perl_semantic_analyzer::analysis::scope_analyzer::{ScopeAnalyzer, IssueKind};
 //! use perl_parser::{Parser, ast::Node};
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -178,13 +178,24 @@ fn index_to_sigil(index: usize) -> &'static str {
 }
 
 type VariableMaps = [Option<FxHashMap<String, Rc<Variable>>>; 6];
+/// Per-sigil, per-name ordered history of every lexical declaration in the
+/// scope. `variables` always holds the *latest* entry; `binding_history`
+/// retains earlier declarations so their `is_used` / shadowing metadata is
+/// preserved when a later declaration becomes active (#15056).
+type BindingHistoryMaps = [Option<FxHashMap<String, Vec<Rc<Variable>>>>; 6];
 
 #[derive(Debug)]
 pub(super) struct Scope {
     // Outer key: sigil index, Inner key: name
     variables: RefCell<VariableMaps>,
+    /// Every lexical declaration in source order; `variables` always points to
+    /// the latest entry of the matching history vector (#15056).
+    binding_history: RefCell<BindingHistoryMaps>,
     /// Lexicals declared within the current unfinished statement modifier.
     pending_variables: RefCell<VariableMaps>,
+    /// Parallel history for pending declarations so the latest-wins contract
+    /// holds while the modifier is still being analyzed.
+    pending_binding_history: RefCell<BindingHistoryMaps>,
     deferring_declarations: Cell<bool>,
     parent: Option<Rc<Scope>>,
     /// Whether a regex match operation (`=~`, `m//`, `s///`) has been seen in this scope.
@@ -196,7 +207,9 @@ impl Scope {
         let vars = std::array::from_fn(|_| None);
         Self {
             variables: RefCell::new(vars),
+            binding_history: RefCell::new(std::array::from_fn(|_| None)),
             pending_variables: RefCell::new(std::array::from_fn(|_| None)),
+            pending_binding_history: RefCell::new(std::array::from_fn(|_| None)),
             deferring_declarations: Cell::new(false),
             parent: None,
             has_regex_match: Cell::new(false),
@@ -207,7 +220,9 @@ impl Scope {
         let vars = std::array::from_fn(|_| None);
         Self {
             variables: RefCell::new(vars),
+            binding_history: RefCell::new(std::array::from_fn(|_| None)),
             pending_variables: RefCell::new(std::array::from_fn(|_| None)),
+            pending_binding_history: RefCell::new(std::array::from_fn(|_| None)),
             deferring_declarations: Cell::new(false),
             parent: Some(parent),
             has_regex_match: Cell::new(false),
@@ -233,26 +248,34 @@ impl Scope {
         let idx = sigil_to_index(sigil);
 
         // First check if already declared in this scope
-        {
+        let already_visible_offset = {
             let vars = self.variables.borrow();
-            if let Some(map) = &vars[idx]
-                && map.contains_key(name)
-            {
-                return Some(IssueKind::VariableRedeclaration);
-            }
-        }
+            vars[idx].as_ref().and_then(|map| map.get(name)).map(|var| var.declaration_offset)
+        };
 
         // Pending declarations still own declaration metadata and participate
         // in redeclaration checks, but lookup must not see them yet.
-        if self
+        let already_pending_offset = self
             .pending_variables
             .borrow()
             .get(idx)
             .and_then(Option::as_ref)
-            .is_some_and(|map| map.contains_key(name))
-        {
-            return Some(IssueKind::VariableRedeclaration);
-        }
+            .and_then(|map| map.get(name))
+            .map(|var| var.declaration_offset);
+
+        // (#15056) The "later" binding that survives is the *textually later*
+        // declaration, not necessarily the most recently analyzed one.
+        // Statement modifiers like `my $x if my $x = 2;` analyze the condition
+        // first (so the condition is "first installed") even though the
+        // condition is textually after the statement. The textually later
+        // binding must win so subsequent reads resolve to it.
+        let redeclaration = already_visible_offset.is_some() || already_pending_offset.is_some();
+        let textually_later = match (already_visible_offset, already_pending_offset) {
+            (Some(visible), Some(pending)) => offset > visible.max(pending),
+            (Some(visible), None) => offset > visible,
+            (None, Some(pending)) => offset > pending,
+            (None, None) => false,
+        };
 
         // Check if it shadows a parent scope variable
         let shadows = if let Some(ref parent) = self.parent {
@@ -268,16 +291,41 @@ impl Scope {
             is_initialized: RefCell::new(is_initialized),
         });
         if self.deferring_declarations.get() && !is_our {
-            if let Some(slot) = self.pending_variables.borrow_mut().get_mut(idx) {
-                slot.get_or_insert_with(FxHashMap::default).insert(name.to_string(), variable);
+            if (textually_later || already_pending_offset.is_none())
+                && let Some(slot) = self.pending_variables.borrow_mut().get_mut(idx)
+            {
+                slot.get_or_insert_with(FxHashMap::default)
+                    .insert(name.to_string(), variable.clone());
+            }
+            if let Some(history_slot) = self.pending_binding_history.borrow_mut().get_mut(idx) {
+                history_slot
+                    .get_or_insert_with(FxHashMap::default)
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(variable);
             }
         } else {
-            let mut vars = self.variables.borrow_mut();
-            let inner = vars[idx].get_or_insert_with(FxHashMap::default);
-            inner.insert(name.to_string(), variable);
+            if textually_later || already_visible_offset.is_none() {
+                let mut vars = self.variables.borrow_mut();
+                let inner = vars[idx].get_or_insert_with(FxHashMap::default);
+                inner.insert(name.to_string(), variable.clone());
+                drop(vars);
+            }
+            let mut history = self.binding_history.borrow_mut();
+            history[idx]
+                .get_or_insert_with(FxHashMap::default)
+                .entry(name.to_string())
+                .or_default()
+                .push(variable);
         }
 
-        if shadows { Some(IssueKind::VariableShadowing) } else { None }
+        if redeclaration {
+            Some(IssueKind::VariableRedeclaration)
+        } else if shadows {
+            Some(IssueKind::VariableShadowing)
+        } else {
+            None
+        }
     }
 
     fn finish_deferred_declarations(&self) {
@@ -287,6 +335,20 @@ impl Scope {
         for (visible, deferred) in vars.iter_mut().zip(pending.iter_mut()) {
             if let Some(declarations) = deferred.take() {
                 visible.get_or_insert_with(FxHashMap::default).extend(declarations);
+            }
+        }
+        drop(vars);
+        drop(pending);
+        // (#15056) Merge pending history into visible history so the
+        // latest-wins contract survives statement-modifier finalization.
+        let mut visible_history = self.binding_history.borrow_mut();
+        let mut pending_history = self.pending_binding_history.borrow_mut();
+        for (visible_h, pending_h) in visible_history.iter_mut().zip(pending_history.iter_mut()) {
+            if let Some(entries_by_name) = pending_h.take() {
+                let visible_slot = visible_h.get_or_insert_with(FxHashMap::default);
+                for (name, mut entries) in entries_by_name {
+                    visible_slot.entry(name).or_insert_with(Vec::new).append(&mut entries);
+                }
             }
         }
     }
@@ -328,8 +390,13 @@ impl Scope {
                 if let Some(map) = &vars[idx]
                     && let Some(var) = map.get(name)
                 {
+                    let initialized = *var.is_initialized.borrow();
+                    // (#15056) Earlier shadowed bindings share the same name;
+                    // a reference to the name counts as a reference to them
+                    // for `is_used` accounting.
+                    Self::mark_history_used(&current_scope.binding_history, idx, name);
                     *var.is_used.borrow_mut() = true;
-                    return (true, *var.is_initialized.borrow());
+                    return (true, initialized);
                 }
             }
 
@@ -351,6 +418,8 @@ impl Scope {
                 if let Some(map) = &vars[idx]
                     && let Some(var) = map.get(name)
                 {
+                    // (#15056) Initialize only the latest binding — earlier
+                    // bindings were never given an initializer in source.
                     *var.is_initialized.borrow_mut() = true;
                     return;
                 }
@@ -376,6 +445,7 @@ impl Scope {
                 if let Some(map) = &vars[idx]
                     && let Some(var) = map.get(name)
                 {
+                    Self::mark_history_used(&current_scope.binding_history, idx, name);
                     *var.is_used.borrow_mut() = true;
                     *var.is_initialized.borrow_mut() = true;
                     return true;
@@ -390,8 +460,27 @@ impl Scope {
         }
     }
 
+    /// (#15056) Mark every entry in `history[idx][name]` as used. Used so
+    /// that a reference to the latest binding also credits the earlier
+    /// shadowed bindings it replaced — they share the same name and the
+    /// `is_used` flag is per-binding, not per-name.
+    fn mark_history_used(history: &RefCell<BindingHistoryMaps>, idx: usize, name: &str) {
+        let history_ref = history.borrow();
+        if let Some(slot) = history_ref[idx].as_ref()
+            && let Some(entries) = slot.get(name)
+        {
+            for var in entries {
+                *var.is_used.borrow_mut() = true;
+            }
+        }
+    }
+
     /// Iterate over unused variables that should be reported as diagnostics.
-    /// Filters out underscore-prefixed variables (intentionally unused) before allocation.
+    /// Filters out underscore-prefixed variables (intentionally unused) before
+    /// allocation. `variables` only carries the *latest* lexical binding per
+    /// name (#15056), so an earlier shadowed binding is naturally not
+    /// double-reported here even when it is unused — only the latest is
+    /// considered reportable.
     fn for_each_reportable_unused_variable<F>(&self, mut f: F)
     where
         F: FnMut(String, usize),

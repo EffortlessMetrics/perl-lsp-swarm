@@ -1,20 +1,21 @@
-//! Checked projection of the declarative configuration authority.
+//! Checked view of the declarative configuration authority.
 //!
-//! `mod.rs` and `catalog.rs` retain the complete leaf inventory and its drift
-//! tests. This projection applies the channel semantics proved by the live
-//! runtime before later generations consume the catalog:
+//! The declared catalog (`mod.rs` / `catalog.rs`) is the sole semantic
+//! authority: every source/scope/owner relationship a generation or consumer
+//! reads comes from the declared row itself. This module validates that
+//! declaration and retains only non-semantic derived structure (a
+//! deterministic index and lookup) over it.
 //!
-//! - `workspace/configuration` writes per-folder `WorkspaceConfig`, not the
-//!   shared `ServerConfig`;
-//! - PERL5LIB and startup `@INC` probes are downstream inputs controlled by
-//!   policy fields, not higher-precedence writers of those policy fields.
+//! Validation answers `is the declared row valid?` with a typed,
+//! row-specific diagnostic. It never rewrites sources, scope, or meaning: an
+//! invalid declaration fails instead of being silently repaired (#10790).
 //!
-//! The projection and its exported vocabulary are the contract #7057 consumes
-//! to assemble global and per-root generations; until then nothing outside the
-//! module's own drift tests reads them. The suppression below is scoped to this
-//! module and is retired by that wiring. It mirrors the one already carried by
-//! the declarative half in `mod.rs`, and stays an `allow` rather than an
-//! `expect` because the items are genuinely live under `cfg(test)`.
+//! The suppression below is scoped to this module: the index and lookup exist
+//! to prove the declaration valid under drift tests, and the generation
+//! pipeline (#7057) consumes the declared authority through the same
+//! `authority_by_id` spelling, so no consumer can select a different catalog
+//! meaning. It stays an `allow` rather than an `expect` because the items are
+//! genuinely live under `cfg(test)`.
 
 #![allow(dead_code, unused_imports)]
 
@@ -28,48 +29,69 @@ pub(crate) use declared::{
 
 use std::sync::LazyLock;
 
-const GLOBAL_SERVER_CHANNELS: &[ConfigSource] = &[
-    ConfigSource::CompiledDefault,
-    ConfigSource::InitializationOptions,
-    ConfigSource::ProjectFile,
-    ConfigSource::GlobalClientSettings,
-];
-
-const WORKSPACE_POLICY_CHANNELS: &[ConfigSource] = &[
-    ConfigSource::CompiledDefault,
-    ConfigSource::InitializationOptions,
-    ConfigSource::ProjectFile,
-    ConfigSource::GlobalClientSettings,
-    ConfigSource::WorkspaceConfiguration,
-];
-
-/// Canonical effective-field authority consumed by configuration generations.
+/// Typed rejection for a declared row that violates source/scope/owner law.
 ///
-/// The backing vector is immutable after first use. Entries remain sorted in
-/// the declaration order established by the source catalog.
-pub(crate) static CONFIGURATION_AUTHORITY: LazyLock<Vec<FieldAuthority>> =
-    LazyLock::new(|| declared::CONFIGURATION_AUTHORITY.iter().copied().map(check_field).collect());
-
-/// Find one checked authority row by stable field ID.
-pub(crate) fn authority_by_id(id: &str) -> Option<&'static FieldAuthority> {
-    CONFIGURATION_AUTHORITY.iter().find(|field| field.id == id)
+/// Each variant names the exact row and the violated invariant. Validation
+/// returns these; it never repairs the row it rejects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthorityViolation {
+    /// A shared server-global field claims per-folder pull authority.
+    /// `workspace/configuration` writes per-folder `WorkspaceConfig`, never
+    /// the shared `ServerConfig`.
+    ServerFieldClaimsFolderPull { id: &'static str },
+    /// A non-derived policy field admits an environment or probe observation
+    /// as a source writer. Observations are downstream derived facts about
+    /// the world, never writers of policy.
+    PolicyFieldAdmitsObservationWriter { id: &'static str, source: ConfigSource },
 }
 
-fn check_field(mut field: FieldAuthority) -> FieldAuthority {
+/// Canonical effective-field authority: validated references to the declared
+/// rows themselves, in declaration order.
+///
+/// The backing vector is immutable after first use. A declaration that
+/// violates source/scope/owner law fails here with the exact row named;
+/// construction never narrows, widens, reorders, or copies what the catalog
+/// declares.
+pub(crate) static CONFIGURATION_AUTHORITY: LazyLock<Vec<&'static FieldAuthority>> =
+    LazyLock::new(|| {
+        let violations = validate_catalog();
+        assert!(
+            violations.is_empty(),
+            "declared configuration authority violates source/scope/owner law: {violations:?}"
+        );
+        declared::CONFIGURATION_AUTHORITY.iter().collect()
+    });
+
+/// Find one authority row by stable field ID: the declared row itself, never
+/// a rewritten projection.
+pub(crate) fn authority_by_id(id: &str) -> Option<&'static FieldAuthority> {
+    declared::authority_by_id(id)
+}
+
+/// Validate one declared row without rewriting it.
+pub(crate) fn validate_row(field: &FieldAuthority) -> Result<(), AuthorityViolation> {
     if field.owner == ConfigOwner::Server
         && field.sources.contains(&ConfigSource::WorkspaceConfiguration)
     {
-        field.sources = GLOBAL_SERVER_CHANNELS;
+        return Err(AuthorityViolation::ServerFieldClaimsFolderPull { id: field.id });
     }
-
-    if matches!(
-        field.id,
-        "workspace.perl5lib_precedence" | "workspace.use_perl5lib" | "workspace.use_system_inc"
-    ) {
-        field.sources = WORKSPACE_POLICY_CHANNELS;
+    if !matches!(field.scope, ConfigScope::DerivedGlobal | ConfigScope::DerivedWorkspaceFolder)
+        && let Some(source) =
+            field.sources.iter().copied().find(|source| {
+                matches!(source, ConfigSource::Environment | ConfigSource::SystemProbe)
+            })
+    {
+        return Err(AuthorityViolation::PolicyFieldAdmitsObservationWriter {
+            id: field.id,
+            source,
+        });
     }
+    Ok(())
+}
 
-    field
+/// Validate every declared row, collecting each violation.
+pub(crate) fn validate_catalog() -> Vec<AuthorityViolation> {
+    declared::CONFIGURATION_AUTHORITY.iter().filter_map(|field| validate_row(field).err()).collect()
 }
 
 #[cfg(test)]
@@ -77,6 +99,147 @@ mod tests {
     use perl_test_must::must_some_with;
 
     use super::*;
+
+    static NO_CONSUMERS: &[ConfigConsumer] = &[];
+    static NO_MARKERS: &[&str] = &[];
+    static ENVIRONMENT_ONLY: &[ConfigSource] = &[ConfigSource::Environment];
+    static SYSTEM_PROBE_ONLY: &[ConfigSource] = &[ConfigSource::SystemProbe];
+    static FOLDER_PULL: &[ConfigSource] =
+        &[ConfigSource::CompiledDefault, ConfigSource::WorkspaceConfiguration];
+
+    fn synthetic_row(
+        id: &'static str,
+        owner: ConfigOwner,
+        scope: ConfigScope,
+        sources: &'static [ConfigSource],
+    ) -> FieldAuthority {
+        FieldAuthority {
+            id,
+            owner,
+            rust_field: "synthetic",
+            scope,
+            value_kind: ConfigValueKind::Boolean,
+            sources,
+            validation: ConfigValidation::Boolean,
+            invalid_fallback: InvalidValueFallback::KeepLastValid,
+            sensitivity: ConfigSensitivity::Ordinary,
+            evidence_policy: EvidencePolicy::SafeValue,
+            invalidation: InvalidationClass::None,
+            consumers: NO_CONSUMERS,
+            source_markers: NO_MARKERS,
+        }
+    }
+
+    /// The regression fixture for #10790: the declared catalog must already
+    /// satisfy source/scope/owner law, so the checked layer has nothing to
+    /// repair, and every consumed row must be the declared row itself.
+    /// Restoring any silent source-channel rewrite fails here.
+    #[test]
+    fn declared_catalog_needs_no_silent_repair() {
+        let violations = validate_catalog();
+        assert!(violations.is_empty(), "checked layer must validate, not repair: {violations:?}");
+
+        for declared in declared::CONFIGURATION_AUTHORITY {
+            let consumed = authority_by_id(declared.id).expect("declared row resolves");
+            assert!(
+                std::ptr::eq(consumed, declared),
+                "consumed row for {:?} is not the declared row",
+                declared.id
+            );
+        }
+    }
+
+    /// Lookup returns the declared row itself, never a copied projection.
+    /// Returning a copied projection with altered sources fails here.
+    #[test]
+    fn lookup_returns_the_declared_row_itself() {
+        for declared in declared::CONFIGURATION_AUTHORITY {
+            let via_checked = authority_by_id(declared.id).expect("checked lookup resolves");
+            let via_declared =
+                declared::authority_by_id(declared.id).expect("declared lookup resolves");
+            assert!(std::ptr::eq(via_checked, declared));
+            assert!(std::ptr::eq(via_checked, via_declared));
+        }
+    }
+
+    /// The checked index is byte-stable: identical declared input produces
+    /// identical output order, matching declaration order. Reordering or
+    /// re-indexing the projection fails here.
+    #[test]
+    fn checked_index_is_byte_stable_in_declaration_order() {
+        let first: Vec<&str> = CONFIGURATION_AUTHORITY.iter().map(|field| field.id).collect();
+        let second: Vec<&str> = CONFIGURATION_AUTHORITY.iter().map(|field| field.id).collect();
+        let declared: Vec<&str> =
+            declared::CONFIGURATION_AUTHORITY.iter().map(|field| field.id).collect();
+        assert_eq!(first, second, "repeated index builds must be identical");
+        assert_eq!(first, declared, "index order must match declaration order");
+    }
+
+    /// A declared server-global field claiming per-folder pull authority is
+    /// rejected with a row-specific diagnostic instead of being silently
+    /// narrowed.
+    #[test]
+    fn rejects_a_server_field_claiming_folder_pull_authority() {
+        let row = synthetic_row(
+            "synthetic.server_global",
+            ConfigOwner::Server,
+            ConfigScope::Global,
+            FOLDER_PULL,
+        );
+        assert_eq!(
+            validate_row(&row),
+            Err(AuthorityViolation::ServerFieldClaimsFolderPull { id: "synthetic.server_global" })
+        );
+    }
+
+    /// Workspace policy cannot be written by environment observations.
+    #[test]
+    fn rejects_a_policy_field_admitting_an_environment_writer() {
+        let row = synthetic_row(
+            "synthetic.workspace_policy",
+            ConfigOwner::Workspace,
+            ConfigScope::WorkspaceFolder,
+            ENVIRONMENT_ONLY,
+        );
+        assert_eq!(
+            validate_row(&row),
+            Err(AuthorityViolation::PolicyFieldAdmitsObservationWriter {
+                id: "synthetic.workspace_policy",
+                source: ConfigSource::Environment,
+            })
+        );
+    }
+
+    /// Workspace policy cannot be written by system-probe observations.
+    #[test]
+    fn rejects_a_policy_field_admitting_a_system_probe_writer() {
+        let row = synthetic_row(
+            "synthetic.workspace_policy",
+            ConfigOwner::Workspace,
+            ConfigScope::WorkspaceFolder,
+            SYSTEM_PROBE_ONLY,
+        );
+        assert_eq!(
+            validate_row(&row),
+            Err(AuthorityViolation::PolicyFieldAdmitsObservationWriter {
+                id: "synthetic.workspace_policy",
+                source: ConfigSource::SystemProbe,
+            })
+        );
+    }
+
+    /// Derived facts may still observe the environment: scoping, not the
+    /// source alone, decides whether a writer relationship is claimed.
+    #[test]
+    fn accepts_derived_rows_observing_the_environment() {
+        let row = synthetic_row(
+            "synthetic.derived_fact",
+            ConfigOwner::Workspace,
+            ConfigScope::DerivedWorkspaceFolder,
+            ENVIRONMENT_ONLY,
+        );
+        assert_eq!(validate_row(&row), Ok(()));
+    }
 
     #[test]
     fn shared_server_fields_do_not_claim_folder_pull_authority() {
