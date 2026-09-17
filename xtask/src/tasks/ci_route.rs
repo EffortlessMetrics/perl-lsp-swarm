@@ -27,13 +27,18 @@ const TEST_SUPPORT_CRATE_PREFIXES: &[&str] = &[
     "crates/perl-test-must/",
 ];
 
-/// Schema versions the `ci route` producer is willing to emit.
+/// The single envelope version the `ci route` producer is willing to emit.
 ///
-/// A future v2 envelope would be added here as a literal and gated on its
-/// own compatibility test; until then any unknown `--envelope-version`
-/// value fails closed at parse time so the consumer never silently coerces
-/// a mismatched envelope.
-const SUPPORTED_ENVELOPE_VERSIONS: &[&str] = &["ci-route.v1"];
+/// This is intentionally a single-current-version check, not a multi-version
+/// allowlist: `route_receipt` has exactly one serializer/shape (v1). Admitting
+/// a second id by merely appending a literal would stamp a v1-shaped payload
+/// under a v2 label. A future v2 requires an explicitly versioned
+/// serializer/schema contract plus a compatibility test, at which point this
+/// check becomes a dispatch per accepted version. Until then
+/// `envelope_version_admission_is_single_current_version` pins the allowlist
+/// to one entry so the append-literal shortcut fails fast.
+const CURRENT_ENVELOPE_VERSION: &str = "ci-route.v1";
+const SUPPORTED_ENVELOPE_VERSIONS: &[&str] = &[CURRENT_ENVELOPE_VERSION];
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -526,7 +531,7 @@ const GENERAL_RUST_PACK: ProofPack = ProofPack {
 };
 
 pub fn run(args: CiRouteArgs) -> Result<()> {
-    if !SUPPORTED_ENVELOPE_VERSIONS.contains(&args.envelope_version.as_str()) {
+    if args.envelope_version != CURRENT_ENVELOPE_VERSION {
         bail!(
             "unsupported envelope_version `{}`; supported versions: {}",
             args.envelope_version,
@@ -540,7 +545,7 @@ pub fn run(args: CiRouteArgs) -> Result<()> {
     };
     let receipt = route_receipt(&args.base, &args.head, changed_files, &args.envelope_version)?;
     write_receipt(&args.receipt, &receipt)?;
-    let markdown = render_summary(&args.receipt, &args.summary, &receipt, &args.envelope_version);
+    let markdown = render_summary(&args.receipt, &args.summary, &receipt);
     write_text(&args.summary, &markdown)?;
     println!(
         "ci route receipt OK: {} changed files, {} proof packs, receipt {} summary {}",
@@ -1300,12 +1305,7 @@ fn write_text(path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_summary(
-    receipt_path: &Path,
-    summary_path: &Path,
-    receipt: &CiRouteReceipt,
-    envelope_version: &str,
-) -> String {
+fn render_summary(receipt_path: &Path, summary_path: &Path, receipt: &CiRouteReceipt) -> String {
     let mut markdown = String::new();
     writeln!(markdown, "# CI Route Proof Packet").ok();
     writeln!(markdown).ok();
@@ -1317,7 +1317,7 @@ fn render_summary(
     writeln!(markdown, "- receipt: `{}`", receipt_path.display()).ok();
     writeln!(markdown, "- summary: `{}`", summary_path.display()).ok();
     writeln!(markdown, "- estimated_lem: `{}`", receipt.estimated_lem).ok();
-    writeln!(markdown, "- envelope_version: `{}`", envelope_version).ok();
+    writeln!(markdown, "- envelope_version: `{}`", receipt.schema_version).ok();
     writeln!(markdown).ok();
 
     markdown_list(&mut markdown, "Changed Files", &receipt.changed_files);
@@ -1329,22 +1329,12 @@ fn render_summary(
     writeln!(markdown, "## Refresh Command").ok();
     writeln!(markdown).ok();
     writeln!(markdown, "```bash").ok();
-    writeln!(
-        markdown,
-        "{}",
-        refresh_command(receipt_path, summary_path, receipt, envelope_version)
-    )
-    .ok();
+    writeln!(markdown, "{}", refresh_command(receipt_path, summary_path, receipt)).ok();
     writeln!(markdown, "```").ok();
     markdown
 }
 
-fn refresh_command(
-    receipt_path: &Path,
-    summary_path: &Path,
-    receipt: &CiRouteReceipt,
-    envelope_version: &str,
-) -> String {
+fn refresh_command(receipt_path: &Path, summary_path: &Path, receipt: &CiRouteReceipt) -> String {
     let mut command = format!(
         "cargo xtask ci route --base {} --head {} --receipt {} --summary {}",
         shell_quote(&receipt.base),
@@ -1355,7 +1345,7 @@ fn refresh_command(
     for file in &receipt.changed_files {
         write!(command, " --changed-file {}", shell_quote(file)).ok();
     }
-    write!(command, " --envelope-version {}", shell_quote(envelope_version)).ok();
+    write!(command, " --envelope-version {}", shell_quote(&receipt.schema_version)).ok();
     command
 }
 
@@ -4298,7 +4288,6 @@ mod tests {
             Path::new("target/receipts/ci route.json"),
             Path::new("target/receipts/ci route.md"),
             &receipt,
-            "ci-route.v1",
         );
 
         assert!(summary.contains("## Coverage Proof Packs"));
@@ -4442,6 +4431,35 @@ mod tests {
         // The receipt and summary files must NOT exist when run() fails closed.
         assert!(!receipt_path.exists(), "no receipt file on rejection");
         assert!(!summary_path.exists(), "no summary file on rejection");
+        Ok(())
+    }
+
+    /// Structural guard: envelope admission is a single-current-version check
+    /// until a versioned emitter exists. `route_receipt` has one
+    /// serializer/shape, so admitting a second id by appending a literal
+    /// would stamp a v1-shaped payload under a v2 label. This test fails if
+    /// a second allowlisted id appears without a per-version dispatch.
+    #[test]
+    fn envelope_version_admission_is_single_current_version() -> Result<()> {
+        assert_eq!(
+            CURRENT_ENVELOPE_VERSION, "ci-route.v1",
+            "current envelope version must stay pinned until a versioned emitter lands"
+        );
+        assert_eq!(
+            SUPPORTED_ENVELOPE_VERSIONS,
+            &[CURRENT_ENVELOPE_VERSION],
+            "do not admit a second envelope id by appending a literal; add a versioned serializer/dispatch first"
+        );
+        let receipt = route_receipt(
+            "origin/main",
+            "HEAD",
+            vec!["docs/development/ROADMAP.md".to_string()],
+            CURRENT_ENVELOPE_VERSION,
+        )?;
+        assert_eq!(
+            receipt.schema_version, CURRENT_ENVELOPE_VERSION,
+            "single-version emitter must stamp the current version verbatim"
+        );
         Ok(())
     }
 
@@ -4705,7 +4723,7 @@ mod tests {
     // coverage_packs_skipped, coverage_pack_skip_reason). The integration-test
     // variants in coverage_proof_measure_only_red_tdd.rs exercise the same
     // behavior through the CLI binary (fixture_opaque to ripr). These lib tests
-    // call route_receipt(, "ci-route.v1") directly so ripr can trace the oracle through the
+    // call route_receipt() with "ci-route.v1" directly so ripr can trace the oracle through the
     // assertion. Resolves the fixture_opaque weakly_exposed seams at
     // ci_route.rs:561 and ci_route.rs:567 introduced by PR #1470.
 
