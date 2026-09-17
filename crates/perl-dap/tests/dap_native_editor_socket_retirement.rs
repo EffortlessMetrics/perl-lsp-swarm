@@ -560,3 +560,4 @@ fn historical_port_connect_does_not_reach_a_stdio_adapter() -> Result<()> {
     assert_no_child_listeners(adapter.pid())?;
     Ok(())
 }
+

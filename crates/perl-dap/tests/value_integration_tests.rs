@@ -582,3 +582,4 @@ fn debug_format_includes_variant_name_for_all_types() {
         );
     }
 }
+

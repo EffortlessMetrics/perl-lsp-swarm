@@ -714,3 +714,4 @@ fn traversal_to_kubernetes_secrets() -> TestResult {
     assert!(result.is_err(), "Traversal to k8s secrets must be blocked");
     Ok(())
 }
+

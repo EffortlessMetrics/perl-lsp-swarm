@@ -1713,3 +1713,4 @@ fn stale_receipt_subject_is_refused() -> Result<()> {
     );
     Ok(())
 }
+

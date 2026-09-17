@@ -175,3 +175,4 @@ fn test_warn_filter_in_feature_catalog() {
     let has_feature = perl_dap::feature_catalog::has_feature("dap.exceptions.warn");
     assert!(has_feature, "dap.exceptions.warn should be a registered feature");
 }
+

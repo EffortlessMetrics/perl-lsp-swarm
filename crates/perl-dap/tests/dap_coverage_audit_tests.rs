@@ -1595,3 +1595,4 @@ fn test_scope_includes_pagination_hints() -> Result<(), Box<dyn std::error::Erro
 
     Ok(())
 }
+

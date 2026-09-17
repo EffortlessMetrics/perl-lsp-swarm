@@ -331,3 +331,4 @@ fn test_die_filter_ignores_lookalike_stderr_output() -> TestResult {
 
     Ok(())
 }
+

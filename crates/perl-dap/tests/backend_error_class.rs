@@ -396,3 +396,4 @@ fn cause_never_reaches_the_editor_visible_text() {
         );
     }
 }
+

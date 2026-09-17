@@ -48,3 +48,4 @@ mod build_catalog {
         );
     }
 }
+

@@ -1873,7 +1873,7 @@ while (my $line = <STDIN>) {
     fn write_message_then_notify_initialized_does_not_deadlock_on_full_queue() -> Result<(), String>
     {
         let shared_writer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-        let (tx, rx) = sync_channel::<DapMessage>(1);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(1);
         let seq = Arc::new(Mutex::new(0i64));
         let wire_seq = Arc::new(Mutex::new(0i64));
         let (consumer_ready_tx, consumer_ready_rx) = sync_channel(1);
@@ -2825,3 +2825,4 @@ mod framing_tests {
         haystack.windows(needle.len()).position(|w| w == needle)
     }
 }
+

@@ -334,3 +334,4 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
 
     Ok(())
 }
+

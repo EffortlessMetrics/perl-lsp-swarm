@@ -178,3 +178,4 @@ fn test_re_exports_from_all_eleven_modules() {
 
     // 11. shell is tested indirectly via command_args above (shell depends on command_args)
 }
+

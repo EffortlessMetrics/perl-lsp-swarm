@@ -366,3 +366,4 @@ fn format_command_args_preserves_order() -> Result<(), anyhow::Error> {
     }
     Ok(())
 }
+

@@ -255,3 +255,4 @@ fn test_documentation_gap_closure_for_safe_eval() -> Result<()> {
     }
     Ok(())
 }
+

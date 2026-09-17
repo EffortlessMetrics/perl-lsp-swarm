@@ -388,3 +388,4 @@ fn transport_receives_mixed_non_request_messages_without_crashing() -> Result<()
 
     Ok(())
 }
+

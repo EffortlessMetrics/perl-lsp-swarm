@@ -307,3 +307,4 @@ fn attach_snippet_deserialization_produces_valid_config() -> Result<(), Box<dyn 
     assert!(parsed.get("port").is_some(), "Must have 'port' field");
     Ok(())
 }
+

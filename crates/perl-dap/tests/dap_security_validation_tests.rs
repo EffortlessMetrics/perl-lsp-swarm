@@ -266,3 +266,4 @@ fn test_security_unicode_safety() {
     let malicious = "my $var = '🚀';\nprint 'hacked'";
     assert!(validate_expression(malicious).is_err());
 }
+

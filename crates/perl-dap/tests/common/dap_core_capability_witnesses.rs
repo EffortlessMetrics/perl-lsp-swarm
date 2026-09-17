@@ -66,3 +66,4 @@ pub fn require_capability_is_json_boolean(body: &Value, name: &str) -> Result<()
         )),
     }
 }
+

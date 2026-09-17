@@ -105,3 +105,4 @@ fn modules_rejection_is_stable_across_repeated_requests() -> TestResult {
     assert_floor_rejection(first.0, &first.1, &first.2);
     Ok(())
 }
+

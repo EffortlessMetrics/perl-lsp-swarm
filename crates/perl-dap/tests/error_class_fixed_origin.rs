@@ -262,3 +262,4 @@ fn dap_wire_display_messages_are_unchanged() {
         "Timeout exceeds maximum allowed value: 500000ms"
     );
 }
+

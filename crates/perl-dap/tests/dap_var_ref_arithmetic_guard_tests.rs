@@ -87,3 +87,4 @@ fn test_var_ref_rs_contains_expected_arithmetic_patterns() -> Result<(), Box<dyn
 
     Ok(())
 }
+

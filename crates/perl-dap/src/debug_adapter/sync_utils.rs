@@ -86,6 +86,17 @@ pub(crate) fn current_drain_epoch() -> DrainEpoch {
     DRAIN_EPOCH.with(|cell| cell.borrow().map(DrainEpoch::Request)).unwrap_or(DrainEpoch::Global)
 }
 
+/// Result of dispatching a DAP event to the bounded outbound channel.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EventDispatchResult {
+    /// Event was accepted into the queue.
+    Sent,
+    /// Event was dropped because the queue was full (`output` events only).
+    Dropped,
+    /// The channel is disconnected; the transport has gone away.
+    Disconnected,
+}
+
 /// Bounded wait before a response write, used by the transport loop to
 /// let the event-consumer thread drain events that a command handler
 /// enqueued before the handler returned. Events accepted by

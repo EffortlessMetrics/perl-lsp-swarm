@@ -256,3 +256,4 @@ fn test_evaluate_allows_dangerous_ops_with_side_effects_enabled() -> TestResult 
 
     Ok(())
 }
+

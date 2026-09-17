@@ -336,3 +336,4 @@ fn test_variables_running_session_multiple_valid_refs_all_empty()
     }
     Ok(())
 }
+

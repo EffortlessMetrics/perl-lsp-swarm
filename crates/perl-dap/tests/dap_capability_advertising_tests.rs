@@ -130,7 +130,7 @@ mod capability_tests {
     #[tokio::test]
     async fn test_goto_is_not_advertised_and_rejected_goto_has_no_side_effects() -> Result<()> {
         // Keep the receiver alive so a (forbidden) event emission is observable.
-        let (tx, rx) = sync_channel::<DapMessage>(64);
+        let (tx, rx) = sync_channel::<DapMessageWithEpoch>(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
         let caps = initialize_capabilities(&mut adapter)?;
@@ -293,3 +293,4 @@ mod capability_tests {
         Ok(())
     }
 }
+

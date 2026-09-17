@@ -852,3 +852,4 @@ fn stdio_transport_stops_when_client_closes_stdout_while_stdin_remains_open() ->
     child.wait()?;
     result
 }
+

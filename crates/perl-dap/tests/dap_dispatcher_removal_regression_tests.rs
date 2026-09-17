@@ -393,3 +393,4 @@ fn response_and_event_sequence_numbers_increase_monotonically() {
         "initialized event seq ({event_seq}) must be greater than its triggering response seq ({r1_seq})"
     );
 }
+

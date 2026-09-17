@@ -706,3 +706,4 @@ print "Result: $result\n";
     eprintln!("DAP lifecycle test completed successfully");
     Ok(())
 }
+
