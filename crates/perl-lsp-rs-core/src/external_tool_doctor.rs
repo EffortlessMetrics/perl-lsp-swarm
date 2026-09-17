@@ -352,6 +352,7 @@ fn non_empty_list(values: &[&str]) -> String {
 mod tests {
     use super::*;
     use crate::external_tools::EXTERNAL_TOOL_REGISTRY;
+    use perl_test_must::must_with;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -540,17 +541,13 @@ mod tests {
         fixture[0].roles = &[ExternalToolRole::ConfigurationCompatibility];
         fixture[0].runtime_enablement = RuntimeEnablement::ExplicitUserAction;
 
-        let entry = external_tool_doctor_entries(&fixture)
-            .into_iter()
-            .next()
-            .ok_or("fixture row should project");
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(message) => {
-                assert!(false, "{message}");
-                return;
-            }
-        };
+        let entry = must_with(
+            external_tool_doctor_entries(&fixture)
+                .into_iter()
+                .next()
+                .ok_or("fixture row should project"),
+            "fixture row should project",
+        );
         assert_eq!(entry.status_code, STATUS_UNKNOWN);
         assert_eq!(entry.reason_code, REASON_UNCLASSIFIED);
         let rendered = render_external_tool_doctor_text(std::slice::from_ref(&entry));
