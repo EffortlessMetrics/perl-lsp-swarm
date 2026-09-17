@@ -79,9 +79,9 @@ pub(super) fn handle_variable<'a>(
 /// Compound computed bodies (`*{$x . $y}`, `*{foo()}`, `*{$h{key}}`) have no
 /// single variable name; recording the raw body text as one variable would
 /// fabricate a name like `x . $y` and raise a false undeclared-variable
-/// diagnostic under strict mode (#15712). The fused assignment form keeps no
-/// child expression nodes to walk, so such bodies are conservatively recorded
-/// as nothing.
+/// diagnostic under strict mode (#15712). This shortcut only applies when the
+/// `Typeglob` node carries no structured body child; with one, the child is
+/// walked instead (#15731).
 fn split_simple_variable_body(body: &str) -> Option<(&str, &str)> {
     let (sigil, var_name) = split_variable_name(body);
     if sigil.is_empty()
@@ -94,23 +94,39 @@ fn split_simple_variable_body(body: &str) -> Option<(&str, &str)> {
 }
 
 /// Handle `NodeKind::Typeglob`.
-pub(super) fn handle_typeglob(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn handle_typeglob<'a>(
     analyzer: &ScopeAnalyzer,
-    node: &Node,
+    node: &'a Node,
     name: &str,
+    body: Option<&'a Node>,
     scope: &Rc<Scope>,
+    ancestors: &mut Vec<&'a Node>,
     issues: &mut Vec<ScopeIssue>,
-    context: &AnalysisContext<'_>,
+    context: &AnalysisContext<'a>,
     strict_vars_mode: bool,
 ) {
     // `Typeglob { name }` stores the name without its leading `*`, unlike the
     // equivalent `Variable { sigil: "*", name }` shape.  Reconstruct the
     // sigil here so typeglob aliases participate in the same scope/use ledger.
     // Brace-delimited names remain dynamic and must not become literal symbols.
+    if let Some(body) = body {
+        // A structured computed body (`*{$x . $y} = ...`) is authoritative:
+        // walk it so each used variable is recorded with its own node —
+        // declared variables count as used and undeclared variables earn
+        // individual strict-mode issues (#15731). Variables are never
+        // synthesized from the raw body text.
+        ancestors.push(node);
+        analyzer.analyze_node(body, scope, ancestors, issues, context);
+        ancestors.pop();
+        return;
+    }
+
     if let Some(expression) = name.strip_prefix('{').and_then(|name| name.strip_suffix('}')) {
         // Only a body that is exactly one simple variable (`*{$x}`) is a single
         // recorded use; any other computed body must not be recorded as one
-        // fabricated variable name (#15712).
+        // fabricated variable name (#15712). This string-level shortcut stays
+        // for Typeglob nodes parsed without a structured body child.
         if let Some((sigil, var_name)) = split_simple_variable_body(expression) {
             analyzer.record_variable_use(
                 scope,

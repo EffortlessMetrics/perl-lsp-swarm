@@ -44,9 +44,9 @@
     "reasons_count": 16,
     "reasons_truncated_marker": "reasons_truncated",
     "reconciliation": {
-      "loaded_source_refresh": "deferred",
-      "inspection_invalidation": "deferred",
-      "breakpoint_reconciliation": "deferred"
+      "loaded_source_refresh": "unavailable",
+      "inspection_invalidation": "invalidated",
+      "breakpoint_reconciliation": "pending"
     }
   }
 }

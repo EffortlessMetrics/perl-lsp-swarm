@@ -3215,7 +3215,7 @@ system($path);
             full_result_id(&document_report).ok_or("document transport must mint a reusable ID")?;
 
         let partial = provider.get_workspace_diagnostics_partial_with_context(
-            &[(uri_str.into(), content.into())],
+            &[(uri_str, content.into())],
             8,
             &|_| context.clone(),
         );

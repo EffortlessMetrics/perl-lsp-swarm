@@ -1721,3 +1721,126 @@ fn test_recovery_unclosed_s_replacement() {
     assert!(result.is_ok(), "Parser should recover from s/ with unclosed replacement");
     assert!(!parser.errors().is_empty(), "Should record unclosed s delimiter error");
 }
+
+// Issue #15750: v3 parser silently accepted `@@@ garbage @@@` as bare-@ /
+// bareword expressions with no diagnostic. The trailing-garbage shape must
+// surface an UnexpectedToken diagnostic AND an ERROR node, so the
+// statement-boundary recovery engages and the next well-formed statement
+// (the `sub ...` declaration) is still parsed.
+#[test]
+fn test_15750_bare_double_sigil_emits_error_and_recovers() {
+    let code = "my $prefix = 1;\n@@@ this is garbage not perl @@@\nsub after_bare_at { return 42; }\nmy $suffix = 2;\n";
+    let mut parser = Parser::new(code);
+    let output = parser.parse_with_recovery();
+
+    // 1) Diagnostics are surfaced, not silently swallowed.
+    assert!(
+        !output.diagnostics.is_empty(),
+        "v3 must surface an UnexpectedToken diagnostic for bare-@ followed by another sigil; got 0 diagnostics, sexp: {}",
+        output.ast.to_sexp()
+    );
+    // The diagnostic must be the UnexpectedToken variant the claim promises.
+    // (ParseError::UnexpectedToken's Display renders only
+    // "expected …, found … at position …", so the wording cannot be matched
+    // through Display; the variant is the stable contract.)
+    let has_unexpected =
+        output.diagnostics.iter().any(|d| matches!(d, ParseError::UnexpectedToken { .. }));
+    assert!(
+        has_unexpected,
+        "expected at least one UnexpectedToken / bare-sigil diagnostic, got: {:?}",
+        output.diagnostics
+    );
+
+    // 2) An ERROR node is present (the recovery surface).  The grammar kind
+    //    name in the sexp is `ERROR` (per perl-ast grammar_kind_name); check
+    //    for it via the rendered sexp so the test does not depend on a
+    //    helper that does not exist on Node.
+    let sexp = output.ast.to_sexp();
+    assert!(
+        sexp.contains("(ERROR "),
+        "v3 must produce at least one ERROR node for the garbage region; sexp: {sexp}"
+    );
+
+    // 3) Post-error markers survive — `after_bare_at` and `$suffix`.
+    let ast = &output.ast;
+    if let NodeKind::Program { statements } = &ast.kind {
+        let sexp_program = ast.to_sexp();
+        assert!(
+            sexp_program.contains("after_bare_at"),
+            "v3 must recover past the bare-@ chain to the next sub declaration; sexp: {sexp_program}"
+        );
+        assert!(
+            sexp_program.contains("suffix"),
+            "v3 must recover past the bare-@ chain to the next variable declaration; sexp: {sexp_program}"
+        );
+        // First and last statements must not be ERROR nodes — the well-formed
+        // prefix and suffix still parse as real declarations.
+        assert!(
+            !matches!(statements.first().map(|s| &s.kind), Some(NodeKind::Error { .. })),
+            "well-formed prefix must not be wrapped in ERROR; sexp: {sexp_program}"
+        );
+        assert!(
+            !matches!(statements.last().map(|s| &s.kind), Some(NodeKind::Error { .. })),
+            "well-formed suffix must not be wrapped in ERROR; sexp: {sexp_program}"
+        );
+    } else {
+        panic!("expected Program node, got: {}", ast.to_sexp());
+    }
+}
+
+// Issue #15750: each non-`$` sigil followed by another sigil is its own
+// invalid shape. None should silently produce a Variable node with the
+// second sigil as the name.
+#[test]
+fn test_15750_rejects_each_bare_double_sigil_shape() {
+    for (label, src) in [
+        ("bare @ then @", "@@x"),
+        ("bare @ then %", "@%x"),
+        ("bare @ then *", "@*x"),
+        ("bare @ then &", "@&x"),
+        ("bare % then @", "%@x"),
+        ("bare % then %", "%%x"),
+        ("bare * then @", "*@x"),
+        ("bare & then @", "&@x"),
+    ] {
+        let mut parser = Parser::new(src);
+        let output = parser.parse_with_recovery();
+        let sexp = output.ast.to_sexp();
+        assert!(
+            !output.diagnostics.is_empty(),
+            "[{label}] expected diagnostics for `{src}`, got 0; sexp: {sexp}"
+        );
+        assert!(
+            sexp.contains("(ERROR "),
+            "[{label}] expected ERROR node for `{src}`, sexp: {sexp}"
+        );
+        // The pathological `Variable { sigil: @, name: @ }` shape must not
+        // appear — that was the v3 silent-misparse symptom.
+        assert!(
+            !sexp.contains("(sigil @) (name @)"),
+            "[{label}] v3 silently misparsed `{src}` as Variable(sigil=@, name=@); sexp: {sexp}"
+        );
+    }
+}
+
+// Issue #15750: the valid `@$ref` unbraced dereference must continue to
+// parse unchanged — the fix only rejects non-`$` followed by another
+// sigil; `$ref` (ScalarSigil) after `@`/`%`/`$` is still valid.
+#[test]
+fn test_15750_preserves_unbraced_scalar_deref() {
+    let cases = [("@$ref", "(unbraced"), ("%$ref", "(unbraced"), ("$$", "pid")];
+    for (src, marker) in cases {
+        let mut parser = Parser::new(src);
+        let output = parser.parse_with_recovery();
+        let sexp = output.ast.to_sexp();
+        assert!(
+            output.diagnostics.is_empty(),
+            "valid unbraced dereference `{src}` must NOT trigger diagnostics; got: {:?}",
+            output.diagnostics
+        );
+        assert!(
+            sexp.contains(marker) || sexp.contains("variable") || sexp.contains("unary"),
+            "expected `{src}` to parse as a variable / unbraced deref; sexp: {sexp}"
+        );
+    }
+}

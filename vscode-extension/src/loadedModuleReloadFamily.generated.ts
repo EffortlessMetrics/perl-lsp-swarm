@@ -119,10 +119,18 @@ export interface ReloadGenerationWitness {
   advanced: boolean;
 }
 
+export type KnownReloadReconciliationDisposition =
+  | 'not_applicable'
+  | 'invalidated'
+  | 'pending'
+  | 'unavailable';
+
+export type ReloadReconciliationDisposition = KnownReloadReconciliationDisposition | (string & {});
+
 export interface ReloadReconciliationDispositions {
-  loaded_source_refresh: 'deferred';
-  inspection_invalidation: 'deferred';
-  breakpoint_reconciliation: 'deferred';
+  loaded_source_refresh: ReloadReconciliationDisposition;
+  inspection_invalidation: ReloadReconciliationDisposition;
+  breakpoint_reconciliation: ReloadReconciliationDisposition;
 }
 
 export interface LoadedModuleReloadOutcomeBody {

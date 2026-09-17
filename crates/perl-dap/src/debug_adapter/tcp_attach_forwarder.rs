@@ -27,7 +27,7 @@
 #[cfg(test)]
 use super::DapMessage;
 use super::process::emit_terminated_event_guarded;
-use super::sync_utils::{EventSender, GuardedDispatchResult, lock_or_recover};
+use super::sync_utils::{EventDrainLatch, EventSender, GuardedDispatchResult, lock_or_recover};
 use super::{DebugAdapter, TerminationState};
 use crate::tcp_attach::DapEvent;
 use serde_json::json;
@@ -51,12 +51,18 @@ pub(super) const TCP_ATTACH_EVENT_CAPACITY: usize = 128;
 /// `session_generation` is the generation captured when the attach succeeded;
 /// events arriving after that generation has been replaced are stale and are
 /// dropped before publication.
+///
+/// `event_drain` joins every publication to the drain latch contract: each
+/// accepted event retains one reservation for the transport consumer, and
+/// every refused, dropped, or stale outcome completes it, so responses
+/// cannot overtake forwarded events on the wire.
 pub(super) fn spawn_tcp_attach_event_forwarder(
     rx: Receiver<DapEvent>,
     event_sender: Option<EventSender>,
     seq_counter: Arc<Mutex<i64>>,
     termination_state: Arc<Mutex<TerminationState>>,
     session_generation: u64,
+    event_drain: EventDrainLatch,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         while let Ok(event) = rx.recv() {
@@ -96,6 +102,7 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
                             Some(session_generation),
                             Some(json!({"reason": reason})),
                             &stale,
+                            Some(&event_drain),
                         );
                     }
                 }
@@ -118,10 +125,16 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
                         // enter the shared outbound queue. The guarded dispatch
                         // re-validates the generation before every commit
                         // attempt, so the replacement retires the stale event
-                        // instead (#9521 review).
-                        if sender.send_event_generation_guarded(&seq_counter, name, body, &stale)
-                            == GuardedDispatchResult::Stale
-                        {
+                        // instead (#9521 review). The accepted event joins
+                        // the drain latch like every other emission, so a
+                        // response cannot overtake it.
+                        event_drain.enqueue(1);
+                        let published =
+                            sender.send_event_generation_guarded(&seq_counter, name, body, &stale);
+                        if published != GuardedDispatchResult::Sent {
+                            event_drain.complete(1);
+                        }
+                        if published == GuardedDispatchResult::Stale {
                             break;
                         }
                     }
@@ -162,6 +175,7 @@ mod tests {
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         tx.send(DapEvent::Output { category: "stdout".into(), output: "one".into() })
@@ -200,6 +214,7 @@ mod tests {
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         // Deliver one live-generation event, and wait until it is observed on
@@ -243,6 +258,7 @@ mod tests {
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         for reason in ["first", "second", "third"] {
@@ -299,6 +315,7 @@ mod tests {
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         // Fill the outbound queue with a first stopped event (the forwarder
@@ -353,6 +370,7 @@ mod tests {
             Arc::new(Mutex::new(0)),
             Arc::clone(&state),
             1,
+            EventDrainLatch::default(),
         );
 
         // Fill the outbound queue with a live-generation stopped event (the

@@ -107,7 +107,7 @@
     },
     "reconciliationDisposition": {
       "type": "string",
-      "enum": ["deferred"]
+      "enum": ["not_applicable", "invalidated", "pending", "unavailable"]
     },
     "reconciliation": {
       "type": "object",
@@ -211,6 +211,40 @@
             "properties": { "kind": { "const": "indeterminate_possibly_applied" } }
           },
           "then": { "properties": { "possiblyApplied": { "const": true } } }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "enum": ["reloaded", "indeterminate_possibly_applied"] }
+            }
+          },
+          "then": {
+            "properties": {
+              "reconciliation": {
+                "properties": {
+                  "loaded_source_refresh": { "const": "unavailable" },
+                  "inspection_invalidation": { "const": "invalidated" },
+                  "breakpoint_reconciliation": { "const": "pending" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "enum": ["refused", "failed_before_mutation"] } }
+          },
+          "then": {
+            "properties": {
+              "reconciliation": {
+                "properties": {
+                  "loaded_source_refresh": { "const": "not_applicable" },
+                  "inspection_invalidation": { "const": "not_applicable" },
+                  "breakpoint_reconciliation": { "const": "not_applicable" }
+                }
+              }
+            }
+          }
         }
       ]
     },

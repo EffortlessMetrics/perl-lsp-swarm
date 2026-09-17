@@ -916,7 +916,7 @@ impl<'a> DeclarationProvider<'a> {
             // Typeglob assignment: `*foo = sub { ... }` creates a callable named `foo`.
             // Strip the package qualifier so `*Pkg::foo` matches bare name `foo`.
             NodeKind::Assignment { lhs, rhs, .. } => {
-                if let NodeKind::Typeglob { name: glob_name } = &lhs.kind {
+                if let NodeKind::Typeglob { name: glob_name, .. } = &lhs.kind {
                     let bare = glob_name.rsplit("::").next().unwrap_or(glob_name.as_str());
                     if bare == sub_name && matches!(rhs.kind, NodeKind::Subroutine { .. }) {
                         subs.push(node);

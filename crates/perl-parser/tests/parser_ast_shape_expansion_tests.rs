@@ -636,7 +636,7 @@ fn diamond_readline_glob_and_typeglob_expression_shapes_are_preserved() -> Resul
     let names: Vec<&str> = typeglobs
         .iter()
         .filter_map(|node| match &node.kind {
-            NodeKind::Typeglob { name } => Some(name.as_str()),
+            NodeKind::Typeglob { name, .. } => Some(name.as_str()),
             _ => None,
         })
         .collect();

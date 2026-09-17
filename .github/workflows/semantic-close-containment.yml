@@ -8,6 +8,14 @@
 # #11847), which enforces relation/section/byte bounds and exits before any
 # issue lookup when a PR carries no automatic closing keyword.
 #
+# #15640: reruns replay the original event payload, so the validator builds
+# the semantic subject from one live `GET /repos/{owner}/{repo}/pulls/{n}`
+# snapshot (fetched with the existing read-only token) instead of the stale
+# event title/body. The event supplies only the locator and audit metadata; a
+# fetch failure is an instrument failure with no event-payload fallback, and
+# the report records `updated_at`, live head SHA, and a title/body digest so
+# the job proves what it actually evaluated.
+#
 # Exit contract: 0 = pass (containment level only), 2 = high-confidence
 # contradiction (the check fails with the suggested non-terminal relation),
 # 3 = NOT_PROVEN/instrument failure (the check fails; it never passes on
@@ -43,7 +51,11 @@ permissions:
 
 concurrency:
   group: semantic-close-containment-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request_target' && github.event.action == 'synchronize' }}
+  # #15640: any fresh PR event (edit included) supersedes an older queued or
+  # in-progress rerun for the same PR, so stale and current verdicts cannot
+  # race in the UI. workflow_dispatch runs on a distinct group and are never
+  # cancelled by PR events.
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 jobs:
   containment:
@@ -143,4 +155,10 @@ jobs:
         if: github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: target/debug/semantic-close-containment
+        # pipefail keeps the validator's exit contract (0/2/3) authoritative
+        # while the same report — including the #15640 snapshot receipt
+        # (updated_at, live head SHA, title/body digest) — lands in the job
+        # summary as evidence of what this run actually evaluated.
+        run: |
+          set -uo pipefail
+          target/debug/semantic-close-containment | tee "${GITHUB_STEP_SUMMARY:-/dev/null}"

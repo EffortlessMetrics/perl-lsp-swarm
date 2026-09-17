@@ -466,7 +466,18 @@ fn count_unmodeled(body: &HirBody) -> u32 {
             | HirExpr::Regex(_)
             | HirExpr::Match(_)
             | HirExpr::Substitution(_)
-            | HirExpr::Transliteration(_) => count = count.saturating_add(1),
+            | HirExpr::Transliteration(_)
+            // `try`/`catch`/`finally` (#15567). Canonical body HIR now models
+            // the regions and PIR-A lowers the statements inside them, so the
+            // three childless `Opaque` blocks that used to be counted here are
+            // gone. The construct must still count: PIR-A does not model
+            // exceptional control flow, so it cannot see that the try body may
+            // abort partway, that a handler runs only on a throw, or that
+            // `finally` runs on every exit path. Dropping the count when the
+            // `Opaque` blocks disappeared would silently flip a try-containing
+            // callable from `Limited` to `Complete` over evidence this
+            // assembler still cannot see.
+            | HirExpr::Try { .. } => count = count.saturating_add(1),
             _ => {}
         }
     }

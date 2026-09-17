@@ -615,7 +615,7 @@ fn sexp_readline_with_and_without_fh() -> Result<(), Box<dyn std::error::Error>>
 #[test]
 fn sexp_glob_and_typeglob() -> Result<(), Box<dyn std::error::Error>> {
     let g = Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc(0, 6));
-    let tg = Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4));
+    let tg = Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4));
     assert_eq!(g.to_sexp(), "(glob (pattern *.pl))");
     assert_eq!(tg.to_sexp(), "(typeglob (name foo))");
     Ok(())
@@ -1639,7 +1639,7 @@ fn kind_name_specific_variants() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(NodeKind::Readline { filehandle: None }.kind_name(), "Readline");
     assert_eq!(NodeKind::Glob { pattern: "".to_string() }.kind_name(), "Glob");
-    assert_eq!(NodeKind::Typeglob { name: "".to_string() }.kind_name(), "Typeglob");
+    assert_eq!(NodeKind::Typeglob { name: "".to_string(), body: None }.kind_name(), "Typeglob");
     Ok(())
 }
 
@@ -1782,7 +1782,7 @@ fn leaf_nodes_have_no_children() -> Result<(), Box<dyn std::error::Error>> {
         Node::new(NodeKind::UnknownRest, loc(0, 0)),
         Node::new(NodeKind::Readline { filehandle: None }, loc(0, 2)),
         Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc(0, 6)),
-        Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4)),
+        Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4)),
         Node::new(NodeKind::String { value: "hi".to_string(), interpolated: false }, loc(0, 4)),
         Node::new(
             NodeKind::Heredoc {

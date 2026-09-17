@@ -109,7 +109,14 @@ pub enum RecoveryConfidence {
 /// declaration resolves to (#14166). This slice originally claimed v4; `main`
 /// took that number for the regex variants first, so the binding layout is a
 /// further increment rather than a second meaning for one version.
-pub const HIR_BODY_MODEL_VERSION: u32 = 5;
+/// v6 adds [`HirExpr::Try`] and [`HirCatchHandler`] (#15567), which replace the
+/// previous `Call { args: [Opaque{Block}, …] }` fallback for
+/// `try`/`catch`/`finally` and, unlike that fallback, retain the statements
+/// inside each region.
+///
+/// [`HirExpr::Try`]: super::body::HirExpr::Try
+/// [`HirCatchHandler`]: super::body::HirCatchHandler
+pub const HIR_BODY_MODEL_VERSION: u32 = 6;
 
 /// HIR for one parsed file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

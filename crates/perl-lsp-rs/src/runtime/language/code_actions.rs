@@ -750,7 +750,22 @@ impl LspServer {
             None => return Ok(Some(json!([]))),
         };
 
-        let parsed = doc.current_parsed();
+        // Prefer the generation-current snapshot; fall back to the latest
+        // published one only when it was parsed from the CURRENT text —
+        // the workspace indexer bumps the generation after didOpen, which
+        // would otherwise strip every AST-derived quick fix (unused-variable
+        // fixes et al.) down to the text-only actions (#11858 pattern,
+        // #15430). The hash gate keeps the fallback honest: a snapshot of
+        // shifted text would pair a stale AST with current offsets and
+        // produce edits against positions that no longer exist (#15776
+        // review). When the hashes disagree (a real edit is pending
+        // republish), actions drop to text-only until the parse catches up.
+        let parsed = doc.current_parsed().or_else(|| {
+            let latest = doc.latest_parsed()?;
+            let matches = perl_lsp_rs_core::tooling::perl_critic::hash_content(&doc.text)
+                == latest.content_hash();
+            matches.then_some(latest)
+        });
         let start_offset = self.pos16_to_offset(doc, start_line, start_char);
         let end_offset = self.pos16_to_offset(doc, end_line, end_char);
         if let Some(ast) = parsed.as_ref().and_then(|p| p.ast()) {

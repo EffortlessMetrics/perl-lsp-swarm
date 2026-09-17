@@ -179,7 +179,7 @@ pub const AST_NODE_POLICIES: &[AstNodePolicy] = &[
     policy!("Undef", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[]),
     policy!("Readline", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::IdentifierExact]),
     policy!("Glob", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::OpaqueSourceRegion]),
-    policy!("Typeglob", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::IdentifierExact]),
+    policy!("Typeglob", Wrapper, Exact, ProfileControlled, Required, Nondecreasing, MayOverlap, &[AstPayloadPolicy::IdentifierExact]),
     policy!("Number", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::LiteralRawAndCooked]),
     policy!("String", Leaf, Normalized, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::LiteralRawAndCooked]),
     policy!("VString", Leaf, Normalized, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::LiteralRawAndCooked]),
@@ -378,7 +378,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
         fixture!(NodeKind::Undef, &[], &[]),
         fixture!(NodeKind::Readline { filehandle: Some(text()) }, &["filehandle"], &[]),
         fixture!(NodeKind::Glob { pattern: text() }, &["pattern"], &[]),
-        fixture!(NodeKind::Typeglob { name: text() }, &["name"], &[]),
+        fixture!(NodeKind::Typeglob { name: text(), body: Some(boxed()) }, &["name"], &[]),
         fixture!(NodeKind::Number { value: text() }, &["value"], &[]),
         fixture!(
             NodeKind::String { value: text(), interpolated: true },

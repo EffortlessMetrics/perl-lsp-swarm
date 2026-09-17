@@ -32,6 +32,32 @@
 local here = debug.getinfo(1, "S").source:sub(2):match("^(.*)[/\\]") or "."
 local repo_root = here .. "/../../.."
 
+-- Prefer a real OS temp dir, then fall back to "target" (a sibling of
+-- CWD). The documented proof command runs from the repository root, so
+-- this resolves to the repo's gitignored target/ directory. Anchoring
+-- the fallback to a gitignored location rather than "." keeps the
+-- documented commands from leaking scratch into a clean working tree on
+-- non-Windows hosts where $TEMP is normally unset. See issue #15517.
+--
+-- Note: the prefix "./" is intentionally absent. compose.lua's
+-- list_files_relative helper normalizes its own path against CWD, but a
+-- leading "./" survives in the prefix it strips and breaks the round-trip
+-- against Windows `dir /s /b` (which reports the resolved path without
+-- "./" components), so the file enumeration comes back empty and verify
+-- reports phantom unowned_diff failures.
+--
+-- An env var set to the empty string is treated the same as unset: Lua's
+-- `os.getenv` returns "" for a present-but-empty var, and the `or` chain
+-- would otherwise pass that empty string through to the path join.
+local function portable_temp_root()
+  local function env(name)
+    local v = os.getenv(name)
+    if v == nil or v == "" then return nil end
+    return v
+  end
+  return env("TMPDIR") or env("TEMP") or env("TMP") or "target"
+end
+
 local passed, failed = 0, 0
 local function ok(condition, message)
   if condition then
@@ -42,8 +68,11 @@ local function ok(condition, message)
   end
 end
 
-local scratch = (os.getenv("TEMP") or ".") .. "/compose_integration_scratch"
-os.execute('mkdir "' .. scratch .. '" 2>nul')
+local scratch = portable_temp_root() .. "/compose_integration_scratch"
+local IS_WINDOWS = package.config:sub(1, 1) == "\\"
+os.execute(IS_WINDOWS
+  and ('mkdir "' .. scratch .. '" 2>nul')
+  or ('mkdir -p "' .. scratch .. '" 2>/dev/null'))
 
 local function write_file(path, bytes)
   local f = io.open(path, "wb")

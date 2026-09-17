@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema_version": {
-      "type": "string"
+      "const": "workflow_contracts.v1"
     },
     "receipt_kind": {
       "const": "workflow_contracts"

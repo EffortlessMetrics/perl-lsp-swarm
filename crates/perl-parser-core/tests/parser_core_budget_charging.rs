@@ -845,6 +845,108 @@ fn tokens_from_a_nested_sub_parse_are_adopted_by_the_adopting_operation() {
     );
 }
 
+/// A fused `*{EXPR}` assignment's body recovery is a nested sub-parse: it runs
+/// under the adopting operation's remaining allowance and its work is adopted.
+///
+/// `*{...}` arrives as one lexer token, so the assignment path re-parses the
+/// braced text to recover the structured body (#15731). Against an
+/// implementation that runs that recovery outside the adopting budget and never
+/// adopts it, a small outer limit never refuses while the receipt under-reports
+/// the work, so the sweep below fails on the missing refusal — and any refusal
+/// it does raise is checked for the adopting operation's coordinates.
+#[test]
+fn a_fused_assignment_body_recovery_is_bounded_by_the_adopting_configuration() {
+    // Fused single-token form: the braced body is only raw text until the
+    // assignment path re-parses it.
+    const FUSED: &str = "*{$a . $b} = \\&target;";
+    // A braced bareword strips to its static name and never recovers a body,
+    // so it performs no nested parse.
+    const BAREWORD: &str = "*{name} = \\&target;";
+
+    for dimension in [ParseCoreDimension::NodesConstructed, ParseCoreDimension::TokensConsumed] {
+        let required = usage_unlimited(FUSED).core_usage(dimension);
+        let without_nested = usage_unlimited(BAREWORD).core_usage(dimension);
+        assert!(
+            required > without_nested,
+            "{dimension}: recovering the fused body must charge more than the bareword form \
+             ({required} vs {without_nested})"
+        );
+
+        // Sweep the whole range rather than naming the limits at which the
+        // nested recovery happens to be the refuser: which side refuses is an
+        // implementation detail, but the coordinates must be the parent's
+        // whichever side raises them.
+        for limit in 1..required {
+            let output = parse_with_budget(FUSED, budget_with(dimension, limit));
+            assert!(
+                matches!(output.stop_cause(), Some(ParseStopCause::CoreBudgetExhausted { .. })),
+                "{dimension} at limit {limit} must refuse; got {:?}",
+                output.stop_cause()
+            );
+            // The assertion above already established the shape; `else` is
+            // unreachable and only exists because the crate denies `panic!`.
+            let Some(ParseStopCause::CoreBudgetExhausted {
+                dimension: stopped,
+                limit: reported_limit,
+                usage: reported_usage,
+            }) = output.stop_cause()
+            else {
+                continue;
+            };
+            assert_eq!(stopped, dimension, "the refusal must name the bounded dimension");
+            assert_eq!(
+                reported_limit, limit,
+                "{dimension} at limit {limit}: the terminal must name the operation's \
+                 configured limit, not the remainder handed to the body recovery"
+            );
+            let charged = output.budget_usage.core_usage(dimension);
+            assert_eq!(
+                reported_usage, charged,
+                "{dimension} at limit {limit}: the terminal's usage and the budget receipt \
+                 describe the same operation and must agree"
+            );
+            assert!(
+                charged >= limit,
+                "{dimension} at limit {limit}: a refusal must follow a budget that was \
+                 actually spent; charged {charged}"
+            );
+            assert!(
+                charged <= limit,
+                "{dimension} at limit {limit}: adoption must never charge past the configured \
+                 limit; charged {charged}"
+            );
+        }
+    }
+}
+
+/// A failed fused-assignment body recovery degrades to no body with the charge
+/// and the retained diagnostics in exact agreement.
+///
+/// The inner parse's retained diagnostics are deliberately dropped — the
+/// assignment path never surfaced them before #15731. On this path the
+/// agreement therefore pins both directions at once: retaining the dropped
+/// diagnostics without charging them would leave the charge below the vector,
+/// and charging them without retaining them would spend `max_errors` on output
+/// no caller receives. (Against the pre-repair implementation, which drops the
+/// whole nested parse without adopting anything, this agreement already holds;
+/// the bounding test above is what kills that implementation.)
+#[test]
+fn a_failed_fused_assignment_recovery_is_not_charged_for_dropped_diagnostics() {
+    // The braced text retains a diagnostic (`my $q = ;` needs recovery) and
+    // then fails strictly, so the recovery path runs with a non-empty nested
+    // diagnostic set.
+    const SOURCE: &str = "*{my $q = ;} = \\&target;";
+    let output = parse_with_budget(SOURCE, ParseBudget::unlimited());
+    assert_eq!(
+        output.budget_usage.errors_emitted,
+        output.diagnostics.len(),
+        "{SOURCE:?}: the inner parse's diagnostics are dropped, so the charge and the \
+         retained vector must agree exactly; charged {} against {} retained",
+        output.budget_usage.errors_emitted,
+        output.diagnostics.len()
+    );
+}
+
 /// A heredoc drain that overran but *finished* is not terminal, so its
 /// diagnostic stays subject to `max_errors`.
 ///

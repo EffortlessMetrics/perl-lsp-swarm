@@ -1,0 +1,379 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://effortlessmetrics.dev/perl-lsp/schemas/compiler_performance_receipt.v1.schema.json",
+  "title": "Compiler performance receipt v1",
+  "description": "Transport-neutral work and timing evidence for compiler-backed code intelligence. Missing instrumentation is not zero: a counter exists only where its paired evidence status is 'measured', and is forbidden otherwise, so an absent observation cannot be serialized as a number a consumer would read as fact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_id",
+    "subject",
+    "workload",
+    "cache",
+    "stages",
+    "provider",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {"const": "compiler_performance_receipt.v1"},
+    "receipt_id": {"$ref": "#/$defs/required_text"},
+    "subject": {"$ref": "#/$defs/subject"},
+    "workload": {"$ref": "#/$defs/workload"},
+    "cache": {"$ref": "#/$defs/cache"},
+    "stages": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/stage"}},
+    "provider": {"$ref": "#/$defs/provider"},
+    "limitations": {"type": "array", "items": {"$ref": "#/$defs/required_text"}}
+  },
+  "$defs": {
+    "git_object_name": {
+      "description": "An exact git object name: forty lowercase hex digits. Used for the identities consumers key attribution, caches, and receipt dedup on, so a symbolic ref, branch name, short hash, or upper-case spelling is rejected.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+
+    "required_text": {
+      "description": "A value the contract requires. Whitespace-only is not a value, so at least one non-whitespace character is required.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+
+    "count": {
+      "description": "A non-negative count. Bounded above by u64 so a schema-valid receipt is always decodable by the typed model.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+
+    "evidence_status": {
+      "description": "Whether the paired observation was actually taken. Only 'measured' admits counters.",
+      "enum": ["measured", "not_proven", "not_applicable", "failed", "cancelled"]
+    },
+
+    "stage_name": {
+      "description": "The twelve compiler stages named by the governing contract (#9311).",
+      "enum": [
+        "upstream",
+        "lex_parse",
+        "compile_unit_extraction",
+        "hir",
+        "pir",
+        "effects",
+        "module_graph",
+        "world",
+        "interface_invalidation",
+        "fact_projection",
+        "provider_request",
+        "serialization"
+      ]
+    },
+
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "profile"],
+      "properties": {
+        "schema": {"$ref": "#/$defs/required_text"},
+        "profile": {"$ref": "#/$defs/required_text"}
+      }
+    },
+
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "candidate",
+        "tree",
+        "dirty_tree",
+        "toolchain",
+        "runner",
+        "identities"
+      ],
+      "properties": {
+        "repository": {"$ref": "#/$defs/required_text"},
+        "candidate": {"$ref": "#/$defs/git_object_name"},
+        "tree": {"$ref": "#/$defs/git_object_name"},
+        "dirty_tree": {"type": "boolean"},
+        "toolchain": {"$ref": "#/$defs/required_text"},
+        "runner": {"$ref": "#/$defs/required_text"},
+        "identities": {
+          "description": "The seven artifact-schema identities this receipt is bound to. Each 'schema' is pinned to its v1 constant, so a producer cannot index a receipt against a vocabulary that never shipped.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "parser", "hir", "pir", "effects", "world", "interfaces"],
+          "properties": {
+            "source": {"$ref": "#/$defs/identity", "properties": {"schema": {"const": "source.v1"}}},
+            "parser": {"$ref": "#/$defs/identity", "properties": {"schema": {"const": "parser.v1"}}},
+            "hir": {"$ref": "#/$defs/identity", "properties": {"schema": {"const": "hir.v1"}}},
+            "pir": {"$ref": "#/$defs/identity", "properties": {"schema": {"const": "pir.v1"}}},
+            "effects": {"$ref": "#/$defs/identity", "properties": {"schema": {"const": "effects.v1"}}},
+            "world": {"$ref": "#/$defs/identity", "properties": {"schema": {"const": "world.v1"}}},
+            "interfaces": {"$ref": "#/$defs/identity", "properties": {"schema": {"const": "interfaces.v1"}}}
+          }
+        }
+      }
+    },
+
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "class", "profile", "fixture", "series", "cache_mode", "required_stages"],
+      "properties": {
+        "id": {"$ref": "#/$defs/required_text"},
+        "class": {
+          "enum": [
+            "focused_fixture",
+            "selected_upstream",
+            "representative_edit",
+            "provider_vertical"
+          ]
+        },
+        "profile": {"$ref": "#/$defs/required_text"},
+        "fixture": {"$ref": "#/$defs/required_text"},
+        "series": {"$ref": "#/$defs/required_text"},
+        "cache_mode": {
+          "description": "Setup label only: how the run was configured. It is not evidence of an outcome — the validated result lives in the sibling 'cache' observation.",
+          "enum": ["cold", "warm", "reused", "bypassed", "unknown"]
+        },
+        "required_stages": {
+          "description": "The explicit denominator this receipt is judged against. A receipt may contain only applicable stages, but every stage named here must appear in 'stages' — as an observation or as an honest 'required_missing' row. The producer declares the denominator; the validator reconciles it.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/stage_name"}
+        }
+      }
+    },
+
+    "work": {
+      "description": "Deterministic work counters, kept separate from timing. Present only when status is 'measured' and forbidden otherwise, so unknown work can never be serialized as zero work.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/evidence_status"},
+        "units": {"$ref": "#/$defs/count"},
+        "objects": {"$ref": "#/$defs/count"},
+        "bytes": {"$ref": "#/$defs/count"},
+        "reused": {"$ref": "#/$defs/count"},
+        "recomputed": {"$ref": "#/$defs/count"}
+      },
+      "if": {"properties": {"status": {"const": "measured"}}, "required": ["status"]},
+      "then": {"required": ["units", "objects", "bytes", "reused", "recomputed"]},
+      "else": {
+        "not": {
+          "anyOf": [
+            {"required": ["units"]},
+            {"required": ["objects"]},
+            {"required": ["bytes"]},
+            {"required": ["reused"]},
+            {"required": ["recomputed"]}
+          ]
+        }
+      }
+    },
+
+    "timing": {
+      "description": "Elapsed observations, kept separate from work counters. A measured timing must carry at least the wall-clock value; a non-measured timing may carry neither value.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/evidence_status"},
+        "wall_ns": {"$ref": "#/$defs/count"},
+        "cpu_ns": {"$ref": "#/$defs/count"}
+      },
+      "if": {"properties": {"status": {"const": "measured"}}, "required": ["status"]},
+      "then": {"required": ["wall_ns"]},
+      "else": {"not": {"anyOf": [{"required": ["wall_ns"]}, {"required": ["cpu_ns"]}]}}
+    },
+
+    "cache": {
+      "description": "Validated cache outcome, deliberately separate from workload.cache_mode. Cache presence cannot imply a hit: 'hit' requires measured evidence, a cache key, and validated currentness. Loaded and copied artefacts are counted apart from 'reused', so a copy is never automatically work avoided.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "outcome"],
+      "properties": {
+        "status": {"$ref": "#/$defs/evidence_status"},
+        "outcome": {"enum": ["hit", "miss", "stale", "bypass", "not_proven"]},
+        "key": {"$ref": "#/$defs/required_text"},
+        "currentness": {"enum": ["validated", "unvalidated", "stale", "unknown"]},
+        "loaded": {"$ref": "#/$defs/count"},
+        "copied": {"$ref": "#/$defs/count"},
+        "reused": {"$ref": "#/$defs/count"},
+        "recomputed": {"$ref": "#/$defs/count"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "measured"}}, "required": ["status"]},
+          "then": {"required": ["loaded", "copied", "reused", "recomputed"]},
+          "else": {
+            "properties": {"outcome": {"const": "not_proven"}},
+            "not": {
+              "anyOf": [
+                {"required": ["loaded"]},
+                {"required": ["copied"]},
+                {"required": ["reused"]},
+                {"required": ["recomputed"]}
+              ]
+            }
+          }
+        },
+        {
+          "if": {"properties": {"outcome": {"const": "hit"}}, "required": ["outcome"]},
+          "then": {
+            "required": ["key", "currentness"],
+            "properties": {
+              "currentness": {"const": "validated"},
+              "status": {"const": "measured"}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"reused": {"type": "integer", "minimum": 1}},
+            "required": ["reused"]
+          },
+          "then": {"properties": {"outcome": {"const": "hit"}}}
+        }
+      ]
+    },
+
+    "stage": {
+      "description": "One compiler stage. The five state fields may not contradict each other: a stage that is not applicable, or required but unobserved, cannot also report measured work, measured timing, complete instrumentation, or a passing result; and instrumentation that is missing cannot coexist with measured evidence. Note that `result` and the evidence statuses are deliberately independent in the other direction: a stage may legitimately report `pass` while carrying no measurement, because whether a stage succeeded is observable without counting its work. Instrumentation state, not the result, is what says how much was measured.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "applicability", "result", "work", "timing", "instrumentation"],
+      "properties": {
+        "name": {"$ref": "#/$defs/stage_name"},
+        "applicability": {"enum": ["applicable", "not_applicable", "required_missing"]},
+        "result": {"enum": ["pass", "failed", "cancelled", "timeout", "not_proven"]},
+        "work": {"$ref": "#/$defs/work"},
+        "timing": {"$ref": "#/$defs/timing"},
+        "instrumentation": {"enum": ["complete", "partial", "missing", "failed"]}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"applicability": {"enum": ["not_applicable", "required_missing"]}},
+            "required": ["applicability"]
+          },
+          "then": {
+            "properties": {
+              "result": {"const": "not_proven"},
+              "instrumentation": {"enum": ["partial", "missing", "failed"]},
+              "work": {"properties": {"status": {"not": {"const": "measured"}}}},
+              "timing": {"properties": {"status": {"not": {"const": "measured"}}}}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"result": {"const": "pass"}}, "required": ["result"]},
+          "then": {"properties": {"applicability": {"const": "applicable"}}}
+        },
+        {
+          "if": {
+            "properties": {"instrumentation": {"const": "complete"}},
+            "required": ["instrumentation"]
+          },
+          "then": {
+            "properties": {
+              "work": {"properties": {"status": {"const": "measured"}}},
+              "timing": {"properties": {"status": {"const": "measured"}}}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {"instrumentation": {"const": "missing"}},
+            "required": ["instrumentation"]
+          },
+          "then": {
+            "properties": {
+              "work": {"properties": {"status": {"not": {"const": "measured"}}}},
+              "timing": {"properties": {"status": {"not": {"const": "measured"}}}}
+            }
+          }
+        }
+      ]
+    },
+
+    "correctness": {
+      "description": "Zero-budget correctness counters. Present only when measured, so an uninstrumented run cannot publish four zeros that read as 'no correctness failures'.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"$ref": "#/$defs/evidence_status"},
+        "false_exact": {"$ref": "#/$defs/count"},
+        "stale_exact": {"$ref": "#/$defs/count"},
+        "unsafe_edit": {"$ref": "#/$defs/count"},
+        "unexplained_empty": {"$ref": "#/$defs/count"}
+      },
+      "if": {"properties": {"status": {"const": "measured"}}, "required": ["status"]},
+      "then": {"required": ["false_exact", "stale_exact", "unsafe_edit", "unexplained_empty"]},
+      "else": {
+        "not": {
+          "anyOf": [
+            {"required": ["false_exact"]},
+            {"required": ["stale_exact"]},
+            {"required": ["unsafe_edit"]},
+            {"required": ["unexplained_empty"]}
+          ]
+        }
+      }
+    },
+
+    "provider": {
+      "description": "Provider utility counters. A measured provider latency claim may not omit correctness evidence: measured timing requires measured correctness counters.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "correctness", "timing"],
+      "properties": {
+        "status": {"$ref": "#/$defs/evidence_status"},
+        "requests": {"$ref": "#/$defs/count"},
+        "exact": {"$ref": "#/$defs/count"},
+        "partial": {"$ref": "#/$defs/count"},
+        "fallback": {"$ref": "#/$defs/count"},
+        "refusal": {"$ref": "#/$defs/count"},
+        "correctness": {"$ref": "#/$defs/correctness"},
+        "timing": {"$ref": "#/$defs/timing"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "measured"}}, "required": ["status"]},
+          "then": {"required": ["requests", "exact", "partial", "fallback", "refusal"]},
+          "else": {
+            "not": {
+              "anyOf": [
+                {"required": ["requests"]},
+                {"required": ["exact"]},
+                {"required": ["partial"]},
+                {"required": ["fallback"]},
+                {"required": ["refusal"]}
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "timing": {"properties": {"status": {"const": "measured"}}, "required": ["status"]}
+            },
+            "required": ["timing"]
+          },
+          "then": {
+            "properties": {
+              "correctness": {
+                "properties": {"status": {"const": "measured"}},
+                "required": ["status"]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

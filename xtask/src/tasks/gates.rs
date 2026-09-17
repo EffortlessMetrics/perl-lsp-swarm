@@ -41,6 +41,7 @@ pub mod disposition;
 mod first_failure;
 mod planning_types;
 pub mod route_profile;
+mod routed_result_adapter;
 
 pub use first_failure::{is_cargo_test_command, parse_first_failure};
 
@@ -498,6 +499,14 @@ pub struct GateResult {
     /// First failing test details for `cargo test`-class gates that exit non-zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_failure: Option<FirstFailure>,
+    /// Whether the runner observed this gate's command actually start.
+    /// In-process dispatches always start their closure; the shell path
+    /// knows whether the child spawned before a failure. Consumed by the
+    /// routed adapter (#9156, review thread FC-ADAPTER-ERROR-FLATTEN) so a
+    /// post-start `error` is never published as never-started; it is a
+    /// runner fact, not a receipt contract field, so it is not serialized.
+    #[serde(default, skip_serializing)]
+    pub command_started: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -655,6 +664,13 @@ pub struct GateRunnerConfig {
     #[allow(dead_code)]
     pub parallel: bool,
     pub verbose: bool,
+    /// Optional published `ci_route_plan.v1` (#10179). When set, the runner
+    /// consumes and validates the canonical plan/row identity before any
+    /// execution and emits one normalized, durably published
+    /// `routed_gate_result.v1` (#9156) per executed planned `run` row under
+    /// `target/receipts/routed-results/`. Unset keeps legacy behavior so
+    /// current workflow topology is unchanged.
+    pub route_plan_path: Option<PathBuf>,
     /// Explicit opt-in that this run inspects the STAGED tree (`git
     /// write-tree`), never the working tree (issue #3786). Required for
     /// `GateTier::Commit` — see `run()`'s early validation — so an agent
@@ -681,6 +697,7 @@ impl Default for GateRunnerConfig {
             fail_fast: false,
             parallel: false,
             verbose: false,
+            route_plan_path: None,
             staged: false,
         }
     }
@@ -1527,6 +1544,108 @@ fn run_gate_plan(
     let log_dir = root.join("target/receipts/logs");
     fs::create_dir_all(&log_dir).context("Failed to create log directory")?;
 
+    // #9156: consume and validate the canonical plan/row identity BEFORE any
+    // gate executes — subject, selection symmetry, and row execution
+    // identity are bound to this invocation here — then emit exactly one
+    // normalized result per planned `run` row. Unset keeps legacy behavior
+    // (topology unchanged).
+    let routed_gate_plan = config
+        .route_plan_path
+        .as_deref()
+        .map(|plan_path| -> Result<(xtask::ci_route_plan::CiRoutePlanV1, PathBuf)> {
+            let compiled = routed_result_adapter::load_compiled_plan(plan_path)?;
+            // A commit-tier run requires --staged with a staged index, which
+            // the route plan's clean-tree binding refuses — the two contracts
+            // cannot both hold, so routed commit runs are refused explicitly
+            // instead of being silently restricted to a trivial empty index
+            // (review thread FC-STAGED-CLEAN-TREE).
+            if matches!(config.tier, GateTier::Commit) {
+                bail!(
+                    "--route-plan does not support --tier commit: commit tier requires --staged \
+                     with a staged index, which the route plan's clean-tree binding refuses; \
+                     run commit tier without --route-plan"
+                );
+            }
+            let actual_head_sha = cmd!("git", "rev-parse", "HEAD")
+                .dir(&root)
+                .read()
+                .map_err(|error| eyre!("resolving HEAD to bind the route plan subject: {error}"))?
+                .trim()
+                .to_string();
+            routed_result_adapter::ensure_plan_subject_matches_invocation(
+                &compiled,
+                &actual_head_sha,
+            )?;
+            let subject_path = config.subject.as_deref().ok_or_else(|| {
+                eyre!(
+                    "--route-plan requires --subject so the complete immutable subject \
+                     digest can be rebound before execution"
+                )
+            })?;
+            routed_result_adapter::ensure_plan_subject_matches_receipt(
+                &compiled,
+                subject_path,
+                &root,
+            )?;
+            let tracked_status =
+                cmd!("git", "status", "--porcelain=v1").dir(&root).read().map_err(|error| {
+                    eyre!("checking the execution tree for route-plan binding: {error}")
+                })?;
+            routed_result_adapter::ensure_execution_tree_is_clean(&tracked_status)?;
+            let selected_gates: Vec<&GateDefinition> =
+                plan.selected.iter().map(|planned| &planned.gate).collect();
+            routed_result_adapter::ensure_plan_covers_selection(
+                &compiled,
+                &selected_gates,
+                config.verbose,
+            )?;
+            // Resolve the runner's actual selection base exactly the way
+            // `plan_gates` resolves it (subject scope, then --base, then the
+            // ambient scope default), and require the plan to match it
+            // unconditionally: skipping the comparison when --base is absent
+            // would let a foreign-base plan publish under selection
+            // authority that did not govern the run (review threads P1
+            // timing / FC-SELECTION-BASE-OPTIONAL-SKIP).
+            let subject_scope_for_base = config
+                .subject
+                .as_deref()
+                .map(|path| ci_scope::scope_from_subject(&root, path))
+                .transpose()?;
+            let selection_base = subject_scope_for_base
+                .as_ref()
+                .map(|scope| scope.base.clone())
+                .or_else(|| config.base_ref.clone())
+                .unwrap_or_else(|| select_scope_base(&root));
+            let resolved_base = cmd!(
+                "git",
+                "rev-parse",
+                "--verify",
+                format!("{selection_base}^{{commit}}")
+            )
+            .dir(&root)
+            .read()
+            .map(|sha| sha.trim().to_string())
+            .map_err(|error| {
+                eyre!(
+                    "resolving the selection base {selection_base} to bind the route plan: {error}"
+                )
+            })?;
+            routed_result_adapter::ensure_plan_authority_matches_invocation(
+                &compiled,
+                &config.tier,
+                &resolved_base,
+            )?;
+            let output_dir = root.join(routed_result_adapter::ROUTED_RESULTS_DIR);
+            fs::create_dir_all(&output_dir).context("Failed to create routed-results directory")?;
+            Ok((compiled, output_dir))
+        })
+        .transpose()?;
+    let routed_hosted_identity = if routed_gate_plan.is_some() {
+        routed_result_adapter::collect_hosted_identity()?
+    } else {
+        None
+    };
+
     // Run each gate
     let mut results: Vec<GateResult> = Vec::new();
     let mut tier_summaries: HashMap<String, TierSummary> = HashMap::new();
@@ -1546,6 +1665,13 @@ fn run_gate_plan(
 
     for (idx, planned_gate) in plan.selected.iter().enumerate() {
         let gate = &planned_gate.gate;
+        if routed_gate_plan.is_some() {
+            let status =
+                cmd!("git", "status", "--porcelain=v1").dir(&root).read().map_err(|error| {
+                    eyre!("checking the execution tree before the next route-plan gate: {error}")
+                })?;
+            routed_result_adapter::ensure_execution_tree_is_clean(&status)?;
+        }
         emit_gate_begin(gate);
         if let Some(ref pb) = spinner {
             pb.set_position(idx as u64);
@@ -1555,6 +1681,24 @@ fn run_gate_plan(
         let result =
             run_single_gate(gate, policy, &log_dir, config, plan.staged_tree_oid.as_deref())?;
         emit_gate_end(gate, &result);
+
+        // One executed planned `run` row -> one normalized result (#9156).
+        // A quarantined gate is selected but never executes, so it has no
+        // planned run row and no result to attribute.
+        if let Some((compiled, output_dir)) = &routed_gate_plan
+            && !routed_result_adapter::is_quarantine_skipped(gate, config.verbose)
+        {
+            routed_result_adapter::emit_planned_run_row_result(
+                compiled,
+                gate,
+                &result,
+                &root,
+                &root.join("target/receipts"),
+                output_dir,
+                routed_hosted_identity.clone(),
+            )
+            .with_context(|| format!("normalized routed-gate result failed for {}", gate.name))?;
+        }
 
         // Update tier summary
         let tier_summary = tier_summaries.entry(gate.tier.clone()).or_default();
@@ -2040,6 +2184,7 @@ fn run_single_gate(
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: false,
         });
     }
 
@@ -2199,6 +2344,7 @@ fn run_single_gate(
                     Some(gate.artifacts.clone())
                 },
                 first_failure,
+                command_started: true,
             })
         }
         Err(e) => {
@@ -2229,6 +2375,10 @@ fn run_single_gate(
                 metrics,
                 artifacts: None,
                 first_failure: None,
+                // The shell failure carries whether the child spawned before
+                // the failure, so a post-start error is never published as
+                // never-started (review thread FC-ADAPTER-ERROR-FLATTEN).
+                command_started: e.child_started,
             })
         }
     }
@@ -2246,18 +2396,27 @@ pub(crate) struct ShellExecutionResult {
 struct ShellExecutionFailure {
     message: String,
     test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
+    /// Whether the child process spawned before the failure: pre-spawn
+    /// configuration or spawn errors never started the command, while
+    /// post-spawn wait/trailer failures did (review thread
+    /// FC-ADAPTER-ERROR-FLATTEN).
+    child_started: bool,
 }
 
 impl ShellExecutionFailure {
     fn new(
-        error: color_eyre::Report,
+        error: GateShellError,
         test_execution_reached_attempts: Vec<TestExecutionAttemptEvidence>,
     ) -> Self {
-        Self { message: format!("{error:#}"), test_execution_reached_attempts }
+        Self {
+            message: format!("{:#}", error.report),
+            test_execution_reached_attempts,
+            child_started: error.child_started,
+        }
     }
 
     fn message(message: String) -> Self {
-        Self { message, test_execution_reached_attempts: Vec::new() }
+        Self { message, test_execution_reached_attempts: Vec::new(), child_started: false }
     }
 }
 
@@ -2328,8 +2487,12 @@ fn run_shell_command_with_retries(
                 total_attempts,
                 "watchdog timeout",
             )
-            .map_err(|error| {
-                ShellExecutionFailure::new(error, test_execution_reached_attempts.clone())
+            .map_err(|error| ShellExecutionFailure {
+                message: format!("{error:#}"),
+                test_execution_reached_attempts: test_execution_reached_attempts.clone(),
+                // The command executed (it timed out); only its log trailer
+                // write failed (review thread FC-ADAPTER-ERROR-FLATTEN).
+                child_started: true,
             })?;
             execution.stdout.push_str(&trailer);
             if attempt < total_attempts {
@@ -2354,8 +2517,12 @@ fn run_shell_command_with_retries(
             };
             let trailer =
                 append_retry_trailer(log_path, gate_name, attempt, total_attempts, &outcome)
-                    .map_err(|error| {
-                        ShellExecutionFailure::new(error, test_execution_reached_attempts.clone())
+                    .map_err(|error| ShellExecutionFailure {
+                        message: format!("{error:#}"),
+                        test_execution_reached_attempts: test_execution_reached_attempts.clone(),
+                        // The command executed; only its log trailer write
+                        // failed (review thread FC-ADAPTER-ERROR-FLATTEN).
+                        child_started: true,
                     })?;
             execution.stdout.push_str(&trailer);
         }
@@ -2401,11 +2568,34 @@ const MAX_GATE_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 /// exact per-child timeout semantics the gate runner enforces (GNU `timeout`
 /// wrapping plus the Rust watchdog backstop) instead of a second, drifting
 /// implementation.
+/// Shell execution failure carrying whether the child process had spawned
+/// when the error occurred: pre-spawn errors (log setup, spawn) never
+/// started the command, post-spawn errors (wait) did. The routed adapter
+/// binds this start state so a post-start `error` is never published as
+/// never-started (review thread FC-ADAPTER-ERROR-FLATTEN).
+#[derive(Debug)]
+pub(crate) struct GateShellError {
+    pub(crate) report: color_eyre::Report,
+    pub(crate) child_started: bool,
+}
+
+impl From<GateShellError> for color_eyre::Report {
+    fn from(error: GateShellError) -> Self {
+        error.report
+    }
+}
+
+impl std::fmt::Display for GateShellError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:#}", self.report)
+    }
+}
+
 pub(crate) fn run_shell_command_with_timeout(
     command: &str,
     log_path: &Path,
     timeout_secs: u64,
-) -> Result<ShellExecutionResult> {
+) -> Result<ShellExecutionResult, GateShellError> {
     run_shell_command_with_timeout_in(command, log_path, timeout_secs, None)
 }
 
@@ -2418,12 +2608,17 @@ pub(crate) fn run_shell_command_with_timeout_in(
     log_path: &Path,
     timeout_secs: u64,
     current_dir: Option<&Path>,
-) -> Result<ShellExecutionResult> {
+) -> Result<ShellExecutionResult, GateShellError> {
+    // Everything before a successful spawn is a pre-start error: the command
+    // never ran.
+    let child_started = false;
     let log_file = fs::File::create(log_path)
-        .with_context(|| format!("Failed to create log file: {}", log_path.display()))?;
+        .with_context(|| format!("Failed to create log file: {}", log_path.display()))
+        .map_err(|report| GateShellError { report, child_started })?;
     let log_file_err = log_file
         .try_clone()
-        .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))?;
+        .with_context(|| format!("Failed to clone log file handle: {}", log_path.display()))
+        .map_err(|report| GateShellError { report, child_started })?;
 
     let mut process = shell_command_process(command, timeout_secs);
     if let Some(dir) = current_dir {
@@ -2433,8 +2628,11 @@ pub(crate) fn run_shell_command_with_timeout_in(
         .stdout(Stdio::from(log_file))
         .stderr(Stdio::from(log_file_err))
         .spawn()
-        .with_context(|| format!("Failed to spawn gate command: {command}"))?;
+        .with_context(|| format!("Failed to spawn gate command: {command}"))
+        .map_err(|report| GateShellError { report, child_started })?;
 
+    // From here on the child exists: any failure is post-start.
+    let child_started = true;
     let start = Instant::now();
     let mut last_heartbeat = start;
     let timeout = shell_command_watchdog_timeout(timeout_secs);
@@ -2444,7 +2642,11 @@ pub(crate) fn run_shell_command_with_timeout_in(
     // wait() a second time (which would be a double-wait and returns an error
     // on Windows). Synthetic exit code 124 follows the GNU timeout(1) convention.
     let (watchdog_timed_out, exit_code) = loop {
-        if let Some(status) = child.try_wait().context("Failed waiting on gate process")? {
+        if let Some(status) = child
+            .try_wait()
+            .context("Failed waiting on gate process")
+            .map_err(|report| GateShellError { report, child_started })?
+        {
             break (false, status.code().unwrap_or(-1));
         }
         if start.elapsed() >= timeout {
@@ -2618,6 +2820,9 @@ fn run_internal_xtask_gate(
         metrics: None,
         artifacts: if gate.artifacts.is_empty() { None } else { Some(gate.artifacts.clone()) },
         first_failure: None,
+        // The in-process closure ran: even a "fail" or "error" outcome here
+        // is post-start activity (review thread FC-ADAPTER-ERROR-FLATTEN).
+        command_started: true,
     })
 }
 
@@ -2678,6 +2883,10 @@ fn run_internal_commit_check(
         metrics: None,
         artifacts: if gate.artifacts.is_empty() { None } else { Some(gate.artifacts.clone()) },
         first_failure: None,
+        // The in-process closure ran: even an "error" outcome here (render
+        // failure, check error) is post-start activity (review thread
+        // FC-ADAPTER-ERROR-FLATTEN).
+        command_started: true,
     })
 }
 
@@ -3477,6 +3686,7 @@ mod tests {
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: status != "skip",
         }
     }
 
@@ -5808,6 +6018,7 @@ gates:
             metrics: None,
             artifacts: None,
             first_failure: None,
+            command_started: status != "skip",
         })
     }
 
@@ -6363,6 +6574,7 @@ gates:
             metrics: Some(metrics),
             artifacts: None,
             first_failure: None,
+            command_started: true,
         });
         receipt
     }
@@ -6678,6 +6890,7 @@ error: aborting due to previous error
                 message: Some("assertion failed".to_string()),
                 exit_code: 101,
             }),
+            command_started: true,
         };
         let json = serialize_json(&result, "should serialize");
         let roundtripped: GateResult = deserialize_json(&json, "should deserialize");

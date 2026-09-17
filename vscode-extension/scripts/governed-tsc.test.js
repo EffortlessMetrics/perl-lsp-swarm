@@ -160,9 +160,22 @@ void test('a real type error exits nonzero through the seam (type failure blocks
       args: ['-p', path.join(fixtureDir, 'tsconfig.json')],
       reporter: captureReporter(),
       authorityCheck: GREEN_AUTHORITY,
+      // Piped, not inherited: this negative-path fixture's diagnostics must
+      // stay inside the test's proof. Inherited stdio leaks the fixture's
+      // `error TS…` line to the hosted runner, whose tsc problem matcher turns
+      // it into an unattributed `##[error]` annotation on every run — the
+      // false "type error" signal behind #15609.
+      spawnChild: (command, argv) => spawnPinnedTsc(command, argv, { stdio: 'pipe' }),
     });
     assert.equal(result.spawned, true);
     assert.notEqual(result.code, 0, 'a type error must fail the governed compile');
+    // The compiler may pretty-print diagnostics with ANSI color, which splits
+    // the diagnostic text; strip it before matching.
+    const plainOutput = (result.childOutput ?? '').replace(/\x1B\[[0-9;]*m/g, '');
+    assert.ok(
+      plainOutput.includes('error TS2322'),
+      'the nonzero exit is the fixture type error, not an infrastructure failure',
+    );
   } finally {
     fs.rmSync(fixtureDir, { recursive: true, force: true });
   }

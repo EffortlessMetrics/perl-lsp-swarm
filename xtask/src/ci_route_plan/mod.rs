@@ -29,7 +29,10 @@ mod validate;
 
 pub use canonical::{CanonicalPayload, FINGERPRINT_DOMAIN, SemanticProjection};
 
-use canonical::deserialize_option_reject_null;
+// Shared canonical-encoding seam: `routed_gate_result.v1` (#9156) reuses the
+// exact same byte writer and null-rejecting optional deserializer so the two
+// versioned payloads share one encoding authority instead of drifting.
+pub(crate) use canonical::{canonical_json, deserialize_option_reject_null};
 pub use validate::KNOWN_PROFILES;
 
 use serde::{Deserialize, Serialize};
