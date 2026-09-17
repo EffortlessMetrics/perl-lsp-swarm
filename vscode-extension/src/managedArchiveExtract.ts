@@ -1,11 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { pipeline } from 'stream/promises';
-import { Transform } from 'stream';
+import { Transform, type Readable } from 'stream';
 import * as zlib from 'zlib';
-import AdmZip from 'adm-zip';
 import { Parser } from 'tar';
 import type { ReadEntry } from 'tar';
+import yauzl from 'yauzl';
 import type { CancellationTokenLike } from './boundedHttpJson';
 import {
   caseFoldIdentity,
@@ -26,6 +26,7 @@ const UNIX_S_IFMT = 0xf000;
 const UNIX_S_IFDIR = 0x4000;
 const UNIX_S_IFREG = 0x8000;
 const UNIX_MADE_UNIX = 3;
+const DOS_FILE_ATTRIBUTE_DIRECTORY = 0x10;
 const DOS_FILE_ATTRIBUTE_DEVICE = 0x40;
 const DOS_FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
 
@@ -216,27 +217,30 @@ function selectExecutables(
   return { server, dap: daps[0] ?? null };
 }
 
-function zipUnixMode(entry: { header: { made: number }; attr: number }): number | null {
-  const made = Math.floor(entry.header.made / 256);
+function zipUnixMode(
+  entry: Pick<yauzl.Entry, 'versionMadeBy' | 'externalFileAttributes'>,
+): number | null {
+  const made = Math.floor(entry.versionMadeBy / 256);
   if (made !== UNIX_MADE_UNIX) {
     return null;
   }
-  return (entry.attr >>> 16) & 0xffff;
+  return (entry.externalFileAttributes >>> 16) & 0xffff;
 }
 
-function classifyZipEntry(entry: {
-  isDirectory: boolean;
-  header: { made: number };
-  attr: number;
-}): 'file' | 'directory' | 'link' | 'special' {
-  if (entry.isDirectory) {
+function classifyZipEntry(
+  entry: Pick<yauzl.Entry, 'fileName' | 'versionMadeBy' | 'externalFileAttributes'>,
+): 'file' | 'directory' | 'link' | 'special' {
+  if (entry.fileName.endsWith('/')) {
     return 'directory';
   }
-  if ((entry.attr & DOS_FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
+  if ((entry.externalFileAttributes & DOS_FILE_ATTRIBUTE_REPARSE_POINT) !== 0) {
     return 'link';
   }
-  if ((entry.attr & DOS_FILE_ATTRIBUTE_DEVICE) !== 0) {
+  if ((entry.externalFileAttributes & DOS_FILE_ATTRIBUTE_DEVICE) !== 0) {
     return 'special';
+  }
+  if ((entry.externalFileAttributes & DOS_FILE_ATTRIBUTE_DIRECTORY) !== 0) {
+    return 'directory';
   }
   const mode = zipUnixMode(entry);
   if (mode === null) {
@@ -265,7 +269,7 @@ function zipCentralDirectoryBudget(limits: ManagedArchiveSafetyLimits): number {
 
 /**
  * Reject oversized zip membership from the End of Central Directory before
- * AdmZip materializes every ZipEntry. ZIP64 (0xFFFF/0xFFFFFFFF sentinels) is
+ * the reader materializes every entry. ZIP64 (0xFFFF/0xFFFFFFFF sentinels) is
  * fail-closed: current managed Windows artifacts are not ZIP64, and those
  * sentinels are how a multi-million-entry zip bomb is declared.
  */
@@ -313,21 +317,58 @@ function preflightZipMembership(archivePath: string, limits: ManagedArchiveSafet
   }
 }
 
-function inspectZip(
+async function openManagedZip(archivePath: string): Promise<yauzl.ZipFile> {
+  return yauzl.openPromise(archivePath, {
+    lazyEntries: true,
+    decodeStrings: true,
+    strictFileNames: true,
+    validateEntrySizes: true,
+  });
+}
+
+function rethrowZipError(error: unknown): never {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.startsWith('invalid relative path:') ||
+    message.startsWith('invalid characters in fileName:') ||
+    message.startsWith('absolute path:')
+  ) {
+    throw new Error(
+      `unsafe archive member path: ${message.slice(message.indexOf(':') + 1).trim()}`,
+    );
+  }
+  throw error instanceof Error ? error : new Error(message);
+}
+
+async function inspectZip(
   archivePath: string,
   windows: boolean,
   limits: ManagedArchiveSafetyLimits,
-): InspectedArchive {
+  token: CancellationTokenLike | undefined,
+): Promise<InspectedArchive> {
   preflightZipMembership(archivePath, limits);
-  const zip = new AdmZip(archivePath);
+  const zip = await openManagedZip(archivePath);
   const members: InspectedMember[] = [];
-  for (const entry of zip.getEntries()) {
-    if (members.length >= limits.maxEntries) {
-      throw new Error(`archive exceeds ${limits.maxEntries} entries`);
+  try {
+    for await (const entry of zip.eachEntry()) {
+      throwIfCancelled(token, 'Archive extraction cancelled');
+      if (members.length >= limits.maxEntries) {
+        throw new Error(`archive exceeds ${limits.maxEntries} entries`);
+      }
+      members.push(
+        inspectMember(
+          entry.fileName,
+          entry.uncompressedSize,
+          classifyZipEntry(entry),
+          windows,
+          limits,
+        ),
+      );
     }
-    members.push(
-      inspectMember(entry.entryName, entry.header.size, classifyZipEntry(entry), windows, limits),
-    );
+  } catch (error) {
+    rethrowZipError(error);
+  } finally {
+    zip.close();
   }
   const selected = selectExecutables(members, limits);
   return { members, server: selected.server, dap: selected.dap };
@@ -431,62 +472,121 @@ function writeBoundedBuffer(
   return data.length;
 }
 
-function inflateZipEntry(
-  entry: { entryName: string; header: { method: number }; getCompressedData: () => Buffer },
+async function readZipEntryBounded(
+  zip: yauzl.ZipFile,
+  entry: yauzl.Entry,
   remaining: number,
   maxEntryBytes: number,
-): Buffer {
-  const method = entry.header.method;
-  const compressed = entry.getCompressedData();
-  const budget = Math.min(remaining, maxEntryBytes);
-  if (method === ZIP_STORE) {
-    if (compressed.length > budget) {
-      throw new Error(`archive entry exceeds ${maxEntryBytes} bytes: ${entry.entryName}`);
-    }
-    return compressed;
+  token: CancellationTokenLike | undefined,
+): Promise<Buffer> {
+  if (entry.compressionMethod !== ZIP_STORE && entry.compressionMethod !== ZIP_DEFLATE) {
+    throw new Error(
+      `unsupported zip compression method ${entry.compressionMethod}: ${entry.fileName}`,
+    );
   }
-  if (method === ZIP_DEFLATE) {
-    try {
-      return zlib.inflateRawSync(compressed, { maxOutputLength: budget });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `archive entry exceeds ${maxEntryBytes} bytes: ${entry.entryName} (${message})`,
-      );
+  throwIfCancelled(token, 'Archive extraction cancelled');
+  let cancelled = token?.isCancellationRequested ?? false;
+  let stream: Readable | undefined;
+  let rejectCancellation: ((reason: Error) => void) | undefined;
+  const cancellationPromise = token
+    ? new Promise<never>((_, reject) => {
+        rejectCancellation = reject;
+      })
+    : undefined;
+  const cancellationDisposable = token?.onCancellationRequested(() => {
+    cancelled = true;
+    stream?.destroy();
+    rejectCancellation?.(new Error('Archive extraction cancelled'));
+  });
+  try {
+    const openedStream = zip.openReadStreamPromise(entry).then((opened) => {
+      stream = opened;
+      if (cancelled || token?.isCancellationRequested) {
+        opened.destroy();
+      }
+      return opened;
+    });
+    stream = await (cancellationPromise
+      ? Promise.race([openedStream, cancellationPromise])
+      : openedStream);
+    if (cancelled || token?.isCancellationRequested) {
+      stream.destroy();
+      throw new Error('Archive extraction cancelled');
     }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of stream as AsyncIterable<Buffer | Uint8Array>) {
+      if (cancelled || token?.isCancellationRequested) {
+        stream.destroy();
+        throw new Error('Archive extraction cancelled');
+      }
+      const data = Buffer.from(chunk);
+      total += data.length;
+      if (total > maxEntryBytes || total > remaining) {
+        stream.destroy();
+        throw new Error(`archive entry exceeds ${maxEntryBytes} bytes: ${entry.fileName}`);
+      }
+      chunks.push(data);
+    }
+    if (cancelled || token?.isCancellationRequested) {
+      throw new Error('Archive extraction cancelled');
+    }
+    return Buffer.concat(chunks, total);
+  } catch (error) {
+    if (cancelled || token?.isCancellationRequested) {
+      throw new Error('Archive extraction cancelled');
+    }
+    throw error;
+  } finally {
+    cancellationDisposable?.dispose();
   }
-  throw new Error(`unsupported zip compression method ${method}: ${entry.entryName}`);
 }
 
-function extractZipMembers(
+async function extractZipMembers(
   archivePath: string,
   extractDir: string,
   inspected: InspectedArchive,
   windows: boolean,
   limits: ManagedArchiveSafetyLimits,
-): ExtractedManagedArchive {
-  const zip = new AdmZip(archivePath);
-  const byName = new Map(zip.getEntries().map((entry) => [entry.entryName, entry]));
+  token: CancellationTokenLike | undefined,
+): Promise<ExtractedManagedArchive> {
+  const zip = await openManagedZip(archivePath);
   let remaining = limits.maxUncompressedBytes;
-
-  const writeMember = (member: InspectedMember, destName: string): string => {
-    const entry = byName.get(member.originalName);
-    if (entry === undefined) {
-      throw new Error(`archive member missing at extract time: ${member.originalName}`);
+  let serverPath: string | null = null;
+  let dapPath: string | null = null;
+  try {
+    for await (const entry of zip.eachEntry()) {
+      throwIfCancelled(token, 'Archive extraction cancelled');
+      let destName: string | null = null;
+      if (entry.fileName === inspected.server.originalName) {
+        destName = installedServerBasename(windows);
+      } else if (inspected.dap !== null && entry.fileName === inspected.dap.originalName) {
+        destName = installedDapBasename(windows);
+      }
+      if (destName === null) {
+        continue;
+      }
+      const data = await readZipEntryBounded(zip, entry, remaining, limits.maxEntryBytes, token);
+      const destPath = path.join(extractDir, destName);
+      remaining -= writeBoundedBuffer(destPath, data, remaining, limits.maxEntryBytes);
+      if (destName === installedServerBasename(windows)) {
+        serverPath = destPath;
+      } else {
+        dapPath = destPath;
+      }
     }
-    const data = inflateZipEntry(entry, remaining, limits.maxEntryBytes);
-    remaining -= writeBoundedBuffer(
-      path.join(extractDir, destName),
-      data,
-      remaining,
-      limits.maxEntryBytes,
-    );
-    return path.join(extractDir, destName);
-  };
-
-  const serverPath = writeMember(inspected.server, installedServerBasename(windows));
-  const dapPath =
-    inspected.dap === null ? null : writeMember(inspected.dap, installedDapBasename(windows));
+  } catch (error) {
+    rethrowZipError(error);
+  } finally {
+    zip.close();
+  }
+  throwIfCancelled(token, 'Archive extraction cancelled');
+  if (serverPath === null) {
+    throw new Error(`archive member missing at extract time: ${inspected.server.originalName}`);
+  }
+  if (inspected.dap !== null && dapPath === null) {
+    throw new Error(`archive member missing at extract time: ${inspected.dap.originalName}`);
+  }
   return {
     serverPath,
     dapPath,
@@ -586,13 +686,20 @@ export async function extractManagedArchive(
   try {
     const inspected =
       format === 'zip'
-        ? inspectZip(archivePath, windows, limits)
+        ? await inspectZip(archivePath, windows, limits, cancellationToken)
         : await inspectTar(archivePath, windows, limits, cancellationToken);
 
     throwIfCancelled(cancellationToken, 'Archive extraction cancelled');
 
     if (format === 'zip') {
-      return extractZipMembers(archivePath, extractDir, inspected, windows, limits);
+      return await extractZipMembers(
+        archivePath,
+        extractDir,
+        inspected,
+        windows,
+        limits,
+        cancellationToken,
+      );
     }
     return await extractTarMembers(
       archivePath,

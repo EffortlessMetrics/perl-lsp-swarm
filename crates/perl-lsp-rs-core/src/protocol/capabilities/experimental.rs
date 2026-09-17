@@ -5,7 +5,7 @@ pub(super) fn apply_experimental_features(caps: &mut ServerCapabilities, build: 
     // Type hierarchy via experimental: lsp-types 0.97 lacks a `type_hierarchy_provider`
     // field on `ServerCapabilities`. We advertise it via `experimental` so that
     // `capabilities_for()` users and `feature_ids_from_caps` can detect the capability.
-    // The `handle_initialize` response also injects it at the top-level for clients.
+    // The `handle_initialize` response includes this under `capabilities.experimental`.
     if build.type_hierarchy {
         insert_experimental_capability(caps, "typeHierarchyProvider", serde_json::json!(true));
     }

@@ -209,5 +209,5 @@ That rail does change `TextDocumentSyncKind` semantics and the parser entry poin
 
 - Umbrella issue: [#229](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/229)
 - JSON-RPC migration: [#224](https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/224) (#221 merged, #223 in flight)
-- Rails index: [`docs/project/RAILS_INDEX.md`](../project/RAILS_INDEX.md)
+- Rail planning is issue-owned; see [`docs/agents/DEVELOPMENT_METHOD.md`](../agents/DEVELOPMENT_METHOD.md)
 - Rail template: [`docs/project/RAIL_TEMPLATE.md`](../project/RAIL_TEMPLATE.md)

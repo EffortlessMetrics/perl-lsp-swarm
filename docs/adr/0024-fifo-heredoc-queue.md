@@ -170,7 +170,8 @@ sequenceDiagram
 
 - Clear documentation of statement boundary semantics
 - Comprehensive error messages with position tracking
-- Timeout enforcement for pathological heredoc nesting (5-second limit)
+- Deterministic `ParseBudget::max_heredoc_scan_bytes` budget for pathological
+  heredoc collection (#7291; replaced the former 5-second wall-clock limit)
 - Bounded recursion depth for nested heredocs (100 levels max)
 
 ## References

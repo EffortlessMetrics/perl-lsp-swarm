@@ -14,7 +14,33 @@ Otherwise return to `build-candidate`. Draft only for a named remote-only proof,
 
 For an existing draft, inspect the named condition. Once complete, recheck the entire ready threshold and explicitly mark the PR ready through Claude's native GitHub surface or `gh pr ready <n>`. Do not leave a completed draft in a repeating `DRAFT` state. If the threshold is no longer met, return to candidate repair rather than marking ready.
 
-Use the PR body as a review index covering claim, issue, contract, production path, proof, hardening, simplification, deviations, limits, risk, rollback, and review locations.
+## PR review index
+
+Proportionality mirrors `review-pr`'s carve-out: a mechanical candidate — generated
+regeneration, lint-site collapse, allowlist row removal, or comment-only edits — may
+publish a reduced index of **Claim**, **Proof**, and **Non-goals**. The full index
+remains the default for anything crossing a production seam.
+
+The order is load-bearing: establish claim and authority before proof; trace the changed
+production path; record focused and affected proof with `pass` / `fail` / `not-run` /
+`NOT_PROVEN`; challenge a realistic wrong implementation with negative, stale,
+failure, recovery, or opposite-direction controls; simplify before publication; bound
+the claim and non-goals; then name risk, rollback, and review locations.
+
+```markdown
+## Claim
+## Controlling issue
+## Governing contract
+## Changed production path
+## Proof
+## Test hardening
+## Simplification
+## Deviations
+## Claim Boundary
+## Non-goals
+## Risk and rollback
+## Review index
+```
 
 ## Enforcement status is part of the claim
 
@@ -36,11 +62,13 @@ by the author's next force-push, and the author's local head and the PR head div
 without either party noticing. All three are expensive precisely because the branch
 still looks like one coherent candidate.
 
-If a reviewer has already pushed, do not race it. Read what landed, verify it against
-observed behavior rather than assuming it is correct, and either adopt it — restating
-the proof, since a reviewer's push carries none — or replace it and say why in the
-thread. Step 8 of `address-review-comments` covers the same case: a reviewer-applied
-repair makes a new authored candidate whose affected review dimensions are invalid.
+Where another context has already pushed, first establish one writer before recovery
+mutation. That writer inspects and verifies the foreign change, fast-forwards when
+possible, and merges a true divergence so both published tips remain ancestors.
+Unwanted behavior is repaired with a new commit and an explanation in the thread;
+do not rebase away or force-push over a foreign commit. Applicable user and repository
+authorization still governs the operation. Re-prove the affected dimensions and
+refresh the affected review; a second writer receives no recovery exception.
 
 Recreating a closed PR is a different matter, and the first move is to try reopening
 it. A closed PR whose head and base branches both still exist normally reopens even

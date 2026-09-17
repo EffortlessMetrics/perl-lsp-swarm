@@ -286,7 +286,7 @@ fn check_reports_recovered_parse_errors() -> Result<(), Box<dyn std::error::Erro
 fn check_reports_fatal_and_earlier_recovered_errors() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let file = dir.path().join("mixed_fatal.pl");
-    // A recoverable error first, then nesting past the parser's depth limit.
+    // A recoverable error first, then expression recursion past the parser's limit.
     let source = format!("my $x = ;\nmy $y = {}1{};\n", "(".repeat(300), ")".repeat(300));
     std::fs::write(&file, source)?;
     let file_str = file.to_str().ok_or("non-UTF-8 temp path")?;
@@ -297,7 +297,8 @@ fn check_reports_fatal_and_earlier_recovered_errors() -> Result<(), Box<dyn std:
         .assert()
         .failure()
         // the fatal condition
-        .stdout(predicates::str::contains("Nesting depth limit exceeded"))
+        .stdout(predicates::str::contains("Recursion depth limit exceeded: 129 > 128"))
+        .stdout(predicates::str::contains("Nesting depth limit exceeded").not())
         // and the earlier recoverable one, which the old code dropped
         .stdout(predicates::str::contains("Missing operand"));
 
