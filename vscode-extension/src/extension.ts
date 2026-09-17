@@ -19,6 +19,13 @@ import { PerlTestAdapter } from './testAdapter';
 import { activateDebugger, rewriteTestLensCommand } from './debugAdapter';
 import { BinaryDownloader, parseLocalVersion } from './downloader';
 import {
+  isPerlLanguageId,
+  isSupportedPerlUriScheme,
+  loadPerlAliasLanguageConfiguration,
+  PERL_ALIAS_LANGUAGE_ID,
+  perlDocumentSelector,
+} from './languageIdentity';
+import {
   acquireLaunchManagedCandidateReference,
   mayReleaseManagedCandidateReferences,
   releaseManagedCandidateSessionReferences,
@@ -581,7 +588,7 @@ export async function runPerlCriticOnActiveFile(
   }
   const channel = outputChannel;
   const editor = vscode.window.activeTextEditor;
-  if (!editor || editor.document.languageId !== 'perl') {
+  if (!editor || !isPerlLanguageId(editor.document.languageId)) {
     vscode.window.showErrorMessage('No active Perl file to run Critic on');
     return;
   }
@@ -841,6 +848,29 @@ function isActivationPhase(value: string): value is ActivationPhase {
   return (ACTIVATION_PHASES as readonly string[]).includes(value);
 }
 
+/**
+ * Register the canonical editing rules for the `perl5` alias (#7699).
+ *
+ * Returns the registration disposable, or undefined when the packaged
+ * configuration cannot be read: activation proceeds with editor-default
+ * alias editing rather than failing. Owned by the activation attempt so
+ * rollback disposes it with everything else.
+ */
+function registerPerlAliasLanguageConfiguration(
+  extensionPath: string,
+): vscode.Disposable | undefined {
+  const config = loadPerlAliasLanguageConfiguration(extensionPath, (file) =>
+    fs.readFileSync(file, 'utf-8'),
+  );
+  if (!config) {
+    return undefined;
+  }
+  return vscode.languages.setLanguageConfiguration(
+    PERL_ALIAS_LANGUAGE_ID,
+    config as vscode.LanguageConfiguration,
+  );
+}
+
 async function runExtensionActivation(
   context: vscode.ExtensionContext,
   activation: ExtensionActivationOwner,
@@ -880,6 +910,15 @@ async function runExtensionActivation(
     // reported rather than swallowed, and the published state stays empty.
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.error(`[configuration-migration] initial read failed: ${message}`);
+  }
+  // Alias editing parity (#7699): buffers classified `perl5` by another
+  // extension get highlighting from the grammar binding, but comments,
+  // brackets, indentation, and word selection fall back to editor defaults
+  // unless the canonical rules are registered for the alias. Programmatic
+  // registration (no second contributes.languages) disposed with the attempt.
+  const aliasLanguageDisposable = registerPerlAliasLanguageConfiguration(context.extensionPath);
+  if (aliasLanguageDisposable) {
+    activation.own('base', 'optional_degradable', aliasLanguageDisposable);
   }
   // The generic MCP passthrough is runtime-inert (#7119), so this domain is no
   // longer activation-critical: it registers nothing and returns no disposable.
@@ -1092,7 +1131,7 @@ async function runExtensionActivation(
           const mode = widget?.mode ?? 'starting';
           const hasLiveServer = mode === 'running' || mode === 'indexing';
           const activeEditor = vscode.window.activeTextEditor;
-          const activePerlDocument = activeEditor?.document.languageId === 'perl';
+          const activePerlDocument = isPerlLanguageId(activeEditor?.document.languageId);
           return {
             mode,
             ...(hasLiveServer && widget?.version !== undefined ? { version: widget.version } : {}),
@@ -2031,8 +2070,7 @@ async function finalizeStartedLanguageClient(
     const openPerlDocuments = vscode.workspace.textDocuments
       .filter(
         (document) =>
-          document.languageId === 'perl' &&
-          (document.uri.scheme === 'file' || document.uri.scheme === 'untitled'),
+          isPerlLanguageId(document.languageId) && isSupportedPerlUriScheme(document.uri.scheme),
       )
       .map((document) => ({
         uri: document.uri.toString(),
@@ -2254,12 +2292,9 @@ export function createLanguageClient(serverPath: string): LanguageClient {
   const clientOptions: LanguageClientOptions = {
     connectionOptions: LANGUAGE_CLIENT_CONNECTION_OPTIONS,
     errorHandler: LANGUAGE_CLIENT_ERROR_HANDLER,
-    documentSelector: [
-      { scheme: 'file', language: 'perl' },
-      { scheme: 'untitled', language: 'perl' },
-    ],
     // v0.18 (#8129): do not override document sync. vscode-languageclient uses
     // the server's advertised TextDocumentSyncKind::Full and UTF-16 encoding.
+    documentSelector: perlDocumentSelector(),
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/.perltidyrc'),
     },
@@ -2846,7 +2881,11 @@ export function presentFormattingProviderError(
 
 export function maybeNudgeArrowCompletion(event: vscode.TextDocumentChangeEvent): void {
   const editor = vscode.window.activeTextEditor;
-  if (!editor || event.document !== editor.document || event.document.languageId !== 'perl') {
+  if (
+    !editor ||
+    event.document !== editor.document ||
+    !isPerlLanguageId(event.document.languageId)
+  ) {
     return;
   }
 
@@ -3152,7 +3191,7 @@ async function restartServerFromExplicitRecovery(context: vscode.ExtensionContex
 }
 
 function shouldFormatOnSave(document: vscode.TextDocument): boolean {
-  if (document.languageId !== 'perl') {
+  if (!isPerlLanguageId(document.languageId)) {
     return false;
   }
 

@@ -1,3 +1,5 @@
+import { isPerlLanguageId } from './languageIdentity';
+
 export interface OpenTextDocumentSnapshot {
   readonly uri: string;
   readonly languageId: string;
@@ -94,7 +96,7 @@ export async function replayOpenPerlDocuments(
   documents: readonly OpenTextDocumentSnapshot[],
 ): Promise<void> {
   for (const document of documents) {
-    if (document.languageId !== 'perl') {
+    if (!isPerlLanguageId(document.languageId)) {
       continue;
     }
 
@@ -122,7 +124,7 @@ export async function replayOpenPerlDocumentsWhenReady(
   assertCurrentGeneration(isCurrent);
 
   for (const document of documents) {
-    if (document.languageId !== 'perl') {
+    if (!isPerlLanguageId(document.languageId)) {
       continue;
     }
     assertCurrentGeneration(isCurrent);

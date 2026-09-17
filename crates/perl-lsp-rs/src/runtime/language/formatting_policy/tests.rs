@@ -329,7 +329,7 @@ fn tab_indentation_on_type_is_a_typed_refusal() -> Result<(), Box<dyn std::error
     assert_eq!(result, Some(json!([])));
     let receipt = receipt(&server)?;
     assert_eq!(receipt["decision"], "blocked");
-    assert_eq!(receipt["reason"], "unsupported_syntax");
+    assert_eq!(receipt["reason"], "tabs_requested");
     assert_eq!(receipt["result_count"], 0);
     Ok(())
 }
@@ -1446,4 +1446,42 @@ fn crlf_terminator_boundary_endpoint_refuses_before_the_engine_runs()
         "refused range formatting must never reach an external engine"
     );
     Ok(())
+}
+
+// ── #7129: no formatter mode may be a bare alias ────────────────────────────
+
+/// Recurrence check: every [`FormatterMode`] must resolve to its own engine.
+///
+/// `compat` was removed because it selected the native formatter and produced
+/// byte-identical output — a public mode naming no behavior a user could
+/// observe, choose between, or rely on. The structural property that made it
+/// indefensible is *sharing an engine with another mode*, so that is what this
+/// pins: reintroducing any alias, under any name, collapses two variants onto
+/// one engine string and fails here.
+///
+/// A genuine future compatibility profile is not blocked by this. It has to
+/// arrive with an engine identity of its own, which is exactly the evidence
+/// the bare alias never had.
+#[test]
+fn formatter_modes_resolve_to_distinct_engines() {
+    // Listed explicitly rather than derived, so adding a variant to
+    // `FormatterMode` fails to compile here and forces the author to state
+    // which engine it runs.
+    let modes = [FormatterMode::Native, FormatterMode::ExternalLegacy, FormatterMode::Off];
+
+    let mut seen: Vec<(&'static str, FormatterMode)> = Vec::new();
+    for mode in modes {
+        let engine = actual_engine_for_mode(mode);
+        if let Some((_, first)) = seen.iter().find(|(known, _)| *known == engine) {
+            assert_eq!(
+                mode, *first,
+                "{mode:?} and {first:?} both resolve to the {engine:?} engine, so one of \
+                 them is a bare alias: a public mode with no behavior of its own. Give it \
+                 a distinct engine identity or do not expose it as a mode (#7129)."
+            );
+        }
+        seen.push((engine, mode));
+    }
+
+    assert_eq!(seen.len(), modes.len(), "every formatter mode must be classified");
 }

@@ -2523,12 +2523,20 @@ fn score_navigation_goto_definition(
     score.goto_definition_expected_count += 1;
 
     let cursor_offset = navigation_cursor_offset(source, expectation)?;
+    // Resolve the legacy location BEFORE entering the callback: the cutover
+    // path must not re-enter `WorkspaceIndex` while
+    // `with_semantic_queries_for_uri` holds its read guards (#15644).
+    let legacy_location = index.find_definition(&expectation.symbol);
     let actual_spans = index
         .with_semantic_queries_for_uri(source_path_text, |file_id, semantic_queries| {
             let context = QueryContext::new(file_id, None, cursor_offset);
             let query_start = Instant::now();
-            let outcome =
-                goto_definition_cutover(index, &semantic_queries, &expectation.symbol, &context);
+            let outcome = goto_definition_cutover(
+                legacy_location,
+                &semantic_queries,
+                &expectation.symbol,
+                &context,
+            );
             score.definition_query_micros.push(query_start.elapsed().as_micros() as u64);
             definition_result_spans(index_source, &outcome.result, anchors_by_id)
         })
@@ -2562,11 +2570,19 @@ fn score_navigation_references(
 
     let entity_id = resolve_navigation_entity_id(shard, &expectation.symbol)
         .with_context(|| format!("resolving navigation entity for {}", expectation.id))?;
+    // Resolve the legacy locations BEFORE entering the callback: the cutover
+    // path must not re-enter `WorkspaceIndex` while
+    // `with_semantic_queries_for_uri` holds its read guards (#15644).
+    let legacy_locations = index.find_references(&expectation.symbol);
     let actual_spans = index
         .with_semantic_queries_for_uri(source_path_text, |_file_id, semantic_queries| {
             let query_start = Instant::now();
-            let outcome =
-                find_references_cutover(index, &semantic_queries, &expectation.symbol, entity_id);
+            let outcome = find_references_cutover(
+                legacy_locations,
+                &semantic_queries,
+                &expectation.symbol,
+                entity_id,
+            );
             score.reference_query_micros.push(query_start.elapsed().as_micros() as u64);
             reference_result_spans(index_source, &outcome.result, anchors_by_id)
         })

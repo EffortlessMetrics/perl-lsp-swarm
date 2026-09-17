@@ -6,6 +6,8 @@
 
 /// Modifier, feature, and capture analysis over Perl regex operators.
 pub mod analyzer;
+/// Versioned conformance vocabulary for modifier-semantics fixtures.
+pub mod conformance;
 /// Typed error type surfaced by validation and analysis entry points.
 pub mod error;
 /// Re-exports of the crate's primary entry-point types.
