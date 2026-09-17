@@ -371,18 +371,40 @@ impl LspServer {
         // AST walk, and deduplication run off-lock (#4966). Predecessor
         // `text_arc` remains stored as evidence and must not publish folds
         // while Full-sync is outstanding.
+        //
+        // Prefer the generation-current snapshot; fall back to the latest
+        // published one when the current generation has no snapshot yet —
+        // the workspace indexer bumps the generation after didOpen, which
+        // would otherwise make every AST-derived fold vanish behind a
+        // keyword-free empty response (#11858 pattern, #15430).
         let (text, parsed, captured_generation) = {
             let documents = self.documents_guard();
             match self.get_document(&documents, uri) {
                 Some(doc) => match doc.text_for_user_answers() {
-                    Some(text) => {
-                        (text.to_string(), doc.current_parsed(), doc.current_generation())
+                    // Clone the Arc (O(1)) under the lock; the full string
+                    // copy happens after release, keeping the lock hold short.
+                    // The latest_parsed fallback is gated on the snapshot's
+                    // content hash matching the current text: a stale AST's
+                    // offsets paired with shifted text would fold the wrong
+                    // lines (#15776 review). It only runs for synchronized
+                    // text — when Full-sync is outstanding, the arm above
+                    // returns empty before any predecessor snapshot is read.
+                    Some(_) => {
+                        let current_or_matching = doc.current_parsed().or_else(|| {
+                            let latest = doc.latest_parsed()?;
+                            let matches =
+                                perl_lsp_rs_core::tooling::perl_critic::hash_content(&doc.text)
+                                    == latest.content_hash();
+                            matches.then_some(latest)
+                        });
+                        (doc.text_arc.clone(), current_or_matching, doc.current_generation())
                     }
                     None => return Ok(Some(json!([]))),
                 },
                 None => return Ok(Some(json!([]))),
             }
         };
+        let text = text.to_string();
 
         let doc_text = &text;
         let mut lsp_ranges = Vec::new();
@@ -428,7 +450,24 @@ impl LspServer {
                 // Calculate actual line numbers from document content
                 let start_line = offset_to_line(doc_text, range.start_offset);
                 let end_line = offset_to_line(doc_text, range.end_offset);
-                if let Some(lsp_end_line) = lsp_inclusive_multiline_end_line(start_line, end_line) {
+                let lsp_end_line = match lsp_inclusive_multiline_end_line(start_line, end_line) {
+                    Some(end) => Some(end),
+                    None => {
+                        // A span rejected by the inclusive filter may still
+                        // genuinely cover multiple lines when its end offset
+                        // sits at the start of its last line (heredoc bodies
+                        // end at content, not at line starts). Count the
+                        // newlines inside the span: any newline means real
+                        // multiline content that must not be dropped
+                        // (#15430 residue).
+                        let newlines = doc_text
+                            .get(range.start_offset..range.end_offset)
+                            .map(|span| span.matches('\n').count())
+                            .unwrap_or(0);
+                        (newlines >= 1).then_some(start_line + newlines)
+                    }
+                };
+                if let Some(lsp_end_line) = lsp_end_line {
                     let mut lsp_range = json!({
                         "startLine": start_line,
                         "endLine": lsp_end_line,  // LSP folding ranges are inclusive

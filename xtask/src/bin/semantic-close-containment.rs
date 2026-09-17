@@ -9,6 +9,7 @@ use clap::{Parser, ValueEnum};
 use color_eyre::eyre::{Context, ContextCompat, Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -23,6 +24,7 @@ const EXIT_NOT_PROVEN: i32 = 3;
 const MAX_EVENT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_FIXTURE_BYTES: usize = 512 * 1024;
 const MAX_PR_BODY_BYTES: usize = 128 * 1024;
+const MAX_PR_TITLE_BYTES: usize = 4 * 1024;
 const MAX_ISSUE_BODY_BYTES: usize = 256 * 1024;
 const MAX_GITHUB_OUTPUT_BYTES: usize = 512 * 1024;
 const MAX_RELATIONS: usize = 32;
@@ -247,6 +249,10 @@ struct Report {
     aggregate_code: ResultCode,
     semantic_completion_proven: bool,
     rows: Vec<RelationResult>,
+    /// Present only for live evaluation (#15640): the captured
+    /// `pulls_api` snapshot the verdict was computed from. Fixture reports
+    /// carry `None` because fixture provenance lives in the fixture itself.
+    subject_snapshot: Option<SubjectSnapshot>,
 }
 
 impl Report {
@@ -278,7 +284,7 @@ struct RelationResult {
 #[derive(Debug, Deserialize)]
 struct GithubEvent {
     repository: GithubRepository,
-    pull_request: GithubPullRequest,
+    pull_request: GithubPullRequestLocator,
 }
 
 #[derive(Debug, Deserialize)]
@@ -286,11 +292,51 @@ struct GithubRepository {
     full_name: String,
 }
 
+/// #15640: reruns replay the original event payload, so the event's PR
+/// title/body can never observe a later body correction. The event supplies
+/// only the immutable locator plus audit metadata; the semantic subject is
+/// built exclusively from a live `GET /repos/{owner}/{repo}/pulls/{number}`
+/// snapshot. The locator struct deliberately has no title/body fields, so the
+/// stale event prose cannot be read even by accident.
 #[derive(Debug, Deserialize)]
-struct GithubPullRequest {
+struct GithubPullRequestLocator {
     number: u64,
-    title: String,
-    body: Option<String>,
+    base: GithubPullRequestBase,
+    head: GithubPullRequestHeadRef,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestBase {
+    repo: GithubRepository,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubPullRequestHeadRef {
+    #[serde(default)]
+    sha: Option<String>,
+}
+
+/// Provenance receipt for the semantic subject (#15640): the report proves
+/// what it actually evaluated — one captured live snapshot — instead of
+/// merely saying "current body".
+#[derive(Clone, Debug, Serialize)]
+struct SubjectSnapshot {
+    /// Where the subject bytes came from. Only `pulls_api` subjects reach
+    /// live evaluation; fixtures carry their own provenance block.
+    source: &'static str,
+    /// GitHub `updated_at` of the fetched pull request.
+    pr_updated_at: String,
+    /// Head SHA recorded by the originating event (audit; "unknown" when
+    /// absent). Comparing it with `head_sha` shows whether the live snapshot
+    /// sits at the event's head or a push landed in between.
+    event_head_sha: String,
+    /// Live head SHA of the fetched pull request ("unknown" when absent).
+    head_sha: String,
+    /// SHA-256 over the evaluated title bytes, a NUL separator, and the
+    /// evaluated body bytes (hex).
+    title_body_sha256: String,
+    title_bytes: usize,
+    body_bytes: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -399,26 +445,156 @@ fn run_cli() -> Result<()> {
     Ok(())
 }
 
+/// #15640: the event payload supplies only the immutable locator; the
+/// semantic subject always comes from one live pulls-API snapshot captured in
+/// this run. A fetch failure is an instrument failure — there is no fallback
+/// to the event's stale title/body, because stale prose is never current
+/// proof.
 fn evaluate_live_event(path: &Path) -> Result<Report> {
     let raw = read_bounded(path, MAX_EVENT_BYTES, "GitHub event payload")?;
-    let event: GithubEvent =
-        serde_json::from_slice(&raw).context("parsing pull_request_target event payload")?;
-    let pull = PullRequestSubject {
-        repository: canonical_repository(&event.repository.full_name)?,
-        number: event.pull_request.number,
-        title: event.pull_request.title,
-        body: event.pull_request.body.unwrap_or_default(),
-    };
+    let locator = parse_event_locator(&raw)?;
+    let (pull, snapshot) = fetch_live_subject(&locator)?;
 
     let mut cache: BTreeMap<IssueKey, IssueEvidence> = BTreeMap::new();
-    evaluate(&pull, |key| {
+    let mut report = evaluate(&pull, |key| {
         if let Some(cached) = cache.get(key) {
             return cached.clone();
         }
         let evidence = fetch_issue_live(key);
         cache.insert(key.clone(), evidence.clone());
         evidence
+    })?;
+    report.subject_snapshot = Some(snapshot);
+    Ok(report)
+}
+
+/// Immutable identity of the pull request to evaluate, extracted from the
+/// `pull_request_target` event payload: repository identity, PR number, base
+/// repository, and head SHA (audit only).
+#[derive(Clone, Debug)]
+struct EventLocator {
+    repository: String,
+    number: u64,
+    head_sha: String,
+}
+
+fn parse_event_locator(raw: &[u8]) -> Result<EventLocator> {
+    let event: GithubEvent =
+        serde_json::from_slice(raw).context("parsing pull_request_target event payload")?;
+    let repository = canonical_repository(&event.repository.full_name)?;
+    let base = canonical_repository(&event.pull_request.base.repo.full_name)
+        .context("canonicalizing event base repository")?;
+    if base != repository {
+        bail!(
+            "event repository {repository} does not match event base repository \
+             {base}; refusing to evaluate across a locator mismatch"
+        );
+    }
+    Ok(EventLocator {
+        repository,
+        number: event.pull_request.number,
+        head_sha: event.pull_request.head.sha.unwrap_or_else(|| "unknown".to_string()),
     })
+}
+
+fn fetch_live_subject(locator: &EventLocator) -> Result<(PullRequestSubject, SubjectSnapshot)> {
+    let raw = fetch_pull_request_json(locator)?;
+    validate_live_snapshot(&raw, locator)
+}
+
+/// One bounded `gh api` call with the existing read-only token. Exactly one
+/// fetch per evaluation: a body edit during the run starts a newer run rather
+/// than invalidating this snapshot.
+fn fetch_pull_request_json(locator: &EventLocator) -> Result<Vec<u8>> {
+    let endpoint = format!("repos/{}/pulls/{}", locator.repository, locator.number);
+    let output = Command::new("gh")
+        .args(["api", "--method", "GET", &endpoint])
+        .output()
+        .context("failed to start gh api for the live pull request snapshot")?;
+    if !output.status.success() {
+        bail!(
+            "live pull request fetch failed: gh api exited with status {} \
+             (no event-payload fallback is permitted; rerun event prose is \
+             never current proof)",
+            output.status
+        );
+    }
+    if output.stdout.len() > MAX_GITHUB_OUTPUT_BYTES {
+        bail!("live pull request response exceeded the bounded containment input");
+    }
+    Ok(output.stdout)
+}
+
+#[derive(Debug, Deserialize)]
+struct LivePullRequest {
+    number: u64,
+    title: String,
+    body: Option<String>,
+    updated_at: String,
+    head: GithubPullRequestHeadRef,
+    base: GithubPullRequestBase,
+}
+
+/// Validate the fetched snapshot against the event locator, apply the
+/// subject bounds, and derive the snapshot receipt. Locator mismatch,
+/// malformed data, and oversized title/body fail closed as instrument
+/// failures (exit 3) — they are never semantic verdicts.
+fn validate_live_snapshot(
+    raw: &[u8],
+    locator: &EventLocator,
+) -> Result<(PullRequestSubject, SubjectSnapshot)> {
+    let payload: LivePullRequest =
+        serde_json::from_slice(raw).context("parsing live pull request response")?;
+    if payload.number != locator.number {
+        bail!(
+            "live pull request response returned number {} but the event locator \
+             is {}",
+            payload.number,
+            locator.number
+        );
+    }
+    let base = canonical_repository(&payload.base.repo.full_name)
+        .context("canonicalizing live pull request base repository")?;
+    if base != locator.repository {
+        bail!(
+            "live pull request base repository {base} does not match the event \
+             locator {}",
+            locator.repository
+        );
+    }
+    if payload.title.len() > MAX_PR_TITLE_BYTES {
+        bail!("live pull request title exceeds the bounded containment input");
+    }
+    let body = payload.body.unwrap_or_default();
+    if body.len() > MAX_PR_BODY_BYTES {
+        bail!("live pull request body exceeds the bounded containment input");
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(payload.title.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(body.as_bytes());
+    let title_body_sha256 =
+        hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+
+    let snapshot = SubjectSnapshot {
+        source: "pulls_api",
+        pr_updated_at: payload.updated_at,
+        event_head_sha: locator.head_sha.clone(),
+        head_sha: payload.head.sha.unwrap_or_else(|| "unknown".to_string()),
+        title_body_sha256,
+        title_bytes: payload.title.len(),
+        body_bytes: body.len(),
+    };
+    Ok((
+        PullRequestSubject {
+            repository: locator.repository.clone(),
+            number: locator.number,
+            title: payload.title,
+            body,
+        },
+        snapshot,
+    ))
 }
 
 fn load_fixture(path: &Path) -> Result<Fixture> {
@@ -554,6 +730,7 @@ where
             aggregate_code: ResultCode::PassNotApplicable,
             semantic_completion_proven: false,
             rows: Vec::new(),
+            subject_snapshot: None,
         });
     }
 
@@ -580,6 +757,7 @@ where
         aggregate_code,
         semantic_completion_proven: false,
         rows,
+        subject_snapshot: None,
     })
 }
 
@@ -1352,14 +1530,18 @@ fn word_match_indices(text: &str, word: &str) -> Vec<usize> {
 }
 
 fn word_boundaries_hold(text: &str, index: usize, len: usize) -> bool {
-    let before_ok = text
-        .get(..index)
-        .and_then(|prefix| prefix.chars().next_back())
-        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
-    let after_ok = text
-        .get(index + len..)
-        .and_then(|suffix| suffix.chars().next())
-        .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_');
+    // A hyphenated compound (`source-release`) must not donate its trailing
+    // term (`release`) as a standalone proof-level mention (#15505): `-`
+    // joins identifier characters for proof-level matching, alongside
+    // alphanumerics and `_`.
+    let before_ok =
+        text.get(..index).and_then(|prefix| prefix.chars().next_back()).is_none_or(|character| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        });
+    let after_ok =
+        text.get(index + len..).and_then(|suffix| suffix.chars().next()).is_none_or(|character| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        });
     before_ok && after_ok
 }
 
@@ -1978,6 +2160,22 @@ fn print_human(report: &Report) {
         report.pull_request_number,
         sanitize_for_output(&report.pull_request_title, 512)
     );
+    // #15640: prove what this run actually evaluated — one captured live
+    // snapshot — so a rerun verdict can be tied to the exact subject bytes.
+    // Printed before any early return: a no-relation verdict still carries
+    // its subject receipt.
+    if let Some(snapshot) = &report.subject_snapshot {
+        println!(
+            "  subject snapshot: {} updated_at={} event_head={} live_head={} title/body sha256={} ({}+{} bytes)",
+            snapshot.source,
+            snapshot.pr_updated_at,
+            snapshot.event_head_sha,
+            snapshot.head_sha,
+            snapshot.title_body_sha256,
+            snapshot.title_bytes,
+            snapshot.body_bytes
+        );
+    }
     if report.rows.is_empty() {
         println!("  no automatic closing relation; issue/domain lookup skipped");
         return;
@@ -2012,7 +2210,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    const FIXTURES: [(&str, &str); 24] = [
+    const FIXTURES: [(&str, &str); 25] = [
         (
             "valid-explicit-subject-inventory-14633",
             include_str!(concat!(
@@ -2074,6 +2272,13 @@ mod tests {
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../.ci/semantic-close-containment/fixtures/invalid-proof-level-required-release.json"
+            )),
+        ),
+        (
+            "valid-proof-level-hyphenated-compound-source-release",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../.ci/semantic-close-containment/fixtures/valid-proof-level-hyphenated-compound-source-release.json"
             )),
         ),
         (
@@ -3611,6 +3816,163 @@ mod tests {
             MAX_PR_BODY_BYTES,
         )?;
         assert!(has_semantic_close_packet(&packet, &key, current_repository));
+        Ok(())
+    }
+
+    /// #15640: the event payload is parsed for the locator only. A stale
+    /// event title/body (the rerun payload) must not be bound anywhere the
+    /// evaluator can reach.
+    #[test]
+    fn event_payload_supplies_a_locator_never_a_semantic_subject() -> Result<()> {
+        let raw = br#"{
+          "repository": {"full_name": "EffortlessMetrics/perl-lsp-swarm"},
+          "pull_request": {
+            "number": 15605,
+            "title": "stale rerun title",
+            "body": "Closes #12905 on merge",
+            "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}},
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+          }
+        }"#;
+        let locator = parse_event_locator(raw)?;
+        assert_eq!(locator.repository, "effortlessmetrics/perl-lsp-swarm");
+        assert_eq!(locator.number, 15605);
+        assert_eq!(locator.head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        Ok(())
+    }
+
+    #[test]
+    fn event_base_repository_mismatch_fails_closed() -> Result<()> {
+        let raw = br#"{
+          "repository": {"full_name": "EffortlessMetrics/perl-lsp-swarm"},
+          "pull_request": {
+            "number": 1,
+            "base": {"repo": {"full_name": "OtherOrg/OtherRepo"}},
+            "head": {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+          }
+        }"#;
+        assert!(parse_event_locator(raw).is_err());
+        Ok(())
+    }
+
+    /// #15640 required control: the live snapshot must agree with the event
+    /// locator (repository, PR number, base repository) before use.
+    #[test]
+    fn live_snapshot_locator_mismatch_fails_closed() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "unknown".into(),
+        };
+        let different_number = br#"{
+          "number": 999,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        assert!(validate_live_snapshot(different_number, &locator).is_err());
+
+        let different_base = br#"{
+          "number": 15605,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "OtherOrg/OtherRepo"}}
+        }"#;
+        assert!(validate_live_snapshot(different_base, &locator).is_err());
+
+        let malformed = br#"{"number": 15605, "title": "t""#;
+        assert!(validate_live_snapshot(malformed, &locator).is_err());
+        Ok(())
+    }
+
+    /// The subject comes from the live snapshot (title/body), the snapshot
+    /// receipt records `updated_at`/head/digest, and the digest changes when
+    /// the evaluated prose changes — the property that makes a stale rerun
+    /// verdict detectable.
+    #[test]
+    fn live_snapshot_builds_subject_and_stable_digest() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        };
+        let raw = br#"{
+          "number": 15605,
+          "title": "fix(ci): live subject",
+          "body": "Fixes #15641",
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (pull, snapshot) = validate_live_snapshot(raw, &locator)?;
+        assert_eq!(pull.title, "fix(ci): live subject");
+        assert_eq!(pull.body, "Fixes #15641");
+        assert_eq!(snapshot.source, "pulls_api");
+        assert_eq!(snapshot.pr_updated_at, "2026-09-12T12:26:40Z");
+        assert_eq!(snapshot.event_head_sha, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(snapshot.head_sha, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(snapshot.title_bytes, "fix(ci): live subject".len());
+        assert_eq!(snapshot.body_bytes, "Fixes #15641".len());
+        assert_eq!(snapshot.title_body_sha256.len(), 64);
+        assert!(snapshot.title_body_sha256.chars().all(|character| character.is_ascii_hexdigit()));
+
+        let edited = br#"{
+          "number": 15605,
+          "title": "fix(ci): live subject",
+          "body": "Advances #15641",
+          "updated_at": "2026-09-12T12:30:00Z",
+          "head": {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (_, edited_snapshot) = validate_live_snapshot(edited, &locator)?;
+        assert_ne!(
+            snapshot.title_body_sha256, edited_snapshot.title_body_sha256,
+            "a body edit must change the snapshot digest"
+        );
+
+        // Deterministic: the same bytes produce the same digest.
+        let (_, replayed) = validate_live_snapshot(raw, &locator)?;
+        assert_eq!(snapshot.title_body_sha256, replayed.title_body_sha256);
+        Ok(())
+    }
+
+    /// A null live body is an empty description, not unavailable data; an
+    /// oversized live body or title fails closed (#15640).
+    #[test]
+    fn live_snapshot_bounds_fail_closed() -> Result<()> {
+        let locator = EventLocator {
+            repository: "effortlessmetrics/perl-lsp-swarm".into(),
+            number: 15605,
+            head_sha: "unknown".into(),
+        };
+        let null_body = br#"{
+          "number": 15605,
+          "title": "t",
+          "body": null,
+          "updated_at": "2026-09-12T12:26:40Z",
+          "head": {"sha": null},
+          "base": {"repo": {"full_name": "EffortlessMetrics/perl-lsp-swarm"}}
+        }"#;
+        let (pull, snapshot) = validate_live_snapshot(null_body, &locator)?;
+        assert_eq!(pull.body, "");
+        assert_eq!(snapshot.head_sha, "unknown");
+        assert_eq!(snapshot.body_bytes, 0);
+
+        let oversized_body = format!(
+            r#"{{"number":15605,"title":"t","body":"{}","updated_at":"2026-09-12T12:26:40Z","head":{{"sha":null}},"base":{{"repo":{{"full_name":"EffortlessMetrics/perl-lsp-swarm"}}}}}}"#,
+            "x".repeat(MAX_PR_BODY_BYTES + 1)
+        );
+        assert!(validate_live_snapshot(oversized_body.as_bytes(), &locator).is_err());
+
+        let oversized_title = format!(
+            r#"{{"number":15605,"title":"{}","body":"b","updated_at":"2026-09-12T12:26:40Z","head":{{"sha":null}},"base":{{"repo":{{"full_name":"EffortlessMetrics/perl-lsp-swarm"}}}}}}"#,
+            "x".repeat(MAX_PR_TITLE_BYTES + 1)
+        );
+        assert!(validate_live_snapshot(oversized_title.as_bytes(), &locator).is_err());
         Ok(())
     }
 }
