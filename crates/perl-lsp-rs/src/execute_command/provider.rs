@@ -2024,8 +2024,9 @@ pub fn command_exists(command: &str) -> bool {
         |cmd| match std::env::var_os("PATH") {
             None => which::which(cmd).is_ok(),
             Some(path) => {
-                let dirs: Vec<std::path::PathBuf> =
-                    std::env::split_paths(&path).filter(|dir| !dir.as_os_str().is_empty()).collect();
+                let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path)
+                    .filter(|dir| !dir.as_os_str().is_empty())
+                    .collect();
                 if dirs.is_empty() {
                     return false;
                 }
