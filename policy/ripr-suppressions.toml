@@ -3270,6 +3270,47 @@ created = "2026-09-09"
 review_after = "2026-10-09"
 expires = "2026-11-09"
 
+# PR #15220 stop-on-entry reader boundary and error-propagation seams. The
+# hosted RIPR receipts report these as static_limitation: the boundary
+# discriminating operands are local/computed (`current_line > 0` and
+# `!current_file.is_empty() && current_line > 0`), and the two
+# error-propagation exits of `read_debugger_record` (the `fill_buf` error
+# return and the invalid-UTF-8 conversion) have no static test path through
+# the generic `R: Read` reader plumbing. The runtime oracles are exact:
+# debugger_record_reader_preserves_underlying_read_error asserts the
+# propagated ErrorKind::Other with the sentinel cause preserved by downcast,
+# and debugger_record_reader_rejects_bare_prompt_and_invalid_utf8 asserts
+# ErrorKind::InvalidData with the FromUtf8Error cause, its bytes,
+# valid_up_to, and error_len. Both hosted receipts are reproduced, not
+# flaky: run 34757592743 (candidate b9dece9d5) and run 35099133724
+# (evaluated merge tree 6781f1ae44dd8df93231e76d7eabc6fb579df983) report the
+# same seams (f849b21a1600b08c, f849bb1a1600bfd7 at line 60;
+# 41d63c1121b37206 at line 87) with "Add an exact error-variant test" while
+# exactly those tests exist and pass. The policy schema has no seam-id or
+# line selector, so this is intentionally restricted to the reported
+# activation_unknown and no_static_path classes on this one production file;
+# any future executable finding there must narrow or remove this entry.
+# The hosted run on 9c1757651 (evaluated merge tree cabc86dd) additionally
+# reports the 4 diff-receipt no_static_path probes on session.rs:24 and :34 —
+# the two `entry_stop_pending: false` initializer lines (call_deletion +
+# field_construction each), not unproven behavior — and three review-guidance
+# weakly_gripped error_variant comments at process.rs:60/87, so the entry
+# covers both files and the weakly_gripped grip_class those comments carry.
+# The reader-level barrier test and its old-gate mutant prove
+# the native-context ordering and the boundary outcomes.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-dap-entry-reader-local-boundaries"
+kind = "predicate_infection_untraceable"
+paths = ["crates/perl-dap/src/debug_adapter/process.rs", "crates/perl-dap/src/debug_adapter/session.rs"]
+classification = ["activation_unknown", "no_static_path", "weakly_gripped"]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "The exact hosted RIPR receipt for PR #15220 reports four activation_unknown predicate-boundary findings in process.rs (seams bebf17059a062f3d, c7b6be059f3099fd, 1ae4339eeecae0c9, and summary-only 1af5359eeed95762) at lines 1223 and 1436. Each is gap_state=static_limitation and states that the missing discriminator is a local/computed current_line/current_file operand; RIPR requests analyzer support rather than a production repair. The reader-level barrier test output_reader_waits_for_native_context_after_warning exercises the native-context ordering with a warning-before-context fixture, the old-gate mutant fails with warning location line 3 consumed as the entry frame, and the focused process reader test command cargo test -p perl-dap --lib debug_adapter::process::tests --locked passes 35 tests on the repaired candidate. The suppression is path-plus-class scoped because schema version 1 has no seam-id or line selector; the receipt's six actionable execution.rs findings remain unaffected. Updated by the #15220 lane merge: hosted run 35099133724 (evaluated merge tree 6781f1ae4) also reports 4 no_static_path new-gap seams on the same two error-propagation exits of read_debugger_record (f849b21a1600b08c and f849bb1a1600bfd7 at line 60 — the fill_buf Err propagation; 41d63c1121b37206 at line 87 — the invalid-UTF-8 conversion), reproduced from run 34757592743 on b9dece9d5, each suggesting an exact error-variant test while debugger_record_reader_preserves_underlying_read_error (ErrorKind::Other, sentinel cause downcast, no os error) and debugger_record_reader_rejects_bare_prompt_and_invalid_utf8 (ErrorKind::InvalidData, FromUtf8Error cause bytes, valid_up_to, error_len) are exactly those tests and pass; the static tracer has no test path through the generic R: Read plumbing. A third hosted receipt (run on 9c1757651, evaluated merge tree cabc86dd6a5ecb5f1231688bc2b142847a4fa186) shows the 4 diff-receipt no_static_path probes are on session.rs lines 24 and 34 (probe pairs ade902cb/24ea7905 and ade902cb.2/24ea7905.2) — the two entry_stop_pending: false initializer lines this merge deduplicated, plain field-construction/call-deletion declaration probes whose init behavior the 1073-test lib suite exercises — and its review-guidance receipt carries the process.rs:60/87 seams as weakly_gripped error_variant comments, so the entry's paths and classification cover the files and classes the receipts actually report. Remove when RIPR resolves local/computed boundary operands or traces through generic reader error propagation, or when targeted mutation replaces this advisory path."
+created = "2026-09-09"
+review_after = "2026-09-30"
+expires = "2026-10-07"
+removal_criteria = "Remove when RIPR resolves local/computed predicate-boundary operands or traces generic reader error propagation, or narrow immediately if a future receipt reports an executable seam in process.rs or session.rs outside the listed activation_unknown, no_static_path, and weakly_gripped boundaries."
 # -----------------------------------------------------------------------------
 # Opaque LexerCheckpoint (#8090, PR #14896): hosted RIPR 0.10.0 on merge tree
 # ac17e230 (run 34418959457, artifact 10132869484) reports 101 new
@@ -4694,3 +4735,66 @@ created = "2026-09-17"
 review_after = "2026-10-17"
 expires = "2026-10-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces field_construction declaration lines to the tests that exercise their owning type, when the module gains a live adapter with traceable call seams and the declaration suppressions can narrow, or at expiry. Narrow immediately if a receipt reports a reachable_unrevealed or other-classified seam under xtask/src/writer_preflight/. Evidence basis: ripr run 35195292770 quality-gate receipt (95 no_static_path, 0 reachable_unrevealed on this diff)."
+
+# -----------------------------------------------------------------------------
+# QuickORM table-package facts declaration probes (PR #13174, issue #13120):
+# the same ripr#1429 declaration-line class already accepted for this
+# repository's siblings (ripr-suppress-15615-outbound-settlement-declaration-
+# probes, ripr-suppress-quickorm-api-reference-registry, the writer-preflight
+# entry above).
+#
+# PR #13174 adds crates/perl-workspace/src/semantic/quickorm.rs (the bounded
+# DBIx::QuickORM table-package fact extractor) and re-exports
+# GeneratedMemberFact through semantic/mod.rs. The hosted ripr lane (run
+# 35280473400, merge preview b021dcb72, base 41b643642) reports exactly five
+# no_static_path probes, all stop_reason no_changed_rust_line:
+#   - semantic/mod.rs:55 `pub(crate) use ...GeneratedMemberFact;` — a
+#     re-export declaration; type-identity plumbing the compiler pins, with
+#     the fact surface exercised by semantic_facade_wrappers_compose_core_
+#     and_quickorm_facts and crates/perl-workspace/tests/quickorm_generated_
+#     member.rs / quickorm_workspace_receipt.rs.
+#   - semantic/quickorm.rs:26 `const QORM_TABLE_MEMBER: &str = "qorm_table";`
+#     — the member-name constant is pinned by the User::qorm_table canonical-
+#     name assertions in src/semantic/quickorm/tests.rs and by
+#     quickorm_qorm_table_reaches_generated_member_surfaces.
+#   - semantic/quickorm.rs:121-123 WalkContext { current_package,
+#     table_package_authority, shadowed_builders } — walker state fields whose
+#     population/reset/authority gates are driven end-to-end by
+#     a_second_import_fails_the_package_closed_without_affecting_its_neighbour,
+#     a_package_switch_inside_the_table_builder_emits_no_candidates, and
+#     a_package_inside_a_deferred_definition_does_not_leak_to_the_outer_walk.
+# Declaration lines have no function body to trace into; constructor-only
+# tests would be proof theatre. reachable_unrevealed is 0 on the same
+# receipt, and the run's three changed-line guidance comments (the
+# classify_import_shape string-boundary predicates at quickorm.rs:684/694)
+# are already answered by classify_import_shape_source_pair_boundary_
+# discriminators plus the two cross-extractor disagreement tests from head
+# fbb6abb25 — infection_unknown is advisory and does not gate.
+#
+# Identity key: `gap_ids` lists the five probe identities from that receipt.
+# Path + classification are additional filters, not the selector. A future
+# executable no_static_path seam in these files with a different probe id
+# stays visible. `kind` is descriptive metadata, not a declaration selector.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13174-quickorm-table-facts-declaration-probes"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-workspace/src/semantic/mod.rs",
+  "crates/perl-workspace/src/semantic/quickorm.rs",
+]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:crates_perl-workspace_src_semantic_mod.rs:call_deletion:f4831bf8",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:a18218ae",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:ece0cd6f",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:3968903b",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:67cd7e77",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #13174 (#13120): five no_static_path probes, all stop_reason no_changed_rust_line, on run 35280473400 at merge preview b021dcb72 (base 41b643642, branch head fbb6abb25). One call_deletion probe is the semantic/mod.rs:55 pub(crate) GeneratedMemberFact re-export (compiler-pinned type plumbing; the fact surface is exercised by semantic_facade_wrappers_compose_core_and_quickorm_facts and the tests/quickorm_generated_member.rs plus tests/quickorm_workspace_receipt.rs integration suites). Four are declaration lines of the new semantic/quickorm.rs: the QORM_TABLE_MEMBER const whose qorm_table member name is pinned by the User::qorm_table canonical-name assertions in src/semantic/quickorm/tests.rs and quickorm_qorm_table_reaches_generated_member_surfaces, and the three WalkContext state fields (current_package, table_package_authority, shadowed_builders) whose authority/shadowing/package-reset logic is driven end-to-end by a_second_import_fails_the_package_closed_without_affecting_its_neighbour, a_package_switch_inside_the_table_builder_emits_no_candidates, and a_package_inside_a_deferred_definition_does_not_leak_to_the_outer_walk. Declaration lines have no function body to trace into; constructor-only tests would be proof theatre. Same ripr#1429 declaration-line class as ripr-suppress-15615-outbound-settlement-declaration-probes and the writer-preflight entry. reachable_unrevealed is 0 on the same receipt. Selector is the five gap_ids from that receipt, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in these files with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-12-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in semantic/mod.rs or semantic/quickorm.rs outside the five identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."

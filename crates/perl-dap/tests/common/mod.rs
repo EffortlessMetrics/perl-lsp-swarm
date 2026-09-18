@@ -182,8 +182,10 @@ impl DapWorkflowSession {
     /// Launch a script with explicit `stopOnEntry` control.
     ///
     /// When `stop_on_entry` is `true`, the adapter emits a `stopped(reason=entry)` event
-    /// at the first real debugger suspension — once stopped-state and frame authority
-    /// exist — so the event never precedes a `stackTrace`-answerable stop (#15637).
+    /// after the debugger reader has captured the native source frame and reached
+    /// the prompt — once stopped-state and frame authority exist — before any
+    /// `configurationDone` is sent, so the event never precedes a
+    /// `stackTrace`-answerable stop (#15637).
     /// When `false`, callers must call `set_breakpoints` and `configuration_done` before
     /// `wait_stopped` to follow the DAP ordering requirement.
     pub fn launch_with_stop_on_entry(
@@ -372,6 +374,18 @@ impl DapWorkflowSession {
         let thread_id = body.get("threadId").and_then(Value::as_i64).unwrap_or(1);
 
         Ok(StoppedInfo { reason, thread_id })
+    }
+
+    /// Count any additional stopped events already queued after the first
+    /// suspension. A stop-on-entry launch must publish exactly one initial stop.
+    pub fn pending_stopped_events(&self) -> usize {
+        let mut count = 0;
+        while let Ok(message) = self.rx.try_recv() {
+            if matches!(message, DapMessage::Event { ref event, .. } if event == "stopped") {
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Retrieve the top stack frame for `thread_id`.
