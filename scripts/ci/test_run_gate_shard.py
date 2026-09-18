@@ -439,6 +439,44 @@ class GateShardTests(unittest.TestCase):
             self.assertEqual(1, status)
             self.assertEqual("instrument_failure", summary["gates"][0]["result"])
 
+    def test_gates_producer_schema_version_is_accepted(self) -> None:
+        # The `cargo xtask gates` producer emits its `GATES_RECEIPT_SCHEMA_VERSION`
+        # constant (`gates.v1`); the Python shard validator must accept the same
+        # shape so a producer bump in `xtask` does not silently fail every
+        # CI gate shard. See #15337.
+        from scripts.ci.run_gate_shard import (
+            GATES_PRODUCER_SCHEMA_VERSION,
+            GATES_PRODUCER_SCHEMA_VERSION_PATTERN,
+        )
+
+        self.assertEqual("gates.v1", GATES_PRODUCER_SCHEMA_VERSION)
+        self.assertTrue(
+            GATES_PRODUCER_SCHEMA_VERSION_PATTERN.fullmatch(
+                GATES_PRODUCER_SCHEMA_VERSION
+            )
+        )
+        for spec in (
+            {"schema_version": "gates.v1"},
+            {"schema_version": "gates.v2"},
+        ):
+            with self.subTest(spec=spec), tempfile.TemporaryDirectory() as tmp:
+                status, summary, _, _ = run_direct(
+                    Path(tmp), {"good": spec}, ["good"]
+                )
+            self.assertEqual(0, status, summary)
+            self.assertEqual("success", summary["gates"][0]["result"])
+
+    def test_unknown_schema_version_still_fails_closed(self) -> None:
+        # The producer-accepted pattern is bounded; anything else is rejected.
+        with tempfile.TemporaryDirectory() as tmp:
+            status, summary, _, _ = run_direct(
+                Path(tmp),
+                {"bad": {"schema_version": "gates.beta"}},
+                ["bad"],
+            )
+        self.assertEqual(1, status)
+        self.assertEqual("instrument_failure", summary["gates"][0]["result"])
+
     def test_all_success_is_zero_and_deterministically_ordered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             status, summary, invoked, options = run_direct(

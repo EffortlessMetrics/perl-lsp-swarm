@@ -15,6 +15,17 @@ const DEFAULT_STALE_TTL_HOURS: i64 = 24;
 const STATE_FILE: &str = ".claude/worktrees/lease-state.json";
 const RECEIPT_FILE: &str = "target/receipts/worktree-lease.json";
 
+/// Schema version emitted by the `LeaseState` producer (`.claude/worktrees/lease-state.json`).
+/// Pin alongside `.ci/receipts/schemas/worktree-lease.schema.json`; a mismatch causes
+/// every freshly-emitted state file to be rejected at load time (#15383).
+pub const WORKTREE_LEASE_STATE_SCHEMA_VERSION: &str = "worktree_lease_state.v1";
+
+/// Schema version emitted by the `WorktreeLeaseReceipt` producer
+/// (`target/receipts/worktree-lease.json`). Pin alongside
+/// `.ci/receipts/schemas/worktree-lease.schema.json`; a mismatch causes every
+/// freshly-emitted receipt to be rejected by any strict consumer (#15383).
+pub const WORKTREE_LEASE_RECEIPT_SCHEMA_VERSION: &str = "worktree_lease_receipt.v1";
+
 #[derive(Subcommand)]
 pub enum AgentWorktreeCommand {
     /// Acquire a lease for an agent worktree.
@@ -67,6 +78,7 @@ pub enum AgentWorktreeCommand {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeaseState {
+    pub schema_version: String,
     pub leases: Vec<WorktreeLease>,
 }
 
@@ -85,6 +97,7 @@ pub struct WorktreeLease {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WorktreeLeaseReceipt {
+    schema_version: String,
     worktree_id: String,
     path: String,
     pr: u64,
@@ -306,10 +319,28 @@ fn resolve_base_sha(root: &Path, base: &str) -> Result<String> {
 fn load_state(root: &Path) -> Result<LeaseState> {
     let path = root.join(STATE_FILE);
     if !path.exists() {
-        return Ok(LeaseState { leases: Vec::new() });
+        return Ok(LeaseState {
+            schema_version: WORKTREE_LEASE_STATE_SCHEMA_VERSION.to_string(),
+            leases: Vec::new(),
+        });
     }
     let data = fs::read_to_string(path)?;
-    let parsed = serde_json::from_str::<LeaseState>(&data)?;
+    // Pre-parse guard: reject any state file whose envelope does not declare
+    // the expected schema_version. This makes silent cross-version
+    // deserialization impossible (#15383).
+    let envelope: serde_json::Value = serde_json::from_str(&data)
+        .map_err(|e| eyre!("lease-state.json is not valid JSON: {e}"))?;
+    let declared = envelope
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| eyre!("lease-state.json missing schema_version envelope"))?;
+    if declared != WORKTREE_LEASE_STATE_SCHEMA_VERSION {
+        bail!(
+            "unsupported lease state schema_version {declared:?}; expected {:?}; rebuild via `agent-worktree acquire` after upgrading",
+            WORKTREE_LEASE_STATE_SCHEMA_VERSION
+        );
+    }
+    let parsed = serde_json::from_value::<LeaseState>(envelope)?;
     Ok(parsed)
 }
 
@@ -324,6 +355,7 @@ fn save_state(root: &Path, state: &LeaseState) -> Result<()> {
 
 fn save_receipt(root: &Path, lease: &WorktreeLease) -> Result<()> {
     let receipt = WorktreeLeaseReceipt {
+        schema_version: WORKTREE_LEASE_RECEIPT_SCHEMA_VERSION.to_string(),
         worktree_id: lease.worktree_id.clone(),
         path: lease.path.clone(),
         pr: lease.pr,
@@ -416,6 +448,90 @@ mod tests {
             "fresh lease must be included when stale_only=false"
         );
         assert!(candidates.contains("wt-expired-heartbeat-fresh"));
+        Ok(())
+    }
+
+    #[test]
+    fn load_state_rejects_unversioned_envelope() -> Result<()> {
+        // #15383: a state file without `schema_version` would silently deserialize
+        // into the wrong envelope and absorb future struct drift. The load_state
+        // pre-parse guard must reject it with an explicit, named error.
+        let dir = tempfile::tempdir()?;
+        let state_path = dir.path().join(".claude/worktrees/lease-state.json");
+        if let Some(parent) = state_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            &state_path,
+            r#"{"leases":[{"worktree_id":"wt-unversioned","path":"/tmp/x","task_id":"t","pr":1,"branch":"agent/pr-1","base_sha":"0123456789abcdef0123456789abcdef01234567","owner":"o","lease_expiry":"2026-04-30T00:00:00Z","last_heartbeat":"2026-04-30T00:00:00Z"}]}"#,
+        )?;
+        let err = load_state(dir.path()).expect_err("load_state must reject unversioned envelope");
+        let msg = err.to_string();
+        assert!(msg.contains("schema_version"), "error must reference the envelope, got: {msg}");
+        Ok(())
+    }
+
+    #[test]
+    fn load_state_rejects_unknown_schema_version() -> Result<()> {
+        // #15383: a future v2 producer must not be silently accepted as v1.
+        let dir = tempfile::tempdir()?;
+        let state_path = dir.path().join(".claude/worktrees/lease-state.json");
+        if let Some(parent) = state_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            &state_path,
+            r#"{"schema_version":"worktree_lease_state.v9-future","leases":[]}"#,
+        )?;
+        let err =
+            load_state(dir.path()).expect_err("load_state must reject a future schema_version");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unsupported lease state schema_version"),
+            "error must name the rejected envelope, got: {msg}"
+        );
+        assert!(
+            msg.contains(WORKTREE_LEASE_STATE_SCHEMA_VERSION),
+            "error must point to the expected version {:?}, got: {msg}",
+            WORKTREE_LEASE_STATE_SCHEMA_VERSION
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_state_accepts_current_schema_version_with_empty_leases() -> Result<()> {
+        // #15383 regression: load_state must round-trip an empty v1 envelope.
+        let dir = tempfile::tempdir()?;
+        let state_path = dir.path().join(".claude/worktrees/lease-state.json");
+        if let Some(parent) = state_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            &state_path,
+            format!(
+                r#"{{"schema_version":"{}","leases":[]}}"#,
+                WORKTREE_LEASE_STATE_SCHEMA_VERSION
+            ),
+        )?;
+        let state = load_state(dir.path())
+            .expect("current schema_version envelope must round-trip cleanly");
+        assert_eq!(state.schema_version, WORKTREE_LEASE_STATE_SCHEMA_VERSION);
+        assert!(state.leases.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn envelope_consts_match_schema_drift_guard() -> Result<()> {
+        // #15383 + #15385 drift guard: the receipt-side schema_version constant
+        // emitted by the Rust producer must agree byte-for-byte with the JSON
+        // Schema's `const` in .ci/receipts/schemas/worktree-lease.schema.json.
+        let schema_text = include_str!("../../../.ci/receipts/schemas/worktree-lease.schema.json");
+        let expected = format!("\"const\": \"{}\"", WORKTREE_LEASE_RECEIPT_SCHEMA_VERSION);
+        assert!(
+            schema_text.contains(&expected),
+            "JSON schema must pin const {:?}, got schema:\n{schema_text}",
+            WORKTREE_LEASE_RECEIPT_SCHEMA_VERSION
+        );
         Ok(())
     }
 }
