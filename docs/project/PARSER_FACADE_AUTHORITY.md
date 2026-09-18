@@ -19,10 +19,11 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Feature isolation
 
-A declared feature is a production boundary only when it selects dependencies or
-gates `src/`. A feature that gates only test, bench, or example source is a test
-profile, and a feature that gates nothing is taxonomy. Neither may be presented as
-an architectural boundary.
+A declared feature is a production boundary when it selects dependencies, gates
+`src/`, or gates whether a production Cargo target is built through
+`required-features`. A feature that gates only test, bench, or example source is
+a test profile, and a feature that gates nothing is taxonomy. Neither may be
+presented as an architectural boundary.
 
 Production boundaries (11): `anyhow`, `cli`, `default`, `incremental`, `lsp-compat`, `lsp-types`, `modernize`, `perl-line-index`, `tracing`, `workspace`, `workspace_refactor`.
 

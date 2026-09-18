@@ -531,10 +531,11 @@ def render_markdown(ledger: dict[str, Any], summary: dict[str, Any]) -> str:
         f"- Workspace consumers: {summary['consumers']}",
         f"- Unresolved review rows: {summary['unresolved_review_rows']}", "",
         "## Feature isolation", "",
-        "A declared feature is a production boundary only when it selects dependencies or",
-        "gates `src/`. A feature that gates only test, bench, or example source is a test",
-        "profile, and a feature that gates nothing is taxonomy. Neither may be presented as",
-        "an architectural boundary.", "",
+        "A declared feature is a production boundary when it selects dependencies, gates",
+        "`src/`, or gates whether a production Cargo target is built through",
+        "`required-features`. A feature that gates only test, bench, or example source is",
+        "a test profile, and a feature that gates nothing is taxonomy. Neither may be",
+        "presented as an architectural boundary.", "",
         f"Production boundaries ({len(summary['production_boundary_features'])}): "
         + ", ".join(f"`{name}`" for name in summary["production_boundary_features"]) + ".", "",
         f"Test profiles ({len(summary['test_profile_features'])}): "

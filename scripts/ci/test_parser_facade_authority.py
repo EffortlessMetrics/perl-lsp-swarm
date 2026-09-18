@@ -96,9 +96,10 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
 
     def write_fixture(self) -> None:
         self.write_ledger(self.ledger)
-        optional_dependency = next(
+        optional_dependencies = {
             row["name"] for row in self.ledger["dependencies"] if row["optional"]
-        )
+        }
+        optional_dependency = next(iter(sorted(optional_dependencies)))
         features = []
         self.gated_features: list[str] = []
         self.test_gated_features: list[str] = []
@@ -112,7 +113,14 @@ class ParserFacadeAuthorityTests(unittest.TestCase):
             if isolation == "feature_aggregate":
                 value = list(self.ledger["default_features"])
             elif isolation in ("dependencies_and_source", "dependencies_only"):
-                value = [optional_dependency]
+                # A feature named like its own optional dependency must use the
+                # `dep:` form: the bare name would be a cyclic feature, and the
+                # real manifests spell these `dep:anyhow`, `dep:lsp-types`, ...
+                value = (
+                    [f"dep:{name}"]
+                    if name in optional_dependencies
+                    else [optional_dependency]
+                )
             else:
                 value = []
             if isolation in ("dependencies_and_source", "source_only"):
