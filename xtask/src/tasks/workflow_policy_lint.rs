@@ -782,10 +782,13 @@ fn parse_justfile(content: &str) -> JustRecipes {
 /// assignments without `:` (e.g. `export RUST_LOG`) are not modeled.
 fn recipe_header_name(line: &str) -> Option<&str> {
     let colon = line.find(':')?;
-    let name = line[..colon].trim();
-    if name.is_empty() {
+    // A `:=` assignment is not a recipe header.
+    if line.as_bytes().get(colon + 1) == Some(&b'=') {
         return None;
     }
+    // Parameters follow the recipe name (`name param:`); only the first
+    // whitespace-separated word is the recipe identifier.
+    let name = line[..colon].trim().split_whitespace().next()?;
     // A `[settings]` or `export` line would also contain `:`, but those
     // names start with a non-identifier character; gate on a valid recipe
     // identifier so we never confuse the two.
@@ -1030,12 +1033,19 @@ fn workflow_invokes_xtask_cli(
 /// file is absent. The lint treats a missing `justfile` as "no `just` recipes
 /// to resolve through", which is the same verdict the gate had before #15509.
 fn load_project_justfile(root: &Path) -> Result<Option<JustRecipes>> {
-    let path = root.join("justfile");
-    match fs::read_to_string(&path) {
-        Ok(content) => Ok(Some(parse_justfile(&content))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).with_context(|| format!("reading justfile {}", path.display())),
+    // The `just` tool accepts both spellings; without the fallback a project
+    // using only `Justfile` would silently resolve zero recipes.
+    for name in ["justfile", "Justfile"] {
+        let path = root.join(name);
+        match fs::read_to_string(&path) {
+            Ok(content) => return Ok(Some(parse_justfile(&content))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {name} {}", path.display()));
+            }
+        }
     }
+    Ok(None)
 }
 
 /// Filter-pattern syntax GitHub defines differently from shell globbing.
@@ -4517,6 +4527,41 @@ devplane-init:
             vec!["echo tools".to_string()],
             "@ echo-suppression prefix must be stripped from the body line"
         );
+    }
+
+    /// Parameterized recipes (`name param:`) must resolve under their bare
+    /// name, and `:=` assignments must never register as recipes — the
+    /// repo's own justfile parameterizes heavily (`_timed name cmd:`).
+    #[test]
+    fn recipe_header_name_ignores_parameters_and_assignments() {
+        assert_eq!(recipe_header_name("ci-fast:"), Some("ci-fast"));
+        assert_eq!(recipe_header_name("pre-merge-check NUMBER:"), Some("pre-merge-check"));
+        assert_eq!(recipe_header_name("_timed name cmd:"), Some("_timed"));
+        assert_eq!(recipe_header_name("cargo_safe := \"./scripts/cargo-safe\""), None);
+        assert_eq!(recipe_header_name("[private]"), None);
+        assert_eq!(recipe_header_name("no colon here"), None);
+    }
+
+    /// `load_project_justfile` reads `justfile` first and falls back to
+    /// `Justfile` so a capital-J project does not silently resolve zero
+    /// recipes; absence of both still yields `None`.
+    #[test]
+    fn load_project_justfile_prefers_justfile_falls_back_to_justfile() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path();
+
+        assert!(load_project_justfile(root)?.is_none(), "empty dir resolves no recipes");
+
+        fs::write(root.join("Justfile"), "caps-only:\n    echo caps\n")?;
+        let recipes = load_project_justfile(root)?
+            .ok_or_else(|| color_eyre::eyre::eyre!("capital-J Justfile must resolve recipes"))?;
+        assert!(recipes.contains_key("caps-only"), "Justfile recipes must load");
+
+        fs::write(root.join("justfile"), "lower-wins:\n    echo lower\n")?;
+        let recipes = load_project_justfile(root)?
+            .ok_or_else(|| color_eyre::eyre::eyre!("lowercase justfile must resolve recipes"))?;
+        assert!(recipes.contains_key("lower-wins"), "justfile takes precedence");
+        Ok(())
     }
 
     /// The acceptance ladder for #15509:
