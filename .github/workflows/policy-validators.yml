@@ -96,8 +96,130 @@ permissions:
   contents: read
 
 jobs:
+  route:
+    name: Route Policy Validators
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.pull_request.draft != true || github.event_name != 'pull_request'
+    outputs:
+      target: ${{ steps.route.outputs.target }}
+      reason: ${{ steps.route.outputs.reason }}
+      error: ${{ steps.route.outputs.error }}
+      fallback_allowed: ${{ steps.route.outputs.fallback_allowed }}
+    steps:
+      - name: Decide target runner
+        id: route
+        env:
+          GH_TOKEN: ${{ secrets.EM_RUNNER_READ_TOKEN }}
+          ORG: EffortlessMetrics
+          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
+          IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          PR_AUTHOR_LOGIN: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.login || '' }}
+          PR_AUTHOR_TYPE: ${{ github.event_name == 'pull_request' && github.event.pull_request.user.type || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          emit() {
+            local target="$1" reason="$2" error="$3" fallback_allowed="$4"
+            echo "router_target=$target"
+            echo "router_reason=$reason"
+            echo "router_error=$error"
+            echo "router_fallback_allowed=$fallback_allowed"
+            {
+              echo "target=$target"
+              echo "reason=$reason"
+              echo "error=$error"
+              echo "fallback_allowed=$fallback_allowed"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo "### Policy Validators Route"
+              echo ""
+              echo "- router_target: \`$target\`"
+              echo "- router_reason: \`$reason\`"
+              echo "- router_error: \`$error\`"
+              echo "- router_fallback_allowed: \`$fallback_allowed\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          if [ "$IS_FORK_PR" = "true" ]; then
+            emit "github" "fork_pr" "false" "true"
+            exit 0
+          fi
+
+          if [ "$IS_PULL_REQUEST" = "true" ]; then
+            pr_author_login_lc="$(printf '%s' "${PR_AUTHOR_LOGIN:-}" | tr '[:upper:]' '[:lower:]')"
+            pr_author_type_lc="$(printf '%s' "${PR_AUTHOR_TYPE:-}" | tr '[:upper:]' '[:lower:]')"
+            is_bot_pr="false"
+
+            case "$pr_author_login_lc" in
+              dependabot*|app/*|*\[bot\])
+                is_bot_pr="true"
+                ;;
+            esac
+
+            if [ "$pr_author_type_lc" = "bot" ]; then
+              is_bot_pr="true"
+            fi
+
+            if [ "$is_bot_pr" = "true" ]; then
+              emit "github" "bot_pr_github_hosted" "false" "true"
+              exit 0
+            fi
+          fi
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::runner inventory token is unavailable; routing Policy Validators to GitHub-hosted"
+            emit "github" "runner_token_missing_github_hosted" "false" "true"
+            exit 0
+          fi
+
+          response="$(mktemp)"
+          status="$(curl -sS -w '%{http_code}' -o "$response" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/orgs/$ORG/actions/runners?per_page=100" || true)"
+
+          if [ "$status" != "200" ]; then
+            echo "::warning::runner inventory API returned HTTP $status; routing Policy Validators to GitHub-hosted"
+            emit "github" "runner_api_unavailable_github_hosted" "false" "true"
+            exit 0
+          fi
+
+          if ! jq -e '.runners' "$response" >/dev/null 2>&1; then
+            echo "::warning::runner inventory response has no runners list; routing Policy Validators to GitHub-hosted"
+            emit "github" "runner_group_absent_github_hosted" "false" "true"
+            exit 0
+          fi
+
+          idle_nano="$(jq '
+            [ .runners[]?
+              | select(.status == "online")
+              | select(.busy == false)
+              | ([.labels[].name | ascii_downcase] // []) as $have
+              | select(
+                  ($have | index("em-ci")) and
+                  ($have | index("trusted-pr")) and
+                  ($have | index("workflow-nano"))
+                )
+            ] | length
+          ' "$response")"
+
+          echo "idle_nano=${idle_nano:-0}"
+
+          if [ "${idle_nano:-0}" -gt 0 ]; then
+            emit "nano" "nano_idle" "false" "false"
+          else
+            emit "github" "no_idle_runner_github_hosted" "false" "true"
+          fi
+
   validate:
-    name: Validate CI policy ledgers
+    name: Validate CI policy ledgers (self-hosted)
+    needs: route
+    if: >-
+      needs.route.result == 'success' &&
+      needs.route.outputs.target == 'nano'
     runs-on:
       group: em-ci-nano
       labels: [self-hosted, linux, x64, em-ci, trusted-pr, workflow-nano]
@@ -189,3 +311,164 @@ jobs:
       - name: Validate Homebrew formula digest binding
         run: |
           python3 scripts/ci/test_verify_homebrew_formula_digests.py
+
+  validate-hosted:
+    name: Validate CI policy ledgers (GitHub-hosted)
+    needs: route
+    if: >-
+      needs.route.result == 'success' &&
+      needs.route.outputs.target == 'github'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 1
+
+      # ubuntu-24.04 ships python3.12 with tomllib in the stdlib, so the
+      # validators run with system python3 exactly as on em-ci-nano: no
+      # toolchain install, no cargo, checkout only. The step list below is
+      # intentionally identical to `validate`; the route contract test
+      # (scripts/ci/test_policy_validators_route_contract.py) fails the
+      # required aggregate if the two copies drift.
+      - name: Validate risk packs
+        run: |
+          python3 scripts/ci/validate_risk_packs.py --strict
+
+      - name: Validate trust lanes
+        run: |
+          python3 scripts/ci/validate_trust_lanes.py --strict
+
+      - name: Validate gate -> lane mapping
+        run: |
+          workflow_args=()
+          for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [[ -f "$workflow" ]] && workflow_args+=(--workflow "$workflow")
+          done
+          python3 scripts/ci/validate_gate_lane_mapping.py --strict "${workflow_args[@]}"
+
+      - name: Validate policy_checks inventory
+        run: |
+          python3 scripts/ci/test_validate_policy_checks_inventory.py
+          python3 scripts/ci/validate_policy_checks_inventory.py --check
+
+      - name: Validate policy TOML parses
+        run: |
+          python3 - <<'EOF'
+          import sys, tomllib
+          from pathlib import Path
+          failed = []
+          for p in sorted(Path("policy").glob("*.toml")):
+              try:
+                  tomllib.loads(p.read_text(encoding="utf-8"))
+                  print(f"OK: {p}")
+              except tomllib.TOMLDecodeError as e:
+                  failed.append((p, e))
+                  print(f"FAIL: {p}: {e}")
+          sys.exit(1 if failed else 0)
+          EOF
+
+      - name: Validate provider fact-read inventory
+        run: |
+          python3 scripts/ci/validate_provider_fact_reads.py
+
+      - name: Validate Cargo.lock conflict-repair policy
+        run: |
+          python3 scripts/ci/test_validate_cargo_lock_conflict_policy.py
+          python3 scripts/ci/validate_cargo_lock_conflict_policy.py --repo-root .
+
+      - name: Validate Dependabot source contract
+        run: |
+          python3 scripts/ci/test_validate_dependabot_contract.py
+          python3 scripts/ci/validate_dependabot_contract.py --repo-root .
+
+      - name: Validate Dependabot cooldown contract
+        run: |
+          python3 scripts/ci/test_validate_dependabot_cooldown.py
+          python3 scripts/ci/validate_dependabot_cooldown.py --repo-root .
+
+      - name: Validate exposed-surface disposition contract
+        run: |
+          python3 -m unittest scripts/tests/test-validate-exposed-surface-disposition.py
+          python3 scripts/validate-exposed-surface-disposition.py \
+            --authority-catalog docs/releases/exposed-surface-authorities.v1.json \
+            --projection docs/releases/exposed-surface-disposition.v1.json
+
+      - name: Validate bounded-result overflow invariants
+        run: |
+          python3 scripts/ci/check_bounded_result_overflow.py
+
+      - name: Validate parser facade authority
+        run: |
+          python3 scripts/ci/test_parser_facade_authority.py
+          python3 scripts/ci/check_parser_facade_authority.py --check-doc
+
+      # brew-bump.yml only runs on release/dispatch, so its own workflow never
+      # gates a PR. Without this step the digest-to-stanza binding would have a
+      # swapped-digest negative control that never runs (#6013).
+      - name: Validate Homebrew formula digest binding
+        run: |
+          python3 scripts/ci/test_verify_homebrew_formula_digests.py
+
+  validate-result:
+    name: Validate CI policy ledgers
+    needs:
+      - route
+      - validate
+      - validate-hosted
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Prove policy-validators route contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest scripts/ci/test_policy_validators_route_contract.py
+
+      # Fail-closed aggregation: the selected route must have passed and the
+      # unselected implementation must have skipped. Routing failure already
+      # selected hosted capacity above; a validator failure on either route
+      # remains a real failure here.
+      - name: Evaluate routed result
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ needs.route.outputs.target }}"
+          route_result="${{ needs.route.result }}"
+          nano_result="${{ needs.validate.result }}"
+          hosted_result="${{ needs.validate-hosted.result }}"
+          echo "route=$route_result target=$target nano=$nano_result hosted=$hosted_result"
+          if [ "$route_result" != "success" ]; then
+            echo "::error::Policy Validators router did not succeed (result=$route_result)"
+            exit 1
+          fi
+          if [ "$target" = "nano" ]; then
+            if [ "$nano_result" != "success" ]; then
+              echo "::error::self-hosted Policy Validators failed (result=$nano_result)"
+              exit 1
+            fi
+            if [ "$hosted_result" != "skipped" ]; then
+              echo "::error::unselected hosted route must skip (result=$hosted_result)"
+              exit 1
+            fi
+          elif [ "$target" = "github" ]; then
+            if [ "$hosted_result" != "success" ]; then
+              echo "::error::hosted Policy Validators failed (result=$hosted_result)"
+              exit 1
+            fi
+            if [ "$nano_result" != "skipped" ]; then
+              echo "::error::unselected self-hosted route must skip (result=$nano_result)"
+              exit 1
+            fi
+          else
+            echo "::error::unknown router target '$target'"
+            exit 1
+          fi
+          echo "Policy Validators routed result: $target passed, unselected route skipped."

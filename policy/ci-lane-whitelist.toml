@@ -1051,6 +1051,69 @@ review_after = "2026-06-07"
 expires = "2026-11-07"
 
 [[lane]]
+id = "policy_validators_route"
+workflow = ".github/workflows/policy-validators.yml"
+job = "route"
+tier = "frontdoor"
+kind = "control"
+blocking = true
+default_pr = false
+runner = "ubuntu_latest"
+base_lem = 1
+owner = "ci"
+intent = "Route trusted same-repo Policy Validators runs to em-ci-nano only when a matching runner is online and idle; forks, bots, and runner outages fall back to GitHub-hosted without exposing self-hosted capacity."
+failure_mode = "Policy Validators either do not route to available trusted capacity or expose self-hosted capacity to untrusted forks and bots."
+proof_obligation = "Emit router_target, router_reason, router_error, and router_fallback_allowed; fork and bot PRs must select GitHub-hosted."
+evidence = ["job output", "step-summary"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-02-18"
+
+[[lane]]
+id = "policy_validators_hosted"
+workflow = ".github/workflows/policy-validators.yml"
+job = "validate-hosted"
+tier = "frontdoor"
+kind = "hygiene"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 2
+owner = "ci"
+intent = "Run the portable stdlib-only policy validators on GitHub-hosted capacity when the trusted nano runner is unavailable."
+failure_mode = "Runner outages leave portable policy validation without a proof path."
+proof_obligation = "Run the identical validator step list as the self-hosted validate job on ubuntu-24.04 system python3."
+evidence = ["job logs"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-02-18"
+
+[[lane]]
+id = "policy_validators_result"
+workflow = ".github/workflows/policy-validators.yml"
+job = "validate-result"
+tier = "frontdoor"
+kind = "control"
+blocking = true
+default_pr = false
+runner = "ubuntu_latest"
+base_lem = 1
+owner = "ci"
+intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status."
+failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, or a validator failure masks as a routing skip."
+proof_obligation = "Require the selected target to pass and the unselected implementation job to skip; run the route contract test."
+evidence = ["job output", "step-summary"]
+allowed_triggers = ["pull_request", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-02-18"
+
+[[lane]]
 id = "commit_checks"
 workflow = "cargo xtask gates --tier commit"
 job = "(local)"
