@@ -5278,6 +5278,55 @@ mod tests {
         Ok(())
     }
 
+    /// Exact error-variant test for the `PollError` arm of the outcome
+    /// ladder: when the OS has already reaped the child behind the
+    /// `Child` handle's back, `try_wait` reports an OS error instead of
+    /// an exit, and the zero-wait probe must surface `PollError` rather
+    /// than hanging or misreporting `Exited` (#15740,
+    /// ripr gap e389be4dd785a892).
+    ///
+    /// Unix-only: `Child::wait` caches the status so a second `try_wait`
+    /// cannot fail; only a raw `waitpid` reaps without Rust knowing
+    /// (subsequent `try_wait` deterministically returns `ECHILD`).
+    /// Windows keeps reporting the cached exit status instead.
+    /// The nonzero timeout matters: a zero timeout skips the poll loop
+    /// entirely, while one loop turn reaches the `Err` arm that reports
+    /// `PollError`.
+    #[cfg(unix)]
+    #[test]
+    fn wait_outcome_poll_error_after_reap_reports_poll_error() -> Result<(), String> {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::Command;
+
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+        // Raw blocking reap behind the `Child` handle's back: Rust never
+        // learns the exit status, so the probe's `try_wait` hits ECHILD.
+        let pid = child.id();
+        let mut status: libc::c_int = 0;
+        // SAFETY: pid names our own just-spawned child; blocking waitpid
+        // returns only once it is reaped.
+        let reaped = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
+        if reaped < 0 {
+            return Err(format!(
+                "raw waitpid failed to reap fixture child: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let exit_status = <std::process::ExitStatus as ExitStatusExt>::from_raw(status);
+        if !exit_status.success() {
+            return Err("fixture `true` must exit successfully".to_string());
+        }
+        let outcome = DebugAdapter::wait_for_child_exit_with_outcome(
+            &mut child,
+            std::time::Duration::from_millis(250),
+        );
+        if !matches!(outcome, super::ChildExitOutcome::PollError { .. }) {
+            return Err(format!("raw-reaped child must surface PollError, got {outcome:?}"));
+        }
+        Ok(())
+    }
+
     /// `send_interrupt_signal` does not panic for a nonexistent pid on Windows.
     ///
     /// Regression for #4639 defect #2: the old code could call terminate_child_process
