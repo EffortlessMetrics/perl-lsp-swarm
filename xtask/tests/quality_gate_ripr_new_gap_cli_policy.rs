@@ -1063,6 +1063,278 @@ fn quality_gate_cli_blocks_new_ripr_when_review_guidance_is_not_actionable() -> 
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// #15630 — the New Gap Gate must honor an earned, producer-classified
+// `static_limitation` disposition. The hosted analyzer classifies such seams
+// itself ("no concrete activation values observed"; "add analyzer support for
+// local/computed boundary operand resolution before emitting an actionable
+// repair packet"), so no candidate-side proof can clear them and blocking on
+// them wedges PRs on a required check nothing can satisfy. The disposition is
+// only honored when it is earned: from a current `present` guidance receipt,
+// carrying the producer's own classification and a full audit identity.
+// ---------------------------------------------------------------------------
+
+/// Verbatim shape of a hosted ripr 0.10.0 review-guidance item from the
+/// #15630 evidence (PR #13174, `predicate_boundary` family): classified
+/// `static_limitation`, no actionable repair packet emitted.
+fn static_limitation_review_guidance_item(gap_id: &str, line: u64, seam: &str) -> Value {
+    json!({
+        "seam_id": gap_id,
+        "classification": "static_limitation",
+        "grip_class": "weakly_gripped",
+        "kind": "focused_test",
+        "severity": "severe",
+        "placement": {
+            "path": "crates/perl-workspace/src/semantic/quickorm.rs",
+            "line": line,
+            "mode": "exact_seam_line"
+        },
+        "seam": seam,
+        "reason": "No concrete activation values observed for the seam; add analyzer support for local/computed boundary operand resolution before emitting an actionable repair packet",
+        "suggested_test": null
+    })
+}
+
+fn write_static_limitation_review_guidance_receipt(
+    path: &Path,
+    head: &str,
+    items: &[Value],
+) -> TestResult {
+    write_json(
+        path,
+        json!({
+            "schema_version": "0.1",
+            "tool": "ripr",
+            "status": "advisory",
+            "base": "quality-gate-cli-test-base",
+            "base_sha": "quality-gate-cli-test-base-sha",
+            "head": "HEAD",
+            "head_sha": head,
+            "summary": {
+                "comments": items.len(),
+                "summary_only": 0,
+                "suppressed": 0
+            },
+            "comments": items,
+            "summary_only": [],
+            "suppressed": [],
+            "warnings": []
+        }),
+    )
+}
+
+#[test]
+fn quality_gate_cli_passes_when_all_new_gaps_are_earned_static_limitation() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    // Both counted new gaps are the #15630 shape: unreachable through Perl
+    // source, classified static_limitation by the hosted analyzer itself.
+    write_ripr_pr_receipt_classes(&ripr_pr, &head, 0, 2, 0)?;
+    write_static_limitation_review_guidance_receipt(
+        &review,
+        &head,
+        &[
+            static_limitation_review_guidance_item("b541fc52c580a9d9", 700, "predicate_boundary"),
+            static_limitation_review_guidance_item("9e8df55bd6494b91", 690, "predicate_boundary"),
+        ],
+    )?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(
+        output.status.success(),
+        "earned static_limitation dispositions must clear the new-gap gate (stderr: {})",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("pass"));
+    // The seams stay visible and auditable in the receipt.
+    assert_eq!(
+        payload.pointer("/ripr_pr/static_limitation_cleared").and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        payload
+            .pointer("/review_guidance/static_limitation_gaps")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2)
+    );
+    assert!(
+        payload.pointer("/next_actions").and_then(Value::as_array).is_some_and(|actions| {
+            actions.iter().any(|action| {
+                action.get("kind").and_then(Value::as_str)
+                    == Some("ripr_static_limitation_gaps_cleared")
+                    && action.get("blocking").and_then(Value::as_bool) == Some(false)
+            })
+        }),
+        "the cleared seams must remain advisory-visible on the receipt: {payload}"
+    );
+    assert!(
+        !payload.pointer("/next_actions").and_then(Value::as_array).is_some_and(|actions| {
+            actions
+                .iter()
+                .any(|action| action.get("kind").and_then(Value::as_str) == Some("new_ripr_gap"))
+        }),
+        "no new_ripr_gap blocker may remain: {payload}"
+    );
+
+    let markdown = fs::read_to_string(&summary)?;
+    assert!(
+        markdown.contains("static_limitation seams cleared from the basis"),
+        "the summary must disclose the clearing for audit: {markdown}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn quality_gate_cli_still_blocks_genuine_gap_alongside_static_limitation() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    // 3 counted new gaps: 1 genuinely actionable (named with a repair packet)
+    // + 2 static_limitation seams named by the same producer receipt.
+    write_ripr_pr_receipt_classes(&ripr_pr, &head, 0, 3, 0)?;
+    write_static_limitation_review_guidance_receipt(
+        &review,
+        &head,
+        &[
+            static_limitation_review_guidance_item("b541fc52c580a9d9", 700, "predicate_boundary"),
+            static_limitation_review_guidance_item("9e8df55bd6494b91", 690, "predicate_boundary"),
+            actionable_review_guidance_item(),
+        ],
+    )?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(!output.status.success(), "a genuine actionable gap must still fail the new-gap gate");
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("fail"));
+    assert_eq!(
+        payload.pointer("/ripr_pr/static_limitation_cleared").and_then(Value::as_u64),
+        Some(2)
+    );
+    let action = next_action(&payload, "new_ripr_gap")?;
+    assert_eq!(
+        action.get("new_unresolved").and_then(Value::as_u64),
+        Some(1),
+        "blocking count must drop by the two earned dispositions but keep the actionable gap: {action}"
+    );
+    assert_eq!(
+        action.pointer("/static_limitation_cleared").and_then(Value::as_array).map(Vec::len),
+        Some(2),
+        "the reduction must stay auditable on the action: {action}"
+    );
+    assert_blocking_actions_have_repair_contract(&payload)?;
+
+    Ok(())
+}
+
+#[test]
+fn quality_gate_cli_does_not_clear_from_unearned_dispositions() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    write_ripr_pr_receipt_classes(&ripr_pr, &head, 0, 2, 0)?;
+    // Stale guidance receipt: the classification is not earned for this head,
+    // so the gate must keep blocking on the full count.
+    write_static_limitation_review_guidance_receipt(
+        &review,
+        "quality-gate-cli-stale-review-head",
+        &[
+            static_limitation_review_guidance_item("b541fc52c580a9d9", 700, "predicate_boundary"),
+            static_limitation_review_guidance_item("9e8df55bd6494b91", 690, "predicate_boundary"),
+        ],
+    )?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(
+        !output.status.success(),
+        "a static_limitation disposition from a stale receipt must not clear the gate"
+    );
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("fail"));
+    assert_eq!(
+        payload.pointer("/ripr_pr/static_limitation_cleared").and_then(Value::as_u64),
+        Some(0)
+    );
+    let action = next_action(&payload, "new_ripr_gap")?;
+    assert_eq!(action.get("new_unresolved").and_then(Value::as_u64), Some(2));
+    next_action(&payload, "ripr_review_receipt_not_current")?;
+    assert_blocking_actions_have_repair_contract(&payload)?;
+
+    Ok(())
+}
+
+#[test]
+fn quality_gate_cli_does_not_clear_from_unauditable_classification() -> TestResult {
+    let root = repo_root()?;
+    let dir = tempdir()?;
+    let ripr = dir.path().join("ripr-plus.json");
+    let ripr_pr = dir.path().join("repo-exposure.json");
+    let review = dir.path().join("comments.json");
+    let receipt = dir.path().join("quality-gate.json");
+    let summary = dir.path().join("quality-gate.md");
+    let head = current_head(&root)?;
+
+    write_ripr_plus_receipt(&ripr, &head)?;
+    write_ripr_pr_receipt_classes(&ripr_pr, &head, 0, 1, 0)?;
+    // Classified static_limitation but with no resolvable gap identity: the
+    // disposition is not auditable, so it earns no clearing credit.
+    let mut unauditable =
+        static_limitation_review_guidance_item("b541fc52c580a9d9", 700, "predicate_boundary");
+    unauditable.as_object_mut().unwrap().remove("seam_id");
+    write_static_limitation_review_guidance_receipt(&review, &head, &[unauditable])?;
+
+    let output =
+        new_ripr_quality_gate_command(&root, &ripr, &ripr_pr, &review, &receipt, &summary)?
+            .output()?;
+    assert!(
+        !output.status.success(),
+        "an unauditable static_limitation classification must not clear the gate"
+    );
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&receipt)?)?;
+    assert_eq!(payload.pointer("/decision").and_then(Value::as_str), Some("fail"));
+    assert_eq!(
+        payload.pointer("/ripr_pr/static_limitation_cleared").and_then(Value::as_u64),
+        Some(0)
+    );
+    assert_blocking_actions_have_repair_contract(&payload)?;
+
+    Ok(())
+}
+
 fn new_ripr_quality_gate_command(
     root: &Path,
     ripr: &Path,

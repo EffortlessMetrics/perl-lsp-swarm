@@ -2,6 +2,7 @@ use chrono::{NaiveDate, Utc};
 use color_eyre::eyre::{Context, Result, bail};
 use serde::Serialize;
 use serde_yaml_ng::{Mapping, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -43,6 +44,15 @@ const PR_CONTROLLED_TRIGGERS: &[&str] = &[
 /// can be targeted by a custom label alone, without the implicit `self-hosted`
 /// label ever appearing in the workflow file.
 const GITHUB_HOSTED_LABEL_PREFIXES: &[&str] = &["ubuntu-", "windows-", "macos-"];
+
+/// Files every `cargo xtask <subcommand>` invocation routes through.
+///
+/// `xtask/src/main.rs` is the clap dispatch and `xtask/src/tasks/mod.rs` is the
+/// module registration it reaches subcommands through. `mod tasks;` is declared
+/// in `main.rs`, not `lib.rs`, so both compile into the default `xtask` binary
+/// and into no other target. A paths-filtered gate that runs a subcommand but
+/// omits them cannot observe a change to its own dispatch (#14293).
+const XTASK_CLI_WIRING_FILES: &[&str] = &["xtask/src/main.rs", "xtask/src/tasks/mod.rs"];
 
 const ALLOWLIST_PR_CONTENTS_WRITE: &[&str] = &["ci.yml", "ci-nightly.yml", "droid-review.yml"];
 const POLICY_WARN_UNPINNED_ACTIONS: bool = true;
@@ -98,6 +108,7 @@ const ALLOWLIST_WORKFLOW_LANE_MISSING: &[&str] = &[
 
 #[derive(Debug, Clone)]
 pub struct WorkflowPolicyLintConfig {
+    pub root: Option<PathBuf>,
     pub receipt: Option<PathBuf>,
     pub fixture: Option<PathBuf>,
     /// Run the per-workflow lane-whitelist check against
@@ -122,41 +133,113 @@ struct WorkflowPolicyReceipt {
     error_count: usize,
     warning_count: usize,
     issues: Vec<LintIssue>,
+    subject: WorkflowPolicySubject,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorkflowPolicySubject {
+    mode: &'static str,
+    selection: &'static str,
+    path_identity_sha256: Option<String>,
+    workflow_file_count: usize,
+    scan_completed: bool,
+    lane_whitelist_requested: bool,
+    isolation_registry_requested: bool,
+}
+
+fn subject_path_identity(path: &Path) -> String {
+    Sha256::digest(path.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn lint_selected_subject(
+    config: &WorkflowPolicyLintConfig,
+    default_root: impl FnOnce() -> Result<PathBuf>,
+    subject: &mut WorkflowPolicySubject,
+    issues: &mut Vec<LintIssue>,
+) -> Result<()> {
+    if let Some(fixture) = &config.fixture {
+        if config.root.is_some() || config.check_lane_whitelist {
+            bail!("fixture mode cannot select a repository root or lane-whitelist check");
+        }
+        let canonical_fixture =
+            fixture.canonicalize().wrap_err("resolving workflow-policy fixture")?;
+        subject.path_identity_sha256 = Some(subject_path_identity(&canonical_fixture));
+        lint_workflow_file(fixture, true, issues)?;
+        subject.workflow_file_count = 1;
+    } else {
+        let root = match &config.root {
+            Some(root) => root.clone(),
+            None => default_root()?,
+        };
+        let root = root.canonicalize().wrap_err("resolving selected workflow-policy root")?;
+        if !root.is_dir() {
+            bail!("selected workflow-policy root is not a directory");
+        }
+        subject.path_identity_sha256 = Some(subject_path_identity(&root));
+        let workflows_dir = root.join(".github").join("workflows");
+        let mut workflows = Vec::new();
+        for entry in fs::read_dir(&workflows_dir)
+            .wrap_err("reading .github/workflows under selected workflow-policy root")?
+        {
+            let path = entry.wrap_err("reading workflow inventory entry")?.path();
+            if matches!(path.extension().and_then(|value| value.to_str()), Some("yml" | "yaml")) {
+                workflows.push(path);
+            }
+        }
+        if workflows.is_empty() {
+            bail!("selected workflow-policy root has no .yml or .yaml workflows");
+        }
+        workflows.sort();
+        for path in workflows {
+            lint_workflow_file(&path, false, issues)?;
+            subject.workflow_file_count += 1;
+        }
+        if config.check_lane_whitelist {
+            check_lane_whitelist(&root, issues)?;
+        }
+        check_self_hosted_isolation(&root, Utc::now().date_naive(), issues)?;
+    }
+    subject.scan_completed = true;
+    Ok(())
 }
 
 pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
-    let root = project_root()?;
+    run_with_default_root(config, project_root)
+}
+
+fn run_with_default_root(
+    config: WorkflowPolicyLintConfig,
+    default_root: impl FnOnce() -> Result<PathBuf>,
+) -> Result<()> {
+    let mut subject = WorkflowPolicySubject {
+        mode: if config.fixture.is_some() { "fixture" } else { "repository" },
+        selection: if config.fixture.is_some() {
+            "fixture"
+        } else if config.root.is_some() {
+            "explicit_root"
+        } else {
+            "compiled_root"
+        },
+        path_identity_sha256: None,
+        workflow_file_count: 0,
+        scan_completed: false,
+        lane_whitelist_requested: config.check_lane_whitelist,
+        isolation_registry_requested: config.fixture.is_none(),
+    };
     let mut issues = Vec::new();
-
-    if let Some(fixture) = config.fixture {
-        lint_workflow_file(&fixture, true, &mut issues)?;
-    } else {
-        let workflows_dir = root.join(".github").join("workflows");
-        if workflows_dir.exists() {
-            for entry in fs::read_dir(&workflows_dir)
-                .with_context(|| format!("reading {}", workflows_dir.display()))?
-            {
-                let path = entry.context("reading workflow entry")?.path();
-                let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
-                    continue;
-                };
-                if ext != "yml" && ext != "yaml" {
-                    continue;
-                }
-                lint_workflow_file(&path, false, &mut issues)?;
-            }
-        }
-
-        if config.check_lane_whitelist {
-            check_lane_whitelist(&root, &mut issues)?;
-        }
-
-        // Unconditional: routing pull-request-controlled code onto self-hosted
-        // capacity is a trust-boundary question, not a lane-economics one, so it
-        // is not gated behind `--check-lane-whitelist` (#15070, under #7414).
-        check_self_hosted_isolation(&root, Utc::now().date_naive(), &mut issues)?;
+    let scan_result = lint_selected_subject(&config, default_root, &mut subject, &mut issues);
+    if scan_result.is_err() {
+        issues.push(LintIssue {
+            level: "error",
+            code: "WORKFLOW_POLICY_INPUT_UNAVAILABLE",
+            workflow: "<subject>".to_string(),
+            message: "selected inputs could not be evaluated; see the command diagnostic"
+                .to_string(),
+        });
     }
-
     issues.sort_by(|left, right| {
         (&left.level, &left.workflow, &left.code, &left.message).cmp(&(
             &right.level,
@@ -183,6 +266,7 @@ pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
             error_count,
             warning_count,
             issues,
+            subject,
         };
         if let Some(parent) = receipt_path.parent() {
             fs::create_dir_all(parent)
@@ -194,6 +278,7 @@ pub fn run(config: WorkflowPolicyLintConfig) -> Result<()> {
         println!("Workflow policy lint receipt written: {}", receipt_path.display());
     }
 
+    scan_result.wrap_err("workflow policy lint instrument failure")?;
     if !passed {
         bail!(
             "workflow policy lint failed with {} error(s) and {} warning(s)",
@@ -334,7 +419,327 @@ fn lint_workflow_file(path: &Path, is_fixture: bool, issues: &mut Vec<LintIssue>
         }
     }
 
+    if workflow_invokes_xtask_cli(&workflow) {
+        for (trigger, paths) in triggers_with_paths_filters(&workflow) {
+            let missing = XTASK_CLI_WIRING_FILES
+                .iter()
+                .filter(|wiring| !paths_filter_covers(&paths, wiring))
+                .copied()
+                .collect::<Vec<_>>();
+            if missing.is_empty() {
+                continue;
+            }
+            issues.push(LintIssue {
+                level: "error",
+                code: "XTASK_CLI_WIRING_PATHS",
+                workflow: workflow_name.clone(),
+                message: format!(
+                    "trigger '{trigger}' runs an xtask CLI subcommand but its paths filter omits {}; a change to the CLI wiring would skip this gate",
+                    missing.join(", ")
+                ),
+            });
+        }
+    }
+
     Ok(())
+}
+
+/// Words that may precede `cargo` while still executing it.
+const COMMAND_WRAPPERS: &[&str] = &["sudo", "env", "time", "exec", "nice", "command"];
+
+/// Whether a `run:` script invokes the default `xtask` binary's CLI.
+///
+/// Detection is on the command in command position, not on substrings, so
+/// prose that merely names the command — a `#` comment line inside a block
+/// scalar, or `echo 'run cargo xtask foo locally'` — is not an invocation. The
+/// finding this feeds is error-level, so a false positive would block an
+/// otherwise valid workflow change.
+///
+/// What counts as the CLI is decided by what links `main.rs`:
+///
+/// - `cargo xtask <sub>` and `cargo run {-p,--package} xtask ... -- <sub>` do;
+/// - so does `--bin xtask`, because `xtask/src/main.rs` *is* the `xtask` bin —
+///   only another `--bin <name>` or an `--example` selects a different target;
+/// - `cargo test -p xtask` compiles test targets rather than the dispatch.
+///
+/// Known limitation: an invocation reached indirectly, through a `just` recipe
+/// or another script, is not visible here. See #14293 for the residual claim.
+fn command_invokes_xtask_cli(script: &str) -> bool {
+    shell_commands(script).iter().any(|command| command_tokens_invoke_xtask_cli(command))
+}
+
+/// Split a `run:` script into candidate commands.
+///
+/// Backslash continuations are joined so one logical command may span lines,
+/// `&&`, `||`, `|` and `;` begin a new command, and comment lines are dropped.
+fn shell_commands(script: &str) -> Vec<Vec<String>> {
+    let mut joined = String::new();
+    for line in script.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        match line.strip_suffix('\\') {
+            Some(continued) => {
+                joined.push_str(continued);
+                joined.push(' ');
+            }
+            None => {
+                joined.push_str(line);
+                joined.push('\n');
+            }
+        }
+    }
+    let mut segments = Vec::new();
+    let mut segment = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut characters = joined.chars().peekable();
+    while let Some(character) = characters.next() {
+        if escaped {
+            segment.push(character);
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && quote != Some('\'') {
+            segment.push(character);
+            escaped = true;
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            segment.push(character);
+            if character == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        if character == '\'' || character == '"' {
+            quote = Some(character);
+            segment.push(character);
+        } else if matches!(character, '\n' | ';' | '|')
+            || (character == '&' && characters.peek() == Some(&'&'))
+        {
+            if character == '&' {
+                characters.next();
+            }
+            segments.push(std::mem::take(&mut segment));
+        } else {
+            segment.push(character);
+        }
+    }
+    segments.push(segment);
+    segments
+        .iter()
+        .map(|segment| segment.split_whitespace().map(str::to_string).collect::<Vec<String>>())
+        .filter(|tokens| !tokens.is_empty())
+        .collect()
+}
+
+/// Whether a token is a shell variable assignment such as `RUST_LOG=debug`.
+fn is_env_assignment(token: &str) -> bool {
+    match token.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty() && name.chars().all(|byte| byte.is_ascii_alphanumeric() || byte == '_')
+        }
+        None => false,
+    }
+}
+
+/// Whether these tokens run the `xtask` CLI, ignoring anything in front of the
+/// command that does not change what runs.
+///
+/// A leading assignment (`RUST_LOG=debug cargo …`) and a wrapper together with
+/// its own options and their arguments (`env A=1`, `sudo -E`, `nice -n 10`) are
+/// consumed first. Skipping only the wrapper's name would leave a non-`cargo`
+/// token in command position and silently miss the invocation.
+fn command_tokens_invoke_xtask_cli(tokens: &[String]) -> bool {
+    let mut rest = tokens;
+    loop {
+        let Some(first) = rest.first().map(String::as_str) else {
+            return false;
+        };
+        if is_env_assignment(first) {
+            rest = &rest[1..];
+            continue;
+        }
+        if COMMAND_WRAPPERS.contains(&first) {
+            rest = &rest[1..];
+            // The wrapper's own options, their values, and any assignments it
+            // carries sit between it and the real command.
+            while let Some(next) = rest.first().map(String::as_str) {
+                let is_option_or_value = next.starts_with('-')
+                    || is_env_assignment(next)
+                    || next.chars().all(|byte| byte.is_ascii_digit());
+                if is_option_or_value {
+                    rest = &rest[1..];
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+        break;
+    }
+    let Some((command, args)) = rest.split_first() else {
+        return false;
+    };
+    if command != "cargo" {
+        return false;
+    }
+    // `cargo +stable xtask …` pins a toolchain; it does not change what runs.
+    let args = match args.split_first() {
+        Some((first, tail)) if first.starts_with('+') => tail,
+        _ => args,
+    };
+    // Cargo's own options may precede the subcommand without changing it.
+    let args = skip_cargo_global_options(args);
+    if selects_another_target(args) {
+        return false;
+    }
+    match args.first().map(String::as_str) {
+        // `cargo xtask [<sub>]` — the alias form.
+        Some("xtask") => true,
+        // `cargo run {-p,--package} xtask [flags] -- <sub>`, or the same
+        // selected by manifest path.
+        Some("run") => {
+            let names_package = args
+                .windows(2)
+                .any(|pair| (pair[0] == "-p" || pair[0] == "--package") && pair[1] == "xtask")
+                || args.iter().any(|arg| {
+                    arg == "-pxtask"
+                        || arg == "--package=xtask"
+                        || arg.ends_with("xtask/Cargo.toml")
+                });
+            names_package && args.iter().any(|arg| arg == "--")
+        }
+        _ => false,
+    }
+}
+
+/// Cargo options accepted before the subcommand that consume a separate value.
+const CARGO_GLOBAL_OPTIONS_WITH_VALUE: &[&str] = &["--color", "--config", "--explain", "-Z", "-C"];
+
+/// Skip cargo's own options, which sit between `cargo` and its subcommand
+/// without changing which subcommand runs — `cargo --offline xtask …`,
+/// `cargo -q run -p xtask -- …`, `cargo --color always xtask …`.
+///
+/// Stops at the first argument that is not an option, which is the subcommand.
+/// A subcommand's own `--bin`/`--example` therefore stays visible to
+/// [`selects_another_target`].
+fn skip_cargo_global_options(mut args: &[String]) -> &[String] {
+    while let Some(first) = args.first().map(String::as_str) {
+        if !first.starts_with('-') {
+            break;
+        }
+        let takes_value = CARGO_GLOBAL_OPTIONS_WITH_VALUE.contains(&first);
+        args = &args[1..];
+        if takes_value && !args.is_empty() {
+            args = &args[1..];
+        }
+    }
+    args
+}
+
+/// Whether the arguments select a build target other than the default `xtask`
+/// binary. `--bin xtask` names `xtask/src/main.rs` itself, so it is not another
+/// target.
+fn selects_another_target(args: &[String]) -> bool {
+    for (index, arg) in args.iter().enumerate() {
+        if arg == "--example" || arg.starts_with("--example=") {
+            return true;
+        }
+        if let Some(name) = arg.strip_prefix("--bin=") {
+            return name != "xtask";
+        }
+        if arg == "--bin" {
+            return args.get(index + 1).map(String::as_str) != Some("xtask");
+        }
+    }
+    false
+}
+
+/// Whether any step in any job of this workflow runs the `xtask` CLI.
+fn workflow_invokes_xtask_cli(workflow: &Value) -> bool {
+    let Some(jobs) = workflow.get("jobs").and_then(Value::as_mapping) else {
+        return false;
+    };
+    jobs.values().any(|job| {
+        job.get("steps").and_then(Value::as_sequence).is_some_and(|steps| {
+            steps.iter().any(|step| {
+                step.get("run").and_then(Value::as_str).is_some_and(command_invokes_xtask_cli)
+            })
+        })
+    })
+}
+
+/// Filter-pattern syntax GitHub defines differently from shell globbing.
+///
+/// GitHub reads `?` and `+` as quantifiers on the *preceding* character and
+/// restricts `[...]` to simple ranges, whereas the `glob` crate reads `?` as
+/// any single character, `+` as a literal, and `[...]` as a POSIX class. A
+/// pattern using these cannot be evaluated faithfully here.
+const GITHUB_SPECIFIC_PATTERN_SYNTAX: &[char] = &['?', '+', '['];
+
+/// Whether a `paths:` allowlist selects `target`.
+///
+/// Entries are filter patterns, not literals: `xtask/**` already covers both
+/// wiring files, so requiring them to be spelled out would be a false positive.
+/// Later entries win, which is how a `!` exclusion takes a file back out of an
+/// earlier glob.
+///
+/// Only the `*`/`**`/`!` forms shared with shell globbing are evaluated, which
+/// is every form this repository's filters use. A pattern that does not parse,
+/// or that uses the GitHub-specific syntax above, cannot be shown to cover
+/// anything and so is not treated as coverage — the rule then asks for the
+/// wiring file explicitly rather than returning a verdict it cannot justify.
+fn paths_filter_covers(paths: &[String], target: &str) -> bool {
+    let options = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
+    let mut covered = false;
+    for entry in paths {
+        let (negated, raw) = match entry.strip_prefix('!') {
+            Some(rest) => (true, rest),
+            None => (false, entry.as_str()),
+        };
+        if raw.contains(GITHUB_SPECIFIC_PATTERN_SYNTAX) {
+            covered &= !negated;
+            continue;
+        }
+        let Ok(pattern) = glob::Pattern::new(raw) else {
+            covered &= !negated;
+            continue;
+        };
+        if pattern.matches_with(target, options) {
+            covered = !negated;
+        }
+    }
+    covered
+}
+
+/// Every trigger carrying a `paths:` allowlist, with its entries.
+///
+/// `paths-ignore:` is deliberately out of scope: it is a denylist, so omitting
+/// a file from it cannot cause the gate to be skipped.
+fn triggers_with_paths_filters(workflow: &Value) -> Vec<(String, Vec<String>)> {
+    let Some(on) = workflow_on(workflow).and_then(Value::as_mapping) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (trigger, config) in on {
+        let Some(name) = trigger.as_str() else {
+            continue;
+        };
+        let Some(paths) = config.get("paths").and_then(Value::as_sequence) else {
+            continue;
+        };
+        let entries =
+            paths.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>();
+        found.push((name.to_string(), entries));
+    }
+    found
 }
 
 fn is_contents_write_allowlisted(workflow_name: &str) -> bool {
@@ -395,7 +800,7 @@ fn default_write_scopes(workflow: &Value) -> Vec<String> {
     }
 }
 
-fn workflow_on(workflow: &Value) -> Option<&Value> {
+pub(crate) fn workflow_on(workflow: &Value) -> Option<&Value> {
     workflow.as_mapping()?.iter().find_map(|(key, value)| match key {
         Value::String(key) if key == "on" => Some(value),
         Value::Bool(true) => Some(value),
@@ -403,7 +808,7 @@ fn workflow_on(workflow: &Value) -> Option<&Value> {
     })
 }
 
-fn triggers(workflow: &Value) -> Vec<String> {
+pub(crate) fn triggers(workflow: &Value) -> Vec<String> {
     let Some(on) = workflow_on(workflow) else {
         return Vec::new();
     };
@@ -419,11 +824,11 @@ fn triggers(workflow: &Value) -> Vec<String> {
     }
 }
 
-fn is_pull_request(triggers: &[String]) -> bool {
+pub(crate) fn is_pull_request(triggers: &[String]) -> bool {
     triggers.iter().any(|trigger| trigger == "pull_request")
 }
 
-fn is_pull_request_target(triggers: &[String]) -> bool {
+pub(crate) fn is_pull_request_target(triggers: &[String]) -> bool {
     triggers.iter().any(|trigger| trigger == "pull_request_target")
 }
 
@@ -480,7 +885,7 @@ fn job_has_contents_write_permission(job: &Mapping) -> bool {
         .is_some_and(|value| value == "write")
 }
 
-fn job_is_statically_excluded_from_pr(job: &Mapping) -> bool {
+pub(crate) fn job_is_statically_excluded_from_pr(job: &Mapping) -> bool {
     let Some(condition) = job.get(Value::String("if".to_string())).and_then(Value::as_str) else {
         return false;
     };
@@ -494,7 +899,7 @@ fn job_is_statically_excluded_from_pr(job: &Mapping) -> bool {
     condition_excludes_pull_request(condition)
 }
 
-fn condition_excludes_pull_request(condition: &str) -> bool {
+pub(crate) fn condition_excludes_pull_request(condition: &str) -> bool {
     let Some(condition) = strip_outer_parentheses(condition) else {
         return false;
     };
@@ -554,7 +959,7 @@ fn term_is_trusted_event_equality(term: &str) -> bool {
     )
 }
 
-fn split_top_level<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str>> {
+pub(crate) fn split_top_level<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str>> {
     let mut parts = Vec::new();
     let mut start = 0;
     let mut index = 0;
@@ -608,7 +1013,7 @@ fn split_top_level<'a>(condition: &'a str, operator: &str) -> Option<Vec<&'a str
     Some(parts)
 }
 
-fn strip_outer_parentheses(mut expression: &str) -> Option<&str> {
+pub(crate) fn strip_outer_parentheses(mut expression: &str) -> Option<&str> {
     loop {
         expression = expression.trim();
         if expression.is_empty() {
@@ -891,11 +1296,6 @@ pub(crate) fn is_sha_pinned(uses: &str) -> bool {
 /// happens only after a calibration window.
 fn check_lane_whitelist(root: &Path, issues: &mut Vec<LintIssue>) -> Result<()> {
     let whitelist_path = root.join("policy").join("ci-lane-whitelist.toml");
-    if !whitelist_path.exists() {
-        // Whitelist not present in this repo; silently skip rather than failing.
-        return Ok(());
-    }
-
     let whitelist_text = fs::read_to_string(&whitelist_path)
         .with_context(|| format!("reading {}", whitelist_path.display()))?;
     let whitelist: toml::Value = toml::from_str(&whitelist_text)
@@ -1694,10 +2094,584 @@ fn check_self_hosted_isolation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use color_eyre::eyre::ensure;
+
+    const CLEAN_SUBJECT_WORKFLOW: &str = "on: push\npermissions: read-all\njobs:\n  check:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo checked\n";
+
+    fn subject_config(root: Option<PathBuf>, receipt: &Path) -> WorkflowPolicyLintConfig {
+        WorkflowPolicyLintConfig {
+            root,
+            receipt: Some(receipt.to_path_buf()),
+            fixture: None,
+            check_lane_whitelist: false,
+        }
+    }
+
+    fn subject_receipt(path: &Path) -> Result<serde_json::Value> {
+        Ok(serde_json::from_slice(&fs::read(path)?)?)
+    }
+
+    fn write_subject_workflow(root: &Path, content: impl AsRef<[u8]>) -> Result<()> {
+        let workflows = root.join(".github/workflows");
+        fs::create_dir_all(&workflows)?;
+        fs::write(workflows.join("subject.yml"), content)?;
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_unavailable_subject_replaces_stale_success() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let parent = temporary.path();
+        fs::write(parent.join("file-root"), "not a directory")?;
+        fs::create_dir(parent.join("missing-workflows"))?;
+        fs::create_dir_all(parent.join("empty/.github/workflows"))?;
+        fs::write(parent.join("empty/.github/workflows/README.md"), "not a workflow")?;
+        fs::create_dir_all(parent.join("directory-yaml/.github/workflows/subject.yml"))?;
+        write_subject_workflow(&parent.join("unreadable-yaml"), [0xff])?;
+        for name in [
+            "missing",
+            "file-root",
+            "missing-workflows",
+            "empty",
+            "directory-yaml",
+            "unreadable-yaml",
+        ] {
+            let receipt = parent.join("receipt.json");
+            fs::write(&receipt, r#"{"passed":true}"#)?;
+            let result =
+                run_with_default_root(subject_config(Some(parent.join(name)), &receipt), || {
+                    bail!("explicit root unexpectedly consulted the default")
+                });
+            ensure!(result.is_err(), "unavailable subject {name} passed");
+            let evidence = subject_receipt(&receipt)?;
+            ensure!(evidence["passed"] == false, "stale success survived for {name}");
+            ensure!(
+                evidence["subject"]["scan_completed"] == false,
+                "incomplete scan claimed completion"
+            );
+            ensure!(
+                evidence["subject"]["workflow_file_count"] == 0,
+                "unreadable workflow counted as evaluated"
+            );
+            ensure!(evidence["schema_version"] == "1.0.0", "receipt version changed");
+            ensure!(
+                evidence["issues"].as_array().is_some_and(|issues| issues
+                    .iter()
+                    .any(|issue| issue["code"] == "WORKFLOW_POLICY_INPUT_UNAVAILABLE")),
+                "instrument failure absent from receipt"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_explicit_root_overrides_unavailable_default() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("selected");
+        let receipt = temporary.path().join("receipt.json");
+        write_subject_workflow(&root, CLEAN_SUBJECT_WORKFLOW)?;
+        run_with_default_root(subject_config(Some(root.clone()), &receipt), || {
+            bail!("explicit root unexpectedly consulted the default")
+        })?;
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(evidence["passed"] == true, "clean explicit root failed");
+        ensure!(evidence["subject"]["selection"] == "explicit_root", "wrong root selection");
+        ensure!(evidence["subject"]["workflow_file_count"] == 1, "workflow denominator missing");
+        ensure!(
+            evidence["subject"]["path_identity_sha256"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64),
+            "root identity missing"
+        );
+        let missing = temporary.path().join("removed-build-root");
+        ensure!(
+            run_with_default_root(subject_config(None, &receipt), || Ok(missing)).is_err(),
+            "unavailable compiled root passed"
+        );
+        ensure!(
+            subject_receipt(&receipt)?["passed"] == false,
+            "default root failure retained success"
+        );
+        run_with_default_root(subject_config(None, &receipt), || Ok(root.clone()))?;
+        write_subject_workflow(&root, CLEAN_SUBJECT_WORKFLOW.replace("read-all", "write-all"))?;
+        ensure!(
+            run_with_default_root(subject_config(Some(root), &receipt), || bail!(
+                "default consulted"
+            ))
+            .is_err(),
+            "selected workflow violation passed"
+        );
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(
+            evidence["subject"]["scan_completed"] == true,
+            "policy failure misclassified as instrument failure"
+        );
+        ensure!(
+            evidence["issues"].as_array().is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "WRITE_ALL_PERMISSIONS")),
+            "wrong root or missing policy finding"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_fixture_has_no_repository_authority() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let fixture = temporary.path().join("fixture.yml");
+        let receipt = temporary.path().join("receipt.json");
+        fs::write(&fixture, CLEAN_SUBJECT_WORKFLOW)?;
+        let mut config = subject_config(None, &receipt);
+        config.fixture = Some(fixture);
+        run_with_default_root(config.clone(), || {
+            bail!("fixture consulted unavailable default root")
+        })?;
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(evidence["passed"] == true, "clean fixture failed");
+        ensure!(evidence["subject"]["mode"] == "fixture", "fixture claims repository authority");
+        ensure!(evidence["subject"]["workflow_file_count"] == 1, "fixture count differs");
+        ensure!(
+            evidence["subject"]["isolation_registry_requested"] == false,
+            "fixture claims isolation coverage"
+        );
+        config.root = Some(temporary.path().to_path_buf());
+        ensure!(
+            run_with_default_root(config.clone(), || bail!("default consulted")).is_err(),
+            "ambiguous fixture root accepted"
+        );
+        config.root = None;
+        config.check_lane_whitelist = true;
+        ensure!(
+            run_with_default_root(config, || bail!("default consulted")).is_err(),
+            "fixture silently ignores requested policy"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn workflow_policy_required_lane_input_preserves_advisory_and_isolation_rules() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("selected");
+        let receipt = temporary.path().join("receipt.json");
+        write_subject_workflow(&root, CLEAN_SUBJECT_WORKFLOW)?;
+        let mut config = subject_config(Some(root.clone()), &receipt);
+        config.check_lane_whitelist = true;
+        ensure!(
+            run_with_default_root(config.clone(), || bail!("default consulted")).is_err(),
+            "missing requested policy passed"
+        );
+        fs::create_dir(root.join("policy"))?;
+        fs::write(root.join("policy/ci-lane-whitelist.toml"), "[malformed")?;
+        ensure!(
+            run_with_default_root(config.clone(), || bail!("default consulted")).is_err(),
+            "malformed requested policy passed"
+        );
+        fs::write(root.join("policy/ci-lane-whitelist.toml"), "lane = []\n")?;
+        run_with_default_root(config.clone(), || bail!("default consulted"))?;
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(evidence["passed"] == true, "advisory findings became errors");
+        ensure!(
+            evidence["issues"].as_array().is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "LANE_WHITELIST_MISSING")),
+            "advisory coverage silently skipped"
+        );
+        write_subject_workflow(
+            &root,
+            CLEAN_SUBJECT_WORKFLOW
+                .replace("on: push", "on: pull_request")
+                .replace("ubuntu-24.04", "self-hosted"),
+        )?;
+        config.check_lane_whitelist = false;
+        ensure!(
+            run_with_default_root(config, || bail!("default consulted")).is_err(),
+            "missing isolation registry cleared self-hosted PR job"
+        );
+        let evidence = subject_receipt(&receipt)?;
+        ensure!(
+            evidence["subject"]["scan_completed"] == true,
+            "absent isolation registry became an input error"
+        );
+        ensure!(
+            evidence["issues"].as_array().is_some_and(|issues| issues
+                .iter()
+                .any(|issue| issue["code"] == "SELF_HOSTED_ISOLATION_UNDECLARED")),
+            "missing isolation profile was not denied"
+        );
+        Ok(())
+    }
 
     fn fixture_path(name: &str) -> Result<PathBuf> {
         let root = project_root()?;
         Ok(root.join("xtask/tests/fixtures/workflow-policy").join(name))
+    }
+
+    fn wiring_issues(name: &str) -> Result<Vec<LintIssue>> {
+        let path = fixture_path(name)?;
+        let mut issues = Vec::new();
+        lint_workflow_file(&path, true, &mut issues)?;
+        Ok(issues.into_iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect())
+    }
+
+    #[test]
+    fn xtask_cli_paths_missing_wiring_is_reported() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_missing_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        let message = &issues[0].message;
+        assert_eq!(issues[0].level, "error");
+        assert!(message.contains("pull_request"), "names the trigger: {message}");
+        assert!(message.contains("xtask/src/main.rs"), "names the missing file: {message}");
+        assert!(message.contains("xtask/src/tasks/mod.rs"), "names the missing file: {message}");
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_paths_complete_wiring_passes() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_paths_complete_wiring.yml")?.is_empty(),
+            "an enumerated filter is accepted, including the `cargo run -p xtask --` spelling"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_partial_wiring_reports_only_the_missing_file() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_partial_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("xtask/src/tasks/mod.rs"), "names what is missing: {message}");
+        assert!(
+            !message.contains("xtask/src/main.rs"),
+            "does not name the file that is already listed: {message}"
+        );
+        Ok(())
+    }
+
+    /// `--bin` selects a standalone target. `mod tasks;` is declared in
+    /// `xtask/src/main.rs`, so neither wiring file is compiled into that
+    /// binary and requiring them would be a false positive.
+    #[test]
+    fn xtask_bin_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(wiring_issues("xtask_bin_paths_missing_wiring.yml")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_test_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(wiring_issues("xtask_test_paths_missing_wiring.yml")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_without_paths_filter_is_not_reported() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_no_paths_filter.yml")?.is_empty(),
+            "an unfiltered trigger always runs; there is no filter to omit from"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_obligation_is_per_trigger() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_push_paths_missing_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "only the incomplete trigger is reported: {issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("push"), "names the incomplete trigger: {message}");
+        assert!(
+            !message.contains("pull_request"),
+            "does not report the complete trigger: {message}"
+        );
+        Ok(())
+    }
+
+    /// Spelling must not decide the verdict. A missed invocation leaves a gate
+    /// silently unenumerated, which is the failure this rule exists to prevent.
+    #[test]
+    fn xtask_cli_is_detected_through_tabs_and_bare_invocation() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_tab_and_bare.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn commented_out_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_commented_invocation.yml")?.is_empty(),
+            "a documented command in a comment is prose, not a dependency"
+        );
+        Ok(())
+    }
+
+    /// Assignments and wrapper options do not change what runs, so each of
+    /// these is still a CLI claim.
+    #[test]
+    fn wrapped_invocations_are_cli_claims() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_wrapped_invocation.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        Ok(())
+    }
+
+    /// The standing inventory of invocation spellings.
+    ///
+    /// Every defect found in this detector so far has been the same shape: a
+    /// spelling nobody enumerated. The shipped-tree ratchet cannot catch that,
+    /// because it asks the detector itself what counts as an invocation. This
+    /// table is the independent half — it fixes what each spelling *means*
+    /// against Cargo's documented behaviour, so extending the detector means
+    /// adding a row here rather than rediscovering the class.
+    ///
+    /// Each case is asserted on its own. A fixture with several jobs passes on
+    /// any one of them, which would hide a missed form.
+    #[test]
+    fn cli_invocation_spellings_are_classified_by_what_they_run() {
+        // Reaches `xtask/src/main.rs`, so the wiring files are a dependency.
+        let runs_the_cli = [
+            "cargo xtask example-contract check",
+            "cargo xtask",
+            "cargo xtask\texample-contract check",
+            "cargo run -p xtask --locked -- example-contract check",
+            "cargo run --package xtask --locked -- example-contract check",
+            "cargo run -p xtask --bin xtask -- example-contract check",
+            "cargo run --manifest-path xtask/Cargo.toml -- example-contract check",
+            "cargo +stable xtask example-contract check",
+            "cargo +nightly run -p xtask -- example-contract check",
+            "cargo --offline xtask example-contract check",
+            "cargo -q run -p xtask -- example-contract check",
+            "cargo --color always xtask example-contract check",
+            "cargo +stable --locked xtask example-contract check",
+            "RUST_LOG=debug cargo xtask example-contract check",
+            "env RUST_LOG=debug cargo xtask example-contract check",
+            "sudo -E cargo xtask example-contract check",
+            "nice -n 10 cargo xtask example-contract check",
+            "make build && cargo xtask example-contract check",
+        ];
+        // Reaches a different target, or is not a command at all.
+        let does_not_run_the_cli = [
+            "cargo run -p xtask --bin generated-status-contract -- --check",
+            "cargo run -p xtask --example public_beta_experience -- --check",
+            "cargo test -p xtask --locked --test example_contract",
+            "cargo build -p xtask",
+            "cargo +stable test -p xtask",
+            "cargo --offline test -p xtask",
+            "cargo -q build -p xtask",
+            "cargo --color always run -p xtask --bin other -- check",
+            "echo 'run cargo xtask example-contract check locally'",
+            "echo -n 10 cargo xtask example-contract check",
+            "# cargo xtask example-contract check",
+            "just ci-metrics-ratchet",
+        ];
+
+        for script in runs_the_cli {
+            assert!(command_invokes_xtask_cli(script), "should be a CLI claim: {script}");
+        }
+        for script in does_not_run_the_cli {
+            assert!(!command_invokes_xtask_cli(script), "should not be a CLI claim: {script}");
+        }
+    }
+
+    #[test]
+    fn echoed_invocation_is_not_a_cli_claim() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_echoed_invocation.yml")?.is_empty(),
+            "printing the command as advice is not running it"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn quoted_separators_do_not_invent_cli_invocations() -> Result<()> {
+        for separator in [";", "&&", "||", "|"] {
+            for quote in ['\'', '"'] {
+                let advice = format!(
+                    "echo {quote}Run local checks{separator} cargo xtask workflows check before pushing{quote}"
+                );
+                if command_invokes_xtask_cli(&advice) {
+                    bail!("quoted advice was classified as an invocation: {advice}");
+                }
+                let invocation =
+                    format!("echo {quote}ready{quote}{separator} cargo xtask workflows check");
+                if !command_invokes_xtask_cli(&invocation) {
+                    bail!("an unquoted separator hid the invocation: {invocation}");
+                }
+            }
+        }
+        for advice in [
+            r#"echo "Say \"ready; cargo xtask workflows check\" locally""#,
+            r"echo ready\; cargo xtask workflows check",
+        ] {
+            if command_invokes_xtask_cli(advice) {
+                bail!("escaped advice was classified as an invocation: {advice}");
+            }
+        }
+        Ok(())
+    }
+
+    /// `xtask/src/main.rs` is the `xtask` bin, `--package` is the long `-p`,
+    /// and a command may span backslash continuations. Each still reaches the
+    /// dispatch this rule guards.
+    #[test]
+    fn default_bin_long_package_and_continuations_are_cli_claims() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_default_bin_and_long_package.yml")?;
+        assert_eq!(issues.len(), 1, "one finding for the one paths-filtered trigger: {issues:?}");
+        Ok(())
+    }
+
+    /// Kills the mutant that drops `require_literal_separator`: with it off,
+    /// `xtask/*` would wrongly appear to reach `xtask/src/main.rs`.
+    #[test]
+    fn single_star_does_not_cross_a_path_separator() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_single_star.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        for wiring in ["xtask/src/main.rs", "xtask/src/tasks/mod.rs"] {
+            assert!(message.contains(wiring), "`xtask/*` reaches neither file: {message}");
+        }
+        Ok(())
+    }
+
+    /// GitHub's `?`/`+` are quantifiers on the preceding character; the glob
+    /// crate disagrees. An unevaluable pattern must not be read as coverage.
+    #[test]
+    fn github_specific_pattern_syntax_is_not_counted_as_coverage() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_github_syntax.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("xtask/src/main.rs"), "the unevaluable pattern: {message}");
+        assert!(
+            !message.contains("xtask/src/tasks/mod.rs"),
+            "the plain literal beside it still covers: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_exclusions_invalidate_coverage_in_order() -> Result<()> {
+        for target in XTASK_CLI_WIRING_FILES {
+            for exclusion in ["!xtask/**/[a-z]*.rs", "!xtask/**/m?*.rs", "!xtask/**/m+*.rs"] {
+                let mut paths = vec!["xtask/**".to_string(), exclusion.to_string()];
+                if paths_filter_covers(&paths, target) {
+                    bail!("unsupported exclusion {exclusion} retained coverage for {target}");
+                }
+                paths.push(target.to_string());
+                if !paths_filter_covers(&paths, target) {
+                    bail!("explicit later inclusion did not restore coverage for {target}");
+                }
+                paths.push(exclusion.to_string());
+                if paths_filter_covers(&paths, target) {
+                    bail!("repeated exclusion {exclusion} retained coverage for {target}");
+                }
+            }
+            let paths = vec![target.to_string(), "xtask/**/[a-z]*.rs".to_string()];
+            if !paths_filter_covers(&paths, target) {
+                bail!("unsupported positive erased proven coverage for {target}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_exclusion_is_reported_by_workflow_lint() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("unsupported-exclusion.yml");
+        for restore_main in [false, true] {
+            let mut paths = vec![
+                "xtask/**".to_string(),
+                "!xtask/src/[a-z]*.rs".to_string(),
+                "xtask/src/tasks/mod.rs".to_string(),
+            ];
+            if restore_main {
+                paths.push("xtask/src/main.rs".to_string());
+            }
+            let workflow = serde_json::json!({
+                "name": "unsupported-exclusion",
+                "on": {"pull_request": {"paths": paths}},
+                "permissions": {"contents": "read"},
+                "jobs": {"contract": {
+                    "runs-on": "ubuntu-latest",
+                    "steps": [{"run": "cargo xtask example-contract check"}]
+                }}
+            });
+            fs::write(&path, serde_yaml_ng::to_string(&workflow)?)?;
+            let mut issues = Vec::new();
+            lint_workflow_file(&path, true, &mut issues)?;
+            let wiring: Vec<_> =
+                issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+            if restore_main {
+                if !wiring.is_empty() {
+                    bail!("explicit re-inclusion still reported missing wiring: {wiring:?}");
+                }
+            } else {
+                let finding = wiring.first().ok_or_else(|| {
+                    color_eyre::eyre::eyre!("unsupported exclusion produced no wiring finding")
+                })?;
+                if wiring.len() != 1
+                    || finding.level != "error"
+                    || !finding.message.contains("xtask/src/main.rs")
+                    || finding.message.contains("xtask/src/tasks/mod.rs")
+                {
+                    bail!("expected only the excluded main.rs wiring finding: {wiring:?}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_may_be_covered_by_a_glob() -> Result<()> {
+        assert!(
+            wiring_issues("xtask_cli_paths_glob_wiring.yml")?.is_empty(),
+            "`xtask/**` already selects both wiring files"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_glob_must_actually_reach_the_file() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_narrow_glob.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(
+            message.contains("xtask/src/main.rs"),
+            "`xtask/src/tasks/**` does not reach main.rs: {message}"
+        );
+        assert!(
+            !message.contains("xtask/src/tasks/mod.rs"),
+            "but it does reach tasks/mod.rs: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn xtask_cli_wiring_excluded_by_negation_is_reported() -> Result<()> {
+        let issues = wiring_issues("xtask_cli_paths_negated_wiring.yml")?;
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let message = &issues[0].message;
+        assert!(message.contains("xtask/src/main.rs"), "the excluded file: {message}");
+        assert!(!message.contains("xtask/src/tasks/mod.rs"), "still covered: {message}");
+        Ok(())
+    }
+
+    /// The claim #14293 actually makes, asserted against the shipped
+    /// workflows rather than fixtures: no paths-filtered gate that routes
+    /// through the xtask CLI may omit the wiring files it depends on.
+    #[test]
+    fn shipped_workflows_enumerate_xtask_cli_wiring() -> Result<()> {
+        let workflows_dir = project_root()?.join(".github").join("workflows");
+        let mut issues = Vec::new();
+        for entry in fs::read_dir(&workflows_dir)? {
+            let path = entry?.path();
+            let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if ext != "yml" && ext != "yaml" {
+                continue;
+            }
+            lint_workflow_file(&path, false, &mut issues)?;
+        }
+        let wiring: Vec<_> =
+            issues.iter().filter(|issue| issue.code == "XTASK_CLI_WIRING_PATHS").collect();
+        assert!(wiring.is_empty(), "workflows with an unenumerated CLI dependency: {wiring:#?}");
+        Ok(())
     }
 
     #[test]

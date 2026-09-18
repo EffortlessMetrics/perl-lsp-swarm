@@ -144,7 +144,7 @@ pub(super) use used_modules::collect_used_module_names;
 mod tests {
     use super::*;
     use perl_parser_core::Parser;
-    use perl_tdd_support::{must, must_some};
+    use perl_test_must::{must, must_some};
 
     /// Regression test for #1700: an unresolvable export tag must not silently
     /// discard the explicit symbols collected alongside it.
@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(authorities.len(), 1);
         assert_eq!(authorities[0].module, "Foo");
         assert_eq!(authorities[0].symbols, HashSet::from(["bar".to_string()]));
-        assert!(authorities[0].end <= code.find("\nbar").unwrap());
+        assert!(authorities[0].end <= must_some(code.find("\nbar")));
     }
 
     #[test]
