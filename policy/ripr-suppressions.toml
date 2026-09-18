@@ -4694,3 +4694,66 @@ created = "2026-09-17"
 review_after = "2026-10-17"
 expires = "2026-10-31"
 removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces field_construction declaration lines to the tests that exercise their owning type, when the module gains a live adapter with traceable call seams and the declaration suppressions can narrow, or at expiry. Narrow immediately if a receipt reports a reachable_unrevealed or other-classified seam under xtask/src/writer_preflight/. Evidence basis: ripr run 35195292770 quality-gate receipt (95 no_static_path, 0 reachable_unrevealed on this diff)."
+
+# -----------------------------------------------------------------------------
+# QuickORM table-package facts declaration probes (PR #13174, issue #13120):
+# the same ripr#1429 declaration-line class already accepted for this
+# repository's siblings (ripr-suppress-15615-outbound-settlement-declaration-
+# probes, ripr-suppress-quickorm-api-reference-registry, the writer-preflight
+# entry above).
+#
+# PR #13174 adds crates/perl-workspace/src/semantic/quickorm.rs (the bounded
+# DBIx::QuickORM table-package fact extractor) and re-exports
+# GeneratedMemberFact through semantic/mod.rs. The hosted ripr lane (run
+# 35280473400, merge preview b021dcb72, base 41b643642) reports exactly five
+# no_static_path probes, all stop_reason no_changed_rust_line:
+#   - semantic/mod.rs:55 `pub(crate) use ...GeneratedMemberFact;` — a
+#     re-export declaration; type-identity plumbing the compiler pins, with
+#     the fact surface exercised by semantic_facade_wrappers_compose_core_
+#     and_quickorm_facts and crates/perl-workspace/tests/quickorm_generated_
+#     member.rs / quickorm_workspace_receipt.rs.
+#   - semantic/quickorm.rs:26 `const QORM_TABLE_MEMBER: &str = "qorm_table";`
+#     — the member-name constant is pinned by the User::qorm_table canonical-
+#     name assertions in src/semantic/quickorm/tests.rs and by
+#     quickorm_qorm_table_reaches_generated_member_surfaces.
+#   - semantic/quickorm.rs:121-123 WalkContext { current_package,
+#     table_package_authority, shadowed_builders } — walker state fields whose
+#     population/reset/authority gates are driven end-to-end by
+#     a_second_import_fails_the_package_closed_without_affecting_its_neighbour,
+#     a_package_switch_inside_the_table_builder_emits_no_candidates, and
+#     a_package_inside_a_deferred_definition_does_not_leak_to_the_outer_walk.
+# Declaration lines have no function body to trace into; constructor-only
+# tests would be proof theatre. reachable_unrevealed is 0 on the same
+# receipt, and the run's three changed-line guidance comments (the
+# classify_import_shape string-boundary predicates at quickorm.rs:684/694)
+# are already answered by classify_import_shape_source_pair_boundary_
+# discriminators plus the two cross-extractor disagreement tests from head
+# fbb6abb25 — infection_unknown is advisory and does not gate.
+#
+# Identity key: `gap_ids` lists the five probe identities from that receipt.
+# Path + classification are additional filters, not the selector. A future
+# executable no_static_path seam in these files with a different probe id
+# stays visible. `kind` is descriptive metadata, not a declaration selector.
+# -----------------------------------------------------------------------------
+[[suppress]]
+id = "ripr-suppress-13174-quickorm-table-facts-declaration-probes"
+kind = "declaration_line_no_static_path"
+paths = [
+  "crates/perl-workspace/src/semantic/mod.rs",
+  "crates/perl-workspace/src/semantic/quickorm.rs",
+]
+classification = ["no_static_path"]
+gap_ids = [
+  "probe:crates_perl-workspace_src_semantic_mod.rs:call_deletion:f4831bf8",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:a18218ae",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:ece0cd6f",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:3968903b",
+  "probe:crates_perl-workspace_src_semantic_quickorm.rs:field_construction:67cd7e77",
+]
+owner = "proof-lane"
+issue = "EffortlessMetrics/ripr#1429"
+reason = "PR #13174 (#13120): five no_static_path probes, all stop_reason no_changed_rust_line, on run 35280473400 at merge preview b021dcb72 (base 41b643642, branch head fbb6abb25). One call_deletion probe is the semantic/mod.rs:55 pub(crate) GeneratedMemberFact re-export (compiler-pinned type plumbing; the fact surface is exercised by semantic_facade_wrappers_compose_core_and_quickorm_facts and the tests/quickorm_generated_member.rs plus tests/quickorm_workspace_receipt.rs integration suites). Four are declaration lines of the new semantic/quickorm.rs: the QORM_TABLE_MEMBER const whose qorm_table member name is pinned by the User::qorm_table canonical-name assertions in src/semantic/quickorm/tests.rs and quickorm_qorm_table_reaches_generated_member_surfaces, and the three WalkContext state fields (current_package, table_package_authority, shadowed_builders) whose authority/shadowing/package-reset logic is driven end-to-end by a_second_import_fails_the_package_closed_without_affecting_its_neighbour, a_package_switch_inside_the_table_builder_emits_no_candidates, and a_package_inside_a_deferred_definition_does_not_leak_to_the_outer_walk. Declaration lines have no function body to trace into; constructor-only tests would be proof theatre. Same ripr#1429 declaration-line class as ripr-suppress-15615-outbound-settlement-declaration-probes and the writer-preflight entry. reachable_unrevealed is 0 on the same receipt. Selector is the five gap_ids from that receipt, not the path; classification-qualified to no_static_path. A future executable no_static_path seam in these files with a different probe id stays visible. kind is descriptive metadata, not a declaration selector."
+created = "2026-09-17"
+review_after = "2026-10-17"
+expires = "2026-12-31"
+removal_criteria = "Remove when EffortlessMetrics/ripr#1429 traces declaration-line probes to the tests that construct or exercise their owners, or at expiry. Narrow immediately if a receipt reports an executable no_static_path seam in semantic/mod.rs or semantic/quickorm.rs outside the five identities listed in gap_ids. Do not keep this entry if those probe ids rotate and the receipt names a different executable owner."
