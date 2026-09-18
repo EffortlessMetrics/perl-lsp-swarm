@@ -300,6 +300,11 @@ struct Shared {
     /// Coordinates intake (batch produced / outbox space freed) with the
     /// dispatcher. Both condvars wait on the same state mutex.
     handoff_cv: Condvar,
+    /// Generation bumped on every `handoff_cv` notification while the state
+    /// lock is held. Test waiters record it before their lock-free predicate
+    /// check and re-verify after acquiring the lock, so a notification that
+    /// lands in between cannot be missed.
+    handoff_gen: AtomicU64,
     /// Set when the callback closure panicked mid-dispatch. Admissions then
     /// report [`WatcherAdmission::Unavailable`] instead of pretending work is
     /// still queueable behind a dead dispatcher.
@@ -746,7 +751,7 @@ impl FileWatcherDebouncer {
         guard.heap.clear();
         shared.stats.pending_subjects.store(0, Ordering::SeqCst);
         shared.intake_cv.notify_all();
-        shared.handoff_cv.notify_all();
+        shared.notify_handoff_all();
     }
 }
 
@@ -773,6 +778,7 @@ fn make_shared(
         }),
         intake_cv: Condvar::new(),
         handoff_cv: Condvar::new(),
+        handoff_gen: AtomicU64::new(0),
         sink_panic: AtomicBool::new(false),
         clock,
         interval_ms,
@@ -814,6 +820,25 @@ fn join_worker(handle: JoinHandle<()>) {
     let _ = handle.join();
 }
 
+impl Shared {
+    /// Wake all handoff waiters and record the wakeup. Callers must hold
+    /// `state`: the generation bump only pairs with its notification when
+    /// both happen under the lock. Every `handoff_cv` notification must route
+    /// through here (or [`Shared::notify_handoff_one`]) so test waiters can
+    /// detect wakeups that land between their predicate check and wait.
+    fn notify_handoff_all(&self) {
+        self.handoff_gen.fetch_add(1, Ordering::SeqCst);
+        self.handoff_cv.notify_all();
+    }
+
+    /// Wake one handoff waiter and record the wakeup. Same lock contract as
+    /// [`Shared::notify_handoff_all`].
+    fn notify_handoff_one(&self) {
+        self.handoff_gen.fetch_add(1, Ordering::SeqCst);
+        self.handoff_cv.notify_one();
+    }
+}
+
 fn halt_workers(
     shared: &Shared,
     intake: Option<JoinHandle<()>>,
@@ -823,7 +848,7 @@ fn halt_workers(
         let mut guard = shared.state.lock();
         guard.shutting_down = true;
         shared.intake_cv.notify_all();
-        shared.handoff_cv.notify_all();
+        shared.notify_handoff_all();
     }
     if let Some(handle) = intake {
         join_worker(handle);
@@ -864,7 +889,7 @@ fn intake_loop(shared: Arc<Shared>) {
                     shared.stats.active_subjects.fetch_add(due.len(), Ordering::SeqCst);
                     guard.outbox.push_back(due);
                     shared.stats.pending_subjects.store(guard.subjects.len(), Ordering::SeqCst);
-                    shared.handoff_cv.notify_one();
+                    shared.notify_handoff_one();
                 }
                 continue;
             }
@@ -926,12 +951,12 @@ where
                     }
                     {
                         let _relock = shared.state.lock();
-                        shared.handoff_cv.notify_all();
+                        shared.notify_handoff_all();
                     }
                     return;
                 }
                 guard = shared.state.lock();
-                shared.handoff_cv.notify_all();
+                shared.notify_handoff_all();
             }
             None => {
                 if guard.shutting_down {
@@ -983,7 +1008,7 @@ mod tests {
             let _state = self.shared.state.lock();
             self.clock.advance_millis(millis);
             self.shared.intake_cv.notify_all();
-            self.shared.handoff_cv.notify_all();
+            self.shared.notify_handoff_all();
         }
 
         fn wait_for(&self, predicate: impl Fn() -> bool, label: &str) {
@@ -995,6 +1020,12 @@ mod tests {
             // on scheduler luck for poll cadence.
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
+                // Predicates read pressure(), which takes the state lock, so
+                // the check cannot run under it (parking_lot mutexes are not
+                // reentrant). The generation recorded here closes the
+                // check-then-wait window instead: any notification in between
+                // bumped the counter under that same lock.
+                let seen = self.shared.handoff_gen.load(Ordering::SeqCst);
                 if predicate() {
                     return;
                 }
@@ -1004,6 +1035,12 @@ mod tests {
                     return;
                 }
                 let mut guard = self.shared.state.lock();
+                if self.shared.handoff_gen.load(Ordering::SeqCst) != seen {
+                    // A handoff landed between the predicate check and the
+                    // lock: state moved, so re-evaluate instead of waiting.
+                    drop(guard);
+                    continue;
+                }
                 let _timed_out = self.shared.handoff_cv.wait_for(&mut guard, remaining);
                 drop(guard);
             }
@@ -1031,6 +1068,35 @@ mod tests {
         let sink_delivered = Arc::clone(&delivered);
         let sink = move |uris: Vec<String>| sink_delivered.lock().push(uris);
         (delivered, sink)
+    }
+
+    #[test]
+    fn handoff_generation_records_every_notification() {
+        let harness = Harness::with_sink(|_| {});
+        assert_eq!(
+            harness.shared.handoff_gen.load(Ordering::SeqCst),
+            0,
+            "fresh harness starts at generation zero"
+        );
+        for i in 0..10u32 {
+            assert_eq!(
+                harness.debouncer.try_schedule(&format!("file:///gen/{i}.pl")),
+                WatcherAdmission::Accepted
+            );
+        }
+        harness.advance(101);
+        harness.wait_for(
+            || harness.debouncer.pressure().pending_subjects == 0,
+            "generation drain",
+        );
+        // shutdown_now joins both workers, so every worker notification has
+        // landed by the time it returns; the final load is race-free.
+        harness.debouncer.shutdown_now();
+        let recorded = harness.shared.handoff_gen.load(Ordering::SeqCst);
+        assert!(
+            recorded >= 3,
+            "advance, worker batch production, and shutdown must each record a wakeup, got {recorded}"
+        );
     }
 
     #[test]
