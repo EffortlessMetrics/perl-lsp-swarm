@@ -385,6 +385,20 @@ fn validate_status_production(triage: &str, verify: &str) -> Result<(), String> 
     if !positions.windows(2).all(|window| window[0] < window[1]) {
         return Err("status-production action precedence changed".into());
     }
+    let action_1_context = unique_position(
+        &order,
+        "The run counts only when its workflow and reporting identity can publish the missing required context",
+    )?;
+    if !(positions[0] < action_1_context && action_1_context < positions[1]) {
+        return Err("Action 1 lost its required-context binding".into());
+    }
+    let action_4_context = unique_position(
+        &order,
+        "Rerun only a run whose workflow and reporting identity can publish the missing required context",
+    )?;
+    if !(positions[3] < action_4_context && action_4_context < positions[4]) {
+        return Err("Action 4 lost its required-context binding".into());
+    }
     require_all(
         &order,
         &[
@@ -721,6 +735,16 @@ fn provider_status_production_is_single_sourced_and_persistent() -> Result<(), D
         );
         assert_ne!(duplicate_action, verify);
         assert!(validate_status_production(&triage, &duplicate_action).is_err());
+
+        let unbound_action_1 =
+            verify.replacen("The run counts only", "Runs count whenever any workflow exists,", 1);
+        assert_ne!(unbound_action_1, verify);
+        assert!(validate_status_production(&triage, &unbound_action_1).is_err());
+
+        let unbound_action_4 =
+            verify.replacen("Rerun only a run whose", "Rerun every completed run regardless of", 1);
+        assert_ne!(unbound_action_4, verify);
+        assert!(validate_status_production(&triage, &unbound_action_4).is_err());
 
         let minted = format!("{verify}\nFRESH_INTEGRATION_SUBJECT_REQUIRED\n");
         assert!(validate_status_production(&triage, &minted).is_err());
