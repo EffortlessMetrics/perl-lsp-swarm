@@ -183,8 +183,7 @@ macro_rules! define_field_ids {
     ($(($constant:ident, $name:literal)),+ $(,)?) => {
         impl FieldId {
             $(
-/// Field identifier for the canonical name
-                #[doc = concat!("`", $name, "`")]
+                #[doc = concat!("Field identifier for the canonical name `", $name, "`")]
                 pub const $constant: Self = Self($name);
             )+
 
