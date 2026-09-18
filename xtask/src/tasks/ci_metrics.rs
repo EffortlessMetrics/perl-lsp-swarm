@@ -421,11 +421,7 @@ pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: Path
     // baseline for a branch the repository does not have. This guards
     // against the long-standing `master` default that returned zero rows on
     // the `main` branch without recording why.
-    let branch = if branch.is_empty() {
-        resolve_default_branch(&root)?
-    } else {
-        branch
-    };
+    let branch = if branch.is_empty() { resolve_default_branch(&root)? } else { branch };
 
     let runs_json = run_gh_command(
         &root,
@@ -779,12 +775,7 @@ fn parse_default_branch(raw: &str) -> Result<String> {
 /// "branch not found" diagnostic.
 fn branch_exists(root: &Path, branch: &str) -> Result<bool> {
     let repo = parse_repo_info(root)?;
-    let endpoint = format!(
-        "repos/{}/{}/branches/{}",
-        repo.owner.login,
-        repo.name,
-        branch,
-    );
+    let endpoint = format!("repos/{}/{}/branches/{}", repo.owner.login, repo.name, branch,);
 
     let status = Command::new("gh")
         .current_dir(root)
@@ -1059,10 +1050,7 @@ mod tests {
     fn parse_default_branch_errors_when_default_branch_ref_absent() {
         let raw = r#"{}"#;
         let result = parse_default_branch(raw);
-        assert!(
-            result.is_err(),
-            "expected an error when defaultBranchRef is missing"
-        );
+        assert!(result.is_err(), "expected an error when defaultBranchRef is missing");
     }
 
     /// A malformed payload (the kind a transient `gh` failure produces)
@@ -1072,10 +1060,7 @@ mod tests {
     fn parse_default_branch_errors_on_garbage_input() {
         let raw = "this is not json";
         let result = parse_default_branch(raw);
-        assert!(
-            result.is_err(),
-            "expected an error when payload is not valid JSON"
-        );
+        assert!(result.is_err(), "expected an error when payload is not valid JSON");
     }
 
     /// `build_baseline_report` must accept an empty run slice without
@@ -1090,10 +1075,7 @@ mod tests {
         let runs: Vec<Value> = Vec::new();
 
         let report = build_baseline_report("main", 1, generated_at, cutoff, &runs);
-        assert!(
-            report.is_none(),
-            "expected no report when zero rows are fetched"
-        );
+        assert!(report.is_none(), "expected no report when zero rows are fetched");
 
         Ok(())
     }
