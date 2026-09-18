@@ -128,7 +128,10 @@ fn scenario_58_guard_condition_inline_completion_quality_stdio() -> Result<()> {
     let harness = create_harness()?;
     harness.open_file(RETURN_GUARD_PATH, RETURN_GUARD_SOURCE)?;
     harness.open_file(NEXT_GUARD_PATH, NEXT_GUARD_SOURCE)?;
-    std::thread::sleep(Duration::from_millis(250));
+    // Same readiness race as #15870: synchronize on the server's own
+    // analysis-readiness signal instead of a fixed sleep.
+    let _ = harness.wait_for_diagnostics(RETURN_GUARD_PATH, Duration::from_secs(30));
+    let _ = harness.wait_for_diagnostics(NEXT_GUARD_PATH, Duration::from_secs(30));
 
     assert!(
         wait_for_inline_registration(&harness),
