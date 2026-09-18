@@ -217,4 +217,3 @@ fn test_find_perl_interpreter_env_resilience() {
 
     // Just verify it doesn't panic on various inputs
 }
-

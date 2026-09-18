@@ -1454,4 +1454,3 @@ fn fixture_stop_markers_resolve_to_distinct_executable_lines() -> ProofResult<()
     }
     Ok(())
 }
-

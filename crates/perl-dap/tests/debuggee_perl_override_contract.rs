@@ -243,4 +243,3 @@ fn attach_does_not_resolve_launch_pin_during_initialization() -> Result<(), Box<
     session.disconnect()?;
     Ok(())
 }
-

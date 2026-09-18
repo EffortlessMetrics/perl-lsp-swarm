@@ -604,4 +604,3 @@ fn handle_scopes_extreme_frame_id_i32_max_returns_zero_refs() {
         assert_eq!(vars_ref, 0, "i32::MAX frame_id should yield ref=0 (no children)");
     }
 }
-

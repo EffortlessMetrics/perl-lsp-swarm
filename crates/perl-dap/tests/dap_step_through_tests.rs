@@ -885,5 +885,3 @@ fn test_many_consecutive_step_operations() -> Result<(), Box<dyn std::error::Err
     }
     Ok(())
 }
-
-

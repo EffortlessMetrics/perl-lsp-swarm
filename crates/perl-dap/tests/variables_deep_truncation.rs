@@ -464,4 +464,3 @@ mod real_session_fixture_tests {
         Ok(())
     }
 }
-

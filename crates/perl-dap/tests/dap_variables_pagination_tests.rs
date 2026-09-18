@@ -81,4 +81,3 @@ fn variables_response_body_round_trip_with_total_variables()
     );
     Ok(())
 }
-

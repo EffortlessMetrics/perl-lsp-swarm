@@ -1500,4 +1500,3 @@ fn brief_format_covers_all_variants_in_preview() -> Result<(), Box<dyn std::erro
     assert!(rendered.value.contains("<error: err>"));
     Ok(())
 }
-

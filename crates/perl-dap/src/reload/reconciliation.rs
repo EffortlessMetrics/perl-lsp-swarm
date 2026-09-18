@@ -503,12 +503,12 @@ impl ReloadSessionWiring {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use perl_test_must::must_with;
     use crate::reload::LoadedModuleReloadEligibility;
     use crate::reload::transaction::{
         IndeterminateCause, PreMutationFailureCause, ReloadTransactionPhase,
     };
     use crate::reload_family::{LOADED_MODULE_RELOAD_FAMILY, LOADED_MODULE_RELOAD_FAMILY_VERSION};
+    use perl_test_must::must_with;
     use serde_json::Value;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;

@@ -328,4 +328,3 @@ fn peer_protocol_malformed_payload_matches_debugger_control_category() {
     assert_eq!(peer.error_class(), debugger.error_class());
     assert_ne!(debugger.origin(), peer.origin());
 }
-

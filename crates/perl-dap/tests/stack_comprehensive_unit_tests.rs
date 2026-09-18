@@ -1009,4 +1009,3 @@ fn stack_frame_deserialize_with_all_fields() -> Result<(), serde_json::Error> {
     );
     Ok(())
 }
-

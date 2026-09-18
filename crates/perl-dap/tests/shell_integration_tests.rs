@@ -209,4 +209,3 @@ fn environment_and_args_work_together() {
     assert_eq!(args[1], "-d");
     assert!(args[2].contains("my script.pl"));
 }
-

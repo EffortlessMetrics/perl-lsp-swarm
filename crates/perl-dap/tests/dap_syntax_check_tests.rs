@@ -366,4 +366,3 @@ fn test_launch_reports_missing_module_with_install_hint() -> Result<(), Box<dyn 
     }
     Ok(())
 }
-

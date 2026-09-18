@@ -382,4 +382,3 @@ fn test_undef_values_safe() {
         "undef type_name should be 'undef', not 'SCALAR'"
     );
 }
-

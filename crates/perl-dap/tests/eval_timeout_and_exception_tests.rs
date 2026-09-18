@@ -500,4 +500,3 @@ fn regression_package_qualified_still_safe() -> Result<(), ValidationError> {
     ok("Baz::Qux::exec()")?;
     Ok(())
 }
-

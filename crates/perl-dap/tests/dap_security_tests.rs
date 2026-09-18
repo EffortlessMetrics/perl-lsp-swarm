@@ -82,4 +82,3 @@ fn test_privilege_separation() {
         assert!(pid > 0);
     }
 }
-

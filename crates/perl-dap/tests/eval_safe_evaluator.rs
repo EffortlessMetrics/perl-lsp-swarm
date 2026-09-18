@@ -620,4 +620,3 @@ fn qw_safe() -> Result<(), ValidationError> {
     ok("qw(foo bar baz)")?;
     Ok(())
 }
-

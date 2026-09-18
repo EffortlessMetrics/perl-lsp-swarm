@@ -188,4 +188,3 @@ fn test_dap_server_construction() -> Result<()> {
     assert!(server.is_ok(), "DapServer should be constructible");
     Ok(())
 }
-

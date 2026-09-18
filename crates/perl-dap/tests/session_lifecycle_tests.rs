@@ -1820,4 +1820,3 @@ fn test_attach_config_stop_on_entry_field() -> Result<(), Box<dyn std::error::Er
     assert_eq!(default_config.stop_on_entry, None);
     Ok(())
 }
-

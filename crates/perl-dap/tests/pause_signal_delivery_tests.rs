@@ -254,4 +254,3 @@ fn test_pause_pid_attach_is_unsupported_without_signaling_parent()
     }
     Ok(())
 }
-

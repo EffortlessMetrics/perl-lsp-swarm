@@ -749,4 +749,3 @@ fn test_adversarial_evalresult_negative_counter_rejected() -> Result<(), Box<dyn
     assert_eq!(result_min, None, "EvalResult{{counter: i32::MIN}} encode must return None");
     Ok(())
 }
-

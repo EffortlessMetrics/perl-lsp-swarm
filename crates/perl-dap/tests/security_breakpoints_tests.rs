@@ -115,4 +115,3 @@ fn test_set_breakpoints_rejects_carriage_returns_in_condition() -> TestResult {
     }
     Ok(())
 }
-

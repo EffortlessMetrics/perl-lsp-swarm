@@ -525,4 +525,3 @@ fn resolve_perl_path_with_toolchain_falls_back_to_path() -> TestResult {
     }
     Ok(())
 }
-

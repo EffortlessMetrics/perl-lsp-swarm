@@ -126,5 +126,3 @@ fn conditional_breakpoint_entry_is_refused_and_never_installs_on_live_session() 
 
     Ok(())
 }
-
-

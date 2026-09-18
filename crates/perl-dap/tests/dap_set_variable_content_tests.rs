@@ -540,4 +540,3 @@ fn test_set_variable_newline_in_name_rejected() -> TestResult {
     }
     Ok(())
 }
-

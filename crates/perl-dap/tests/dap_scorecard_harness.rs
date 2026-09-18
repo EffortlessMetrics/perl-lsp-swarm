@@ -16,8 +16,8 @@
 mod common;
 
 use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, perl_available, workflow_timeout};
-use perl_dap::{DapMessage, DebugAdapter};
 use perl_dap::debug_adapter::DapMessageWithEpoch;
+use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::transport::framing::frame;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -666,4 +666,3 @@ fn scorecard_launch_success_rate() -> TestResult {
 
     Ok(())
 }
-

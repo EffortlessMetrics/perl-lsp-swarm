@@ -824,4 +824,3 @@ $ = main::bar() called from file `other.pl' line 20";
     assert_eq!(frames[0].file_path(), Some("script.pl"));
     assert_eq!(frames[1].file_path(), Some("other.pl"));
 }
-

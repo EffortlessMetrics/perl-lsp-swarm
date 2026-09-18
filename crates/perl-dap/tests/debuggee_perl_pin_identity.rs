@@ -161,4 +161,3 @@ fn staged_copy_pipe_probe(source: &Path) -> Result<(), String> {
     probe_debuggee_perl_for_test(&staging.path().join(file_name), Duration::from_secs(10), false)
         .map(|_| ())
 }
-

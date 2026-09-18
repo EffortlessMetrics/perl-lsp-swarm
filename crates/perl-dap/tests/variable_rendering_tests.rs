@@ -298,4 +298,3 @@ fn test_variables_placeholder_pagination() -> Result<(), Box<dyn std::error::Err
     }
     Ok(())
 }
-

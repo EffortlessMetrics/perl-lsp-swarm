@@ -210,4 +210,3 @@ fn dap_event_clone() {
     let debug_cloned = format!("{:?}", cloned);
     assert_eq!(debug_original, debug_cloned);
 }
-

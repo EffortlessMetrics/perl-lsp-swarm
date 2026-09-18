@@ -110,4 +110,3 @@ fn test_formatting_is_correct() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
-

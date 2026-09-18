@@ -172,4 +172,3 @@ fn current_architecture_and_archive_state_the_transition_explicitly()
 
     Ok(())
 }
-

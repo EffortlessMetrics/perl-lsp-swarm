@@ -41,8 +41,8 @@
 mod common;
 
 use common::{DapWorkflowSession, perl_available, workflow_timeout};
-use perl_dap::{DapMessage, DebugAdapter};
 use perl_dap::debug_adapter::DrainEpoch;
+use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs::write;
@@ -873,4 +873,3 @@ fn test_e2e_locals_scope_returns_user_lexicals_not_db_internals() -> TestResult 
     session.disconnect()?;
     Ok(())
 }
-

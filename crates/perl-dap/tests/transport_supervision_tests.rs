@@ -146,4 +146,3 @@ mod transport_supervision {
         assert!(consecutive < 3, "single failure after a reset must not reach threshold(3)");
     }
 }
-

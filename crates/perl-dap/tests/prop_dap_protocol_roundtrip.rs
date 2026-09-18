@@ -643,4 +643,3 @@ proptest! {
         prop_assert_eq!(back.default, default);
     }
 }
-

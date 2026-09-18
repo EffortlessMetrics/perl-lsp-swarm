@@ -265,4 +265,3 @@ fn variable_large_variables_reference() -> Result<(), serde_json::Error> {
     assert_eq!(back.named_variables, Some(i32::MAX));
     Ok(())
 }
-

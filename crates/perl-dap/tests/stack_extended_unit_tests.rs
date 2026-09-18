@@ -746,4 +746,3 @@ fn stack_parse_error_debug_impl() {
     let dbg = format!("{err:?}");
     assert!(dbg.contains("UnrecognizedFormat"));
 }
-

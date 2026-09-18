@@ -638,4 +638,3 @@ fn test_tcp_attach_retired_reader_does_not_admit_late_buffered_output() {
     must(must(server1.join().map_err(|_| "Server 1 thread panicked".to_string())));
     must(server2.join().map_err(|_| "Server 2 thread panicked".to_string()));
 }
-

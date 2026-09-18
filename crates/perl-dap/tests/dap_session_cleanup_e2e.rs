@@ -11,8 +11,8 @@ mod common;
 #[cfg(feature = "dap-phase2")]
 mod cleanup_tests {
     use anyhow::Result;
-    use perl_dap::{DapMessage, DebugAdapter};
     use perl_dap::debug_adapter::DapMessageWithEpoch;
+    use perl_dap::{DapMessage, DebugAdapter};
     #[cfg(windows)]
     use serde_json::Value;
     use serde_json::json;
@@ -309,4 +309,3 @@ while (1) {
         }
     }
 }
-

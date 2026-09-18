@@ -39,4 +39,3 @@ fn variable_serializes_type_field() -> Result<(), serde_json::Error> {
     assert!(json.contains("\"type\":\"scalar\""));
     Ok(())
 }
-

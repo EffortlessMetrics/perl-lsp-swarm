@@ -917,4 +917,3 @@ fn multiple_objects_in_scope_all_display_class() -> Result<(), Box<dyn std::erro
 
     Ok(())
 }
-

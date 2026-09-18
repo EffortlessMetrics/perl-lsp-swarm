@@ -341,4 +341,3 @@ fn full_dap_session_drives_the_live_peer_backend() -> Result<(), Box<dyn std::er
     let _ = peer.join();
     Ok(())
 }
-

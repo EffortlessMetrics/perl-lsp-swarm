@@ -752,4 +752,3 @@ fn wait_for_process_start(pid: u32, timeout: Duration) -> io::Result<()> {
         std::thread::sleep(Duration::from_millis(25));
     }
 }
-

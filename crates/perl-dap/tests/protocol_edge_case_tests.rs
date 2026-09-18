@@ -1187,4 +1187,3 @@ fn test_source_breakpoint_with_extra_fields() -> Result<()> {
     assert_eq!(bp.line, 5);
     Ok(())
 }
-

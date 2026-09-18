@@ -727,4 +727,3 @@ fn sigil_with_package_qualified_not_dangerous() -> Result<(), Box<dyn std::error
     ok("%Foo::eval")?;
     Ok(())
 }
-

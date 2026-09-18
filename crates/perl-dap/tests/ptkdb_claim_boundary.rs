@@ -1078,4 +1078,3 @@ fn vscode_keeps_native_as_the_default_debugger_backend() -> Result<(), Box<dyn s
     assert!(manifest.contains("Perl: External Debugger Peer (experimental)"));
     Ok(())
 }
-

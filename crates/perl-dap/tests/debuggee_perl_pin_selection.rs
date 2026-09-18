@@ -126,4 +126,3 @@ fn valid_pin_selects_the_pinned_usable_identity() -> Result<(), Box<dyn Error>> 
     }
     Ok(())
 }
-
