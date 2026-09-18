@@ -1252,9 +1252,7 @@ fn agent_ledgers_validator_recipe_wired_into_merge_gate() {
     let recipe_marker = "ci-agent-ledgers-validate:";
     let recipe_start = must_some(justfile.find(recipe_marker));
     let recipe_window = &justfile[recipe_start..];
-    let recipe_end_rel = recipe_window
-        .find("\n\n")
-        .unwrap_or(recipe_window.len());
+    let recipe_end_rel = recipe_window.find("\n\n").unwrap_or(recipe_window.len());
     let recipe = &recipe_window[..recipe_end_rel];
     assert!(
         recipe.contains("cargo xtask agent-ledgers validate --format json"),
@@ -1264,12 +1262,11 @@ fn agent_ledgers_validator_recipe_wired_into_merge_gate() {
     let merge_gate_marker = "merge-gate: _check-tools-basic pr-fast";
     let merge_gate_start = must_some(justfile.find(merge_gate_marker));
     let merge_gate_window = &justfile[merge_gate_start..];
-    let merge_gate_end_rel = merge_gate_window
-        .find("\n\n")
-        .unwrap_or(merge_gate_window.len());
+    let merge_gate_end_rel = merge_gate_window.find("\n\n").unwrap_or(merge_gate_window.len());
     let merge_gate = &merge_gate_window[..merge_gate_end_rel];
     assert!(
-        merge_gate.contains("_timed \"ci-agent-ledgers-validate\" \"just ci-agent-ledgers-validate\""),
+        merge_gate
+            .contains("_timed \"ci-agent-ledgers-validate\" \"just ci-agent-ledgers-validate\""),
         "merge-gate must call ci-agent-ledgers-validate via _timed so non-zero exit fails closed"
     );
 }
@@ -1288,12 +1285,7 @@ fn agent_ledgers_validator_runs_clean_against_committed_files() {
     );
 
     let output = cargo_bin_cmd!("xtask")
-        .args([
-            "agent-ledgers",
-            "validate",
-            "--format",
-            "json",
-        ])
+        .args(["agent-ledgers", "validate", "--format", "json"])
         .current_dir(&root)
         .output()
         .expect("spawn cargo xtask agent-ledgers validate");
