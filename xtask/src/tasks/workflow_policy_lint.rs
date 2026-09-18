@@ -1016,10 +1016,10 @@ fn workflow_invokes_xtask_cli(
             continue;
         };
         for step in steps {
-            if let Some(run) = step.get("run").and_then(Value::as_str) {
-                if command_invokes_xtask_cli_with_just(run, recipes)? {
-                    return Ok(true);
-                }
+            if let Some(run) = step.get("run").and_then(Value::as_str)
+                && command_invokes_xtask_cli_with_just(run, recipes)?
+            {
+                return Ok(true);
             }
         }
     }
