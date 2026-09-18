@@ -161,7 +161,10 @@ fn wait_for_inline_registration(harness: &UxHarness) -> bool {
 
 fn probe_module_inline_completion(harness: &UxHarness) -> Result<InlineModuleProbeReport> {
     let (line, character) = position_after(MODULE_IMPORT_PROBE_SOURCE, MODULE_MARKER)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.inline_completion_with_trigger_kind(
             MODULE_IMPORT_PROBE_PATH,

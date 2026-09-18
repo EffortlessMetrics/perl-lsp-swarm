@@ -85,7 +85,10 @@ fn wait_for_expected_inserts(
     character: u32,
     expected: &[&str],
 ) -> Result<Vec<String>> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let insert_texts = insert_texts_for(
             &harness.inline_completion_with_trigger_kind(file, line, character, 1)?,
