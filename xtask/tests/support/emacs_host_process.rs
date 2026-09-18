@@ -189,14 +189,23 @@ pub fn run_owned_process(
         }
         thread::sleep(Duration::from_millis(10));
     };
+    // Observe the fake host's recorded leak descendant at host-exit time,
+    // before the capture join, and stop it immediately. On Windows the
+    // descendant inherits the host's stdio pipe handles despite its null
+    // stdio (#15424), so a leak left running keeps the join below blocked
+    // until the descendant's own lifetime ends, and any leak probe delayed
+    // until after the join would always find it dead. The ready-marker gives
+    // direct run-local attribution, so remediation does not need to wait for
+    // the bulk baseline: killing at observation still leaves the run's
+    // ledger naming the leak via the recorded PID promoted below.
+    let leaked_descendant_at_exit = leaked_marker_descendant_alive(layout, pid);
+    if let Some(descendant_pid) = leaked_descendant_at_exit {
+        stop_owned_pid(descendant_pid);
+    }
     // Timeout/force cleanup owns this run's candidate identity, not only the
     // host PID. Kill needle-matching survivors that were absent from the
     // before-probe (never image-wide, never the pre-existing set) before the
     // after-probe so timeout cannot report those PIDs as still running.
-    // Descendants spawned with null stdio do not hold the host pipes;
-    // join_capture still unblocks on host EOF. Clean-exit leaks are observed
-    // first (cleanup Fail) and reaped after the after-probe so the ledger
-    // still names the leak.
     if (timed_out || kill_requested) && before_usable {
         reap_this_run_survivors(pid, &before_lines, &needle);
     }
@@ -234,36 +243,37 @@ pub fn run_owned_process(
             match (&probe_before, &probe_after) {
                 (Some(Ok(_)), Some(Ok(after_text))) => match parse_probe(after_text) {
                     Ok(after_lines) => {
-                        let mut survivors = surviving_processes(&before_lines, &after_lines, &needle);
+                        let mut survivors =
+                            surviving_processes(&before_lines, &after_lines, &needle);
                         // Windows fallback for #15424: a detached candidate descendant
-                        // can be missing from the bulk `tasklist` snapshot even when
-                        // the per-PID kernel query still finds it. The fake host's
-                        // leak mode writes the descendant PID to a ready-marker file
-                        // next to the event file; check that PID directly and
-                        // promote cleanup to Fail when the kernel confirms a leak.
-                        // Per-PID `tasklist /FI` is the same primitive the test
-                        // already uses for `descendant_still_running`, so the
+                        // can be missing from the bulk `tasklist` snapshot, and the
+                        // capture join above can outlive the descendant itself, so the
+                        // after-probe alone cannot observe the leak. The host-exit
+                        // observation (`leaked_descendant_at_exit`) checked the fake
+                        // host's ready-marker against the kernel while the descendant
+                        // could still be alive; promote that recorded PID so cleanup
+                        // fails and the ledger names the leak. The same per-PID
+                        // primitive backs `descendant_still_running`, so the
                         // classification stays consistent with the test assertion.
-                        if survivors.is_empty() {
-                            if let Some(descendant_pid) = read_descendant_pid(layout, pid) {
-                                if descendant_pid != pid
-                                    && !survivors.iter().any(|line| line.pid == descendant_pid)
-                                {
-                                    match pid_still_alive(descendant_pid) {
-                                        Some(true) => {
-                                            survivors.push(ProcessProbeLine {
-                                                pid: descendant_pid,
-                                                args: plan.paths.candidate_executable
-                                                    .file_name()
-                                                    .and_then(OsStr::to_str)
-                                                    .unwrap_or("perllsp")
-                                                    .to_string(),
-                                            });
-                                        }
-                                        Some(false) | None => {}
-                                    }
-                                }
-                            }
+                        // A timed-out/force-killed host never promotes the marker
+                        // descendant: it was already stopped at observation time,
+                        // before the after-probe, so the post-reap ledger stays
+                        // empty and the killed-host rule classifies the run.
+                        if survivors.is_empty()
+                            && !timed_out
+                            && !kill_requested
+                            && let Some(descendant_pid) = leaked_descendant_at_exit
+                        {
+                            survivors.push(ProcessProbeLine {
+                                pid: descendant_pid,
+                                args: plan
+                                    .paths
+                                    .candidate_executable
+                                    .file_name()
+                                    .and_then(OsStr::to_str)
+                                    .unwrap_or("perllsp")
+                                    .to_string(),
+                            });
                         }
                         if survivors.is_empty() {
                             (
@@ -1040,11 +1050,11 @@ fn stop_owned_pid(pid: u32) {
 /// writes `ready pid=<N>` there. Callers read this only when the host's
 /// supervision mode promised a leaked descendant — non-leak modes do not
 /// create the file and the reader returns `None`.
-fn descendant_ready_marker_path(layout: &HermeticLayout, host_pid: u32) -> Option<std::path::PathBuf> {
-    layout
-        .event_file()
-        .parent()
-        .map(|parent| parent.join(format!("descendant-ready-{host_pid}")))
+fn descendant_ready_marker_path(
+    layout: &HermeticLayout,
+    host_pid: u32,
+) -> Option<std::path::PathBuf> {
+    layout.event_file().parent().map(|parent| parent.join(format!("descendant-ready-{host_pid}")))
 }
 
 /// Read the descendant PID the fake host's leak mode recorded for this run.
@@ -1058,6 +1068,22 @@ fn read_descendant_pid(layout: &HermeticLayout, host_pid: u32) -> Option<u32> {
     let (_, after) = text.split_once("pid=")?;
     let trimmed = after.trim().trim_end_matches(|c: char| !c.is_ascii_digit());
     trimmed.parse::<u32>().ok()
+}
+
+/// Kernel-verify the fake host's recorded leak descendant at host-exit time.
+/// Returns the recorded PID only when the marker names a foreign PID and the
+/// kernel still reports it alive, so a descendant that died with the host, a
+/// missing/garbled marker, or a failed probe keeps the prior classification
+/// untouched instead of fabricating a survivor.
+fn leaked_marker_descendant_alive(layout: &HermeticLayout, host_pid: u32) -> Option<u32> {
+    let descendant_pid = read_descendant_pid(layout, host_pid)?;
+    if descendant_pid == host_pid {
+        return None;
+    }
+    match pid_still_alive(descendant_pid) {
+        Some(true) => Some(descendant_pid),
+        _ => None,
+    }
 }
 
 /// Per-PID survival probe used as a Windows fallback when the bulk process
@@ -1299,23 +1325,23 @@ mod process_tests {
     }
 
     #[test]
-    fn descendant_pid_reader_returns_none_when_marker_missing() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let layout = HermeticLayout::prepare(tmp.path()).expect("layout");
+    fn descendant_pid_reader_returns_none_when_marker_missing() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let layout = HermeticLayout::prepare(tmp.path())?;
         assert!(
             read_descendant_pid(&layout, 4242).is_none(),
             "missing ready-marker file must mean the host did not enter leak mode"
         );
+        Ok(())
     }
 
     #[test]
     fn descendant_pid_reader_parses_fake_host_marker_format() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let layout = HermeticLayout::prepare(tmp.path())?;
-        let marker_parent = layout
-            .event_file()
-            .parent()
-            .context("event file must have a parent directory")?;
+        let event_file = layout.event_file();
+        let marker_parent =
+            event_file.parent().context("event file must have a parent directory")?;
         fs::write(marker_parent.join("descendant-ready-4242"), b"ready pid=98765\n")?;
         let pid = read_descendant_pid(&layout, 4242).context("marker must parse to a PID")?;
         ensure!(pid == 98765, "PID must round-trip through the marker, got {pid}");
@@ -1323,17 +1349,16 @@ mod process_tests {
     }
 
     #[test]
-    fn descendant_pid_reader_rejects_garbage_marker() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let layout = HermeticLayout::prepare(tmp.path()).expect("layout");
-        let marker_parent = layout
-            .event_file()
-            .parent()
-            .expect("event file parent");
-        fs::write(marker_parent.join("descendant-ready-1"), b"not a pid line\n").expect("write");
+    fn descendant_pid_reader_rejects_garbage_marker() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let layout = HermeticLayout::prepare(tmp.path())?;
+        let event_file = layout.event_file();
+        let marker_parent = event_file.parent().context("event file parent")?;
+        fs::write(marker_parent.join("descendant-ready-1"), b"not a pid line\n")?;
         assert!(
             read_descendant_pid(&layout, 1).is_none(),
             "a malformed marker must not silently pass as a recorded descendant PID"
         );
+        Ok(())
     }
 }
