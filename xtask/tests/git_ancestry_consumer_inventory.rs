@@ -43,6 +43,9 @@ struct ConsumerRow {
 /// reappears here, the migration has regressed.
 const INVENTORY: &[ConsumerRow] = &[
     ConsumerRow { path: "src/git_ancestry.rs", disposition: Disposition::Authority },
+    // #11703 collects the merge base only to bound the closeout diff range;
+    // failures propagate as errors, never as history verdicts.
+    ConsumerRow { path: "src/authority_transfer_closeout.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/bin/action-pin-provenance.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/tasks/ci_contract.rs", disposition: Disposition::RangeOnly },
     ConsumerRow { path: "src/tasks/ci_subject.rs", disposition: Disposition::RangeOnly },
