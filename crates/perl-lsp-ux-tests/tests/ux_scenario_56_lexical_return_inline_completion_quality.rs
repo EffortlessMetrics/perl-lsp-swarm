@@ -123,7 +123,10 @@ fn scenario_56_lexical_return_inline_completion_quality_stdio() -> Result<()> {
     let harness = create_harness()?;
     harness.open_file(LEXICAL_RETURN_PATH, LEXICAL_RETURN_SOURCE)?;
     harness.open_file(AFTER_COMMENT_PATH, AFTER_COMMENT_SOURCE)?;
-    std::thread::sleep(Duration::from_millis(250));
+    // Same readiness race as #15870: synchronize on the server's own
+    // analysis-readiness signal instead of a fixed sleep.
+    let _ = harness.wait_for_diagnostics(LEXICAL_RETURN_PATH, Duration::from_secs(30));
+    let _ = harness.wait_for_diagnostics(AFTER_COMMENT_PATH, Duration::from_secs(30));
 
     let blank_line_insert_texts = wait_for_lexical_return_inline_completion(
         &harness,

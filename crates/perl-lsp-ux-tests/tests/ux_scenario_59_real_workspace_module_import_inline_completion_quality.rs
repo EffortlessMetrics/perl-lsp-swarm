@@ -262,7 +262,15 @@ fn scenario_59_real_workspace_module_import_inline_completion_quality_receipt() 
             ] {
                 harness.open_file(path, source)?;
             }
-            std::thread::sleep(Duration::from_millis(500));
+            // Synchronize on the server's own analysis-readiness signal instead
+            // of a fixed sleep: on a cold CI runner the sleep let completion
+            // queries outrun the first analysis of the just-opened documents
+            // and starve the semantic context (#15870 family).
+            let _ = harness.wait_for_diagnostics(REACHABLE_PROBE_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(CANCELLED_LIB_PROBE_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(LOCAL_PROBE_PATH, Duration::from_secs(30));
+            let _ =
+                harness.wait_for_diagnostics(CANCELLED_LOCAL_PROBE_PATH, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);
