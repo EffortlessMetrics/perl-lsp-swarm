@@ -886,7 +886,7 @@ git() {
           [ "$5" = "--head" ] && [ "$6" = "HEAD" ] || return 1
           [ "$7" = "--pr-head" ] && [ "$8" = "$FAKE_PR_HEAD_SHA" ] || return 1
           if [ "$#" -eq 10 ]; then
-            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "1800" ] || return 1
+            [ "$9" = "--timeout-seconds" ] && [ "${10}" = "3600" ] || return 1
           elif [ "$#" -eq 9 ]; then
             [ "$9" = "--check" ] || return 1
           else
@@ -1746,7 +1746,7 @@ fn ripr_self_hosted_preflight_falls_back_when_required_image_is_missing() -> Res
     for expected_command in [
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json",
         "cargo xtask ripr-plus --receipt target/receipts/quality/ripr-plus.json --check",
-        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 1800",
+        "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --timeout-seconds 3600",
         "cargo xtask ripr-review-comments --base origin/main --head HEAD --pr-head 0123456789abcdef0123456789abcdef01234567 --check",
         "cargo xtask impacted-evidence --labels-csv ci",
         "cargo xtask impacted-evidence --labels-csv ci --check",
@@ -2614,7 +2614,7 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         // ripr-github and ripr-fallback could silently miss the bound.
         let guidance = workflow_run_block(lane, "Generate review guidance")?;
         // Token-aware on purpose: a substring match would also accept a
-        // future --timeout-seconds 18000, silently unenforcing the bound.
+        // longer value, silently unenforcing the bound.
         let bound = guidance
             .split_whitespace()
             .skip_while(|token| *token != "--timeout-seconds")
@@ -2623,8 +2623,8 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
                 anyhow!("{lane}'s review-guidance pass carries no --timeout-seconds value")
             })?;
         ensure!(
-            bound == "1800",
-            "{lane}'s review-guidance pass must carry --timeout-seconds 1800; found {bound:?}.              The 600s bound failed closed twice on new-crate diffs (#15082, #15028)"
+            bound == "3600",
+            "{lane}'s review-guidance pass must carry --timeout-seconds 3600; found {bound:?}.              The 600s and 1800s bounds each failed closed on large-closure diffs (#15082,              #15028, #14897)"
         );
     }
     let count = workflow
@@ -2633,12 +2633,12 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
             line.split_whitespace()
                 .skip_while(|token| *token != "--timeout-seconds")
                 .nth(1)
-                .is_some_and(|value| value == "1800")
+                .is_some_and(|value| value == "3600")
         })
         .count();
     ensure!(
         count == 2,
-        "exactly the two hosted lanes must carry the 1800s guidance bound; found {count}"
+        "exactly the two hosted lanes must carry the 3600s guidance bound; found {count}"
     );
     Ok(())
 }
