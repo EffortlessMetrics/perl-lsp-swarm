@@ -5,6 +5,7 @@
 //! required to drive a real `perl -d` debug session in tests.
 
 #![allow(dead_code)]
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
@@ -65,7 +66,7 @@ pub struct StoppedFrameInfo {
 /// stack_trace → scopes → variables → continue/step → wait_stopped → disconnect.
 pub struct DapWorkflowSession {
     pub adapter: DebugAdapter,
-    pub rx: Receiver<DapMessage>,
+    pub rx: Receiver<DapMessageWithEpoch>,
     pub timeout: Duration,
     seq: i64,
     perl_path: Option<PathBuf>,
@@ -76,7 +77,7 @@ pub struct DapWorkflowSession {
 #[allow(dead_code)]
 impl DapWorkflowSession {
     #[cfg(test)]
-    pub fn with_receiver_for_test(rx: Receiver<DapMessage>, timeout: Duration) -> Self {
+    pub fn with_receiver_for_test(rx: Receiver<DapMessageWithEpoch>, timeout: Duration) -> Self {
         Self {
             adapter: DebugAdapter::new(),
             rx,
@@ -181,8 +182,10 @@ impl DapWorkflowSession {
     /// Launch a script with explicit `stopOnEntry` control.
     ///
     /// When `stop_on_entry` is `true`, the adapter emits a `stopped(reason=entry)` event
-    /// at the first real debugger suspension — once stopped-state and frame authority
-    /// exist — so the event never precedes a `stackTrace`-answerable stop (#15637).
+    /// after the debugger reader has captured the native source frame and reached
+    /// the prompt — once stopped-state and frame authority exist — before any
+    /// `configurationDone` is sent, so the event never precedes a
+    /// `stackTrace`-answerable stop (#15637).
     /// When `false`, callers must call `set_breakpoints` and `configuration_done` before
     /// `wait_stopped` to follow the DAP ordering requirement.
     pub fn launch_with_stop_on_entry(
@@ -371,6 +374,18 @@ impl DapWorkflowSession {
         let thread_id = body.get("threadId").and_then(Value::as_i64).unwrap_or(1);
 
         Ok(StoppedInfo { reason, thread_id })
+    }
+
+    /// Count any additional stopped events already queued after the first
+    /// suspension. A stop-on-entry launch must publish exactly one initial stop.
+    pub fn pending_stopped_events(&self) -> usize {
+        let mut count = 0;
+        while let Ok(message) = self.rx.try_recv() {
+            if matches!(message, (DapMessage::Event { ref event, .. }, _) if event == "stopped") {
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Retrieve the top stack frame for `thread_id`.
@@ -621,9 +636,9 @@ impl DapWorkflowSession {
             let remaining = deadline.saturating_duration_since(now);
             match self.rx.recv_timeout(remaining) {
                 Ok(msg) => {
-                    if let DapMessage::Event { event, body, .. } = &msg {
+                    if let (DapMessage::Event { event, body, .. }, _) = &msg {
                         if event == event_name {
-                            return Ok(msg);
+                            return Ok(msg.0);
                         }
 
                         push_recent_event(
@@ -3328,7 +3343,7 @@ pub fn debuggee_perl_or_typed_skip(test_name: &str) -> Option<&'static DebuggeeP
 // binaries that do not call it would otherwise trip per-target dead_code.
 #[allow(dead_code)]
 pub fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
@@ -3341,10 +3356,10 @@ pub fn wait_for_event(
         let remaining = deadline.saturating_duration_since(now);
         match rx.recv_timeout(remaining) {
             Ok(message) => {
-                if let DapMessage::Event { event, .. } = &message
+                if let (DapMessage::Event { event, .. }, _) = &message
                     && event == event_name
                 {
-                    return Ok(message);
+                    return Ok(message.0);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {

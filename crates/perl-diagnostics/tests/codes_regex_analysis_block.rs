@@ -3,6 +3,7 @@
 //! These codes project the parser-retained canonical regex analysis into stable
 //! client-facing identities. The block is the first four-digit range, which makes
 //! one property load-bearing: codes must be compared exactly, never by prefix.
+#![deny(clippy::map_err_ignore)] // Cohort C0 activation (#12598): census-clean on all targets; new findings move the crate to C1.
 
 use perl_diagnostics::codes::{DiagnosticCategory, DiagnosticCode, DiagnosticSeverity};
 

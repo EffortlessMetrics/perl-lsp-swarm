@@ -244,6 +244,35 @@ test_disposition_malformed_marker_is_inert() {
     fi
 }
 
+# ── unsupported marker version (v2) causes zero mutation ───────────────────
+# @risk: an unrecognized envelope version (e.g. v2) is silently dropped, which
+#        previously let the script post duplicate replies and resolve threads
+#        that already carried an authoritative v2 disposition (#15282).
+# @return_path: any non-v1 disposition marker is counted as malformed and
+#        forces the existing fail-closed path (exit 2).
+# @side_effect: neither a review reply nor a thread-resolution mutation is permitted.
+test_disposition_v2_marker_is_inert() {
+    local v2_only
+    v2_only=$'Future reply.\n\n<!-- disposition:v2 {"v":2,"class":"fixed","thread_id":"THREAD","by":"alice","head":"abc","evidence":{"commit":"abc"}} -->'
+    run_disposition ok "$v2_only" abc
+    local mutations
+    mutations="$(paste -sd, "$FAKE_LOG")"
+    if [[ "$DISPOSITION_EXIT" -eq 2 && -z "$mutations" && "$DISPOSITION_OUT" == *"malformed disposition marker"* ]]; then
+        pass "v2-only marker exits 2 with no reply or resolution mutation"
+    else
+        fail "v2-only marker — exit=$DISPOSITION_EXIT mutations=$mutations out=$DISPOSITION_OUT"
+    fi
+
+    local v1_plus_v2="$existing_h1"$'\n\nFuture reply.\n\n<!-- disposition:v2 {"v":2,"class":"fixed","thread_id":"THREAD","by":"alice","head":"abc","evidence":{"commit":"abc"}} -->'
+    run_disposition ok "$v1_plus_v2" abc
+    mutations="$(paste -sd, "$FAKE_LOG")"
+    if [[ "$DISPOSITION_EXIT" -eq 2 && -z "$mutations" && "$DISPOSITION_OUT" == *"malformed disposition marker"* ]]; then
+        pass "mixed v1+v2 fixture exits 2 (the v2 envelope gates mutation)"
+    else
+        fail "mixed v1+v2 fixture — exit=$DISPOSITION_EXIT mutations=$mutations out=$DISPOSITION_OUT"
+    fi
+}
+
 echo "=== review lease + disposition test suite ==="
 echo ""
 test_acquire_then_verify
@@ -258,6 +287,7 @@ test_disposition_reuses_h1_at_h2
 test_disposition_posts_changed_evidence
 test_disposition_provider_failure_is_inert
 test_disposition_malformed_marker_is_inert
+test_disposition_v2_marker_is_inert
 echo ""
 echo "=== Results: $PASS_COUNT passed, $FAIL_COUNT failed ==="
 

@@ -4544,7 +4544,7 @@ fn annotation_from_comment(item: &Value) -> Result<String> {
         escape_cmd(&path),
         line,
         escape_cmd(&format!("ripr {severity} {kind}")),
-        escape_cmd(&message)
+        escape_cmd_data(&message)
     ))
 }
 
@@ -10182,6 +10182,34 @@ paths = ["archive/["]
         Ok(())
     }
 
+    /// Pin the GitHub workflow-command escape rules apart at the unit level.
+    ///
+    /// The two rules drift apart silently if `escape_cmd` is ever used on the
+    /// data half or `escape_cmd_data` on a property half: the runner unescapes
+    /// `%3A` and `%2C` in properties only, so a property half that is only
+    /// data-escaped will surface literal `:` / `,` where the operator expects
+    /// the original characters, and a data half that is property-escaped will
+    /// surface literal `%3A` / `%2C` everywhere a human is supposed to read.
+    /// See #15527.
+    #[test]
+    fn escape_rules_stay_apart_for_property_and_data_halves() {
+        // Property half: every reserved character must be encoded.
+        let property_value = "ripr strong:gap focused,test 100%";
+        let property = escape_cmd(property_value);
+        assert_eq!(property, "ripr strong%3Agap focused%2Ctest 100%25");
+        assert!(!property.contains(':'));
+        assert!(!property.contains(','));
+
+        // Data half: only `%`, CR and LF must be encoded; `:` and `,` survive.
+        let data_value = "boundary proof: below, equal, above\nSuggested test: add % branch";
+        let data = escape_cmd_data(data_value);
+        assert_eq!(data, "boundary proof: below, equal, above%0ASuggested test: add %25 branch");
+        assert!(data.contains(':'));
+        assert!(data.contains(','));
+        assert!(!data.contains("%3A"));
+        assert!(!data.contains("%2C"));
+    }
+
     #[test]
     fn render_annotations_emits_escaped_github_warning_packets() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -10211,10 +10239,20 @@ paths = ["archive/["]
         let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
 
         assert!(!rendered.comments_missing);
+        // Property halves keep the GitHub workflow-command property rule
+        // (%3A, %2C, %25, %0D, %0A are all unescaped by the runner).
         assert!(rendered.text.contains("::warning file=crates/perl-parser/src/lib.rs,line=42"));
         assert!(rendered.text.contains("title=ripr strong%3Agap focused%2Ctest"));
-        assert!(rendered.text.contains("boundary proof%3A below%2C equal%2C above"));
-        assert!(rendered.text.contains("Suggested test%3A add %25 branch table"));
+        // Data half keeps only the three escapes the runner unescapes there
+        // (%25, %0D, %0A). Colons and commas must reach the operator as `:`
+        // and `,`, not as `%3A` / `%2C`.
+        assert!(rendered.text.contains("boundary proof: below, equal, above"));
+        assert!(rendered.text.contains("Suggested test: add %25 branch table"));
+        // And the two rules stay pinned apart: the *property* halves in the
+        // same packet must still encode `:` and `,` while `%` stays escaped
+        // even in data halves.
+        assert!(!rendered.text.contains("boundary proof%3A"));
+        assert!(!rendered.text.contains("Suggested test%3A"));
         Ok(())
     }
 
