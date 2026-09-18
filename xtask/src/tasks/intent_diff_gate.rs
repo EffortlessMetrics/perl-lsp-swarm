@@ -1,6 +1,6 @@
 //! Intent/diff closeout evidence gate.
 
-use crate::tasks::change_set::{ArtifactIdentity, resolve_change_set};
+use crate::tasks::change_set::{ArtifactIdentity, ChangeSet, resolve_change_set};
 use crate::utils::project_root;
 use color_eyre::eyre::{Context, Result, bail};
 use regex::Regex;
@@ -264,7 +264,9 @@ fn load_fixture(path: &Path) -> Result<PrInput> {
 struct GhPrMetadata {
     title: String,
     body: String,
+    #[serde(rename = "baseRefOid")]
     base_ref_oid: String,
+    #[serde(rename = "headRefOid")]
     head_ref_oid: String,
 }
 
@@ -296,35 +298,56 @@ fn load_pr_from_gh(pr: u64, root: &Path) -> Result<PrInput> {
     // returned `changed_paths` is the complete PR set (#15384).
     //
     // The PR head must be available locally (e.g. via `gh pr checkout` or
-    // a fetched refspec). When it isn't, the resolver fails loudly — we
-    // deliberately do NOT fall back to `gh pr view --json files` (which
-    // would re-introduce the truncation bug).
-    let changeset = resolve_change_set(
+    // a fetched refspec). When it isn't, report the source as unavailable
+    // rather than failing before `evaluate`: the verdict machinery turns an
+    // unavailable source into a structured `Fail` receipt instead of leaving
+    // no receipt at all. We deliberately do NOT fall back to
+    // `gh pr view --json files` (which would re-introduce the truncation bug).
+    let resolution = resolve_change_set(
         ArtifactIdentity::CommitRange {
             base: parsed.base_ref_oid.clone(),
             head: parsed.head_ref_oid.clone(),
         },
         root,
-    )
-    .with_context(|| {
-        format!(
-            "resolving complete PR change-set for #{} via git diff {}..{} — \
-             ensure the PR head is fetched locally (e.g. `gh pr checkout {}` \
-             or `git fetch origin pull/{}/head:pr-{}`)",
-            pr, parsed.base_ref_oid, parsed.head_ref_oid, pr, pr, pr
-        )
-    })?;
+    );
+    let (changed_files, source_state) =
+        pr_input_source(pr, &parsed.base_ref_oid, &parsed.head_ref_oid, resolution);
 
     Ok(PrInput {
         title: parsed.title,
         body: parsed.body,
-        changed_files: changeset.changed_paths,
-        source_state: SourceState::Complete {
-            base_sha: changeset.base_sha,
-            head_sha: changeset.head_sha,
-        },
+        changed_files,
+        source_state,
         evidence: FixtureEvidence::default(),
     })
+}
+
+/// Map a change-set resolution onto the loader's file list and source
+/// state. A failed resolution (e.g. the PR head is not in the local clone)
+/// yields an empty list with an `Unavailable` source rather than failing
+/// before `evaluate`, so the verdict machinery still writes a structured
+/// `Fail` receipt instead of leaving no receipt at all.
+fn pr_input_source<E: std::fmt::Display>(
+    pr: u64,
+    base_ref_oid: &str,
+    head_ref_oid: &str,
+    resolution: Result<ChangeSet, E>,
+) -> (Vec<String>, SourceState) {
+    match resolution {
+        Ok(changeset) => (
+            changeset.changed_paths,
+            SourceState::Complete { base_sha: changeset.base_sha, head_sha: changeset.head_sha },
+        ),
+        Err(err) => {
+            let reason = format!(
+                "resolving complete PR change-set for #{} via git diff {}..{} failed: {} — \
+                 ensure the PR head is fetched locally (e.g. `gh pr checkout {}` \
+                 or `git fetch origin pull/{}/head:pr-{}`)",
+                pr, base_ref_oid, head_ref_oid, err, pr, pr, pr
+            );
+            (Vec::new(), SourceState::Unavailable { reason })
+        }
+    }
 }
 
 fn evaluate(input: &PrInput, policy: &PolicyFile) -> Receipt {
@@ -698,6 +721,48 @@ expected_paths = ["vscode-extension/package.json", "crates/perl-lsp-rs/tests/"]
         let head_sha = source.get("head_sha").and_then(|k| k.as_str());
         assert_eq!(base_sha, Some("deadbeef"));
         assert_eq!(head_sha, Some("feedface"));
+        Ok(())
+    }
+
+    /// The live `gh pr view --json title,body,baseRefOid,headRefOid`
+    /// payload uses camelCase keys; without renames every `--pr`
+    /// invocation fails deserialization with a missing-field error.
+    #[test]
+    fn gh_pr_metadata_deserializes_camel_case_keys() -> Result<()> {
+        let raw = serde_json::json!({
+            "title": "fix(intent-diff-gate): bind closeout",
+            "body": "Closes #15384",
+            "baseRefOid": "aaa",
+            "headRefOid": "bbb",
+        });
+        let parsed: GhPrMetadata =
+            serde_json::from_value(raw).context("camelCase gh payload must deserialize")?;
+        assert_eq!(parsed.base_ref_oid, "aaa");
+        assert_eq!(parsed.head_ref_oid, "bbb");
+        Ok(())
+    }
+
+    /// A failed change-set resolution (e.g. PR head missing locally)
+    /// maps to an empty file list with an `Unavailable` source so
+    /// `evaluate` still writes a structured `Fail` receipt.
+    #[test]
+    fn failed_resolution_maps_to_unavailable_source() -> Result<()> {
+        let (files, state) = pr_input_source(
+            15855,
+            "aaa",
+            "bbb",
+            Err::<ChangeSet, _>("head bbb not in local clone"),
+        );
+        assert!(files.is_empty());
+        match state {
+            SourceState::Unavailable { reason } => {
+                assert!(
+                    reason.contains("15855") && reason.contains("bbb"),
+                    "reason must name the PR and head, got: {reason}"
+                );
+            }
+            other => panic!("expected Unavailable, got: {other:?}"),
+        }
         Ok(())
     }
 }
