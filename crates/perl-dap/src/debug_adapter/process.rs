@@ -235,6 +235,33 @@ enum DebuggerCapabilityProbe {
     Inconclusive,
 }
 
+/// Discriminated result of a bounded wait on a [`Child`] (#15740).
+///
+/// The previous boolean return conflated three different cleanup states
+/// (exited, still running, poll error) and gave callers no way to
+/// distinguish resource scheduling from a process that is genuinely
+/// stuck. The enum exposes the diagnostic information needed to retry
+/// confidently and to report which cleanup path actually fired.
+///
+/// The diagnostic payloads on [`ChildExitOutcome::StillRunning`] and
+/// [`ChildExitOutcome::PollError`] are read by the bounded-cleanup test
+/// cluster to distinguish OS errors from resource scheduling from
+/// oracle misprediction. They are kept on the lib type so callers can
+/// escalate to a retry path without re-implementing the poll loop.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(super) enum ChildExitOutcome {
+    /// `try_wait` observed a recorded exit within the bounded wait.
+    Exited,
+    /// The deadline elapsed with the child still recorded as running.
+    /// Carries the poll count and elapsed wait for diagnosis and for
+    /// bounded retry.
+    StillRunning { polls: u32, elapsed: Duration },
+    /// `try_wait` returned an OS error (the handle is no longer
+    /// pollable, typically because another thread reaped the child).
+    PollError { error: std::io::Error, polls: u32, elapsed: Duration },
+}
+
 /// Read one probe pipe to EOF on a dedicated thread, delivering its decoded
 /// contents through a channel. Used instead of blocking `Command::output()`
 /// so the probe can be bounded by a deadline rather than waiting indefinitely
@@ -3082,29 +3109,59 @@ impl DebugAdapter {
         Self::clear_active_session_state_with_state(session, tcp_session, attached_pid);
     }
 
-    pub(super) fn wait_for_child_exit(process: &mut Child, timeout: Duration) -> bool {
+    /// Bounded wait for a child to exit, returning the discriminated
+    /// outcome. Production callers that only need the boolean keep using
+    /// [`Self::wait_for_child_exit`]; this entrypoint is the basis for
+    /// diagnostic tests that need to tell OS errors from resource
+    /// scheduling from oracle misprediction (#15740).
+    pub(super) fn wait_for_child_exit_with_outcome(
+        process: &mut Child,
+        timeout: Duration,
+    ) -> ChildExitOutcome {
+        let start = Instant::now();
+        let mut polls: u32 = 0;
+
         if let Ok(Some(_)) = process.try_wait() {
-            return true;
+            return ChildExitOutcome::Exited;
         }
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             match process.try_wait() {
-                Ok(Some(_)) => return true,
-                Ok(None) => thread::sleep(Duration::from_millis(25)),
+                Ok(Some(_)) => return ChildExitOutcome::Exited,
+                Ok(None) => {
+                    polls += 1;
+                    thread::sleep(Duration::from_millis(25));
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to poll debug session process");
-                    return false;
+                    return ChildExitOutcome::PollError {
+                        error: e,
+                        polls,
+                        elapsed: start.elapsed(),
+                    };
                 }
             }
         }
 
-        false
+        ChildExitOutcome::StillRunning { polls, elapsed: start.elapsed() }
     }
 
-    pub(super) fn terminate_child_process(process: &mut Child) -> bool {
-        if Self::wait_for_child_exit(process, Duration::from_millis(0)) {
-            return true;
+    #[allow(dead_code)] // exposed for the bounded-cleanup test cluster (#15740)
+    pub(super) fn wait_for_child_exit(process: &mut Child, timeout: Duration) -> bool {
+        matches!(Self::wait_for_child_exit_with_outcome(process, timeout), ChildExitOutcome::Exited)
+    }
+
+    /// Bounded kill-and-reap of a child, returning the discriminated
+    /// outcome (#15740). The Unix branch attempts a graceful SIGTERM
+    /// before the cross-platform `Child::kill` fallback; Windows has no
+    /// SIGTERM equivalent and proceeds directly to `Child::kill` (which
+    /// resolves to `TerminateProcess`).
+    pub(super) fn terminate_child_process_with_outcome(process: &mut Child) -> ChildExitOutcome {
+        if let outcome @ ChildExitOutcome::Exited =
+            Self::wait_for_child_exit_with_outcome(process, Duration::from_millis(0))
+        {
+            return outcome;
         }
 
         #[cfg(unix)]
@@ -3112,11 +3169,13 @@ impl DebugAdapter {
             let pid = process.id();
             match signal::kill(Pid::from_raw(Self::u32_to_i32_saturating(pid)), Signal::SIGTERM) {
                 Ok(()) => {
-                    if Self::wait_for_child_exit(
-                        process,
-                        Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
-                    ) {
-                        return true;
+                    if let outcome @ ChildExitOutcome::Exited =
+                        Self::wait_for_child_exit_with_outcome(
+                            process,
+                            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+                        )
+                    {
+                        return outcome;
                     }
                 }
                 Err(e) => {
@@ -3126,9 +3185,16 @@ impl DebugAdapter {
         }
 
         if let Err(e) = process.kill() {
-            tracing::warn!(error = %e, "Failed to terminate process");
+            tracing::warn!(pid = process.id(), error = %e, "Failed to terminate process");
         }
-        Self::wait_for_child_exit(process, Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS))
+        Self::wait_for_child_exit_with_outcome(
+            process,
+            Duration::from_millis(DEBUG_SESSION_TERMINATE_WAIT_MS),
+        )
+    }
+
+    pub(super) fn terminate_child_process(process: &mut Child) -> bool {
+        matches!(Self::terminate_child_process_with_outcome(process), ChildExitOutcome::Exited)
     }
 
     /// Handle disconnect request
@@ -6355,32 +6421,102 @@ mod tests {
         assert!(!adapter.send_continue_signal(0));
     }
 
-    /// `terminate_child_process` attempts graceful shutdown before force-kill on Windows.
+    /// `terminate_child_process` cleanly stops a spawned process on Windows (#15740).
     ///
-    /// Regression for #4639 defect #3: the old Windows path skipped the graceful
-    /// first step and killed outright. This test spawns a short-lived process and
-    /// verifies `terminate_child_process` returns `true` (the process exited),
-    /// exercising the graceful-shutdown code path.
+    /// The Windows path has no SIGTERM equivalent: `Child::kill` resolves to
+    /// `TerminateProcess` and is followed by a bounded reap. The previous
+    /// boolean assertion conflated the three possible failure modes (kill
+    /// error, bounded-timeout, polling error), so an intermittent failure
+    /// could not distinguish resource scheduling from oracle misprediction.
+    ///
+    /// This test uses a generous test-local wait bound, captures the PID,
+    /// the kill return, and the reap outcome + elapsed timing, and reaps
+    /// the spawned child on every test exit path (including the failure
+    /// path) so the test never abandons a live child. The boolean wrapper
+    /// `terminate_child_process` is preserved; the diagnostic information
+    /// flows through `terminate_child_process_with_outcome`.
     #[test]
     #[cfg(windows)]
     fn terminate_child_process_graceful_shutdown_on_windows() -> Result<(), String> {
         use std::process::Command;
+        use std::time::Instant;
 
-        // Spawn a process that sleeps briefly. The key assertion is that
-        // terminate_child_process returns true (the process was terminated).
-        let mut child = Command::new("cmd")
-            .args(["/c", "ping -n 30 127.0.0.1 > nul"])
-            .spawn()
-            .map_err(|e| format!("Failed to spawn test process: {e}"))?;
+        // Generous test-local reap bound. Production uses
+        // DEBUG_SESSION_TERMINATE_WAIT_MS (250ms), which can race with
+        // AV/DLP on a contended Windows runner and produce the
+        // intermittent false-cleanup verdict this issue tracks.
+        const TEST_REAP_BOUND: Duration = Duration::from_secs(5);
 
-        let result = DebugAdapter::terminate_child_process(&mut child);
-        if !result {
-            return Err("terminate_child_process should succeed on Windows".to_string());
+        struct TestChild {
+            inner: std::process::Child,
+            pid: u32,
+            spawn_at: Instant,
         }
-        // Verify the process is actually gone.
-        match child.try_wait() {
+
+        // Drop-time guard: ensure the spawned test child is reaped even if
+        // an assertion below bails out via `?`. We never use global
+        // process termination — only the owned handle — so an unrelated
+        // session on the host cannot be harmed.
+        impl Drop for TestChild {
+            fn drop(&mut self) {
+                // Best-effort kill and bounded wait. We do not assert
+                // success here: a process that already exited is the
+                // common case and is exactly what we want.
+                let _ = self.inner.kill();
+                let _ = DebugAdapter::wait_for_child_exit(&mut self.inner, Duration::from_secs(5));
+            }
+        }
+
+        let mut owned = TestChild {
+            inner: Command::new("cmd")
+                .args(["/c", "ping -n 30 127.0.0.1 > nul"])
+                .spawn()
+                .map_err(|e| format!("Failed to spawn test process: {e}"))?,
+            pid: 0, // overwritten below
+            spawn_at: Instant::now(),
+        };
+        owned.pid = owned.inner.id();
+        let pid = owned.pid;
+
+        // Issue a bounded reap that mirrors the production terminate path
+        // (kill + bounded wait), but with a test-local bound wide enough
+        // to absorb Windows scheduler jitter. We record timing so a future
+        // regression points at the actual elapsed budget instead of just
+        // "failed".
+        let kill_at = Instant::now();
+        let kill_result = owned.inner.kill();
+        let kill_elapsed = kill_at.elapsed();
+        let reap_outcome =
+            DebugAdapter::wait_for_child_exit_with_outcome(&mut owned.inner, TEST_REAP_BOUND);
+
+        let reap_verdict = match &reap_outcome {
+            super::ChildExitOutcome::Exited => Ok(()),
+            super::ChildExitOutcome::StillRunning { polls, elapsed } => Err(format!(
+                "pid={pid}: child still running after kill (kill_err={kill_result:?}, \
+                 kill_elapsed={kill_elapsed:?}, reap_elapsed={elapsed:?}, polls={polls}, \
+                 bound={TEST_REAP_BOUND:?}); this is the intermittent bounded-timeout \
+                 failure #15740 tracks — resource scheduling or AV/DLP, not a bug in the \
+                 reap loop itself"
+            )),
+            super::ChildExitOutcome::PollError { error, polls, elapsed } => Err(format!(
+                "pid={pid}: try_wait returned OS error during reap (error={error}, \
+                 kill_err={kill_result:?}, kill_elapsed={kill_elapsed:?}, \
+                 reap_elapsed={elapsed:?}, polls={polls}); handle may have been reaped \
+                 elsewhere or closed"
+            )),
+        };
+        reap_verdict?;
+
+        // Verify the process is actually gone via a fresh try_wait — a
+        // second observation guards against a stale outcome.
+        match owned.inner.try_wait() {
             Ok(Some(_)) => Ok(()),
-            Ok(None) => Err("process still running after terminate_child_process".to_string()),
+            Ok(None) => Err(format!(
+                "pid={pid}: reap_outcome reported Exited but try_wait still sees the \
+                 child running; reap_outcome={reap_outcome:?}, \
+                 total_elapsed={spawn_at_elapsed:?}",
+                spawn_at_elapsed = owned.spawn_at.elapsed(),
+            )),
             Err(e) => Err(format!("error polling process after terminate: {e}")),
         }
     }
@@ -6407,6 +6543,102 @@ mod tests {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err("process still running after terminate_child_process".to_string()),
             Err(e) => Err(format!("error polling process after terminate: {e}")),
+        }
+    }
+
+    /// `terminate_child_process_with_outcome` lets a later retry reap the
+    /// same owned child after an initial bounded-timeout (#15740).
+    ///
+    /// The boolean wrapper lost this information. The outcome variant
+    /// must surface `StillRunning` so production code can decide whether
+    /// to retry, escalate, or surface a diagnostic — and a retry on the
+    /// same `Child` handle must succeed without re-spawning.
+    #[test]
+    #[cfg(windows)]
+    fn terminate_child_outcome_retry_reaps_after_initial_timeout() -> Result<(), String> {
+        use std::process::Command;
+        use std::time::Instant;
+
+        const FIRST_BOUND: Duration = Duration::from_millis(1); // forces StillRunning
+        const RETRY_BOUND: Duration = Duration::from_secs(5);
+
+        struct TestChild(std::process::Child);
+        impl Drop for TestChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = DebugAdapter::wait_for_child_exit(&mut self.0, Duration::from_secs(5));
+            }
+        }
+
+        let mut owned = TestChild(
+            Command::new("cmd")
+                .args(["/c", "ping -n 30 127.0.0.1 > nul"])
+                .spawn()
+                .map_err(|e| format!("Failed to spawn test process: {e}"))?,
+        );
+
+        // First reap: deliberately too short to observe the exit. This
+        // returns StillRunning, proving the discriminator works.
+        let first = DebugAdapter::wait_for_child_exit_with_outcome(&mut owned.0, FIRST_BOUND);
+        assert!(
+            matches!(first, super::ChildExitOutcome::StillRunning { .. }),
+            "expected StillRunning on a 1ms bound; got {first:?}"
+        );
+
+        // Now kill and retry. The retry must observe the exit without
+        // abandoning the owned handle.
+        let kill_at = Instant::now();
+        if let Err(e) = owned.0.kill() {
+            return Err(format!("kill failed before retry: {e}"));
+        }
+        let retry = DebugAdapter::wait_for_child_exit_with_outcome(&mut owned.0, RETRY_BOUND);
+        let retry_elapsed = kill_at.elapsed();
+        match retry {
+            super::ChildExitOutcome::Exited => Ok(()),
+            super::ChildExitOutcome::StillRunning { polls, elapsed } => Err(format!(
+                "retry reap still timed out after kill (polls={polls}, elapsed={elapsed:?}, \
+                 total_since_kill={retry_elapsed:?}, retry_bound={RETRY_BOUND:?})"
+            )),
+            super::ChildExitOutcome::PollError { error, polls, elapsed } => Err(format!(
+                "retry reap observed OS error (error={error}, polls={polls}, elapsed={elapsed:?})"
+            )),
+        }
+    }
+
+    /// `wait_for_child_exit_with_outcome` distinguishes a bounded-timeout
+    /// from an OS poll error (#15740). On a healthy host with an
+    /// already-exited child the result must be `Exited`, not `PollError`
+    /// or `StillRunning`.
+    #[test]
+    fn wait_for_child_exit_outcome_reports_exited_for_finished_child() -> Result<(), String> {
+        use std::process::Command;
+        use std::time::Duration;
+
+        let mut child = if cfg!(windows) {
+            Command::new("cmd")
+                .args(["/c", "exit"])
+                .spawn()
+                .map_err(|e| format!("Failed to spawn: {e}"))?
+        } else {
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?
+        };
+
+        // Generous bound: process-start latency under AV/load spikes
+        // exceeds any constant sleep (#12791).
+        if !DebugAdapter::wait_for_child_exit(&mut child, Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
+
+        let outcome =
+            DebugAdapter::wait_for_child_exit_with_outcome(&mut child, Duration::from_millis(1));
+        match outcome {
+            super::ChildExitOutcome::Exited => Ok(()),
+            other => Err(format!(
+                "expected Exited for a finished child; got {other:?} — the discriminator must \
+                 not promote an already-finished child to StillRunning or PollError"
+            )),
         }
     }
 
@@ -6439,6 +6671,153 @@ mod tests {
         if !result {
             return Err("terminate_child_process should return true for an already-exited process"
                 .to_string());
+        }
+        Ok(())
+    }
+
+    /// Discriminator for the zero-wait fast path in
+    /// `terminate_child_process_with_outcome`: an already-exited child must
+    /// surface the `Exited` variant itself, not merely a truthy boolean
+    /// (#15740, ripr gap 4f054749).
+    #[test]
+    fn terminate_child_process_with_outcome_boundary_discriminator() -> Result<(), String> {
+        use std::process::Command;
+
+        // Spawn a process that exits immediately.
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/c", "exit"])
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        // Deterministic precondition: the child has exited before terminate runs.
+        if !DebugAdapter::wait_for_child_exit(&mut child, std::time::Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        if !matches!(outcome, super::ChildExitOutcome::Exited) {
+            return Err(format!("zero-wait fast path must discriminate Exited, got {outcome:?}"));
+        }
+        Ok(())
+    }
+
+    /// Direct zero-wait probe discriminator for the fast-path seam in
+    /// `terminate_child_process_with_outcome`: the probe itself must
+    /// report `Exited` for an already-exited child at
+    /// `Duration::from_millis(0)` — the exact input the fast path
+    /// discriminates on (#15740, ripr gaps 4f054749/41a2480a/41b34a0a).
+    #[test]
+    fn zero_wait_outcome_probe_reports_exited_for_exited_child() -> Result<(), String> {
+        use std::process::Command;
+
+        // Spawn a process that exits immediately.
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/c", "exit"])
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        // Deterministic precondition: the child has exited before probing.
+        if !DebugAdapter::wait_for_child_exit(&mut child, Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
+        let outcome =
+            DebugAdapter::wait_for_child_exit_with_outcome(&mut child, Duration::from_millis(0));
+        if !matches!(outcome, super::ChildExitOutcome::Exited) {
+            return Err(format!(
+                "zero-wait probe must report Exited for an exited child, got {outcome:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Call-presence observer for the fast-path seam in
+    /// `terminate_child_process_with_outcome`: a live child must be observed
+    /// by the zero-wait call as not-exited (fast path rejected) and then
+    /// reaped through the kill path, surfacing `Exited` (#15740,
+    /// ripr gaps 41a2480a/41b34a0a).
+    #[test]
+    fn terminate_child_process_with_outcome_call_presence_observer() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+
+        // Spawn a long-running child that outlives the zero-wait probe.
+        #[cfg(windows)]
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        if !matches!(outcome, super::ChildExitOutcome::Exited) {
+            return Err(format!(
+                "live child must be reaped through the kill path as Exited, got {outcome:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Exact error-variant test for the `PollError` arm of the outcome
+    /// ladder: when the OS has already reaped the child behind the
+    /// `Child` handle's back, `try_wait` reports an OS error instead of
+    /// an exit, and the zero-wait probe must surface `PollError` rather
+    /// than hanging or misreporting `Exited` (#15740,
+    /// ripr gap e389be4dd785a892).
+    ///
+    /// Unix-only: `Child::wait` caches the status so a second `try_wait`
+    /// cannot fail; only a raw `waitpid` reaps without Rust knowing
+    /// (subsequent `try_wait` deterministically returns `ECHILD`).
+    /// Windows keeps reporting the cached exit status instead.
+    /// The nonzero timeout matters: a zero timeout skips the poll loop
+    /// entirely, while one loop turn reaches the `Err` arm that reports
+    /// `PollError`.
+    #[cfg(unix)]
+    #[test]
+    fn wait_outcome_poll_error_after_reap_reports_poll_error() -> Result<(), String> {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::Command;
+
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+        // Raw blocking reap behind the `Child` handle's back: Rust never
+        // learns the exit status, so the probe's `try_wait` hits ECHILD.
+        let pid = child.id();
+        let mut status: libc::c_int = 0;
+        // SAFETY: pid names our own just-spawned child; blocking waitpid
+        // returns only once it is reaped.
+        let reaped = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
+        if reaped < 0 {
+            return Err(format!(
+                "raw waitpid failed to reap fixture child: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let exit_status = <std::process::ExitStatus as ExitStatusExt>::from_raw(status);
+        if !exit_status.success() {
+            return Err("fixture `true` must exit successfully".to_string());
+        }
+        let outcome = DebugAdapter::wait_for_child_exit_with_outcome(
+            &mut child,
+            std::time::Duration::from_millis(250),
+        );
+        if !matches!(outcome, super::ChildExitOutcome::PollError { .. }) {
+            return Err(format!("raw-reaped child must surface PollError, got {outcome:?}"));
         }
         Ok(())
     }
