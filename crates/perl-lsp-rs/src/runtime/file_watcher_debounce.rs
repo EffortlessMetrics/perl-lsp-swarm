@@ -305,6 +305,15 @@ struct Shared {
     /// check and re-verify after acquiring the lock, so a notification that
     /// lands in between cannot be missed.
     handoff_gen: AtomicU64,
+    /// Test-only progress broadcast. Test harness waiters park here instead
+    /// of on [`Self::handoff_cv`] so a production `notify_one` (batch
+    /// produced) can never be stolen from its intended production waiter,
+    /// the dispatcher: a stolen wakeup leaves a produced batch undispatched
+    /// until the next unrelated notification. Every `handoff_gen` bump under
+    /// the state lock also broadcasts here. Compiled out of production
+    /// builds.
+    #[cfg(test)]
+    test_progress_cv: Condvar,
     /// Set when the callback closure panicked mid-dispatch. Admissions then
     /// report [`WatcherAdmission::Unavailable`] instead of pretending work is
     /// still queueable behind a dead dispatcher.
@@ -779,6 +788,8 @@ fn make_shared(
         intake_cv: Condvar::new(),
         handoff_cv: Condvar::new(),
         handoff_gen: AtomicU64::new(0),
+        #[cfg(test)]
+        test_progress_cv: Condvar::new(),
         sink_panic: AtomicBool::new(false),
         clock,
         interval_ms,
@@ -829,13 +840,19 @@ impl Shared {
     fn notify_handoff_all(&self) {
         self.handoff_gen.fetch_add(1, Ordering::SeqCst);
         self.handoff_cv.notify_all();
+        #[cfg(test)]
+        self.test_progress_cv.notify_all();
     }
 
     /// Wake one handoff waiter and record the wakeup. Same lock contract as
-    /// [`Shared::notify_handoff_all`].
+    /// [`Shared::notify_handoff_all`]. The single wakeup is reserved for
+    /// production waiters; test waiters observe progress via the separate
+    /// `test_progress_cv` broadcast instead of competing for it.
     fn notify_handoff_one(&self) {
         self.handoff_gen.fetch_add(1, Ordering::SeqCst);
         self.handoff_cv.notify_one();
+        #[cfg(test)]
+        self.test_progress_cv.notify_all();
     }
 }
 
@@ -908,6 +925,15 @@ where
     loop {
         match guard.outbox.pop_front() {
             Some(batch) => {
+                // The outbox drain is a state transition that pressure
+                // observers wait on (`outboxed_batches` drops here), so it
+                // must record a wakeup exactly like the intake handoff and
+                // the post-delivery release. A waiter parked between the
+                // push notification and this pop would otherwise hold a
+                // stale outbox length with no future notification left to
+                // wake it, because the callback below can block
+                // indefinitely.
+                shared.notify_handoff_all();
                 // Active was already counted at handoff (intake side); popping
                 // changes no accounting. Decrement happens after the sink
                 // completes, success or failure.
@@ -1015,9 +1041,18 @@ mod tests {
             // Deterministic synchronization seam: the production code already
             // notifies `handoff_cv` (under the state lock) on every batch
             // produced, every outbox space freed, and on shutdown. Waiting on
-            // that cv replaces the wall-clock poll with a bounded event-driven
-            // wait that survives heavily preempted runners without depending
-            // on scheduler luck for poll cadence.
+            // that seam replaces the wall-clock poll with a bounded
+            // event-driven wait that survives heavily preempted runners
+            // without depending on scheduler luck for poll cadence.
+            //
+            // Test waiters park on `test_progress_cv`, never on `handoff_cv`
+            // itself: intake's batch-produced wakeup is `notify_one` reserved
+            // for the dispatcher, and a test waiter parked on `handoff_cv`
+            // could steal it, leaving the produced batch undispatched until
+            // the next unrelated notification (the exact nondeterminism this
+            // harness exists to remove). Every generation bump broadcasts on
+            // `test_progress_cv` under the same lock, so the wakeup topology
+            // stays complete without touching production wakeups.
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
                 // Predicates read pressure(), which takes the state lock, so
@@ -1041,7 +1076,7 @@ mod tests {
                     drop(guard);
                     continue;
                 }
-                let _timed_out = self.shared.handoff_cv.wait_for(&mut guard, remaining);
+                let _timed_out = self.shared.test_progress_cv.wait_for(&mut guard, remaining);
                 drop(guard);
             }
         }
@@ -1609,9 +1644,10 @@ mod tests {
     fn file_watcher_debouncer_heap_cap_bounds_reschedule_storm_under_stall() {
         let gate: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
         let gate_open = Arc::clone(&gate);
-        // pending cap 40 → heap cap 80; batch 2 + outbox 8 ⇒ 16 subjects
-        // drain into a saturated outbox and the remaining 24 stay pending
-        // while intake parks at the backpressure gate.
+        // pending cap 40 → heap cap 80; batch 2 + outbox 8 + 1 in-callback
+        // batch ⇒ 18 subjects held outside the pending map. The dispatcher's
+        // pop notifies the backpressure gate, so intake refills the freed
+        // slot and the remaining 22 stay pending while intake parks.
         let harness = Harness::with_caps(
             move |_uris: Vec<String>| {
                 // Bounded block: even if the test fails before opening the
@@ -1633,14 +1669,16 @@ mod tests {
             );
         }
         harness.advance(101);
-        // Dispatcher pops batch #1 immediately (in-callback, blocked on the
-        // gate), so queued batches plateau at 7 — count the stall by the
-        // pending map instead, which excludes both in-flight and queued work.
+        // Dispatcher pops batch #1 into the gate-blocked callback; the pop
+        // itself frees an outbox slot and wakes intake, so queued batches
+        // refill to the full 8. Count the stall by the pending map, which
+        // excludes both in-flight and queued work and only settles once the
+        // backpressure gate re-saturates.
         harness.wait_for(
-            || harness.debouncer.pressure().pending_subjects == 24,
+            || harness.debouncer.pressure().pending_subjects == 22,
             "remainder parks at backpressure",
         );
-        // Dispatcher holds batch #1 in-callback; up to 8 more fill the
+        // Dispatcher holds batch #1 in-callback; 8 more batches fill the
         // outbox; the remaining dues stay parked pending.
         let parked: Vec<String> = {
             let state = harness.shared.state.lock();
@@ -1648,7 +1686,7 @@ mod tests {
             keys.sort();
             keys
         };
-        assert_eq!(parked.len(), 24, "40 subjects − 16 outboxed − 2 in-flight must park");
+        assert_eq!(parked.len(), 22, "40 subjects − 16 queued − 2 in-flight must park");
 
         // Storm: repeated schedules for still-pending URIs. Each supersedes a
         // previous heap entry; the retained-entry cap plus lazy purge must
