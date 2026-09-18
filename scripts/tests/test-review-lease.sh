@@ -271,6 +271,58 @@ test_verify_missing_v_field_refused() {
     fi
 }
 
+# ── swap-after-validation — verify acts on the validated snapshot ──────────
+# @risk: validate_lease_file passes on a v1 read, then a concurrent writer
+#        replaces the mutable path with a v2 envelope before owner/expiry are
+#        read; the // "?" / // 0 defaults then take the wrong-action EXPIRED
+#        path this PR is meant to eliminate.
+# @return_path: the command reads the bytes once; fields come from the
+#        validated snapshot, so verify still reports the original v1 owner.
+# @side_effect: the on-disk file is left as the swapped v2 content (the test
+#        simulates the race); the command output reflects the snapshot.
+test_verify_uses_snapshot_despite_swap_after_validation() {
+    run acquire --branch snapshot-race-branch --owner alice --ttl-min 120
+    [[ "$RUN_EXIT" -eq 0 ]] || { fail "snapshot-race setup — acquire exit=$RUN_EXIT out=$RUN_OUT"; return; }
+    local real_jq
+    real_jq="$(command -v jq)"
+    local shim_dir="$TMPDIR_REVIEW/shim-jq"
+    mkdir -p "$shim_dir"
+    export SNAPSHOT_RACE_TARGET="$REVIEW_LEASES_DIR/snapshot-race-branch.json"
+    export SNAPSHOT_RACE_REAL_JQ="$real_jq"
+    export SNAPSHOT_RACE_MARKER="$TMPDIR_REVIEW/shim-jq.swapped"
+    rm -f "$SNAPSHOT_RACE_MARKER"
+    cat >"$shim_dir/jq" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+real="${SNAPSHOT_RACE_REAL_JQ:?}"
+target="${SNAPSHOT_RACE_TARGET:?}"
+marker="${SNAPSHOT_RACE_MARKER:?}"
+is_version_check=0
+for a in "$@"; do
+    [[ "$a" == *".v"* ]] && is_version_check=1
+done
+"$real" "$@"
+status=$?
+if [[ $is_version_check -eq 1 && ! -f "$marker" ]]; then
+    : > "$marker"
+    "$real" -n '{v:2, branch:"snapshot-race-branch", held_by:"mallory", lease_expires_at:2147483647, pr:42, base_sha:"abc"}' > "$target"
+fi
+exit $status
+EOF
+    chmod +x "$shim_dir/jq"
+    local out exit_code
+    local e=0
+    out="$(PATH="$shim_dir:$PATH" REVIEW_LEASES_DIR="$REVIEW_LEASES_DIR" bash "$LEASE" verify --branch snapshot-race-branch 2>&1)" || e=$?
+    exit_code=$e
+    if [[ "$exit_code" -eq 0 ]] && echo "$out" | grep -q "alice"; then
+        pass "verify acts on the validated snapshot despite a swap after validation (still alice, exit 0)"
+    else
+        fail "snapshot-race — expected exit 0 holding alice, got exit=$exit_code out=$out"
+    fi
+    rm -rf "$shim_dir" "$SNAPSHOT_RACE_MARKER"
+    unset SNAPSHOT_RACE_TARGET SNAPSHOT_RACE_REAL_JQ SNAPSHOT_RACE_MARKER
+}
+
 # ── disposition fake-GitHub seam ───────────────────────────────────────────
 FAKE_BIN="$TMPDIR_REVIEW/fake-bin"
 FAKE_LOG="$TMPDIR_REVIEW/gh-mutations.log"
@@ -437,6 +489,7 @@ test_audit_v2_lease_refused
 test_acquire_v2_lease_refused_no_overwrite
 test_verify_malformed_lease_refused
 test_verify_missing_v_field_refused
+test_verify_uses_snapshot_despite_swap_after_validation
 test_disposition_reuses_h1_at_h2
 test_disposition_posts_changed_evidence
 test_disposition_provider_failure_is_inert

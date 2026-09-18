@@ -57,22 +57,31 @@ lease_path() {
 now_epoch() { date -u +%s; }
 iso_of_epoch() { date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
 
-# validate_lease_file refuses to read a lease that does not match the
-# declared v1 envelope (per .ci/receipts/schemas/review-lease.schema.json).
+# validate_lease_file loads one immutable snapshot of the lease file and
+# refuses leases that do not match the declared v1 envelope (per
+# .ci/receipts/schemas/review-lease.schema.json). The snapshot closes the
+# validate-then-reconsume TOCTOU: a concurrent writer replacing the mutable
+# path after validation cannot change the fields this command acts on.
 # Without this guard, a future schema rename (e.g. owner → held_by) parses as
 # valid JSON and the unguarded `// "?"` / `// 0` defaults at each read site
 # silently produce wrong-action results: verify classifies the lease as
 # EXPIRED, audit emits a TAKEOVER-CANDIDATE for every active branch. Exit 2
 # is intentional — callers must refuse to proceed on an unknown envelope.
+LEASE_SNAPSHOT=""
 validate_lease_file() {
     local path="$1"
+    LEASE_SNAPSHOT="$(cat -- "$path")" || die_usage "lease file $path is unreadable"
     local v
-    if ! v="$(jq -r '.v // "missing"' "$path" 2>/dev/null)"; then
-        die_usage "lease file $path is not valid JSON"
-    fi
+    v="$(printf '%s' "$LEASE_SNAPSHOT" | jq -r '.v // "missing"')" || die_usage "lease file $path is not valid JSON"
     if [[ "$v" != "1" ]]; then
         die_usage "lease file $path has unsupported version: '$v' (only v:1 is recognized)"
     fi
+}
+
+# lease_field extracts one field from the snapshot loaded by
+# validate_lease_file. Never re-read the mutable path after validation.
+lease_field() {
+    printf '%s' "$LEASE_SNAPSHOT" | jq -r "$1"
 }
 
 # ── arg parsing ─────────────────────────────────────────────────────────────
@@ -102,8 +111,8 @@ case "$SUBCMD" in
         now="$(now_epoch)"
         if [[ -f "$path" ]]; then
             validate_lease_file "$path"
-            cur_owner="$(jq -r '.owner // ""' "$path")"
-            cur_exp="$(jq -r '.expires_at_epoch // 0' "$path")"
+            cur_owner="$(lease_field '.owner // ""')"
+            cur_exp="$(lease_field '.expires_at_epoch // 0')"
             if [[ "$now" -lt "$cur_exp" && "$cur_owner" != "$OWNER" ]]; then
                 echo "REFUSE lease on '$BRANCH' is held by '$cur_owner' until $(iso_of_epoch "$cur_exp") — not '$OWNER'" >&2
                 exit 1
@@ -112,6 +121,7 @@ case "$SUBCMD" in
         exp=$((now + TTL_MIN * 60))
         acquired_iso="$(iso_of_epoch "$now")"
         expires_iso="$(iso_of_epoch "$exp")"
+        tmp_path="$path.tmp.$$"
         jq -n \
             --arg branch "$BRANCH" --arg owner "$OWNER" --argjson pr "$PR" \
             --argjson base "$BASE_SHA" \
@@ -119,7 +129,8 @@ case "$SUBCMD" in
             --argjson aep "$now" --argjson eep "$exp" \
             '{v:1, branch:$branch, owner:$owner, pr:$pr, base_sha:$base,
               acquired_at:$aiso, expires_at:$eiso, last_heartbeat:$aiso,
-              acquired_at_epoch:$aep, expires_at_epoch:$eep}' > "$path"
+              acquired_at_epoch:$aep, expires_at_epoch:$eep}' > "$tmp_path"
+        mv -f "$tmp_path" "$path"
         echo "OK lease acquired on '$BRANCH' by '$OWNER' until $expires_iso"
         exit 0
         ;;
@@ -132,8 +143,8 @@ case "$SUBCMD" in
         fi
         validate_lease_file "$path"
         now="$(now_epoch)"
-        exp="$(jq -r '.expires_at_epoch // 0' "$path")"
-        owner="$(jq -r '.owner // "?"' "$path")"
+        exp="$(lease_field '.expires_at_epoch // 0')"
+        owner="$(lease_field '.owner // "?"')"
         if [[ "$now" -lt "$exp" ]]; then
             echo "OK lease on '$BRANCH' held by '$owner' until $(iso_of_epoch "$exp")"
             exit 0
@@ -150,7 +161,7 @@ case "$SUBCMD" in
             exit 0
         fi
         validate_lease_file "$path"
-        cur_owner="$(jq -r '.owner // ""' "$path")"
+        cur_owner="$(lease_field '.owner // ""')"
         if [[ "$cur_owner" != "$OWNER" ]]; then
             echo "REFUSE lease on '$BRANCH' is held by '$cur_owner' — '$OWNER' cannot release it" >&2
             exit 1
@@ -169,10 +180,10 @@ case "$SUBCMD" in
         for path in "$LEASES_DIR"/*.json; do
             [[ -e "$path" ]] || continue
             validate_lease_file "$path"
-            exp="$(jq -r '.expires_at_epoch // 0' "$path")"
-            branch="$(jq -r '.branch // "?"' "$path")"
-            owner="$(jq -r '.owner // "?"' "$path")"
-            pr="$(jq -r '.pr // "?"' "$path")"
+            exp="$(lease_field '.expires_at_epoch // 0')"
+            branch="$(lease_field '.branch // "?"')"
+            owner="$(lease_field '.owner // "?"')"
+            pr="$(lease_field '.pr // "?"')"
             if [[ "$now" -ge "$exp" ]]; then
                 expired=$((expired + 1))
                 echo "TAKEOVER-CANDIDATE branch='$branch' owner='$owner' pr=$pr expired=$(iso_of_epoch "$exp") — route to lease-audit/R5 (do NOT auto-takeover)"
