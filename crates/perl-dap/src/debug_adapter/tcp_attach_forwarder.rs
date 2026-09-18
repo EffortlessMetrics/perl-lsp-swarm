@@ -147,6 +147,7 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_adapter::DapMessageWithEpoch;
     use crate::debug_adapter::process::reserve_terminated_event;
     use std::sync::mpsc::sync_channel;
     use std::time::Duration;
@@ -157,7 +158,7 @@ mod tests {
         Arc::new(Mutex::new(TerminationState { generation: 1, ..Default::default() }))
     }
 
-    fn current_queue() -> (SyncSender<DapMessage>, Receiver<DapMessage>) {
+    fn current_queue() -> (SyncSender<DapMessageWithEpoch>, Receiver<DapMessageWithEpoch>) {
         sync_channel(64)
     }
 
@@ -186,7 +187,7 @@ mod tests {
 
         let mut names = Vec::new();
         for _ in 0..2 {
-            let msg = out_rx
+            let (msg, _epoch) = out_rx
                 .recv_timeout(Duration::from_secs(2))
                 .map_err(|e| format!("forwarded event missing: {e}"))?;
             if let DapMessage::Event { event, .. } = msg {
@@ -225,7 +226,7 @@ mod tests {
         let live = out_rx
             .recv_timeout(Duration::from_secs(2))
             .map_err(|e| format!("live event must be forwarded: {e}"))?;
-        assert!(matches!(&live, DapMessage::Event { event, .. } if event == "output"));
+        assert!(matches!(&live, (DapMessage::Event { event, .. }, _) if event == "output"));
 
         // Replace the session: generation 1 is now dead.
         lock_or_recover(&state, "test.termination_state").generation = 2;
@@ -269,7 +270,7 @@ mod tests {
         handle.join().map_err(|_| "forwarder panicked".to_string())?;
 
         let mut terminated = 0;
-        while let Ok(msg) = out_rx.try_recv() {
+        while let Ok((msg, _epoch)) = out_rx.try_recv() {
             if let DapMessage::Event { event, .. } = msg
                 && event == "terminated"
             {
@@ -306,7 +307,7 @@ mod tests {
         let (tx, rx) = sync_channel::<DapEvent>(8);
         // Outbound capacity 1: the first stopped event fills the queue, so the
         // second one must wait for room inside the guarded dispatch.
-        let (out_tx, out_rx) = sync_channel::<DapMessage>(1);
+        let (out_tx, out_rx) = sync_channel::<DapMessageWithEpoch>(1);
         let state = termination_state_at_generation_one();
 
         let handle = spawn_tcp_attach_event_forwarder(
@@ -337,10 +338,10 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .map_err(|e| format!("the live-generation event must publish: {e}"))?;
         let stopped_reason = match published {
-            DapMessage::Event { event, body, .. } if event == "stopped" => {
+            (DapMessage::Event { event, body, .. }, _) if event == "stopped" => {
                 body.and_then(|b| b.get("reason").and_then(|r| r.as_str()).map(String::from))
             }
-            other => return Err(format!("expected the live stopped event, got {other:?}")),
+            (other, _) => return Err(format!("expected the live stopped event, got {other:?}")),
         };
         assert_eq!(
             stopped_reason.as_deref(),
@@ -361,7 +362,7 @@ mod tests {
     #[test]
     fn blocked_terminated_event_is_retired_when_generation_advances() -> Result<(), String> {
         let (tx, rx) = sync_channel::<DapEvent>(8);
-        let (out_tx, out_rx) = sync_channel::<DapMessage>(1);
+        let (out_tx, out_rx) = sync_channel::<DapMessageWithEpoch>(1);
         let state = termination_state_at_generation_one();
 
         let handle = spawn_tcp_attach_event_forwarder(
@@ -393,8 +394,8 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .map_err(|e| format!("the live-generation event must publish: {e}"))?;
         match published {
-            DapMessage::Event { event, .. } if event == "stopped" => {}
-            other => return Err(format!("expected the live stopped event, got {other:?}")),
+            (DapMessage::Event { event, .. }, _) if event == "stopped" => {}
+            (other, _) => return Err(format!("expected the live stopped event, got {other:?}")),
         }
         assert!(
             out_rx.try_recv().is_err(),
