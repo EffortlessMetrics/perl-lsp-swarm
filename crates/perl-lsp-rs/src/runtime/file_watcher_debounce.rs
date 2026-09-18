@@ -987,10 +987,25 @@ mod tests {
         }
 
         fn wait_for(&self, predicate: impl Fn() -> bool, label: &str) {
+            // Deterministic synchronization seam: the production code already
+            // notifies `handoff_cv` (under the state lock) on every batch
+            // produced, every outbox space freed, and on shutdown. Waiting on
+            // that cv replaces the wall-clock poll with a bounded event-driven
+            // wait that survives heavily preempted runners without depending
+            // on scheduler luck for poll cadence.
             let deadline = Instant::now() + Duration::from_secs(10);
-            while !predicate() {
-                assert!(Instant::now() < deadline, "timed out waiting for {label}");
-                std::thread::sleep(Duration::from_millis(2));
+            loop {
+                if predicate() {
+                    return;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    assert!(predicate(), "timed out waiting for {label}");
+                    return;
+                }
+                let mut guard = self.shared.state.lock();
+                let _timed_out = self.shared.handoff_cv.wait_for(&mut guard, remaining);
+                drop(guard);
             }
         }
 
