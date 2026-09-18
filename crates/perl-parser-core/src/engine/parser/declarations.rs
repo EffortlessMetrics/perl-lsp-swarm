@@ -179,13 +179,14 @@ impl<'a> Parser<'a> {
                 let mut attr_name = base_name.clone();
 
                 if self.peek_kind() == Some(TokenKind::LeftParen) {
-                    self.consume_token()?; // consume (
-                    attr_name.push('(');
+                    let opening = self.consume_token()?;
+                    let argument_start = opening.start();
+                    let mut argument_end = opening.end();
 
                     let mut paren_depth = 1;
                     while paren_depth > 0 && !self.tokens.is_eof() {
                         let token = self.tokens.next()?;
-                        attr_name.push_str(&token.text);
+                        argument_end = token.end();
 
                         if base_name == "prototype"
                             && paren_depth == 1
@@ -208,6 +209,8 @@ impl<'a> Parser<'a> {
                             self.current_position(),
                         ));
                     }
+                    attr_name
+                        .push_str(self.source_attribute_argument(argument_start, argument_end)?);
                 }
 
                 // Perl allows arbitrary subroutine attributes via the
@@ -243,6 +246,42 @@ impl<'a> Parser<'a> {
     /// Convenience wrapper for the common subroutine/method case.
     fn parse_declaration_attributes(&mut self) -> ParseResult<Vec<String>> {
         self.parse_declaration_attributes_with_extras(&[])
+    }
+
+    /// Preserve argument bytes rather than joining trivia-stripped token text.
+    /// Perl scans attribute arguments as balanced, escaped parentheses: quote
+    /// and comment-looking bytes inside them are literal argument text.
+    /// Token traversal still owns consumption. Refuse a token-derived boundary
+    /// that disagrees with source instead of publishing a fabricated attribute.
+    fn source_attribute_argument(&self, start: usize, end: usize) -> ParseResult<&str> {
+        let invalid = || ParseError::syntax("Untrusted attribute argument boundary", start);
+        let bytes = self.src_bytes.get(start..end).ok_or_else(invalid)?;
+        if bytes.first() != Some(&b'(') {
+            return Err(invalid());
+        }
+        let mut depth = 0usize;
+        let mut escaped = false;
+        for (index, byte) in bytes.iter().enumerate() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match byte {
+                b'\\' => escaped = true,
+                b'(' => depth = depth.saturating_add(1),
+                b')' => {
+                    depth = depth.checked_sub(1).ok_or_else(invalid)?;
+                    if depth == 0 && index.saturating_add(1) != bytes.len() {
+                        return Err(invalid());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 || escaped {
+            return Err(invalid());
+        }
+        std::str::from_utf8(bytes).map_err(|_| invalid())
     }
 
     /// Parse variable declaration attributes (`:shared`, `:param`, `:reader`, etc.).

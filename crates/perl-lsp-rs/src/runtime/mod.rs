@@ -40,6 +40,9 @@ mod refresh;
 mod resolve_session;
 /// Routing module for lifecycle-aware index access
 pub mod routing;
+/// Ownership boundary for application background-worker execution lifetime,
+/// cancellation, join, and settlement (#10024).
+pub(crate) mod runtime_services;
 #[cfg(all(test, feature = "workspace"))]
 mod scan_gate_observation;
 pub(crate) mod scheduler;
@@ -70,6 +73,8 @@ mod metadata_invalidation_tests;
 #[cfg(test)]
 mod open_buffer_authority_tests;
 #[cfg(test)]
+mod runtime_services_tests;
+#[cfg(test)]
 mod session_warning_dedup_tests;
 
 // Test/pressure observation of the bounded session-warning dedup store (#9769).
@@ -84,12 +89,17 @@ pub use crate::protocol::{JsonRpcError, JsonRpcId, JsonRpcRequest, JsonRpcRespon
 pub use window::{MessageType, ShowDocumentOptions};
 
 use perl_lsp_rs_core::tooling::performance::SymbolIndex;
-use perl_lsp_rs_core::tooling::perl_critic::BuiltInAnalyzer;
 use perl_parser::{
     Parser,
     ast::{Node, NodeKind},
-    declaration::ParentMap,
 };
+use perl_semantic_analyzer::analysis::declaration::ParentMap;
+
+#[cfg(any(test, feature = "expose_lsp_test_api"))]
+pub(crate) struct WorkspaceTopologyTransitionGate {
+    pub(crate) started: std::sync::mpsc::Sender<()>,
+    pub(crate) release: std::sync::mpsc::Receiver<()>,
+}
 use perl_tdd_support::{
     tdd_basic::TestGenerator,
     test_runner::{TestKind, TestRunner},
@@ -154,11 +164,11 @@ use std::sync::{
 use url::Url;
 
 #[cfg(feature = "workspace")]
-use perl_parser::workspace_index::{
+use perl_position_tracking::{WireLocation, WirePosition, WireRange};
+#[cfg(feature = "workspace")]
+use perl_workspace::workspace_index::{
     IndexCoordinator, LspWorkspaceSymbol, WorkspaceIndex, uri_to_fs_path,
 };
-#[cfg(feature = "workspace")]
-use perl_position_tracking::{WireLocation, WirePosition, WireRange};
 
 #[cfg(feature = "workspace")]
 use crate::fallback::text::extract_text_based_symbols;
@@ -219,6 +229,10 @@ pub struct LspServer {
     /// workspaces with per-folder configuration. The old string-based approach
     /// is maintained via `workspace_folder_uris()` for backward compatibility.
     workspace_folders: Arc<Mutex<Vec<WorkspaceFolderState>>>,
+    /// Monotonic workspace-topology generation for folder transitions.
+    pub(crate) workspace_topology_generation: Arc<AtomicU32>,
+    /// False while folder membership and matching configuration are published.
+    pub(crate) workspace_topology_stable: Arc<AtomicBool>,
     /// Monotonic configuration/ownership generation for diagnostic snapshots.
     pub(crate) workspace_identity_generation: Arc<AtomicU64>,
     /// Monotonic generation for dependency and environment facts derived from
@@ -282,6 +296,23 @@ pub struct LspServer {
     /// Perl settings extracted from `initializationOptions` during initialize.
     /// Kept as a base config layer below `.perl-lsp.toml` and `workspace/configuration`.
     initialization_options_perl_settings: Arc<Mutex<Option<Value>>>,
+    /// Most recent perl settings payload received via `workspace/didChangeConfiguration`.
+    /// Replayed on top of merged project config by
+    /// [`crate::runtime::lifecycle::workspace::load_and_apply_project_config`] so that
+    /// tier-3 client values (documented as layered above TOML) survive a folder
+    /// removal when the remaining folders have no `.perl-lsp.toml` to re-apply
+    /// them, and so that project-owned fields are reset back to defaults before
+    /// the merged TOML is applied (issue #15715).
+    last_client_settings: Arc<Mutex<Option<Value>>>,
+    /// Snapshot of `ServerConfig` captured after tier-1 (`initializationOptions`)
+    /// is applied in [`super::workspace::handle_initialize`] and updated whenever
+    /// tier-3 (`didChangeConfiguration`) arrives. Represents the
+    /// `defaults + tier-1 + tier-3` baseline that survives
+    /// `load_and_apply_project_config`'s per-call reset; without it, a
+    /// removed folder's tier-2 contribution would persist on the server-global
+    /// layer because `merged.apply_to_server_config` only writes present
+    /// fields (issue #15715).
+    server_config_baseline: Arc<Mutex<Option<perl_lsp_rs_core::config::ServerConfig>>>,
     /// Atomic counter for generating unique request IDs
     next_request_id: Arc<AtomicI32>,
     /// Pending workspace/configuration reverse requests keyed by request ID.
@@ -293,23 +324,27 @@ pub struct LspServer {
     progress_token_to_request: Arc<Mutex<HashMap<String, JsonRpcId>>>,
     /// Refresh controller for debounced client refresh requests
     refresh_controller: refresh::RefreshController,
-    /// Diagnostic publication debouncer (installed after Arc wrapping in Scheduler::new)
-    diagnostic_debouncer: Mutex<Option<diagnostic_debounce::DiagnosticDebouncer>>,
     /// Accepted-ticket push-diagnostics sink (#11673): per-URI record of the
     /// last committed `publishDiagnostics` ticket + monotonic sequence. The
     /// irreversible outbound enqueue for parser-triggered replacements/clears
     /// happens inside this sink's critical section -- see
     /// [`diagnostics_sink`].
     push_diagnostics_sink: diagnostics_sink::PushDiagnosticsSink,
-    /// Off-lock async parse worker (#3396 Phase 3), installed after Arc
-    /// wrapping in `Scheduler::new` (production) or explicitly by tests
-    /// that want to exercise the real async gap. `None` means the
-    /// synchronous fallback path is active -- see
-    /// `LspServer::install_default_parse_worker` and
-    /// `handle_did_change_with_cancellation`.
-    parse_worker_handle: Mutex<Option<Arc<parse_worker::ParseWorker>>>,
-    /// File watcher change debouncer (installed after Arc wrapping in Scheduler::new)
-    file_watcher_debouncer: Mutex<Option<file_watcher_debounce::FileWatcherDebouncer>>,
+    /// Ownership boundary for application background-worker execution
+    /// lifetime, cancellation, join, and settlement (#10024).
+    ///
+    /// Owns the diagnostic publication debouncer, the off-lock async parse
+    /// worker (#3396 Phase 3), and the file watcher change debouncer --
+    /// each installed after Arc wrapping in `Scheduler::new` (production) or
+    /// explicitly by tests that want to exercise the real async gap. A
+    /// `None` worker slot means the synchronous fallback path is active --
+    /// see `LspServer::install_default_parse_worker` and
+    /// `handle_did_change_with_cancellation`. This does NOT own semantic
+    /// readiness/currentness/publication state (`indexing_in_progress`,
+    /// `indexing_rescan_pending`, `indexing_transition_lock`,
+    /// `pending_index_task_count`, `parse_cancel_flags` stay below, per the
+    /// #10024 hard boundary).
+    runtime_services: runtime_services::RuntimeServices,
     /// Notebook document store (LSP 3.17)
     pub(crate) notebook_store: notebook::NotebookStore,
     /// Trace level set by client via $/setTrace (off, messages, verbose)
@@ -407,8 +442,11 @@ pub struct LspServer {
     #[cfg(feature = "workspace")]
     indexing_rescan_pending: Arc<AtomicBool>,
     /// Serializes the active/pending indexing handoff at scan completion.
-    #[cfg(feature = "workspace")]
     indexing_transition_lock: Arc<Mutex<()>>,
+    /// One-shot barrier used only by the workspace-transition race proof.
+    #[cfg(any(test, feature = "expose_lsp_test_api"))]
+    pub(crate) workspace_transition_test_gate:
+        Arc<std::sync::Mutex<Option<WorkspaceTopologyTransitionGate>>>,
     /// Test-only gate fired inside the startup scan's per-file commit
     /// critical section, after `indexing_transition_lock` is acquired
     /// (#13308).
@@ -435,49 +473,10 @@ pub struct LspServer {
     /// process-level `Once`) so that each `LspServer` instance tracks its own
     /// session independently.
     pub(crate) root_undetected_shown: Arc<AtomicBool>,
-    /// Shared Perl::Critic analyzer for the diagnostic pipeline.
-    ///
-    /// Lazily initialized on first use and reused across diagnostic cycles so
-    /// the per-instance violation cache survives between `textDocument/didChange`
-    /// events.  `invalidate_cache` is called on `didChange`; the whole entry is
-    /// reset to `None` when `perlcritic_enabled`, `perlcritic_severity`, or
-    /// `perlcritic_profile` changes via `didChangeConfiguration`.
-    ///
-    /// Only present on non-WASM targets (subprocess execution is unavailable
-    /// on WASM).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_analyzer: Mutex<Option<crate::perl_critic::CriticAnalyzer>>,
-    /// Subprocess runtime override for the `CriticAnalyzer`.
-    ///
-    /// When `Some`, the lazy-init path in `collect_external_perlcritic_diagnostics`
-    /// uses this runtime instead of `OsSubprocessRuntime`.  Always `None` in
-    /// production; set to a `MockSubprocessRuntime` by the test helper
-    /// `LspServer::test_install_mock_critic_runtime` so that tests can exercise
-    /// the full diagnostic pipeline without spawning a real `perlcritic` process.
-    ///
-    /// Using a separate runtime override (rather than pre-building the analyzer)
-    /// ensures that config-sensitive values such as the auto-discovered
-    /// `.perlcriticrc` profile path are still resolved at analysis time.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) critic_runtime_override:
-        Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
     /// Test-only subprocess runtime override for formatter construction.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub(crate) formatter_runtime_override:
         Mutex<Option<std::sync::Arc<dyn perl_subprocess_runtime::SubprocessRuntime>>>,
-    /// When `true`, skip the `command_exists("perlcritic")` guard during
-    /// diagnostic collection.  Always present on non-WASM targets but only
-    /// settable to `true` through the test API exposed via
-    /// `#[cfg(any(test, feature = "expose_lsp_test_api"))]`.
-    ///
-    /// Initialized to `false`; only the test helper methods flip this.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) skip_perlcritic_command_check: AtomicBool,
-    /// When `true`, force the perlcritic availability check to report that the
-    /// binary is missing.  Always `false` in production; only the test API can
-    /// set this flag so unavailable-binary tests do not depend on PATH.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) force_perlcritic_command_unavailable: AtomicBool,
     /// Typed, bounded dedup state for user-facing session warnings (#9769).
     ///
     /// Governs whether a repeated Perl::Critic, invalid-client-setting, or AI
@@ -801,6 +800,47 @@ impl LspServer {
             return;
         };
 
+        let provider_config = Self::ai_provider_config(&ai_config, api_key);
+
+        // The token bucket is the requests-per-second control. Its burst is a
+        // refill allowance, NOT a concurrency ceiling: a token is consumed at
+        // dispatch and never returned, so burst alone cannot bound how many
+        // requests are simultaneously active. `maxInflight` is enforced by the
+        // provider's InflightGate above. The allowance is left at its
+        // historical value so this change does not alter rate-limit behavior.
+        let rate_limit_burst = ai_config.max_inflight.max(1);
+        let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
+            ai_config.rate_limit_rps,
+            rate_limit_burst,
+        ));
+
+        let provider =
+            perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
+        *self.ai_inline_backend.lock() = Some(Arc::new(provider));
+
+        tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+    }
+
+    /// Translate the workspace AI configuration into the provider's own config.
+    ///
+    /// Split out of [`Self::refresh_ai_backend`] so the field-by-field
+    /// translation is directly testable. The live-concurrency ceiling (`#8300`)
+    /// is the reason: it is a single assignment, and dropping it would silently
+    /// restore the original defect — the provider would fall back to
+    /// `OpenAiConfig::new`'s default of 1 while the configured value still
+    /// reached only the rate limiter. Nothing observable at the LSP boundary
+    /// would change, because the backend is installed behind a trait object
+    /// with no way to read the gate back, so the omission would not fail a
+    /// test.
+    ///
+    /// Activation authority, credential resolution, and backend lifetime are
+    /// not this function's concern — see [`Self::refresh_ai_backend`], which
+    /// decides whether a provider may be constructed at all before calling
+    /// this.
+    pub(crate) fn ai_provider_config(
+        ai_config: &perl_lsp_rs_core::config::AiCompletionConfig,
+        api_key: String,
+    ) -> perl_lsp_rs_core::providers::ai::OpenAiConfig {
         let mut provider_config = perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
             ai_config.endpoint.clone(),
             ai_config.model.clone(),
@@ -810,17 +850,10 @@ impl LspServer {
         provider_config.api_key_header = ai_config.api_key_header.clone();
         provider_config.api_key_prefix = ai_config.api_key_prefix.clone();
         provider_config.local_model_mode = ai_config.local_model_mode;
-
-        let limiter = Arc::new(perl_lsp_rs_core::providers::ai::RateLimiter::new(
-            ai_config.rate_limit_rps,
-            ai_config.max_inflight,
-        ));
-
-        let provider =
-            perl_lsp_rs_core::providers::ai::OpenAiProvider::new(provider_config, limiter);
-        *self.ai_inline_backend.lock() = Some(Arc::new(provider));
-
-        tracing::info!(endpoint = %ai_config.endpoint, model = %ai_config.model, "AI inline completion backend configured");
+        // Live concurrency ceiling. The provider builds its gate from this, so
+        // the gate's lifetime is this backend generation's (#8300).
+        provider_config.max_inflight = ai_config.max_inflight;
+        provider_config
     }
 
     /// Get the subprocess runtime for external tool execution (perltidy, perlcritic).
@@ -1007,9 +1040,6 @@ impl LspServer {
         for key in &uri_keys {
             if let Some(path) = source_path_from_uri(key) {
                 self.pod_cache.lock().remove(&path);
-
-                #[cfg(not(target_arch = "wasm32"))]
-                self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
             }
         }
     }
@@ -1043,9 +1073,6 @@ impl LspServer {
             for key in &uri_keys {
                 if let Some(path) = source_path_from_uri(key) {
                     self.pod_cache.lock().remove(&path);
-
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.pull_diagnostics_orchestrator.invalidate_file_cache(&path);
                 }
             }
             tracing::debug!(
@@ -1111,19 +1138,20 @@ impl LspServer {
         }
     }
 
+    /// Whether a diagnostic debouncer is currently installed, forwarded to
+    /// the `RuntimeServices` owner that holds the slot (#10024). Replaces the
+    /// direct `self.diagnostic_debouncer` field read this refactor removed.
+    #[cfg(test)]
+    pub(crate) fn diagnostic_debouncer_is_installed(&self) -> bool {
+        self.runtime_services.diagnostic_debouncer_is_installed()
+    }
+
     /// Capture test/debug counters for async task and debounce pressure.
     #[cfg(any(test, feature = "expose_lsp_test_api"))]
     pub fn runtime_pressure_snapshot(&self) -> RuntimePressureSnapshot {
-        let diagnostic_debounce_pending_uris = self
-            .diagnostic_debouncer
-            .lock()
-            .as_ref()
-            .map_or(0, diagnostic_debounce::DiagnosticDebouncer::pending_uris);
-        let watcher_pressure = self
-            .file_watcher_debouncer
-            .lock()
-            .as_ref()
-            .map(file_watcher_debounce::FileWatcherDebouncer::pressure);
+        let diagnostic_debounce_pending_uris =
+            self.runtime_services.diagnostic_debounce_pending_uris();
+        let watcher_pressure = self.runtime_services.file_watcher_pressure();
         let file_watcher_pending_uris = watcher_pressure.as_ref().map_or(0, |p| p.pending_subjects);
 
         RuntimePressureSnapshot {
@@ -1518,8 +1546,7 @@ impl LspServer {
         &self,
         debouncer: diagnostic_debounce::DiagnosticDebouncer,
     ) {
-        let previous = self.diagnostic_debouncer.lock().replace(debouncer);
-        drop(previous);
+        self.runtime_services.install_diagnostic_debouncer(debouncer);
     }
 
     /// Install the production diagnostic debouncer (called from
@@ -1577,18 +1604,9 @@ impl LspServer {
             self.publish_diagnostics(uri);
             return;
         }
-        // Evict outside the lock for the same reason as
-        // `install_diagnostic_debouncer`: releasing a debouncer joins its
-        // worker thread, which must not happen under this mutex.
-        let evicted = {
-            let mut guard = self.diagnostic_debouncer.lock();
-            if guard.as_ref().is_some_and(|debouncer| debouncer.schedule(uri)) {
-                return;
-            }
-            guard.take()
-        };
-        drop(evicted);
-        self.publish_diagnostics(uri);
+        if !self.runtime_services.schedule_diagnostic_debounce(uri) {
+            self.publish_diagnostics(uri);
+        }
     }
 
     /// Install the off-lock async parse worker (#3396 Phase 3).
@@ -1672,13 +1690,12 @@ impl LspServer {
         // `self.parse_worker().is_some()` to decide whether to enqueue
         // instead of parsing inline, and an installed-but-threadless worker
         // would silently accept jobs no thread will ever process -- a
-        // permanent stall instead of a crash. Leaving `parse_worker_handle`
-        // as `None` here keeps the existing synchronous fallback path (the
-        // one hundreds of unit tests and any editor session already
-        // exercise) as the effective behavior instead.
-        if worker.is_operational() {
-            *self.parse_worker_handle.lock() = Some(Arc::new(worker));
-        } else {
+        // permanent stall instead of a crash. `RuntimeServices` leaves the
+        // worker slot `None` here (keeping the existing synchronous fallback
+        // path -- the one hundreds of unit tests and any editor session
+        // already exercise) and retains the outcome as `InstrumentFailed`
+        // instead of only logging it (#10024).
+        if !self.runtime_services.install_parse_worker(worker) {
             tracing::error!(
                 "parse worker pool failed to spawn any threads; \
                  falling back to the synchronous parse path"
@@ -1691,7 +1708,7 @@ impl LspServer {
     /// exited is treated the same as no installed worker, so edits cannot be
     /// accepted into a queue that nobody can drain.
     pub(crate) fn parse_worker(&self) -> Option<Arc<parse_worker::ParseWorker>> {
-        self.parse_worker_handle.lock().clone().filter(|worker| worker.is_operational())
+        self.runtime_services.parse_worker()
     }
 
     /// Install the file watcher debouncer (called from Scheduler::new after Arc wrapping).
@@ -1699,7 +1716,7 @@ impl LspServer {
         &self,
         debouncer: file_watcher_debounce::FileWatcherDebouncer,
     ) {
-        *self.file_watcher_debouncer.lock() = Some(debouncer);
+        self.runtime_services.install_file_watcher_debouncer(debouncer);
     }
 
     /// Schedule a file watcher URI for debounced batch processing.
@@ -1712,15 +1729,7 @@ impl LspServer {
     /// synchronous processing instead of losing events behind false success
     /// (#8064).
     pub fn schedule_file_watcher_uri(&self, uri: &str) -> bool {
-        let guard = self.file_watcher_debouncer.lock();
-        match guard.as_ref() {
-            None => false,
-            Some(debouncer) => matches!(
-                debouncer.try_schedule(uri),
-                file_watcher_debounce::WatcherAdmission::Accepted
-                    | file_watcher_debounce::WatcherAdmission::Coalesced
-            ),
-        }
+        self.runtime_services.schedule_file_watcher_uri(uri)
     }
 }
 
@@ -1919,7 +1928,7 @@ mod tests {
         server.install_default_parse_worker();
         let worker = server.parse_worker().expect("default parse worker must install");
 
-        worker.test_request_shutdown();
+        worker.request_shutdown();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while worker.is_operational() {
             assert!(
@@ -2154,13 +2163,8 @@ mod tests {
         assert!(!server.schedule_file_watcher_uri("file:///degraded/overflow.pl"));
 
         // ShuttingDown: after teardown, late events are refused.
-        {
-            let guard = server.file_watcher_debouncer.lock();
-            assert!(guard.is_some(), "debouncer installed");
-            if let Some(debouncer) = guard.as_ref() {
-                debouncer.shutdown_now();
-            }
-        }
+        assert!(server.runtime_services.file_watcher_debouncer_installed(), "debouncer installed");
+        server.runtime_services.shutdown_file_watcher_debouncer_for_test();
         assert!(!server.schedule_file_watcher_uri("file:///degraded/late.pl"));
     }
 
@@ -2646,6 +2650,86 @@ model = "gpt-4"
         server.refresh_ai_backend();
 
         assert!(server.ai_backend().is_some());
+        Ok(())
+    }
+
+    /// The production wiring for `#8300`: a configured `maxInflight` must reach
+    /// the provider's gate, not only the rate limiter.
+    ///
+    /// This is the line the issue is actually about. Before it existed,
+    /// `ai_config.max_inflight` was passed *only* as the token bucket's burst,
+    /// which bounds starts-per-second rather than live requests. Deleting
+    /// `provider_config.max_inflight = ai_config.max_inflight` restores exactly
+    /// that defect while every other test in the tree stays green, because the
+    /// backend is installed behind `Arc<dyn InlineCompletionBackend>` and the
+    /// gate cannot be read back through it. Hence a config-level assertion.
+    #[test]
+    fn ai_provider_config_carries_the_configured_inflight_ceiling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let ai_config = AiCompletionConfig {
+            endpoint: "https://api.example/v1/chat/completions".to_string(),
+            model: "custom-code-model".to_string(),
+            timeout_ms: 1_800,
+            max_inflight: 3,
+            ..AiCompletionConfig::default()
+        };
+
+        let provider_config = LspServer::ai_provider_config(&ai_config, "test-key".to_string());
+
+        if provider_config.max_inflight != 3 {
+            return Err(std::io::Error::other(
+                "a configured maxInflight must reach the provider, not just the rate limiter",
+            )
+            .into());
+        }
+        // Negative control on the assertion itself: 3 must not be the default,
+        // or this test would pass with the assignment removed.
+        if perl_lsp_rs_core::providers::ai::OpenAiConfig::new(
+            ai_config.endpoint.clone(),
+            ai_config.model.clone(),
+            "test-key".to_string(),
+            ai_config.timeout_ms,
+        )
+        .max_inflight
+            == 3
+        {
+            return Err(std::io::Error::other(
+                "the constructor default must differ from the configured value",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// The translation must not quietly drop the other transport fields either.
+    #[test]
+    fn ai_provider_config_carries_the_transport_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let ai_config = AiCompletionConfig {
+            endpoint: "http://127.0.0.1:11434/v1/chat/completions".to_string(),
+            model: "local-model".to_string(),
+            api_key_header: "x-api-key".to_string(),
+            api_key_prefix: None,
+            timeout_ms: 900,
+            local_model_mode: true,
+            max_inflight: 2,
+            ..AiCompletionConfig::default()
+        };
+
+        let provider_config = LspServer::ai_provider_config(&ai_config, "local-key".to_string());
+
+        if provider_config.endpoint != ai_config.endpoint
+            || provider_config.model != ai_config.model
+            || provider_config.api_key != "local-key"
+            || provider_config.api_key_header != "x-api-key"
+            || provider_config.api_key_prefix.is_some()
+            || provider_config.timeout_ms != 900
+            || !provider_config.local_model_mode
+            || provider_config.max_inflight != 2
+        {
+            return Err(
+                std::io::Error::other("provider transport fields were not preserved").into()
+            );
+        }
         Ok(())
     }
 
