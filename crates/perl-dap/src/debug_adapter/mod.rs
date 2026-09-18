@@ -93,6 +93,7 @@ use patterns::{
     prompt_re, regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
+pub use sync_utils::{DapMessageWithEpoch, DrainEpoch};
 use sync_utils::{EventSender, lock_or_recover};
 
 #[derive(Debug, Default)]
@@ -317,7 +318,7 @@ impl DebugAdapter {
     /// sender will fail to compile since `SyncSender` and `Sender` are distinct
     /// types.  Use `sync_channel(EVENT_QUEUE_CAPACITY)` or any capacity large
     /// enough for the test's event volume.
-    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessage>) {
+    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessageWithEpoch>) {
         self.event_sender = Some(EventSender::new(sender));
     }
 
@@ -696,12 +697,22 @@ impl DebugAdapter {
             // residue that pushed every later response through the full
             // timeout; a refused or dropped dispatch rolls its reservation
             // back below.
-            self.event_drain.enqueue(1);
+            //
+            // Reservation is per-epoch (#15725): when the calling thread is
+            // the worker thread inside a request handler invocation, the
+            // thread-local `DRAIN_EPOCH` is set and the reservation lands on
+            // the request-scoped latch. Outside that context — background
+            // readers, the forwarder, tests — the cell is unset and we fall
+            // back to `DrainEpoch::Global`, which is preserved for backward
+            // compatibility but not waited on by the per-request response
+            // barrier.
+            let drain_epoch = crate::debug_adapter::sync_utils::current_drain_epoch();
+            self.event_drain.enqueue_at(drain_epoch, 1);
             if !matches!(
                 sender.send_event(&self.seq, event, body),
                 crate::debug_adapter::sync_utils::EventDispatchResult::Sent
             ) {
-                self.event_drain.complete(1);
+                self.event_drain.complete_at(drain_epoch, 1);
             }
         }
     }
@@ -1027,8 +1038,8 @@ impl DebugAdapter {
                 thread_id: 1,
                 debuggee_cwd: std::path::PathBuf::from("."),
                 last_resume_mode: ResumeMode::Continue,
-                initial_stop_pending: false,
                 entry_stop_pending: false,
+                initial_stop_pending: false,
                 stopped_generation: 0,
                 module_generation: RuntimeModuleGenerationClock::new(),
             });
@@ -1063,8 +1074,8 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
-            initial_stop_pending: false,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
             module_generation: RuntimeModuleGenerationClock::new(),
         });
@@ -1172,8 +1183,8 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
-            initial_stop_pending: false,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
             module_generation: RuntimeModuleGenerationClock::new(),
         });
@@ -2946,6 +2957,16 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_context_re_windows_drive_path_with_spaces() -> Result<(), String> {
+        let result = apply_context_re(r"main::(C:\Program Files\Perl\file.pl:7):");
+        let expected = Some((r"C:\Program Files\Perl\file.pl".to_string(), "7".to_string()));
+        if result != expected {
+            return Err(format!("Windows spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_context_re_unc_path() {
         // UNC path (Windows network share).
         let result = apply_context_re(r"main::(\\server\share\file.pl:5):");
@@ -2979,10 +3000,94 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_context_re_no_match_path_with_spaces() {
-        // Paths with spaces do not match — the character class excludes \s.
+    fn test_context_re_path_with_spaces() -> Result<(), String> {
+        // Spaces are valid in Unix and Windows paths and must remain part of the
+        // source location rather than preventing the initial frame from forming.
         let result = apply_context_re("main::(/path with spaces/file.pl:5):");
-        assert!(result.is_none(), "paths with spaces should not match");
+        let expected = Some(("/path with spaces/file.pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_path_with_spaces_and_parentheses() -> Result<(), String> {
+        let result = apply_context_re("main::(/path with spaces (ctx)/file (name).pl:5):");
+        let expected =
+            Some(("/path with spaces (ctx)/file (name).pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("parenthesized path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_accepts_perl_source_statement_suffix() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/script.pl:4):\tif ($x =~ /:99)/) {")
+            .ok_or("perl source statement suffix was not accepted")?;
+        let expected = ("/tmp/script.pl".to_string(), "4".to_string());
+        if result != expected {
+            return Err(format!("source suffix parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_path_with_earlier_digit_colon_parenthesis() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/a:12)/file.pl:3):");
+        let expected = Some(("/tmp/a:12)/file.pl".to_string(), "3".to_string()));
+        if result != expected {
+            return Err(format!("digit-colon path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_source_suffix_uses_last_delimiter() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/a:12): b.pl:3):\tmy $entry = 1;")
+            .ok_or("context with source suffix did not match")?;
+        let expected = ("/tmp/a:12): b.pl".to_string(), "3".to_string());
+        if result != expected {
+            return Err(format!("source suffix parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_rejects_unmarked_prompt_text() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/file.pl:3): text :99) text");
+        if result.is_some() {
+            return Err(format!("unmarked prompt text was accepted as {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_preserves_legacy_main_fallback_shapes() -> Result<(), String> {
+        let cases = [
+            ("main::(/tmp/file.pl):3:", "/tmp/file.pl"),
+            ("main::/tmp/file.pl:3:", "/tmp/file.pl"),
+        ];
+        for (input, expected_file) in cases {
+            let result = apply_context_re(input);
+            let expected = Some((expected_file.to_string(), "3".to_string()));
+            if result != expected {
+                return Err(format!(
+                    "legacy context {input:?} parsed as {result:?}; expected {expected:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_rejects_malformed_line_delimiter() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/file.pl:3x):");
+        if result.is_some() {
+            return Err(format!("malformed line delimiter was accepted as {result:?}"));
+        }
+        Ok(())
     }
 
     #[test]

@@ -14,7 +14,7 @@
 mod common;
 
 use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, workflow_timeout};
-use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
 use perl_tdd_support::must_some;
 use serde_json::{Value, json};
 use std::fs::write;
@@ -549,18 +549,22 @@ fn test_stacktrace_no_session_returns_empty() -> Result<(), Box<dyn std::error::
 //
 // Each test uses `make_adapter_with_rx` + `wait_cleanup_event` (defined below).
 
-fn make_adapter_with_rx() -> (DebugAdapter, Receiver<DapMessage>) {
+fn make_adapter_with_rx() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
     (adapter, rx)
 }
 
-fn require_terminal_count(rx: &Receiver<DapMessage>, expected: usize, context: &str) -> TestResult {
+fn require_terminal_count(
+    rx: &Receiver<DapMessageWithEpoch>,
+    expected: usize,
+    context: &str,
+) -> TestResult {
     let observed = rx
         .try_iter()
         .filter(
-            |message| matches!(message, DapMessage::Event { event, .. } if event == "terminated"),
+            |message| matches!(message, (DapMessage::Event { event, .. }, _) if event == "terminated"),
         )
         .count();
     if observed != expected {
@@ -689,12 +693,12 @@ fn disconnect_terminal_successful_replacement_reopens_lifecycle() -> TestResult 
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         loop {
             match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
-                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                     return Err(
                         "replacement terminated before establishing a stopped debuggee".into()
                     );
                 }
-                Ok(DapMessage::Event { event, .. }) if event == "stopped" => break,
+                Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => break,
                 Ok(_) => {}
                 Err(error) => return Err(format!("replacement did not stop: {error}").into()),
             }
@@ -718,12 +722,16 @@ fn disconnect_terminal_successful_replacement_reopens_lifecycle() -> TestResult 
 
 /// Drain the event channel looking for an event with the given name, up to
 /// `timeout_ms` total. Returns the event body on match.
-fn wait_cleanup_event(rx: &Receiver<DapMessage>, name: &str, timeout_ms: u64) -> Option<Value> {
+fn wait_cleanup_event(
+    rx: &Receiver<DapMessageWithEpoch>,
+    name: &str,
+    timeout_ms: u64,
+) -> Option<Value> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     while std::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         match rx.recv_timeout(remaining) {
-            Ok(DapMessage::Event { event, body, .. }) if event == name => {
+            Ok((DapMessage::Event { event, body, .. }, _)) if event == name => {
                 return Some(body.unwrap_or(Value::Null));
             }
             Ok(_) => continue,

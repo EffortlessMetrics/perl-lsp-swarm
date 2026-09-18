@@ -769,7 +769,11 @@ jobs:
       needs.route-ripr.outputs.target == 'github' &&
       needs.route-ripr.outputs.fallback_allowed == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 130
+    # 135m (#15498 sequel): the guidance pass measured >30m on a 1600+-file
+    # closure after the 40m analysis cap and the baseline receipt — the 75m
+    # envelope SIGTERMed the guidance step mid-bound. The budget must hold
+    # analysis + receipt + guidance + gate together, not guidance alone.
+    timeout-minutes: 135
     env:
       RIPR_VERSION: "0.10.0"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
@@ -935,7 +939,17 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 2700
+        # 1800s: the guidance pass on a new-crate diff no longer completes in
+        # 600s on the hosted lane — #15082 and #15028 both failed the required
+        # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
+        # turning 64-67 mechanical no_static_path seams into unadjudicated
+        # gaps because static-limitation credit is only paid from a completed
+        # receipt. 3600s: #14897 then measured the guidance pass itself
+        # exceeding 1800s on a 1600+-file closure (xtask SIGTERMed the ripr
+        # child at the bound, exit 143), so the bound is raised together with
+        # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
+        # and an incomplete receipt keeps failing closed, just later.
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()
@@ -1068,7 +1082,8 @@ jobs:
         (needs.route-ripr.outputs.target == 'cx43' && needs.ripr-cx43.result == 'failure' && needs.ripr-cx43.outputs.preflight_ok == 'false')
       )
     runs-on: ubuntu-24.04
-    timeout-minutes: 130
+    # Same measured budget as the primary hosted lane (#15498 sequel).
+    timeout-minutes: 135
     env:
       RIPR_VERSION: "0.10.0"
       # #15498: this lane runs ripr-pr directly on the runner, so without an
@@ -1151,7 +1166,17 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 2700
+        # 1800s: the guidance pass on a new-crate diff no longer completes in
+        # 600s on the hosted lane — #15082 and #15028 both failed the required
+        # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
+        # turning 64-67 mechanical no_static_path seams into unadjudicated
+        # gaps because static-limitation credit is only paid from a completed
+        # receipt. 3600s: #14897 then measured the guidance pass itself
+        # exceeding 1800s on a 1600+-file closure (xtask SIGTERMed the ripr
+        # child at the bound, exit 143), so the bound is raised together with
+        # the 135m job envelope — analysis 40m + receipt + guidance 60m fits,
+        # and an incomplete receipt keeps failing closed, just later.
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 3600
 
       - name: Generate impacted evidence
         if: always()

@@ -137,7 +137,7 @@ fn successful_initialize_emits_initialized_event_with_no_body() {
 
     let event = must(rx.recv_timeout(Duration::from_millis(500)));
     match event {
-        DapMessage::Event { event, body, .. } => {
+        (DapMessage::Event { event, body, .. }, _) => {
             assert_eq!(event, "initialized");
             assert!(body.is_none(), "initialized event carries no body");
         }
@@ -382,7 +382,7 @@ fn response_and_event_sequence_numbers_increase_monotonically() {
     // its seq is strictly between r1's response seq and any later activity.
     // (DebugAdapter shares one counter across responses and events.)
     let event_seq = match must(rx.recv_timeout(Duration::from_millis(500))) {
-        DapMessage::Event { seq, event, .. } => {
+        (DapMessage::Event { seq, event, .. }, _) => {
             assert_eq!(event, "initialized");
             seq
         }

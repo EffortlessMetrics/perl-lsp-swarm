@@ -1696,6 +1696,38 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_data_for_canonical_regex_backtracking() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // The pull path must publish the retained-analysis projection (#7024):
+        // a repeated group with a nested quantifier reaches the client as the
+        // canonical regex code PL1000, with the same data/codeDescription
+        // enrichment the other PL codes carry.
+        let provider = PullDiagnosticsProvider::new();
+        let uri: Uri = "file:///test.pl".parse()?;
+        let code = "my $re = qr/(a+)+b/;\n";
+        let items = get_full_items(provider.get_document_diagnostics(&uri, code, None, None));
+        let diag = items
+            .iter()
+            .find(|d| {
+                d.code.as_ref().map(|c| matches!(c, NumberOrString::String(s) if s == "PL1000"))
+                    == Some(true)
+            })
+            .ok_or("expected PL1000 (regex backtracking risk) diagnostic for repeated group")?;
+        let data = diag.data.as_ref().ok_or("data should be Some for PL1000")?;
+        assert_eq!(data["code"], "PL1000");
+        assert_eq!(data["category"], "RegexAnalysis");
+        let code_description = diag
+            .code_description
+            .as_ref()
+            .ok_or("codeDescription should be populated for PL1000")?;
+        let expected_url = DiagnosticCode::RegexBacktrackingRisk
+            .documentation_url()
+            .ok_or("PL1000 should have docs")?;
+        assert_eq!(code_description.href.to_string(), expected_url);
+        Ok(())
+    }
+
+    #[test]
     fn code_description_is_catalog_backed_and_fail_closed() -> Result<(), Box<dyn std::error::Error>>
     {
         let parse_error_description =
