@@ -412,7 +412,7 @@ fn print_table(m: &ReleaseHealthMetrics) {
         None => {
             println!("  No CI baseline available.");
             println!(
-                "  Run `cargo xtask ci-baseline --branch master --days {}` to populate.",
+                "  Run `cargo xtask ci-baseline --days {}` to populate (omitting --branch uses the repository default).",
                 m.history_window_days
             );
         }
