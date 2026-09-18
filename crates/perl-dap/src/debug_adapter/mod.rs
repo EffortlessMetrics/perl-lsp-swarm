@@ -93,6 +93,7 @@ use patterns::{
     prompt_re, regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
+pub use sync_utils::{DapMessageWithEpoch, DrainEpoch};
 use sync_utils::{EventSender, lock_or_recover};
 
 #[derive(Debug, Default)]

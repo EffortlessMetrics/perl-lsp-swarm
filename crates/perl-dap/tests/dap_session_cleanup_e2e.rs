@@ -12,6 +12,7 @@ mod common;
 mod cleanup_tests {
     use anyhow::Result;
     use perl_dap::{DapMessage, DebugAdapter};
+    use perl_dap::debug_adapter::DapMessageWithEpoch;
     #[cfg(windows)]
     use serde_json::Value;
     use serde_json::json;
@@ -25,7 +26,7 @@ mod cleanup_tests {
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
-    fn make_adapter() -> (DebugAdapter, std::sync::mpsc::Receiver<DapMessage>) {
+    fn make_adapter() -> (DebugAdapter, std::sync::mpsc::Receiver<DapMessageWithEpoch>) {
         let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);

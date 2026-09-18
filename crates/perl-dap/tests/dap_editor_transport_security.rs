@@ -1251,4 +1251,3 @@ fn composed_receipt_binds_exact_candidate_without_secrets() -> Result<()> {
     write_receipt(&receipt)?;
     Ok(())
 }
-

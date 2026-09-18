@@ -238,4 +238,3 @@ fn test_launch_workspace_root_field_cannot_widen_server_root()
     }
     Ok(())
 }
-

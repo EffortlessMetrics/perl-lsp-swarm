@@ -225,7 +225,7 @@ mod tests {
         let live = out_rx
             .recv_timeout(Duration::from_secs(2))
             .map_err(|e| format!("live event must be forwarded: {e}"))?;
-        assert!(matches!(&live, DapMessage::Event { event, .. } if event == "output"));
+        assert!(matches!(&live, (DapMessage::Event { event, .. }, _) if event == "output"));
 
         // Replace the session: generation 1 is now dead.
         lock_or_recover(&state, "test.termination_state").generation = 2;
@@ -403,4 +403,3 @@ mod tests {
         Ok(())
     }
 }
-

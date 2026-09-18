@@ -488,4 +488,3 @@ fn breakpoint_error_variants_are_distinct() -> Result<(), Box<dyn std::error::Er
     assert_ne!(e1.to_string(), e2.to_string());
     Ok(())
 }
-

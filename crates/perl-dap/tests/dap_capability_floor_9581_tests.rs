@@ -454,4 +454,3 @@ fn mirror_bridge_rejects_non_default_format_on_proxied_families() -> TestResult 
     }
     Ok(())
 }
-

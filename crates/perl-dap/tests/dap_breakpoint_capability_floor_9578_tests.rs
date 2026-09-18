@@ -677,4 +677,3 @@ fn per_item_refusals_are_idempotent() -> Result<()> {
     }
     Ok(())
 }
-

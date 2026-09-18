@@ -665,4 +665,3 @@ fn test_e2e_evaluate_expression_in_stopped_frame() -> TestResult {
     session.disconnect()?;
     Ok(())
 }
-

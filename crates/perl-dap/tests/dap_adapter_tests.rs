@@ -8,7 +8,7 @@
 mod dap_phase2_tests {
     use anyhow::{Result, ensure};
     use perl_dap::breakpoints::BreakpointStore;
-    use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+    use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
     use perl_dap::platform::normalize_path;
     use perl_dap::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
     use perl_dap::{create_attach_json_snippet, create_launch_json_snippet};
@@ -19,7 +19,7 @@ mod dap_phase2_tests {
     use std::time::{Duration, Instant};
     use tempfile::NamedTempFile;
 
-    fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
+    fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
         let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(tx);
@@ -58,7 +58,7 @@ mod dap_phase2_tests {
 
         let initialized = rx.recv_timeout(Duration::from_millis(200))?;
         match initialized {
-            DapMessage::Event { event, .. } => assert_eq!(event, "initialized"),
+            (DapMessage::Event { event, .. }, _) => assert_eq!(event, "initialized"),
             _ => anyhow::bail!("expected initialized event"),
         }
 
@@ -425,4 +425,3 @@ mod dap_phase2_tests {
         Ok(())
     }
 }
-

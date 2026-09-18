@@ -918,4 +918,3 @@ fn condition_array_scalar_context() -> Result<(), Box<dyn std::error::Error>> {
     assert!(result.verified);
     Ok(())
 }
-

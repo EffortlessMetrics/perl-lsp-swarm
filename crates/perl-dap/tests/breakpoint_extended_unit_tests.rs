@@ -813,4 +813,3 @@ fn single_line_no_newline_blank() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!v.is_executable_line(1));
     Ok(())
 }
-

@@ -1898,7 +1898,7 @@ while (my $line = <STDIN>) {
             drop(lock_or_recover(&consumer_writer, "test.event_writer"));
             rx.recv().map_err(|error| error.to_string())?;
             match rx.recv().map_err(|error| error.to_string())? {
-                DapMessage::Event { event, .. } if event == "initialized" => Ok(()),
+                (DapMessage::Event { event, .. }, _) if event == "initialized" => Ok(()),
                 other => Err(format!("expected initialized event, got {other:?}")),
             }
         });
@@ -2825,4 +2825,3 @@ mod framing_tests {
         haystack.windows(needle.len()).position(|w| w == needle)
     }
 }
-

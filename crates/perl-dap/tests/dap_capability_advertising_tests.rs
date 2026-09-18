@@ -293,4 +293,3 @@ mod capability_tests {
         Ok(())
     }
 }
-

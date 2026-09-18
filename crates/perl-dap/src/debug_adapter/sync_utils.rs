@@ -12,7 +12,7 @@ use std::time::Duration;
 /// epoch on consume and debits the matching per-epoch reservation so the
 /// request-scoped wait drains only the events emitted by that request
 /// (#15725).
-pub(crate) type DapMessageWithEpoch = (DapMessage, DrainEpoch);
+pub type DapMessageWithEpoch = (DapMessage, DrainEpoch);
 
 /// Counts dropped `output` events due to a full outbound queue.
 static DROPPED_OUTPUT_EVENTS: AtomicU64 = AtomicU64::new(0);
@@ -38,7 +38,7 @@ const OUTPUT_DROP_WARN_INTERVAL: u64 = 64;
 /// drop notices, or unrelated prior requests) does not push the response
 /// wait up to the full `EVENT_DRAIN_MAX_WAIT` cap.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum DrainEpoch {
+pub enum DrainEpoch {
     /// Events emitted outside a request-handler scope (background threads,
     /// the TCP-attach forwarder, the synthetic drop notice, the reserved
     /// `terminated` event, tests that drive the latch directly). Reserved
@@ -136,7 +136,7 @@ impl EventDrainLatch {
     /// paths that emit outside a request-handler scope; the request
     /// handler response path does not wait on this epoch.
     pub(crate) fn enqueue(&self, count: usize) {
-        self.enqueue_at(DrainEpoch::Global, count)
+        self.enqueue_at(DrainEpoch::global(), count)
     }
 
     /// Record `count` messages accepted onto the outbound channel,
@@ -157,7 +157,7 @@ impl EventDrainLatch {
     /// Record that the consumer wrote `count` previously counted
     /// messages reserved against [`DrainEpoch::Global`].
     pub(crate) fn complete(&self, count: usize) {
-        self.complete_at(DrainEpoch::Global, count)
+        self.complete_at(DrainEpoch::global(), count)
     }
 
     /// Record that the consumer wrote `count` previously counted
@@ -189,7 +189,7 @@ impl EventDrainLatch {
     /// the historical seam; the request handler response path uses
     /// [`EventDrainLatch::wait_for_epoch`] to drain only its own epoch.
     pub(crate) fn wait_until_drained(&self, cap: std::time::Duration) -> bool {
-        self.wait_for_epoch(DrainEpoch::Global, cap)
+        self.wait_for_epoch(DrainEpoch::global(), cap)
     }
 
     /// Wait until every counted message reserved against `epoch` has
@@ -787,14 +787,14 @@ mod tests {
         let drained = rx
             .recv_timeout(Duration::from_millis(200))
             .map_err(|e| format!("output event must be drainable: {e}"))?;
-        if !matches!(&drained, DapMessage::Event { event, .. } if event == "output") {
+        if !matches!(&drained, (DapMessage::Event { event, .. }, _) if event == "output") {
             return Err(format!("expected output event, got: {drained:?}"));
         }
 
         let stopped = rx
             .recv_timeout(Duration::from_millis(500))
             .map_err(|e| format!("stopped event must arrive after queue drains: {e}"))?;
-        if !matches!(&stopped, DapMessage::Event { event, .. } if event == "stopped") {
+        if !matches!(&stopped, (DapMessage::Event { event, .. }, _) if event == "stopped") {
             return Err(format!("expected stopped event, got: {stopped:?}"));
         }
 
@@ -1005,14 +1005,14 @@ mod tests {
         let drained = rx
             .recv_timeout(Duration::from_millis(200))
             .map_err(|e| format!("output event must be drainable: {e}"))?;
-        if !matches!(&drained, DapMessage::Event { event, .. } if event == "output") {
+        if !matches!(&drained, (DapMessage::Event { event, .. }, _) if event == "output") {
             return Err(format!("expected output event, got: {drained:?}"));
         }
 
         let terminated = rx
             .recv_timeout(Duration::from_millis(500))
             .map_err(|e| format!("terminated event must arrive after queue drains: {e}"))?;
-        if !matches!(&terminated, DapMessage::Event { event, .. } if event == "terminated") {
+        if !matches!(&terminated, (DapMessage::Event { event, .. }, _) if event == "terminated") {
             return Err(format!("expected terminated event, got: {terminated:?}"));
         }
 
@@ -1063,7 +1063,7 @@ mod tests {
                 Err(_) => {
                     if producers.iter().all(|h| h.is_finished()) {
                         while let Ok(msg) = rx.try_recv() {
-                            if is_drop_notice(&msg) {
+                            if is_drop_notice(&msg.0) {
                                 found_notice = true;
                             }
                         }

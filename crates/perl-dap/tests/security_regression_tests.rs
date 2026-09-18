@@ -53,7 +53,7 @@ fn test_command_injection_via_program_argument() -> TestResult {
     // Check if we received any output containing "pwned"
     let mut found_pwned = false;
     while let Ok(msg) = rx.try_recv() {
-        if let DapMessage::Event { event, body: Some(body), .. } = msg
+        if let (DapMessage::Event { event, body: Some(body), .. }, _) = msg
             && event == "output"
             && let Some(output) = body.get("output").and_then(|o| o.as_str())
             && output.contains("pwned")

@@ -185,4 +185,3 @@ fn launch_error_on_windows_links_strawberry_perl_when_perl_absent() -> anyhow::R
     // the other tests above.
     Ok(())
 }
-

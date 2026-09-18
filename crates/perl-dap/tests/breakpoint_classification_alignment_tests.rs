@@ -133,4 +133,3 @@ fn mixed_file_use_then_statement() -> Result<(), Box<dyn std::error::Error>> {
     assert!(v.validate(4).verified, "line 4 (print $x) must be a valid breakpoint location");
     Ok(())
 }
-

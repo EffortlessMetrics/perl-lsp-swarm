@@ -249,4 +249,3 @@ fn test_launch_config_empty_include_paths() -> Result<(), Box<dyn std::error::Er
     assert!(json.contains("\"includePaths\":[]"), "Empty include_paths should serialize correctly");
     Ok(())
 }
-

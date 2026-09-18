@@ -5,6 +5,7 @@
     reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
 )]
 use perl_dap::{DapMessage, DebugAdapter};
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use serde_json::{Value, json};
 use std::fs::write;
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -30,7 +31,7 @@ fn smoke_timeout() -> Duration {
 }
 
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {

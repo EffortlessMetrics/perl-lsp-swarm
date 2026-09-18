@@ -4,6 +4,7 @@
 //! returns spec-shaped responses across the command surface.
 
 use anyhow::{Result, anyhow};
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -34,10 +35,13 @@ fn load_fixtures() -> Result<Vec<(String, Value)>> {
     Ok(fixtures)
 }
 
-fn collect_events(rx: &Receiver<DapMessage>, timeout_ms: u64) -> Vec<(String, Option<Value>)> {
+fn collect_events(
+    rx: &Receiver<DapMessageWithEpoch>,
+    timeout_ms: u64,
+) -> Vec<(String, Option<Value>)> {
     let mut events = Vec::new();
     if let Ok(message) = rx.recv_timeout(Duration::from_millis(timeout_ms))
-        && let DapMessage::Event { event, body, .. } = message
+        && let (DapMessage::Event { event, body, .. }, _) = message
     {
         events.push((event, body));
     }
@@ -260,5 +264,3 @@ fn vscode_mock_debug_surface_conformance() -> Result<()> {
     }
     Ok(())
 }
-
-

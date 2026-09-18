@@ -149,4 +149,3 @@ fn test_attach_json_snippet_valid_json() -> Result<(), Box<dyn std::error::Error
     assert!(parsed["timeout"].is_number());
     Ok(())
 }
-

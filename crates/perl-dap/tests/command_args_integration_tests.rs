@@ -268,4 +268,3 @@ fn preserves_argument_order() {
     assert!(result[1].contains("second arg"));
     assert_eq!(result[2], "third");
 }
-

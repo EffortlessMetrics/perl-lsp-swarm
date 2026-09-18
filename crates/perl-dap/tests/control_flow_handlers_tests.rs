@@ -755,4 +755,3 @@ fn step_out_without_session_returns_guidance() {
         other => must(Err::<(), _>(format!("expected Response, got {other:?}"))),
     }
 }
-

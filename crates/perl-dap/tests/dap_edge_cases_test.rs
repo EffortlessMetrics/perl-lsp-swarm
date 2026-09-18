@@ -532,4 +532,3 @@ fn test_dap_stack_trace_zero_levels_returns_remaining_frames() -> TestResult {
 
     Ok(())
 }
-

@@ -1638,4 +1638,3 @@ mod evaluate_real_session_fixtures {
         Ok(())
     }
 }
-

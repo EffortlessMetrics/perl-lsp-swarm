@@ -706,4 +706,3 @@ fn test_all_ten_commands_echo_request_seq() -> Result<(), Box<dyn std::error::Er
     }
     Ok(())
 }
-

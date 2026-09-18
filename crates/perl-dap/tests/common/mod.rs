@@ -5,6 +5,7 @@
 //! required to drive a real `perl -d` debug session in tests.
 
 #![allow(dead_code)]
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use serde_json::{Value, json};
@@ -65,7 +66,7 @@ pub struct StoppedFrameInfo {
 /// stack_trace → scopes → variables → continue/step → wait_stopped → disconnect.
 pub struct DapWorkflowSession {
     pub adapter: DebugAdapter,
-    pub rx: Receiver<DapMessage>,
+    pub rx: Receiver<DapMessageWithEpoch>,
     pub timeout: Duration,
     seq: i64,
     perl_path: Option<PathBuf>,
@@ -76,7 +77,7 @@ pub struct DapWorkflowSession {
 #[allow(dead_code)]
 impl DapWorkflowSession {
     #[cfg(test)]
-    pub fn with_receiver_for_test(rx: Receiver<DapMessage>, timeout: Duration) -> Self {
+    pub fn with_receiver_for_test(rx: Receiver<DapMessageWithEpoch>, timeout: Duration) -> Self {
         Self {
             adapter: DebugAdapter::new(),
             rx,
@@ -623,7 +624,7 @@ impl DapWorkflowSession {
                 Ok(msg) => {
                     if let (DapMessage::Event { event, body, .. }, _) = &msg {
                         if event == event_name {
-                            return Ok(msg);
+                            return Ok(msg.0);
                         }
 
                         push_recent_event(
@@ -3328,7 +3329,7 @@ pub fn debuggee_perl_or_typed_skip(test_name: &str) -> Option<&'static DebuggeeP
 // binaries that do not call it would otherwise trip per-target dead_code.
 #[allow(dead_code)]
 pub fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
@@ -3341,10 +3342,10 @@ pub fn wait_for_event(
         let remaining = deadline.saturating_duration_since(now);
         match rx.recv_timeout(remaining) {
             Ok(message) => {
-                if let DapMessage::Event { event, .. } = &message
+                if let (DapMessage::Event { event, .. }, _) = &message
                     && event == event_name
                 {
-                    return Ok(message);
+                    return Ok(message.0);
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -3358,5 +3359,3 @@ pub fn wait_for_event(
         }
     }
 }
-
-

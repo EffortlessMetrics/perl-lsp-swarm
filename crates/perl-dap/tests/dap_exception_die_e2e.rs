@@ -112,7 +112,7 @@ fn drain_to_terminated(session: &DapWorkflowSession) -> DrainOutcome {
         let Ok(msg) = session.rx.recv_timeout(remaining) else {
             break;
         };
-        let DapMessage::Event { event, .. } = &msg else {
+        let (DapMessage::Event { event, .. }, _) = &msg else {
             continue;
         };
         if event == "stopped" {
@@ -331,4 +331,3 @@ fn test_die_filter_ignores_lookalike_stderr_output() -> TestResult {
 
     Ok(())
 }
-

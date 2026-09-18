@@ -9,7 +9,9 @@
 //!    drives the drop counter up and never hangs.
 
 use super::DapMessage;
-use super::sync_utils::{EventDispatchResult, dispatch_event, dropped_output_event_count};
+use super::sync_utils::{
+    DapMessageWithEpoch, EventDispatchResult, dispatch_event, dropped_output_event_count,
+};
 use perl_tdd_support::must;
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
@@ -113,4 +115,3 @@ fn slow_writer_queue_stays_bounded() {
         FLOOD - CAPACITY,
     );
 }
-
