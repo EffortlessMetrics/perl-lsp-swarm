@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""Route-shape contract for Policy Validators hosted fallback.
+"""Fallback-shape contract for Policy Validators hosted failover.
 
 `Policy Validators` was pinned directly to `em-ci-nano` while the lane
-registry marks it blocking. Its work is portable stdlib-only Python, so
-self-hosting is an optimization, not proof semantics. This workflow routes
-trusted same-repository events to `em-ci-nano` only when a matching runner is
-online and idle, and falls back to `ubuntu-24.04` otherwise:
+registry marks it blocking, so a runner outage queued the lane forever. Its
+work is portable stdlib-only Python, so self-hosting is an optimization, not
+proof semantics. This workflow runs trusted same-repository events on
+`em-ci-nano` and fails over to `ubuntu-24.04` whenever the trusted lane does
+not succeed (outage timeout, failure, cancellation, or a fork/bot skip):
 
-- `route` (GitHub-hosted) emits target/reason/error/fallback_allowed
-- `validate` runs only when routed to `nano`
-- `validate-hosted` runs only when routed to `github`, with step bodies
+- `validate` runs on trusted capacity for same-repo human PRs (and dispatch)
+- `validate-hosted` runs when `validate` did not succeed, with step bodies
   identical to `validate`
 - `validate-result` (display name `Validate CI policy ledgers`, the stable
-  required identity) aggregates fail-closed: the selected route must pass,
-  the unselected route must skip, and a validator failure on either route
-  remains a real failure.
+  required identity) aggregates fail-closed: a trusted success passes with
+  the fallback skipped, any other trusted outcome requires a fallback
+  success, and a validator failure on the executed lane remains a failure.
+
+No secrets and no expressions embedded in run source: the router that needed
+a runner-inventory token cannot satisfy the workflow security ratchet, so
+failover keys off native job results instead.
 
 Red-first contract: mutating ANY single implementation job's copy of a
 validator step — argument drift, commenting out, echo decoy — must fail this
@@ -34,7 +38,6 @@ WORKFLOW_PATH = ROOT / ".github" / "workflows" / "policy-validators.yml"
 
 IMPL_JOBS = ("validate", "validate-hosted")
 RESULT_JOB = "validate-result"
-ROUTE_JOB = "route"
 STABLE_DISPLAY_NAME = "Validate CI policy ledgers"
 CONTRACT_TEST_FILE = "scripts/ci/test_policy_validators_route_contract.py"
 
@@ -57,14 +60,13 @@ VALIDATOR_STEPS = (
     "Validate Homebrew formula digest binding",
 )
 
-# Router fallback reasons that must each route to hosted capacity.
-HOSTED_REASONS = (
-    "fork_pr",
-    "bot_pr_github_hosted",
-    "runner_token_missing_github_hosted",
-    "runner_api_unavailable_github_hosted",
-    "runner_group_absent_github_hosted",
-    "no_idle_runner_github_hosted",
+# Fork/bot markers that must each keep the trusted lane skipped.
+UNTRUSTED_MARKERS = (
+    "head.repo.full_name",
+    "user.type != 'Bot'",
+    "dependabot",
+    "app/",
+    "[bot]",
 )
 
 
@@ -135,45 +137,35 @@ class ParityTest(unittest.TestCase):
         )
 
 
-class RouterTest(unittest.TestCase):
-    def test_router_emits_all_outputs(self):
-        route = job_block(read_workflow(), ROUTE_JOB)
-        for output in ("target=", "reason=", "error=", "fallback_allowed="):
-            self.assertIn(
-                output, route, f"router never emits {output.rstrip('=')}"
-            )
+class FallbackRoutingTest(unittest.TestCase):
+    def test_no_router_job(self):
+        text = read_workflow()
+        self.assertNotRegex(text, r"(?m)^  route:\n")
 
-    def test_router_runs_hosted(self):
-        route = job_block(read_workflow(), ROUTE_JOB)
-        self.assertIn("ubuntu-latest", route)
+    def test_no_secret_references(self):
+        text = read_workflow()
+        self.assertNotIn("secrets.", text)
 
-    def test_every_fallback_reason_routes_hosted(self):
-        route = job_block(read_workflow(), ROUTE_JOB)
-        for reason in HOSTED_REASONS:
-            self.assertIn(
-                reason, route, f"fallback reason {reason!r} missing from router"
-            )
-        # Each emit with one of these reasons must select the github target.
-        for match in re.finditer(r'emit "(\w+)" "(\w+)"', route):
-            target, reason = match.groups()
-            if reason in HOSTED_REASONS:
-                self.assertEqual(
-                    target, "github", f"reason {reason!r} must route to github"
+    def test_no_expressions_in_run_source(self):
+        text = read_workflow()
+        for job in IMPL_JOBS + (RESULT_JOB,):
+            for step, body in step_bodies(job_block(text, job)).items():
+                self.assertNotIn(
+                    "${{", body, f"expression embedded in {job} step {step!r}"
                 )
 
     def test_fork_and_bot_off_self_hosted(self):
-        route = job_block(read_workflow(), ROUTE_JOB)
-        self.assertIn('IS_FORK_PR', route)
-        self.assertIn('is_bot_pr="true"', route)
+        validate = job_block(read_workflow(), "validate")
+        for marker in UNTRUSTED_MARKERS:
+            self.assertIn(
+                marker, validate, f"untrusted marker {marker!r} missing from validate guard"
+            )
 
-    def test_implementation_jobs_key_off_router(self):
-        text = read_workflow()
-        validate = job_block(text, "validate")
-        hosted = job_block(text, "validate-hosted")
-        self.assertIn("needs: route", validate)
-        self.assertIn("needs: route", hosted)
-        self.assertIn("outputs.target == 'nano'", validate)
-        self.assertIn("outputs.target == 'github'", hosted)
+    def test_hosted_fails_over_on_non_success(self):
+        hosted = job_block(read_workflow(), "validate-hosted")
+        self.assertIn("needs: validate", hosted)
+        self.assertIn("always()", hosted)
+        self.assertIn("needs.validate.result != 'success'", hosted)
 
     def test_self_hosted_job_keeps_nano_placement(self):
         validate = job_block(read_workflow(), "validate")
@@ -196,12 +188,16 @@ class AggregateTest(unittest.TestCase):
 
     def test_aggregate_fail_closed(self):
         result = job_block(read_workflow(), RESULT_JOB)
-        # Selected route must succeed...
-        self.assertIn("!= \"success\"", result)
-        # ...unselected route must skip...
-        self.assertIn("!= \"skipped\"", result)
+        # Trusted success passes with the fallback skipped...
+        self.assertIn('"$NANO_RESULT" = "success"', result)
+        self.assertIn('"$HOSTED_RESULT" != "skipped"', result)
+        # ...any other trusted outcome requires a fallback success...
+        self.assertIn('"$HOSTED_RESULT" = "success"', result)
+        # ...needs results arrive via env, never embedded in run source...
+        self.assertIn("NANO_RESULT:", result)
+        self.assertIn("HOSTED_RESULT:", result)
         # ...and every violation path exits nonzero.
-        self.assertGreaterEqual(result.count("exit 1"), 3)
+        self.assertGreaterEqual(result.count("exit 1"), 2)
 
 
 class RedFirstTest(unittest.TestCase):
