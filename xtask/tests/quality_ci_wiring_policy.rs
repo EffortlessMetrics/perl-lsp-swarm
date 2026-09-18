@@ -962,7 +962,16 @@ fn coverage_workflow_is_manual_or_nightly_only_and_requires_receipts() {
             .is_err(),
         "ci-route schema_version cross-check must reject Python producer drift"
     );
-    let mutated_rust_receipt = ci_route_source.replacen("\"ci-route.v1\"", "\"ci-route.v2\"", 1);
+    // Target the emission-site literal (with its `schema_version: ` prefix),
+    // not the first bare `"ci-route.v1"` in the file: since #15390 added the
+    // `CURRENT_ENVELOPE_VERSION` admission const above, a bare first-match
+    // mutation would hit the const and leave the producer literal intact,
+    // making this control vacuous.
+    let mutated_rust_receipt = ci_route_source.replacen(
+        "schema_version: \"ci-route.v1\"",
+        "schema_version: \"ci-route.v2\"",
+        1,
+    );
     assert_ne!(
         mutated_rust_receipt, ci_route_source,
         "negative control must mutate the Rust producer's `schema_version` literal"

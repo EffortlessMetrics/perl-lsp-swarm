@@ -654,8 +654,17 @@ fn route_receipt(
         String::new()
     };
 
+    // Stamp the literal, not the admitted input: the wire-policy
+    // cross-check (`cross_check_ci_route_schema_version_literals`) pins this
+    // literal against the Python producer's `schema_version`. The admission
+    // check in `run` guarantees `envelope_version` already equals
+    // `CURRENT_ENVELOPE_VERSION`, so the literal cannot drift from input.
+    debug_assert_eq!(
+        envelope_version, CURRENT_ENVELOPE_VERSION,
+        "admission in `run` pins envelope_version to the single current version"
+    );
     Ok(CiRouteReceipt {
-        schema_version: envelope_version.to_string(),
+        schema_version: "ci-route.v1".to_string(),
         provider_action: "changed_file_proof_pack_route",
         claim_boundary: "Advisory changed-file coverage routing; selected coverage pack commands feed manual routed coverage diagnostics",
         base: base.to_string(),
