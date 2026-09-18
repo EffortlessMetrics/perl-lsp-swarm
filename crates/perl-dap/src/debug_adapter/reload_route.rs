@@ -845,7 +845,7 @@ mod tests {
         // then one breakpoint changed event per affected pending record.
         let mut seen = Vec::new();
         while let Ok(message) = receiver.try_recv() {
-            if let DapMessage::Event { event, body, .. } = message {
+            if let (DapMessage::Event { event, body, .. }, _) = message {
                 seen.push((event, body));
             }
         }
@@ -917,7 +917,7 @@ mod tests {
         let (frames, _, _) = session_state_snapshot(&adapter);
         assert_eq!(frames, 0, "old frames cannot survive a possibly applied reload");
         let invalidated = receiver.try_recv().ok().and_then(|message| match message {
-            DapMessage::Event { event, .. } => Some(event),
+            (DapMessage::Event { event, .. }, _) => Some(event),
             _ => None,
         });
         assert_eq!(invalidated.as_deref(), Some("invalidated"));

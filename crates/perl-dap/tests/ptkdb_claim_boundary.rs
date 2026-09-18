@@ -216,7 +216,7 @@ exit 0;
         .spawn()?;
     let mut child = ChildCleanup::new(child, Vec::<PathBuf>::new());
 
-    let stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
+    let stream = accept_plugin(&listener, &mut child.child, Duration::from_mins(1))?;
     let token = PeerSessionToken::try_from(PEER_TOKEN)?;
     let mut backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
         stream,
@@ -371,7 +371,7 @@ exit 0;
         Vec::<PathBuf>::new(),
     );
 
-    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
+    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_mins(1))?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut hello = [0_u8; 4096];
     let read = stream.read(&mut hello)?;
@@ -445,7 +445,7 @@ exit 0;
         Vec::<PathBuf>::new(),
     );
 
-    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
+    let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_mins(1))?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     let mut hello = [0_u8; 4096];
     let read = stream.read(&mut hello)?;
@@ -504,28 +504,25 @@ fn reference_ptkdb_adapter_fails_closed_on_incomplete_accepted_hello_subject()
         ),
         (
             "missing capabilities",
-            format!(r#"{{"protocolVersion":"perl-debug-peer-v1","sessionId":"test"}}"#),
+            r#"{"protocolVersion":"perl-debug-peer-v1","sessionId":"test"}"#.to_string(),
             "must contain a capabilities object",
         ),
         (
             "non-object capabilities",
-            format!(
-                r#"{{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":[]}}"#
-            ),
+            r#"{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":[]}"#
+                .to_string(),
             "must contain a capabilities object",
         ),
         (
             "capability-widened hello",
-            format!(
-                r#"{{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":{{"wantsBreakpoints":true,"wantsEditorControl":true}}}}"#
-            ),
+            r#"{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":{"wantsBreakpoints":true,"wantsEditorControl":true}}"#
+                .to_string(),
             "unrecognized capability",
         ),
         (
             "numeric boolean lookalike capability",
-            format!(
-                r#"{{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":{{"wantsOutput":1}}}}"#
-            ),
+            r#"{"protocolVersion":"perl-debug-peer-v1","sessionId":"test","capabilities":{"wantsOutput":1}}"#
+                .to_string(),
             "is not a strict JSON boolean",
         ),
     ];
@@ -568,7 +565,7 @@ exit 0;
             Vec::<PathBuf>::new(),
         );
 
-        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
+        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_mins(1))?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         let mut hello = [0_u8; 4096];
         let read = stream.read(&mut hello)?;
@@ -624,7 +621,7 @@ fn reference_peer_rejects_non_object_post_handshake_frame_without_terminating()
             Vec::<PathBuf>::new(),
         );
 
-        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
+        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_mins(1))?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         let mut hello = [0_u8; 4096];
         let read = stream.read(&mut hello)?;
@@ -685,7 +682,7 @@ fn reference_peer_fails_closed_cleanly_on_handshake_failures()
             Vec::<PathBuf>::new(),
         );
 
-        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
+        let mut stream = accept_plugin(&listener, &mut child.child, Duration::from_mins(1))?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         let mut hello = [0_u8; 4096];
         let read = stream.read(&mut hello)?;
@@ -1012,7 +1009,7 @@ exit 0;
         .spawn()?;
     let mut child = ChildCleanup::new(child, [release.clone(), survived.clone()]);
 
-    let stream = accept_plugin(&listener, &mut child.child, Duration::from_secs(60))?;
+    let stream = accept_plugin(&listener, &mut child.child, Duration::from_mins(1))?;
     let token = PeerSessionToken::try_from(PEER_TOKEN)?;
     let mut backend = ExternalDebuggerPeerBackend::from_connected_stream_with_token(
         stream,

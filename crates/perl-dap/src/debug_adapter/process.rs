@@ -3768,13 +3768,13 @@ fn deliver_reserved_terminated_event(
         if state.generation != generation {
             return false;
         }
-        match sender.try_send(message) {
+        match sender.try_send((message, super::sync_utils::current_drain_epoch())) {
             Ok(()) => {
                 state.terminal_committed = true;
                 return true;
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return false,
-            Err(std::sync::mpsc::TrySendError::Full(returned)) => message = returned,
+            Err(std::sync::mpsc::TrySendError::Full(returned)) => message = returned.0,
         }
         drop(state);
         thread::sleep(super::sync_utils::GENERATION_GUARD_PARK);
@@ -3996,7 +3996,7 @@ mod tests {
         let mut saw_terminated = false;
         while !saw_completion_marker || !saw_terminated {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     stopped += 1;
                     if stopped > 1 {
                         return Err("context plus prompt emitted duplicate stopped events".into());
@@ -4009,7 +4009,7 @@ mod tests {
                         return Err(format!("expected entry stop, got {reason:?}"));
                     }
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     if body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -4027,7 +4027,7 @@ mod tests {
                         saw_completion_marker = true;
                     }
                 }
-                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                     saw_terminated = true;
                 }
                 Ok(_) => {}
@@ -4142,7 +4142,7 @@ mod tests {
         let mut saw_terminated = false;
         while !saw_actual || !saw_terminated {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     let output = body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -4176,7 +4176,7 @@ mod tests {
                         ));
                     }
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     stopped += 1;
                     let reason = body
                         .as_ref()
@@ -4202,7 +4202,7 @@ mod tests {
                         ));
                     }
                 }
-                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                     saw_terminated = true;
                 }
                 Ok(_) => {}
@@ -4264,10 +4264,10 @@ mod tests {
         adapter.start_output_reader(PathBuf::from("/tmp"));
         loop {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => {
                     return Err("context-shaped output published entry before prompt".into());
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     if body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -4353,10 +4353,10 @@ mod tests {
         }
         loop {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     return Err(format!("delayed prompt prefix fabricated a stop: {body:?}"));
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     let output = body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -4420,7 +4420,7 @@ mod tests {
         let mut observed = Vec::new();
         loop {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     let reason = body
                         .as_ref()
                         .and_then(|value| value.get("reason"))
@@ -4439,7 +4439,7 @@ mod tests {
                     }
                     return Ok(());
                 }
-                Ok(DapMessage::Event { event, body, .. }) => {
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
                     observed.push(format!("{event}:{body:?}"));
                 }
                 Ok(other) => observed.push(format!("message:{other:?}")),
@@ -4880,7 +4880,7 @@ mod tests {
         let mut saw_terminated = false;
         while !saw_completion_marker || !saw_terminated {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     if !released {
                         return Err("warning consumed entry stop before native context".into());
                     }
@@ -4902,7 +4902,7 @@ mod tests {
                         .ok_or("entry stop did not install a source frame")?;
                     stopped_line = Some(frame.line);
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     let output = body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -4926,7 +4926,7 @@ mod tests {
                         saw_completion_marker = true;
                     }
                 }
-                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                     saw_terminated = true;
                 }
                 Ok(_) => {}
@@ -5015,7 +5015,7 @@ mod tests {
                 let mut stopped_events = Vec::new();
                 while !saw_marker {
                     match receiver.recv_timeout(Duration::from_secs(3)) {
-                        Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                        Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                             let reason = body
                                 .as_ref()
                                 .and_then(|value| value.get("reason"))
@@ -5024,7 +5024,7 @@ mod tests {
                                 .to_string();
                             stopped_events.push(reason);
                         }
-                        Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                        Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                             if body
                                 .as_ref()
                                 .and_then(|value| value.get("output"))
@@ -5106,13 +5106,13 @@ mod tests {
             let mut termination_error = None;
             while !saw_terminated {
                 match receiver.recv_timeout(Duration::from_secs(3)) {
-                    Ok(DapMessage::Event { event, .. }) if event == "stopped" => {
+                    Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => {
                         termination_error = Some(format!(
                             "{label}: unexpected stopped event after invalid source context"
                         ));
                         break;
                     }
-                    Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                    Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                         saw_terminated = true;
                     }
                     Ok(_) => {}
@@ -5305,7 +5305,7 @@ mod tests {
 
         let message = receiver.try_recv().map_err(|error| error.to_string())?;
         match message {
-            super::DapMessage::Event { event, body, .. } => {
+            (super::DapMessage::Event { event, body, .. }, _) => {
                 let reason = body
                     .as_ref()
                     .and_then(|value| value.get("reason"))
@@ -5346,7 +5346,7 @@ mod tests {
                 return Err("current async terminal source did not emit".to_string());
             }
             match receiver.try_recv().map_err(|error| error.to_string())? {
-                DapMessage::Event { event, .. } if event == "terminated" => {}
+                (DapMessage::Event { event, .. }, _) if event == "terminated" => {}
                 other => return Err(format!("expected natural terminal event, got {other:?}")),
             }
             if fail_cleanup {
@@ -5390,7 +5390,7 @@ mod tests {
                     other => return Err(format!("disconnect failed: {other:?}")),
                 }
                 if let Some(message) = receiver.try_iter().find(|message| {
-                    matches!(message, DapMessage::Event { event, .. } if event == "terminated")
+                    matches!(message, (DapMessage::Event { event, .. }, _) if event == "terminated")
                 }) {
                     return Err(format!("disconnect duplicated async completion: {message:?}"));
                 }
@@ -5405,7 +5405,10 @@ mod tests {
     ) -> Result<(), String> {
         let (outbound, received) = sync_channel(1);
         outbound
-            .send(DapMessage::Event { seq: 0, event: "queue_filler".to_string(), body: None })
+            .send((
+                DapMessage::Event { seq: 0, event: "queue_filler".to_string(), body: None },
+                super::super::sync_utils::current_drain_epoch(),
+            ))
             .map_err(|error| error.to_string())?;
         let mut adapter = DebugAdapter::new();
         adapter.set_event_sender(outbound.clone());
@@ -5463,7 +5466,7 @@ mod tests {
         let mut response = None;
         while Instant::now() < deadline {
             if let Ok(message) = received.recv_timeout(Duration::from_millis(10))
-                && matches!(&message, DapMessage::Event { event, .. } if event == "terminated")
+                && matches!(&message, (DapMessage::Event { event, .. }, _) if event == "terminated")
             {
                 terminal_events.push(message);
             }
@@ -5473,7 +5476,7 @@ mod tests {
             }
         }
         terminal_events.extend(received.try_iter().filter(
-            |message| matches!(message, DapMessage::Event { event, .. } if event == "terminated"),
+            |message| matches!(message, (DapMessage::Event { event, .. }, _) if event == "terminated"),
         ));
         rescue.store(true, std::sync::atomic::Ordering::SeqCst);
         drop(received);
@@ -5494,7 +5497,7 @@ mod tests {
             return Err(format!("expected exactly one terminal event, got {terminal_events:?}"));
         }
         if terminal_events.iter().any(|message| {
-            matches!(message, DapMessage::Event { body: Some(body), .. }
+            matches!(message, (DapMessage::Event { body: Some(body), .. }, _)
                 if body.get("reason").and_then(Value::as_str) == Some("old_async_completion"))
         }) {
             return Err("retired async event escaped into the client terminal response".to_string());
@@ -5540,7 +5543,7 @@ mod tests {
         }
         let response = adapter.handle_request(1, "disconnect", None);
         let terminal_count = receiver.try_iter().filter(|message| {
-            matches!(message, DapMessage::Event { event, .. } if event == "terminated")
+            matches!(message, (DapMessage::Event { event, .. }, _) if event == "terminated")
         }).count();
         if reported_delivery {
             return Err("stale enqueue was reported as delivered".to_string());
@@ -5650,7 +5653,7 @@ mod tests {
 
         // Exactly one event reached the channel: the current generation's.
         match receiver.try_recv() {
-            Ok(super::DapMessage::Event { event, body, .. }) => {
+            Ok((super::DapMessage::Event { event, body, .. }, _)) => {
                 if event != "terminated"
                     || body.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str())
                         != Some("current_generation")
@@ -6899,7 +6902,7 @@ mod tests {
         let mut found_timeout = false;
         while std::time::Instant::now() < deadline {
             match receiver.recv_timeout(Duration::from_secs(1)) {
-                Ok(super::DapMessage::Event { event, body, .. }) => {
+                Ok((super::DapMessage::Event { event, body, .. }, _)) => {
                     if event == "terminated" {
                         let reason =
                             body.as_ref().and_then(|v| v.get("reason")).and_then(|v| v.as_str());
@@ -7241,7 +7244,13 @@ mod tests {
         mode: &str,
         entry_stop_pending: bool,
         initial_stop_pending: bool,
-    ) -> Result<(Arc<DebugAdapter>, std::sync::mpsc::Receiver<DapMessage>), String> {
+    ) -> Result<
+        (
+            Arc<DebugAdapter>,
+            std::sync::mpsc::Receiver<super::super::sync_utils::DapMessageWithEpoch>,
+        ),
+        String,
+    > {
         use super::{DebugSession, ResumeMode, VariableCache};
 
         let child = spawn_entry_stop_fixture_child(mode)?;
@@ -7273,7 +7282,7 @@ mod tests {
 
     /// Collect `stopped` reasons until `deadline`, failing if the wait errors.
     fn stopped_reasons_within(
-        receiver: &std::sync::mpsc::Receiver<DapMessage>,
+        receiver: &std::sync::mpsc::Receiver<super::super::sync_utils::DapMessageWithEpoch>,
         window: Duration,
     ) -> Result<Vec<String>, String> {
         let deadline = Instant::now() + window;
@@ -7284,7 +7293,7 @@ mod tests {
                 return Ok(reasons);
             }
             match receiver.recv_timeout(remaining) {
-                Ok(DapMessage::Event { event, body, .. }) => {
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
                     if event == "stopped" {
                         reasons.push(
                             body.as_ref()
@@ -7306,7 +7315,7 @@ mod tests {
 
     /// Wait for the first `stopped` event and return its reason.
     fn first_stopped_reason(
-        receiver: &std::sync::mpsc::Receiver<DapMessage>,
+        receiver: &std::sync::mpsc::Receiver<super::super::sync_utils::DapMessageWithEpoch>,
     ) -> Result<String, String> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -7315,7 +7324,7 @@ mod tests {
                 return Err("no stopped event arrived within 5s".to_string());
             }
             match receiver.recv_timeout(remaining) {
-                Ok(DapMessage::Event { event, body, .. }) => {
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
                     if event == "stopped" {
                         return Ok(body
                             .as_ref()
@@ -7468,7 +7477,7 @@ mod tests {
                 return Err("no terminal event arrived after debugger EOF".to_string());
             }
             match receiver.recv_timeout(remaining) {
-                Ok(DapMessage::Event { event, body, .. }) => {
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
                     if event == "stopped" {
                         let reason = body
                             .as_ref()
@@ -7530,11 +7539,14 @@ mod tests {
         // (e.g. the old pre-kill `terminated` emission) would hang forever here.
         let (sender, _receiver) = sync_channel(1);
         sender
-            .send(super::DapMessage::Event {
-                seq: 0,
-                event: "output".to_string(),
-                body: Some(serde_json::json!({"category": "stdout", "output": "filler\n"})),
-            })
+            .send((
+                super::DapMessage::Event {
+                    seq: 0,
+                    event: "output".to_string(),
+                    body: Some(serde_json::json!({"category": "stdout", "output": "filler\n"})),
+                },
+                super::super::sync_utils::current_drain_epoch(),
+            ))
             .map_err(|_| "failed to prefill the outbound queue".to_string())?;
 
         let mut adapter = DebugAdapter::new();
