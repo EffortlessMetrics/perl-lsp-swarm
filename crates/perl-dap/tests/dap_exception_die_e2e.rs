@@ -112,7 +112,7 @@ fn drain_to_terminated(session: &DapWorkflowSession) -> DrainOutcome {
         let Ok(msg) = session.rx.recv_timeout(remaining) else {
             break;
         };
-        let DapMessage::Event { event, .. } = &msg else {
+        let (DapMessage::Event { event, .. }, _) = &msg else {
             continue;
         };
         if event == "stopped" {
