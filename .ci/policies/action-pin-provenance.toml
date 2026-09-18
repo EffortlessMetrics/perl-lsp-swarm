@@ -17,7 +17,7 @@ value = 'dev (2026-09-06)'
 action = 'EffortlessMetrics/droid-action-safe/isolated-review'
 sha = '0c2019dd56a43750a0abf30b6449001707f90807'
 kind = 'branch_commit'
-value = 'dev merges #7 + #8 (2026-09-16)'
+value = 'dev (2026-09-16)'
 
 [[pin]]
 action = 'Swatinem/rust-cache'
