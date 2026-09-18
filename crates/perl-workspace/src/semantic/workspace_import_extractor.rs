@@ -1016,7 +1016,8 @@ mod tests {
         // `foo => { -as => 'bar' }` installs `bar`, not `foo`. This pass does not
         // model the rename — that is a stated non-goal — but skipping the option
         // hash would drop `bar` and keep only `foo`, turning an imprecise answer
-        // into a wrong one. A dash-prefixed first key marks the per-symbol form.
+        // into a wrong one. Only the documented option names retain the body;
+        // a dashed first key alone does not mark the per-symbol form.
         let specs = parse_and_extract("use Module foo => { -as => 'bar' };");
         let spec = specs
             .iter()
