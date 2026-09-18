@@ -181,7 +181,10 @@ fn scenario_52_test_inline_completion_quality_receipt() {
             let harness = create_harness()?;
             harness.open_file(TEST_MORE_PATH, TEST_MORE_SOURCE)?;
             harness.open_file(TEST2_PATH, TEST2_SOURCE)?;
-            std::thread::sleep(Duration::from_millis(250));
+            // Same readiness race as #15870: synchronize on the server's own
+            // analysis-readiness signal instead of a fixed sleep.
+            let _ = harness.wait_for_diagnostics(TEST_MORE_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(TEST2_PATH, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);

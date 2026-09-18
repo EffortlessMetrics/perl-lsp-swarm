@@ -151,7 +151,12 @@ fn scenario_57_loop_binding_inline_completion_quality_stdio() -> Result<()> {
     harness.open_file(HASH_LOOP_PATH, HASH_LOOP_SOURCE)?;
     harness.open_file(ARRAY_PREFERENCE_PATH, ARRAY_PREFERENCE_SOURCE)?;
     harness.open_file(STATUS_LOOP_PATH, STATUS_LOOP_SOURCE)?;
-    std::thread::sleep(Duration::from_millis(250));
+    // Same readiness race as #15870: synchronize on the server's own
+    // analysis-readiness signal instead of a fixed sleep.
+    let _ = harness.wait_for_diagnostics(ARRAY_LOOP_PATH, Duration::from_secs(30));
+    let _ = harness.wait_for_diagnostics(HASH_LOOP_PATH, Duration::from_secs(30));
+    let _ = harness.wait_for_diagnostics(ARRAY_PREFERENCE_PATH, Duration::from_secs(30));
+    let _ = harness.wait_for_diagnostics(STATUS_LOOP_PATH, Duration::from_secs(30));
 
     assert!(
         wait_for_inline_registration(&harness),
