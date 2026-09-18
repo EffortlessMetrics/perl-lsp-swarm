@@ -1622,7 +1622,7 @@ fn probe_debugger_capability(binary: &Path) -> Result<(), ProbeFailure> {
     command
         .args(["-e", "require 'perl5db.pl';"])
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .env_remove("PERL5LIB")
         .env_remove("PERL5OPT")
@@ -1639,8 +1639,34 @@ fn probe_debugger_capability(binary: &Path) -> Result<(), ProbeFailure> {
     }
     let mut child =
         command.spawn().map_err(|error| fail(format!("cannot spawn capability probe: {error}")))?;
+    // Own stderr through the file's bounded reader machinery from the start:
+    // a descendant inheriting the write end can then never extend this probe
+    // past its budget, and collection is bounded instead of a blocking read.
+    let stderr_drain = match child.stderr.take() {
+        Some(pipe) => match drain_pipe(pipe, false) {
+            Ok(drain) => drain,
+            Err(error) => {
+                return Err(fail(format!(
+                    "cannot spawn capability probe stderr reader: {error}{}",
+                    reap_capability_probe_bounded(&mut child)
+                        .err()
+                        .map_or_else(String::new, |reap| format!("; {reap}"))
+                )));
+            }
+        },
+        None => {
+            return Err(fail(format!(
+                "capability probe stderr pipe unavailable{}",
+                reap_capability_probe_bounded(&mut child)
+                    .err()
+                    .map_or_else(String::new, |reap| format!("; {reap}"))
+            )));
+        }
+    };
     let deadline = Instant::now() + DEBUGGEE_CAPABILITY_BUDGET;
-    let outcome = loop {
+    // Overruns are timing-sensitive (transient); host-side wait errors are
+    // deterministic and must not trigger the resolver's one retry.
+    let outcome: Result<std::process::ExitStatus, (String, bool)> = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) if Instant::now() < deadline => {
@@ -1648,27 +1674,33 @@ fn probe_debugger_capability(binary: &Path) -> Result<(), ProbeFailure> {
             }
             Ok(None) => {
                 let kill = child.kill();
-                let _ = child.wait();
-                break Err(match kill {
-                    Ok(()) => format!(
-                        "capability probe did not exit within {DEBUGGEE_CAPABILITY_BUDGET:?}"
-                    ),
-                    Err(error) => format!(
-                        "capability probe overran its budget and could not be killed: {error}"
-                    ),
-                });
+                let reap = reap_capability_probe_bounded(&mut child);
+                break Err((
+                    match (kill, reap) {
+                        (Ok(()), Ok(())) => format!(
+                            "capability probe did not exit within {DEBUGGEE_CAPABILITY_BUDGET:?}"
+                        ),
+                        (Ok(()), Err(reap_error)) => format!(
+                            "capability probe overran its budget; kill landed but the \
+                             bounded reap failed: {reap_error}"
+                        ),
+                        (Err(kill_error), reap_result) => format!(
+                            "capability probe overran its budget and could not be killed: \
+                             {kill_error}{}",
+                            reap_result.err().map_or_else(String::new, |reap_error| format!(
+                                "; bounded reap: {reap_error}"
+                            ))
+                        ),
+                    },
+                    true,
+                ));
             }
-            Err(error) => break Err(format!("capability probe wait failed: {error}")),
+            Err(error) => break Err((format!("capability probe wait failed: {error}"), false)),
         }
     };
-    // The child has exited (or been killed), so its pipe write ends are
-    // closed and this read cannot block. The require path emits at most the
-    // small loader banner, well under the pipe buffer, so waiting for exit
-    // before draining cannot deadlock either.
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
-    }
+    // Bounded collection through the shared machinery; the reader thread owns
+    // the pipe, so this cannot block on a live descendant.
+    let stderr = collect_pipe_output(stderr_drain).unwrap_or_default();
     match outcome {
         Ok(status) if status.success() => Ok(()),
         Ok(status) => classify_debugger_capability(
@@ -1679,7 +1711,24 @@ fn probe_debugger_capability(binary: &Path) -> Result<(), ProbeFailure> {
             ),
             &stderr,
         ),
-        Err(reason) => Err(ProbeFailure { reason, transient: true }),
+        Err((reason, transient)) => Err(ProbeFailure { reason, transient }),
+    }
+}
+
+/// Kill (when needed) and reap the capability-probe child within a bounded
+/// window, so a failed kill can never hang the probe past its wall clock.
+fn reap_capability_probe_bounded(child: &mut Child) -> Result<(), String> {
+    let _ = child.kill();
+    let deadline = Instant::now() + CLEANUP_REAP_BUDGET;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => return Err(format!("child did not exit within {CLEANUP_REAP_BUDGET:?}")),
+            Err(error) => return Err(format!("child reap check failed: {error}")),
+        }
     }
 }
 

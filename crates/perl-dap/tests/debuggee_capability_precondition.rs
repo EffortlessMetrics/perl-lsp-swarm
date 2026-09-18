@@ -26,7 +26,7 @@ mod common;
 use common::{classify_debugger_capability, probe_debuggee_perl_for_test};
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 const MISSING_LIBRARY_STDERR: &str = "Can't locate perl5db.pl in @INC (@INC entries checked: /usr/lib/perl5/site_perl \
@@ -126,19 +126,31 @@ fn resolution_refuses_a_missing_library_interpreter_with_typed_reason() -> Resul
 
 /// Positive control: when the host ships a real perl, requiring perl5db.pl
 /// exits successfully — the exact subprocess shape the precondition runs —
-/// and the composed resolution probe accepts the interpreter.
+/// and the composed resolution probe accepts the interpreter. Both spawns
+/// run through the shared bounded-command helper so a wedged `where`/`which`
+/// or perl cannot block the test past its budget.
 #[test]
 #[allow(clippy::print_stderr)]
 fn a_capable_host_interpreter_passes_the_capability_precondition() -> Result<(), Box<dyn Error>> {
+    let controls = tempfile::tempdir()?;
+    let locator_listing = controls.path().join("locator.stdout");
+    let require_stderr = controls.path().join("require.stderr");
     let locator = if cfg!(windows) { "where.exe" } else { "which" };
-    let output = Command::new(locator).arg("perl").output()?;
-    if !output.status.success() {
+    let mut locator_command = Command::new(locator);
+    locator_command
+        .arg("perl")
+        .stdout(Stdio::from(std::fs::File::create(&locator_listing)?))
+        .stderr(Stdio::null());
+    let locator_status =
+        common::run_bounded_command_for_test(locator_command, Duration::from_secs(30))
+            .map_err(|error| format!("perl locator did not finish within its budget: {error}"))?;
+    if !locator_status.success() {
         eprintln!(
             "SKIP a_capable_host_interpreter_passes_the_capability_precondition: no perl on PATH"
         );
         return Ok(());
     }
-    let Some(candidate) = String::from_utf8_lossy(&output.stdout)
+    let Some(candidate) = std::fs::read_to_string(&locator_listing)?
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
@@ -150,17 +162,23 @@ fn a_capable_host_interpreter_passes_the_capability_precondition() -> Result<(),
         );
         return Ok(());
     };
-    let require = Command::new(&candidate)
+    let mut require_command = Command::new(&candidate);
+    require_command
         .args(["-e", "require 'perl5db.pl';"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(std::fs::File::create(&require_stderr)?))
         .env_remove("PERL5LIB")
         .env_remove("PERL5OPT")
-        .env("LC_ALL", "C")
-        .output()?;
+        .env("LC_ALL", "C");
+    let require_status =
+        common::run_bounded_command_for_test(require_command, Duration::from_secs(30)).map_err(
+            |error| format!("capability preflight did not finish within its budget: {error}"),
+        )?;
     assert!(
-        require.status.success(),
+        require_status.success(),
         "host perl {} could not load perl5db.pl: {}",
         candidate.display(),
-        String::from_utf8_lossy(&require.stderr)
+        std::fs::read_to_string(&require_stderr).unwrap_or_default()
     );
     probe_debuggee_perl_for_test(&candidate, Duration::from_secs(10), false)
         .map_err(|reason| format!("pipe-capable host perl was rejected: {reason}"))?;
