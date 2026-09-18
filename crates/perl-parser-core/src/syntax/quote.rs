@@ -69,7 +69,7 @@ pub fn extract_regex_parts_strict(text: &str) -> Result<(String, String, String)
     // Extract body and modifiers
     let (body, modifiers_raw) = extract_delimited_content(content, delimiter, closing);
 
-    let modifiers = validate_match_modifiers(&modifiers_raw)?;
+    let modifiers = validate_match_modifiers(modifiers_raw)?;
 
     // Include delimiters in the pattern string for compatibility
     let pattern = format!("{}{}{}", delimiter, body, closing);
