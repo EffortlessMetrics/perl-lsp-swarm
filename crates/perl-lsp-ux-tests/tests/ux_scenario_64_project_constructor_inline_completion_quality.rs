@@ -278,7 +278,12 @@ fn scenario_64_project_constructor_inline_completion_quality_receipt() {
             harness.open_file(SHIFT_APP_PATH, SHIFT_APP_PM)?;
             harness.open_file(SIGNATURE_APP_PATH, SIGNATURE_APP_PM)?;
             harness.open_file(TEST_PATH, TEST_SOURCE)?;
-            std::thread::sleep(Duration::from_millis(300));
+            // Same readiness race as #15870: synchronize on the server's own
+            // analysis-readiness signal instead of a fixed sleep.
+            let _ = harness.wait_for_diagnostics(ROLE_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(SHIFT_APP_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(SIGNATURE_APP_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(TEST_PATH, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);

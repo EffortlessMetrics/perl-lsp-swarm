@@ -513,7 +513,15 @@ class ReleaseTopologyTests(unittest.TestCase):
         platform = subprocess.run([bash, "--noprofile", "--norc", "-c", "uname -s"],
                                   capture_output=True, text=True, timeout=30)
         self.assertEqual(platform.returncode, 0, platform.stderr)
-        self.assertEqual(platform.stdout.strip(), "Linux", "The production checksum oracle requires Linux; Git Bash uses a different sha256sum default")
+        if platform.stdout.strip() != "Linux":
+            # Honest platform envelope (#15401, #15395 pattern): the production
+            # checksum oracle requires Linux — Git Bash's sha256sum behaves
+            # differently — so the producer half of this oracle is Linux-only.
+            # The workflow-shape assertions above already ran everywhere.
+            self.skipTest(
+                "production checksum producer requires Linux; "
+                f"bash here reports {platform.stdout.strip()!r}"
+            )
 
         def execute(script, duplicate=False):
             with TemporaryDirectory() as temporary:
