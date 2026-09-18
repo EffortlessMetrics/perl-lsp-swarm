@@ -1297,8 +1297,11 @@ enum Commands {
 
     /// Measure CI baseline from recent workflow runs.
     CiBaseline {
-        /// Branch to analyze.
-        #[arg(short, long, default_value = "master")]
+        /// Branch to analyze. When empty, the repository's default branch is
+        /// derived from `gh repo view --json defaultBranchRef` instead of
+        /// assuming a hard-coded name (which silently returned zero rows on
+        /// the `main` branch).
+        #[arg(short, long, default_value = "")]
         branch: String,
 
         /// Number of days to analyze.
