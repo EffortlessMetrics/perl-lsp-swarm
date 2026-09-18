@@ -75,6 +75,29 @@ describe('replayOpenPerlDocuments', () => {
     });
   });
 
+  test('replays perl5 alias documents to the same server generation (#7699)', async () => {
+    const sendNotification = jest.fn().mockResolvedValue(undefined);
+
+    await replayOpenPerlDocuments({ sendNotification }, [
+      {
+        uri: 'file:///workspace/probe.pl',
+        languageId: 'perl5',
+        version: 3,
+        text: '1;\n',
+      },
+    ]);
+
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    expect(sendNotification).toHaveBeenCalledWith('textDocument/didOpen', {
+      textDocument: {
+        uri: 'file:///workspace/probe.pl',
+        languageId: 'perl5',
+        version: 3,
+        text: '1;\n',
+      },
+    });
+  });
+
   test('preserves notification failures for restart callers', async () => {
     const failure = new Error('client stopped');
     const sendNotification = jest.fn().mockRejectedValue(failure);

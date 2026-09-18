@@ -611,7 +611,31 @@ impl ServerConfig {
                 self.ai_completion.rate_limit_rps = rps;
             }
             if let Some(inflight) = ai.get("maxInflight").and_then(|v| v.as_u64()) {
-                self.ai_completion.max_inflight = inflight as u32;
+                // The configuration authority catalog declares `ai.max_inflight`
+                // as `UnsignedRange { minimum: 1, maximum: 64 }` with
+                // `KeepLastValid`. This channel bypassed both: `as u32` wraps,
+                // so 4294967296 became 0 — and then a gate capacity of 1, i.e.
+                // *tighter* than the user asked for — while 65..=u32::MAX
+                // sailed past the declared maximum.
+                //
+                // Pre-existing, but `max_inflight` is now a live-concurrency
+                // ceiling rather than only the token bucket's burst (`#8300`),
+                // so an out-of-range value changes how many requests may be
+                // simultaneously active. Honour the declared contract here.
+                match u32::try_from(inflight) {
+                    Ok(value) if AI_MAX_INFLIGHT_RANGE.contains(&value) => {
+                        self.ai_completion.max_inflight = value;
+                    }
+                    _ => {
+                        tracing::warn!(
+                            requested = inflight,
+                            minimum = *AI_MAX_INFLIGHT_RANGE.start(),
+                            maximum = *AI_MAX_INFLIGHT_RANGE.end(),
+                            retained = self.ai_completion.max_inflight,
+                            "aiCompletion.maxInflight is out of range; keeping the previous value"
+                        );
+                    }
+                }
             }
             if let Some(fallback) = ai.get("fallback").and_then(|v| v.as_bool()) {
                 self.ai_completion.fallback = fallback;
@@ -767,10 +791,19 @@ pub fn normalize_formatter_mode_value(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('_', "-")
 }
 
+/// Resolve a `formatting.engine` token to the mode the server will run.
+///
+/// #7129 removed the bare `compat` mode: it selected the native formatter and
+/// produced byte-identical output, so it named no behavior. Its retired
+/// tokens were initially accepted through a deprecation projection; that
+/// window was closed by #15624 before any release ever carried the
+/// acceptance, so the retired tokens are now rejected like any other
+/// unrecognized value. Rejecting them changes no formatting output — they
+/// always ran the native formatter, and an unknown value keeps the current
+/// setting (native by default).
 fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
     match normalize_formatter_mode_value(value).as_str() {
         "native" => Some(FormatterMode::Native),
-        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
         "external-legacy" | "external-perltidy" | "perltidy" => Some(FormatterMode::ExternalLegacy),
         "off" | "disabled" | "none" => Some(FormatterMode::Off),
         _ => None,
@@ -780,7 +813,6 @@ fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
 fn parse_client_formatter_mode(value: &str) -> Option<FormatterMode> {
     match normalize_formatter_mode_value(value).as_str() {
         "native" => Some(FormatterMode::Native),
-        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
         "off" | "disabled" | "none" => Some(FormatterMode::Off),
         _ => None,
     }
@@ -804,13 +836,12 @@ fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
 /// Human-readable list of accepted `formatting.engine` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_formatter_mode`].
-const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), external-legacy (external-perltidy, perltidy), \
-     off (disabled, none)";
+const FORMATTER_MODE_VALID_OPTIONS: &str =
+    "native, external-legacy (external-perltidy, perltidy), off (disabled, none)";
 
 /// Human-readable values accepted for `formatting.engine` on the LSP
 /// client-settings channel. External process selection remains project-owned.
-const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str =
-    "native, compat (perltidy-compat), off (disabled, none)";
+const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str = "native, off (disabled, none)";
 
 /// Human-readable values accepted for `critic.engine` on the LSP client-settings
 /// channel. Legacy subprocess aliases remain available only through trusted
@@ -2220,6 +2251,13 @@ pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// spawns instead of re-probing on every `get_system_inc()` call.
 const SYSTEM_INC_PROBE_MAX_ATTEMPTS: u32 = 2;
 
+/// Accepted range for `aiCompletion.maxInflight` (`#8300`).
+///
+/// Mirrors the `Validation::UnsignedRange { minimum: 1, maximum: 64 }` declared
+/// for `ai.max_inflight` in `configuration_authority::catalog`, so the
+/// client-settings channel cannot admit a value the authority would reject.
+const AI_MAX_INFLIGHT_RANGE: std::ops::RangeInclusive<u32> = 1..=64;
+
 /// Deterministic probe replacement for the bounded-retry proof (#12945).
 ///
 /// Test-only: the real subprocess probe stays the only production path. The
@@ -2435,7 +2473,7 @@ pub struct ProjectFormattingConfig {
     pub enabled: Option<bool>,
     /// Whether to format on save (willSaveWaitUntil). Default `true`.
     pub format_on_save: Option<bool>,
-    /// Formatter engine (`native`, `compat`, `external-perltidy`, or `off`).
+    /// Formatter engine (`native`, `external-legacy`, or `off`).
     pub engine: Option<String>,
     /// Path to a `.perltidyrc` profile file.
     pub perltidy_profile: Option<String>,
@@ -3373,6 +3411,8 @@ fn value_to_string<T: std::fmt::Debug>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::*;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -3510,10 +3550,7 @@ mod tests {
         let inputs: Vec<(&str, &ProjectConfig)> = vec![("folderA", &a), ("folderB", &b)];
         let (merged, conflicts) = merge_project_configs_for_server(&inputs);
 
-        assert_eq!(
-            merged.critic.include.as_ref().map(Vec::as_slice),
-            Some(&["ProhibitGrep".to_string()][..])
-        );
+        assert_eq!(merged.critic.include.as_deref(), Some(&["ProhibitGrep".to_string()][..]));
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].key, "critic.include");
     }
@@ -4012,7 +4049,7 @@ profile = "recommended"
         config.update_from_value(&serde_json::json!({
             "formatting": {
                 "enabled": false,
-                "engine": "perltidy_compat",
+                "engine": "off",
                 "profile": "  .perltidyrc  ",
                 "maximumLineLength": 120,
                 "indentColumns": 2,
@@ -4047,7 +4084,9 @@ profile = "recommended"
         }));
 
         assert!(!config.perltidy_enabled);
-        assert_eq!(config.formatting_engine, FormatterMode::Compat);
+        // `off` is a non-default, schema-valid engine value, so this proves the
+        // field is read rather than matching the compiled default (`native`).
+        assert_eq!(config.formatting_engine, FormatterMode::Off);
         assert!(config.perltidy_profile.is_none());
         assert_eq!(config.perltidy_maximum_line_length, Some(120));
         assert_eq!(config.perltidy_indent_columns, Some(2));
@@ -4104,6 +4143,60 @@ profile = "recommended"
         Ok(())
     }
 
+    /// `aiCompletion.maxInflight` must honour the authority catalog's
+    /// `1..=64` / `KeepLastValid` contract on the client-settings channel
+    /// (`#8300`).
+    ///
+    /// Before this, the channel did `inflight as u32`, which wraps. The
+    /// interesting case is not the obvious "too big" one — it is that
+    /// `4294967296` truncated to `0` and then became a gate capacity of **1**,
+    /// silently giving the user a *tighter* ceiling than they asked for.
+    #[test]
+    fn ai_max_inflight_out_of_range_keeps_the_previous_value() -> TestResult {
+        let mut config = ServerConfig::default();
+
+        // A valid value is accepted, and establishes the "previous valid"
+        // state the rejections below must preserve.
+        config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 8 } }));
+        if config.ai_completion.max_inflight != 8 {
+            return Err(std::io::Error::other("valid maxInflight was not accepted").into());
+        }
+
+        // The declared maximum is inclusive.
+        config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 64 } }));
+        if config.ai_completion.max_inflight != 64 {
+            return Err(
+                std::io::Error::other("64 must be accepted as the inclusive maximum").into()
+            );
+        }
+
+        for rejected in [
+            0_u64,               // below the minimum; previously became capacity 1
+            65,                  // above the declared maximum
+            u64::from(u32::MAX), // far above it, but does not wrap
+            4_294_967_296,       // wraps to 0 under `as u32`
+            4_294_967_297,       // wraps to 1 under `as u32`
+            u64::MAX,            // wraps to u32::MAX under `as u32`
+        ] {
+            config.update_from_value(
+                &serde_json::json!({ "aiCompletion": { "maxInflight": rejected } }),
+            );
+            if config.ai_completion.max_inflight != 64 {
+                return Err(std::io::Error::other(format!(
+                    "maxInflight={rejected} is out of range and must keep the previous valid value"
+                ))
+                .into());
+            }
+        }
+
+        // Still usable afterwards: rejection does not latch the field.
+        config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 1 } }));
+        if config.ai_completion.max_inflight != 1 {
+            return Err(std::io::Error::other("a later valid maxInflight must still apply").into());
+        }
+        Ok(())
+    }
+
     #[test]
     fn server_config_rejects_external_formatter_engine_from_client_settings() {
         let mut config = ServerConfig::default();
@@ -4140,14 +4233,98 @@ profile = "recommended"
     fn external_perltidy_is_selected_only_by_explicit_engine() {
         // `parse_formatter_mode` is a pure mapping with no environment/PATH
         // probe: the external engine is reachable only through explicit config.
-        assert_eq!(parse_formatter_mode("external-perltidy"), Some(FormatterMode::ExternalLegacy));
-        assert_eq!(parse_formatter_mode("external-legacy"), Some(FormatterMode::ExternalLegacy));
-        assert_eq!(parse_formatter_mode("perltidy"), Some(FormatterMode::ExternalLegacy));
-        assert_eq!(parse_formatter_mode("native"), Some(FormatterMode::Native));
+        let mode = |value| parse_formatter_mode(value);
+        assert_eq!(mode("external-perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(mode("external-legacy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(mode("perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(mode("native"), Some(FormatterMode::Native));
         // Unknown values do not silently select external; the caller keeps its
         // current value (native by default).
-        assert_eq!(parse_formatter_mode("definitely-not-an-engine"), None);
-        assert_eq!(parse_formatter_mode(""), None);
+        assert_eq!(mode("definitely-not-an-engine"), None);
+        assert_eq!(mode(""), None);
+    }
+
+    // ── #7129/#15624: the retired `compat` tokens are rejected ─────────────
+    //
+    // `compat` was a bare alias: it selected the native formatter and produced
+    // byte-identical output, so it named no behavior a user could observe.
+    // #7129 removed the mode; #15624 closed the deprecation window before any
+    // release ever carried the alias acceptance, so the retired tokens are
+    // rejected like any other unrecognized value. No formatting output
+    // changes: an unknown value keeps the current setting (native by
+    // default), which is what the alias ran anyway.
+
+    #[test]
+    fn retired_compat_aliases_are_rejected_on_both_channels() {
+        // Includes the underscore and mixed-case/padded spellings so the
+        // rejection is exercised through `normalize_formatter_mode_value`
+        // rather than by exact-token luck.
+        for value in ["compat", "perltidy-compat", "perltidy_compat", "  COMPAT  "] {
+            assert_eq!(
+                parse_formatter_mode(value),
+                None,
+                "{value:?} is a retired alias (#7129/#15624): it must be rejected on \
+                 project config, not silently accepted"
+            );
+            assert_eq!(
+                parse_client_formatter_mode(value),
+                None,
+                "{value:?} is a retired alias (#7129/#15624): it must be rejected on \
+                 client settings, not silently accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn formatter_engine_near_misses_reach_the_unknown_value_path() {
+        // Tokens that merely resemble a current mode name must reach the
+        // unknown-value path — where the server keeps its current setting and
+        // warns — rather than being quietly accepted.
+        for near_miss in [
+            "compa",           // a prefix of the retired `compat`
+            "compats",         // `compat` with a suffix
+            "xcompat",         // `compat` with a prefix
+            "compat-perltidy", // the retired pair, reversed
+            "compat native",   // the retired alias embedded in a longer phrase
+        ] {
+            assert_eq!(
+                parse_formatter_mode(near_miss),
+                None,
+                "{near_miss:?} must reach the unknown-value path on project config"
+            );
+            assert_eq!(
+                parse_client_formatter_mode(near_miss),
+                None,
+                "{near_miss:?} must reach the unknown-value path on client settings"
+            );
+        }
+
+        // Positive control, so the assertions above cannot pass by the parser
+        // simply rejecting everything. `perltidy` is the one near-miss-shaped
+        // token that IS current: the project channel resolves it to the
+        // external adapter, and the client channel does not offer external
+        // selection at all.
+        assert_eq!(parse_formatter_mode("perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(parse_client_formatter_mode("perltidy"), None);
+        assert_eq!(parse_formatter_mode("native"), Some(FormatterMode::Native));
+        assert_eq!(parse_client_formatter_mode("native"), Some(FormatterMode::Native));
+    }
+
+    #[test]
+    fn no_advertised_formatter_mode_option_names_a_retired_alias() {
+        // The valid-value lists are what a user is told to choose from.
+        // Neither may name a retired alias (#7129/#15624).
+        for (channel, options) in [
+            ("project config", FORMATTER_MODE_VALID_OPTIONS),
+            ("client settings", CLIENT_FORMATTER_MODE_VALID_OPTIONS),
+        ] {
+            for alias in ["compat", "perltidy-compat"] {
+                assert!(
+                    !options.contains(alias),
+                    "{channel} still advertises the retired alias {alias:?}: {options}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -4255,8 +4432,10 @@ profile = "recommended"
     #[test]
     fn native_critic_config_boundary_agrees_with_profile_authority() {
         for raw in ["recommended", " RECOMMENDED ", "strict", " STRICT "] {
-            let expected = NativeCriticProfile::parse(raw)
-                .expect("boundary fixture must be accepted by the profile authority");
+            let expected = must_some_with(
+                NativeCriticProfile::parse(raw),
+                "boundary fixture must be accepted by the profile authority",
+            );
             let mut config = ServerConfig::default();
             config.update_from_value(&serde_json::json!({
                 "critic": { "profile": raw }
@@ -6743,7 +6922,7 @@ api_key_prefix = "Attacker "
     /// `generic_channel_ai_activation_shapes_fail_closed_across_clients`
     /// below (#4997).
     #[test]
-    fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
+    fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_did_change() {
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "aiCompletion": {

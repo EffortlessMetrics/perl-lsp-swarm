@@ -873,10 +873,19 @@ jobs:
           if [ "$inspect_id_status" -ne 0 ] || [ "$inspect_digest_status" -ne 0 ]; then exit 1; fi
           printf "image_id=%s\nimage_digest=%s\n" "$image_id" "$image_digest" >> target/ripr/pr/ripr-measurement-config.txt
           set +e
+          # #15498: the admission boundary must stay explicit and paired with a
+          # container budget measured to hold it. 1600-file closures indexed
+          # inside 6g, i.e. <=3.75 MB per file; 2560 files therefore needs
+          # ~9.6 GB of analysis memory, so the container gets 14g of this
+          # 16 GB runner (2 GB stays with the host). 2560 still refuses a
+          # whole-tree index (~4080 files, ~15 GB) — the guard stays bounded.
+          # Do not lower the container budget without lowering the file cap:
+          # an oversized closure must fail closed as diff_scope_oversized,
+          # never as an OOM kill.
           timeout --signal=TERM --kill-after=30s 40m docker run --rm --name "$container_name" \
-            --cpus=4 --memory=6g --memory-swap=6g \
+            --cpus=4 --memory=14g --memory-swap=14g \
             -e RIPR_VERSION -e BASE_REF -e PR_HEAD_SHA \
-            -e RIPR_MAX_DIFF_INDEX_FILES=1600 \
+            -e RIPR_MAX_DIFF_INDEX_FILES=2560 \
             -e RIPR_FRESHNESS_HANDOFF=/freshness -e RIPR_FRESHNESS_TOKEN \
             -e MEASUREMENT_IMAGE_ID="$image_id" -e MEASUREMENT_IMAGE_DIGEST="$image_digest" \
             -v "$GITHUB_WORKSPACE:/workspace" -v "$RIPR_FRESHNESS_HANDOFF:/freshness" \
@@ -892,7 +901,7 @@ jobs:
               ripr_version="$(ripr --version)"; ripr_path="$(command -v ripr)"
               ripr_sha256="$(sha256sum "$ripr_path" | cut -d " " -f 1)"
               {
-                printf "docker_memory=6g\ndocker_memory_swap=6g\nsource_head_sha=%s\nsource_base_ref=%s\n" "$(git rev-parse HEAD)" "$base_arg"
+                printf "docker_memory=14g\ndocker_memory_swap=14g\nsource_head_sha=%s\nsource_base_ref=%s\n" "$(git rev-parse HEAD)" "$base_arg"
                 printf "head=%s\nbase=%s\nripr_version=%s\nripr_sha256=%s\nindex_limit=%s\n" "$(git rev-parse HEAD)" "$base_arg" "$ripr_version" "$ripr_sha256" "$RIPR_MAX_DIFF_INDEX_FILES"
                 printf "%s\n%s\n" "$rustc_version" "$cargo_version"
               } >> target/ripr/pr/ripr-measurement-config.txt
@@ -926,7 +935,15 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+        # 1800s: the guidance pass on a new-crate diff no longer completes in
+        # 600s on the hosted lane — #15082 and #15028 both failed the required
+        # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
+        # turning 64-67 mechanical no_static_path seams into unadjudicated
+        # gaps because static-limitation credit is only paid from a completed
+        # receipt. 30 minutes still fits the 75m job envelope (analysis is
+        # capped at 40m) and stays bounded — an incomplete receipt keeps
+        # failing closed, just later.
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 1800
 
       - name: Generate impacted evidence
         if: always()
@@ -1062,6 +1079,12 @@ jobs:
     timeout-minutes: 75
     env:
       RIPR_VERSION: "0.10.0"
+      # #15498: this lane runs ripr-pr directly on the runner, so without an
+      # explicit cap it inherits the CLI's built-in default — which tightened
+      # from 1600 (ripr 0.9.0) to 800 (ripr 0.10.0) and would fail closed on
+      # ordinary multi-crate closures. Pin the same measured boundary as the
+      # primary hosted lane so a CLI version bump cannot silently shrink it.
+      RIPR_MAX_DIFF_INDEX_FILES: "2560"
       BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref || github.event.repository.default_branch }}
       PR_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}
       PR_LABELS: ${{ github.event_name == 'pull_request' && join(github.event.pull_request.labels.*.name, ',') || '' }}
@@ -1136,7 +1159,15 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+        # 1800s: the guidance pass on a new-crate diff no longer completes in
+        # 600s on the hosted lane — #15082 and #15028 both failed the required
+        # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
+        # turning 64-67 mechanical no_static_path seams into unadjudicated
+        # gaps because static-limitation credit is only paid from a completed
+        # receipt. 30 minutes still fits the 75m job envelope (analysis is
+        # capped at 40m) and stays bounded — an incomplete receipt keeps
+        # failing closed, just later.
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 1800
 
       - name: Generate impacted evidence
         if: always()
