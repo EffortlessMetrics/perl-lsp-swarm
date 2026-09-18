@@ -188,8 +188,9 @@ impl EventFieldValue {
     /// serialized size.
     pub(crate) fn approx_payload_len(&self) -> usize {
         match self {
-            Self::Integer(_) => std::mem::size_of::<i64>(),
-            Self::Boolean(_) => std::mem::size_of::<bool>(),
+            Self::Integer(value) => value.to_string().len(),
+            Self::Boolean(true) => "true".len(),
+            Self::Boolean(false) => "false".len(),
             Self::PublicString(s) => s.len(),
             Self::Private(p) => p.approx_serialized_len(),
             Self::Secret(s) => s.approx_serialized_len(),
@@ -446,11 +447,13 @@ mod tests {
     /// but never asserts this method's return value directly).
     #[test]
     fn approx_payload_len_matches_what_each_variant_actually_serializes_to() {
-        assert_eq!(EventFieldValue::Integer(1).approx_payload_len(), std::mem::size_of::<i64>());
+        assert_eq!(EventFieldValue::Integer(1).approx_payload_len(), 1);
         assert_eq!(
-            EventFieldValue::Boolean(true).approx_payload_len(),
-            std::mem::size_of::<bool>()
+            EventFieldValue::Integer(i64::MIN).approx_payload_len(),
+            i64::MIN.to_string().len()
         );
+        assert_eq!(EventFieldValue::Boolean(true).approx_payload_len(), 4);
+        assert_eq!(EventFieldValue::Boolean(false).approx_payload_len(), 5);
         assert_eq!(EventFieldValue::PublicString("hello".into()).approx_payload_len(), 5);
         assert_eq!(EventFieldValue::PublicString(String::new()).approx_payload_len(), 0);
         // Private: charged the *rendered* `<redacted:N bytes>` length, which

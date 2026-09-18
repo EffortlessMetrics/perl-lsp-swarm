@@ -163,7 +163,7 @@ impl Serialize for PrivateValue {
 /// count narrows a guess (`<redacted:4 bytes>` all but announces a PIN) — so,
 /// unlike [`PrivateValue`], nothing about the content survives redaction —
 /// **including in [`crate::OperationRecorder`]'s own budget accounting**: see
-/// [`Self::approx_serialized_len`].
+/// `Self::approx_serialized_len()`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretField(String);
 

@@ -824,7 +824,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (36/46 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (37/47 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials

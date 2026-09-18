@@ -130,7 +130,7 @@ impl SessionId {
         if label.trim().is_empty() {
             return Err(SessionIdError::Blank);
         }
-        if label.chars().any(|c| c.is_control()) {
+        if label.chars().any(|c| c.is_ascii_control()) {
             return Err(SessionIdError::ContainsControlCharacter);
         }
         if label.len() > MAX_SESSION_ID_BYTES {

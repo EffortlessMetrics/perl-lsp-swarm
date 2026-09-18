@@ -17,7 +17,7 @@ use crate::schema::OperationTraceSchemaVersion;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecorderBounds {
     /// Maximum number of *admitted* events retained per operation — this
-    /// counts [`RecordedEntry::Event`] entries only, never a truncation
+    /// counts [`RecordedEventEntry::Event`] entries only, never a truncation
     /// marker.
     ///
     /// A snapshot for one operation can therefore hold at most
