@@ -123,7 +123,10 @@ fn probe_test_inline_completion(
     forbidden: &[&'static str],
 ) -> Result<InlineTestProbeReport> {
     let (line, character) = cursor_at_end(source)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.inline_completion_with_trigger_kind(file, line, character, 1)?;
         for item in &items {
