@@ -935,7 +935,15 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+        # 1800s: the guidance pass on a new-crate diff no longer completes in
+        # 600s on the hosted lane — #15082 and #15028 both failed the required
+        # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
+        # turning 64-67 mechanical no_static_path seams into unadjudicated
+        # gaps because static-limitation credit is only paid from a completed
+        # receipt. 30 minutes still fits the 75m job envelope (analysis is
+        # capped at 40m) and stays bounded — an incomplete receipt keeps
+        # failing closed, just later.
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 1800
 
       - name: Generate impacted evidence
         if: always()
@@ -1151,7 +1159,15 @@ jobs:
 
       - name: Generate review guidance
         if: always()
-        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 600
+        # 1800s: the guidance pass on a new-crate diff no longer completes in
+        # 600s on the hosted lane — #15082 and #15028 both failed the required
+        # ripr+ New Gap Gate twice with review_guidance.status=incomplete,
+        # turning 64-67 mechanical no_static_path seams into unadjudicated
+        # gaps because static-limitation credit is only paid from a completed
+        # receipt. 30 minutes still fits the 75m job envelope (analysis is
+        # capped at 40m) and stays bounded — an incomplete receipt keeps
+        # failing closed, just later.
+        run: cargo xtask ripr-review-comments --base "origin/$BASE_REF" --head HEAD --pr-head "$PR_HEAD_SHA" --timeout-seconds 1800
 
       - name: Generate impacted evidence
         if: always()
