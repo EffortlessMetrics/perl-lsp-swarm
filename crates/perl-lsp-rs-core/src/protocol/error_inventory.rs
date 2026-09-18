@@ -332,19 +332,21 @@ mod tests {
     /// `T: ErrorClass`, and the blanket trait impl answers otherwise.
     struct ErrorClassProbe<T>(core::marker::PhantomData<T>);
 
-    #[expect(
-        dead_code,
-        reason = "Fallback arm of an inherent-vs-blanket specialization emulation: its \
-                  associated const is observed through trait resolution when the more \
-                  specific `impl<T: ErrorClass> ErrorClassProbe<T>` does not apply, never \
-                  through a direct call the dead-code pass can see."
-    )]
     trait ErrorClassProbeFallback {
         const IMPLEMENTS_ERROR_CLASS: bool = false;
     }
 
     impl<T> ErrorClassProbeFallback for ErrorClassProbe<T> {}
 
+    // Live only when a probed type implements `ErrorClass`. While every probed
+    // type stays taxonomy-neutral this arm is unused; `allow` (not `expect`)
+    // keeps the emulation warning-free in both states.
+    #[allow(
+        dead_code,
+        reason = "Inherent arm of an inherent-vs-blanket specialization emulation: unused \
+                  while no probed type implements ErrorClass; restoring a probed impl \
+                  fails the const assertion above before lint state matters."
+    )]
     impl<T: perl_parser_core::ErrorClass> ErrorClassProbe<T> {
         const IMPLEMENTS_ERROR_CLASS: bool = true;
     }
