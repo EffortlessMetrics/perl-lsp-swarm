@@ -534,8 +534,8 @@ impl DiagnosticCode {
                 Avoid combining heredocs with source filters.",
             ),
             Self::HeredocInRegexCode => Some(
-                "Heredocs inside regex code blocks `(?{ ... })` can cause parsing failures. \
-                Move the heredoc content outside the regex.",
+                "Heredocs inside regex code blocks `(?{ ... })` or postponed code blocks \
+                `(??{ ... })` can cause parsing failures. Move the heredoc content outside the regex.",
             ),
             Self::HeredocInEval => Some(
                 "Heredocs inside string `eval` are fragile and error-prone. \

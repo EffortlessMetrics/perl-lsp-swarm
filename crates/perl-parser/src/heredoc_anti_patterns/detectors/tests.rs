@@ -128,6 +128,41 @@ fn test_regex_heredoc_detection() {
 }
 
 #[test]
+fn test_regex_postponed_heredoc_detection() {
+    // #14390: `(??{ ... })` is the postponed (subpattern-evaluating) form of the regex
+    // code block and carries the same heredoc parsing hazard as `(?{ ... })`. The detector
+    // must report a PL804 diagnostic for it as well.
+    let detector = AntiPatternDetector::new();
+
+    let single_line = "m/a(??{b<<'X'})c/";
+    let diagnostics = detector.detect_all(single_line);
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "expected one RegexCodeBlockHeredoc diagnostic for `(??{{b<<'X'}})`, got {diagnostics:?}"
+    );
+    assert!(matches!(diagnostics[0].pattern, AntiPattern::RegexCodeBlockHeredoc { .. }));
+}
+
+#[test]
+fn test_regex_heredoc_does_not_overmatch_triple_question() {
+    // Regression guard: the bounded `?{1,2}` opener must not match `(???{`. The
+    // literal `{` must appear immediately after the 1-2 `?` characters; a third `?`
+    // is a literal `?` and breaks the pattern. `[^}\n]*` then never reaches the `<<`.
+    let detector = AntiPatternDetector::new();
+    let code = "m/a(???{b<<'X'})c/";
+    let diagnostics = detector.detect_all(code);
+    let regex_code_block_count = diagnostics
+        .iter()
+        .filter(|diag| matches!(diag.pattern, AntiPattern::RegexCodeBlockHeredoc { .. }))
+        .count();
+    assert_eq!(
+        regex_code_block_count, 0,
+        "expected no RegexCodeBlockHeredoc diagnostic for `(???{{b<<'X'}})` (not a valid Perl opener), got {diagnostics:?}"
+    );
+}
+
+#[test]
 fn test_eval_heredoc_detection() {
     let detector = AntiPatternDetector::new();
     // Single-line case: eval and << on the same line — detected by the bounded pattern.

@@ -37,7 +37,7 @@ fn test_antip_no_redos_regex_5kb_unclosed() {
     let pathological_input = format!("{}{}{}", "(?{", "a".repeat(5000), "<<");
 
     // Create the FIXED pattern (with \n boundary)
-    let pattern = Regex::new(r"\(\?\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
+    let pattern = Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
 
     let start = Instant::now();
     let _ = pattern.captures(&pathological_input);
@@ -46,6 +46,47 @@ fn test_antip_no_redos_regex_5kb_unclosed() {
     assert!(
         elapsed.as_millis() < 10,
         "REGEX_HEREDOC_PATTERN took {}ms on 5KB unclosed brace input; expected <10ms (ReDoS detected)",
+        elapsed.as_millis()
+    );
+}
+
+#[test]
+fn test_antip_no_redos_regex_postponed_5kb_unclosed() {
+    /// #14390: REGEX_HEREDOC_PATTERN must remain linear on the postponed opener
+    /// `(??{` followed by 5KB of non-`}` non-`\n` characters and an unclosed heredoc
+    /// marker. The bounded `?{1,2}` opener and the same `[^}\n]*` body shape apply.
+    let pathological_input = format!("{}{}{}", "(??{", "a".repeat(5000), "<<");
+
+    let pattern = Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
+
+    let start = Instant::now();
+    let _ = pattern.captures(&pathological_input);
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed.as_millis() < 10,
+        "REGEX_HEREDOC_PATTERN took {}ms on 5KB postponed-opener unclosed input; expected <10ms (ReDoS detected)",
+        elapsed.as_millis()
+    );
+}
+
+#[test]
+fn test_antip_no_redos_regex_triple_question_5kb_unclosed() {
+    /// #14390: `(???{` is not a valid Perl opener. The bounded `?{1,2}` must not
+    /// partially match and then advance into the body. A naive alternation would
+    /// match `(??{` against `(???{...` and then scan the body; this test guards
+    /// against any backtracking shape that escapes the bounded character class.
+    let pathological_input = format!("{}{}{}", "(???{", "a".repeat(5000), "<<");
+
+    let pattern = Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
+
+    let start = Instant::now();
+    let _ = pattern.captures(&pathological_input);
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed.as_millis() < 10,
+        "REGEX_HEREDOC_PATTERN took {}ms on 5KB triple-question unclosed input; expected <10ms (ReDoS detected)",
         elapsed.as_millis()
     );
 }
@@ -111,11 +152,25 @@ fn test_antip_dynamic_delimiter_valid() {
 fn test_antip_regex_heredoc_valid() {
     /// Verify that valid `(?{...<<...})` patterns are still detected.
     let valid_input = "/(?{print <<'EOF'})/ or die;";
-    let pattern = Regex::new(r"\(\?\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
+    let pattern = Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
 
     let matches = pattern.find(valid_input);
 
     assert!(matches.is_some(), "Valid regex heredoc (?{{...<<...}}) should be detected");
+}
+
+#[test]
+fn test_antip_regex_postponed_heredoc_valid() {
+    /// #14390: a postponed opener `(??{...<<...})` must match the same pattern.
+    let valid_input = "/(??{print <<'EOF'})/ or die;";
+    let pattern = Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
+
+    let matches = pattern.find(valid_input);
+
+    assert!(
+        matches.is_some(),
+        "Valid postponed regex heredoc `(??{{...<<...}})` should be detected"
+    );
 }
 
 #[test]
