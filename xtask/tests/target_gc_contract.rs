@@ -56,8 +56,12 @@ fn target_gc_self_test_discriminates_stale_from_fresh() -> Result<(), Box<dyn st
     // in a temp dir, asserts only the stale target/ is selected, that --apply
     // preserves the fresh tree and registry/lockfile decoys, and that a held
     // devplane flock refuses the run.
-    let output =
-        Command::new("bash").arg(root.join("scripts/target-gc.sh")).arg("--self-test").output()?;
+    // MSYS bash strips backslashes from absolute Windows paths passed as
+    // argv, so forward-slash the script path before handing it to bash on
+    // Windows (#15435 / #15423 family C8).
+    let script = root.join("scripts/target-gc.sh");
+    let script_arg = script.to_string_lossy().replace('\\', "/");
+    let output = Command::new("bash").arg(script_arg).arg("--self-test").output()?;
     assert!(
         output.status.success(),
         "target-gc --self-test failed:\nstdout: {}\nstderr: {}",
@@ -76,8 +80,11 @@ fn target_gc_self_test_plumbing_requires_an_injected_root() -> Result<(), Box<dy
 {
     let root = project_root()?;
     let script = root.join("scripts/target-gc.sh");
+    // MSYS bash strips backslashes from absolute Windows paths (#15435 / #15423
+    // family C8); forward-slash the script path before handing it to bash.
+    let script_arg = script.to_string_lossy().replace('\\', "/");
     let output = Command::new("bash")
-        .arg(script)
+        .arg(script_arg)
         .arg("--self-test-apply")
         .env_remove("TARGET_GC_SELFTEST_ROOT")
         .env_remove("TARGET_GC_SELFTEST_DRY_RUN")
