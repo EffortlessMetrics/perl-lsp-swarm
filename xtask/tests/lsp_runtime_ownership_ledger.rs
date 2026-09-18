@@ -245,6 +245,20 @@ const MODULES: &[ModuleRow] = &[
         "#9503"
     ),
     module_row!(
+        "runtime_services",
+        PerlApplication,
+        "perl-lsp-rs RuntimeServices",
+        "retain as the application worker execution lifecycle/settlement owner",
+        "#10024"
+    ),
+    module_row!(
+        "runtime_services_tests",
+        PerlApplication,
+        "perl-lsp-rs",
+        "retain as cfg(test) falsifiers of application worker settlement beside its subject",
+        "#10024"
+    ),
+    module_row!(
         "scan_gate_observation",
         TemporaryCoupling,
         "effortless-lsp testkit + product tests",
@@ -414,6 +428,9 @@ const DEPENDENCIES: &[DependencyRow] = &[
     dependency!("perl-pod", MoveToPerlAdapter, "#6957"),
     dependency!("perl-position-tracking", MoveToPerlAdapter, "#8617"),
     dependency!("perl-pragma", MoveToPerlAdapter, "#6957"),
+    // #14751: canonical regex diagnostics engine consumed by the core
+    // diagnostics provider; same adapter-bound analysis shape as perl-lexer.
+    dependency!("perl-regex", MoveToPerlAdapter, "#6957"),
     dependency!("perl-ripr-facts", MoveToPerlAdapter, "#6957"),
     dependency!("perl-semantic-analyzer", MoveToPerlAdapter, "#6957"),
     dependency!("perl-semantic-facts", MoveToPerlAdapter, "#6957"),

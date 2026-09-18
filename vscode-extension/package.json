@@ -62,6 +62,7 @@
     "onLanguage:gherkin",
     "onWalkthrough:perl-lsp.gettingStarted",
     "onDebugResolve:perl",
+    "onDebugResolve:perl5",
     "onDebugInitialConfigurations"
   ],
   "contributes": {
@@ -151,6 +152,15 @@
         }
       },
       {
+        "language": "perl5",
+        "scopeName": "source.perl",
+        "path": "./syntaxes/perl.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.c.perl": "c",
+          "meta.embedded.block.perl.perl": "perl"
+        }
+      },
+      {
         "language": "gherkin",
         "scopeName": "source.gherkin",
         "path": "./syntaxes/gherkin.tmLanguage.json"
@@ -159,6 +169,9 @@
     "breakpoints": [
       {
         "language": "perl"
+      },
+      {
+        "language": "perl5"
       }
     ],
     "debuggers": [
@@ -1087,27 +1100,27 @@
         },
         {
           "command": "perl-lsp.runTests",
-          "when": "editorLangId == perl && resourceExtname =~ /\\.(t|pl)$/"
+          "when": "(editorLangId == perl || editorLangId == perl5) && resourceExtname =~ /\\.(t|pl)$/"
         },
         {
           "command": "perl-lsp.runPerlCritic",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.setPerlCriticSeverity",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.checkSyntax",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.runCurrentTest",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.runTestAtCursor",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.runAllTests",
@@ -1115,11 +1128,11 @@
         },
         {
           "command": "perl-lsp.formatDocument",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.showIncPaths",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.openModule",
@@ -1127,19 +1140,19 @@
         },
         {
           "command": "perl-lsp.showParserAst",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.extractVariable",
-          "when": "editorLangId == perl && editorHasSelection"
+          "when": "(editorLangId == perl || editorLangId == perl5) && editorHasSelection"
         },
         {
           "command": "perl-lsp.extractMethod",
-          "when": "editorLangId == perl && editorHasSelection"
+          "when": "(editorLangId == perl || editorLangId == perl5) && editorHasSelection"
         },
         {
           "command": "perl-lsp.showRefactoringOptions",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.createDebugConfig",
@@ -1153,19 +1166,19 @@
         },
         {
           "command": "perl-lsp.explainProviderDecision",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.previewSafeDelete",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.previewPackageRename",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.copyProviderDecisionReceipt",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.showWorkspaceTrustReport",
@@ -1177,58 +1190,58 @@
         },
         {
           "command": "perl-lsp.explainMissingModuleLookup",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.explainDiagnostic",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         },
         {
           "command": "perl-lsp.reportIssue"
         },
         {
           "command": "perl-lsp.previewPod",
-          "when": "editorLangId == perl"
+          "when": "editorLangId == perl || editorLangId == perl5"
         }
       ],
       "editor/title": [
         {
           "command": "perl-lsp.runTests",
-          "when": "editorLangId == perl && resourceExtname =~ /\\.(t|pl)$/",
+          "when": "(editorLangId == perl || editorLangId == perl5) && resourceExtname =~ /\\.(t|pl)$/",
           "group": "navigation"
         },
         {
           "command": "perl-lsp.runPerlCritic",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         },
         {
           "command": "perl-lsp.previewPod",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         }
       ],
       "editor/context": [
         {
           "command": "perl-lsp.runTests",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         },
         {
           "command": "perl-lsp.runTestAtCursor",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         },
         {
           "command": "perl-lsp.runPerlCritic",
-          "when": "editorLangId == perl",
+          "when": "editorLangId == perl || editorLangId == perl5",
           "group": "navigation"
         }
       ],
       "problem/context": [
         {
           "command": "perl-lsp.explainDiagnostic",
-          "when": "resourceLangId == perl",
+          "when": "resourceLangId == perl || resourceLangId == perl5",
           "group": "navigation"
         }
       ]
@@ -1237,37 +1250,41 @@
       {
         "command": "perl-lsp.runTests",
         "key": "shift+alt+t",
-        "when": "editorTextFocus && editorLangId == perl"
+        "when": "editorTextFocus && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "perl-lsp.runTestAtCursor",
         "key": "ctrl+alt+shift+t",
-        "when": "editorTextFocus && editorLangId == perl"
+        "when": "editorTextFocus && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "perl-lsp.restart",
         "key": "shift+alt+r",
-        "when": "editorTextFocus && editorLangId == perl"
+        "when": "editorTextFocus && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "editor.action.formatDocument",
         "key": "shift+alt+f",
-        "when": "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly && editorLangId == perl"
+        "when": "editorHasDocumentFormattingProvider && editorTextFocus && !editorReadonly && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "perl-lsp.extractVariable",
         "key": "shift+alt+v",
-        "when": "editorTextFocus && editorHasSelection && editorLangId == perl"
+        "when": "editorTextFocus && editorHasSelection && (editorLangId == perl || editorLangId == perl5)"
       },
       {
         "command": "perl-lsp.extractMethod",
         "key": "shift+alt+m",
-        "when": "editorTextFocus && editorHasSelection && editorLangId == perl"
+        "when": "editorTextFocus && editorHasSelection && (editorLangId == perl || editorLangId == perl5)"
       }
     ],
     "snippets": [
       {
         "language": "perl",
+        "path": "./snippets/perl.json"
+      },
+      {
+        "language": "perl5",
         "path": "./snippets/perl.json"
       },
       {

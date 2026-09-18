@@ -17,13 +17,15 @@
 //! a contract later is proven — or reported as unclassified — without anyone
 //! remembering to extend a list here.
 
-use crate::build::build_runner_plan;
+use crate::build::{DeclaredPlanInputs, build_runner_plan};
 use crate::compare::compare_runner_plans_against;
 use crate::io::{read_drift, read_matrix};
 use crate::model::{
     TargetMatrixIndex, TargetMatrixPart, TargetTopologyDrift, UpstreamTargetMatrix,
 };
-use crate::runner_model::{RunnerKind, RunnerParityReport, RunnerPlan, RunnerScheduling};
+use crate::runner_model::{
+    DiscoveryFrame, RunnerKind, RunnerParityReport, RunnerPlan, RunnerScheduling,
+};
 use crate::schema_check;
 use color_eyre::eyre::{Result, eyre};
 use serde_json::{Value, json};
@@ -138,22 +140,42 @@ fn envelopes() -> Result<Vec<Envelope>> {
         RunnerScheduling::default(),
     )
     .map_err(|error| eyre!(error))?;
+    let harness_scheduling = RunnerScheduling {
+        jobs: Some(2),
+        asap: false,
+        state_ordering: true,
+        properties: [("stress".to_string(), "off".to_string())].into_iter().collect(),
+    };
     let harness_plan = build_runner_plan(
         &matrix,
         "component_base",
         RunnerKind::Harness,
         harness_raw,
-        RunnerScheduling {
-            jobs: Some(2),
-            asap: false,
-            state_ordering: true,
-            properties: [("stress".to_string(), "off".to_string())].into_iter().collect(),
-        },
+        harness_scheduling.clone(),
     )
     .map_err(|error| eyre!(error))?;
-    let parity =
-        compare_runner_plans_against(&matrix, &test_plan, test_raw, &harness_plan, harness_raw)
-            .map_err(|error| eyre!(error))?;
+    // Each side is validated against the schedule its producer declared, never
+    // against the one the candidate carries (#7737).
+    let parity = compare_runner_plans_against(
+        &matrix,
+        &DeclaredPlanInputs::new(
+            "component_base",
+            RunnerKind::Test,
+            DiscoveryFrame::CanonicalRepositoryPath,
+            RunnerScheduling::default(),
+        ),
+        &test_plan,
+        test_raw,
+        &DeclaredPlanInputs::new(
+            "component_base",
+            RunnerKind::Harness,
+            DiscoveryFrame::CanonicalRepositoryPath,
+            harness_scheduling,
+        ),
+        &harness_plan,
+        harness_raw,
+    )
+    .map_err(|error| eyre!(error))?;
 
     Ok(vec![
         Envelope {
