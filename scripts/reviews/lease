@@ -71,11 +71,21 @@ LEASE_SNAPSHOT=""
 validate_lease_file() {
     local path="$1"
     LEASE_SNAPSHOT="$(cat -- "$path")" || die_usage "lease file $path is unreadable"
-    local v
-    v="$(printf '%s' "$LEASE_SNAPSHOT" | jq -r '.v // "missing"')" || die_usage "lease file $path is not valid JSON"
-    if [[ "$v" != "1" ]]; then
-        die_usage "lease file $path has unsupported version: '$v' (only v:1 is recognized)"
+    # Numeric comparison: a string "1" must not pass as v1, and a missing
+    # field must report as unsupported (not valid) rather than matching.
+    local verdict
+    if ! verdict="$(printf '%s' "$LEASE_SNAPSHOT" | jq -r '
+        if type != "object" then "bad-json"
+        elif .v == 1 then "ok"
+        else "bad-version: \(.v // "missing")"
+        end' 2>/dev/null)"; then
+        die_usage "lease file $path is not valid JSON"
     fi
+    case "$verdict" in
+        ok) ;;
+        bad-json) die_usage "lease file $path is not a JSON object" ;;
+        *) die_usage "lease file $path has unsupported version: '${verdict#bad-version: }' (only v:1 is recognized)" ;;
+    esac
 }
 
 # lease_field extracts one field from the snapshot loaded by

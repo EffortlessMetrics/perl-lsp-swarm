@@ -136,13 +136,13 @@ test_audit_v1_lease_reports_active() {
     # Snapshot the active count before this test.
     run audit
     local before
-    before="$(echo "$RUN_OUT" | sed -nE 's/.*([0-9]+) active.*/\1/p')"
+    before="$(printf '%s\n' "$RUN_OUT" | sed -nE 's/.*[^0-9]([0-9]+) active.*/\1/p')"
     [[ -n "$before" ]] || before=0
     run acquire --branch v1-active-branch --owner alice --ttl-min 120
     local a=$RUN_EXIT
     run audit
     local after
-    after="$(echo "$RUN_OUT" | sed -nE 's/.*([0-9]+) active.*/\1/p')"
+    after="$(printf '%s\n' "$RUN_OUT" | sed -nE 's/.*[^0-9]([0-9]+) active.*/\1/p')"
     if [[ "$a" -eq 0 && "$RUN_EXIT" -eq 0 && "$after" -eq "$((before + 1))" ]]; then
         pass "audit reports a v1 unexpired lease as active (active count $before -> $after)"
     else
@@ -268,6 +268,25 @@ test_verify_missing_v_field_refused() {
         pass "verify refuses a missing-v lease with a clear unsupported-version error (exit 2)"
     else
         fail "verify-missing-v — expected exit 2 + 'unsupported version', got exit=$RUN_EXIT out=$RUN_OUT"
+    fi
+}
+
+# ── string-v lease (valid JSON, but `v` is the string "1") — refused ─────────
+# @risk: a string "1" renders identically to numeric 1 under `jq -r`, so a
+#        string comparison lets a mistyped envelope pass the version gate.
+# @return_path: validate_lease_file compares numerically (`.v == 1`) and
+#        refuses with exit 2 and the unsupported-version error.
+test_verify_string_v_field_refused() {
+    mkdir -p "$REVIEW_LEASES_DIR"
+    local path="$REVIEW_LEASES_DIR/string-v-branch.json"
+    jq -n '{v:"1", branch:"string-v-branch", owner:"alice", expires_at_epoch:2147483647,
+            acquired_at_epoch:1, acquired_at:"1970-01-01T00:00:01Z",
+            expires_at:"2038-01-19T03:14:07Z"}' > "$path"
+    run verify --branch string-v-branch
+    if [[ "$RUN_EXIT" -eq 2 ]] && echo "$RUN_OUT" | grep -q "unsupported version"; then
+        pass "verify refuses a string-v lease with a clear unsupported-version error (exit 2)"
+    else
+        fail "verify-string-v — expected exit 2 + 'unsupported version', got exit=$RUN_EXIT out=$RUN_OUT"
     fi
 }
 
@@ -489,6 +508,7 @@ test_audit_v2_lease_refused
 test_acquire_v2_lease_refused_no_overwrite
 test_verify_malformed_lease_refused
 test_verify_missing_v_field_refused
+test_verify_string_v_field_refused
 test_verify_uses_snapshot_despite_swap_after_validation
 test_disposition_reuses_h1_at_h2
 test_disposition_posts_changed_evidence
