@@ -261,6 +261,11 @@ pub struct AuditConfig {
 // Receipt Schema (from .ci/receipt.schema.json)
 // =============================================================================
 
+/// Schema version emitted by the `gates` producer. Must match the consumer's
+/// expected value in `ci_explain::SUPPORTED_SCHEMA_VERSION`; a mismatch causes
+/// every freshly-emitted receipt to be rejected at load time (#15337).
+pub const GATES_RECEIPT_SCHEMA_VERSION: &str = "gates.v1";
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Receipt {
     pub schema_version: String,
@@ -1783,7 +1788,7 @@ fn run_gate_plan(
     let agent_receipt = Some(build_agent_receipt(&root, &results, plan));
 
     Ok(Receipt {
-        schema_version: "1.0.0".to_string(),
+        schema_version: GATES_RECEIPT_SCHEMA_VERSION.to_string(),
         metadata,
         gates: results,
         summary,
@@ -6551,7 +6556,7 @@ gates:
         // still deserialize successfully (backward compat).
         let receipt: Receipt = deserialize_json(
             r#"{
-            "schema_version": "1.0.0",
+            "schema_version": "gates.v1",
             "metadata": {
                 "timestamp": "2026-04-23T00:00:00Z",
                 "git_sha": "abc123",
@@ -6617,7 +6622,7 @@ gates:
         // Confirm backward compatibility: a receipt WITHOUT agent_receipt deserializes to None.
         let old_receipt: Receipt = deserialize_json(
             r#"{
-            "schema_version": "1.0.0",
+            "schema_version": "gates.v1",
             "metadata": {
                 "timestamp": "2026-04-23T00:00:00Z",
                 "git_sha": "abc123",
