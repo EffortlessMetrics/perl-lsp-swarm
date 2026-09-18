@@ -169,7 +169,10 @@ fn probe_self_this_receiver(
     probe: &SelfThisReceiverProbe,
 ) -> Result<SelfThisReceiverReport> {
     let (line, character) = position_after(probe.source, probe.receiver_marker)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.completion(probe.file, line, character)?;
         for item in &items {

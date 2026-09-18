@@ -117,7 +117,10 @@ fn wait_for_inline_registration(harness: &UxHarness) -> bool {
 
 fn probe_self_receiver_inline_completion(harness: &UxHarness) -> Result<SelfReceiverProbeReport> {
     let (line, character) = position_after(SELF_RECEIVER_SOURCE, SELF_RECEIVER_MARKER)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items =
             harness.inline_completion_with_trigger_kind(SELF_RECEIVER_PATH, line, character, 1)?;
