@@ -4,6 +4,7 @@ use std::{fs, path::PathBuf};
 
 use anyhow::{Result, anyhow, ensure};
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use perl_tdd_support::{must, must_some};
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
@@ -1236,6 +1237,73 @@ fn conventional_required_checks_record_live_proof_floor() {
             "docs must name advisory coverage context `{advisory}`"
         );
     }
+}
+
+#[test]
+fn agent_ledgers_validator_recipe_wired_into_merge_gate() {
+    // #15380: `cargo xtask agent-ledgers validate` exists but only the unit-test
+    // module was wired into CI; the CLI was never invoked against committed files.
+    // The fix is the new `ci-agent-ledgers-validate` recipe plus a `_timed` call
+    // inside `merge-gate`, mirroring how `ci-format` / `ci-clippy` / `ci-policy`
+    // are wired. This test pins both halves so the gate cannot silently regress.
+    let root = repo_root();
+    let justfile = must(fs::read_to_string(root.join("justfile")));
+
+    let recipe_marker = "ci-agent-ledgers-validate:";
+    let recipe_start = must_some(justfile.find(recipe_marker));
+    let recipe_window = &justfile[recipe_start..];
+    let recipe_end_rel = recipe_window
+        .find("\n\n")
+        .unwrap_or(recipe_window.len());
+    let recipe = &recipe_window[..recipe_end_rel];
+    assert!(
+        recipe.contains("cargo xtask agent-ledgers validate --format json"),
+        "ci-agent-ledgers-validate recipe must invoke the agent-ledgers validate CLI in JSON mode, got: {recipe}"
+    );
+
+    let merge_gate_marker = "merge-gate: _check-tools-basic pr-fast";
+    let merge_gate_start = must_some(justfile.find(merge_gate_marker));
+    let merge_gate_window = &justfile[merge_gate_start..];
+    let merge_gate_end_rel = merge_gate_window
+        .find("\n\n")
+        .unwrap_or(merge_gate_window.len());
+    let merge_gate = &merge_gate_window[..merge_gate_end_rel];
+    assert!(
+        merge_gate.contains("_timed \"ci-agent-ledgers-validate\" \"just ci-agent-ledgers-validate\""),
+        "merge-gate must call ci-agent-ledgers-validate via _timed so non-zero exit fails closed"
+    );
+}
+
+#[test]
+fn agent_ledgers_validator_runs_clean_against_committed_files() {
+    // #15380 (Lane A): once the validator is wired into merge-gate it must pass
+    // against the current committed ledger files. A future drift that breaks a
+    // committed row will fail this test (and the merge-gate), forcing the change
+    // through review instead of being silently absorbed.
+    let root = repo_root();
+    let ledger_dir = root.join("docs/agents/ledgers");
+    assert!(
+        ledger_dir.is_dir(),
+        "committed docs/agents/ledgers/ directory must exist for the wiring to have something to check"
+    );
+
+    let output = cargo_bin_cmd!("xtask")
+        .args([
+            "agent-ledgers",
+            "validate",
+            "--format",
+            "json",
+        ])
+        .current_dir(&root)
+        .output()
+        .expect("spawn cargo xtask agent-ledgers validate");
+    assert!(
+        output.status.success(),
+        "agent-ledgers validate must pass against the committed files (issue #15380 wired the CLI into CI); \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 #[test]
