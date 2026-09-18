@@ -127,6 +127,52 @@ fn prompt_buffer_padding_length(buffered: &[u8]) -> Option<usize> {
     Some(index)
 }
 
+/// Length of the perl5db prompt at the start of `text`, in bytes, or `None`
+/// when `text` does not begin with one (after optional indentation).
+///
+/// Accepts the shapes perl5db actually renders: the bare `DB<4>`, the nested
+/// `DB<<2>>` (repeated angle brackets balanced between opener and closer),
+/// and the threaded `[3] DB<4>` form that `PERL5DB_THREADED`/`-dt` produces
+/// (#15220 review). The record path requires the balanced close so an
+/// in-progress nested prompt is never split mid-record; the text path uses
+/// the same balanced scan, which for the bare form stops at the first `>`.
+fn perl5db_prompt_len(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while bytes.get(index) == Some(&b' ') {
+        index += 1;
+    }
+    if bytes.get(index) == Some(&b'[') {
+        let close = bytes[index + 1..].iter().position(|byte| *byte == b']')?;
+        let tid = &text[index + 1..index + 1 + close];
+        if tid.is_empty() || !tid.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        index += close + 2;
+        while bytes.get(index) == Some(&b' ') {
+            index += 1;
+        }
+    }
+    if !text[index..].starts_with("DB<") {
+        return None;
+    }
+    index += "DB<".len();
+    let opens = 1 + bytes[index..].iter().take_while(|byte| **byte == b'<').count();
+    index += opens - 1;
+    let digits_start = index;
+    while bytes.get(index).is_some_and(|byte| byte.is_ascii_digit()) {
+        index += 1;
+    }
+    if index == digits_start {
+        return None;
+    }
+    let closes = bytes[index..].iter().take_while(|byte| **byte == b'>').count();
+    if closes != opens {
+        return None;
+    }
+    Some(index + closes)
+}
+
 fn is_strict_prompt_candidate(bytes: &[u8]) -> bool {
     // Prompt records are tiny; bounding this inspection keeps a long source
     // line from repeatedly decoding and scanning its full prefix.
@@ -140,21 +186,11 @@ fn is_strict_prompt_candidate(bytes: &[u8]) -> bool {
         .map(|re| re.replace_all(candidate, "").into_owned())
         .unwrap_or_else(|| candidate.to_string());
     let prompt = without_ansi.trim();
-    let Some(digits) = prompt.strip_prefix("DB<").and_then(|value| value.strip_suffix('>')) else {
-        return false;
-    };
-    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    perl5db_prompt_len(prompt).is_some_and(|len| len == prompt.len())
 }
 
 fn has_prompt_prefix(text: &str) -> bool {
-    let prompt = text.trim_start();
-    let Some(rest) = prompt.strip_prefix("DB<") else {
-        return false;
-    };
-    let Some((digits, _)) = rest.split_once('>') else {
-        return false;
-    };
-    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+    perl5db_prompt_len(text).is_some()
 }
 
 /// Wall-clock budget for one perl5db capability probe. A cold interpreter
@@ -3686,8 +3722,8 @@ mod tests {
     use super::{
         BufReader, DebugAdapter, DebugState, current_stopped_frame_id, detect_perl_info,
         emit_terminated_event, format_perl_spawn_error, has_probe_success_marker,
-        has_prompt_prefix, is_valid_perl_interpreter, lock_or_recover, read_debugger_record,
-        reserve_terminated_event, terminated_delivery_is_current,
+        has_prompt_prefix, is_strict_prompt_candidate, is_valid_perl_interpreter, lock_or_recover,
+        read_debugger_record, reserve_terminated_event, terminated_delivery_is_current,
     };
     use super::{DapMessage, Duration, Instant, PathBuf, Stdio, Value, json, thread};
     use crate::reload::RuntimeModuleGenerationClock;
@@ -4380,6 +4416,44 @@ mod tests {
         }
         if has_prompt_prefix("DB<incomplete") {
             return Err("incomplete prompt prefix was accepted".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn prompt_prefix_grammar_accepts_threaded_and_nested_perl5db_prompts() -> Result<(), String> {
+        // PERL5DB_THREADED renders `[tid] DB<N>` (launch.json env overrides
+        // can enable it), and nested debugger levels render `DB<<N>>` — the
+        // shared grammar must admit both or the reader stalls on the
+        // suspension prompt (#15220 review).
+        if !has_prompt_prefix("[3] DB<4> DAPLPV:x\t42") {
+            return Err("threaded prompt prefix was not recognized".into());
+        }
+        if !has_prompt_prefix("[12]DB<1>") {
+            return Err("threaded prompt without separator was not recognized".into());
+        }
+        if !has_prompt_prefix("DB<<2>> DAPLPV:x") {
+            return Err("nested prompt prefix was not recognized".into());
+        }
+        if !is_strict_prompt_candidate(b"  [3] DB<4>") {
+            return Err("threaded prompt record candidate was not recognized".into());
+        }
+        if !is_strict_prompt_candidate(b"DB<<2>>") {
+            return Err("nested prompt record candidate was not recognized".into());
+        }
+        // An in-progress nested close must not split the record mid-prompt:
+        // at the first '>' the balanced close has not arrived yet.
+        if is_strict_prompt_candidate(b"DB<<2>") {
+            return Err("unbalanced nested prompt candidate was accepted".into());
+        }
+        if has_prompt_prefix("[tid] DB<4>") {
+            return Err("non-numeric thread id was accepted".into());
+        }
+        if has_prompt_prefix("[3] DB<d>") {
+            return Err("non-numeric command number was accepted".into());
+        }
+        if has_prompt_prefix("DB<<2> DAPLPV:x") {
+            return Err("unbalanced nested prompt prefix was accepted".into());
         }
         Ok(())
     }

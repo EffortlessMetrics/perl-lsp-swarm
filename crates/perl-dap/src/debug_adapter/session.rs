@@ -26,7 +26,8 @@ pub(super) struct DebugSession {
     /// `stopped(reason=entry)` event (#15637). The launch path no longer emits
     /// it eagerly: the output reader consumes this flag at the first real
     /// debugger suspension — after the native source frame and its ordering
-    /// prompt when one is fresh — once stopped-state and frame authority
+    /// prompt when one is fresh, or after the prompt-only fallback frame when
+    /// no fresh source frame exists — once stopped-state and frame authority
     /// exist, so the event can never announce a stop that `stackTrace` cannot
     /// yet see.
     pub(super) entry_stop_pending: bool,
