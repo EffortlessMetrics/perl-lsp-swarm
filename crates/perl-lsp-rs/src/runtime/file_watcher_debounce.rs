@@ -1085,10 +1085,7 @@ mod tests {
             );
         }
         harness.advance(101);
-        harness.wait_for(
-            || harness.debouncer.pressure().pending_subjects == 0,
-            "generation drain",
-        );
+        harness.wait_for(|| harness.debouncer.pressure().pending_subjects == 0, "generation drain");
         // shutdown_now joins both workers, so every worker notification has
         // landed by the time it returns; the final load is race-free.
         harness.debouncer.shutdown_now();
