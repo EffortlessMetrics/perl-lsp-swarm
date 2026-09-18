@@ -1028,8 +1028,21 @@ jobs:
           # as the first meta gate and the matching
           # `.ci/gate-shard-execution.json` row if the dedicated/required
           # formatter path is reverted. Local pr-fast `fmt` remains.
+          # `compile_all_targets` retired from this hosted shard after
+          # #15638: the shard copy duplicated the required
+          # `Compile All Targets (bit-rot guard)` / `check-all-targets` job on
+          # the same tree and deterministically exceeded the shared shard
+          # budget (exit 124, ~19 min cold workspace compile) while the
+          # dedicated owner passed on the identical commit. The standalone
+          # job owns the bit-rot property; local pr-fast and advisory
+          # pr-smoke keep the gate for shift-left. Rollback: restore
+          # `compile_all_targets` to this gate list, the matching
+          # `.ci/gate-shard-execution.json` row, the
+          # `workflow_integration.job_mapping` list in `.ci/gate-policy.yaml`,
+          # and re-flip `ci_workflow_includes_compile_all_targets_in_matrix`
+          # if the dedicated job is ever reverted.
           - name: meta
-            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet release_history_check source_commit_api_check perl_token_leaf_contract compile_all_targets clippy_full
+            gates: ignored_tests_check_refs check_conflict_markers release_history readme_heading_check publish_closure publish_manifest_check layer_check published_crate_count_pr_fast serial_test_ratchet release_history_check source_commit_api_check perl_token_leaf_contract clippy_full
           - name: foundation
             gates: unit_foundation_full
           - name: parser_stack
@@ -1046,7 +1059,7 @@ jobs:
             # The cheapest control remains first for fast diagnosis, but the
             # shard runner now records every independent member before it
             # returns the aggregate failure verdict.
-            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync tdd_support_surface_ledger
+            gates: docs_agents_contract_workflows msrv_authority_sync compiler_concept_ledger compiler_proof_policy compiler_concept_proof compiler_performance_receipt_contract kubernetes_dap_profiles postfix_capability_closure release_trust_invariants docs_build adr_link_check non_rust_inventory_check must_context_check lint_policy v2_bundle_sync nested_lock_check version_sync tdd_support_surface_ledger
     permissions:
       contents: read
     # Run on every PR push and on push to main/master
@@ -1368,7 +1381,20 @@ jobs:
               )
           non_success = payload.get("summary", {}).get("non_success_gates", [])
           if non_success:
-              lines.extend(["", f"Non-success gates: {', '.join(non_success)}"])
+              # #15638: render each non-success gate with its shard result
+              # class so "the clock ran out" (timeout) is distinguishable from
+              # "the gate failed" (failure/instrument_failure) without a log
+              # dive. The bare name list in summary.non_success_gates stays
+              # machine-readable.
+              results = {
+                  gate.get("gate_name"): str(gate.get("result", ""))
+                  for gate in payload.get("gates", [])
+              }
+              rendered = ", ".join(
+                  f"{name} ({results[name]})" if results.get(name) else name
+                  for name in non_success
+              )
+              lines.extend(["", f"Non-success gates: {rendered}"])
 
           Path(summary_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
@@ -1709,6 +1735,22 @@ jobs:
       - name: Direct command guidance contract (required merge surface)
         run: cargo test -p xtask --test direct_command_guidance --locked -- --nocapture
 
+      # The active cache denominator (#9177) is derived from workflow source, so it
+      # silently rots whenever a cache step, trigger, or save guard moves. This
+      # contract lives as the xtask binary's own unit tests (tasks::ci_cache_inventory),
+      # and the merge gate runs `cargo test --workspace --lib`, which never compiles or
+      # runs the xtask *binary*'s unit tests — so keep this step required here.
+      - name: CI cache inventory contract (required merge surface)
+        run: cargo test -p xtask --bin xtask tasks::ci_cache_inventory --locked -- --nocapture
+
+      # The unit tests above prove the deriver's logic; this proves the
+      # *producer* against the live workflow tree: the checked-in manifest
+      # `.ci/ci-cache/cache-inventory.v1.json` must equal what
+      # `ci-cache-inventory` derives right now, or the drift gate fails the
+      # merge surface instead of letting the manifest rot silently.
+      - name: CI cache inventory manifest drift gate (required merge surface)
+        run: cargo run --locked --package xtask -- ci-cache-inventory --check
+
       # Same reasoning as the Emacs contract above: the merge gate runs
       # `cargo test --workspace --lib`, so this integration test would otherwise
       # only execute via advisory pr-smoke. It guards the publish path that can
@@ -1722,12 +1764,19 @@ jobs:
       - name: Publish-provenance contract (required merge surface)
         run: cargo test -p xtask --test post_publish_smoke_version_provenance --locked -- --nocapture
 
+      # Same reasoning as the contracts above: the #11377 semantic-facade
+      # recurrence guard otherwise only executes through diff-routed advisory
+      # lanes, so stale facade imports could merge without it ever running.
+      - name: Semantic facade consumer contract (required merge surface)
+        run: cargo test -p xtask --test parser_semantic_facade_consumers --locked -- --nocapture
+
       # Same reasoning as the contracts above: the #11389 workspace/index
       # facade recurrence guard otherwise only executes through diff-routed
       # advisory lanes, so stale facade imports could merge without it ever
       # running.
       - name: Workspace/index facade consumer contract (required merge surface)
         run: cargo test -p xtask --test parser_workspace_index_facade_consumers --locked -- --nocapture
+
       # Same reasoning as the contracts above: the #11382 TDD-facade
       # recurrence guard otherwise only executes through diff-routed advisory
       # lanes, so stale facade imports could merge without it ever running.
@@ -1834,6 +1883,18 @@ jobs:
       # runs when only `.ci/` changes.
       - name: Freshness-gate cfg-binding contract (required merge surface)
         run: cargo test -p xtask --test gate_policy_profile_tests --locked -- freshness_gate_commands_satisfy_every_named_suite_cfg --nocapture
+      # #13491: identical reasoning to the contracts above. The staged
+      # product-topology contract lives in `xtask/src/bin/product-topology.rs`
+      # (unit tests) and `xtask/tests/product_topology_cli.rs` (current-tree
+      # reachability). The merge gate runs `cargo test --workspace --lib`,
+      # which builds neither `--bin` nor `tests/` targets, and no workflow
+      # names either one — so as authored the whole contract would compile and
+      # never execute, the exact state #14585 found `file_policy` in. A
+      # topology guard that cannot go red does not guard the topology.
+      - name: Product-topology staged contract (required merge surface)
+        run: |
+          cargo test -p xtask --bin product-topology --locked -- --nocapture
+          cargo test -p xtask --test product_topology_cli --locked -- --nocapture
 
   lsp-memory-smoke:
     name: LSP Memory Smoke

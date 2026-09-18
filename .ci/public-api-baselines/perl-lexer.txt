@@ -63,6 +63,7 @@ pub fn perl_lexer::builtins::phf_lookup::get_param_names(function_name: &str) ->
 pub fn perl_lexer::builtins::phf_lookup::is_builtin(function_name: &str) -> bool
 pub fn perl_lexer::builtins::phf_lookup::try_get_param_names(function_name: &str) -> core::option::Option<&'static [&'static str]>
 pub mod perl_lexer::checkpoint
+#[non_exhaustive] pub enum perl_lexer::checkpoint::CheckpointContext
 pub perl_lexer::checkpoint::CheckpointContext::Format
 pub perl_lexer::checkpoint::CheckpointContext::Format::start_position: usize
 pub perl_lexer::checkpoint::CheckpointContext::Heredoc
@@ -79,10 +80,12 @@ pub perl_lexer::checkpoint::CheckpointContext::Regex::flags_position: core::opti
 pub fn perl_lexer::checkpoint::CheckpointContext::clone(&self) -> perl_lexer::checkpoint::CheckpointContext
 pub fn perl_lexer::checkpoint::CheckpointContext::eq(&self, other: &perl_lexer::checkpoint::CheckpointContext) -> bool
 pub fn perl_lexer::checkpoint::CheckpointContext::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_lexer::checkpoint::CheckpointNewlinePolicy
 pub perl_lexer::checkpoint::CheckpointNewlinePolicy::SourceExact
 pub fn perl_lexer::CheckpointNewlinePolicy::clone(&self) -> perl_lexer::CheckpointNewlinePolicy
 pub fn perl_lexer::CheckpointNewlinePolicy::eq(&self, other: &perl_lexer::CheckpointNewlinePolicy) -> bool
 pub fn perl_lexer::CheckpointNewlinePolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_lexer::checkpoint::CheckpointRestoreError
 pub perl_lexer::checkpoint::CheckpointRestoreError::IncompleteState
 pub perl_lexer::checkpoint::CheckpointRestoreError::InvalidUtf8Boundary
 pub perl_lexer::checkpoint::CheckpointRestoreError::Invalidated
@@ -392,10 +395,12 @@ pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::range(&self) -> 
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::text(&self) -> &str
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::clone(&self) -> perl_lexer::tokenizer::token_wrapper::TokenWithPosition
 pub fn perl_lexer::tokenizer::token_wrapper::TokenWithPosition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_lexer::CheckpointNewlinePolicy
 pub perl_lexer::CheckpointNewlinePolicy::SourceExact
 pub fn perl_lexer::CheckpointNewlinePolicy::clone(&self) -> perl_lexer::CheckpointNewlinePolicy
 pub fn perl_lexer::CheckpointNewlinePolicy::eq(&self, other: &perl_lexer::CheckpointNewlinePolicy) -> bool
 pub fn perl_lexer::CheckpointNewlinePolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum perl_lexer::CheckpointRestoreError
 pub perl_lexer::CheckpointRestoreError::IncompleteState
 pub perl_lexer::CheckpointRestoreError::InvalidUtf8Boundary
 pub perl_lexer::CheckpointRestoreError::Invalidated

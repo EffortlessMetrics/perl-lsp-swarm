@@ -306,9 +306,16 @@ impl FoldingRangeExtractor {
             }
 
             // POD is typically inside strings or special constructs, not a separate NodeKind
-            NodeKind::Heredoc { .. } => {
-                // Heredocs are always foldable as regions
-                self.add_range_from_node(node, Some(FoldingRangeKind::Region));
+            NodeKind::Heredoc { body_span, .. } => {
+                // Heredocs are always foldable as regions. Fold the body span
+                // rather than the declaration node location: the `<<'END'`
+                // declaration sits on a single line, so the node location can
+                // never produce a multiline range, while the body span does.
+                // Single-line bodies still drop out later via the
+                // multiline-only LSP filter.
+                if let Some(body) = body_span.as_ref() {
+                    self.add_range_from_locations(body, body, Some(FoldingRangeKind::Region));
+                }
             }
 
             NodeKind::StatementModifier { statement, modifier: _, condition } => {
@@ -486,6 +493,94 @@ mod tests {
 
         assert!(ranges.iter().any(|range| range.start_offset == 0 && range.end_offset == 27));
         assert!(ranges.iter().any(|range| range.start_offset == 29 && range.end_offset == 56));
+    }
+
+    #[test]
+    fn heredoc_folds_body_span_not_single_line_declaration() {
+        // `my $text = <<'END';\nalpha\nbeta\nEND\n`: the declaration node
+        // location covers only the single-line `<<'END'` token, the attached
+        // body span covers the multiline body lines.
+        let declaration = Node::new(
+            NodeKind::Heredoc {
+                delimiter: "END".to_string(),
+                content: "alpha\nbeta\n".to_string(),
+                interpolated: false,
+                indented: false,
+                command: false,
+                body_span: Some(loc(20, 29)),
+            },
+            loc(14, 21),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![declaration] }, loc(0, 34));
+        let mut extractor = FoldingRangeExtractor::new();
+
+        let ranges = extractor.extract(&root);
+
+        assert_eq!(ranges.len(), 1, "exactly the body span folds: {ranges:?}");
+        assert_eq!(ranges[0].start_offset, 20);
+        assert_eq!(ranges[0].end_offset, 29);
+        assert!(
+            matches!(ranges[0].kind, Some(FoldingRangeKind::Region)),
+            "kind must be Region: {:?}",
+            ranges[0].kind
+        );
+
+        // Without an attached body span (empty/unterminated heredoc) nothing
+        // folds from the declaration token alone.
+        let bare = Node::new(
+            NodeKind::Heredoc {
+                delimiter: "END".to_string(),
+                content: String::new(),
+                interpolated: false,
+                indented: false,
+                command: false,
+                body_span: None,
+            },
+            loc(14, 21),
+        );
+        let root = Node::new(NodeKind::Program { statements: vec![bare] }, loc(0, 34));
+        let mut extractor = FoldingRangeExtractor::new();
+
+        assert!(extractor.extract(&root).is_empty());
+    }
+
+    #[test]
+    fn parsed_quoted_heredoc_yields_multiline_region_fold() -> Result<(), String> {
+        // End-to-end through the real parser for the lsp_folding_ranges_test
+        // integration scenario: a quoted-delimiter heredoc whose body spans
+        // two lines must produce one multiline region fold covering the body
+        // lines (LSP lines 1..2), and the single-line-body sibling must not
+        // fold.
+        let multiline = "my $text = <<'END';\none\ntwo\nEND\n";
+        let mut parser = perl_parser::Parser::new(multiline);
+        let ast = parser.parse().map_err(|e| format!("parse failed: {e:?}"))?;
+
+        let mut extractor = FoldingRangeExtractor::new();
+        let ranges = extractor.extract(&ast);
+
+        assert_eq!(ranges.len(), 1, "exactly the heredoc body folds: {ranges:?}");
+        assert!(
+            matches!(ranges[0].kind, Some(FoldingRangeKind::Region)),
+            "kind must be Region: {:?}",
+            ranges[0].kind
+        );
+        let start_line = multiline[..ranges[0].start_offset].matches('\n').count();
+        let end_line = multiline[..ranges[0].end_offset].matches('\n').count();
+        assert_eq!((start_line, end_line), (1, 2), "fold must cover the body lines");
+
+        let single_line = "my $text = <<'END';\none\nEND\n";
+        let mut parser = perl_parser::Parser::new(single_line);
+        let ast = parser.parse().map_err(|e| format!("parse failed: {e:?}"))?;
+        let mut extractor = FoldingRangeExtractor::new();
+        let ranges = extractor.extract(&ast);
+        // The extractor still yields the single-line body span (20..23);
+        // the LSP handler's multiline-only end-line filter is what drops it
+        // from the protocol response, so assert the span stays single-line.
+        assert_eq!(ranges.len(), 1, "exactly the heredoc body span: {ranges:?}");
+        let start_line = single_line[..ranges[0].start_offset].matches('\n').count();
+        let end_line = single_line[..ranges[0].end_offset].matches('\n').count();
+        assert_eq!((start_line, end_line), (1, 1), "single-line body stays on one line");
+        Ok(())
     }
 
     #[test]
