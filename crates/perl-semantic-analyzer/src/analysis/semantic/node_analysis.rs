@@ -946,6 +946,16 @@ impl SemanticAnalyzer {
                 self.analyze_node(target, scope_id);
             }
 
+            NodeKind::TargetlessGoto { .. } => {
+                // Emit the keyword-control semantic token for the bare
+                // `goto` keyword; there is no target to analyze.
+                self.semantic_tokens.push(SemanticToken {
+                    location: node.location,
+                    token_type: SemanticTokenType::KeywordControl,
+                    modifiers: vec![],
+                });
+            }
+
             NodeKind::MissingExpression
             | NodeKind::MissingStatement
             | NodeKind::MissingIdentifier

@@ -626,17 +626,25 @@ impl<'a> Parser<'a> {
         // Parse the target as an assignment-level expression (not full comma
         // expression) to avoid consuming surrounding list separators.  A
         // targetless `goto` (`goto;`, `foo and goto;`, `goto if $x;`) is
-        // valid Perl: the omission is legal, not a broken operand, so it
-        // yields a `MissingExpression` target with no diagnostic.
-        // Genuinely missing operands elsewhere keep the blocking recovery
-        // via `recover_missing_infix_rhs` (#13489 review).
+        // valid Perl: the omission is legal, not a broken operand, so emit
+        // the dedicated childless `TargetlessGoto` node with no diagnostic
+        // (#15742). Genuinely missing operands elsewhere keep the blocking
+        // recovery via `recover_missing_infix_rhs` (#13489 review).
         let target = if self.is_infix_rhs_absent() {
-            Node::new(NodeKind::MissingExpression, SourceLocation { start, end: start })
+            None
         } else if let Some(missing) = self.recover_missing_infix_rhs(start) {
-            missing
+            Some(missing)
         } else {
-            self.parse_assignment()?
+            Some(self.parse_assignment()?)
         };
+
+        let Some(target) = target else {
+            return Ok(Node::new(
+                NodeKind::TargetlessGoto {},
+                SourceLocation { start, end: start },
+            ));
+        };
+
         let end = target.location.end;
 
         // Phase 2: Determine form based on parsed target (and whether it started with &)
@@ -1106,5 +1114,95 @@ mod goto_form_tests {
         let mut parser = Parser::new("goto &handler;");
         let ast = must(parser.parse());
         assert!(ast.to_sexp().contains("goto"), "sexp must render the goto node");
+    }
+
+    /// Find the first node whose kind matches the predicate; used by the
+    /// targetless-goto tests to assert the new variant is emitted.
+    fn find_kind<F>(node: &Node, pred: &F) -> Option<NodeKind>
+    where
+        F: Fn(&NodeKind) -> bool,
+    {
+        if pred(&node.kind) {
+            return Some(node.kind.clone());
+        }
+        for child in node.children() {
+            if let Some(k) = find_kind(child, pred) {
+                return Some(k);
+            }
+        }
+        None
+    }
+
+    fn first_targetless_kind(source: &str) -> Option<NodeKind> {
+        let mut parser = Parser::new(source);
+        let ast = must(parser.parse());
+        find_kind(&ast, &|k| matches!(k, NodeKind::TargetlessGoto { .. }))
+    }
+
+    #[test]
+    fn parse_goto_bare_emits_targetless_variant() {
+        // `goto;` — Perl accepts the omission; parser emits the new
+        // childless `TargetlessGoto` node instead of fabricating a
+        // `MissingExpression` operand.
+        let kind = first_targetless_kind("goto;").expect("`goto;` must produce a TargetlessGoto");
+        assert!(matches!(kind, NodeKind::TargetlessGoto { .. }));
+    }
+
+    #[test]
+    fn parse_goto_short_circuit_targetless_emits_variant() {
+        // `foo and goto;` — same omission accepted inside a short-circuit
+        // expression form.
+        let kind = first_targetless_kind("foo and goto;")
+            .expect("short-circuit goto must produce a TargetlessGoto");
+        assert!(matches!(kind, NodeKind::TargetlessGoto { .. }));
+    }
+
+    #[test]
+    fn parse_goto_statement_modifier_targetless_emits_variant() {
+        // `goto if 0;` — same omission accepted after a statement modifier.
+        let kind = first_targetless_kind("goto if 0;")
+            .expect("modifier goto must produce a TargetlessGoto");
+        assert!(matches!(kind, NodeKind::TargetlessGoto { .. }));
+    }
+
+    #[test]
+    fn parse_goto_targeted_still_emits_goto_variant() {
+        // `goto LABEL;` — targeted form keeps the existing `Goto` variant
+        // and must not be collapsed into the targetless one.
+        let mut parser = Parser::new("goto LABEL;");
+        let ast = must(parser.parse());
+        let mut found_goto = false;
+        let mut found_targetless = false;
+        fn walk(node: &Node, found_goto: &mut bool, found_targetless: &mut bool) {
+            match &node.kind {
+                NodeKind::Goto { .. } => *found_goto = true,
+                NodeKind::TargetlessGoto { .. } => *found_targetless = true,
+                _ => {}
+            }
+            for child in node.children() {
+                walk(child, found_goto, found_targetless);
+            }
+        }
+        walk(&ast, &mut found_goto, &mut found_targetless);
+        assert!(found_goto, "targeted goto must still produce a Goto node");
+        assert!(!found_targetless, "targeted goto must not produce a TargetlessGoto");
+    }
+
+    #[test]
+    fn parse_goto_targetless_sexp_renders_grammar_kind() {
+        // The S-expression for a bare `goto;` must surface the new
+        // grammar atom `goto_targetless`, with no fabricated operand or
+        // child payload.
+        let mut parser = Parser::new("goto;");
+        let ast = must(parser.parse());
+        let sexp = ast.to_sexp();
+        assert!(
+            sexp.contains("goto_targetless"),
+            "sexp must render the new variant atom, got: {sexp}"
+        );
+        assert!(
+            !sexp.contains("missing_expression"),
+            "sexp must not fabricate a missing_expression operand, got: {sexp}"
+        );
     }
 }
