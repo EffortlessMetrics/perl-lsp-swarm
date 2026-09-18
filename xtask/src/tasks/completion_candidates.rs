@@ -86,7 +86,7 @@
 //! rather than the control. An invocation-sensitive model is #15470.
 
 use crate::utils::project_root;
-use color_eyre::eyre::{bail, Context, Result};
+use color_eyre::eyre::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -620,11 +620,7 @@ impl Channel {
     }
 
     fn merge(self, other: Self) -> Self {
-        if self == other {
-            self
-        } else {
-            Self::AppendAndReturned
-        }
+        if self == other { self } else { Self::AppendAndReturned }
     }
 }
 
@@ -704,11 +700,8 @@ pub fn run(command: CompletionCandidatesSubcommand) -> Result<()> {
         }
         CompletionCandidatesSubcommand::Explain { producer_id } => {
             validate(&ledger, &discovered)?;
-            let row = ledger
-                .producers
-                .iter()
-                .find(|row| row.id == producer_id)
-                .ok_or_else(|| {
+            let row =
+                ledger.producers.iter().find(|row| row.id == producer_id).ok_or_else(|| {
                     color_eyre::eyre::eyre!(
                         "no producer `{producer_id}` in {LEDGER_PATH}; run `cargo xtask \
                          completion-candidates list`"
@@ -731,10 +724,7 @@ pub fn run(command: CompletionCandidatesSubcommand) -> Result<()> {
             }
             fs::write(&path, &markdown)
                 .wrap_err_with(|| format!("failed to write {PROJECTION_PATH}"))?;
-            println!(
-                "wrote {PROJECTION_PATH} from {} producers",
-                ledger.producers.len()
-            );
+            println!("wrote {PROJECTION_PATH} from {} producers", ledger.producers.len());
             Ok(())
         }
     }
@@ -826,10 +816,8 @@ pub fn discover(root: &Path) -> Result<Discovered> {
     }
     let producers = merge_declarations(producers)?;
 
-    let producer_names: BTreeSet<String> = producers
-        .iter()
-        .map(|producer| producer.function.clone())
-        .collect();
+    let producer_names: BTreeSet<String> =
+        producers.iter().map(|producer| producer.function.clone()).collect();
     let (entry_direct_calls, post_finalizer_appends) =
         discover_entry_routes(root, &producer_names)?;
     let source_digest = digest_files(&files, &loaded.sources)?;
@@ -960,10 +948,7 @@ impl ProviderReferenceVisitor<'_> {
     /// would fire on every one. Exact resolution adds no false-alarm surface —
     /// a `super` chain either lands directly under `providers` or it does not.
     fn resolved_provider_module(&self, segments: &[String]) -> Option<String> {
-        let supers = segments
-            .iter()
-            .take_while(|segment| *segment == "super")
-            .count();
+        let supers = segments.iter().take_while(|segment| *segment == "super").count();
         if supers == 0 {
             return None;
         }
@@ -1053,11 +1038,8 @@ impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
     }
 
     fn visit_path(&mut self, node: &'ast syn::Path) {
-        let segments: Vec<String> = node
-            .segments
-            .iter()
-            .map(|segment| segment.ident.to_string())
-            .collect();
+        let segments: Vec<String> =
+            node.segments.iter().map(|segment| segment.ident.to_string()).collect();
         for window in segments.windows(2) {
             if self.names_providers(&window[0]) {
                 self.modules.insert(window[1].clone());
@@ -1073,12 +1055,10 @@ impl<'ast> Visit<'ast> for ProviderReferenceVisitor<'_> {
     /// statements are walked, so a `use` written below the code that uses it
     /// still applies, and popped after, so it does not leak to a sibling.
     fn visit_block(&mut self, node: &'ast syn::Block) {
-        self.scopes.push(scope_aliases(node.stmts.iter().filter_map(
-            |stmt| match stmt {
-                syn::Stmt::Item(syn::Item::Use(item)) => Some(item),
-                _ => None,
-            },
-        )));
+        self.scopes.push(scope_aliases(node.stmts.iter().filter_map(|stmt| match stmt {
+            syn::Stmt::Item(syn::Item::Use(item)) => Some(item),
+            _ => None,
+        })));
         syn::visit::visit_block(self, node);
         self.scopes.pop();
     }
@@ -1170,9 +1150,7 @@ impl ProviderAliasVisitor<'_> {
 /// nested bodies — those own their own scope.
 fn scope_aliases<'a>(items: impl Iterator<Item = &'a syn::ItemUse>) -> BTreeSet<String> {
     let mut aliases = BTreeSet::new();
-    let mut visitor = ProviderAliasVisitor {
-        aliases: &mut aliases,
-    };
+    let mut visitor = ProviderAliasVisitor { aliases: &mut aliases };
     for item in items.filter(|item| !has_cfg_test(&item.attrs)) {
         visitor.walk_use_tree(&item.tree, false);
     }
@@ -1185,9 +1163,7 @@ fn scope_aliases<'a>(items: impl Iterator<Item = &'a syn::ItemUse>) -> BTreeSet<
 /// module is unscanned, and a producer there would be invisible.
 fn module_is_fully_scanned(module: &str) -> bool {
     let directory = format!("crates/perl-lsp-rs-core/src/providers/{module}/");
-    SCAN_ROOTS
-        .iter()
-        .any(|root| root.ends_with('/') && directory.starts_with(root))
+    SCAN_ROOTS.iter().any(|root| root.ends_with('/') && directory.starts_with(root))
 }
 
 /// Tracked Rust files under the scan roots, minus the declared test surfaces.
@@ -1199,11 +1175,7 @@ fn scanned_files(root: &Path) -> Result<Vec<String>> {
     let mut files: Vec<String> = tracked
         .into_iter()
         .filter(|path| path.ends_with(".rs"))
-        .filter(|path| {
-            SCAN_ROOTS
-                .iter()
-                .any(|scope| path.starts_with(scope) || path == scope)
-        })
+        .filter(|path| SCAN_ROOTS.iter().any(|scope| path.starts_with(scope) || path == scope))
         .filter(|path| !TEST_SURFACE_FILES.contains(&path.as_str()))
         .collect();
     files.sort();
@@ -1249,14 +1221,7 @@ fn untracked_scan_root_files(root: &Path) -> Result<Vec<String>> {
     let mut paths = Vec::new();
     for args in [
         ["ls-files", "-z", "--others", "--exclude-standard"].as_slice(),
-        [
-            "ls-files",
-            "-z",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-        ]
-        .as_slice(),
+        ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"].as_slice(),
     ] {
         let output = Command::new("git")
             .arg("-C")
@@ -1277,9 +1242,7 @@ fn untracked_scan_root_files(root: &Path) -> Result<Vec<String>> {
                 .filter(|entry| !entry.is_empty())
                 .filter(|entry| entry.ends_with(".rs"))
                 .filter(|entry| {
-                    SCAN_ROOTS
-                        .iter()
-                        .any(|scope| entry.starts_with(scope) || entry == scope)
+                    SCAN_ROOTS.iter().any(|scope| entry.starts_with(scope) || entry == scope)
                 })
                 .map(str::to_string),
         );
@@ -1336,11 +1299,7 @@ fn first_stderr_line(stderr: &[u8]) -> String {
 
 /// Package owning a scanned path.
 fn package_for(file: &str) -> &'static str {
-    if file.starts_with("crates/perl-lsp-rs-core/") {
-        "perl-lsp-rs-core"
-    } else {
-        "perl-lsp-rs"
-    }
+    if file.starts_with("crates/perl-lsp-rs-core/") { "perl-lsp-rs-core" } else { "perl-lsp-rs" }
 }
 
 /// `crate_module::path::segments` for a source file, used to build stable ids.
@@ -1376,11 +1335,7 @@ fn digest_files(files: &[String], sources: &BTreeMap<String, String>) -> Result<
         hasher.update((source.len() as u64).to_le_bytes());
         hasher.update(source.as_bytes());
     }
-    let hex: String = hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let hex: String = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
     Ok(format!("sha256:{hex}"))
 }
 
@@ -1409,10 +1364,7 @@ impl<'a> SeamVisitor<'a> {
     }
 
     fn record(&mut self, name: &str, sig: &syn::Signature) {
-        let appends = sig
-            .inputs
-            .iter()
-            .any(|arg| takes_append_channel(arg, self.carriers));
+        let appends = sig.inputs.iter().any(|arg| takes_append_channel(arg, self.carriers));
         let returns = match &sig.output {
             syn::ReturnType::Type(_, ty) => {
                 mentions_candidate_vec(ty) || mentions_named_carrier(ty, self.carriers)
@@ -1490,10 +1442,7 @@ impl<'ast> Visit<'ast> for SeamVisitor<'_> {
     /// invisibly. `EntryBodyVisitor` already reads both; the two visitors
     /// disagreeing about what a candidate is was the bug.
     fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
-        if CANDIDATE_TYPES
-            .iter()
-            .any(|name| last_segment_is(&node.path, name))
-        {
+        if CANDIDATE_TYPES.iter().any(|name| last_segment_is(&node.path, name)) {
             self.constructions += 1;
         }
         syn::visit::visit_expr_struct(self, node);
@@ -1521,9 +1470,7 @@ fn discover_candidate_carriers(
         let parsed = asts
             .get(file)
             .ok_or_else(|| color_eyre::eyre::eyre!("missing AST cache entry for {file}"))?;
-        let mut visitor = CarrierVisitor {
-            containers: &mut containers,
-        };
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(parsed);
     }
     Ok(resolve_carriers(&containers))
@@ -1619,8 +1566,7 @@ impl<'ast> Visit<'ast> for CarrierVisitor<'_> {
         if has_cfg_test(&node.attrs) {
             return;
         }
-        self.containers
-            .push((node.ident.to_string(), vec![(*node.ty).clone()]));
+        self.containers.push((node.ident.to_string(), vec![(*node.ty).clone()]));
         syn::visit::visit_item_type(self, node);
     }
 }
@@ -1654,18 +1600,13 @@ fn mentions_candidate_vec(ty: &syn::Type) -> bool {
             if is_candidate_vec(ty) {
                 return true;
             }
-            path.path
-                .segments
-                .iter()
-                .any(|segment| match &segment.arguments {
-                    syn::PathArguments::AngleBracketed(args) => {
-                        args.args.iter().any(|arg| match arg {
-                            syn::GenericArgument::Type(inner) => mentions_candidate_vec(inner),
-                            _ => false,
-                        })
-                    }
+            path.path.segments.iter().any(|segment| match &segment.arguments {
+                syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| match arg {
+                    syn::GenericArgument::Type(inner) => mentions_candidate_vec(inner),
                     _ => false,
-                })
+                }),
+                _ => false,
+            })
         }
         syn::Type::Tuple(tuple) => tuple.elems.iter().any(mentions_candidate_vec),
         syn::Type::Reference(reference) => mentions_candidate_vec(&reference.elem),
@@ -1687,25 +1628,17 @@ fn mentions_named_carrier(ty: &syn::Type, carriers: &BTreeSet<String>) -> bool {
             {
                 return true;
             }
-            path.path
-                .segments
-                .iter()
-                .any(|segment| match &segment.arguments {
-                    syn::PathArguments::AngleBracketed(args) => {
-                        args.args.iter().any(|arg| match arg {
-                            syn::GenericArgument::Type(inner) => {
-                                mentions_named_carrier(inner, carriers)
-                            }
-                            _ => false,
-                        })
-                    }
+            path.path.segments.iter().any(|segment| match &segment.arguments {
+                syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| match arg {
+                    syn::GenericArgument::Type(inner) => mentions_named_carrier(inner, carriers),
                     _ => false,
-                })
+                }),
+                _ => false,
+            })
         }
-        syn::Type::Tuple(tuple) => tuple
-            .elems
-            .iter()
-            .any(|elem| mentions_named_carrier(elem, carriers)),
+        syn::Type::Tuple(tuple) => {
+            tuple.elems.iter().any(|elem| mentions_named_carrier(elem, carriers))
+        }
         syn::Type::Reference(reference) => mentions_named_carrier(&reference.elem, carriers),
         syn::Type::Paren(paren) => mentions_named_carrier(&paren.elem, carriers),
         syn::Type::Group(group) => mentions_named_carrier(&group.elem, carriers),
@@ -1728,17 +1661,15 @@ fn is_candidate_vec(ty: &syn::Type) -> bool {
         return false;
     };
     args.args.iter().any(|arg| match arg {
-        syn::GenericArgument::Type(syn::Type::Path(inner)) => CANDIDATE_TYPES
-            .iter()
-            .any(|name| last_segment_is(&inner.path, name)),
+        syn::GenericArgument::Type(syn::Type::Path(inner)) => {
+            CANDIDATE_TYPES.iter().any(|name| last_segment_is(&inner.path, name))
+        }
         _ => false,
     })
 }
 
 fn last_segment_is(path: &syn::Path, name: &str) -> bool {
-    path.segments
-        .last()
-        .is_some_and(|segment| segment.ident == name)
+    path.segments.last().is_some_and(|segment| segment.ident == name)
 }
 
 /// Name segment for a producer id declared inside an `impl` block.
@@ -1831,12 +1762,7 @@ fn cfg_predicate_is_test_only(meta: &syn::Meta) -> bool {
 }
 
 fn has_test_attribute(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        attr.path()
-            .segments
-            .last()
-            .is_some_and(|s| s.ident == "test")
-    })
+    attrs.iter().any(|attr| attr.path().segments.last().is_some_and(|s| s.ident == "test"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1985,10 +1911,7 @@ impl EntryBodyVisitor<'_> {
         if self.holds_candidates(expr) {
             return true;
         }
-        let mut probe = CandidateMentionProbe {
-            bindings: &self.bindings,
-            found: false,
-        };
+        let mut probe = CandidateMentionProbe { bindings: &self.bindings, found: false };
         probe.visit_expr(expr);
         probe.found
     }
@@ -2002,11 +1925,7 @@ struct CandidateMentionProbe<'a> {
 
 impl<'ast> Visit<'ast> for CandidateMentionProbe<'_> {
     fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
-        if node
-            .path
-            .get_ident()
-            .is_some_and(|ident| self.bindings.contains(&ident.to_string()))
-        {
+        if node.path.get_ident().is_some_and(|ident| self.bindings.contains(&ident.to_string())) {
             self.found = true;
         }
         syn::visit::visit_expr_path(self, node);
@@ -2174,9 +2093,7 @@ impl<'ast> Visit<'ast> for EntryBodyVisitor<'_> {
     /// legitimate reason to construct a candidate after ranking and capping.
     fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
         if self.seen_finalizer
-            && CANDIDATE_TYPES
-                .iter()
-                .any(|name| last_segment_is(&node.path, name))
+            && CANDIDATE_TYPES.iter().any(|name| last_segment_is(&node.path, name))
         {
             self.appended_after_finalizer = true;
         }
@@ -2265,11 +2182,8 @@ fn validate_producer_population(ledger: &Ledger, discovered: &Discovered) -> Res
         }
     }
 
-    let discovered_by_id: BTreeMap<&str, &DiscoveredProducer> = discovered
-        .producers
-        .iter()
-        .map(|p| (p.id.as_str(), p))
-        .collect();
+    let discovered_by_id: BTreeMap<&str, &DiscoveredProducer> =
+        discovered.producers.iter().map(|p| (p.id.as_str(), p)).collect();
 
     for producer in &discovered.producers {
         if !seen.contains(producer.id.as_str()) {
@@ -2304,11 +2218,8 @@ fn validate_producer_population(ledger: &Ledger, discovered: &Discovered) -> Res
 
 /// A file that builds candidates but exposes no producer must say why.
 fn validate_construction_plane(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
-    let declared: BTreeMap<&str, &ConstructionOnlyRow> = ledger
-        .construction_only
-        .iter()
-        .map(|row| (row.path.as_str(), row))
-        .collect();
+    let declared: BTreeMap<&str, &ConstructionOnlyRow> =
+        ledger.construction_only.iter().map(|row| (row.path.as_str(), row)).collect();
     if declared.len() != ledger.construction_only.len() {
         bail!("{LEDGER_PATH} declares a duplicate `construction_only` path");
     }
@@ -2377,11 +2288,8 @@ fn validate_construction_plane(ledger: &Ledger, discovered: &Discovered) -> Resu
 /// otherwise satisfy the inventory while the real producer carried no
 /// disposition and no owner.
 fn validate_delegations(ledger: &Ledger, discovered: &Discovered) -> Result<()> {
-    let declared: BTreeMap<&str, &DelegationRow> = ledger
-        .delegations
-        .iter()
-        .map(|row| (row.module.as_str(), row))
-        .collect();
+    let declared: BTreeMap<&str, &DelegationRow> =
+        ledger.delegations.iter().map(|row| (row.module.as_str(), row)).collect();
     if declared.len() != ledger.delegations.len() {
         bail!("{LEDGER_PATH} declares a duplicate `delegations` module");
     }
@@ -2480,12 +2388,7 @@ fn validate_dispositions(ledger: &Ledger) -> Result<()> {
         }
 
         if row.rank == RankDisposition::CompatibilityPermanentReviewed
-            && row
-                .reviewed_reason
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .is_empty()
+            && row.reviewed_reason.as_deref().unwrap_or("").trim().is_empty()
         {
             bail!(
                 "{LEDGER_PATH} row `{}` claims permanent rank compatibility but records no \
@@ -2542,23 +2445,12 @@ fn validate_dispositions(ledger: &Ledger) -> Result<()> {
         // classification a migration would act on is gone. Both directions are
         // checked, so a seam cannot quietly acquire producer dispositions
         // either.
-        let is_seam = matches!(
-            row.candidate_class,
-            CandidateClass::Router | CandidateClass::Finalizer
-        );
+        let is_seam =
+            matches!(row.candidate_class, CandidateClass::Router | CandidateClass::Finalizer);
         for (field, erased) in [
-            (
-                "identity",
-                row.identity == IdentityDisposition::NotApplicable,
-            ),
-            (
-                "insertion_plan",
-                row.insertion_plan == InsertionDisposition::NotApplicable,
-            ),
-            (
-                "evidence",
-                row.evidence == EvidenceDisposition::NotApplicable,
-            ),
+            ("identity", row.identity == IdentityDisposition::NotApplicable),
+            ("insertion_plan", row.insertion_plan == InsertionDisposition::NotApplicable),
+            ("evidence", row.evidence == EvidenceDisposition::NotApplicable),
             ("rank", row.rank == RankDisposition::NotApplicable),
         ] {
             if erased && !is_seam {
@@ -2634,19 +2526,14 @@ fn validate_reachability(ledger: &Ledger, discovered: &Discovered) -> Result<()>
     // entry-point call sites cannot say which row they meant.
     let mut by_function: BTreeMap<String, Vec<&str>> = BTreeMap::new();
     for row in &ledger.producers {
-        by_function
-            .entry(row.function_name())
-            .or_default()
-            .push(row.id.as_str());
+        by_function.entry(row.function_name()).or_default().push(row.id.as_str());
     }
     for (function, ids) in &by_function {
         if ids.len() < 2 {
             continue;
         }
-        let called_by_an_entry = discovered
-            .entry_direct_calls
-            .values()
-            .any(|calls| calls.contains(function));
+        let called_by_an_entry =
+            discovered.entry_direct_calls.values().any(|calls| calls.contains(function));
         if called_by_an_entry {
             bail!(
                 "{LEDGER_PATH} has {} rows whose trailing function name is `{function}` ({}), and \
@@ -2766,10 +2653,7 @@ fn validate_reachability(ledger: &Ledger, discovered: &Discovered) -> Result<()>
                 quoted_list(&row.reached_by)
             ),
             (Some(reason), true) if reason.trim().is_empty() => {
-                bail!(
-                    "{LEDGER_PATH} row `{}` has an empty `unreachable_reason`",
-                    row.id
-                )
+                bail!("{LEDGER_PATH} row `{}` has an empty `unreachable_reason`", row.id)
             }
             _ => {}
         }
@@ -2861,11 +2745,7 @@ fn is_issue_ref(value: &str) -> bool {
 }
 
 fn quoted_list(values: &[String]) -> String {
-    values
-        .iter()
-        .map(|value| format!("\"{value}\""))
-        .collect::<Vec<_>>()
-        .join(", ")
+    values.iter().map(|value| format!("\"{value}\"")).collect::<Vec<_>>().join(", ")
 }
 
 // ---------------------------------------------------------------------------
@@ -2883,9 +2763,7 @@ fn class_counts(ledger: &Ledger) -> BTreeMap<&'static str, usize> {
 fn sorted_rows(ledger: &Ledger) -> Vec<&ProducerRow> {
     let mut rows: Vec<&ProducerRow> = ledger.producers.iter().collect();
     rows.sort_by(|left, right| {
-        left.candidate_class
-            .cmp(&right.candidate_class)
-            .then_with(|| left.id.cmp(&right.id))
+        left.candidate_class.cmp(&right.candidate_class).then_with(|| left.id.cmp(&right.id))
     });
     rows
 }
@@ -3029,23 +2907,12 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
     let _ = writeln!(out, "| Population | Count |");
     let _ = writeln!(out, "| --- | --- |");
     let _ = writeln!(out, "| producers | {} |", ledger.producers.len());
-    let _ = writeln!(
-        out,
-        "| candidate classes | {} |",
-        class_counts(ledger).len()
-    );
-    let _ = writeln!(
-        out,
-        "| construction-only files | {} |",
-        ledger.construction_only.len()
-    );
+    let _ = writeln!(out, "| candidate classes | {} |", class_counts(ledger).len());
+    let _ = writeln!(out, "| construction-only files | {} |", ledger.construction_only.len());
     let _ = writeln!(out, "| delegated modules | {} |", ledger.delegations.len());
     let _ = writeln!(out, "| entry points | {} |", ENTRY_POINTS.len());
-    let _ = writeln!(
-        out,
-        "| post-finalizer appends | {} |",
-        discovered.post_finalizer_appends.len()
-    );
+    let _ =
+        writeln!(out, "| post-finalizer appends | {} |", discovered.post_finalizer_appends.len());
     let _ = writeln!(out);
 
     let _ = writeln!(out, "## Producers");
@@ -3055,15 +2922,10 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
         "| Producer | Class | Seam | Tier | Identity | Insertion | Evidence | Rank | \
          Completeness | Finalizer route | Reached by | Owner |"
     );
-    let _ = writeln!(
-        out,
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
-    );
-    let seams: BTreeMap<&str, &DiscoveredProducer> = discovered
-        .producers
-        .iter()
-        .map(|producer| (producer.id.as_str(), producer))
-        .collect();
+    let _ =
+        writeln!(out, "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+    let seams: BTreeMap<&str, &DiscoveredProducer> =
+        discovered.producers.iter().map(|producer| (producer.id.as_str(), producer)).collect();
     for row in sorted_rows(ledger) {
         // `×2` marks one logical producer with two mutually exclusive `cfg`
         // bodies, so a reader does not read it as a duplicated row.
@@ -3158,22 +3020,14 @@ pub fn render_markdown(ledger: &Ledger, discovered: &Discovered) -> String {
     );
     let _ = writeln!(out);
     if ledger.delegations.is_empty() {
-        let _ = writeln!(
-            out,
-            "None. Every referenced provider module is scanned in full."
-        );
+        let _ = writeln!(out, "None. Every referenced provider module is scanned in full.");
     } else {
         let _ = writeln!(out, "| Module | Why it carries no unscanned producer |");
         let _ = writeln!(out, "| --- | --- |");
         let mut rows: Vec<&DelegationRow> = ledger.delegations.iter().collect();
         rows.sort_by(|left, right| left.module.cmp(&right.module));
         for row in rows {
-            let _ = writeln!(
-                out,
-                "| `providers::{}` | {} |",
-                cell(&row.module),
-                cell(&row.reason)
-            );
+            let _ = writeln!(out, "| `providers::{}` | {} |", cell(&row.module), cell(&row.reason));
         }
     }
     let _ = writeln!(out);
@@ -3355,10 +3209,7 @@ mod tests {
     #[test]
     fn generation_is_deterministic() {
         let (ledger, discovered) = fixture();
-        assert_eq!(
-            render_markdown(&ledger, &discovered),
-            render_markdown(&ledger, &discovered)
-        );
+        assert_eq!(render_markdown(&ledger, &discovered), render_markdown(&ledger, &discovered));
         assert_eq!(render_list(&ledger), render_list(&ledger));
     }
 
@@ -3388,11 +3239,7 @@ mod tests {
             expected,
             "the source cache holds one entry per scanned file"
         );
-        assert_eq!(
-            loaded.asts.len(),
-            expected,
-            "the AST cache holds one entry per scanned file"
-        );
+        assert_eq!(loaded.asts.len(), expected, "the AST cache holds one entry per scanned file");
 
         // The cache is the same view for every visitor: `loaded.asts[file]`
         // and `loaded.sources[file]` reference the canonical entries the
@@ -3400,18 +3247,10 @@ mod tests {
         // Two lookups in a row must hand back the same `syn::File` allocation
         // — that is the proof that a visitor did not re-parse from scratch.
         for file in &files {
-            let source = loaded
-                .sources
-                .get(file)
-                .unwrap_or_else(|| panic!("source cache misses {file}"));
-            let first = loaded
-                .asts
-                .get(file)
-                .unwrap_or_else(|| panic!("AST cache misses {file}"));
-            let second = loaded
-                .asts
-                .get(file)
-                .expect("AST cache stable across repeat lookups");
+            let source =
+                loaded.sources.get(file).unwrap_or_else(|| panic!("source cache misses {file}"));
+            let first = loaded.asts.get(file).unwrap_or_else(|| panic!("AST cache misses {file}"));
+            let second = loaded.asts.get(file).expect("AST cache stable across repeat lookups");
             assert_eq!(
                 std::ptr::from_ref(first),
                 std::ptr::from_ref(second),
@@ -3445,15 +3284,11 @@ mod tests {
     fn every_scan_root_still_matches_tracked_source() {
         let root = project_root().expect("project root");
         let tracked = tracked_files(&root).expect("git ls-files runs");
-        let rust: Vec<&String> = tracked
-            .iter()
-            .filter(|path| path.ends_with(".rs"))
-            .collect();
+        let rust: Vec<&String> = tracked.iter().filter(|path| path.ends_with(".rs")).collect();
 
         for scope in SCAN_ROOTS {
             assert!(
-                rust.iter()
-                    .any(|path| path.starts_with(scope) || *path == scope),
+                rust.iter().any(|path| path.starts_with(scope) || *path == scope),
                 "scan root `{scope}` matches no tracked Rust file. It was renamed, moved or \
                  deleted, so the inventory silently stopped covering it: discovery only refuses \
                  when every root matches nothing. Update SCAN_ROOTS and re-audit the rows that \
@@ -3471,9 +3306,7 @@ mod tests {
                  denominator as product source, or it is gone and the entry should be removed."
             );
             assert!(
-                SCAN_ROOTS
-                    .iter()
-                    .any(|scope| excluded.starts_with(scope) || excluded == scope),
+                SCAN_ROOTS.iter().any(|scope| excluded.starts_with(scope) || excluded == scope),
                 "TEST_SURFACE_FILES names `{excluded}`, which lies outside every scan root. \
                  Excluding a file discovery would never have read hides nothing and suggests \
                  the roots moved out from under it."
@@ -3553,11 +3386,7 @@ mod tests {
         let (mut ledger, discovered) = fixture();
         ledger.source_digest =
             "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string();
-        refuses(
-            &ledger,
-            &discovered,
-            "changed since the inventory was audited",
-        );
+        refuses(&ledger, &discovered, "changed since the inventory was audited");
     }
 
     #[test]
@@ -3577,9 +3406,7 @@ mod tests {
     #[test]
     fn refuses_permanent_compatibility_without_a_reviewed_reason() {
         let (mut ledger, discovered) = fixture();
-        let row = row_mut(&mut ledger, |row| {
-            row.rank == RankDisposition::CompatibilityWithExit
-        });
+        let row = row_mut(&mut ledger, |row| row.rank == RankDisposition::CompatibilityWithExit);
         row.rank = RankDisposition::CompatibilityPermanentReviewed;
         refuses(&ledger, &discovered, "records no `reviewed_reason`");
     }
@@ -3627,15 +3454,10 @@ mod tests {
     #[test]
     fn refuses_stable_metadata_identity_for_a_resolved_candidate() {
         let (mut ledger, discovered) = fixture();
-        let row = row_mut(&mut ledger, |row| {
-            row.candidate_class == CandidateClass::WorkspaceSymbol
-        });
+        let row =
+            row_mut(&mut ledger, |row| row.candidate_class == CandidateClass::WorkspaceSymbol);
         row.identity = IdentityDisposition::StableMetadataCandidate;
-        refuses(
-            &ledger,
-            &discovered,
-            "reserved for server-authored catalogues",
-        );
+        refuses(&ledger, &discovered, "reserved for server-authored catalogues");
     }
 
     /// The route control. Claiming both paths reach a producer that only one
@@ -3643,9 +3465,7 @@ mod tests {
     #[test]
     fn refuses_a_declared_reach_the_call_site_contradicts() {
         let (mut ledger, discovered) = fixture();
-        let row = row_mut(&mut ledger, |row| {
-            row.id.ends_with("add_dancer2_keyword_completions")
-        });
+        let row = row_mut(&mut ledger, |row| row.id.ends_with("add_dancer2_keyword_completions"));
         row.reached_by = ENTRY_POINTS.iter().map(|e| (*e).to_string()).collect();
         row.route_divergence_owner = None;
         row.route_divergence_note = None;
@@ -3655,9 +3475,7 @@ mod tests {
     #[test]
     fn refuses_an_unowned_route_divergence() {
         let (mut ledger, discovered) = fixture();
-        let row = row_mut(&mut ledger, |row| {
-            row.id.ends_with("add_dancer2_keyword_completions")
-        });
+        let row = row_mut(&mut ledger, |row| row.id.ends_with("add_dancer2_keyword_completions"));
         row.route_divergence_owner = None;
         row.route_divergence_note = None;
         refuses(&ledger, &discovered, "names no `route_divergence_owner`");
@@ -3666,9 +3484,7 @@ mod tests {
     #[test]
     fn refuses_a_provider_seam_row_that_drops_an_entry_point() {
         let (mut ledger, discovered) = fixture();
-        let row = row_mut(&mut ledger, |row| {
-            row.reach_evidence == ReachEvidence::ProviderSeam
-        });
+        let row = row_mut(&mut ledger, |row| row.reach_evidence == ReachEvidence::ProviderSeam);
         row.reached_by = vec!["handle_completion".to_string()];
         refuses(&ledger, &discovered, "must list all of");
     }
@@ -3676,9 +3492,7 @@ mod tests {
     #[test]
     fn refuses_an_unreachable_row_with_no_reason() {
         let (mut ledger, discovered) = fixture();
-        let row = row_mut(&mut ledger, |row| {
-            row.reach_evidence == ReachEvidence::Unreachable
-        });
+        let row = row_mut(&mut ledger, |row| row.reach_evidence == ReachEvidence::Unreachable);
         row.unreachable_reason = None;
         refuses(&ledger, &discovered, "gives no `unreachable_reason`");
     }
@@ -3687,8 +3501,7 @@ mod tests {
     fn refuses_a_dead_row_that_came_back_into_service() {
         let (mut ledger, discovered) = fixture();
         let row = row_mut(&mut ledger, |row| {
-            row.id
-                .ends_with("CompletionProvider::get_completions_with_path")
+            row.id.ends_with("CompletionProvider::get_completions_with_path")
                 && !row.id.ends_with("cancellable")
         });
         row.reach_evidence = ReachEvidence::Unreachable;
@@ -3729,10 +3542,9 @@ mod tests {
     #[test]
     fn refuses_a_delegation_row_for_a_scanned_module() {
         let (mut ledger, discovered) = fixture();
-        ledger.delegations.push(DelegationRow {
-            module: "htmx".to_string(),
-            reason: "stale".to_string(),
-        });
+        ledger
+            .delegations
+            .push(DelegationRow { module: "htmx".to_string(), reason: "stale".to_string() });
         refuses(&ledger, &discovered, "now fully scanned");
     }
 
@@ -3749,10 +3561,7 @@ mod tests {
     /// A scan root naming one file does not cover the module around it.
     #[test]
     fn a_single_file_scan_root_does_not_cover_its_module() {
-        assert!(
-            module_is_fully_scanned("htmx"),
-            "a directory root covers its module"
-        );
+        assert!(module_is_fully_scanned("htmx"), "a directory root covers its module");
         assert!(module_is_fully_scanned("file_completion"));
         assert!(
             !module_is_fully_scanned("dancer2"),
@@ -3772,10 +3581,7 @@ mod tests {
             "perl_lsp_rs_core::providers::htmx::complete_header_names",
         ] {
             assert!(
-                discovered
-                    .producers
-                    .iter()
-                    .any(|producer| producer.id == id),
+                discovered.producers.iter().any(|producer| producer.id == id),
                 "discovery lost the delegated producer `{id}`"
             );
             assert!(
@@ -3799,30 +3605,18 @@ mod tests {
             }
         };
         let mut containers = Vec::new();
-        let mut visitor = CarrierVisitor {
-            containers: &mut containers,
-        };
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
         let carriers = resolve_carriers(&containers);
-        assert!(
-            carriers.contains("Finalization"),
-            "a struct holding the page is a carrier"
-        );
-        assert!(
-            !carriers.contains("Unrelated"),
-            "an unrelated vector must not widen the scan"
-        );
+        assert!(carriers.contains("Finalization"), "a struct holding the page is a carrier");
+        assert!(!carriers.contains("Unrelated"), "an unrelated vector must not widen the scan");
 
         let returns_carrier: syn::ItemFn = syn::parse_quote! {
             fn finalize() -> Finalization { unimplemented!() }
         };
         let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
         seam.visit_file(&syn::parse_quote! { fn finalize() -> Finalization { unimplemented!() } });
-        assert_eq!(
-            seam.producers.len(),
-            1,
-            "returning a carrier is a candidate return"
-        );
+        assert_eq!(seam.producers.len(), 1, "returning a carrier is a candidate return");
         let _ = returns_carrier;
     }
 
@@ -3890,10 +3684,7 @@ mod tests {
         };
         let mut visitor = EntryBodyVisitor::new(&producers);
         visitor.visit_block(&ordinary.block);
-        assert!(
-            !visitor.appended_after_finalizer,
-            "contribution before the finalizer is normal"
-        );
+        assert!(!visitor.appended_after_finalizer, "contribution before the finalizer is normal");
     }
 
     /// Grouped and renamed imports have no `providers::<ident>` substring, so
@@ -3916,13 +3707,7 @@ mod tests {
             module: String::new(),
         };
         visitor.visit_file(&file);
-        for expected in [
-            "file_completion",
-            "htmx",
-            "dancer2",
-            "testing",
-            "inline_completion",
-        ] {
+        for expected in ["file_completion", "htmx", "dancer2", "testing", "inline_completion"] {
             assert!(
                 modules.contains(expected),
                 "the delegation plane lost `providers::{expected}`; found {modules:?}"
@@ -3982,10 +3767,7 @@ mod tests {
         };
         let mut visitor = EntryBodyVisitor::new(&no_producers);
         visitor.visit_block(&tuple_wrapped.block);
-        assert!(
-            visitor.appended_after_finalizer,
-            "a tuple-field append went undetected"
-        );
+        assert!(visitor.appended_after_finalizer, "a tuple-field append went undetected");
     }
 
     /// Reconstruction backstop: no append method, no `&mut`, no producer call
@@ -4019,10 +3801,7 @@ mod tests {
         };
         let mut visitor = EntryBodyVisitor::new(&no_producers);
         visitor.visit_block(&ordinary.block);
-        assert!(
-            !visitor.appended_after_finalizer,
-            "construction before the finalizer is normal"
-        );
+        assert!(!visitor.appended_after_finalizer, "construction before the finalizer is normal");
     }
 
     /// The provider dispatch returns `CompletionFlow`, whose `Return` variant
@@ -4040,19 +3819,11 @@ mod tests {
             }
         };
         let mut containers = Vec::new();
-        let mut visitor = CarrierVisitor {
-            containers: &mut containers,
-        };
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
         let carriers = resolve_carriers(&containers);
-        assert!(
-            carriers.contains("Flow"),
-            "an enum variant holding the page is a carrier"
-        );
-        assert!(
-            !carriers.contains("Unrelated"),
-            "an unrelated enum must not widen the scan"
-        );
+        assert!(carriers.contains("Flow"), "an enum variant holding the page is a carrier");
+        assert!(!carriers.contains("Unrelated"), "an unrelated enum must not widen the scan");
     }
 
     /// Arguments are evaluated before the call they belong to, so a candidate
@@ -4084,10 +3855,7 @@ mod tests {
         };
         let mut visitor = EntryBodyVisitor::new(&no_producers);
         visitor.visit_block(&after.block);
-        assert!(
-            visitor.appended_after_finalizer,
-            "a literal after the finalizer must be refused"
-        );
+        assert!(visitor.appended_after_finalizer, "a literal after the finalizer must be refused");
     }
 
     /// A glob makes every sibling provider reachable by a bare name this scan
@@ -4187,17 +3955,12 @@ mod tests {
     #[test]
     fn refuses_an_append_after_finalization() {
         let (_, mut discovered) = fixture();
-        discovered
-            .post_finalizer_appends
-            .push("handle_completion".to_string());
+        discovered.post_finalizer_appends.push("handle_completion".to_string());
         let error = match validate_no_post_finalizer_append(&discovered) {
             Ok(()) => panic!("post-finalizer append was not refused"),
             Err(error) => format!("{error:?}"),
         };
-        assert!(
-            error.contains("has not been ranked"),
-            "unexpected message: {error}"
-        );
+        assert!(error.contains("has not been ranked"), "unexpected message: {error}");
     }
 
     /// The append-channel predicate is what makes the denominator mechanical,
@@ -4218,10 +3981,7 @@ mod tests {
             "a child that floods stderr must not flood the error message: {} chars",
             bounded.chars().count()
         );
-        assert!(
-            bounded.ends_with('\u{2026}'),
-            "truncation must be visible: {bounded}"
-        );
+        assert!(bounded.ends_with('\u{2026}'), "truncation must be visible: {bounded}");
     }
 
     /// Two trait impls can share a method name on one type, and an
@@ -4240,11 +4000,7 @@ mod tests {
         let carriers = BTreeSet::new();
         let mut visitor = SeamVisitor::new(PROBE_FILE, &carriers);
         visitor.visit_file(&file);
-        assert_eq!(
-            visitor.producers.len(),
-            2,
-            "both trait methods are producers"
-        );
+        assert_eq!(visitor.producers.len(), 2, "both trait methods are producers");
 
         let merged = merge_declarations(visitor.producers).expect("distinct ids do not collide");
         assert_eq!(
@@ -4291,19 +4047,13 @@ mod tests {
             #[cfg(all(test, feature = "wasm"))]
             fn f(completions: &mut Vec<CompletionItem>) {}
         };
-        assert!(
-            has_cfg_test(&only_under_test.attrs),
-            "all(test, ..) is test-only"
-        );
+        assert!(has_cfg_test(&only_under_test.attrs), "all(test, ..) is test-only");
 
         let nested: syn::ItemFn = syn::parse_quote! {
             #[cfg(all(feature = "wasm", all(test)))]
             fn f(completions: &mut Vec<CompletionItem>) {}
         };
-        assert!(
-            has_cfg_test(&nested.attrs),
-            "nested all(..) is still test-only"
-        );
+        assert!(has_cfg_test(&nested.attrs), "nested all(..) is still test-only");
 
         let also_ships: syn::ItemFn = syn::parse_quote! {
             #[cfg(any(test, feature = "x"))]
@@ -4358,10 +4108,7 @@ mod tests {
         let no_producers = BTreeSet::new();
         let mut visitor = EntryBodyVisitor::new(&no_producers);
         visitor.visit_block(&taken.block);
-        assert!(
-            visitor.appended_after_finalizer,
-            "`append` through a moved page went undetected"
-        );
+        assert!(visitor.appended_after_finalizer, "`append` through a moved page went undetected");
     }
 
     /// The same control must not fire on the ordinary shape, or every entry
@@ -4500,24 +4247,13 @@ mod tests {
             pub type Unrelated = Vec<String>;
         };
         let mut containers = Vec::new();
-        let mut visitor = CarrierVisitor {
-            containers: &mut containers,
-        };
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
         let carriers = resolve_carriers(&containers);
 
-        assert!(
-            carriers.contains("Items"),
-            "an alias for the page is the page"
-        );
-        assert!(
-            carriers.contains("Chained"),
-            "an alias chain resolves to the page"
-        );
-        assert!(
-            !carriers.contains("Unrelated"),
-            "an unrelated alias must not widen the scan"
-        );
+        assert!(carriers.contains("Items"), "an alias for the page is the page");
+        assert!(carriers.contains("Chained"), "an alias chain resolves to the page");
+        assert!(!carriers.contains("Unrelated"), "an unrelated alias must not widen the scan");
 
         // Both channels must see through the alias, or a producer keeps its
         // signature and loses its row, its owner, and its digest coverage.
@@ -4525,11 +4261,7 @@ mod tests {
             fn producer(completions: &mut Chained) {}
         };
         assert!(
-            appends
-                .sig
-                .inputs
-                .iter()
-                .any(|arg| takes_append_channel(arg, &carriers)),
+            appends.sig.inputs.iter().any(|arg| takes_append_channel(arg, &carriers)),
             "`&mut Chained` is the append channel spelled through an alias"
         );
 
@@ -4537,11 +4269,7 @@ mod tests {
         seam.visit_file(&syn::parse_quote! {
             fn returns_alias() -> Items { Vec::new() }
         });
-        assert_eq!(
-            seam.producers.len(),
-            1,
-            "returning an alias is a candidate return"
-        );
+        assert_eq!(seam.producers.len(), 1, "returning an alias is a candidate return");
     }
 
     /// A container holding the page through an alias, or through another
@@ -4559,39 +4287,21 @@ mod tests {
             pub struct Unrelated { pub names: Vec<String> }
         };
         let mut containers = Vec::new();
-        let mut visitor = CarrierVisitor {
-            containers: &mut containers,
-        };
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
         let carriers = resolve_carriers(&containers);
 
-        assert!(
-            carriers.contains("Page"),
-            "a field typed through an alias holds the page"
-        );
-        assert!(
-            carriers.contains("Outer"),
-            "a field typed as a carrier holds the page"
-        );
-        assert!(
-            carriers.contains("Flow"),
-            "an enum variant holding a carrier holds the page"
-        );
-        assert!(
-            !carriers.contains("Unrelated"),
-            "an unrelated vector must not widen the scan"
-        );
+        assert!(carriers.contains("Page"), "a field typed through an alias holds the page");
+        assert!(carriers.contains("Outer"), "a field typed as a carrier holds the page");
+        assert!(carriers.contains("Flow"), "an enum variant holding a carrier holds the page");
+        assert!(!carriers.contains("Unrelated"), "an unrelated vector must not widen the scan");
 
         // The point of the closure is that the producer keeps its row.
         let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
         seam.visit_file(&syn::parse_quote! {
             fn returns_nested() -> Outer { unimplemented!() }
         });
-        assert_eq!(
-            seam.producers.len(),
-            1,
-            "returning a nested carrier is a candidate return"
-        );
+        assert_eq!(seam.producers.len(), 1, "returning a nested carrier is a candidate return");
     }
 
     /// The `providers` namespace can itself be renamed.
@@ -4649,10 +4359,7 @@ mod tests {
             module: String::new(),
         };
         visitor.visit_file(&late);
-        assert!(
-            modules.contains("hover"),
-            "the alias pass must not depend on item order"
-        );
+        assert!(modules.contains("hover"), "the alias pass must not depend on item order");
 
         // An ordinary local name is not a provider namespace.
         let unrelated: syn::File = syn::parse_quote! {
@@ -4670,10 +4377,7 @@ mod tests {
             module: String::new(),
         };
         visitor.visit_file(&unrelated);
-        assert!(
-            modules.is_empty(),
-            "an unrelated alias must not widen the plane, got {modules:?}"
-        );
+        assert!(modules.is_empty(), "an unrelated alias must not widen the plane, got {modules:?}");
     }
 
     /// `providers::{self}` imports the namespace, not a module called `self`.
@@ -4702,14 +4406,8 @@ mod tests {
             !modules.contains("self"),
             "`self` is the namespace, not a module in it, got {modules:?}"
         );
-        assert!(
-            modules.contains("htmx"),
-            "a real sibling module is still recorded"
-        );
-        assert!(
-            aliases.contains("p"),
-            "`self as p` still registers the namespace alias"
-        );
+        assert!(modules.contains("htmx"), "a real sibling module is still recorded");
+        assert!(aliases.contains("p"), "`self as p` still registers the namespace alias");
     }
 
     /// A repeated entry point cannot inflate a row's route count.
@@ -4929,10 +4627,7 @@ mod tests {
         let overshoot = record(&syn::parse_quote! {
             fn call() { let _ = super::super::super::super::super::super::x(); }
         });
-        assert!(
-            overshoot.is_empty(),
-            "an over-long super chain resolves to nothing"
-        );
+        assert!(overshoot.is_empty(), "an over-long super chain resolves to nothing");
     }
 
     /// Test-only types must not enter the carrier set.
@@ -4955,16 +4650,11 @@ mod tests {
             pub struct Shipped { pub candidates: Vec<CompletionItem> }
         };
         let mut containers = Vec::new();
-        let mut visitor = CarrierVisitor {
-            containers: &mut containers,
-        };
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
         let carriers = resolve_carriers(&containers);
 
-        assert!(
-            carriers.contains("Shipped"),
-            "product source is still a carrier"
-        );
+        assert!(carriers.contains("Shipped"), "product source is still a carrier");
         for absent in ["Finalization", "DirectlyGated", "GatedAlias"] {
             assert!(
                 !carriers.contains(absent),
@@ -5082,10 +4772,7 @@ mod tests {
                 fn call() { let _ = super::super::super::super::hover::something(); }
             }
         });
-        assert!(
-            nested.contains("hover"),
-            "an inline module is one level deeper, got {nested:?}"
-        );
+        assert!(nested.contains("hover"), "an inline module is one level deeper, got {nested:?}");
 
         // Three from inside `mod inner` land in `providers::completion` —
         // correct, and not a sibling delegation.
@@ -5121,15 +4808,10 @@ mod tests {
             pub type B = A;
         };
         let mut containers = Vec::new();
-        let mut visitor = CarrierVisitor {
-            containers: &mut containers,
-        };
+        let mut visitor = CarrierVisitor { containers: &mut containers };
         visitor.visit_file(&file);
         let carriers = resolve_carriers(&containers);
-        assert!(
-            carriers.is_empty(),
-            "a cycle naming no candidate resolves to nothing"
-        );
+        assert!(carriers.is_empty(), "a cycle naming no candidate resolves to nothing");
     }
 
     /// The construction plane tracks the migration target too.
@@ -5142,10 +4824,7 @@ mod tests {
         };
         let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
         seam.visit_file(&item);
-        assert_eq!(
-            seam.constructions, 1,
-            "a `CompletionItem` construction enters the plane"
-        );
+        assert_eq!(seam.constructions, 1, "a `CompletionItem` construction enters the plane");
 
         let candidate: syn::File = syn::parse_quote! {
             fn build() { let _ = CompletionCandidate { label: label() }; }
@@ -5163,10 +4842,7 @@ mod tests {
         };
         let mut seam = SeamVisitor::new(PROBE_FILE, &carriers);
         seam.visit_file(&unrelated);
-        assert_eq!(
-            seam.constructions, 0,
-            "an unrelated struct is not a candidate"
-        );
+        assert_eq!(seam.constructions, 0, "an unrelated struct is not a candidate");
     }
 
     /// `not_applicable` on a real producer erases a classification rather than
@@ -5209,11 +4885,7 @@ mod tests {
             .find(|row| row.candidate_class == CandidateClass::Router)
             .expect("the ledger carries a router row");
         row.identity = IdentityDisposition::LegacyLabelCompatibility;
-        refuses(
-            &ledger,
-            &discovered,
-            "carries a producer disposition in `identity`",
-        );
+        refuses(&ledger, &discovered, "carries a producer disposition in `identity`");
     }
 
     #[test]
@@ -5221,50 +4893,32 @@ mod tests {
         let accepted: syn::ItemFn = syn::parse_quote! {
             fn producer(completions: &mut Vec<CompletionItem>) {}
         };
-        assert!(accepted
-            .sig
-            .inputs
-            .iter()
-            .any(|arg| takes_append_channel(arg, &BTreeSet::new())));
+        assert!(accepted.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new())));
 
         let qualified: syn::ItemFn = syn::parse_quote! {
             fn producer(completions: &mut Vec<crate::completion::CompletionItem>) {}
         };
-        assert!(qualified
-            .sig
-            .inputs
-            .iter()
-            .any(|arg| takes_append_channel(arg, &BTreeSet::new())));
+        assert!(qualified.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new())));
 
         // A shared slice reorders in place; it cannot add a candidate.
         let slice: syn::ItemFn = syn::parse_quote! {
             fn reorder(completions: &mut [CompletionItem]) {}
         };
-        assert!(!slice
-            .sig
-            .inputs
-            .iter()
-            .any(|arg| takes_append_channel(arg, &BTreeSet::new())));
+        assert!(!slice.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new())));
 
         // Read-only access is not an append channel.
         let shared: syn::ItemFn = syn::parse_quote! {
             fn inspect(completions: &Vec<CompletionItem>) {}
         };
-        assert!(!shared
-            .sig
-            .inputs
-            .iter()
-            .any(|arg| takes_append_channel(arg, &BTreeSet::new())));
+        assert!(!shared.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new())));
 
         // An unrelated vector must not widen the denominator.
         let unrelated: syn::ItemFn = syn::parse_quote! {
             fn unrelated(values: &mut Vec<String>) {}
         };
-        assert!(!unrelated
-            .sig
-            .inputs
-            .iter()
-            .any(|arg| takes_append_channel(arg, &BTreeSet::new())));
+        assert!(
+            !unrelated.sig.inputs.iter().any(|arg| takes_append_channel(arg, &BTreeSet::new()))
+        );
 
         // A `&mut` borrow of a named carrier is the same channel: the callee
         // can reach the page through the field and append to it, exactly as
@@ -5276,11 +4930,7 @@ mod tests {
             fn producer(page: &mut Finalization) {}
         };
         assert!(
-            borrows_carrier
-                .sig
-                .inputs
-                .iter()
-                .any(|arg| takes_append_channel(arg, &carriers)),
+            borrows_carrier.sig.inputs.iter().any(|arg| takes_append_channel(arg, &carriers)),
             "`&mut Finalization` reaches the page through its field"
         );
 
@@ -5289,11 +4939,7 @@ mod tests {
             fn inspect(page: &Finalization) {}
         };
         assert!(
-            !shared_carrier
-                .sig
-                .inputs
-                .iter()
-                .any(|arg| takes_append_channel(arg, &carriers)),
+            !shared_carrier.sig.inputs.iter().any(|arg| takes_append_channel(arg, &carriers)),
             "a shared borrow of a carrier is not an append channel"
         );
 
