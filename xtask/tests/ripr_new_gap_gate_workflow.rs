@@ -2624,7 +2624,7 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
             })?;
         ensure!(
             bound == "3600",
-            "{lane}'s review-guidance pass must carry --timeout-seconds 3600; found {bound:?}.              The 600s and 1800s bounds each failed closed on large-closure diffs (#15082,              #15028, #14897)"
+            "{lane}'s review-guidance pass must carry --timeout-seconds 3600; found {bound:?}.              The 600s and 1800s bounds each failed closed on large-closure diffs (#15082, #15028, #14897)"
         );
     }
     let count = workflow
