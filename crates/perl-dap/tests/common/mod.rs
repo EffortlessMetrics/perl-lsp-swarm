@@ -381,7 +381,7 @@ impl DapWorkflowSession {
     pub fn pending_stopped_events(&self) -> usize {
         let mut count = 0;
         while let Ok(message) = self.rx.try_recv() {
-            if matches!(message, DapMessage::Event { ref event, .. } if event == "stopped") {
+            if matches!(message, (DapMessage::Event { ref event, .. }, _) if event == "stopped") {
                 count += 1;
             }
         }

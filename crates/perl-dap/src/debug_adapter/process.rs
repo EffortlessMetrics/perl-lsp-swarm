@@ -3930,7 +3930,7 @@ mod tests {
         let mut saw_terminated = false;
         while !saw_completion_marker || !saw_terminated {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     stopped += 1;
                     if stopped > 1 {
                         return Err("context plus prompt emitted duplicate stopped events".into());
@@ -3943,7 +3943,7 @@ mod tests {
                         return Err(format!("expected entry stop, got {reason:?}"));
                     }
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     if body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -3961,7 +3961,7 @@ mod tests {
                         saw_completion_marker = true;
                     }
                 }
-                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                     saw_terminated = true;
                 }
                 Ok(_) => {}
@@ -4076,7 +4076,7 @@ mod tests {
         let mut saw_terminated = false;
         while !saw_actual || !saw_terminated {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     let output = body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -4110,7 +4110,7 @@ mod tests {
                         ));
                     }
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     stopped += 1;
                     let reason = body
                         .as_ref()
@@ -4136,7 +4136,7 @@ mod tests {
                         ));
                     }
                 }
-                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                     saw_terminated = true;
                 }
                 Ok(_) => {}
@@ -4198,10 +4198,10 @@ mod tests {
         adapter.start_output_reader(PathBuf::from("/tmp"));
         loop {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => {
                     return Err("context-shaped output published entry before prompt".into());
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     if body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -4287,10 +4287,10 @@ mod tests {
         }
         loop {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     return Err(format!("delayed prompt prefix fabricated a stop: {body:?}"));
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     let output = body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -4354,7 +4354,7 @@ mod tests {
         let mut observed = Vec::new();
         loop {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     let reason = body
                         .as_ref()
                         .and_then(|value| value.get("reason"))
@@ -4373,7 +4373,7 @@ mod tests {
                     }
                     return Ok(());
                 }
-                Ok(DapMessage::Event { event, body, .. }) => {
+                Ok((DapMessage::Event { event, body, .. }, _)) => {
                     observed.push(format!("{event}:{body:?}"));
                 }
                 Ok(other) => observed.push(format!("message:{other:?}")),
@@ -4814,7 +4814,7 @@ mod tests {
         let mut saw_terminated = false;
         while !saw_completion_marker || !saw_terminated {
             match receiver.recv_timeout(Duration::from_secs(3)) {
-                Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                     if !released {
                         return Err("warning consumed entry stop before native context".into());
                     }
@@ -4836,7 +4836,7 @@ mod tests {
                         .ok_or("entry stop did not install a source frame")?;
                     stopped_line = Some(frame.line);
                 }
-                Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                     let output = body
                         .as_ref()
                         .and_then(|value| value.get("output"))
@@ -4860,7 +4860,7 @@ mod tests {
                         saw_completion_marker = true;
                     }
                 }
-                Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                     saw_terminated = true;
                 }
                 Ok(_) => {}
@@ -4949,7 +4949,7 @@ mod tests {
                 let mut stopped_events = Vec::new();
                 while !saw_marker {
                     match receiver.recv_timeout(Duration::from_secs(3)) {
-                        Ok(DapMessage::Event { event, body, .. }) if event == "stopped" => {
+                        Ok((DapMessage::Event { event, body, .. }, _)) if event == "stopped" => {
                             let reason = body
                                 .as_ref()
                                 .and_then(|value| value.get("reason"))
@@ -4958,7 +4958,7 @@ mod tests {
                                 .to_string();
                             stopped_events.push(reason);
                         }
-                        Ok(DapMessage::Event { event, body, .. }) if event == "output" => {
+                        Ok((DapMessage::Event { event, body, .. }, _)) if event == "output" => {
                             if body
                                 .as_ref()
                                 .and_then(|value| value.get("output"))
@@ -5040,13 +5040,13 @@ mod tests {
             let mut termination_error = None;
             while !saw_terminated {
                 match receiver.recv_timeout(Duration::from_secs(3)) {
-                    Ok(DapMessage::Event { event, .. }) if event == "stopped" => {
+                    Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => {
                         termination_error = Some(format!(
                             "{label}: unexpected stopped event after invalid source context"
                         ));
                         break;
                     }
-                    Ok(DapMessage::Event { event, .. }) if event == "terminated" => {
+                    Ok((DapMessage::Event { event, .. }, _)) if event == "terminated" => {
                         saw_terminated = true;
                     }
                     Ok(_) => {}

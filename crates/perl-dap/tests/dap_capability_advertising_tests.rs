@@ -22,7 +22,7 @@
 #[cfg(feature = "dap-phase2")]
 mod capability_tests {
     use anyhow::Result;
-    use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+    use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
     use perl_dap::types::{Source, StackFrame};
     use serde_json::Value;
     use std::fs;
@@ -183,7 +183,7 @@ mod capability_tests {
 
         // No execution side effect: only the initialize-time `initialized`
         // event may exist; a rejected goto must not emit `continued`.
-        while let Ok(msg) = rx.try_recv() {
+        while let Ok((msg, _)) = rx.try_recv() {
             let rendered = serde_json::to_string(&msg)?;
             assert!(
                 !rendered.contains("\"continued\""),
