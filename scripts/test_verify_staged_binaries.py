@@ -20,15 +20,27 @@ def bash_binary() -> str:
     so on a Windows host with WSL installed the suite silently ran under
     Linux/WSL bash, where native `F:/...` paths do not exist — every case
     failed 127 while `shutil.which("bash")` pointed at the Git/MSYS bash the
-    suite was written for (#15401). Prefer the PATH bash explicitly; POSIX
-    hosts keep the bare name.
+    suite was written for (#15401). Prefer the PATH bash explicitly, then the
+    standard Git-for-Windows install locations for hosts where bash is not on
+    PATH at all; POSIX hosts keep the bare name.
     """
     if sys.platform != "win32":
         return "bash"
     for entry in os.environ.get("PATH", "").split(os.pathsep):
-        if "system32" in entry.lower():
+        # PATH entries may carry surrounding quotes when they contain `;` or
+        # spaces; a quoted entry would never match an existing file as-is.
+        stripped = entry.strip().strip('"')
+        if "system32" in stripped.lower():
             continue
-        candidate = Path(entry) / "bash.exe"
+        candidate = Path(stripped) / "bash.exe"
+        if candidate.is_file():
+            return str(candidate)
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    for candidate in (
+        Path(program_files) / "Git" / "bin" / "bash.exe",
+        Path(program_files) / "Git" / "usr" / "bin" / "bash.exe",
+        Path(r"C:\Program Files (x86)\Git") / "usr" / "bin" / "bash.exe",
+    ):
         if candidate.is_file():
             return str(candidate)
     return "bash"
