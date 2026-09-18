@@ -14,7 +14,12 @@ fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
 
 fn run_packet_checker(root: &Path) -> Result<std::process::Output, Box<dyn Error>> {
     let script = root.join("scripts/check-zed-upstream-submission-packet.sh");
-    let output = Command::new("bash").arg(&script).current_dir(root).output()?;
+    // MSYS bash strips backslashes from absolute Windows paths passed as argv;
+    // forward-slash the script path before handing it to bash on Windows
+    // (#15435 / #15423 family C8). `current_dir(root)` already anchors the
+    // invocation, so a forward-slash absolute path is fine on both platforms.
+    let script_arg = script.to_string_lossy().replace('\\', "/");
+    let output = Command::new("bash").arg(script_arg).current_dir(root).output()?;
     Ok(output)
 }
 
