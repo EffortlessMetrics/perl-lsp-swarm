@@ -233,7 +233,7 @@ fn facade_success_output_names_only_caller_artifacts() -> TestResult {
         "success output names a deleted temporary workspace path: {stdout}"
     );
     assert!(
-        stdout.contains(&receipt.to_string_lossy().replace('\\', "/")),
+        stdout.contains(&*receipt.to_string_lossy()),
         "success output does not name the caller receipt: {stdout}"
     );
     Ok(())

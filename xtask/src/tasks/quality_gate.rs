@@ -1,7 +1,7 @@
 //! Quality gates for the proof lane.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::ErrorKind,
     path::{Path, PathBuf},
@@ -19,6 +19,49 @@ use crate::tasks::git_context::git_stdout_with_worktree_fallback;
 const PATCH_TARGET: f64 = 95.0;
 const PROJECT_TARGET: f64 = 95.0;
 const NEW_RIPR_GAP_SUGGESTED_TEST: &str = "Add or update the focused test named by RIPR review guidance for the changed file, line, and seam.";
+
+/// Sentinel date used during verdict evaluation when a caller hands the engine a
+/// [`LifecycleOverlay`]. The sentinel can never cross `today`, so a committed
+/// exception row cannot inherit a verdict shift driven by clock progression.
+pub(crate) const LIFECYCLE_SENTINEL: &str = "9999-12-31";
+
+/// One committed lifecycle row lifted out of the caller-supplied policy.
+///
+/// The engine uses these rows to stamp original committed dates back into the
+/// receipt output while substituting sentinels for verdict comparison.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LifecycleDates {
+    pub review_after: String,
+    pub expires: String,
+}
+
+/// Caller-supplied policy adaptation injected by the [`super::quality_gate_facade`]
+/// adapter to keep candidate verdicts invariant under wall-clock progression.
+///
+/// When supplied:
+/// - Verdict comparison substitutes [`LIFECYCLE_SENTINEL`] for `review_after` /
+///   `expires` so the `quality_exception_review_due` and
+///   `quality_exception_expired` arms never fire on committed dates.
+/// - The receipt's `temporary_exceptions.active[*]` and every
+///   `quality_exception_active_final_blocker` next action stamp the original
+///   committed dates from `rows` keyed by exception id.
+/// - The receipt's `temporary_exceptions` records `due_review = "advisory"`,
+///   `lifecycle_authority = "policy_cadence"`, and (when present) the
+///   `validation_error` from the caller.
+/// - The engine injects a single `quality_exception_policy_not_current`
+///   next action with `reason = "invalid_due_review"` carrying the
+///   `validation_error` as its `repair` text.
+///
+/// `invalid_metadata_status` is true when the only metadata-level fault in the
+/// caller policy is the malformed `due_review` itself; in that case the engine
+/// suppresses its own synthetic `invalid_metadata` next action to keep the two
+/// diagnoses from competing for the operator's attention.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LifecycleOverlay {
+    pub rows: std::collections::BTreeMap<String, LifecycleDates>,
+    pub validation_error: Option<String>,
+    pub invalid_metadata_status: bool,
+}
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum QualityGateMode {
@@ -52,9 +95,10 @@ pub struct QualityGateArgs {
     pub receipt: PathBuf,
     pub summary: PathBuf,
     pub check: bool,
-    /// Suppress the success line. Facades that evaluate in a temporary
-    /// workspace set this so logs never name paths that vanish on return;
-    /// they print the published caller artifacts themselves.
+    /// Suppress the success line. Reserved for callers that orchestrate the
+    /// engine in nested contexts where naming the published artifacts on the
+    /// default stream would duplicate the surrounding report; normal CLI
+    /// invocations leave this `false`.
     pub quiet: bool,
 }
 
@@ -66,8 +110,28 @@ struct GateEvaluation {
 }
 
 pub fn run(args: QualityGateArgs) -> Result<()> {
+    run_with_overlay(args, None)
+}
+
+/// Evaluate the gate and publish the rendered artifacts. When `overlay` is
+/// `Some`, the engine substitutes the sentinel lifecycle dates for verdict
+/// comparison, stamps the overlay's committed dates into the receipt, and
+/// records the overlay's `validation_error` if present.
+///
+/// This is the single entry point the [`super::quality_gate_facade`] adapter
+/// uses. Rendering, freshness comparison, output writes, and exit
+/// classification all live behind this seam — callers must not duplicate any
+/// of them.
+pub fn run_with_overlay(args: QualityGateArgs, overlay: Option<LifecycleOverlay>) -> Result<()> {
     let root = std::env::current_dir().context("resolving current directory")?;
-    let evaluation = evaluate(&root, &args)?;
+    let evaluation = evaluate(&root, &args, overlay.as_ref())?;
+    publish(&args, evaluation)
+}
+
+/// Render the evaluated gate as the caller-requested artifacts and classify
+/// the exit. The caller-facing receipt/summary paths in `args` are the only
+/// paths the engine reads or writes here — no temporary workspace is involved.
+fn publish(args: &QualityGateArgs, evaluation: GateEvaluation) -> Result<()> {
     let receipt_text = render_json(&evaluation.receipt)?;
 
     if args.check {
@@ -108,23 +172,31 @@ pub fn run(args: QualityGateArgs) -> Result<()> {
     Ok(())
 }
 
-fn evaluate(root: &Path, args: &QualityGateArgs) -> Result<GateEvaluation> {
+fn evaluate(
+    root: &Path,
+    args: &QualityGateArgs,
+    overlay: Option<&LifecycleOverlay>,
+) -> Result<GateEvaluation> {
     let head = current_head(root)?;
     match args.mode {
-        QualityGateMode::Enforce => evaluate_final(&head, args),
-        QualityGateMode::EnforcePatchCoverage => evaluate_patch_coverage(&head, args),
-        QualityGateMode::EnforceNewRipr => evaluate_new_ripr(&head, args),
+        QualityGateMode::Enforce => evaluate_final(&head, args, overlay),
+        QualityGateMode::EnforcePatchCoverage => evaluate_patch_coverage(&head, args, overlay),
+        QualityGateMode::EnforceNewRipr => evaluate_new_ripr(&head, args, overlay),
     }
 }
 
-fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> {
+fn evaluate_final(
+    head: &str,
+    args: &QualityGateArgs,
+    overlay: Option<&LifecycleOverlay>,
+) -> Result<GateEvaluation> {
     let codecov_patch_status = read_codecov_patch_status(&args.codecov)?;
     let codecov_project_status = read_codecov_project_status(&args.codecov)?;
     let coverage = read_coverage_receipt(&args.coverage_receipt, head);
     let ripr = read_ripr_plus_receipt(&args.ripr_receipt, head);
     let ripr_pr = read_ripr_pr_receipt(&args.ripr_pr_receipt, head);
     let review = read_review_guidance_receipt(&args.review_receipt, head);
-    let exceptions = read_exception_policy(args, today());
+    let exceptions = read_exception_policy(args, today(), overlay);
     let mut next_actions = Vec::new();
     next_actions.extend(exceptions.actions.clone());
 
@@ -293,10 +365,14 @@ fn evaluate_final(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> 
     Ok(GateEvaluation { receipt, markdown, failed })
 }
 
-fn evaluate_patch_coverage(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> {
+fn evaluate_patch_coverage(
+    head: &str,
+    args: &QualityGateArgs,
+    overlay: Option<&LifecycleOverlay>,
+) -> Result<GateEvaluation> {
     let codecov_status = read_codecov_patch_status(&args.codecov)?;
     let coverage = read_coverage_receipt(&args.coverage_receipt, head);
-    let exceptions = read_exception_policy(args, today());
+    let exceptions = read_exception_policy(args, today(), overlay);
     let mut next_actions = Vec::new();
     next_actions.extend(exceptions.actions.clone());
 
@@ -399,11 +475,15 @@ fn classify_patch_coverage_failure(failed: bool, next_actions: &[Value]) -> &'st
     "setup_failure"
 }
 
-fn evaluate_new_ripr(head: &str, args: &QualityGateArgs) -> Result<GateEvaluation> {
+fn evaluate_new_ripr(
+    head: &str,
+    args: &QualityGateArgs,
+    overlay: Option<&LifecycleOverlay>,
+) -> Result<GateEvaluation> {
     let ripr = read_ripr_plus_receipt(&args.ripr_receipt, head);
     let ripr_pr = read_ripr_pr_receipt(&args.ripr_pr_receipt, head);
     let review = read_review_guidance_receipt(&args.review_receipt, head);
-    let exceptions = read_exception_policy(args, today());
+    let exceptions = read_exception_policy(args, today(), overlay);
     let mut next_actions = Vec::new();
     next_actions.extend(exceptions.actions.clone());
 
@@ -662,6 +742,144 @@ struct ExceptionRequirements {
     required_active: Vec<String>,
 }
 
+/// Parse a raw caller-supplied policy into the lifecycle overlay the engine
+/// applies during evaluation. The overlay carries the original committed
+/// `review_after`/`expires` rows keyed by exception id, the optional
+/// `validation_error` for malformed `due_review` values, and the
+/// `invalid_metadata_status` flag that suppresses the engine's synthetic
+/// `invalid_metadata` next action when `due_review` is the only metadata
+/// defect.
+///
+/// Returns an overlay with no rows and no validation error when the policy
+/// content already lines up with the engine's natural verdict; callers can
+/// always supply the result unconditionally.
+pub(crate) fn compute_lifecycle_overlay(raw: &str) -> Result<LifecycleOverlay> {
+    use toml::Value as TomlValue;
+
+    let mut overlay = LifecycleOverlay::default();
+
+    let mut policy = match toml::from_str::<TomlValue>(raw) {
+        Ok(value) => value,
+        Err(_) => return Ok(overlay),
+    };
+    let Some(table) = policy.as_table_mut() else {
+        return Ok(overlay);
+    };
+
+    let metadata_is_valid = overlay_policy_metadata_is_valid(table);
+
+    let due_review = table.get("due_review").and_then(TomlValue::as_str).map(str::to_string);
+    if let Some(due_review) = due_review.as_deref() {
+        if !matches!(due_review, "warn" | "fail") {
+            overlay.validation_error = Some(format!(
+                "quality exception due_review must be warn or fail, found {due_review}"
+            ));
+            overlay.invalid_metadata_status = metadata_is_valid;
+            table.insert("status".to_string(), TomlValue::String("invalid".to_string()));
+        }
+    }
+    table.insert(
+        "due_review".to_string(),
+        TomlValue::String("warn".to_string()),
+    );
+
+    if let Some(exceptions) = table.get_mut("exception").and_then(TomlValue::as_array_mut) {
+        for exception in exceptions {
+            let Some(exception) = exception.as_table_mut() else {
+                continue;
+            };
+            if !overlay_exception_is_structurally_valid(exception) {
+                continue;
+            }
+            let Some(id) = exception
+                .get("id")
+                .and_then(TomlValue::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Some(review_after) = exception
+                .get("review_after")
+                .and_then(TomlValue::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Some(expires) = exception
+                .get("expires")
+                .and_then(TomlValue::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+
+            overlay.rows.insert(
+                id,
+                LifecycleDates {
+                    review_after,
+                    expires,
+                },
+            );
+            exception.insert(
+                "review_after".to_string(),
+                TomlValue::String(LIFECYCLE_SENTINEL.to_string()),
+            );
+            exception.insert(
+                "expires".to_string(),
+                TomlValue::String(LIFECYCLE_SENTINEL.to_string()),
+            );
+        }
+    }
+
+    // Preserve the normalized text only as a side effect of running through
+    // `toml::Value` so the caller's file on disk is untouched. The overlay
+    // itself is the contract; the engine never reads back the rewritten text.
+    let _ = toml::to_string(&policy);
+    Ok(overlay)
+}
+
+fn overlay_policy_metadata_is_valid(table: &toml::Table) -> bool {
+    table.get("owner").and_then(toml::Value::as_str).is_some_and(|value| !value.trim().is_empty())
+        && table.get("status").and_then(toml::Value::as_str) == Some("active")
+        && table
+            .get("updated")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn overlay_exception_is_structurally_valid(exception: &toml::Table) -> bool {
+    let required = [
+        "id",
+        "kind",
+        "scope",
+        "owner",
+        "reason",
+        "final_target",
+        "evidence",
+        "removal_criteria",
+        "created",
+        "review_after",
+        "expires",
+    ];
+    let required_fields_are_present = required.iter().all(|field| {
+        exception
+            .get(*field)
+            .and_then(toml::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    });
+    let lifecycle_dates_are_valid = ["created", "review_after", "expires"].iter().all(|field| {
+        exception
+            .get(*field)
+            .and_then(toml::Value::as_str)
+            .and_then(parse_policy_date)
+            .is_some()
+    });
+
+    required_fields_are_present
+        && lifecycle_dates_are_valid
+        && exception.get("kind").and_then(toml::Value::as_str) == Some("temporary_burndown")
+}
+
 #[derive(Debug, Deserialize)]
 struct QualityException {
     id: String,
@@ -687,7 +905,11 @@ enum JsonReceipt {
     Present(Value),
 }
 
-fn read_exception_policy(args: &QualityGateArgs, today: NaiveDate) -> ExceptionPolicyEvaluation {
+fn read_exception_policy(
+    args: &QualityGateArgs,
+    today: NaiveDate,
+    overlay: Option<&LifecycleOverlay>,
+) -> ExceptionPolicyEvaluation {
     let path = &args.exception_policy;
     let raw = match fs::read_to_string(path) {
         Ok(raw) => raw,
@@ -729,7 +951,7 @@ fn read_exception_policy(args: &QualityGateArgs, today: NaiveDate) -> ExceptionP
         }
     };
 
-    let due_review = policy.due_review.as_deref().unwrap_or("fail");
+    let policy_due_review = policy.due_review.as_deref().unwrap_or("fail");
     let mut active = Vec::new();
     let mut active_ids = BTreeSet::new();
     let mut actions = Vec::new();
@@ -741,10 +963,9 @@ fn read_exception_policy(args: &QualityGateArgs, today: NaiveDate) -> ExceptionP
             "quality exception policy must use schema_version = 1 and policy = \"quality-gate-exceptions\"",
         ));
     }
-    if policy.owner.trim().is_empty()
-        || policy.status != "active"
-        || policy.updated.trim().is_empty()
-    {
+    let metadata_is_valid =
+        !policy.owner.trim().is_empty() && policy.status == "active" && !policy.updated.trim().is_empty();
+    if !metadata_is_valid {
         actions.push(quality_exception_policy_action(
             args,
             "invalid_metadata",
@@ -774,24 +995,47 @@ fn read_exception_policy(args: &QualityGateArgs, today: NaiveDate) -> ExceptionP
         let Some(expires) = expires else {
             continue;
         };
-        if expires < today {
+        // Lifecycle overlay: substitute sentinel dates for verdict comparison
+        // so committed review_after/expires never shift an unchanged candidate.
+        let verdict_expires = overlay
+            .and_then(|o| o.rows.get(&exception.id))
+            .map(|_| LIFECYCLE_SENTINEL)
+            .and_then(|d| parse_policy_date(d))
+            .unwrap_or(expires);
+        if verdict_expires < today {
             actions.push(quality_exception_expired_action(args, exception, expires, today));
             continue;
         }
 
         active_ids.insert(exception.id.clone());
-        active.push(quality_exception_receipt_entry(exception, review_after, expires));
+        // Receipt entries stamp the original committed dates so callers see
+        // the row they authored, even when the overlay sentinels drove the
+        // verdict.
+        let receipt_review_after = overlay
+            .and_then(|o| o.rows.get(&exception.id))
+            .map(|d| parse_policy_date(&d.review_after))
+            .unwrap_or(review_after);
+        active.push(quality_exception_receipt_entry(
+            exception,
+            receipt_review_after,
+            expires,
+        ));
 
         let Some(review_after) = review_after else {
             continue;
         };
-        if review_after <= today {
+        let verdict_review_after = overlay
+            .and_then(|o| o.rows.get(&exception.id))
+            .map(|_| LIFECYCLE_SENTINEL)
+            .and_then(|d| parse_policy_date(d))
+            .unwrap_or(review_after);
+        if verdict_review_after <= today {
             actions.push(quality_exception_review_due_action(
                 args,
                 exception,
                 review_after,
                 today,
-                due_review,
+                policy_due_review,
             ));
         }
     }
@@ -811,23 +1055,55 @@ fn read_exception_policy(args: &QualityGateArgs, today: NaiveDate) -> ExceptionP
         ));
     }
 
+    if let Some(overlay) = overlay {
+        if let Some(error) = overlay.validation_error.as_deref() {
+            actions.push(quality_exception_policy_action(
+                args,
+                "invalid_due_review",
+                error,
+            ));
+            if overlay.invalid_metadata_status {
+                actions.retain(|action| {
+                    !(action.get("kind").and_then(Value::as_str)
+                        == Some("quality_exception_policy_not_current")
+                        && action.get("reason").and_then(Value::as_str)
+                            == Some("invalid_metadata"))
+                });
+            }
+        }
+    }
+
     let blocking =
         actions.iter().any(|action| action.get("blocking").and_then(Value::as_bool) == Some(true));
     let status = if blocking { "invalid" } else { "present" };
 
-    ExceptionPolicyEvaluation {
-        receipt: json!({
-            "status": status,
-            "policy": display_path(path),
-            "due_review": due_review,
-            "required_active": policy.requirements.required_active,
-            "active_count": active.len(),
-            "final_enforcement_blocked": !active.is_empty(),
-            "active": active,
-            "missing_required": missing_required,
-        }),
-        actions,
+    let mut receipt = json!({
+        "status": status,
+        "policy": display_path(path),
+        "due_review": policy_due_review,
+        "required_active": policy.requirements.required_active,
+        "active_count": active.len(),
+        "final_enforcement_blocked": !active.is_empty(),
+        "active": active,
+        "missing_required": missing_required,
+    });
+    if let Some(overlay) = overlay {
+        if let Some(object) = receipt.as_object_mut() {
+            object.insert("due_review".to_string(), Value::String("advisory".to_string()));
+            object.insert(
+                "lifecycle_authority".to_string(),
+                Value::String("policy_cadence".to_string()),
+            );
+            if let Some(error) = overlay.validation_error.as_deref() {
+                object.insert(
+                    "validation_error".to_string(),
+                    Value::String(error.to_string()),
+                );
+            }
+        }
     }
+
+    ExceptionPolicyEvaluation { receipt, actions }
 }
 
 fn exception_validation_errors(exception: &QualityException) -> Vec<String> {
@@ -2182,6 +2458,25 @@ pub(crate) fn render_markdown(receipt: &Value, args: &QualityGateArgs) -> Result
         markdown.push('\n');
     }
 
+    if receipt
+        .get("temporary_exceptions")
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("lifecycle_authority"))
+        .is_some()
+    {
+        markdown.push_str("\n## Policy Lifecycle\n\n");
+        markdown.push_str("- authority: `cargo xtask policy cadence`\n");
+        markdown.push_str("- candidate impact: `advisory_only`\n");
+        if let Some(error) = receipt
+            .get("temporary_exceptions")
+            .and_then(Value::as_object)
+            .and_then(|object| object.get("validation_error"))
+            .and_then(Value::as_str)
+        {
+            markdown.push_str(&format!("- validation error: `{error}`\n"));
+        }
+    }
+
     Ok(markdown)
 }
 
@@ -2293,8 +2588,8 @@ fn quality_gate_command(args: &QualityGateArgs, check: bool, patch: Option<f64>)
     }
     command.push_str(&format!(
         " --receipt {} --summary {}",
-        args.receipt.display(),
-        args.summary.display()
+        display_path(&args.receipt),
+        display_path(&args.summary)
     ));
     if let Some(patch) = patch {
         command.push_str(&format!(" --patch-coverage {patch:.2}"));
@@ -3072,7 +3367,7 @@ mod tests {
         )?;
         let args = new_ripr_args(dir.path())?;
 
-        let evaluation = evaluate_new_ripr(head, &args)?;
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
 
         assert!(evaluation.failed, "the counted gap must still block");
         let gap = gap_action(&evaluation, "new_ripr_gap");
@@ -3138,7 +3433,7 @@ mod tests {
         )?;
         let args = new_ripr_args(dir.path())?;
 
-        let evaluation = evaluate_new_ripr(head, &args)?;
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
 
         assert!(!evaluation.failed, "{:?}", evaluation.receipt["next_actions"]);
         let original = evaluation
@@ -3282,7 +3577,7 @@ mod tests {
         )?;
         let args = new_ripr_args(dir.path())?;
 
-        let evaluation = evaluate_new_ripr(head, &args)?;
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
 
         assert!(evaluation.failed);
         let actions = evaluation
@@ -3357,7 +3652,7 @@ mod tests {
         )?;
         let args = new_ripr_args(dir.path())?;
 
-        let evaluation = evaluate_new_ripr(head, &args)?;
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
 
         assert!(!evaluation.failed, "{:?}", evaluation.receipt["next_actions"]);
         assert_eq!(evaluation.receipt.pointer("/ripr_pr/new_unresolved"), Some(&json!(0)));
@@ -3386,7 +3681,7 @@ mod tests {
         )?;
         let args = new_ripr_args(dir.path())?;
 
-        let evaluation = evaluate_new_ripr(head, &args)?;
+        let evaluation = evaluate_new_ripr(head, &args, None)?;
 
         assert!(evaluation.failed);
         let actions = evaluation
@@ -3407,5 +3702,94 @@ mod tests {
             "nameless guidance failure must still block on the receipt: {actions:?}"
         );
         Ok(())
+    }
+
+    #[test]
+    fn overlay_preserves_committed_dates_for_receipt() {
+        let raw = r#"
+            schema_version = 1
+            policy = "quality-gate-exceptions"
+            owner = "test-owner"
+            status = "active"
+            updated = "2026-01-01"
+            due_review = "fail"
+
+            [[exception]]
+            id = "EX-1"
+            kind = "temporary_burndown"
+            scope = "crates/perl-lsp-rs/src/foo.rs"
+            owner = "team-a"
+            reason = "tracking"
+            final_target = "fix in 0.18"
+            evidence = "git history"
+            removal_criteria = "remove when fixed"
+            created = "2026-01-01"
+            review_after = "2026-12-31"
+            expires = "2027-12-31"
+        "#;
+        let overlay = compute_lifecycle_overlay(raw).expect("overlay parses");
+
+        let row = overlay
+            .rows
+            .get("EX-1")
+            .expect("committed dates recorded for the receipt");
+        assert_eq!(
+            row.review_after,
+            "2026-12-31",
+            "overlay must lift the committed review_after untouched"
+        );
+        assert_eq!(
+            row.expires, "2027-12-31",
+            "overlay must lift the committed expires untouched"
+        );
+        assert!(
+            overlay.validation_error.is_none(),
+            "valid `due_review` must not trip the validation error path"
+        );
+        assert!(
+            !overlay.invalid_metadata_status,
+            "valid metadata must not flag the synthetic invalid_metadata suppression"
+        );
+    }
+
+    #[test]
+    fn overlay_records_validation_error_for_unsupported_due_review() {
+        let raw = r#"
+            schema_version = 1
+            policy = "quality-gate-exceptions"
+            owner = "test-owner"
+            status = "active"
+            updated = "2026-01-01"
+            due_review = "panic"
+
+            [[exception]]
+            id = "EX-2"
+            kind = "temporary_burndown"
+            scope = "crates/perl-lsp-rs/src/bar.rs"
+            owner = "team-b"
+            reason = "tracking"
+            final_target = "fix in 0.18"
+            evidence = "git history"
+            removal_criteria = "remove when fixed"
+            created = "2026-01-01"
+            review_after = "2026-12-31"
+            expires = "2027-12-31"
+        "#;
+        let overlay = compute_lifecycle_overlay(raw).expect("overlay parses");
+        assert_eq!(
+            overlay.validation_error.as_deref(),
+            Some(
+                "quality exception due_review must be warn or fail, found panic"
+            ),
+            "unsupported due_review must produce the validation error the engine forwards"
+        );
+        assert!(
+            overlay.invalid_metadata_status,
+            "metadata is otherwise valid, so the synthetic invalid_metadata suppression must activate"
+        );
+        assert!(
+            overlay.rows.contains_key("EX-2"),
+            "exception rows must still be lifted even when due_review is malformed"
+        );
     }
 }
