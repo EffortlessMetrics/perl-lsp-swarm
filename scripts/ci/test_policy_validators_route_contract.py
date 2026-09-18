@@ -9,16 +9,18 @@ proof semantics. This workflow runs trusted same-repository events on
 not succeed (outage timeout, failure, cancellation, or a fork/bot skip):
 
 - `validate` runs on trusted capacity for same-repo human PRs (and dispatch)
-- `validate-hosted` runs when `validate` did not succeed, with step bodies
-  identical to `validate`
+- `validate-hosted` always runs in parallel with step bodies identical to
+  `validate`
 - `validate-result` (display name `Validate CI policy ledgers`, the stable
-  required identity) aggregates fail-closed: a trusted success passes with
-  the fallback skipped, any other trusted outcome requires a fallback
-  success, and a validator failure on the executed lane remains a failure.
+  required identity) aggregates fail-closed: it waits only on the fallback,
+  polls the trusted verdict with a deadline, passes on agreement or on a
+  fallback success when the trusted lane never completed, and fails on
+  trusted failure or lane divergence.
 
 No secrets and no expressions embedded in run source: the router that needed
-a runner-inventory token cannot satisfy the workflow security ratchet, so
-failover keys off native job results instead.
+a runner-inventory token cannot satisfy the workflow security ratchet, and a
+needs gate cannot fail over a lane that queues forever (queue time ignores
+timeout-minutes), so the aggregate polls native job conclusions instead.
 
 Red-first contract: mutating ANY single implementation job's copy of a
 validator step — argument drift, commenting out, echo decoy — must fail this
@@ -161,11 +163,12 @@ class FallbackRoutingTest(unittest.TestCase):
                 marker, validate, f"untrusted marker {marker!r} missing from validate guard"
             )
 
-    def test_hosted_fails_over_on_non_success(self):
+    def test_hosted_always_runs_unblocked(self):
         hosted = job_block(read_workflow(), "validate-hosted")
-        self.assertIn("needs: validate", hosted)
-        self.assertIn("always()", hosted)
-        self.assertIn("needs.validate.result != 'success'", hosted)
+        # No needs gate: a queued-forever trusted lane must not block the
+        # fallback, and queue time ignores timeout-minutes.
+        self.assertNotIn("needs:", hosted)
+        self.assertIn("ubuntu-24.04", hosted)
 
     def test_self_hosted_job_keeps_nano_placement(self):
         validate = job_block(read_workflow(), "validate")
@@ -188,16 +191,21 @@ class AggregateTest(unittest.TestCase):
 
     def test_aggregate_fail_closed(self):
         result = job_block(read_workflow(), RESULT_JOB)
-        # Trusted success passes with the fallback skipped...
-        self.assertIn('"$NANO_RESULT" = "success"', result)
-        self.assertIn('"$HOSTED_RESULT" != "skipped"', result)
-        # ...any other trusted outcome requires a fallback success...
-        self.assertIn('"$HOSTED_RESULT" = "success"', result)
-        # ...needs results arrive via env, never embedded in run source...
-        self.assertIn("NANO_RESULT:", result)
-        self.assertIn("HOSTED_RESULT:", result)
+        # Aggregate waits only on the always-running fallback...
+        self.assertIn("- validate-hosted", result)
+        self.assertNotIn("- validate\n", result)
+        # ...polls the trusted verdict with a deadline instead of
+        # needs-gating on a lane that can queue forever...
+        self.assertIn("actions/runs/", result)
+        self.assertIn("POLL_DEADLINE_SECONDS", result)
+        self.assertIn(".conclusion", result)
+        # ...both-lanes-agree passes, divergence fails...
+        self.assertIn("both lanes agree", result)
+        self.assertIn("lane divergence", result)
+        # ...a trusted failure fails regardless of the fallback...
+        self.assertIn("trusted lane failed", result)
         # ...and every violation path exits nonzero.
-        self.assertGreaterEqual(result.count("exit 1"), 2)
+        self.assertGreaterEqual(result.count("exit 1"), 3)
 
 
 class RedFirstTest(unittest.TestCase):

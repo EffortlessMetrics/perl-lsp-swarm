@@ -98,9 +98,10 @@ permissions:
 jobs:
   validate:
     name: Validate CI policy ledgers (self-hosted)
-    # Trusted self-hosted capacity stays off forks and bot PRs; those run
-    # the hosted fallback below. A queued-forever nano (outage) hits the
-    # timeout and fails over the same way.
+    # Trusted self-hosted capacity stays off forks and bot PRs; those are
+    # proven by the hosted lane alone. A queued-forever nano (outage) is
+    # tolerated: the aggregate polls it with a deadline instead of
+    # needs-gating on it.
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -202,10 +203,10 @@ jobs:
 
   validate-hosted:
     name: Validate CI policy ledgers (GitHub-hosted)
-    needs: validate
-    # Fail over whenever the trusted lane did not succeed: outage timeout,
-    # failure, cancellation, or a fork/bot skip above.
-    if: always() && needs.validate.result != 'success'
+    # Always runs in parallel: the aggregate below decides between the
+    # trusted verdict and the fallback, so a queued-forever trusted lane
+    # (runner outage; queue time ignores timeout-minutes) cannot block
+    # failover the way a needs-gated lane would.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -301,12 +302,15 @@ jobs:
 
   validate-result:
     name: Validate CI policy ledgers
+    # Only the always-running fallback is a hard dependency: a queued-forever
+    # trusted lane (runner outage) must not block failover, and job queue
+    # time does not count toward timeout-minutes. The trusted verdict is read
+    # by polling the run's jobs below.
     needs:
-      - validate
       - validate-hosted
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -319,29 +323,61 @@ jobs:
           set -euo pipefail
           python3 -m unittest scripts/ci/test_policy_validators_route_contract.py
 
-      # Fail-closed aggregation: a trusted-lane success passes with the
-      # fallback skipped; any other trusted outcome requires a fallback
-      # success. Needs results arrive via env (never embedded in run
-      # source) per the workflow security ratchet.
+      # Fail-closed aggregation with a bounded wait for the trusted lane.
+      # Context values arrive via env (never embedded in run source) per the
+      # workflow security ratchet; the API token is the automatic
+      # GITHUB_TOKEN, never a secret reference.
       - name: Evaluate routed result
         shell: bash
         env:
-          NANO_RESULT: ${{ needs.validate.result }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
           HOSTED_RESULT: ${{ needs.validate-hosted.result }}
+          NANO_JOB: Validate CI policy ledgers (self-hosted)
+          POLL_DEADLINE_SECONDS: 900
+          POLL_INTERVAL_SECONDS: 30
         run: |
           set -euo pipefail
-          echo "nano=$NANO_RESULT hosted=$HOSTED_RESULT"
-          if [ "$NANO_RESULT" = "success" ]; then
-            if [ "$HOSTED_RESULT" != "skipped" ]; then
-              echo "::error::fallback must skip when the trusted lane succeeds (result=$HOSTED_RESULT)"
+          nano_conclusion=""
+          deadline=$((SECONDS + POLL_DEADLINE_SECONDS))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            nano_conclusion="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name == \"$NANO_JOB\") | .conclusion // \"pending\"")"
+            case "$nano_conclusion" in
+              success | failure | cancelled | skipped) break ;;
+            esac
+            sleep "$POLL_INTERVAL_SECONDS"
+          done
+          nano="${nano_conclusion:-pending}"
+          echo "nano=$nano hosted=$HOSTED_RESULT"
+          case "$nano" in
+            success)
+              if [ "$HOSTED_RESULT" = "success" ]; then
+                echo "Policy Validators trusted result: both lanes agree."
+                exit 0
+              fi
+              echo "::error::lane divergence: trusted lane passed but fallback is $HOSTED_RESULT"
               exit 1
-            fi
-            echo "Policy Validators trusted result: nano passed, fallback skipped."
-            exit 0
-          fi
-          if [ "$HOSTED_RESULT" = "success" ]; then
-            echo "Policy Validators fallback result: trusted lane $NANO_RESULT, hosted passed."
-            exit 0
-          fi
-          echo "::error::Policy Validators failed (nano=$NANO_RESULT hosted=$HOSTED_RESULT)"
-          exit 1
+              ;;
+            failure)
+              echo "::error::Policy Validators trusted lane failed (fallback $HOSTED_RESULT)"
+              exit 1
+              ;;
+            skipped | cancelled)
+              if [ "$HOSTED_RESULT" = "success" ]; then
+                echo "Policy Validators fallback result: trusted lane $nano, hosted passed."
+                exit 0
+              fi
+              echo "::error::Policy Validators failed (trusted $nano, hosted $HOSTED_RESULT)"
+              exit 1
+              ;;
+            *)
+              if [ "$HOSTED_RESULT" = "success" ]; then
+                echo "Policy Validators failover result: trusted lane still $nano after deadline, hosted passed."
+                exit 0
+              fi
+              echo "::error::Policy Validators failed (trusted $nano, hosted $HOSTED_RESULT)"
+              exit 1
+              ;;
+          esac
