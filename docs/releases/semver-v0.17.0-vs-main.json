@@ -1,0 +1,392 @@
+{
+  "schema": 1,
+  "release": "0.18",
+  "baseline_tag": "v0.17.0",
+  "head_sha": "aea691bcea5e821eadff94a542736a5b8edb2195",
+  "tool": "cargo-semver-checks",
+  "ratchet_list": ".ci\\public-api-baselines\\ratchet-crates.txt",
+  "totals": {
+    "crates": 12,
+    "crates_with_breaks": 6,
+    "crates_passing": 4,
+    "crates_with_tool_errors": 2,
+    "major_level_breaks_absorbed": 45
+  },
+  "crates": [
+    {
+      "name": "perl-lsp-rs",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 185,
+        "fail": 11,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": [
+        {
+          "rule": "auto_trait_impl_removed",
+          "description": "auto trait no longer implemented",
+          "locations": []
+        },
+        {
+          "rule": "constructible_struct_adds_field",
+          "description": "externally-constructible struct adds field",
+          "locations": []
+        },
+        {
+          "rule": "constructible_struct_adds_private_field",
+          "description": "struct no longer constructible due to new private field",
+          "locations": []
+        },
+        {
+          "rule": "enum_missing",
+          "description": "pub enum removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "feature_missing",
+          "description": "package feature removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "function_missing",
+          "description": "pub fn removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "inherent_method_missing",
+          "description": "pub method removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "method_requires_different_generic_type_params",
+          "description": "method now requires a different number of generic type parameters",
+          "locations": []
+        },
+        {
+          "rule": "module_missing",
+          "description": "pub module removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "struct_missing",
+          "description": "pub struct removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "struct_pub_field_missing",
+          "description": "pub struct's pub field removed or renamed",
+          "locations": []
+        }
+      ]
+    },
+    {
+      "name": "perllsp",
+      "exit_code": 0,
+      "status": "pass",
+      "checks": {
+        "pass": 196,
+        "fail": 0,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": []
+    },
+    {
+      "name": "perl-parser",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 193,
+        "fail": 3,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": [
+        {
+          "rule": "constructible_struct_adds_field",
+          "description": "externally-constructible struct adds field",
+          "locations": []
+        },
+        {
+          "rule": "struct_marked_non_exhaustive",
+          "description": "struct marked #[non_exhaustive]",
+          "locations": []
+        },
+        {
+          "rule": "struct_pub_field_missing",
+          "description": "pub struct's pub field removed or renamed",
+          "locations": []
+        }
+      ]
+    },
+    {
+      "name": "perl-dap",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 188,
+        "fail": 8,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": [
+        {
+          "rule": "constructible_struct_adds_field",
+          "description": "externally-constructible struct adds field",
+          "locations": []
+        },
+        {
+          "rule": "enum_variant_added",
+          "description": "enum variant added on exhaustive enum",
+          "locations": []
+        },
+        {
+          "rule": "enum_variant_missing",
+          "description": "pub enum variant removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "feature_missing",
+          "description": "package feature removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "inherent_method_missing",
+          "description": "pub method removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "method_receiver_ref_became_mut",
+          "description": "method receiver changed from immutable to mutable reference",
+          "locations": []
+        },
+        {
+          "rule": "module_missing",
+          "description": "pub module removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "struct_missing",
+          "description": "pub struct removed or renamed",
+          "locations": []
+        }
+      ]
+    },
+    {
+      "name": "perl-uri",
+      "exit_code": 0,
+      "status": "pass",
+      "checks": {
+        "pass": 196,
+        "fail": 0,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": []
+    },
+    {
+      "name": "perl-lexer",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 189,
+        "fail": 7,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": [
+        {
+          "rule": "constructible_struct_adds_private_field",
+          "description": "struct no longer constructible due to new private field",
+          "locations": []
+        },
+        {
+          "rule": "enum_marked_non_exhaustive",
+          "description": "enum marked #[non_exhaustive]",
+          "locations": []
+        },
+        {
+          "rule": "enum_unit_variant_changed_kind",
+          "description": "An enum unit variant changed kind",
+          "locations": []
+        },
+        {
+          "rule": "enum_variant_added",
+          "description": "enum variant added on exhaustive enum",
+          "locations": []
+        },
+        {
+          "rule": "struct_pub_field_missing",
+          "description": "pub struct's pub field removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "trait_method_added",
+          "description": "pub trait method added",
+          "locations": []
+        },
+        {
+          "rule": "trait_method_return_value_added",
+          "description": "pub trait method return value added",
+          "locations": []
+        }
+      ]
+    },
+    {
+      "name": "perl-parser-core",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 184,
+        "fail": 12,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": [
+        {
+          "rule": "constructible_struct_adds_field",
+          "description": "externally-constructible struct adds field",
+          "locations": []
+        },
+        {
+          "rule": "enum_marked_non_exhaustive",
+          "description": "enum marked #[non_exhaustive]",
+          "locations": []
+        },
+        {
+          "rule": "enum_no_repr_variant_discriminant_changed",
+          "description": "enum variant had its discriminant change value",
+          "locations": []
+        },
+        {
+          "rule": "enum_struct_variant_field_added",
+          "description": "pub enum struct variant field added",
+          "locations": []
+        },
+        {
+          "rule": "enum_variant_added",
+          "description": "enum variant added on exhaustive enum",
+          "locations": []
+        },
+        {
+          "rule": "enum_variant_missing",
+          "description": "pub enum variant removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "function_missing",
+          "description": "pub fn removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "module_missing",
+          "description": "pub module removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "struct_marked_non_exhaustive",
+          "description": "struct marked #[non_exhaustive]",
+          "locations": []
+        },
+        {
+          "rule": "struct_missing",
+          "description": "pub struct removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "struct_pub_field_missing",
+          "description": "pub struct's pub field removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "type_mismatched_generic_lifetimes",
+          "description": "type now takes a different number of generic lifetimes",
+          "locations": []
+        }
+      ]
+    },
+    {
+      "name": "perl-module",
+      "exit_code": 1,
+      "status": "fail",
+      "checks": {
+        "pass": 192,
+        "fail": 4,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": [
+        {
+          "rule": "enum_missing",
+          "description": "pub enum removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "function_missing",
+          "description": "pub fn removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "module_missing",
+          "description": "pub module removed or renamed",
+          "locations": []
+        },
+        {
+          "rule": "struct_missing",
+          "description": "pub struct removed or renamed",
+          "locations": []
+        }
+      ]
+    },
+    {
+      "name": "perl-semantic-facts",
+      "exit_code": 0,
+      "status": "pass",
+      "checks": {
+        "pass": 196,
+        "fail": 0,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": []
+    },
+    {
+      "name": "perl-source-identity",
+      "exit_code": 1,
+      "status": "error",
+      "checks": {
+        "pass": 0,
+        "fail": 0,
+        "warn": 0,
+        "skip": 0
+      },
+      "major_level_breaks": []
+    },
+    {
+      "name": "perl-symbol",
+      "exit_code": 0,
+      "status": "pass",
+      "checks": {
+        "pass": 196,
+        "fail": 0,
+        "warn": 0,
+        "skip": 49
+      },
+      "major_level_breaks": []
+    },
+    {
+      "name": "perl-lsp-rs-core",
+      "exit_code": 1,
+      "status": "error",
+      "checks": {
+        "pass": 0,
+        "fail": 0,
+        "warn": 0,
+        "skip": 0
+      },
+      "major_level_breaks": []
+    }
+  ]
+}
