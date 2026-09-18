@@ -158,6 +158,7 @@ class VerifyBinaryIdentityTests(unittest.TestCase):
         )
         self.assertIn("dap_required_but_missing", receipt["reasons"])
 
+    @unittest.skipUnless(os.name == "posix", "shebang executables")
     def test_observation_hashes_exact_bytes_and_runs_identity_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory, "perllsp")
