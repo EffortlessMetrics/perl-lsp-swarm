@@ -75,6 +75,8 @@ compatibility_apis = ["index_file", "index_file_str", "index_file_with_generatio
 # pre-existing `index_file` fixtures in the same test module. Outside the
 # #11305 banned prefix (`crates/perl-lsp-rs/src/runtime/text_sync`).
 # By API: index_file +1.
+# The #13120 QuickORM work adds canonical index-initial callers and no
+# compatibility calls of its own.
 compatibility_baseline = 694
 
 # Structural recurrence control (#11305): files under these prefixes must
@@ -100,6 +102,7 @@ caller_paths = [
   "crates/perl-lsp-rs-core/src/providers/navigation/references_shadow.rs",
   "crates/perl-lsp-rs-core/tests/detect_dead_code_mid_surrogate_position.rs",
   "crates/perl-lsp-rs-core/tests/dynamic_callable_integration_tests.rs",
+  "crates/perl-lsp-rs-core/tests/quickorm_completion_tests.rs",
   "crates/perl-lsp-rs-core/tests/role_conflict_cross_file_wiring_tests.rs",
   "crates/perl-lsp-rs/src/features/workspace_rename.rs",
   "crates/perl-lsp-rs/src/runtime/dispatch/workspace/file_preflight.rs",
@@ -153,6 +156,8 @@ caller_paths = [
   "crates/perl-workspace/tests/legacy_public_api_regression_tests.rs",
   "crates/perl-workspace/tests/memory_leak_regression.rs",
   "crates/perl-workspace/tests/memory_profiling_test.rs",
+  "crates/perl-workspace/tests/quickorm_generated_member.rs",
+  "crates/perl-workspace/tests/quickorm_workspace_receipt.rs",
   "crates/perl-workspace/tests/semantic_real_workspace_baseline.rs",
   "crates/perl-workspace/tests/short_query_workspace_symbols_bdd.rs",
   "crates/perl-workspace/tests/surface_workspace_parity.rs",
