@@ -1885,6 +1885,12 @@ tests::gamma: test
         // explicitly (the realistic analogue of a panic/unwind in callers
         // that own the guard): a leaked probe would be read as an untracked
         // path by every later dirty-signal capture (#15532).
+        //
+        // The worktree lock serializes against the sweep in
+        // `the_dirty_signal_reads_this_checkout_and_ignores_the_receipt_itself`:
+        // both probes share the process PID in their filename, so an unlocked
+        // sweep can delete this test's live probe mid-flight (#15864).
+        let _tree = lock_worktree();
         let root = std::env::current_dir().wrap_err("resolving fixture cwd")?;
         let separator = if cfg!(windows) { " " } else { "\t" };
         let probe_path = root.join(format!("rsp probe{separator}drop-{}.txt", std::process::id()));
@@ -1906,6 +1912,11 @@ tests::gamma: test
         // going out of scope) must not surface a NotFound error and abort the
         // process — the leak guard's job is to be best-effort, not to add a
         // new failure surface (#15532).
+        //
+        // Locked for the same reason as
+        // `dirty_signal_probe_drop_removes_the_owned_file`: the sweep must not
+        // remove this probe between the write and the manual removal (#15864).
+        let _tree = lock_worktree();
         let root = std::env::current_dir().wrap_err("resolving fixture cwd")?;
         let separator = if cfg!(windows) { " " } else { "\t" };
         let probe_path =
