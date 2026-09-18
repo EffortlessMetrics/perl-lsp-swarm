@@ -58,16 +58,16 @@ impl DrainEpoch {
     }
 }
 
-/// Thread-local request epoch bound by the transport worker thread
-/// before calling into the request handler and cleared immediately after.
-///
-/// `dispatch_event` reads this cell to tag each accepted event with the
-/// epoch under which the handler emitted it; the transport response wait
-/// then drains only that epoch. Producers outside the worker thread
-/// (test threads, background readers, the forwarder thread) see the
-/// unset cell and fall through to [`DrainEpoch::Global`], so their
-/// events still reserve against the latch for backward compatibility
-/// but are not waited on by any single request's response path (#15725).
+// Thread-local request epoch bound by the transport worker thread
+// before calling into the request handler and cleared immediately after.
+//
+// `dispatch_event` reads this cell to tag each accepted event with the
+// epoch under which the handler emitted it; the transport response wait
+// then drains only that epoch. Producers outside the worker thread
+// (test threads, background readers, the forwarder thread) see the
+// unset cell and fall through to `DrainEpoch::Global`, so their
+// events still reserve against the latch for backward compatibility
+// but are not waited on by any single request's response path (#15725).
 thread_local! {
     static DRAIN_EPOCH: RefCell<Option<u64>> = const { RefCell::new(None) };
 }
@@ -188,6 +188,7 @@ impl EventDrainLatch {
     /// Returns `true` when fully drained, `false` on timeout. Kept for
     /// the historical seam; the request handler response path uses
     /// [`EventDrainLatch::wait_for_epoch`] to drain only its own epoch.
+    #[cfg(test)]
     pub(crate) fn wait_until_drained(&self, cap: std::time::Duration) -> bool {
         self.wait_for_epoch(DrainEpoch::global(), cap)
     }

@@ -2223,6 +2223,7 @@ mod framing_tests {
     //! internal framing error types.
 
     use super::*;
+    use perl_test_must::must_some_with;
     use serde_json::json;
     use std::io::Cursor;
 
@@ -2809,10 +2810,14 @@ mod framing_tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         };
 
-        let event_offset = windows_find(&snapshot, b"\"event\":\"continued\"")
-            .expect("continue handler must emit the continued event");
-        let response_offset = windows_find(&snapshot, b"\"command\":\"continue\"")
-            .expect("continue response must be written");
+        let event_offset = must_some_with(
+            windows_find(&snapshot, b"\"event\":\"continued\""),
+            "continue handler must emit the continued event",
+        );
+        let response_offset = must_some_with(
+            windows_find(&snapshot, b"\"command\":\"continue\""),
+            "continue response must be written",
+        );
         assert!(
             event_offset < response_offset,
             "handler-emitted events must precede the terminal response on the wire              (event at {event_offset}, response at {response_offset})"

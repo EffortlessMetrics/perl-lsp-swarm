@@ -503,6 +503,7 @@ impl ReloadSessionWiring {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use perl_test_must::must_with;
     use crate::reload::LoadedModuleReloadEligibility;
     use crate::reload::transaction::{
         IndeterminateCause, PreMutationFailureCause, ReloadTransactionPhase,
@@ -759,8 +760,10 @@ mod tests {
         let mut old = negotiated_wiring(4);
         admit(&mut old, 1);
         let mut clock = RuntimeModuleGenerationClock::new();
-        old.route_terminal(1, &reloaded(), &mut clock, &[])
-            .expect("the old wiring must route its seed terminal");
+        must_with(
+            old.route_terminal(1, &reloaded(), &mut clock, &[]),
+            "the old wiring must route its seed terminal",
+        );
         let claim = ObservationClaim { epoch: 4, generation: clock.current(), operation_id: 1 };
         let replaced = ReloadSessionWiring::new(5, true);
         assert_eq!(

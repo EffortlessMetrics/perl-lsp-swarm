@@ -147,6 +147,7 @@ pub(super) fn spawn_tcp_attach_event_forwarder(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_adapter::DapMessageWithEpoch;
     use crate::debug_adapter::process::reserve_terminated_event;
     use std::sync::mpsc::sync_channel;
     use std::time::Duration;
