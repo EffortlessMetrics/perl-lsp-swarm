@@ -778,10 +778,7 @@ pub(crate) fn compute_lifecycle_overlay(raw: &str) -> Result<LifecycleOverlay> {
             table.insert("status".to_string(), TomlValue::String("invalid".to_string()));
         }
     }
-    table.insert(
-        "due_review".to_string(),
-        TomlValue::String("warn".to_string()),
-    );
+    table.insert("due_review".to_string(), TomlValue::String("warn".to_string()));
 
     if let Some(exceptions) = table.get_mut("exception").and_then(TomlValue::as_array_mut) {
         for exception in exceptions {
@@ -791,43 +788,28 @@ pub(crate) fn compute_lifecycle_overlay(raw: &str) -> Result<LifecycleOverlay> {
             if !overlay_exception_is_structurally_valid(exception) {
                 continue;
             }
-            let Some(id) = exception
-                .get("id")
-                .and_then(TomlValue::as_str)
-                .map(str::to_string)
+            let Some(id) = exception.get("id").and_then(TomlValue::as_str).map(str::to_string)
             else {
                 continue;
             };
-            let Some(review_after) = exception
-                .get("review_after")
-                .and_then(TomlValue::as_str)
-                .map(str::to_string)
+            let Some(review_after) =
+                exception.get("review_after").and_then(TomlValue::as_str).map(str::to_string)
             else {
                 continue;
             };
-            let Some(expires) = exception
-                .get("expires")
-                .and_then(TomlValue::as_str)
-                .map(str::to_string)
+            let Some(expires) =
+                exception.get("expires").and_then(TomlValue::as_str).map(str::to_string)
             else {
                 continue;
             };
 
-            overlay.rows.insert(
-                id,
-                LifecycleDates {
-                    review_after,
-                    expires,
-                },
-            );
+            overlay.rows.insert(id, LifecycleDates { review_after, expires });
             exception.insert(
                 "review_after".to_string(),
                 TomlValue::String(LIFECYCLE_SENTINEL.to_string()),
             );
-            exception.insert(
-                "expires".to_string(),
-                TomlValue::String(LIFECYCLE_SENTINEL.to_string()),
-            );
+            exception
+                .insert("expires".to_string(), TomlValue::String(LIFECYCLE_SENTINEL.to_string()));
         }
     }
 
@@ -868,11 +850,7 @@ fn overlay_exception_is_structurally_valid(exception: &toml::Table) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
     });
     let lifecycle_dates_are_valid = ["created", "review_after", "expires"].iter().all(|field| {
-        exception
-            .get(*field)
-            .and_then(toml::Value::as_str)
-            .and_then(parse_policy_date)
-            .is_some()
+        exception.get(*field).and_then(toml::Value::as_str).and_then(parse_policy_date).is_some()
     });
 
     required_fields_are_present
@@ -963,8 +941,9 @@ fn read_exception_policy(
             "quality exception policy must use schema_version = 1 and policy = \"quality-gate-exceptions\"",
         ));
     }
-    let metadata_is_valid =
-        !policy.owner.trim().is_empty() && policy.status == "active" && !policy.updated.trim().is_empty();
+    let metadata_is_valid = !policy.owner.trim().is_empty()
+        && policy.status == "active"
+        && !policy.updated.trim().is_empty();
     if !metadata_is_valid {
         actions.push(quality_exception_policy_action(
             args,
@@ -1015,11 +994,7 @@ fn read_exception_policy(
             .and_then(|o| o.rows.get(&exception.id))
             .map(|d| parse_policy_date(&d.review_after))
             .unwrap_or(review_after);
-        active.push(quality_exception_receipt_entry(
-            exception,
-            receipt_review_after,
-            expires,
-        ));
+        active.push(quality_exception_receipt_entry(exception, receipt_review_after, expires));
 
         let Some(review_after) = review_after else {
             continue;
@@ -1057,17 +1032,12 @@ fn read_exception_policy(
 
     if let Some(overlay) = overlay {
         if let Some(error) = overlay.validation_error.as_deref() {
-            actions.push(quality_exception_policy_action(
-                args,
-                "invalid_due_review",
-                error,
-            ));
+            actions.push(quality_exception_policy_action(args, "invalid_due_review", error));
             if overlay.invalid_metadata_status {
                 actions.retain(|action| {
                     !(action.get("kind").and_then(Value::as_str)
                         == Some("quality_exception_policy_not_current")
-                        && action.get("reason").and_then(Value::as_str)
-                            == Some("invalid_metadata"))
+                        && action.get("reason").and_then(Value::as_str) == Some("invalid_metadata"))
                 });
             }
         }
@@ -1095,10 +1065,7 @@ fn read_exception_policy(
                 Value::String("policy_cadence".to_string()),
             );
             if let Some(error) = overlay.validation_error.as_deref() {
-                object.insert(
-                    "validation_error".to_string(),
-                    Value::String(error.to_string()),
-                );
+                object.insert("validation_error".to_string(), Value::String(error.to_string()));
             }
         }
     }
@@ -3729,19 +3696,12 @@ mod tests {
         "#;
         let overlay = compute_lifecycle_overlay(raw).expect("overlay parses");
 
-        let row = overlay
-            .rows
-            .get("EX-1")
-            .expect("committed dates recorded for the receipt");
+        let row = overlay.rows.get("EX-1").expect("committed dates recorded for the receipt");
         assert_eq!(
-            row.review_after,
-            "2026-12-31",
+            row.review_after, "2026-12-31",
             "overlay must lift the committed review_after untouched"
         );
-        assert_eq!(
-            row.expires, "2027-12-31",
-            "overlay must lift the committed expires untouched"
-        );
+        assert_eq!(row.expires, "2027-12-31", "overlay must lift the committed expires untouched");
         assert!(
             overlay.validation_error.is_none(),
             "valid `due_review` must not trip the validation error path"
@@ -3778,9 +3738,7 @@ mod tests {
         let overlay = compute_lifecycle_overlay(raw).expect("overlay parses");
         assert_eq!(
             overlay.validation_error.as_deref(),
-            Some(
-                "quality exception due_review must be warn or fail, found panic"
-            ),
+            Some("quality exception due_review must be warn or fail, found panic"),
             "unsupported due_review must produce the validation error the engine forwards"
         );
         assert!(

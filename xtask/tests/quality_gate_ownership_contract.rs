@@ -65,10 +65,7 @@ fn facade_source() -> String {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let path = crate_dir.join("src/tasks/quality_gate_facade.rs");
     fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!(
-            "could not read quality_gate_facade.rs at {}: {error}",
-            path.display()
-        )
+        panic!("could not read quality_gate_facade.rs at {}: {error}", path.display())
     })
 }
 
