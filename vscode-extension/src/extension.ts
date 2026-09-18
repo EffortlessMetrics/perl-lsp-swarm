@@ -865,7 +865,10 @@ function registerPerlAliasLanguageConfiguration(
   if (!config) {
     return undefined;
   }
-  return vscode.languages.setLanguageConfiguration(PERL_ALIAS_LANGUAGE_ID, config as vscode.LanguageConfiguration);
+  return vscode.languages.setLanguageConfiguration(
+    PERL_ALIAS_LANGUAGE_ID,
+    config as vscode.LanguageConfiguration,
+  );
 }
 
 async function runExtensionActivation(
