@@ -5246,6 +5246,41 @@ mod tests {
         Ok(())
     }
 
+    /// Direct zero-wait probe discriminator for the fast-path seam in
+    /// `terminate_child_process_with_outcome`: the probe itself must
+    /// report `Exited` for an already-exited child at
+    /// `Duration::from_millis(0)` — the exact input the fast path
+    /// discriminates on (#15740, ripr gaps 4f054749/41a2480a/41b34a0a).
+    #[test]
+    fn zero_wait_outcome_probe_reports_exited_for_exited_child() -> Result<(), String> {
+        use std::process::Command;
+
+        // Spawn a process that exits immediately.
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/c", "exit"])
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        // Deterministic precondition: the child has exited before probing.
+        if !DebugAdapter::wait_for_child_exit(&mut child, Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
+        let outcome =
+            DebugAdapter::wait_for_child_exit_with_outcome(&mut child, Duration::from_millis(0));
+        if !matches!(outcome, super::ChildExitOutcome::Exited) {
+            return Err(format!(
+                "zero-wait probe must report Exited for an exited child, got {outcome:?}"
+            ));
+        }
+        Ok(())
+    }
+
     /// Call-presence observer for the fast-path seam in
     /// `terminate_child_process_with_outcome`: a live child must be observed
     /// by the zero-wait call as not-exited (fast path rejected) and then
