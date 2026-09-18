@@ -52,9 +52,9 @@ fn test_antip_no_redos_regex_5kb_unclosed() {
 
 #[test]
 fn test_antip_no_redos_regex_postponed_5kb_unclosed() {
-    /// #14390: REGEX_HEREDOC_PATTERN must remain linear on the postponed opener
-    /// `(??{` followed by 5KB of non-`}` non-`\n` characters and an unclosed heredoc
-    /// marker. The bounded `?{1,2}` opener and the same `[^}\n]*` body shape apply.
+    // #14390: REGEX_HEREDOC_PATTERN must remain linear on the postponed opener
+    // `(??{` followed by 5KB of non-`}` non-`\n` characters and an unclosed heredoc
+    // marker. The bounded `?{1,2}` opener and the same `[^}\n]*` body shape apply.
     let pathological_input = format!("{}{}{}", "(??{", "a".repeat(5000), "<<");
 
     let pattern = Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
@@ -72,10 +72,10 @@ fn test_antip_no_redos_regex_postponed_5kb_unclosed() {
 
 #[test]
 fn test_antip_no_redos_regex_triple_question_5kb_unclosed() {
-    /// #14390: `(???{` is not a valid Perl opener. The bounded `?{1,2}` must not
-    /// partially match and then advance into the body. A naive alternation would
-    /// match `(??{` against `(???{...` and then scan the body; this test guards
-    /// against any backtracking shape that escapes the bounded character class.
+    // #14390: `(???{` is not a valid Perl opener. The bounded `?{1,2}` must not
+    // partially match and then advance into the body. A naive alternation would
+    // match `(??{` against `(???{...` and then scan the body; this test guards
+    // against any backtracking shape that escapes the bounded character class.
     let pathological_input = format!("{}{}{}", "(???{", "a".repeat(5000), "<<");
 
     let pattern = Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
@@ -161,7 +161,7 @@ fn test_antip_regex_heredoc_valid() {
 
 #[test]
 fn test_antip_regex_postponed_heredoc_valid() {
-    /// #14390: a postponed opener `(??{...<<...})` must match the same pattern.
+    // #14390: a postponed opener `(??{...<<...})` must match the same pattern.
     let valid_input = "/(??{print <<'EOF'})/ or die;";
     let pattern = Regex::new(r"\(\?{1,2}\{[^}\n]*<<[^}\n]*\}").expect("Pattern should compile");
 
