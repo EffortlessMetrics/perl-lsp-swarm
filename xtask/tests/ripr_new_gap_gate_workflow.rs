@@ -2613,12 +2613,29 @@ fn hosted_ripr_lanes_pin_the_diff_index_boundary_with_a_measured_budget() -> Res
         // matching step in the file, so both iterations would inspect
         // ripr-github and ripr-fallback could silently miss the bound.
         let guidance = workflow_run_block(lane, "Generate review guidance")?;
+        // Token-aware on purpose: a substring match would also accept a
+        // future --timeout-seconds 18000, silently unenforcing the bound.
+        let bound = guidance
+            .split_whitespace()
+            .skip_while(|token| *token != "--timeout-seconds")
+            .nth(1)
+            .ok_or_else(|| {
+                anyhow!("{lane}'s review-guidance pass carries no --timeout-seconds value")
+            })?;
         ensure!(
-            guidance.contains("--timeout-seconds 1800"),
-            "{lane}'s review-guidance pass must carry --timeout-seconds 1800; the 600s bound failed closed twice on new-crate diffs (#15082, #15028)"
+            bound == "1800",
+            "{lane}'s review-guidance pass must carry --timeout-seconds 1800; found {bound:?}.              The 600s bound failed closed twice on new-crate diffs (#15082, #15028)"
         );
     }
-    let count = workflow.matches("--timeout-seconds 1800").count();
+    let count = workflow
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .skip_while(|token| *token != "--timeout-seconds")
+                .nth(1)
+                .is_some_and(|value| value == "1800")
+        })
+        .count();
     ensure!(
         count == 2,
         "exactly the two hosted lanes must carry the 1800s guidance bound; found {count}"
