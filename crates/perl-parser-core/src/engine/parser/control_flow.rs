@@ -617,7 +617,8 @@ impl<'a> Parser<'a> {
     /// 2. For the plain-Identifier case, inspect the fully-parsed target to distinguish
     ///    Label (plain Identifier node) from Expr (complex expression like `E . $suffix`).
     fn parse_goto(&mut self) -> ParseResult<Node> {
-        let start = self.consume_token()?.start(); // consume 'goto'
+        let goto_token = self.consume_token()?; // consume 'goto'
+        let start = goto_token.start();
         self.mark_not_stmt_start();
 
         // Phase 1: Quick detection of & (always Sub form)
@@ -639,9 +640,12 @@ impl<'a> Parser<'a> {
         };
 
         let Some(target) = target else {
+            // Span the consumed `goto` keyword so downstream ranges
+            // (semantic tokens, hover, diagnostics) anchor to the real
+            // source text instead of a zero-width point (#15742 review).
             return Ok(Node::new(
                 NodeKind::TargetlessGoto {},
-                SourceLocation { start, end: start },
+                SourceLocation { start, end: goto_token.end() },
             ));
         };
 

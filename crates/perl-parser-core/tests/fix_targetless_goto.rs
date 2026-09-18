@@ -45,6 +45,20 @@ fn count_kind(node: &Node, pred: &dyn Fn(&NodeKind) -> bool) -> usize {
     count
 }
 
+/// Find the first node whose kind matches the predicate, returning the node
+/// itself so callers can assert on source location.
+fn find_node<'a>(node: &'a Node, pred: &dyn Fn(&NodeKind) -> bool) -> Option<&'a Node> {
+    if pred(&node.kind) {
+        return Some(node);
+    }
+    for child in node.children() {
+        if let Some(found) = find_node(child, pred) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 #[test]
 fn bare_goto_emits_targetless_variant() {
     let ast = cpan_test_helpers::parse("goto;");
@@ -53,6 +67,18 @@ fn bare_goto_emits_targetless_variant() {
         "`goto;` must emit a TargetlessGoto node",
     );
     assert!(matches!(kind, NodeKind::TargetlessGoto { .. }));
+}
+
+#[test]
+fn bare_goto_targetless_node_spans_goto_keyword() {
+    // The TargetlessGoto node must span the consumed `goto` keyword, not a
+    // zero-width point, so semantic tokens, hover, and diagnostics anchor to
+    // the real source text (#15742 review).
+    let ast = cpan_test_helpers::parse("goto;");
+    let node = find_node(&ast, &|k| matches!(k, NodeKind::TargetlessGoto { .. }))
+        .expect("`goto;` must emit a TargetlessGoto node");
+    assert_eq!(node.location.start, 0, "node must start at the `goto` keyword");
+    assert_eq!(node.location.end, 4, "node must span the four-byte `goto` keyword");
 }
 
 #[test]
