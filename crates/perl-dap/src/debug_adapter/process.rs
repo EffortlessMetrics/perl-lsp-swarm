@@ -5215,6 +5215,69 @@ mod tests {
         Ok(())
     }
 
+    /// Discriminator for the zero-wait fast path in
+    /// `terminate_child_process_with_outcome`: an already-exited child must
+    /// surface the `Exited` variant itself, not merely a truthy boolean
+    /// (#15740, ripr gap 4f054749).
+    #[test]
+    fn terminate_child_process_with_outcome_boundary_discriminator() -> Result<(), String> {
+        use std::process::Command;
+
+        // Spawn a process that exits immediately.
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/c", "exit"])
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child =
+            Command::new("true").spawn().map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        // Deterministic precondition: the child has exited before terminate runs.
+        if !DebugAdapter::wait_for_child_exit(&mut child, std::time::Duration::from_secs(10)) {
+            return Err(
+                "child did not exit within 10s; host process latency pathological".to_string()
+            );
+        }
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        if !matches!(outcome, super::ChildExitOutcome::Exited) {
+            return Err(format!("zero-wait fast path must discriminate Exited, got {outcome:?}"));
+        }
+        Ok(())
+    }
+
+    /// Call-presence observer for the fast-path seam in
+    /// `terminate_child_process_with_outcome`: a live child must be observed
+    /// by the zero-wait call as not-exited (fast path rejected) and then
+    /// reaped through the kill path, surfacing `Exited` (#15740,
+    /// ripr gaps 41a2480a/41b34a0a).
+    #[test]
+    fn terminate_child_process_with_outcome_call_presence_observer() -> Result<(), String> {
+        use std::process::{Command, Stdio};
+
+        // Spawn a long-running child that outlives the zero-wait probe.
+        #[cfg(windows)]
+        let mut child = Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+        #[cfg(not(windows))]
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn: {e}"))?;
+
+        let outcome = DebugAdapter::terminate_child_process_with_outcome(&mut child);
+        if !matches!(outcome, super::ChildExitOutcome::Exited) {
+            return Err(format!(
+                "live child must be reaped through the kill path as Exited, got {outcome:?}"
+            ));
+        }
+        Ok(())
+    }
+
     /// `send_interrupt_signal` does not panic for a nonexistent pid on Windows.
     ///
     /// Regression for #4639 defect #2: the old code could call terminate_child_process
