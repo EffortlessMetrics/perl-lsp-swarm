@@ -1526,6 +1526,13 @@ pub const DEBUGGEE_PERL_OVERRIDE_ENV: &str = "PERL_LSP_DAP_DEBUGGEE_PERL";
 /// bounds the probe.
 const DEBUGGEE_PROBE_BUDGET: Duration = Duration::from_secs(10);
 
+/// Wall-clock budget for one debugger-capability precondition attempt.
+///
+/// Loading `perl5db.pl` is pure interpreter startup; it finishes in well
+/// under a second even on cold hosts, but the budget bounds a wedged or
+/// pathological interpreter the same way [`DEBUGGEE_PROBE_BUDGET`] does.
+const DEBUGGEE_CAPABILITY_BUDGET: Duration = Duration::from_secs(10);
+
 /// A debuggee interpreter proven able to run a real debugger session over
 /// piped stdio.
 #[derive(Debug, Clone)]
@@ -1589,16 +1596,128 @@ fn debuggee_perl_candidates() -> Vec<PathBuf> {
 }
 
 /// Why one [`probe_debuggee_perl`] attempt failed.
-struct ProbeFailure {
-    reason: String,
+#[derive(Debug)]
+pub(crate) struct ProbeFailure {
+    pub(crate) reason: String,
     /// Timing-sensitive failure (the deadline killed a still-running
     /// debuggee); one retry can legitimately flip it, unlike deterministic
     /// failures such as a spawn error or a missing debugger banner.
-    transient: bool,
+    pub(crate) transient: bool,
+}
+
+/// Cheap deterministic precondition before the timing-sensitive pipe probe:
+/// the candidate must be able to load `perl5db.pl` at all (#15429).
+///
+/// The interpreter's own `@INC` decides loadability, so the only honest check
+/// is a subprocess: `<binary> -e "require 'perl5db.pl';"`. A distribution
+/// that ships without the debugger library (the captured Git-Bash/MSYS
+/// failure names exactly `Can't locate perl5db.pl in @INC`) would otherwise
+/// burn the full pipe-probe budget and surface as a generic mid-session
+/// pipe failure instead of the actionable typed reason this precondition
+/// produces. Overrunning the budget is timing-sensitive, so it is classified
+/// transient like the corresponding pipe-probe class.
+fn probe_debugger_capability(binary: &Path) -> Result<(), ProbeFailure> {
+    let fail = |reason: String| ProbeFailure { reason, transient: false };
+    let mut command = Command::new(binary);
+    command
+        .args(["-e", "require 'perl5db.pl';"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_remove("PERL5LIB")
+        .env_remove("PERL5OPT")
+        .env("LC_ALL", "C");
+    // Same console-transport hardening as the pipe probe: the require emits
+    // the perl5db loader banner, and ReadLine must not query console handles
+    // while the child is attached to pipes.
+    #[cfg(windows)]
+    {
+        command.env("EMACS", "1");
+        let mut perl_db_opts = std::env::var_os("PERLDB_OPTS").unwrap_or_default();
+        perl_db_opts.push(" ReadLine=0");
+        command.env("PERLDB_OPTS", perl_db_opts);
+    }
+    let mut child =
+        command.spawn().map_err(|error| fail(format!("cannot spawn capability probe: {error}")))?;
+    let deadline = Instant::now() + DEBUGGEE_CAPABILITY_BUDGET;
+    let outcome = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let kill = child.kill();
+                let _ = child.wait();
+                break Err(match kill {
+                    Ok(()) => format!(
+                        "capability probe did not exit within {DEBUGGEE_CAPABILITY_BUDGET:?}"
+                    ),
+                    Err(error) => format!(
+                        "capability probe overran its budget and could not be killed: {error}"
+                    ),
+                });
+            }
+            Err(error) => break Err(format!("capability probe wait failed: {error}")),
+        }
+    };
+    // The child has exited (or been killed), so its pipe write ends are
+    // closed and this read cannot block. The require path emits at most the
+    // small loader banner, well under the pipe buffer, so waiting for exit
+    // before draining cannot deadlock either.
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = std::io::Read::read_to_string(&mut pipe, &mut stderr);
+    }
+    match outcome {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => classify_debugger_capability(
+            false,
+            &format!(
+                "exit code: {}",
+                status.code().map_or_else(|| "signal".to_string(), |c| c.to_string())
+            ),
+            &stderr,
+        ),
+        Err(reason) => Err(ProbeFailure { reason, transient: true }),
+    }
+}
+
+/// Typed verdict for a finished capability-probe outcome, split out so the
+/// classification contract is unit-testable without spawning interpreters.
+pub(crate) fn classify_debugger_capability(
+    success: bool,
+    exit_display: &str,
+    stderr: &str,
+) -> Result<(), ProbeFailure> {
+    if success {
+        return Ok(());
+    }
+    let excerpt: String = stderr.chars().take(200).collect();
+    if stderr.contains("Can't locate perl5db.pl") {
+        Err(ProbeFailure {
+            reason: format!(
+                "selected perl cannot host the debugger: perl5db.pl is not loadable \
+                 (exit={exit_display}, stderr: {excerpt})"
+            ),
+            transient: false,
+        })
+    } else {
+        Err(ProbeFailure {
+            reason: format!("capability probe failed (exit={exit_display}, stderr: {excerpt})"),
+            transient: false,
+        })
+    }
 }
 
 /// Probe whether `binary` can actually drive a debugger session over true
 /// pipes.
+///
+/// A cheap deterministic capability precondition runs first
+/// ([`probe_debugger_capability`]): an interpreter whose `@INC` cannot locate
+/// `perl5db.pl` can never host a session, so it is refused with the typed
+/// precondition reason instead of being pinned and failing later over pipes
+/// (#15429). Only then does the conformance probe run.
 ///
 /// Spawns `<binary> -d -- <fixture>` with all three stdio streams as real OS
 /// pipes (`Stdio::piped()` ×3 — the exact spawn shape the adapter uses in
@@ -1973,6 +2092,11 @@ fn probe_debuggee_perl_with_options_and_barrier(
     publication_barrier: bool,
 ) -> Result<DebuggeePerl, ProbeFailure> {
     let fail = |reason: String| ProbeFailure { reason, transient: false };
+    // Every probe path — production resolution and the fault-injection test
+    // variants alike — refuses an interpreter that cannot load perl5db.pl
+    // with the typed precondition reason before paying for the
+    // timing-sensitive pipe probe (#15429).
+    probe_debugger_capability(binary)?;
     // The workspace is explicitly closed after the probe body so recursive
     // removal errors remain observable. The pid-keyed prefix keeps concurrent
     // suites' workspaces distinguishable for hygiene proofs.
