@@ -3261,6 +3261,7 @@ pub fn perl_dap::reload_family::project_execution(execution: &perl_dap::reload::
 pub mod perl_dap::security
 pub mod perl_dap::security::workspace_authority
 pub enum perl_dap::security::workspace_authority::SessionBoundary
+#[non_exhaustive] pub perl_dap::security::workspace_authority::SessionBoundary::Bounded(std::path::PathBuf)
 pub perl_dap::security::workspace_authority::SessionBoundary::Unbounded
 pub fn perl_dap::security::workspace_authority::SessionBoundary::root(&self) -> core::option::Option<&std::path::Path>
 pub fn perl_dap::security::workspace_authority::SessionBoundary::clone(&self) -> perl_dap::security::workspace_authority::SessionBoundary
@@ -3274,7 +3275,9 @@ pub fn perl_dap::security::workspace_authority::UnboundedGrant::clone(&self) -> 
 pub fn perl_dap::security::workspace_authority::UnboundedGrant::eq(&self, other: &perl_dap::security::workspace_authority::UnboundedGrant) -> bool
 pub fn perl_dap::security::workspace_authority::UnboundedGrant::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::security::workspace_authority::WorkspaceAuthority
+#[non_exhaustive] pub perl_dap::security::workspace_authority::WorkspaceAuthority::Unbounded
 pub perl_dap::security::workspace_authority::WorkspaceAuthority::Unbounded::grant: perl_dap::security::workspace_authority::UnboundedGrant
+#[non_exhaustive] pub perl_dap::security::workspace_authority::WorkspaceAuthority::WorkspaceBound
 pub perl_dap::security::workspace_authority::WorkspaceAuthority::WorkspaceBound::roots: perl_dap::security::workspace_authority::TrustedRoots
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthority::from_startup(roots: &[std::path::PathBuf], allow_unbounded: bool) -> core::result::Result<Self, perl_dap::security::workspace_authority::WorkspaceAuthorityError>
 pub const fn perl_dap::security::workspace_authority::WorkspaceAuthority::is_bounded(&self) -> bool
@@ -3323,6 +3326,7 @@ pub fn perl_dap::security::SecurityError::fmt(&self, f: &mut core::fmt::Formatte
 pub fn perl_dap::security::SecurityError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_dap::security::SecurityError::error_class(&self) -> perl_parser_core::syntax::error::ErrorCategory
 pub enum perl_dap::security::SessionBoundary
+#[non_exhaustive] pub perl_dap::security::SessionBoundary::Bounded(std::path::PathBuf)
 pub perl_dap::security::SessionBoundary::Unbounded
 pub fn perl_dap::security::workspace_authority::SessionBoundary::root(&self) -> core::option::Option<&std::path::Path>
 pub fn perl_dap::security::workspace_authority::SessionBoundary::clone(&self) -> perl_dap::security::workspace_authority::SessionBoundary
@@ -3336,7 +3340,9 @@ pub fn perl_dap::security::workspace_authority::UnboundedGrant::clone(&self) -> 
 pub fn perl_dap::security::workspace_authority::UnboundedGrant::eq(&self, other: &perl_dap::security::workspace_authority::UnboundedGrant) -> bool
 pub fn perl_dap::security::workspace_authority::UnboundedGrant::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum perl_dap::security::WorkspaceAuthority
+#[non_exhaustive] pub perl_dap::security::WorkspaceAuthority::Unbounded
 pub perl_dap::security::WorkspaceAuthority::Unbounded::grant: perl_dap::security::workspace_authority::UnboundedGrant
+#[non_exhaustive] pub perl_dap::security::WorkspaceAuthority::WorkspaceBound
 pub perl_dap::security::WorkspaceAuthority::WorkspaceBound::roots: perl_dap::security::workspace_authority::TrustedRoots
 pub fn perl_dap::security::workspace_authority::WorkspaceAuthority::from_startup(roots: &[std::path::PathBuf], allow_unbounded: bool) -> core::result::Result<Self, perl_dap::security::workspace_authority::WorkspaceAuthorityError>
 pub const fn perl_dap::security::workspace_authority::WorkspaceAuthority::is_bounded(&self) -> bool
