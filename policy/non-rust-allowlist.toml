@@ -5223,6 +5223,21 @@ created = "2026-08-29"
 review_after = "2027-02-28"
 
 [[allow]]
+id = "non-rust-core-harness-result-axes-v2-schema"
+path = "schemas/perl_core_harness.result_axes.v2.schema.json"
+kind = "compiler_contract"
+language = "json"
+surface = "compiler"
+classification = "config"
+owner = "compiler"
+reason = "Published JSON Schema for the perl_core_harness.result_axes.v2 receipt; the cross-axis rules are held to the Rust constructor case-for-case by the schema-parity tests in perl-core-harness-types, so the schema cannot drift from the invariants it publishes (#8607)."
+covered_by = [
+  "cargo test -p perl-core-harness-types --locked",
+]
+created = "2026-08-29"
+review_after = "2026-11-29"
+
+[[allow]]
 id = "non-rust-standalone-owned-state-schema"
 path = "schemas/standalone_owned_state.v1.schema.json"
 kind = "contract_schema"
