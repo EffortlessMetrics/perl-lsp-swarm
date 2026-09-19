@@ -2046,13 +2046,12 @@ enum Commands {
         version: String,
     },
 
-    /// Publish crates to crates.io
+    /// Verify crates.io packaging (dry run only; publication is workflow-gated)
+    ///
+    /// Direct local publication is disabled: releases must dispatch the
+    /// gated `publish-crates.yml` workflow via `publish-release`.
     PublishCrates {
-        /// Skip confirmation
-        #[arg(long)]
-        yes: bool,
-
-        /// Dry run (don't actually publish)
+        /// Dry run (nothing is published)
         #[arg(long)]
         dry_run: bool,
     },
@@ -2100,16 +2099,11 @@ enum Commands {
         date: Option<String>,
     },
 
-    /// Publish VSCode extension to marketplace
-    PublishVscode {
-        /// Skip confirmation
-        #[arg(long)]
-        yes: bool,
-
-        /// PAT token for authentication
-        #[arg(long)]
-        token: Option<String>,
-    },
+    /// Refuse direct marketplace publication (workflow-gated)
+    ///
+    /// Direct local publication is disabled: the gated
+    /// `publish-extension.yml` workflow owns marketplace publication.
+    PublishVscode,
 
     /// Verify transitive normal-dep closure of published crates contains only publishable deps
     PublishClosure {
@@ -6694,7 +6688,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             test_lsp::run(create_only, test, cleanup)
         }
         Commands::BumpVersion { version } => bump_version::run(version),
-        Commands::PublishCrates { yes, dry_run } => publish::publish_crates(yes, dry_run),
+        Commands::PublishCrates { dry_run } => publish::publish_crates(dry_run),
         Commands::PublishRelease { version, dry_run, git_ref } => {
             publish::publish_release(version, dry_run, git_ref)
         }
@@ -6703,7 +6697,7 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::HookTests => hook_checks::run_hook_tests(),
         Commands::ForbidFatalConstructs { args } => forbid_fatal_constructs::run(args),
         Commands::CiHygiene { command, args } => ci_hygiene::run(command, args),
-        Commands::PublishVscode { yes, token } => publish::publish_vscode(yes, token),
+        Commands::PublishVscode => publish::publish_vscode(),
         Commands::PublishClosure { crate_name } => publish_closure::run(crate_name),
         Commands::PublishedCrateCount => count_ratchet::run(),
         Commands::PublishManifestCheck => publish_manifest_check::run(),
