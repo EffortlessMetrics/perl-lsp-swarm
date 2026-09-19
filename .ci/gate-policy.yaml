@@ -1939,16 +1939,18 @@ gates:
       - compiler
 
   # The agent-ledger contract (#15380) is fail-closed: `cargo xtask
-  # agent-ledgers validate` rejects malformed ledger rows, unknown envelope
+  # agent ledgers validate` rejects malformed ledger rows, unknown envelope
   # versions, and schema drift in docs/agents/ledgers/*.jsonl. Only the
   # validator's unit-test module ran in CI until this gate existed, so the CLI
   # was never invoked against the committed files and ledger drift was
-  # silently absorbed. Runs in the `policy` shard.
+  # silently absorbed. Runs in the `policy` shard. Note the Clap hierarchy
+  # is `agent ledgers validate` (AgentCommand::Ledgers) — the dashed
+  # `agent-ledgers` form is not a registered subcommand (exit 2).
   - name: agent_ledgers_validate
     tier: merge_gate
     description: "Validate docs/agents/ledgers/*.jsonl against the agent-ledger contract"
     required: true
-    command: cargo xtask agent-ledgers validate --format json
+    command: cargo xtask agent ledgers validate --format json
     # 300s to match the sibling `cargo xtask ...` gates in this shard. The
     # validator itself is near-instant; the cost is the cargo invocation.
     timeout_seconds: 300

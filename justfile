@@ -1067,14 +1067,14 @@ ci-format:
     cargo xtask fmt --check
     @echo "✅ Format check passed"
 
-# Agent-ledger contract validator (#15380) — exercises `cargo xtask agent-ledgers validate`
+# Agent-ledger contract validator (#15380) — exercises `cargo xtask agent ledgers validate`
 # against the committed docs/agents/ledgers/*.jsonl files. The validator exists and is unit-
 # tested (xtask/src/tasks/agent_ledgers.rs), but only the test module was wired into CI; the
 # CLI was never invoked against committed files. Adding the recipe + merge-gate call closes
 # the gap so a future ledger shape drift fails closed instead of being silently absorbed.
 ci-agent-ledgers-validate:
     @echo "📒 Validating agent ledger contracts..."
-    cargo xtask agent-ledgers validate --format json
+    cargo xtask agent ledgers validate --format json
     @echo "✅ Agent ledger contracts valid"
 
 # Clippy lint (catches common issues, allow missing_docs during systematic resolution)

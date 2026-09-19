@@ -1255,8 +1255,8 @@ fn agent_ledgers_validator_recipe_wired_into_merge_gate() {
     let recipe_end_rel = recipe_window.find("\n\n").unwrap_or(recipe_window.len());
     let recipe = &recipe_window[..recipe_end_rel];
     assert!(
-        recipe.contains("cargo xtask agent-ledgers validate --format json"),
-        "ci-agent-ledgers-validate recipe must invoke the agent-ledgers validate CLI in JSON mode, got: {recipe}"
+        recipe.contains("cargo xtask agent ledgers validate --format json"),
+        "ci-agent-ledgers-validate recipe must invoke the `agent ledgers validate` CLI in JSON mode, got: {recipe}"
     );
 
     let merge_gate_marker = "merge-gate: _check-tools-basic pr-fast";
@@ -1290,7 +1290,7 @@ fn agent_ledgers_validator_wired_into_hosted_policy_shard() {
     for required in [
         "tier: merge_gate",
         "required: true",
-        "command: cargo xtask agent-ledgers validate --format json",
+        "command: cargo xtask agent ledgers validate --format json",
         "quarantine: false",
     ] {
         assert!(
@@ -1354,13 +1354,13 @@ fn agent_ledgers_validator_runs_clean_against_committed_files() {
     );
 
     let output = cargo_bin_cmd!("xtask")
-        .args(["agent-ledgers", "validate", "--format", "json"])
+        .args(["agent", "ledgers", "validate", "--format", "json"])
         .current_dir(&root)
         .output()
-        .expect("spawn cargo xtask agent-ledgers validate");
+        .expect("spawn cargo xtask agent ledgers validate");
     assert!(
         output.status.success(),
-        "agent-ledgers validate must pass against the committed files (issue #15380 wired the CLI into CI); \
+        "agent ledgers validate must pass against the committed files (issue #15380 wired the CLI into CI); \
          stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
