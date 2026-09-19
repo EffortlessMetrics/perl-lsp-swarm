@@ -57,7 +57,9 @@ fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
 }
 
 fn contains_goto(node: &Node) -> bool {
-    matches!(node.kind, NodeKind::Goto { .. }) || node.children().into_iter().any(contains_goto)
+    matches!(node.kind, NodeKind::Goto { .. })
+        || matches!(node.kind, NodeKind::TargetlessGoto { .. })
+        || node.children().into_iter().any(contains_goto)
 }
 
 fn first_expression(ast: &Node) -> Option<&Node> {
@@ -76,7 +78,9 @@ fn first_expression_has_direct_word_operator_goto_rhs(ast: &Node, expected_op: &
         first_expression(ast),
         Some(expression)
             if matches!(&expression.kind, NodeKind::Binary { op, right, .. }
-                if op == expected_op && matches!(right.kind, NodeKind::Goto { .. }))
+                if op == expected_op
+                    && (matches!(right.kind, NodeKind::Goto { .. })
+                        || matches!(right.kind, NodeKind::TargetlessGoto { .. })))
     )
 }
 
@@ -423,7 +427,11 @@ fn bare_word_goto_forms_preserve_control_flow_rhs() -> Result<(), String> {
         // The omission is legal, so no diagnostic may remain: the shape
         // assertion below carries the proof, not a blocking marker.
         let has_blocking_diagnostic = output.diagnostics.iter().any(ParseError::blocks_clean_parse);
-        let missing_target_is_word_operator_rhs = match &output.ast.kind {
+        // After #15742, bare `goto` on the RHS of a word operator is
+        // represented by the childless `TargetlessGoto` variant directly —
+        // not by wrapping a fabricated `MissingExpression` operand inside
+        // the targeted `Goto` variant.
+        let targetless_is_word_operator_rhs = match &output.ast.kind {
             NodeKind::Program { statements } => matches!(
                 statements.first().map(|statement| &statement.kind),
                 Some(NodeKind::ExpressionStatement { expression })
@@ -431,18 +439,14 @@ fn bare_word_goto_forms_preserve_control_flow_rhs() -> Result<(), String> {
                         &expression.kind,
                         NodeKind::Binary { op, right, .. }
                             if op == operator
-                                && matches!(
-                                    &right.kind,
-                                    NodeKind::Goto { target, .. }
-                                        if matches!(target.kind, NodeKind::MissingExpression)
-                                )
+                                && matches!(&right.kind, NodeKind::TargetlessGoto { .. })
                     )
             ),
             _ => false,
         };
-        if has_blocking_diagnostic || !missing_target_is_word_operator_rhs {
+        if has_blocking_diagnostic || !targetless_is_word_operator_rhs {
             return Err(format!(
-                "bare {operator} goto must stay a clean MissingExpression Goto RHS with no blocking diagnostic:\nsource={source:?}\ndiagnostics={:?}\nast={}",
+                "bare {operator} goto must surface a childless TargetlessGoto RHS with no blocking diagnostic:\nsource={source:?}\ndiagnostics={:?}\nast={}",
                 output.diagnostics,
                 output.ast.to_sexp()
             ));
