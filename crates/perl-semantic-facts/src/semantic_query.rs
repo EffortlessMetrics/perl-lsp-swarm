@@ -388,36 +388,75 @@ impl From<SemanticQueryRequirementRegistry> for Vec<SemanticQueryRequirement> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SemanticQueryOutcome<T> {
     /// An exact value supported by complete evidence.
-    Complete { value: T, evidence: SemanticQueryEvidence },
+    Complete {
+        /// The exact value.
+        value: T,
+        /// Complete evidence supporting exactness.
+        evidence: SemanticQueryEvidence,
+    },
     /// A useful value exists, but limitations remain.
     ///
     /// `limitations` is the subset of `evidence.limitations` that bounded this
     /// value; it may not name a limitation the evidence does not record.
-    Partial { value: T, limitations: Vec<SemanticQueryLimitation>, evidence: SemanticQueryEvidence },
+    Partial {
+        /// The best available value.
+        value: T,
+        /// Limitations that bounded this value.
+        limitations: Vec<SemanticQueryLimitation>,
+        /// Evidence for the partial answer.
+        evidence: SemanticQueryEvidence,
+    },
     /// No value was found and the complete denominator proves that absence.
-    LegitimateEmpty { evidence: SemanticQueryEvidence },
+    LegitimateEmpty {
+        /// Complete evidence proving the absence.
+        evidence: SemanticQueryEvidence,
+    },
     /// Required facts are still being built or admitted.
-    NotReady { reason: String, evidence: SemanticQueryEvidence },
+    NotReady {
+        /// Why the required facts are not ready.
+        reason: String,
+        /// Current evidence view for the request.
+        evidence: SemanticQueryEvidence,
+    },
     /// The result belongs to a different source/model generation.
     Stale {
+        /// Generation the consumer asked about.
         expected: crate::SourceGeneration,
+        /// Generation the result actually describes.
         observed: crate::SourceGeneration,
+        /// Evidence from the observed generation.
         evidence: SemanticQueryEvidence,
     },
     /// Multiple candidates remain and no exact choice was proven.
     ///
     /// `limitations` follows the same subset rule as `Partial`.
     Ambiguous {
+        /// The remaining candidates (at least two distinct values).
         candidates: Vec<T>,
+        /// Limitations that bounded the candidate set.
         limitations: Vec<SemanticQueryLimitation>,
+        /// Evidence for the candidate set.
         evidence: SemanticQueryEvidence,
     },
     /// A dynamic boundary prevents exact resolution.
-    Dynamic { boundary: BoundaryKind, evidence: SemanticQueryEvidence },
+    Dynamic {
+        /// The boundary that prevented exact resolution.
+        boundary: BoundaryKind,
+        /// Evidence carrying the matching boundary limitation.
+        evidence: SemanticQueryEvidence,
+    },
     /// This query family is not supported by the current producer/profile.
-    Unsupported { reason: String, evidence: SemanticQueryEvidence },
+    Unsupported {
+        /// Why the query family is unsupported.
+        reason: String,
+        /// Evidence view for the request.
+        evidence: SemanticQueryEvidence,
+    },
     /// Instrumentation failed, so the result cannot claim evidence-backed status.
-    InstrumentFailure { reason: String },
+    InstrumentFailure {
+        /// Description of the instrument failure.
+        reason: String,
+    },
 }
 
 impl<T: PartialEq> SemanticQueryOutcome<T> {

@@ -321,8 +321,25 @@ impl LspServer {
             // configured the deterministic route owns the final content,
             // otherwise the stream ends with an empty final. The terminal
             // isFinal notification below is still always sent.
-            let provider_failed = matches!(&stream_result, Err(BackendError::Provider(_)));
-            let outcome = if provider_failed || cumulative_text.is_empty() {
+            // A resource-budget refusal repudiates the candidate exactly as a
+            // provider failure does. The accumulated prefix is the part of a
+            // response the server refused to finish reading, so promoting it
+            // here would turn a deliberate refusal into a truncated final
+            // completion — the one outcome the budget exists to prevent.
+            let candidate_repudiated = matches!(
+                &stream_result,
+                Err(BackendError::Provider(_) | BackendError::BudgetExceeded(_))
+            );
+            // A backend error that produced no text at all leaves nothing to
+            // promote and nothing to evaluate. Without this the stream ends
+            // empty even when fallback is configured, so the user gets no
+            // suggestion at all rather than the deterministic one — the
+            // buffered route (`misc.rs`) already falls back on any backend
+            // error, and the two routes must not diverge. Reachable for every
+            // terminal-before-output error: `Saturated` (#8300), `RateLimited`,
+            // `Timeout`, `Transport`, `Auth`.
+            let failed_before_any_output = stream_result.is_err() && cumulative_text.is_empty();
+            let outcome = if candidate_repudiated || cumulative_text.is_empty() {
                 None
             } else {
                 Some(evaluate_external_candidates(
@@ -342,8 +359,9 @@ impl LspServer {
                     ai_fallback,
                 ))
             };
-            let final_decision = if provider_failed {
-                // Failed provider output never becomes the candidate: the
+            let final_decision = if candidate_repudiated || failed_before_any_output {
+                // Repudiated output never becomes the candidate, and an
+                // error that produced nothing has no candidate at all: the
                 // deterministic route owns the final when configured.
                 if ai_fallback {
                     Some(ExternalCompletionOutcome::FallbackRequired)
