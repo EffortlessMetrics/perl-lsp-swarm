@@ -134,7 +134,10 @@ fn probe_constructor_inline_completion(
     forbidden: &[&'static str],
 ) -> Result<ConstructorProbeReport> {
     let (line, character) = cursor_at_end(source)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.inline_completion_with_trigger_kind(file, line, character, 1)?;
         for item in &items {
@@ -192,7 +195,10 @@ fn scenario_53_constructor_inline_completion_quality_receipt() {
             let harness = create_harness()?;
             harness.open_file(SHIFT_STYLE_PATH, SHIFT_STYLE_SOURCE)?;
             harness.open_file(SIGNATURE_STYLE_PATH, SIGNATURE_STYLE_SOURCE)?;
-            std::thread::sleep(Duration::from_millis(250));
+            // Same readiness race as #15870: synchronize on the server's own
+            // analysis-readiness signal instead of a fixed sleep.
+            let _ = harness.wait_for_diagnostics(SHIFT_STYLE_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(SIGNATURE_STYLE_PATH, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);

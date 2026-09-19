@@ -1,5 +1,38 @@
 name: Droid Tag
 
+# Security boundary for the @droid tag lane (#15840).
+#
+# The pinned droid-action-safe action spawns `droid exec` with a full
+# `process.env` spread and an upstream-hardcoded `--skip-permissions-unsafe`
+# flag, so every environment variable visible to the action's Node process is
+# readable by the model agent. The reviewed PR content that the agent processes
+# is untrusted even though only OWNER/MEMBER/COLLABORATOR authors may invoke
+# `@droid`, so this workflow keeps the agent environment least-privilege:
+#
+# - no workflow-level `env:` block: workflow env would be inherited by every
+#   step including the action, and therefore by the agent process. The MiniMax
+#   key is scoped to the settings step that writes `~/.factory/settings.local.json`
+#   and never reaches the action or agent environment;
+# - job permissions are read-only except `id-token: write`, which the action
+#   requires to exchange an OIDC token (audience `droid-github-action`) for a
+#   short-lived Factory GitHub App installation token. All GitHub writes
+#   (review comments) are performed with that App token; the job's own
+#   GITHUB_TOKEN carries no write authority and is never passed to the action;
+# - `persist-credentials: false` keeps the job token out of the workspace the
+#   agent operates in.
+#
+# Accepted residuals (removable only upstream in droid-action-safe):
+# - `--skip-permissions-unsafe` is hardcoded in `base-action/src/run-droid.ts`
+#   and cannot be disabled from this workflow; the compensating controls are
+#   the trusted-author trigger gate above, the read-only workspace credentials,
+#   the minimal secret surface, and `show_full_output: false` (keeps
+#   secret-bearing agent output out of public job logs);
+# - the agent process legitimately holds `FACTORY_API_KEY` (required by the
+#   droid CLI) and the short-lived App token (used by the action's comment
+#   MCP tools). Removing those from the agent environment requires the
+#   upstream isolated-publisher split; until then the model endpoint remains
+#   the only intended egress channel for these values.
+
 on:
   issue_comment:
     types: [created]
@@ -7,9 +40,6 @@ on:
     types: [created]
   pull_request_review:
     types: [submitted]
-
-env:
-  MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
 
 jobs:
   droid:
@@ -21,17 +51,19 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
       id-token: write
-      actions: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          persist-credentials: false
       - name: Configure MiniMax BYOK for Factory Droid
         shell: bash
+        # Step-scoped env: the key must not enter the workflow environment that
+        # the droid-action-safe child-process spread would hand to the agent.
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
         run: |
           mkdir -p "$HOME/.factory"
           cat > "$HOME/.factory/settings.local.json" <<JSON
