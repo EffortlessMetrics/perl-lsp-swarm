@@ -316,8 +316,8 @@ fn selected_packages(command: &str) -> BTreeSet<String> {
 /// comment.
 ///
 /// Matches `/// ```compile_fail`, `//! ```rust,compile_fail`, four-or-more
-/// backtick and tilde delimiters, and the other comma-separated attribute
-/// spellings — every line-doc fence form rustdoc collects. A bare
+/// backtick and tilde delimiters, and attribute terms separated by commas,
+/// spaces, or tabs — every line-doc fence form rustdoc collects. A bare
 /// `compile_fail` string in ordinary code or a non-doc comment is not a
 /// contract and does not match. Block doc comments (`/**`, `/*!`) are
 /// recognized by [`scan_contracts`], which tracks comment state across lines.
