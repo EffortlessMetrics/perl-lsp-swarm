@@ -15,7 +15,9 @@ from copy import deepcopy
 from tempfile import TemporaryDirectory
 import unittest
 from pathlib import Path
-from shutil import copytree, which
+
+from bash_binary import bash_binary
+from shutil import copytree
 from unittest.mock import patch
 
 
@@ -508,7 +510,7 @@ class ReleaseTopologyTests(unittest.TestCase):
         targets = MODULE.derive_targets(workflow, "0.18.0")
         self.assertTrue(any(target["archive_name"].endswith(".zip") for target in targets))
         self.assertTrue(any(target["archive_name"].endswith(".tar.gz") for target in targets))
-        bash = which("bash")
+        bash = bash_binary()
         self.assertIsNotNone(bash, "Linux Bash (or WSL Bash) is required for the producer oracle")
         platform = subprocess.run([bash, "--noprofile", "--norc", "-c", "uname -s"],
                                   capture_output=True, text=True, timeout=30)
