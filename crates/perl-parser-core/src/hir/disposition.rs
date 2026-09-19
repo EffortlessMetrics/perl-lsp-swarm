@@ -176,6 +176,7 @@ pub fn hir_kinds_for(ast_kind: &str) -> &'static [&'static str] {
         "Return" => &["ControlTransfer"],
         "LoopControl" => &["ControlTransfer"],
         "Goto" => &["ControlTransfer"],
+        "TargetlessGoto" => &["ControlTransfer"],
         "StatementModifier" => &["StatementModifierShell"],
         "Unary" => &["DerefExpr", "DynamicBoundary"],
         "Regex" => &["RegexExpr", "DynamicBoundary"],
@@ -416,6 +417,14 @@ pub fn disposition_for(ast_kind: &str) -> Option<LoweringDisposition> {
             false,
             true,
             "Lowered as a control-transfer shell; plain label targets are preserved."
+        ),
+        "TargetlessGoto" => disp!(
+            true,
+            false,
+            false,
+            false,
+            true,
+            "Honest targetless goto emits a control-transfer shell with no label and no executed child."
         ),
         "StatementModifier" => disp!(
             true,
