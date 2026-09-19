@@ -358,7 +358,7 @@ fn channel_subject_denominator(surface_id: &str, manifest: &serde_json::Value) -
         // four independently mutable registry/image subjects, enumerated
         // exactly.
         "container_registry_publication" => {
-            let mut subjects = vec![
+            let mut subjects = [
                 "container image ghcr.io release runtime image".to_string(),
                 "container image ghcr.io perl runtime image".to_string(),
                 "container image docker.io release runtime image".to_string(),
@@ -382,6 +382,9 @@ fn channel_subject_denominator(surface_id: &str, manifest: &serde_json::Value) -
 /// Per-surface observation policy: what must be compared, under which
 /// authority rule, with which mutation-authority class. Keyed by surface id;
 /// an authority surface without a policy row fails the derivation.
+// Observation-policy table backing `derive_inventory` above; see the
+// dead-code note there for why the validation-only units see no call site.
+#[allow(dead_code)]
 fn observation_policy(surface_id: &str) -> Option<(&'static str, &'static str, MutationAuthority)> {
     match surface_id {
         "crates_io_crate_publication" => Some((
@@ -440,7 +443,7 @@ pub fn validate_inventory(inventory: &NoPublishSideEffectsInventory) -> Result<(
             INVENTORY_SCHEMA
         );
     }
-    let digest = inventory.topology_digest.trim();
+    let digest = inventory.topology_digest.as_str();
     if digest.is_empty() {
         bail!("required topology_digest is omitted");
     }
@@ -540,6 +543,14 @@ pub fn validate_inventory(inventory: &NoPublishSideEffectsInventory) -> Result<(
                 public_state_label(surface.expected_public_state)
             );
         }
+        if surface.applicability == Applicability::Applicable
+            && surface.expected_public_state == PublicState::NotApplicable
+        {
+            bail!(
+                "surface {:?} is applicable but expects not_applicable; positive                  applicability cannot shed the surface's public-state expectation",
+                surface.surface_id
+            );
+        }
     }
 
     Ok(())
@@ -553,7 +564,7 @@ pub fn validate_topology_binding(
     inventory: &NoPublishSideEffectsInventory,
     authority: &TopologyAuthority,
 ) -> Result<()> {
-    if inventory.topology_digest.trim() != authority.digest {
+    if inventory.topology_digest != authority.digest {
         bail!(
             "topology_digest {:?} does not match the canonical release topology bytes \
              ({:?}); the inventory is stale or fabricated",
@@ -610,6 +621,16 @@ pub fn validate_topology_binding(
                 expected_applicability
             );
         }
+        if spec.topology_state == TopologyState::Deferred
+            && surface.applicability_evidence != spec.deferral_evidence
+        {
+            bail!(
+                "surface {:?} names applicability evidence {:?} but the canonical topology                  defers it with {:?}; fabricated deferral evidence fails the closed-world                  authority",
+                surface.surface_id,
+                surface.applicability_evidence,
+                spec.deferral_evidence
+            );
+        }
         let expected_denominator = spec.subject_denominator();
         if surface.subject_identity != expected_denominator {
             bail!(
@@ -659,6 +680,12 @@ pub fn canonical_projection(inventory: &NoPublishSideEffectsInventory) -> Result
 /// expectation, owner, and claim boundary. Values name their rule, not
 /// observed results — this constructor exists so the inventory shape is
 /// executable and provable before any observer or publisher runs.
+// Consumed today by this module's fail-closed derivation tests and reserved as
+// the constructor for the topology-admission claim that consumes
+// no_publish_side_effects.v1 next (#9414 sequencing). The standalone
+// validation bin and the `cargo xtask no-publish-side-effects` arm only
+// validate supplied documents, so those compilation units have no call site.
+#[allow(dead_code)]
 pub fn derive_inventory(authority: &TopologyAuthority) -> Result<NoPublishSideEffectsInventory> {
     let owner = "issue-9414".to_string();
     let claim_boundary = "schema/inventory only; no workflow parsing, endpoint observation, or \
@@ -1013,6 +1040,63 @@ mod tests {
         };
         assert!(error.to_string().contains("topology-state swaps"), "{error}");
         assert!(error.to_string().contains("Deferred"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_whitespace_padded_topology_digest() -> Result<()> {
+        let fixture = authority();
+        let exact = format!("{}{}", TOPOLOGY_DIGEST_PREFIX, "0".repeat(64));
+        for padded in [
+            format!(" {exact}"),
+            format!("{exact} "),
+            format!(
+                "	{exact}
+"
+            ),
+        ] {
+            let mut candidate = inventory();
+            candidate.topology_digest = padded.clone();
+            let error = rejection_error(&candidate);
+            assert!(error.to_string().contains("malformed"), "{padded:?}: {error}");
+            let error = match validate_topology_binding(&candidate, &fixture) {
+                Ok(()) => eyre!("padded digest unexpectedly bound"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("does not match"), "{padded:?}: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_fabricated_deferral_evidence_through_the_binding_check() -> Result<()> {
+        let fixture = authority();
+        let mut candidate = inventory();
+        let row = candidate
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.surface_id == "homebrew_publication")
+            .ok_or_else(|| eyre!("derived inventory lost the homebrew surface"))?;
+        row.applicability_evidence = Some("approved by the release captain".to_string());
+        let error = match validate_topology_binding(&candidate, &fixture) {
+            Ok(()) => eyre!("fabricated deferral evidence unexpectedly bound"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("fabricated deferral evidence"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_applicable_surface_with_not_applicable_public_state() -> Result<()> {
+        let mut candidate = inventory();
+        let row = candidate
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.surface_id == "crates_io_crate_publication")
+            .ok_or_else(|| eyre!("derived inventory lost the crates.io surface"))?;
+        row.expected_public_state = PublicState::NotApplicable;
+        let error = rejection_error(&candidate);
+        assert!(error.to_string().contains("cannot shed the surface's public-state"), "{error}");
         Ok(())
     }
 

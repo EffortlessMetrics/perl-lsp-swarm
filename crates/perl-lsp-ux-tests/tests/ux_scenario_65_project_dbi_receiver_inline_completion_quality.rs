@@ -201,7 +201,10 @@ fn probe_project_dbi_receiver(
     probe: &ProjectDbiReceiverProbe,
 ) -> Result<ProjectDbiReceiverReport> {
     let (line, character) = cursor_at_end(probe.source)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.inline_completion_with_trigger_kind(probe.file, line, character, 1)?;
         for item in &items {
@@ -281,7 +284,12 @@ fn scenario_65_project_dbi_receiver_inline_completion_quality_receipt() {
             harness.open_file(HANDLE_PATH, HANDLE_PM)?;
             harness.open_file(STATEMENT_PATH, STATEMENT_PM)?;
             harness.open_file(TEST_PATH, TEST_SOURCE)?;
-            std::thread::sleep(Duration::from_millis(300));
+            // Synchronize on the server's own analysis-readiness signal instead
+            // of a fixed sleep: on a cold CI runner the previous 300ms guess
+            // let the first receiver probe outrun the analysis of its just-
+            // opened document and starve the DBI semantic context (#15870).
+            let _ = harness.wait_for_diagnostics(HANDLE_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(STATEMENT_PATH, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);

@@ -15,6 +15,7 @@
 //!
 //! Run with: cargo test -p perl-dap --features test-helpers --test dap_step_through_tests
 
+use perl_dap::debug_adapter::DrainEpoch;
 use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
 use perl_dap::types::{Source, StackFrame};
 use serde_json::json;
@@ -30,7 +31,7 @@ fn make_adapter() -> DebugAdapter {
     DebugAdapter::new()
 }
 
-fn make_adapter_with_events() -> (DebugAdapter, Receiver<DapMessage>) {
+fn make_adapter_with_events() -> (DebugAdapter, Receiver<(DapMessage, DrainEpoch)>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
@@ -55,10 +56,10 @@ fn assert_response(
 }
 
 /// Drain all pending events from the receiver within a short timeout.
-fn drain_events(rx: &Receiver<DapMessage>, timeout_ms: u64) -> Vec<String> {
+fn drain_events(rx: &Receiver<(DapMessage, DrainEpoch)>, timeout_ms: u64) -> Vec<String> {
     let mut events = Vec::new();
     while let Ok(msg) = rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-        if let DapMessage::Event { event, .. } = msg {
+        if let (DapMessage::Event { event, .. }, _) = msg {
             events.push(event);
         }
     }

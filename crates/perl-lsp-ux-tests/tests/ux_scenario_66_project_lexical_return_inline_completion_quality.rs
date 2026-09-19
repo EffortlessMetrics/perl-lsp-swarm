@@ -212,7 +212,10 @@ fn probe_project_lexical_return(
     probe: &ProjectLexicalReturnProbe,
 ) -> Result<ProjectLexicalReturnReport> {
     let (line, character) = cursor_on_blank_line(probe.source, probe.marker)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.inline_completion_with_trigger_kind(probe.file, line, character, 1)?;
         for item in &items {
@@ -277,7 +280,12 @@ fn scenario_66_project_lexical_return_inline_completion_quality_receipt() {
             harness.open_file(CALCULATOR_PATH, CALCULATOR_PM)?;
             harness.open_file(CONFIG_PATH, CONFIG_PM)?;
             harness.open_file(TEST_PATH, TEST_SOURCE)?;
-            std::thread::sleep(Duration::from_millis(300));
+            // Same readiness race as #15870: synchronize on the server's own
+            // analysis-readiness signal instead of a fixed sleep.
+            let _ = harness.wait_for_diagnostics(APP_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(CALCULATOR_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(CONFIG_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(TEST_PATH, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);
