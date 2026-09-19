@@ -1,0 +1,723 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_path_plan.v1.schema.json",
+  "title": "standalone_path_plan.v1",
+  "description": "PATH policy and mutation intent for one confirmed standalone candidate (#11521). This document plans; it mutates no profile, registry, environment, or PATH. A candidate that is not the confirmed current selection can never reach installer-owned PATH mutation, and the mutation owner decides whether an owned entry exists at all: ownership is never laundered across owners.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "transaction_id",
+    "subject",
+    "environment",
+    "path_policy",
+    "prior_state",
+    "redaction_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "standalone_path_plan.v1"
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "transaction_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "selection_generation",
+        "confirmation_state",
+        "executable_path",
+        "executable_sha256",
+        "command_name"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selection_generation": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confirmation_state": {
+          "enum": [
+            "confirmed_current",
+            "unconfirmed",
+            "superseded",
+            "not_proven"
+          ]
+        },
+        "executable_path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(/[^/]|[A-Za-z]:\\\\[^\\\\]|\\\\\\\\[^\\\\]+\\\\[^\\\\]).*$",
+          "allOf": [
+            {
+              "$comment": "Path text is a literal exact identity; nothing in it is ever expanded by a shell, a script, the registry, or the environment.",
+              "not": {
+                "pattern": "[$%`;&|<>\"'*?~]|[\\u0000-\\u001f\\u007f]"
+              }
+            },
+            {
+              "$comment": "A list separator is the observable signature of a complete PATH value having been pasted into a durable receipt.",
+              "not": {
+                "pattern": "^.{2,}:"
+              }
+            }
+          ],
+          "description": "One canonical absolute path: posix `/seg`, drive `X:\\seg`, or UNC `\\\\host\\share`. Expansion metacharacters and PATH list separators are refused."
+        },
+        "executable_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "command_name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/\\\\\\s]+$",
+          "not": {
+            "pattern": "[$%`;&|<>\"'*?~:]"
+          },
+          "description": "The bare command a user types. A separator would make this a path invocation, which can never prove PATH discoverability."
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "install_root"
+      ],
+      "properties": {
+        "platform": {
+          "enum": [
+            "posix",
+            "windows_native",
+            "wsl"
+          ]
+        },
+        "shell_family": {
+          "oneOf": [
+            {
+              "enum": [
+                "posix_sh",
+                "bash",
+                "zsh",
+                "fish",
+                "powershell",
+                "cmd"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "install_root": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "role"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(/[^/]|[A-Za-z]:\\\\[^\\\\]|\\\\\\\\[^\\\\]+\\\\[^\\\\]).*$",
+              "allOf": [
+                {
+                  "$comment": "Path text is a literal exact identity; nothing in it is ever expanded by a shell, a script, the registry, or the environment.",
+                  "not": {
+                    "pattern": "[$%`;&|<>\"'*?~]|[\\u0000-\\u001f\\u007f]"
+                  }
+                },
+                {
+                  "$comment": "A list separator is the observable signature of a complete PATH value having been pasted into a durable receipt.",
+                  "not": {
+                    "pattern": "^.{2,}:"
+                  }
+                }
+              ],
+              "description": "One canonical absolute path: posix `/seg`, drive `X:\\seg`, or UNC `\\\\host\\share`. Expansion metacharacters and PATH list separators are refused."
+            },
+            "role": {
+              "enum": [
+                "user_install_root",
+                "system_install_root",
+                "package_manager_root"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "path_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "mutation_owner",
+        "scope",
+        "owned_entry",
+        "new_session_requirement"
+      ],
+      "properties": {
+        "policy": {
+          "enum": [
+            "installer_owned_entry",
+            "package_manager_owned",
+            "manual_instruction_only",
+            "no_path_change"
+          ]
+        },
+        "mutation_owner": {
+          "enum": [
+            "installer",
+            "package_manager",
+            "user_manual",
+            "none"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "user",
+            "system_elevated",
+            "shell_specific",
+            "session_only"
+          ]
+        },
+        "owned_entry": {
+          "$ref": "#/$defs/owned_entry"
+        },
+        "new_session_requirement": {
+          "enum": [
+            "none",
+            "new_shell",
+            "logout_login"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "Each policy has exactly one owner; the pair cannot disagree.",
+          "if": {
+            "properties": {
+              "policy": {
+                "const": "installer_owned_entry"
+              }
+            },
+            "required": [
+              "policy"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mutation_owner": {
+                "const": "installer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "policy": {
+                "const": "package_manager_owned"
+              }
+            },
+            "required": [
+              "policy"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mutation_owner": {
+                "const": "package_manager"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "policy": {
+                "const": "manual_instruction_only"
+              }
+            },
+            "required": [
+              "policy"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mutation_owner": {
+                "const": "user_manual"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "policy": {
+                "const": "no_path_change"
+              }
+            },
+            "required": [
+              "policy"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mutation_owner": {
+                "const": "none"
+              },
+              "new_session_requirement": {
+                "const": "none"
+              }
+            }
+          }
+        },
+        {
+          "$comment": "Only the installer owns an entry; every other owner owns none.",
+          "if": {
+            "properties": {
+              "mutation_owner": {
+                "const": "installer"
+              }
+            },
+            "required": [
+              "mutation_owner"
+            ]
+          },
+          "then": {
+            "properties": {
+              "owned_entry": {
+                "properties": {
+                  "entry_kind": {
+                    "not": {
+                      "const": "none"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "owned_entry": {
+                "properties": {
+                  "entry_kind": {
+                    "const": "none"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A current-process change is not durable persistence, so session_only carries no durable owner.",
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "session_only"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mutation_owner": {
+                "enum": [
+                  "user_manual",
+                  "none"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "prior_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity_kind"
+      ],
+      "properties": {
+        "identity_kind": {
+          "enum": [
+            "sha256_content",
+            "unavailable"
+          ]
+        },
+        "sha256": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "identity_kind": {
+                "const": "sha256_content"
+              }
+            },
+            "required": [
+              "identity_kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "sha256"
+            ],
+            "properties": {
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "sha256": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "redaction_policy": {
+      "const": "bounded_typed_fields_only",
+      "description": "Complete PATH, profile, registry, and home values never enter a durable receipt; only bounded typed fields do."
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "The confirmation gate: installer-owned PATH mutation requires the confirmed current selection.",
+      "if": {
+        "properties": {
+          "path_policy": {
+            "properties": {
+              "mutation_owner": {
+                "const": "installer"
+              }
+            },
+            "required": [
+              "mutation_owner"
+            ]
+          }
+        },
+        "required": [
+          "path_policy"
+        ]
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "confirmation_state": {
+                "const": "confirmed_current"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "shell_specific policy names the exact shell it targets; one shell never satisfies all shells.",
+      "if": {
+        "properties": {
+          "path_policy": {
+            "properties": {
+              "scope": {
+                "const": "shell_specific"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        },
+        "required": [
+          "path_policy"
+        ]
+      },
+      "then": {
+        "properties": {
+          "environment": {
+            "required": [
+              "shell_family"
+            ],
+            "properties": {
+              "shell_family": {
+                "enum": [
+                  "posix_sh",
+                  "bash",
+                  "zsh",
+                  "fish",
+                  "powershell",
+                  "cmd"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "system_elevated scope requires a system install root; user scope is never silently widened.",
+      "if": {
+        "properties": {
+          "path_policy": {
+            "properties": {
+              "scope": {
+                "const": "system_elevated"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        },
+        "required": [
+          "path_policy"
+        ]
+      },
+      "then": {
+        "properties": {
+          "environment": {
+            "properties": {
+              "install_root": {
+                "properties": {
+                  "role": {
+                    "const": "system_install_root"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "The registry is a Windows mechanism; profile and path.d are POSIX and WSL mechanisms.",
+      "if": {
+        "properties": {
+          "environment": {
+            "properties": {
+              "platform": {
+                "const": "windows_native"
+              }
+            },
+            "required": [
+              "platform"
+            ]
+          }
+        },
+        "required": [
+          "environment"
+        ]
+      },
+      "then": {
+        "properties": {
+          "path_policy": {
+            "properties": {
+              "owned_entry": {
+                "properties": {
+                  "entry_kind": {
+                    "enum": [
+                      "registry_user_path",
+                      "none"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "path_policy": {
+            "properties": {
+              "owned_entry": {
+                "properties": {
+                  "entry_kind": {
+                    "enum": [
+                      "profile_line",
+                      "path_d_fragment",
+                      "none"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "owned_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry_kind"
+      ],
+      "properties": {
+        "entry_kind": {
+          "enum": [
+            "profile_line",
+            "path_d_fragment",
+            "registry_user_path",
+            "none"
+          ]
+        },
+        "entry_location": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "not": {
+                "pattern": "[$%`;&|<>\"'*?~]"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entry_value": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(/[^/]|[A-Za-z]:\\\\[^\\\\]|\\\\\\\\[^\\\\]+\\\\[^\\\\]).*$",
+              "allOf": [
+                {
+                  "$comment": "Path text is a literal exact identity; nothing in it is ever expanded by a shell, a script, the registry, or the environment.",
+                  "not": {
+                    "pattern": "[$%`;&|<>\"'*?~]|[\\u0000-\\u001f\\u007f]"
+                  }
+                },
+                {
+                  "$comment": "A list separator is the observable signature of a complete PATH value having been pasted into a durable receipt.",
+                  "not": {
+                    "pattern": "^.{2,}:"
+                  }
+                }
+              ],
+              "description": "One canonical absolute path: posix `/seg`, drive `X:\\seg`, or UNC `\\\\host\\share`. Expansion metacharacters and PATH list separators are refused."
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "marker": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "not": {
+                "pattern": "[$%`;&|<>\"'*?~:]"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "An owned entry names where it lives, the one directory it adds, and the marker that makes it exactly removable.",
+          "if": {
+            "properties": {
+              "entry_kind": {
+                "not": {
+                  "const": "none"
+                }
+              }
+            },
+            "required": [
+              "entry_kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "entry_location",
+              "entry_value",
+              "marker"
+            ],
+            "properties": {
+              "entry_location": {
+                "type": "string",
+                "minLength": 1
+              },
+              "entry_value": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(/[^/]|[A-Za-z]:\\\\[^\\\\]|\\\\\\\\[^\\\\]+\\\\[^\\\\]).*$",
+                "allOf": [
+                  {
+                    "$comment": "Path text is a literal exact identity; nothing in it is ever expanded by a shell, a script, the registry, or the environment.",
+                    "not": {
+                      "pattern": "[$%`;&|<>\"'*?~]|[\\u0000-\\u001f\\u007f]"
+                    }
+                  },
+                  {
+                    "$comment": "A list separator is the observable signature of a complete PATH value having been pasted into a durable receipt.",
+                    "not": {
+                      "pattern": "^.{2,}:"
+                    }
+                  }
+                ],
+                "description": "One canonical absolute path: posix `/seg`, drive `X:\\seg`, or UNC `\\\\host\\share`. Expansion metacharacters and PATH list separators are refused."
+              },
+              "marker": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "entry_location": {
+                "type": "null"
+              },
+              "entry_value": {
+                "type": "null"
+              },
+              "marker": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

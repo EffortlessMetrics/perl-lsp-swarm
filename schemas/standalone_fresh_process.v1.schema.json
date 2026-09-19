@@ -1,0 +1,584 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/EffortlessMetrics/perl-lsp-swarm/schemas/standalone_fresh_process.v1.schema.json",
+  "title": "standalone_fresh_process.v1",
+  "description": "What a genuinely new ordinary process resolved for the planned command (#11521). A visibility claim cannot be manufactured: not by an absolute-path invocation, not by the installer's own mutated environment, not by a harness that prepared PATH, and not by the selected candidate merely existing while some other binary wins the lookup.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bound_plan_id",
+    "bound_plan_sha256",
+    "observed_environment",
+    "session",
+    "lookup",
+    "startup_disposition",
+    "result",
+    "instrument_complete",
+    "redaction_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "standalone_fresh_process.v1"
+    },
+    "bound_plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "bound_plan_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Digest of the exact plan bytes observed against; if the selection moved, the observation proves nothing about the current candidate."
+    },
+    "bound_persistence_result": {
+      "oneOf": [
+        {
+          "enum": [
+            "already_visible_no_change",
+            "installer_persisted",
+            "package_manager_owned",
+            "manual_action_required",
+            "new_session_required",
+            "unsupported_scope",
+            "permission_or_lock_failure",
+            "conflict_or_wrong_existing_entry",
+            "cancelled",
+            "instrument_failure",
+            "not_proven"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observed_environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform"
+      ],
+      "properties": {
+        "platform": {
+          "enum": [
+            "posix",
+            "windows_native",
+            "wsl"
+          ],
+          "description": "Native Windows, WSL, and POSIX are distinct execution environments; evidence from one never satisfies another."
+        },
+        "shell_family": {
+          "oneOf": [
+            {
+              "enum": [
+                "posix_sh",
+                "bash",
+                "zsh",
+                "fish",
+                "powershell",
+                "cmd"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin",
+        "environment_source",
+        "path_prepared_by_harness"
+      ],
+      "properties": {
+        "origin": {
+          "enum": [
+            "new_login_session",
+            "new_shell_process",
+            "installer_child_process",
+            "current_process"
+          ]
+        },
+        "environment_source": {
+          "enum": [
+            "ambient_session",
+            "installer_mutated_current_process",
+            "harness_injected_path"
+          ]
+        },
+        "path_prepared_by_harness": {
+          "type": "boolean"
+        }
+      }
+    },
+    "lookup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "competing_candidates",
+        "ambiguous"
+      ],
+      "properties": {
+        "method": {
+          "enum": [
+            "command_lookup",
+            "absolute_path_invocation",
+            "not_attempted"
+          ]
+        },
+        "resolved": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "sha256",
+                "matches_candidate"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^(/[^/]|[A-Za-z]:\\\\[^\\\\]|\\\\\\\\[^\\\\]+\\\\[^\\\\]).*$",
+                  "allOf": [
+                    {
+                      "$comment": "Path text is a literal exact identity; nothing in it is ever expanded by a shell, a script, the registry, or the environment.",
+                      "not": {
+                        "pattern": "[$%`;&|<>\"'*?~]|[\\u0000-\\u001f\\u007f]"
+                      }
+                    },
+                    {
+                      "$comment": "A list separator is the observable signature of a complete PATH value having been pasted into a durable receipt.",
+                      "not": {
+                        "pattern": "^.{2,}:"
+                      }
+                    }
+                  ],
+                  "description": "One canonical absolute path: posix `/seg`, drive `X:\\seg`, or UNC `\\\\host\\share`. Expansion metacharacters and PATH list separators are refused."
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "matches_candidate": {
+                  "type": "boolean"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "competing_candidates": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Every candidate for the command name observed on the session PATH, as an exact deterministic set: strictly ascending by path, no duplicates.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(/[^/]|[A-Za-z]:\\\\[^\\\\]|\\\\\\\\[^\\\\]+\\\\[^\\\\]).*$",
+                "allOf": [
+                  {
+                    "$comment": "Path text is a literal exact identity; nothing in it is ever expanded by a shell, a script, the registry, or the environment.",
+                    "not": {
+                      "pattern": "[$%`;&|<>\"'*?~]|[\\u0000-\\u001f\\u007f]"
+                    }
+                  },
+                  {
+                    "$comment": "A list separator is the observable signature of a complete PATH value having been pasted into a durable receipt.",
+                    "not": {
+                      "pattern": "^.{2,}:"
+                    }
+                  }
+                ],
+                "description": "One canonical absolute path: posix `/seg`, drive `X:\\seg`, or UNC `\\\\host\\share`. Expansion metacharacters and PATH list separators are refused."
+              },
+              "sha256": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "ambiguous": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "Ambiguity stays visible rather than resolving into a convenient winner.",
+          "if": {
+            "properties": {
+              "ambiguous": {
+                "const": true
+              }
+            },
+            "required": [
+              "ambiguous"
+            ]
+          },
+          "then": {
+            "properties": {
+              "competing_candidates": {
+                "minItems": 2
+              }
+            }
+          }
+        }
+      ]
+    },
+    "startup_disposition": {
+      "enum": [
+        "healthy",
+        "failed",
+        "not_required",
+        "not_observed"
+      ]
+    },
+    "result": {
+      "enum": [
+        "path_visible_immediately",
+        "path_visible_after_documented_new_session",
+        "package_manager_owned_path",
+        "manual_path_action_required",
+        "wrong_ambient_binary",
+        "not_found",
+        "ambiguous_resolution",
+        "unsupported_environment",
+        "instrument_failure",
+        "not_proven"
+      ]
+    },
+    "instrument_complete": {
+      "type": "boolean"
+    },
+    "redaction_policy": {
+      "const": "bounded_typed_fields_only",
+      "description": "Complete PATH, profile, registry, and home values never enter a durable receipt; only bounded typed fields do."
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "A visibility claim requires a genuinely new ambient session, an unprepared PATH, and a real command lookup that resolved the candidate unambiguously.",
+      "if": {
+        "properties": {
+          "result": {
+            "enum": [
+              "path_visible_immediately",
+              "path_visible_after_documented_new_session"
+            ]
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "session": {
+            "properties": {
+              "origin": {
+                "enum": [
+                  "new_login_session",
+                  "new_shell_process"
+                ]
+              },
+              "environment_source": {
+                "const": "ambient_session"
+              },
+              "path_prepared_by_harness": {
+                "const": false
+              }
+            }
+          },
+          "lookup": {
+            "required": [
+              "resolved"
+            ],
+            "properties": {
+              "method": {
+                "const": "command_lookup"
+              },
+              "ambiguous": {
+                "const": false
+              },
+              "resolved": {
+                "type": "object",
+                "properties": {
+                  "matches_candidate": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "startup_disposition": {
+            "not": {
+              "const": "failed"
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A resolved binary that is not the candidate is wrong_ambient_binary, whatever else was hoped for.",
+      "if": {
+        "properties": {
+          "lookup": {
+            "properties": {
+              "resolved": {
+                "type": "object",
+                "properties": {
+                  "matches_candidate": {
+                    "const": false
+                  }
+                },
+                "required": [
+                  "matches_candidate"
+                ]
+              }
+            },
+            "required": [
+              "resolved"
+            ]
+          }
+        },
+        "required": [
+          "lookup"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "enum": [
+              "wrong_ambient_binary",
+              "ambiguous_resolution",
+              "instrument_failure",
+              "not_proven"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "wrong_ambient_binary"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "lookup": {
+            "required": [
+              "resolved"
+            ],
+            "properties": {
+              "resolved": {
+                "type": "object",
+                "properties": {
+                  "matches_candidate": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "An ambiguous lookup is reported as ambiguous and nothing else.",
+      "if": {
+        "properties": {
+          "lookup": {
+            "properties": {
+              "ambiguous": {
+                "const": true
+              }
+            },
+            "required": [
+              "ambiguous"
+            ]
+          }
+        },
+        "required": [
+          "lookup"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "const": "ambiguous_resolution"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "ambiguous_resolution"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "lookup": {
+            "properties": {
+              "ambiguous": {
+                "const": true
+              },
+              "competing_candidates": {
+                "minItems": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "not_found observed no candidates and resolved nothing.",
+      "if": {
+        "properties": {
+          "result": {
+            "const": "not_found"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "lookup": {
+            "properties": {
+              "resolved": {
+                "type": "null"
+              },
+              "competing_candidates": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A lookup that was never attempted cannot conclude anything about discoverability.",
+      "if": {
+        "properties": {
+          "lookup": {
+            "properties": {
+              "method": {
+                "const": "not_attempted"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          }
+        },
+        "required": [
+          "lookup"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "enum": [
+              "unsupported_environment",
+              "manual_path_action_required",
+              "package_manager_owned_path",
+              "instrument_failure",
+              "not_proven"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "unsupported_environment"
+          }
+        },
+        "required": [
+          "result"
+        ]
+      },
+      "then": {
+        "properties": {
+          "lookup": {
+            "properties": {
+              "method": {
+                "const": "not_attempted"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "An incomplete instrument concludes nothing; a complete one never reports instrument_failure.",
+      "if": {
+        "properties": {
+          "instrument_complete": {
+            "const": false
+          }
+        },
+        "required": [
+          "instrument_complete"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "enum": [
+              "instrument_failure",
+              "not_proven"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "result": {
+            "not": {
+              "const": "instrument_failure"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
