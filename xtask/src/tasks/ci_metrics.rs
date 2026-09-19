@@ -13,6 +13,21 @@ const COST_PER_MINUTE: f64 = 0.008;
 const MONTHLY_BUDGET_TARGET: f64 = 60.0;
 const ANNUAL_BUDGET_TARGET: f64 = 720.0;
 
+/// CLI `--api-version` pin shared by the cost-monitor and ci-baseline
+/// producers (#15371). Only `v1` is supported; anything else fails loudly
+/// so a future versioned producer cannot be silently misread by this
+/// consumer.
+pub const SUPPORTED_API_VERSION: &str = "v1";
+
+fn ensure_supported_api_version(api_version: &str) -> Result<()> {
+    if api_version != SUPPORTED_API_VERSION {
+        bail!(
+            "unsupported --api-version `{api_version}`: this producer pins `{SUPPORTED_API_VERSION}`"
+        );
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct RepoInfo {
     owner: RepoOwner,
@@ -149,7 +164,8 @@ struct BaselineRun {
     head_sha: Option<String>,
 }
 
-pub fn run_cost_monitor(days: u64, json_output: bool) -> Result<()> {
+pub fn run_cost_monitor(days: u64, json_output: bool, api_version: &str) -> Result<()> {
+    ensure_supported_api_version(api_version)?;
     let root = project_root()?;
     if days == 0 {
         bail!("--days must be greater than zero");
@@ -434,7 +450,14 @@ pub fn run_cost_monitor(days: u64, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn run_ci_baseline(branch: String, days: u64, limit: usize, output_dir: PathBuf) -> Result<()> {
+pub fn run_ci_baseline(
+    branch: String,
+    days: u64,
+    limit: usize,
+    output_dir: PathBuf,
+    api_version: &str,
+) -> Result<()> {
+    ensure_supported_api_version(api_version)?;
     let root = project_root()?;
     if days == 0 {
         bail!("--days must be greater than zero");
@@ -1046,6 +1069,15 @@ mod tests {
             timestamp,
             DateTime::parse_from_rfc3339("2026-03-25T12:00:00Z")?.with_timezone(&Utc)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn api_version_pin_rejects_unknown_versions() -> Result<()> {
+        ensure_supported_api_version("v1")?;
+        let error = ensure_supported_api_version("v2").expect_err("v2 must fail loudly");
+        assert!(error.to_string().contains("unsupported --api-version `v2`"), "got error: {error}");
+        assert!(error.to_string().contains("`v1`"), "got error: {error}");
         Ok(())
     }
 

@@ -6,6 +6,9 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+/// Wire version this producer emits and every consumer pins (#15373).
+const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentLeaseReceipt {
@@ -23,6 +26,12 @@ pub struct AgentLeaseReceipt {
 
 pub fn validate(receipt_path: &Path) -> Result<()> {
     let receipt = read_receipt(receipt_path)?;
+    if receipt.schema_version != SUPPORTED_SCHEMA_VERSION {
+        bail!(
+            "unsupported agent receipt schema_version: {} (expected {SUPPORTED_SCHEMA_VERSION})",
+            receipt.schema_version
+        );
+    }
     validate_core_fields(&receipt)?;
 
     let lease = read_lease(Path::new(&receipt.lease_path))?;
@@ -310,6 +319,38 @@ mod tests {
             .ok_or_else(|| color_eyre::eyre::eyre!("unknown receipt field should be rejected"))?;
         let debug = format!("{err:?}");
         assert!(debug.contains("unexpected"), "expected unknown field error, got {err}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn agent_receipt_validate_rejects_unsupported_and_missing_schema_version() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("receipt.json");
+
+        let mut future = valid_receipt("comment_upsert");
+        future.schema_version = 2;
+        fs::write(&path, serde_json::to_string_pretty(&future)?)?;
+        let err = validate(&path)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("v2 receipt should fail validation"))?;
+        assert!(
+            err.to_string().contains("unsupported agent receipt schema_version: 2 (expected 1)"),
+            "got error: {err}"
+        );
+
+        let mut value = serde_json::to_value(valid_receipt("comment_upsert"))?;
+        value
+            .as_object_mut()
+            .ok_or_else(|| {
+                color_eyre::eyre::eyre!("receipt fixture should serialize to an object")
+            })?
+            .remove("schema_version");
+        fs::write(&path, serde_json::to_string_pretty(&value)?)?;
+        let err = validate(&path)
+            .err()
+            .ok_or_else(|| color_eyre::eyre::eyre!("receipt without schema_version should fail"))?;
+        assert!(format!("{err:?}").contains("schema_version"), "got error: {err:?}");
 
         Ok(())
     }

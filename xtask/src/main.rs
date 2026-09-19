@@ -1327,6 +1327,12 @@ enum Commands {
         /// Emit machine-readable output.
         #[arg(long)]
         json: bool,
+
+        /// Schema version this producer must emit and validate. Only `v1`
+        /// is supported; anything else fails loudly instead of emitting a
+        /// shape the caller does not parse (#15371).
+        #[arg(long, default_value = "v1")]
+        api_version: String,
     },
 
     /// Measure CI baseline from recent workflow runs.
@@ -1354,6 +1360,12 @@ enum Commands {
         /// historical or per-branch baselines side by side.
         #[arg(short, long, default_value = metrics::release_health::CI_BASELINE_OUTPUT_DIR)]
         output: PathBuf,
+
+        /// Schema version this producer must emit and validate. Only `v1`
+        /// is supported; anything else fails loudly instead of emitting a
+        /// shape the caller does not parse (#15371).
+        #[arg(long, default_value = "v1")]
+        api_version: String,
     },
 
     /// Compute the CI scope — changed crates, reverse-dep closure, and architectural wideners.
@@ -6280,9 +6292,11 @@ fn run_cli(cli: Cli) -> Result<()> {
                 timeout_secs,
             })
         }
-        Commands::CiCostMonitor { days, json } => ci_metrics::run_cost_monitor(days, json),
-        Commands::CiBaseline { branch, days, limit, output } => {
-            ci_metrics::run_ci_baseline(branch, days, limit, output)
+        Commands::CiCostMonitor { days, json, api_version } => {
+            ci_metrics::run_cost_monitor(days, json, &api_version)
+        }
+        Commands::CiBaseline { branch, days, limit, output, api_version } => {
+            ci_metrics::run_ci_baseline(branch, days, limit, output, &api_version)
         }
         Commands::CiScope { base, subject, root, format } => {
             ci_scope::run(ci_scope::CiScopeConfig { base, subject, root, format })
