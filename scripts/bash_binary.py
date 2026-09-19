@@ -66,4 +66,9 @@ def bash_path(path: Path) -> str:
     ``F:codeRust2x.sh`` (exit 127). ``Path.as_posix()`` is the portable
     form; POSIX hosts treat it unchanged.
     """
-    return path.as_posix()
+    # ``Path.as_posix()`` only converts the separator native to the running
+    # host.  The callers can receive a Windows path while running under a
+    # POSIX test harness (or when a path was persisted by a Windows host), so
+    # normalize the string representation as well.
+    return str(path).replace("\\", "/")
+
