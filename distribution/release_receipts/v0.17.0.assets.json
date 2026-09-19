@@ -1,0 +1,17 @@
+{
+  "release": "v0.17.0",
+  "source": "https://github.com/EffortlessMetrics/perl-lsp/releases/tags/v0.17.0",
+  "verified_date": "2026-08-28",
+  "assets": [
+    {"name": "SHA256SUMS"},
+    {"name": "perl-lsp-rs-0.17.0.vsix"},
+    {"name": "perllsp-0.17.0-aarch64-apple-darwin.tar.gz"},
+    {"name": "perllsp-0.17.0-aarch64-unknown-linux-gnu.tar.gz"},
+    {"name": "perllsp-0.17.0-aarch64-unknown-linux-musl.tar.gz"},
+    {"name": "perllsp-0.17.0-x86_64-apple-darwin.tar.gz"},
+    {"name": "perllsp-0.17.0-x86_64-pc-windows-msvc.zip"},
+    {"name": "perllsp-0.17.0-x86_64-unknown-linux-gnu.tar.gz"},
+    {"name": "perllsp-0.17.0-x86_64-unknown-linux-musl.tar.gz"},
+    {"name": "sbom-spdx.json"}
+  ]
+}
