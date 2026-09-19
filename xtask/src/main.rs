@@ -5324,21 +5324,26 @@ enum UxScorecardOutputFormat {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-    // The clap derive surface of `Commands` is large enough that its builder
-    // frames overflow the 1 MiB Windows main-thread reserve in debug builds
-    // before argument parsing begins. Dispatch on an explicitly sized stack;
-    // the reservation is virtual memory and costs nothing until used.
-    let dispatcher = std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
-        .spawn(cli_main)
-        .map_err(|error| eyre!("failed to spawn xtask dispatcher thread: {error}"))?;
-    match dispatcher.join() {
-        Ok(result) => result,
-        Err(_) => Err(eyre!("xtask dispatcher thread panicked")),
+    // The 236-variant `Commands` derive makes clap's parse matcher overflow the
+    // 1 MB Windows main-thread stack in debug builds (STATUS_STACK_OVERFLOW,
+    // #15918); Linux's 8 MB default hides it. Run the CLI on a worker thread
+    // with an explicit 64 MiB stack — cross-platform, no CLI surface change.
+    const CLI_STACK_SIZE: usize = 64 * 1024 * 1024;
+    let worker = std::thread::Builder::new()
+        .name("xtask-cli".to_owned())
+        .stack_size(CLI_STACK_SIZE)
+        .spawn(run_cli_main);
+    match worker {
+        Ok(handle) => match handle.join() {
+            Ok(result) => result,
+            // Propagate a panic from the CLI thread with its original payload.
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
+        Err(error) => Err(eyre!("failed to spawn xtask CLI thread: {error}")),
     }
 }
 
-fn cli_main() -> Result<()> {
+fn run_cli_main() -> Result<()> {
     run_cli(Cli::parse())
 }
 
