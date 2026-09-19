@@ -168,7 +168,7 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-/// The structured `close_proof` defined by `docs/agents/pr-ledger.schema.json`.
+/// The structured `close_proof` contract governed by `docs/agents/CLOSE_PROOF_POLICY.md`.
 ///
 /// Governed by `docs/agents/CLOSE_PROOF_POLICY.md`: landing ancestry alone never
 /// authorizes a close, so the receipt and the separate semantic-completion evidence
@@ -218,8 +218,8 @@ struct PrTriageRow {
     evidence: Vec<String>,
     cleanup_done: bool,
     known_gaps: Vec<String>,
-    /// Kept as a raw `Value` so absent, `null`, prose, and the structured form of
-    /// `pr-ledger.schema.json` are distinguishable; see [`check_close_proof`].
+    /// Kept as a raw `Value` so absent, `null`, prose, and structured close-proof
+    /// forms are distinguishable; see [`check_close_proof`].
     /// `absent_or` is required because `Option<Value>` alone would fold an explicit
     /// `null` back into `None`, losing the missing-versus-null distinction.
     #[serde(default, deserialize_with = "absent_or")]
@@ -554,6 +554,19 @@ fn validate_line(
     into_errors(messages)
 }
 
+/// Validate one row against the `pr-triage.v1` contract.
+///
+/// Crate seam for the generator ([`crate::tasks::pr_ledger`]): the reconciliation
+/// worklist is written under `target/` and never committed, so the batch validator
+/// that globs `docs/agents/ledgers/` never sees it (#15557). The generator calls
+/// this at the only seam that always executes: row emission.
+pub(crate) fn validate_pr_triage_row(line: &str) -> Vec<String> {
+    validate_line(line, "<generated>", 0, LedgerSchemaId::PrTriageV1)
+        .into_iter()
+        .map(|error| error.message)
+        .collect()
+}
+
 /// Decode one row into its typed contract, then apply that contract's semantic rules.
 ///
 /// Structural failures (unknown field, wrong type, missing field) come from serde and
@@ -602,8 +615,8 @@ fn check_pr_triage(row: &PrTriageRow) -> Vec<String> {
 ///
 /// Which forms are accepted depends on whether the classification **gates a close**:
 ///
-/// - `close-superseded` and `duplicate-of-merged` accept **only** the structured form
-///   of `docs/agents/pr-ledger.schema.json`, checked field by field. A prose string is
+/// - `close-superseded` and `duplicate-of-merged` accept **only** the structured
+///   close-proof contract, checked field by field. A prose string is
 ///   rejected: `CLOSE_PROOF_POLICY.md` requires landing proof *and* separate
 ///   semantic-completion evidence, and a free string carries neither in
 ///   machine-checkable form.
@@ -637,8 +650,8 @@ fn check_close_proof(proof: Option<&Value>, classification: &str, errors: &mut V
                 // semantic-completion evidence. A prose string carries neither in
                 // machine-checkable form, so it cannot authorize a gated close.
                 errors.push(format!(
-                    "classification `{classification}` requires the structured `close_proof` object of \
-                     pr-ledger.schema.json; a prose string carries no landing receipt or \
+                    "classification `{classification}` requires the structured `close_proof` \
+                     object; a prose string carries no landing receipt or \
                      semantic-completion evidence (CLOSE_PROOF_POLICY.md)"
                 ));
             }
@@ -660,7 +673,7 @@ fn check_close_proof(proof: Option<&Value>, classification: &str, errors: &mut V
     }
 }
 
-/// Enforce the constants and non-empty fields `pr-ledger.schema.json` declares.
+/// Enforce the constants and non-empty fields the close-proof contract declares.
 fn check_structured_close_proof(proof: &StructuredCloseProof) -> Vec<String> {
     let mut errors = Vec::new();
 
@@ -843,7 +856,7 @@ mod tests {
 
     // ----- helpers ----------------------------------------------------------
 
-    /// A conforming structured close proof, per `docs/agents/pr-ledger.schema.json`.
+    /// A conforming structured close proof, per the close-proof contract (CLOSE_PROOF_POLICY.md).
     const STRUCTURED_CLOSE_PROOF: &str = r#"{"command":"cargo xtask landing-proof --commit abc1234 --canonical-main origin/main --format json","receipt":{"schema_version":"landing_proof.v1","commit_reachable":true,"commit":"abc1234","canonical_main":"origin/main","semantic_completion":"not_evaluated"},"semantic_completion_evidence":"semantic-close packet #1100","verified_date":"2026-06-07"}"#;
 
     const PR_TRIAGE_HEADER: &str = "#!ledger-schema: pr-triage.v1";
@@ -919,6 +932,28 @@ mod tests {
         }
 
         ensure!(checked_rows >= 11, "expected at least 11 committed rows, checked {checked_rows}");
+        Ok(())
+    }
+
+    /// The committed pr-triage worklist is the live artifact of the #15557
+    /// consolidation: `pr-triage.v1` follows the [`crate::tasks::pr_ledger`]
+    /// generator row (the sole row authority; the competing
+    /// `docs/agents/pr-ledger.schema.json` was retired) and owns
+    /// `docs/agents/ledgers/pr-triage.jsonl`. Pin its exact rows so the
+    /// registration can never be silently inert again.
+    #[test]
+    fn test_committed_pr_triage_ledger_exact_rows() -> Result<()> {
+        let path = resolve_ledger_dir(None)?.join("pr-triage.jsonl");
+        ensure!(path.is_file(), "committed pr-triage ledger missing: {}", path.display());
+        let content = fs::read_to_string(&path)?;
+        let (rows, errors) = validate_file(&content, "docs/agents/ledgers/pr-triage.jsonl", None);
+        ensure!(errors.is_empty(), "committed pr-triage ledger invalid: {errors:?}");
+        ensure!(rows == 1, "expected exactly 1 committed pr-triage row, got {rows}");
+        ensure!(content.contains("\"pr\":\"15554\""), "pr-triage row for #15554 missing");
+        ensure!(
+            content.contains("\"classification\":\"merge-ready\""),
+            "#15554 merge-ready disposition missing"
+        );
         Ok(())
     }
 
@@ -1498,20 +1533,16 @@ mod tests {
 
     // ----- close-proof contract (structured form) --------------------------
 
-    /// The structured `close_proof` of `pr-ledger.schema.json` must be accepted.
+    /// The structured `close_proof` contract must be accepted.
     ///
-    /// Binds to that schema's own `examples[1]`, so the Rust contract and the
-    /// published schema cannot drift apart silently.
+    /// Exercises every constant the contract pins: the `landing_proof.v1` receipt,
+    /// `commit_reachable: true`, `semantic_completion: not_evaluated`, and the ISO
+    /// verified date.
     #[test]
-    fn test_structured_close_proof_from_schema_example_is_accepted() -> Result<()> {
-        let schema_path = crate::utils::project_root()?.join("docs/agents/pr-ledger.schema.json");
-        let schema: Value = serde_json::from_str(&fs::read_to_string(&schema_path)?)?;
-
-        let close_proof = schema
-            .get("examples")
-            .and_then(Value::as_array)
-            .and_then(|examples| examples.iter().find_map(|e| e.get("close_proof")))
-            .ok_or_else(|| eyre!("pr-ledger.schema.json has no example carrying close_proof"))?;
+    fn test_structured_close_proof_is_accepted() -> Result<()> {
+        let close_proof: Value = serde_json::from_str(
+            r#"{"command":"cargo xtask landing-proof --commit abc1234 --canonical-main origin/main --format json","receipt":{"schema_version":"landing_proof.v1","commit_reachable":true,"commit":"abc1234","canonical_main":"origin/main","semantic_completion":"not_evaluated"},"semantic_completion_evidence":"semantic-close packet #1100-row-evidence (see CLOSE_PROOF_POLICY.md Three Distinct Proof Layers)","verified_date":"2026-06-07"}"#,
+        )?;
 
         let mut row: Value = serde_json::from_str(valid_row())?;
         let obj = row.as_object_mut().ok_or_else(|| eyre!("row is not an object"))?;
@@ -1519,7 +1550,7 @@ mod tests {
         obj.insert("close_proof".to_string(), close_proof.clone());
 
         let errs = line_errors(&serde_json::to_string(&row)?);
-        ensure!(errs.is_empty(), "schema's own structured close_proof rejected: {errs:?}");
+        ensure!(errs.is_empty(), "structured close_proof rejected: {errs:?}");
         Ok(())
     }
 
@@ -1971,12 +2002,14 @@ mod tests {
         );
         assert_eq!(
             errors,
-            vec!["
-                classification `duplicate-of-merged` requires the structured `close_proof` object of \
-                pr-ledger.schema.json; a prose string carries no landing receipt or \
+            vec![
+                "
+                classification `duplicate-of-merged` requires the structured `close_proof` \
+                object; a prose string carries no landing receipt or \
                 semantic-completion evidence (CLOSE_PROOF_POLICY.md)"
-                .trim()
-                .to_string()]
+                    .trim()
+                    .to_string()
+            ]
         );
     }
 
