@@ -1507,7 +1507,11 @@ fn cmd_quick_receipts(repo_root: &Path) -> Result<i32> {
         "total_all_tests": 0,
         "pass_rate_active": 0.0,
         "pass_rate_total": 0.0,
-        "note": "Run generate-receipts.sh for actual test metrics"
+        // #15350: zeroes from a no-test quick run are explicitly not_run_by_mode,
+        // never a measured zero. Bundle publishers refuse this status, so a
+        // fresh timestamp cannot pass synthetic state off as current evidence.
+        "status": "not_run_by_mode",
+        "note": "Synthetic quick receipt: tests not run. Use the canonical typed producer `cargo xtask receipts` for subject-bound test metrics."
     });
     fs::write(artifacts_dir.join("test-summary.json"), serde_json::to_string(&test_summary)?)
         .with_context(|| "writing test-summary.json")?;
