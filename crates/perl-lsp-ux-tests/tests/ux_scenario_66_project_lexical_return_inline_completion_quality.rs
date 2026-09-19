@@ -212,7 +212,10 @@ fn probe_project_lexical_return(
     probe: &ProjectLexicalReturnProbe,
 ) -> Result<ProjectLexicalReturnReport> {
     let (line, character) = cursor_on_blank_line(probe.source, probe.marker)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.inline_completion_with_trigger_kind(probe.file, line, character, 1)?;
         for item in &items {

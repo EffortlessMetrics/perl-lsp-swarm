@@ -93,7 +93,10 @@ fn wait_for_guard_condition(
     expected_insert: &str,
 ) -> Result<Vec<String>> {
     let (line, character) = cursor_at_end(source)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let items = harness.inline_completion_with_trigger_kind(file, line, character, 1)?;
         for item in &items {
@@ -130,8 +133,20 @@ fn scenario_58_guard_condition_inline_completion_quality_stdio() -> Result<()> {
     harness.open_file(NEXT_GUARD_PATH, NEXT_GUARD_SOURCE)?;
     // Same readiness race as #15870: synchronize on the server's own
     // analysis-readiness signal instead of a fixed sleep.
-    let _ = harness.wait_for_diagnostics(RETURN_GUARD_PATH, Duration::from_secs(30));
-    let _ = harness.wait_for_diagnostics(NEXT_GUARD_PATH, Duration::from_secs(30));
+    let readiness = harness.wait_for_diagnostics(RETURN_GUARD_PATH, Duration::from_secs(30));
+    if readiness.is_empty() {
+        return Err(anyhow::anyhow!(
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+        )
+        .into());
+    }
+    let readiness = harness.wait_for_diagnostics(NEXT_GUARD_PATH, Duration::from_secs(30));
+    if readiness.is_empty() {
+        return Err(anyhow::anyhow!(
+            "analysis readiness: no publishDiagnostics; completion probes would poll blind (#15899)"
+        )
+        .into());
+    }
 
     assert!(
         wait_for_inline_registration(&harness),

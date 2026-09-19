@@ -3593,8 +3593,13 @@ mod tests {
     /// into the push journey. A repeated group with a nested quantifier reaches
     /// the client as `PL1000` in the `textDocument/publishDiagnostics`
     /// notification on didOpen, and a didChange to an invalid-modifier pattern
-    /// publishes `PL1002` — proving the retained table is re-derived for the
-    /// changed snapshot instead of serving stale analysis.
+    /// publishes the parse-time modifier diagnostic — proving the retained table
+    /// is re-derived for the changed snapshot instead of serving stale analysis.
+    ///
+    /// Since #14980 an unknown match modifier is rejected by the strict
+    /// match-family extractor before analysis runs (the `s///` contract, see
+    /// #14762), so the didChange half pins the typed `SyntaxError` rather than
+    /// the analysis-level `PL1002`.
     #[test]
     fn push_diagnostics_include_canonical_regex_codes() {
         let (server, buf) = make_server_with_capture();
@@ -3628,8 +3633,12 @@ mod tests {
             "didOpen push must publish the canonical regex backtracking code PL1000; got: {text:?}"
         );
         assert!(
-            text.contains("PL1002"),
-            "didChange push must publish the canonical regex modifier code PL1002; got: {text:?}"
+            text.contains("Invalid match modifier 'z'"),
+            "didChange push must publish the parse-time modifier diagnostic naming the letter; got: {text:?}"
+        );
+        assert!(
+            !text.contains("PL1002"),
+            "the bogus letter is rejected before analysis, so no PL1002 may appear; got: {text:?}"
         );
     }
 
