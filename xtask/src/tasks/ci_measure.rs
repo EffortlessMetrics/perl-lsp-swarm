@@ -121,10 +121,7 @@ pub fn run() -> Result<()> {
         ndjson.push('\n');
 
         if !status.success() {
-            bail!(
-                "CI lane '{name}' failed with exit code {}",
-                record.returncode
-            );
+            bail!("CI lane '{name}' failed with exit code {}", record.returncode);
         }
 
         lanes.push(record);
@@ -164,10 +161,8 @@ pub fn render_markdown(payload: &CiMeasurePayload) -> String {
     ));
     markdown.push_str("| Lane | Seconds | RC |\n|------|---------|----|\n");
     for lane in &payload.lanes {
-        markdown.push_str(&format!(
-            "| `{}` | {} | {} |\n",
-            lane.name, lane.seconds, lane.returncode
-        ));
+        markdown
+            .push_str(&format!("| `{}` | {} | {} |\n", lane.name, lane.seconds, lane.returncode));
     }
     markdown
 }
@@ -196,10 +191,7 @@ mod tests {
 
     #[test]
     fn build_payload_threads_schema_version_into_payload_and_lanes() {
-        let lanes = vec![
-            sample_lane("ci-format", 0.123, 0),
-            sample_lane("ci-docs-check", 1.5, 0),
-        ];
+        let lanes = vec![sample_lane("ci-format", 0.123, 0), sample_lane("ci-docs-check", 1.5, 0)];
         let payload = build_payload("2026-09-18T20:00:00+00:00".to_string(), lanes.clone());
 
         assert_eq!(payload.schema_version, "ci-time.v1");
@@ -231,7 +223,8 @@ mod tests {
     #[test]
     fn lane_serialization_carries_schema_version_field() {
         let lane = sample_lane("ci-format", 0.5, 0);
-        let value: serde_json::Value = serde_json::from_str(&serde_json::to_string(&lane).unwrap()).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&lane).unwrap()).unwrap();
         assert_eq!(value["schema_version"], "ci-time.v1");
         assert_eq!(value["producer"], "cargo-xtask-ci-measure");
         assert_eq!(value["name"], "ci-format");
@@ -245,10 +238,7 @@ mod tests {
         );
         let md = render_markdown(&payload);
         assert!(md.contains("- Schema: `ci-time.v1`"), "{md}");
-        assert!(
-            md.contains("- Producer: `cargo-xtask-ci-measure`"),
-            "{md}"
-        );
+        assert!(md.contains("- Producer: `cargo-xtask-ci-measure`"), "{md}");
         assert!(md.contains("| `ci-format` | 0.5 | 0 |"), "{md}");
     }
 
