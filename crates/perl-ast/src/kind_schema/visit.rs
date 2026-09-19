@@ -235,6 +235,7 @@ macro_rules! visit_kind_children {
                 }
             }
             NodeKind::Goto { target, .. } => $emit!(FieldId::TARGET, target),
+            NodeKind::TargetlessGoto {} => {}
             NodeKind::Signature { parameters } => {
                 for param in parameters {
                     $emit!(FieldId::PARAMETERS, param);
@@ -271,6 +272,15 @@ macro_rules! visit_kind_children {
                 }
             }
 
+            // Dynamic typeglob assignment body (#15731): present only for a
+            // computed `*{EXPR}` target whose normalized name kept the brace
+            // marker; braced barewords and plain `*name` carry no body.
+            NodeKind::Typeglob { body, .. } => {
+                if let Some(body) = body {
+                    $emit!(FieldId::BODY, body);
+                }
+            }
+
             // Package system
             NodeKind::Package { block, .. } => {
                 if let Some(b) = block {
@@ -297,7 +307,6 @@ macro_rules! visit_kind_children {
             | NodeKind::Regex { .. }
             | NodeKind::Readline { .. }
             | NodeKind::Glob { .. }
-            | NodeKind::Typeglob { .. }
             | NodeKind::Diamond
             | NodeKind::Ellipsis
             | NodeKind::Undef

@@ -3,10 +3,16 @@
 //! Wraps LSP lifecycle requests (initialize, shutdown, exit).
 
 use super::super::{JsonRpcError, LspServer, Ordering, Value, json};
+use std::time::Duration;
 
 const TRACE_LEVEL_OFF: &str = "off";
 const TRACE_LEVEL_MESSAGES: &str = "messages";
 const TRACE_LEVEL_VERBOSE: &str = "verbose";
+const OUTBOUND_SETTLEMENT_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn protocol_exit_code(shutdown_received: bool) -> i32 {
+    if shutdown_received { 0 } else { 1 }
+}
 
 impl LspServer {
     fn normalize_trace_level(value: Option<&str>) -> &'static str {
@@ -73,7 +79,7 @@ impl LspServer {
     }
 
     pub(super) fn auto_initialize_for_compat(&self, method: &str) {
-        if self.initialize_requested.load(Ordering::Acquire)
+        if self.initialization_accepted.load(Ordering::Acquire)
             && !self.initialized.load(Ordering::Acquire)
         {
             tracing::warn!(
@@ -107,6 +113,7 @@ impl LspServer {
 
         // Clear any pending cancelled requests on shutdown
         self.cancelled.lock().clear();
+        self.clear_position_encoding_session_context();
         // Destroy the session-keyed resolve authenticator so every envelope
         // from this session becomes unverifiable (#8342).
         self.teardown_resolve_session();
@@ -115,9 +122,26 @@ impl LspServer {
 
     /// Handle exit request
     pub(super) fn handle_exit_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        // LSP spec: exit with 0 if shutdown was called, 1 otherwise
-        let exit_code = if self.shutdown_received.load(Ordering::Acquire) { 0 } else { 1 };
+        // `process::exit` skips destructors. Close all outbound admission gates
+        // and give the existing writer a bounded chance to flush frames that
+        // were already accepted. A timeout remains unsettled and is reported
+        // as such; it must never be treated as successful delivery.
+        let settlement = self.outbound.close_and_wait(OUTBOUND_SETTLEMENT_TIMEOUT);
+        match settlement.as_ref() {
+            Some(outcome) => outcome.report_settlement(),
+            None => tracing::error!("outbound writer did not settle before process exit"),
+        }
+        // LSP exit status is defined by whether shutdown was received. Writer
+        // settlement remains independent evidence and must not change that
+        // protocol status when shutdown was accepted.
+        let exit_code = protocol_exit_code(self.shutdown_received.load(Ordering::Acquire));
         tracing::info!(exit_code, "LSP server exiting");
+        // `process::exit` skips Rust destructors, including the non-blocking
+        // file writer guard. Drain it explicitly so the final lifecycle log
+        // record is durable before the process terminates.
+        // The logging guard is owned by the core launcher crate, which is
+        // also where the CLI initializes it.
+        perl_lsp_rs_core::runtime::launcher::shutdown_logging();
         std::process::exit(exit_code);
     }
 
@@ -165,7 +189,7 @@ impl LspServer {
 
     /// Handle initialized notification
     pub(crate) fn handle_initialized_dispatch(&self) -> Result<Option<Value>, JsonRpcError> {
-        if !self.initialize_requested.load(Ordering::Acquire) {
+        if !self.initialization_accepted.load(Ordering::Acquire) {
             return Err(JsonRpcError {
                 code: -32002, // ServerNotInitialized per LSP spec
                 message: "Server not initialized".to_string(),
@@ -193,6 +217,12 @@ mod tests {
     use proptest::prelude::*;
 
     type TestResult = Result<(), String>;
+
+    #[test]
+    fn exit_status_follows_shutdown_independently_of_writer_settlement() {
+        assert_eq!(protocol_exit_code(true), 0);
+        assert_eq!(protocol_exit_code(false), 1);
+    }
 
     // ── BDD lifecycle dispatch scenarios ────────────────────────────────────
 
@@ -276,6 +306,10 @@ mod tests {
         server
             .handle_initialized_dispatch()
             .map_err(|e| format!("initialized notification should succeed: {e}"))?;
+        assert!(
+            server.position_encoding_session_context().is_some(),
+            "successful initialize must publish active coordinate context"
+        );
 
         // When
         let response = server
@@ -287,6 +321,10 @@ mod tests {
         assert!(
             server.shutdown_received.load(Ordering::Acquire),
             "shutdown_received must be set (exit will use code 0)"
+        );
+        assert!(
+            server.position_encoding_session_context().is_none(),
+            "shutdown must invalidate the active coordinate context"
         );
         Ok(())
     }
@@ -480,6 +518,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct LifecycleModel {
         initialize_requested: bool,
+        initialization_accepted: bool,
         initialized: bool,
     }
 
@@ -489,11 +528,12 @@ mod tests {
                 return Err(-32600);
             }
             self.initialize_requested = true;
+            self.initialization_accepted = true;
             Ok(())
         }
 
         fn initialized_notification(&mut self) -> Result<(), i32> {
-            if !self.initialize_requested {
+            if !self.initialization_accepted {
                 return Err(-32002);
             }
             if self.initialized {
@@ -504,7 +544,7 @@ mod tests {
         }
 
         fn auto_initialize_compat(&mut self) {
-            if self.initialize_requested {
+            if self.initialization_accepted {
                 self.initialized = true;
             }
         }
@@ -563,6 +603,11 @@ mod tests {
                     server.initialize_requested.load(Ordering::Acquire),
                     model.initialize_requested,
                     "initialize_requested flag must track model"
+                );
+                prop_assert_eq!(
+                    server.initialization_accepted.load(Ordering::Acquire),
+                    model.initialization_accepted,
+                    "initialization_accepted flag must track model"
                 );
                 prop_assert_eq!(
                     server.is_initialized(),

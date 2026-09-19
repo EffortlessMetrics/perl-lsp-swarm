@@ -62,6 +62,72 @@ fn disabled_is_a_typed_refusal() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn full_sync_violation_fails_closed_before_edit_projection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = LspServer::new();
+    advertise(&server, Surface::Document);
+    let uri = "file:///desync-formatting-policy.pl";
+    server.test_apply_did_open(uri, "sub hello{my $x=1;return $x;}\n", 1)?;
+
+    let fresh = server.handle_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 1 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+    let fresh_edits = fresh
+        .and_then(|value| value.as_array().map(ToOwned::to_owned))
+        .ok_or("expected live formatting edits before desync")?;
+    assert!(!fresh_edits.is_empty(), "native formatter should edit unformatted Perl");
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 2 },
+        "contentChanges": [{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 3 }
+            },
+            "text": "foo"
+        }]
+    })))?;
+
+    let error = server
+        .handle_formatting_policy(
+            Some(json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            })),
+            None,
+        )
+        .err()
+        .ok_or("live formatting must not project predecessor edits while desynchronized")?;
+    assert_eq!(error.code, CONTENT_MODIFIED);
+    let receipt = receipt(&server)?;
+    assert_eq!(receipt["decision"], "blocked");
+    assert_eq!(receipt["reason"], "full_sync_required");
+    assert_eq!(receipt["fallback"], "no_edit");
+    assert_eq!(receipt["result_count"], 0);
+
+    server.handle_did_change(Some(json!({
+        "textDocument": { "uri": uri, "version": 3 },
+        "contentChanges": [{ "text": "sub recovered{my $y=2;return $y;}\n" }]
+    })))?;
+    let recovered = server.handle_formatting_policy(
+        Some(json!({
+            "textDocument": { "uri": uri, "version": 3 },
+            "options": { "tabSize": 4, "insertSpaces": true },
+        })),
+        None,
+    )?;
+    let recovered_edits = recovered
+        .and_then(|value| value.as_array().map(ToOwned::to_owned))
+        .ok_or("expected live formatting edits after full replacement")?;
+    assert!(!recovered_edits.is_empty(), "accepted full replacement must restore live formatting");
+    Ok(())
+}
+
+#[test]
 fn generic_external_formatter_alias_is_contained_before_formatting()
 -> Result<(), Box<dyn std::error::Error>> {
     let server = LspServer::new();
@@ -263,7 +329,7 @@ fn tab_indentation_on_type_is_a_typed_refusal() -> Result<(), Box<dyn std::error
     assert_eq!(result, Some(json!([])));
     let receipt = receipt(&server)?;
     assert_eq!(receipt["decision"], "blocked");
-    assert_eq!(receipt["reason"], "unsupported_syntax");
+    assert_eq!(receipt["reason"], "tabs_requested");
     assert_eq!(receipt["result_count"], 0);
     Ok(())
 }
@@ -1380,4 +1446,42 @@ fn crlf_terminator_boundary_endpoint_refuses_before_the_engine_runs()
         "refused range formatting must never reach an external engine"
     );
     Ok(())
+}
+
+// ── #7129: no formatter mode may be a bare alias ────────────────────────────
+
+/// Recurrence check: every [`FormatterMode`] must resolve to its own engine.
+///
+/// `compat` was removed because it selected the native formatter and produced
+/// byte-identical output — a public mode naming no behavior a user could
+/// observe, choose between, or rely on. The structural property that made it
+/// indefensible is *sharing an engine with another mode*, so that is what this
+/// pins: reintroducing any alias, under any name, collapses two variants onto
+/// one engine string and fails here.
+///
+/// A genuine future compatibility profile is not blocked by this. It has to
+/// arrive with an engine identity of its own, which is exactly the evidence
+/// the bare alias never had.
+#[test]
+fn formatter_modes_resolve_to_distinct_engines() {
+    // Listed explicitly rather than derived, so adding a variant to
+    // `FormatterMode` fails to compile here and forces the author to state
+    // which engine it runs.
+    let modes = [FormatterMode::Native, FormatterMode::ExternalLegacy, FormatterMode::Off];
+
+    let mut seen: Vec<(&'static str, FormatterMode)> = Vec::new();
+    for mode in modes {
+        let engine = actual_engine_for_mode(mode);
+        if let Some((_, first)) = seen.iter().find(|(known, _)| *known == engine) {
+            assert_eq!(
+                mode, *first,
+                "{mode:?} and {first:?} both resolve to the {engine:?} engine, so one of \
+                 them is a bare alias: a public mode with no behavior of its own. Give it \
+                 a distinct engine identity or do not expose it as a mode (#7129)."
+            );
+        }
+        seen.push((engine, mode));
+    }
+
+    assert_eq!(seen.len(), modes.len(), "every formatter mode must be classified");
 }

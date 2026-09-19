@@ -295,17 +295,578 @@ pub struct ResolvedImport {
     pub pragmas: Option<Test2Pragmas>,
 }
 
+/// Internal result carrying analysis completeness alongside the stable public
+/// import shape. The completeness bit is deliberately not part of
+/// [`ResolvedImport`]'s public API: this crate is currently 0.17.x, and adding
+/// a public field would break downstream struct-literal construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedImportAnalysis {
+    resolved: ResolvedImport,
+    analysis_limited: bool,
+}
+
 /// Match `name => { ... -as => 'alias' ... }` renames in an import list.
-static RENAME_AS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-as\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#)
-        .unwrap_or_else(|_| unreachable!("static Test2 -as rename pattern is valid"))
-});
+///
+/// `None` when the pattern cannot be compiled. Recognition is a bounded
+/// compatibility bridge, not an invariant: a recognizer that fails to build
+/// must degrade the affected statement, never abort the language server.
+static RENAME_AS: LazyLock<Option<Regex>> =
+    LazyLock::new(|| Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-as\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#).ok());
 
 /// Match `name => { ... -prefix => 'p' ... }` / `-postfix` renames.
-static RENAME_FIX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-(prefix|postfix)\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#)
-        .unwrap_or_else(|_| unreachable!("static Test2 -prefix/-postfix pattern is valid"))
+///
+/// `None` when the pattern cannot be compiled; see [`RENAME_AS`].
+static RENAME_FIX: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    Regex::new(r#"(\w+)\s*=>\s*\{[^}]*?-(prefix|postfix)\s*=>\s*['"]?(\w+)['"]?[^}]*?\}"#).ok()
 });
+
+/// The transform-option names Importer consumes inside a `name => { ... }`
+/// rename map. These are recognized by *role* (an option token immediately
+/// followed by `=>`), never as a bareword blacklist: a legitimate exported
+/// symbol may share the spelling elsewhere in the import list.
+const TRANSFORM_OPTIONS: [&str; 3] = ["-as", "-prefix", "-postfix"];
+
+/// Whether `text` still contains Test2 transform-option syntax.
+///
+/// This is a deliberately conservative, regex-free detector used only to
+/// decide whether to *fail closed*. Over-detection costs a statement its
+/// symbols; under-detection would let transform bytes reach the bareword
+/// scanner and fabricate imports from syntax atoms. The safe bias is therefore
+/// to over-detect.
+///
+/// It must cover the recognizers: anything [`RENAME_AS`] or [`RENAME_FIX`]
+/// matches has to be detected here, or `resolve_import` would take the
+/// no-transform path and bareword-scan text those patterns own. Both patterns
+/// place the option after `[^}]*?`, which admits a preceding word character,
+/// so this deliberately does *not* require a word boundary before the token —
+/// only that the token is not a prefix of a longer word (`-aside`) and that it
+/// sits in option position. `covers_every_recognizer_match` pins that.
+fn contains_transform_syntax(text: &str) -> bool {
+    count_transform_options(text) > 0
+}
+
+/// How many transform options sit in option position in `text`.
+///
+/// Shares one role predicate with [`contains_transform_syntax`] so the
+/// presence test and the arity test cannot drift apart.
+fn count_transform_options(text: &str) -> usize {
+    let masked = mask_data_values(text).masked;
+    let mut total = 0;
+
+    for option in TRANSFORM_OPTIONS {
+        let mut rest = masked.as_str();
+        while let Some(offset) = rest.find(option) {
+            let after = &rest[offset + option.len()..];
+            // The token must not merely open a longer word (`-aside`), and must
+            // sit in option position — followed by a fat comma, optionally
+            // through a closing quote so the quoted spelling (`{'-as' => ...}`)
+            // is recognized too.
+            let tail = after.strip_prefix(['\'', '"']).unwrap_or(after);
+            if !after.starts_with(|next: char| next.is_alphanumeric() || next == '_')
+                && tail.trim_start().starts_with("=>")
+            {
+                total += 1;
+            }
+            rest = &rest[offset + option.len()..];
+        }
+    }
+    total
+}
+
+/// Whether one recognizer-matched `name => { ... }` entry carries exactly one
+/// transform option.
+///
+/// Each recognizer reads a single option and claims the whole entry, never
+/// seeing what else the map holds. A map carrying two options therefore
+/// produces one alias per matching recognizer — two symbols for an entry
+/// Importer installs under exactly one name (`{-as => 'a', -prefix => 'p'}`
+/// yielded both `a` and `p_ok`), or one alias built from a single option when
+/// the real name composes both (`{-prefix => 'p', -postfix => 's'}` yielded
+/// `p_ok`). Either way a name that does not exist is published, and nothing
+/// downstream can catch it: the entry's span is stripped, so the residual scan
+/// sees nothing left to object to.
+///
+/// Which single name Importer composes for such a map is not decided here.
+/// This resolver only refuses to guess.
+fn entry_carries_one_transform_option(span: &str) -> bool {
+    count_transform_options(span) == 1
+}
+
+/// Blank the Perl values whose bytes are data rather than option syntax, so
+/// the detector's role predicate is not tripped by an option-shaped payload.
+///
+/// Two forms are masked, each replaced by spaces so surrounding structure and
+/// token boundaries survive:
+///
+/// * complete quote-like expressions (`q{}`, `qq{}`, `qx{}`, `qw//`, `m//`,
+///   `s///`, `tr///`, `y///`, `qr//`), which `-target` legitimately takes and
+///   which the rest of this module already treats as opaque;
+/// * ordinary single- and double-quoted strings.
+///
+/// A value whose entire payload is one option name is **not** masked, because
+/// it is an option key rather than data: `{'-as' => ...}` and `{q{-as} => ...}`
+/// evaluate to the same key. A quote-like key is re-emitted as the bare option
+/// so the role predicate can see the following `=>`; the span is padded back to
+/// its original character length so nothing else shifts.
+///
+/// Masking a genuine option key would hide it from *both* the detector and the
+/// recognizers — the recognizers do not accept the quote-like spelling either —
+/// leaving no disagreement for `scan_import_transforms` to fail closed on, and
+/// the bareword scan would then report the map's atoms as imports.
+///
+/// An unterminated string is left visible, so malformed text still reaches the
+/// conservative detector rather than being silently swallowed.
+fn mask_data_values(text: &str) -> MaskedArgs {
+    let mut masked = String::with_capacity(text.len());
+    let mut undecidable_key = false;
+    let mut index = 0usize;
+
+    while index < text.len() {
+        if let Some(end) = quote_like_expression_end(text, index)
+            && end > index
+        {
+            let span = &text[index..end];
+            match quote_like_option_key(span) {
+                Some(option) => {
+                    masked.push_str(option);
+                    for _ in option.chars().count()..span.chars().count() {
+                        masked.push(' ');
+                    }
+                }
+                None => {
+                    if let Some((operator, payload)) = string_quote_payload(span)
+                        && !quoted_payload_is_literal(payload, operator == "qq")
+                        && is_key_position(text, end)
+                    {
+                        undecidable_key = true;
+                    }
+                    blank_into(&mut masked, span);
+                }
+            }
+            index = end;
+            continue;
+        }
+
+        let Some(current) = text[index..].chars().next() else {
+            break;
+        };
+
+        // A bare `/.../` match carries no operator, so the quote-like scan above
+        // cannot see it, yet its payload is data exactly like `m{...}`. Perl
+        // resolves `/` by parse state; here the discriminator is whether a term
+        // can start, which keeps division (`$a / $b`) visible.
+        if current == '/'
+            && bare_match_can_start(&text[..index])
+            && let Some(end) = bare_match_end(text, index)
+        {
+            blank_into(&mut masked, &text[index..end]);
+            index = end;
+            continue;
+        }
+
+        // `$\``, `$'` and `$"` are punctuation-named variables, not delimiters.
+        // Pairing them would mask everything up to the next such variable,
+        // hiding real transform syntax in between.
+        if matches!(current, '\'' | '"' | '`') && text[..index].ends_with('$') {
+            masked.push(current);
+            index += current.len_utf8();
+            continue;
+        }
+
+        if current != '\'' && current != '"' && current != '`' {
+            masked.push(current);
+            index += current.len_utf8();
+            continue;
+        }
+
+        let body_start = index + current.len_utf8();
+        let mut cursor = body_start;
+        let mut escaped = false;
+        let mut close = None;
+        while let Some(next) = text[cursor..].chars().next() {
+            if escaped {
+                escaped = false;
+            } else if next == '\\' {
+                escaped = true;
+            } else if next == current {
+                close = Some(cursor);
+                break;
+            }
+            cursor += next.len_utf8();
+        }
+
+        let Some(close) = close else {
+            masked.push_str(&text[index..]);
+            break;
+        };
+
+        let end = close + current.len_utf8();
+        let inner = &text[body_start..close];
+        // A backtick expression runs a command and yields its output, never the
+        // literal option text, so it can never be an option key.
+        if current != '`' && TRANSFORM_OPTIONS.iter().any(|option| inner.trim() == *option) {
+            masked.push_str(&text[index..end]);
+        } else {
+            if current != '`'
+                && !quoted_payload_is_literal(inner, current == '"')
+                && is_key_position(text, end)
+            {
+                undecidable_key = true;
+            }
+            blank_into(&mut masked, &text[index..end]);
+        }
+        index = end;
+    }
+
+    MaskedArgs { masked, undecidable_key }
+}
+
+/// The result of masking one statement's import arguments.
+struct MaskedArgs {
+    /// The text with data payloads blanked, for the option-role predicate.
+    masked: String,
+    /// A quoted key sat in option position but could not be compared as
+    /// written, so whether it names a transform option is unknown. Resolution
+    /// must fail closed rather than pick a reading.
+    undecidable_key: bool,
+}
+
+/// The quote-like operators that evaluate to their literal payload text, and
+/// so can spell an option key. Longest first, so `qq`/`qw` are not read as `q`
+/// followed by a delimiter.
+///
+/// Deliberately excludes the operators that evaluate to something else:
+/// `qr` yields a compiled pattern, `qx` runs a command and yields its output,
+/// and `m`/`s`/`tr`/`y` yield a match or substitution result. None of them
+/// produces the literal option text, so none can be an option key.
+const STRING_QUOTE_OPERATORS: [&str; 3] = ["qq", "qw", "q"];
+
+/// The transform option a quote-like expression evaluates to, when its entire
+/// payload is exactly one option name (`q{-as}`, `qq[-prefix]`), else `None`.
+///
+/// Only single-segment string-yielding forms can produce a bare option key;
+/// `s///`-style two-segment expressions never trim to one option name, and the
+/// non-string operators are rejected by [`STRING_QUOTE_OPERATORS`].
+fn quote_like_option_key(span: &str) -> Option<&'static str> {
+    let (_, inner) = string_quote_payload(span)?;
+    TRANSFORM_OPTIONS.iter().copied().find(|option| inner.trim() == *option)
+}
+
+/// The operator and literal payload of a string-producing quote-like span.
+///
+/// `None` for anything else — a non-string operator, or text that is not a
+/// quote-like expression at all.
+fn string_quote_payload(span: &str) -> Option<(&'static str, &str)> {
+    let operator = STRING_QUOTE_OPERATORS.iter().copied().find(|operator| {
+        span.strip_prefix(*operator)
+            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+    })?;
+    let after_operator = span[operator.len()..].trim_start();
+    let mut chars = after_operator.chars();
+    let open = chars.next()?;
+    let close = match open {
+        '(' => ')',
+        '{' => '}',
+        '[' => ']',
+        '<' => '>',
+        other => other,
+    };
+    let inner = chars.as_str().strip_suffix(close)?;
+    Some((operator, inner))
+}
+
+/// Whether a quoted payload can be compared against an option name as written.
+///
+/// Perl evaluates escapes, and (in an interpolating quote) variables, before
+/// the hash key exists: `"\x2das"` *is* the key `-as`, and `"${sigil}as"` may
+/// be. This module evaluates neither, so a payload carrying either construct
+/// cannot be classified as data or as syntax — only guessed at.
+///
+/// `qw` is listed as interpolating-safe because it never interpolates, and `q`
+/// and `'` only honor `\\` and `\'`; a backslash still makes them undecidable
+/// here rather than worth a second escape model.
+fn quoted_payload_is_literal(payload: &str, interpolating: bool) -> bool {
+    !payload.contains('\\') && !(interpolating && (payload.contains('$') || payload.contains('@')))
+}
+
+/// Whether the text after a quoted span puts it in option-key position.
+fn is_key_position(text: &str, end: usize) -> bool {
+    text.get(end..).is_some_and(|rest| rest.trim_start().starts_with("=>"))
+}
+
+/// Whether a `/` at the end of `before` opens a bare match rather than
+/// dividing what precedes it.
+///
+/// Perl resolves this from parse state. Inside an import list the workable
+/// discriminator is the preceding *token*, not just its last character, and the
+/// decisive property is the sigil rather than the spelling:
+///
+/// * a sigilled variable (`$count /`, `$? /`) is a complete value, so `/`
+///   divides it;
+/// * a closer or quote likewise ends a term (`f(1) /`, `'Foo' /`);
+/// * a bare word is a function or operator call (`grep /.../`, `abs /.../`),
+///   so `/` opens its first argument.
+///
+/// The bare-word case deliberately does *not* consult a list of known
+/// operators. Perl has no fixed set here — any sub name can appear — and an
+/// allowlist silently misreads every name it omits, dropping that statement's
+/// imports.
+///
+/// Two bare-word shapes are decidable and treated as values: a numeric literal,
+/// and a `__FILE__`-style compile-time token. A *named* constant (`PI / 2`) is
+/// not decidable here — it is spelled exactly like a sub call — so it falls to
+/// the call default and its statement fails closed. That costs completions,
+/// never correctness: `scan_import_transforms` refuses when the recognizer
+/// still claims a span this masked, so an ambiguous constant cannot turn into
+/// a fabricated import. Resolving it properly needs the symbol table that the
+/// canonical adapter migration brings.
+fn bare_match_can_start(before: &str) -> bool {
+    let trimmed = before.trim_end();
+    let Some(last) = trimmed.chars().next_back() else {
+        return true;
+    };
+
+    // A bare sigil means the `/` is itself the variable's name (`$/`), not a
+    // match opener.
+    if matches!(last, '$' | '@' | '%') {
+        return false;
+    }
+
+    // A punctuation-named variable (`$?`, `$!`, `@-`) is a complete term, so a
+    // following `/` divides it.
+    let mut reversed = trimmed.chars().rev();
+    reversed.next();
+    if !last.is_alphanumeric() && last != '_' && matches!(reversed.next(), Some('$' | '@' | '%')) {
+        return false;
+    }
+
+    if last.is_alphanumeric() || last == '_' {
+        let word_start = trimmed
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
+            .last()
+            .map_or(trimmed.len(), |(offset, _)| offset);
+        // A sigil makes it a variable (`$grep /`).
+        let sigil = trimmed[..word_start].chars().next_back();
+        if matches!(sigil, Some('$' | '@' | '%' | '&')) {
+            return false;
+        }
+        let word = &trimmed[word_start..];
+        // A numeric literal is a value, never a call.
+        if word.starts_with(|c: char| c.is_ascii_digit()) {
+            return false;
+        }
+        // Perl's compile-time tokens are values, never calls. The set is
+        // closed: `__helper__` is an ordinary subroutine name, and the general
+        // bareword rule above already treats those as calls. Excluding the
+        // whole `__NAME__` *shape* would make this the one place a spelling,
+        // rather than structure, decided the question.
+        if matches!(word, "__FILE__" | "__LINE__" | "__PACKAGE__" | "__SUB__" | "__CLASS__") {
+            return false;
+        }
+        return true;
+    }
+
+    // Closers and quotes end a term, so a following `/` divides it.
+    !matches!(last, ')' | ']' | '}' | '\'' | '"')
+}
+
+/// End offset just past a bare `/.../` match and any trailing flags, or `None`
+/// when the expression is unterminated (left visible for the conservative path).
+fn bare_match_end(text: &str, start: usize) -> Option<usize> {
+    let mut cursor = start + '/'.len_utf8();
+    let mut escaped = false;
+    while let Some(next) = text[cursor..].chars().next() {
+        if escaped {
+            escaped = false;
+        } else if next == '\\' {
+            escaped = true;
+        } else if next == '/' {
+            let mut end = cursor + next.len_utf8();
+            while let Some(flag) = text[end..].chars().next() {
+                if !flag.is_ascii_alphabetic() {
+                    break;
+                }
+                end += flag.len_utf8();
+            }
+            return Some(end);
+        }
+        cursor += next.len_utf8();
+    }
+    None
+}
+
+/// Append one space per character of `span`, keeping token boundaries intact
+/// while erasing the payload.
+fn blank_into(masked: &mut String, span: &str) {
+    for _ in span.chars() {
+        masked.push(' ');
+    }
+}
+
+/// Outcome of scanning one import list for transform syntax.
+enum TransformScan {
+    /// No transform syntax observed; the ordinary bareword scan may run over
+    /// the import text unchanged.
+    None,
+    /// Transform syntax recognized and fully consumed. `stripped` is the
+    /// import text with every recognized transform span removed.
+    Recognized { renames: Vec<(String, String)>, stripped: String },
+    /// Transform syntax is present but was not fully recognized — either the
+    /// recognizer could not be constructed, or it left transform bytes behind
+    /// (malformed or unsupported form). The affected statement must fail
+    /// closed rather than resume bareword scanning over those bytes.
+    Unresolved,
+}
+
+/// Extract `-as`/`-prefix`/`-postfix` renames and strip their spans.
+///
+/// Passing `None` for either recognizer models that recognizer being
+/// unavailable; this is the seam the fail-closed regressions drive.
+fn scan_import_transforms(
+    raw_args: &str,
+    rename_as: Option<&Regex>,
+    rename_fix: Option<&Regex>,
+) -> TransformScan {
+    // An option key whose evaluated text is unknown is invisible to both
+    // instruments: the recognizers never match its spelling, and the detector
+    // compares it literally. Neither disagrees, so the bareword scan would run
+    // over a real rename map and report the original and the alias as imports.
+    if mask_data_values(raw_args).undecidable_key {
+        return TransformScan::Unresolved;
+    }
+
+    if !contains_transform_syntax(raw_args) {
+        // The detector masks option-shaped text inside ordinary quoted values,
+        // but the regex bridge does not: it can still match across a quoted
+        // value (`ok => {target => '-as => my_ok'}`). Taking the no-transform
+        // path there would bareword-scan a span a recognizer owns and report
+        // its structural atoms — the container key, and an original that a
+        // rename would have removed — as imported symbols. Where the two
+        // disagree, fail closed rather than let the cheaper instrument win.
+        let recognizer_claims_span = rename_as.is_some_and(|re| re.is_match(raw_args))
+            || rename_fix.is_some_and(|re| re.is_match(raw_args));
+        if recognizer_claims_span {
+            return TransformScan::Unresolved;
+        }
+        return TransformScan::None;
+    }
+
+    // Transform syntax is present, so both recognizers are load-bearing for
+    // this statement. An unavailable recognizer is instrument failure, not
+    // evidence that the syntax is absent.
+    let (Some(rename_as), Some(rename_fix)) = (rename_as, rename_fix) else {
+        return TransformScan::Unresolved;
+    };
+
+    let mut renames: Vec<(String, String)> = Vec::new();
+    for caps in rename_as.captures_iter(raw_args) {
+        if !entry_carries_one_transform_option(caps.get(0).map_or("", |span| span.as_str())) {
+            return TransformScan::Unresolved;
+        }
+        if let (Some(name), Some(alias)) = (caps.get(1), caps.get(2)) {
+            if !capture_covers_whole_value(raw_args, alias.start(), alias.end()) {
+                return TransformScan::Unresolved;
+            }
+            renames.push((name.as_str().to_string(), alias.as_str().to_string()));
+        }
+    }
+    for caps in rename_fix.captures_iter(raw_args) {
+        if !entry_carries_one_transform_option(caps.get(0).map_or("", |span| span.as_str())) {
+            return TransformScan::Unresolved;
+        }
+        if let (Some(name), Some(kind), Some(fix)) = (caps.get(1), caps.get(2), caps.get(3)) {
+            if !capture_covers_whole_value(raw_args, fix.start(), fix.end()) {
+                return TransformScan::Unresolved;
+            }
+            let base = name.as_str();
+            let alias = if kind.as_str() == "prefix" {
+                format!("{}{}", fix.as_str(), base)
+            } else {
+                format!("{}{}", base, fix.as_str())
+            };
+            renames.push((base.to_string(), alias));
+        }
+    }
+
+    // Remove matched rename spans so the remaining scan does not see the raw
+    // `name => { ... }` text.
+    let mut stripped = rename_as.replace_all(raw_args, " ").into_owned();
+    stripped = rename_fix.replace_all(&stripped, " ").into_owned();
+
+    // Residual transform syntax means the recognizers did not consume every
+    // transform span (malformed, truncated, or an unsupported form). Those
+    // leftover bytes are exactly what would otherwise be scanned as barewords.
+    if contains_transform_syntax(&stripped) {
+        return TransformScan::Unresolved;
+    }
+
+    TransformScan::Recognized { renames, stripped }
+}
+
+/// Whether a recognizer's captured transform value is the whole Perl value.
+///
+/// Both patterns read a value as `['"]?(\w+)['"]?`, which happily matches a
+/// *prefix* of anything longer, and the trailing `[^}]*?` then swallows the
+/// rest. Every one of these published a name Perl never installs, as a clean
+/// result:
+///
+/// ```text
+/// -as => "my_\x6fk"    captured my_    Perl value my_ok
+/// -as => 'my ok'       captured my     Perl value "my ok"
+/// -as => 'my' . '_ok'  captured my     Perl value my_ok
+/// -as => lc 'MY_OK'    captured lc     Perl value my_ok
+/// ```
+///
+/// A capture is the whole value only when it runs to the value's own end *and*
+/// the map entry ends there. The first three characters of `'my' . '_ok'`
+/// satisfy the first condition and not the second, so both are required: after
+/// the value (through its closing quote, when quoted) the next thing must be
+/// the entry separator or the map's close, never more expression.
+fn capture_covers_whole_value(raw_args: &str, start: usize, end: usize) -> bool {
+    let opened_with = raw_args[..start].chars().next_back();
+    let after_value = match opened_with {
+        Some(quote @ ('\'' | '"')) => {
+            let Some(rest) = raw_args[end..].strip_prefix(quote) else {
+                // The capture stopped inside the quoted value.
+                return false;
+            };
+            rest
+        }
+        // `\w+` is greedy, so a bare value already ends at a non-word
+        // character; whether it ends the *entry* is the question below.
+        _ => &raw_args[end..],
+    };
+
+    matches!(skip_blanks_and_comments(after_value).chars().next(), Some(',' | '}'))
+}
+
+/// Skip whitespace and Perl comments at the front of `text`.
+///
+/// A `use` statement may span lines and carry comments, so a complete value can
+/// be separated from its entry terminator by one. Requiring the terminator to
+/// follow immediately would read `{-as => 'my_ok' # alias` as a continuation.
+///
+/// The internal path never needs this — [`use_statements`] drops comment
+/// characters while extracting each statement, so `raw_args` reaching
+/// [`Test2Facts::from_source`] contains none. It is [`resolve_import`] that
+/// needs it: that function is public and takes raw argument text, so a caller
+/// may pass a comment the extractor would have removed, and this module
+/// resolved those correctly before the terminator rule existed. Narrowing a
+/// public function's accepted input is a behavior change whether or not any
+/// caller in this repository relies on it.
+///
+/// Only reached after a complete value, where a `#` can open nothing but a
+/// comment — this is not a general comment stripper and never meets a
+/// `$#array` sigil or a `#` inside a string.
+fn skip_blanks_and_comments(text: &str) -> &str {
+    let mut rest = text.trim_start();
+    while let Some(comment) = rest.strip_prefix('#') {
+        rest = comment.find('\n').map_or("", |line_end| &comment[line_end..]).trim_start();
+    }
+    rest
+}
 
 /// Resolve the imported symbols and pragma effect of a single Test2 `use`
 /// statement, given the module name and the raw import-argument text (whatever
@@ -313,6 +874,20 @@ static RENAME_FIX: LazyLock<Regex> = LazyLock::new(|| {
 ///
 /// Returns `None` if `module` is not a recognized Test2 module.
 pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
+    resolve_import_with(module, raw_args, RENAME_AS.as_ref(), RENAME_FIX.as_ref())
+        .map(|analysis| analysis.resolved)
+}
+
+/// [`resolve_import`] with the transform recognizers injected.
+///
+/// Production always passes the compiled statics. Tests pass `None` to force
+/// an unavailable recognizer without process-global resettable state.
+fn resolve_import_with(
+    module: &str,
+    raw_args: &str,
+    rename_as: Option<&Regex>,
+    rename_fix: Option<&Regex>,
+) -> Option<ResolvedImportAnalysis> {
     if !is_test2_module(module) {
         return None;
     }
@@ -326,7 +901,10 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         && trimmed_args.ends_with(')')
         && trimmed_args[1..trimmed_args.len() - 1].trim().is_empty()
     {
-        return Some(ResolvedImport { symbols: BTreeSet::new(), pragmas: None });
+        return Some(ResolvedImportAnalysis {
+            resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas: None },
+            analysis_limited: false,
+        });
     }
 
     let bundle = is_test2_bundle(module);
@@ -367,28 +945,21 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
 
     // Extract renames first (and strip their spans so their bareword names are
     // not double-counted as positive imports).
-    let mut renames: Vec<(String, String)> = Vec::new();
-    let mut stripped = raw_args.to_string();
-    for caps in RENAME_AS.captures_iter(raw_args) {
-        if let (Some(name), Some(alias)) = (caps.get(1), caps.get(2)) {
-            renames.push((name.as_str().to_string(), alias.as_str().to_string()));
+    let (renames, stripped) = match scan_import_transforms(raw_args, rename_as, rename_fix) {
+        TransformScan::None => (Vec::new(), raw_args.to_string()),
+        TransformScan::Recognized { renames, stripped } => (renames, stripped),
+        TransformScan::Unresolved => {
+            // Transform syntax was declared but not interpreted. Resuming the
+            // bareword scan here would report `-as`, alias names, and mapping
+            // keys/values as imported symbols. Fail closed instead: prove no
+            // symbol rather than invent one. Pragma resolution is independent
+            // of the import list, so it stays exact.
+            return Some(ResolvedImportAnalysis {
+                resolved: ResolvedImport { symbols: BTreeSet::new(), pragmas },
+                analysis_limited: true,
+            });
         }
-    }
-    for caps in RENAME_FIX.captures_iter(raw_args) {
-        if let (Some(name), Some(kind), Some(fix)) = (caps.get(1), caps.get(2), caps.get(3)) {
-            let base = name.as_str();
-            let alias = if kind.as_str() == "prefix" {
-                format!("{}{}", fix.as_str(), base)
-            } else {
-                format!("{}{}", base, fix.as_str())
-            };
-            renames.push((base.to_string(), alias));
-        }
-    }
-    // Remove matched rename spans so the remaining scan does not see the raw
-    // `name => { ... }` text.
-    stripped = RENAME_AS.replace_all(&stripped, " ").into_owned();
-    stripped = RENAME_FIX.replace_all(&stripped, " ").into_owned();
+    };
 
     let atoms = tokenize_import_args(&stripped);
     let target_option_supported = matches!(module, "Test2::V0" | "Test2::V1");
@@ -611,7 +1182,10 @@ pub fn resolve_import(module: &str, raw_args: &str) -> Option<ResolvedImport> {
         symbols.insert(helper);
     }
 
-    Some(ResolvedImport { symbols, pragmas })
+    Some(ResolvedImportAnalysis {
+        resolved: ResolvedImport { symbols, pragmas },
+        analysis_limited: false,
+    })
 }
 
 /// Aggregate Test2 facts for an entire source file.
@@ -625,6 +1199,14 @@ pub struct Test2Facts {
     pub strict: bool,
     /// Whether some Test2 bundle turned on `warnings`.
     pub warnings: bool,
+}
+
+/// Crate-private facts plus the completeness signal needed by
+/// completeness-sensitive production consumers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Test2FactsAnalysis {
+    pub facts: Test2Facts,
+    pub analysis_limited: bool,
 }
 
 impl Test2Facts {
@@ -656,24 +1238,34 @@ impl Test2Facts {
 
     /// Scan `source` for Test2 `use` statements and aggregate their effects.
     pub fn from_source(source: &str) -> Self {
+        Self::from_source_with_analysis(source).facts
+    }
+
+    /// Scan source while retaining the internal completeness result. Public
+    /// callers continue to receive the stable [`Test2Facts`] shape.
+    pub(crate) fn from_source_with_analysis(source: &str) -> Test2FactsAnalysis {
         let mut facts = Test2Facts::default();
+        let mut analysis_limited = false;
         for stmt in use_statements(source) {
             let Some((module, args)) = parse_use_statement(&stmt) else {
                 continue;
             };
-            let Some(resolved) = resolve_import(&module, &args) else {
+            let Some(resolved) =
+                resolve_import_with(&module, &args, RENAME_AS.as_ref(), RENAME_FIX.as_ref())
+            else {
                 continue;
             };
             facts.modules.push(module);
-            for sym in resolved.symbols {
+            analysis_limited |= resolved.analysis_limited;
+            for sym in resolved.resolved.symbols {
                 facts.imported_symbols.insert(sym);
             }
-            if let Some(pragmas) = resolved.pragmas {
+            if let Some(pragmas) = resolved.resolved.pragmas {
                 facts.strict |= pragmas.strict;
                 facts.warnings |= pragmas.warnings;
             }
         }
-        facts
+        Test2FactsAnalysis { facts, analysis_limited }
     }
 }
 
@@ -806,12 +1398,9 @@ fn quote_like_expression_end(raw: &str, start: usize) -> Option<usize> {
         return None;
     }
     let operators = [b"tr".as_slice(), b"qq", b"qx", b"qr", b"qw", b"q", b"m", b"s", b"y"];
-    let Some(operator) = operators
+    let operator = operators
         .iter()
-        .find(|operator| bytes.get(start..start + operator.len()) == Some(*operator))
-    else {
-        return None;
-    };
+        .find(|operator| bytes.get(start..start + operator.len()) == Some(*operator))?;
     let mut delimiter = start + operator.len();
     while bytes.get(delimiter).is_some_and(u8::is_ascii_whitespace) {
         delimiter += 1;
@@ -1132,9 +1721,7 @@ fn qw_is_target_value(raw: &str, index: usize) -> bool {
             depth = depth.saturating_add(1);
         } else if matches!(ch, ')' | '}' | ']') {
             depth = depth.saturating_sub(1);
-        } else if ch == ',' && depth == 0 {
-            return false;
-        } else if ch == ';' {
+        } else if (ch == ',' && depth == 0) || ch == ';' {
             return false;
         }
     }
@@ -1251,9 +1838,8 @@ fn consume_parenthesized_scalar(atoms: &[String], start: usize) -> Option<(usize
             ")" => {
                 depth = depth.checked_sub(1)?;
                 if depth == 0 {
-                    let truthy = !nested_expression
-                        && inner.len() == 1
-                        && scalar_target_is_truthy(&inner[0]);
+                    let truthy =
+                        !nested_expression && inner.len() == 1 && scalar_target_is_truthy(inner[0]);
                     return Some((index + 1, truthy));
                 }
             }

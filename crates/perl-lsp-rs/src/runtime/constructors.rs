@@ -4,13 +4,11 @@
 //! so that `mod.rs` is limited to the struct definition and core accessors.
 
 use super::{
-    Arc, AtomicBool, AtomicI32, BufReader, ClientCapabilities, FeatureProfile, HashMap, HashSet,
-    IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
+    Arc, AtomicBool, AtomicI32, AtomicU64, BufReader, ClientCapabilities, FeatureProfile, HashMap,
+    HashSet, IndexCoordinator, LspServer, Mutex, Read, ServerConfig, SymbolIndex, UseLibHirCache,
     WorkspaceConfig, Write, io, notebook, outbound, refresh,
 };
 use perl_lsp_rs_core::runtime::tuning::RuntimeTuning;
-#[cfg(any(test, feature = "expose_lsp_test_api"))]
-use std::sync::atomic::AtomicU64;
 
 impl LspServer {
     /// Create a new LSP server
@@ -51,7 +49,9 @@ impl LspServer {
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
+            initialization_accepted: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
+            position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
@@ -65,6 +65,15 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            workspace_topology_stable: Arc::new(AtomicBool::new(true)),
+            workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            dependency_facts_generation: Arc::new(AtomicU64::new(0)),
+            stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            metadata_refresh_serialization: Arc::new(Mutex::new(())),
+            workspace_identity_lock: Arc::new(Mutex::new(())),
+            single_file_project_config: Arc::new(Mutex::new(None)),
+            single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -72,15 +81,15 @@ impl LspServer {
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
             initialization_options_perl_settings: Arc::new(Mutex::new(None)),
+            last_client_settings: Arc::new(Mutex::new(None)),
+            server_config_baseline: Arc::new(Mutex::new(None)),
             next_request_id: Arc::new(AtomicI32::new(1)),
             pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
-            diagnostic_debouncer: Mutex::new(None),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
-            parse_worker_handle: Mutex::new(None),
-            file_watcher_debouncer: Mutex::new(None),
+            runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
@@ -111,21 +120,20 @@ impl LspServer {
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            workspace_transition_test_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
+
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
+
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -238,7 +246,9 @@ impl LspServer {
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
+            initialization_accepted: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
+            position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
@@ -252,6 +262,15 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            workspace_topology_stable: Arc::new(AtomicBool::new(true)),
+            workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            dependency_facts_generation: Arc::new(AtomicU64::new(0)),
+            stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            metadata_refresh_serialization: Arc::new(Mutex::new(())),
+            workspace_identity_lock: Arc::new(Mutex::new(())),
+            single_file_project_config: Arc::new(Mutex::new(None)),
+            single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -259,15 +278,15 @@ impl LspServer {
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
             initialization_options_perl_settings: Arc::new(Mutex::new(None)),
+            last_client_settings: Arc::new(Mutex::new(None)),
+            server_config_baseline: Arc::new(Mutex::new(None)),
             next_request_id: Arc::new(AtomicI32::new(1)),
             pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
-            diagnostic_debouncer: Mutex::new(None),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
-            parse_worker_handle: Mutex::new(None),
-            file_watcher_debouncer: Mutex::new(None),
+            runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
@@ -298,21 +317,20 @@ impl LspServer {
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            workspace_transition_test_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
+
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
+
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -366,7 +384,9 @@ impl LspServer {
         Self {
             documents: Arc::new(Mutex::new(HashMap::new())),
             initialize_requested: AtomicBool::new(false),
+            initialization_accepted: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
+            position_encoding_session_context: Mutex::new(None),
             shutdown_received: AtomicBool::new(false),
             pending_startup_log: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
@@ -380,6 +400,15 @@ impl LspServer {
             cancelled: Arc::new(Mutex::new(HashSet::new())),
             pending_request_ids: Arc::new(Mutex::new(HashSet::new())),
             workspace_folders: Arc::new(Mutex::new(Vec::new())),
+            workspace_topology_generation: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            workspace_topology_stable: Arc::new(AtomicBool::new(true)),
+            workspace_identity_generation: Arc::new(AtomicU64::new(0)),
+            dependency_facts_generation: Arc::new(AtomicU64::new(0)),
+            stale_dependency_facts: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            metadata_refresh_serialization: Arc::new(Mutex::new(())),
+            workspace_identity_lock: Arc::new(Mutex::new(())),
+            single_file_project_config: Arc::new(Mutex::new(None)),
+            single_file_project_config_generation: Arc::new(AtomicU64::new(0)),
             root_path: Arc::new(Mutex::new(None)),
             discovered_perltidy_profile: Arc::new(Mutex::new(None)),
             advertised_features: Mutex::new(default_features),
@@ -387,15 +416,15 @@ impl LspServer {
             client_supports_pull_diags: Arc::new(AtomicBool::new(false)),
             workspace_config: Arc::new(Mutex::new(WorkspaceConfig::default())),
             initialization_options_perl_settings: Arc::new(Mutex::new(None)),
+            last_client_settings: Arc::new(Mutex::new(None)),
+            server_config_baseline: Arc::new(Mutex::new(None)),
             next_request_id: Arc::new(AtomicI32::new(1)),
             pending_workspace_configuration_requests: Arc::new(Mutex::new(HashMap::new())),
             progress_tokens: Arc::new(Mutex::new(HashSet::new())),
             progress_token_to_request: Arc::new(Mutex::new(HashMap::new())),
             refresh_controller: refresh::RefreshController::new(),
-            diagnostic_debouncer: Mutex::new(None),
             push_diagnostics_sink: super::diagnostics_sink::PushDiagnosticsSink::default(),
-            parse_worker_handle: Mutex::new(None),
-            file_watcher_debouncer: Mutex::new(None),
+            runtime_services: super::runtime_services::RuntimeServices::new(),
             notebook_store: notebook::NotebookStore::new(),
             trace_level: Arc::new(Mutex::new("off".to_string())),
             stream_session_manager: super::stream_session::StreamSessionManager::new(),
@@ -426,21 +455,20 @@ impl LspServer {
             indexing_in_progress: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "workspace")]
             indexing_rescan_pending: Arc::new(AtomicBool::new(false)),
-            #[cfg(feature = "workspace")]
             indexing_transition_lock: Arc::new(Mutex::new(())),
+            #[cfg(any(test, feature = "expose_lsp_test_api"))]
+            workspace_transition_test_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(feature = "workspace", any(test, feature = "expose_lsp_test_api")))]
+            indexing_commit_gate: Arc::new(std::sync::Mutex::new(None)),
+            #[cfg(all(test, feature = "workspace"))]
+            indexing_scan_observation: Arc::new(Mutex::new(None)),
             #[cfg(feature = "workspace")]
             permission_denied_shown: Arc::new(AtomicBool::new(false)),
             root_undetected_shown: Arc::new(AtomicBool::new(false)),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_analyzer: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            critic_runtime_override: Mutex::new(None),
+
             #[cfg(any(test, feature = "expose_lsp_test_api"))]
             formatter_runtime_override: Mutex::new(None),
-            #[cfg(not(target_arch = "wasm32"))]
-            skip_perlcritic_command_check: AtomicBool::new(false),
-            #[cfg(not(target_arch = "wasm32"))]
-            force_perlcritic_command_unavailable: AtomicBool::new(false),
+
             session_warning_dedup: super::session_warning_dedup::SessionWarningDedupStore::default(),
             #[cfg(test)]
             diagnostic_after_snapshot_hook: Mutex::new(None),
@@ -463,13 +491,30 @@ impl Default for LspServer {
     }
 }
 
+#[cfg(test)]
+impl LspServer {
+    /// Test helper: mark the initialize one-shot consumed *and* accepted.
+    ///
+    /// Setting [`Self::initialize_requested`] alone must not open serving.
+    pub(crate) fn test_mark_initialize_session_accepted(&self) {
+        use std::sync::atomic::Ordering;
+        self.initialize_requested.store(true, Ordering::Release);
+        self.initialization_accepted.store(true, Ordering::Release);
+    }
+}
+
 impl Drop for LspServer {
     fn drop(&mut self) {
         let outbound = std::mem::replace(&mut self.outbound, outbound::closed_sender());
         drop(outbound);
 
         if let Some(handle) = self.outbound_writer_handle.take() {
-            let _ = handle.join();
+            match handle.join() {
+                Ok(outcome) => outcome.report_settlement(),
+                Err(_) => {
+                    tracing::error!("outbound writer thread panicked before terminal settlement")
+                }
+            }
         }
     }
 }
@@ -524,5 +569,74 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("window/logMessage"));
         assert!(text.contains("flush me"));
+    }
+
+    /// #8402: dropping a server whose outbound writer already failed on its
+    /// sink must settle promptly through the typed terminal outcome rather
+    /// than deadlocking, and the settlement record must name the first
+    /// causal sink error — the `ConnectionAborted` write failure — so the
+    /// failure surface is observable instead of silently discarded.
+    #[test]
+    fn drop_with_failed_outbound_writer_does_not_deadlock() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "controlled write failure (#8402)",
+                ))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // Statically observe the causal error path of the controlled sink:
+        // `FailingWriter::write` fails with ConnectionAborted, and the writer
+        // loop turns that exact error into the typed first cause reported in
+        // the settlement record asserted below.
+        let mut probe_sink = FailingWriter;
+        let probe = probe_sink.write(&[]);
+        assert!(
+            matches!(&probe, Err(err) if err.kind() == io::ErrorKind::ConnectionAborted),
+            "controlled writer must fail writes with ConnectionAborted, got {probe:?}"
+        );
+
+        let server =
+            LspServer::with_io(Box::new(Cursor::new(Vec::<u8>::new())), Box::new(FailingWriter));
+        let _ = server.notify("window/logMessage", json!({"type": 4, "message": "settle"}));
+
+        let dropper = thread::spawn(move || {
+            // Capture on this thread: Drop reports settlement while joining
+            // the writer thread's terminal outcome.
+            let records = outbound::tests::capture_tracing_records(|| drop(server));
+            assert!(
+                records.contains("outbound writer settled: transport I/O failure"),
+                "failed-writer drop must settle with the transport I/O failure record, got: {records}"
+            );
+            assert!(
+                records.contains("phase=\"write\""),
+                "settlement must record the write phase, got: {records}"
+            );
+            assert!(
+                records.contains("error_kind=connection aborted"),
+                "settlement must preserve the first causal sink error kind, got: {records}"
+            );
+            assert!(
+                !records.contains("error_kind=broken pipe"),
+                "later channel-closed observations must not overwrite the first cause, got: {records}"
+            );
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !dropper.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "server drop must not deadlock on a failed outbound writer"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(dropper.join().is_ok(), "drop thread must not panic");
     }
 }

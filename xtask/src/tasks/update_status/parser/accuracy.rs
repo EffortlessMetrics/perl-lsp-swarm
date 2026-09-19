@@ -216,12 +216,12 @@ fn parser_accuracy_metric_summary(metrics: &[ParserAccuracyMetricSummary]) -> St
         .filter(|metric| matches!(metric, ParserAccuracyMetricSummary::InsufficientData { .. }))
         .count();
 
-    let additional_measured = trusted_measured_count.saturating_sub(selected_trusted_measured_count);
+    let additional_measured =
+        trusted_measured_count.saturating_sub(selected_trusted_measured_count);
     if additional_measured > 0 {
         parts.push(format!("{additional_measured} additional measured rows"));
     }
-    let additional_investigation =
-        investigation_count.saturating_sub(selected_investigation_count);
+    let additional_investigation = investigation_count.saturating_sub(selected_investigation_count);
     if additional_investigation > 0 {
         parts.push(format!("{additional_investigation} additional investigation_only rows"));
     }
@@ -258,9 +258,7 @@ fn render_parser_accuracy_metric(metric: &ParserAccuracyMetricSummary) -> String
 fn is_legacy_untrusted_metric(metric: &str) -> bool {
     matches!(
         metric,
-        "whitespace_invariance_rate"
-            | "comment_invariance_rate"
-            | "newline_style_invariance_rate"
+        "whitespace_invariance_rate" | "comment_invariance_rate" | "newline_style_invariance_rate"
     )
 }
 

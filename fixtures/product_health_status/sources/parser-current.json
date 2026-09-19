@@ -1,0 +1,14 @@
+{
+  "schema": "fixture.v1",
+  "packet_id": "parser-current",
+  "selector": "fixture.subject",
+  "rail_id": "fixture.parser",
+  "subject": "parser@fixture-tree",
+  "source_result": "pass",
+  "state": "current",
+  "supersedes": null,
+  "digest": "sha256:c39d053f8a37d09dc8ddc8ba901df3bb3d30766151bec10eb0a1d1c81cc7f9c2",
+  "limitations": [],
+  "nonclaims": [],
+  "detail": { "owner": "parser-fixture-owner", "wake_event": "fixture.parser rerun" }
+}

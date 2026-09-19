@@ -741,6 +741,7 @@ mod tests {
         AdapterCancellation, DetectionEvidenceClass, ModuleObservationReceipt,
         ModuleSelectorEvaluation, ModuleVersionEvidence,
     };
+    use perl_test_must::must_some_with;
 
     fn detection(scope: &str, generation: &str, version: &str) -> AdapterDetectionResult {
         let generation = SourceGeneration::known(generation);
@@ -815,12 +816,9 @@ mod tests {
         );
         assert!(facts.outcome.is_exact());
         assert_eq!(facts.completeness, DbixFactCompleteness::Complete);
-        let (Some(result_class), Some(result_source)) =
-            (facts.result_class.as_ref(), facts.result_source.as_ref())
-        else {
-            assert!(false, "exact facts must carry both identities");
-            return;
-        };
+        let identities = "exact facts must carry both identities";
+        let result_class = must_some_with(facts.result_class.as_ref(), identities);
+        let result_source = must_some_with(facts.result_source.as_ref(), identities);
         assert_ne!(result_class.key, result_source.key);
         assert_eq!(result_source.result_class_key, result_class.key);
         assert_eq!(result_source.table_name, "users");
@@ -868,12 +866,9 @@ mod tests {
             &base_inheritance(),
             &table("users"),
         );
-        let (Some(first_source), Some(second_source)) =
-            (first.result_source.as_ref(), second.result_source.as_ref())
-        else {
-            assert!(false, "both exact profiles must carry result-source identities");
-            return;
-        };
+        let identities = "both exact profiles must carry result-source identities";
+        let first_source = must_some_with(first.result_source.as_ref(), identities);
+        let second_source = must_some_with(second.result_source.as_ref(), identities);
         assert_ne!(first_source.key, second_source.key);
     }
 

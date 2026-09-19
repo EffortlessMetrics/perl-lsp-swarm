@@ -6,7 +6,9 @@
 //! self-sustaining cycle from returning: the warm leg must end below the
 //! preemption envelope under an explicit budget, persist partial progress,
 //! report completion truthfully, and the gate chain must stay byte-identical
-//! and never enforce against partial state. Mutation controls are named per
+//! and never enforce against partial state. The bounded lane additionally keeps
+//! all runs of this reviewed workflow copy restore-only (#13926); historical
+//! workflow refs are outside this policy claim. Mutation controls are named per
 //! `.spec/12823-corpus-cache-cycle/acceptance.md`.
 
 use std::{collections::BTreeSet, fs, path::PathBuf};
@@ -32,6 +34,7 @@ const GOVERNED_JOBS: [&str; 4] = [BOUNDED_JOB, WARM_JOB, RATCHET_JOB, PR_WRITER_
 const INSTALL_STEP: &str = "Install CPAN corpus checkpoint";
 const CANONICAL_SAVE_STEP: &str = "Save CPAN corpus cache (canonical)";
 const CHECKPOINT_SAVE_STEP: &str = "Save CPAN corpus checkpoint (partial progress)";
+const BOUNDED_RUST_CACHE_STEP: &str = "Cache cargo dependencies";
 
 const FULL_JOB_GUARDS: &[(&str, &str)] = &[
     (
@@ -72,14 +75,15 @@ persist-credentials: false"#,
         "toolchain: 1.95.0",
     ),
     (
-        "Cache cargo dependencies",
+        BOUNDED_RUST_CACHE_STEP,
         "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
         r#"cache-on-failure: true
-shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}"#,
+shared-key: post-merge-corpus-ratchet-${{ hashFiles('Cargo.lock') }}
+save-if: false"#,
     ),
     (
         "Install just",
-        "taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1",
+        "taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8",
         "tool: just",
     ),
     (
@@ -90,12 +94,6 @@ key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distrib
 restore-keys: |
   cpan-corpus-bounded-${{ runner.os }}-
 "#,
-    ),
-    (
-        "Save CPAN corpus cache (bounded)",
-        "actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
-        r#"path: target/cpan-corpus-bounded
-key: cpan-corpus-bounded-${{ runner.os }}-${{ hashFiles('.ci/cpan-top-50-distributions.txt') }}"#,
     ),
     (
         "Upload bounded corpus receipt",
@@ -192,6 +190,21 @@ fn named_step<'a>(steps: &'a [Value], name: &str) -> Result<&'a Value> {
         .iter()
         .find(|step| step.get("name").and_then(Value::as_str) == Some(name))
         .ok_or_else(|| anyhow!("step `{name}` must exist"))
+}
+
+fn bounded_step_mut<'a>(workflow: &'a mut Value, step_name: &str) -> Result<&'a mut Value> {
+    workflow
+        .get_mut("jobs")
+        .and_then(Value::as_mapping_mut)
+        .and_then(|jobs| jobs.get_mut(Value::String(BOUNDED_JOB.into())))
+        .and_then(|bounded| bounded.get_mut("steps"))
+        .and_then(Value::as_sequence_mut)
+        .and_then(|steps| {
+            steps
+                .iter_mut()
+                .find(|step| step.get("name").and_then(Value::as_str) == Some(step_name))
+        })
+        .ok_or_else(|| anyhow!("bounded step `{step_name}` must exist"))
 }
 
 fn condition<'a>(step: &'a Value, step_name: &str) -> Result<Option<&'a str>> {
@@ -297,11 +310,10 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
     let expected_step_names = [
         "Checkout bounded analysis tree",
         "Install Rust toolchain",
-        "Cache cargo dependencies",
+        BOUNDED_RUST_CACHE_STEP,
         "Install just",
         "Restore CPAN corpus cache (bounded)",
         "Install CPAN corpus (bounded — top 50)",
-        "Save CPAN corpus cache (bounded)",
         "Verify bounded corpus path",
         "Sweep bounded corpus and emit receipt",
         "Upload bounded corpus receipt",
@@ -329,6 +341,7 @@ fn ensure_bounded_top_50_is_safe_and_reachable(workflow: &Value) -> Result<()> {
             "bounded action step `{name}` inputs drifted: expected {expected_inputs:?}, found {actual_inputs:?}"
         );
     }
+
     for (name, expected) in BOUNDED_RUN_STEPS {
         let step = named_step(steps, name)?;
         ensure!(
@@ -608,6 +621,107 @@ fn bounded_control_rejects_step_local_action_indirection() -> Result<()> {
         .err()
         .ok_or_else(|| anyhow!("step-level local action indirection must fail containment"))?;
     ensure!(error.to_string().contains("repository-local action"), "unexpected refusal: {error}");
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_missing_rust_cache_writer_guard() -> Result<()> {
+    let mut candidate = workflow()?;
+    let cache = bounded_step_mut(&mut candidate, BOUNDED_RUST_CACHE_STEP)?;
+    let inputs = cache
+        .get_mut("with")
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| anyhow!("bounded Rust cache inputs must be mutable"))?;
+    inputs.remove(&Value::String("save-if".into()));
+
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("missing bounded Rust cache save guard must fail"))?;
+    let message = error.to_string();
+    ensure!(message.contains("inputs drifted"), "unexpected refusal: {message}");
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_ref_only_rust_cache_writer_guard() -> Result<()> {
+    let mut candidate = workflow()?;
+    let cache = bounded_step_mut(&mut candidate, BOUNDED_RUST_CACHE_STEP)?;
+    let inputs = cache
+        .get_mut("with")
+        .and_then(Value::as_mapping_mut)
+        .ok_or_else(|| anyhow!("bounded Rust cache inputs must be mutable"))?;
+    inputs.insert(
+        Value::String("save-if".into()),
+        Value::String(
+            "${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}".into(),
+        ),
+    );
+
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("ref-only bounded Rust cache guard must fail"))?;
+    ensure!(error.to_string().contains("inputs drifted"), "unexpected refusal: {error}");
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_conditional_or_unconditional_rust_cache_writes() -> Result<()> {
+    for save_if in [
+        Value::Bool(true),
+        Value::String("${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'bounded' && github.ref_name == github.event.repository.default_branch }}".into()),
+    ] {
+        let mut candidate = workflow()?;
+        let cache = bounded_step_mut(&mut candidate, BOUNDED_RUST_CACHE_STEP)?;
+        let inputs = cache.get_mut("with").and_then(Value::as_mapping_mut)
+            .ok_or_else(|| anyhow!("bounded Rust cache inputs must be mutable"))?;
+        inputs.insert(Value::String("save-if".into()), save_if);
+        let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate).err()
+            .ok_or_else(|| anyhow!("bounded Rust cache writes must fail containment"))?;
+        ensure!(error.to_string().contains("inputs drifted"), "unexpected refusal: {error}");
+    }
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_added_cache_save_or_combined_action() -> Result<()> {
+    for action in ["actions/cache/save", "actions/cache"] {
+        let mut candidate = workflow()?;
+        let steps = candidate
+            .get_mut("jobs")
+            .and_then(Value::as_mapping_mut)
+            .and_then(|jobs| jobs.get_mut(Value::String(BOUNDED_JOB.into())))
+            .and_then(|bounded| bounded.get_mut("steps"))
+            .and_then(Value::as_sequence_mut)
+            .ok_or_else(|| anyhow!("bounded steps must be mutable"))?;
+        steps.push(serde_yaml_ng::from_str(&format!(
+            "name: Added cache writer\nuses: {action}@55cc8345863c7cc4c66a329aec7e433d2d1c52a9\nwith:\n  path: target/cpan-corpus-bounded\n  key: bounded-control"
+        ))?);
+        let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+            .err()
+            .ok_or_else(|| anyhow!("added bounded cache writer must fail containment"))?;
+        ensure!(
+            error.to_string().contains("step inventory drifted"),
+            "unexpected refusal: {error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn bounded_control_rejects_restore_replaced_with_combined_cache_action() -> Result<()> {
+    let mut candidate = workflow()?;
+    let restore = bounded_step_mut(&mut candidate, "Restore CPAN corpus cache (bounded)")?;
+    restore.as_mapping_mut().ok_or_else(|| anyhow!("restore step must be mutable"))?.insert(
+        Value::String("uses".into()),
+        Value::String("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9".into()),
+    );
+    let error = ensure_bounded_top_50_is_safe_and_reachable(&candidate)
+        .err()
+        .ok_or_else(|| anyhow!("combined cache action must fail containment"))?;
+    ensure!(
+        error.to_string().contains("execution identity drifted"),
+        "unexpected refusal: {error}"
+    );
     Ok(())
 }
 

@@ -1,6 +1,10 @@
-use super::model::{DebtLedger, LintLedger};
+use super::model::{ConfigurationState, DebtLedger, LintLedger};
 
-pub(super) fn render_policy_summary(ledger: &LintLedger, debt: &DebtLedger) -> String {
+pub(super) fn render_policy_summary(
+    ledger: &LintLedger,
+    debt: &DebtLedger,
+    configured_selector_count: usize,
+) -> String {
     let mut output = format!(
         "lint policy ok: {} dispositions, {} debt rows\n",
         ledger.lint.len() + ledger.planned.len() + ledger.deferred_due.len(),
@@ -16,6 +20,22 @@ pub(super) fn render_policy_summary(ledger: &LintLedger, debt: &DebtLedger) -> S
             .collect();
         append_summary_group(&mut output, status, names);
     }
+    append_summary_group(
+        &mut output,
+        "configuration-empty-by-design",
+        ledger
+            .lint
+            .iter()
+            .filter(|lint| lint.configuration_state == Some(ConfigurationState::EmptyByDesign))
+            .map(|lint| lint.name.clone())
+            .collect(),
+    );
+    // Phase 1 validation admits only the empty selector set, so the configured
+    // selector denominator is also the protected architecture-seam denominator.
+    output.push_str(&format!("  configured selector denominator: {configured_selector_count}\n"));
+    output.push_str(&format!(
+        "  protected architecture-seam denominator: {configured_selector_count}\n"
+    ));
     append_summary_group(
         &mut output,
         "future-planned",

@@ -3,7 +3,8 @@ use perl_lsp_rs_core::providers::formatting::{
 };
 use perl_lsp_rs_core::tooling::perltidy::FormatterMode;
 use perl_lsp_rs_core::tooling::perltidy::native::{
-    FormatContext, FormatDisposition, FormatEngine, FormatReasonCode, FormatRequestTarget,
+    FormatContext, FormatDisposition, FormatEngine, FormatLineEndingDisposition, FormatReasonCode,
+    FormatRequestTarget,
 };
 use perl_lsp_rs_core::tooling::{SubprocessError, SubprocessOutput, SubprocessRuntime};
 use std::sync::{
@@ -26,6 +27,29 @@ impl SubprocessRuntime for RecordingRuntime {
         self.invoked.store(true, Ordering::SeqCst);
         Ok(SubprocessOutput {
             stdout: b"my $external = 1;\n".to_vec(),
+            stderr: Vec::new(),
+            status_code: 0,
+        })
+    }
+}
+
+/// A subprocess runtime whose rendered output is chosen by the test, so the
+/// external adapter path can be driven to a real change and to a byte-for-byte
+/// no-op.
+#[derive(Clone)]
+struct ScriptedRuntime {
+    stdout: String,
+}
+
+impl SubprocessRuntime for ScriptedRuntime {
+    fn run_command(
+        &self,
+        _program: &str,
+        _args: &[&str],
+        _stdin: Option<&[u8]>,
+    ) -> Result<SubprocessOutput, SubprocessError> {
+        Ok(SubprocessOutput {
+            stdout: self.stdout.clone().into_bytes(),
             stderr: Vec::new(),
             status_code: 0,
         })
@@ -232,6 +256,13 @@ fn native_partial_range_that_widens_is_downgraded_without_edits()
     assert_eq!(decision.outcome.reason, FormatReasonCode::InstrumentFailure);
     assert!(decision.document.edits.is_empty());
     assert_eq!(decision.document.text, source);
+    // The engine rendered a change that containment then rejected. Because no
+    // edit is admitted, the withheld decision carries no applied-change
+    // summary — the intermediate evidence must not survive (#7585).
+    assert_eq!(decision.outcome.change.edit_count, 0);
+    assert_eq!(decision.outcome.change.source_bytes_changed, 0);
+    assert_eq!(decision.outcome.change.rendered_bytes_changed, 0);
+    assert_eq!(decision.outcome.change.changed_lines, 0);
     Ok(())
 }
 
@@ -388,4 +419,288 @@ fn compatibility_projection_preserves_existing_successful_document_output()
     assert_eq!(document.edits.len(), 1);
     assert_eq!(document.edits[0].new_text, "my $x = 1;\n");
     Ok(())
+}
+
+#[test]
+fn native_projection_insert_final_newline_preserves_crlf_after_generated_layout()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    formatting_options.trim_final_newlines = Some(true);
+    let source = "while($n){next;}\r\n";
+
+    let decision = provider.format_document_decision(
+        source,
+        &formatting_options,
+        &FormatContext::default(),
+    )?;
+
+    assert_eq!(decision.document.text, "while ($n) {\r\n    next;\r\n}\r\n");
+    assert_eq!(decision.document.edits.len(), 1);
+    assert!(decision.document.text.ends_with("}\r\n"));
+    assert!(!decision.document.text.ends_with("}\r\n\r\n"));
+    assert!(decision.document.edits[0].new_text.ends_with("}\r\n"));
+    assert!(!decision.document.edits[0].new_text.ends_with("}\r\n\r\n"));
+    assert!(!decision.document.edits[0].new_text.contains("\r\n\n"));
+    Ok(())
+}
+
+#[test]
+fn native_projection_insert_final_newline_uses_last_lf_then_crlf_ending()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    formatting_options.trim_final_newlines = Some(true);
+    let source = "my $before=1;\nwhile($n){next;}\r\n";
+
+    let decision = provider.format_document_decision(
+        source,
+        &formatting_options,
+        &FormatContext::default(),
+    )?;
+
+    let expected = "my $before = 1;\nwhile ($n) {\r\n    next;\r\n}\r\n";
+    assert_eq!(decision.document.text, expected);
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].new_text, expected);
+    assert!(decision.document.text.ends_with("}\r\n"));
+    assert!(!decision.document.text.ends_with("}\n"));
+    Ok(())
+}
+
+#[test]
+fn native_projection_insert_final_newline_uses_last_crlf_then_lf_ending()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    formatting_options.trim_final_newlines = Some(true);
+    let source = "my $before=1;\r\nwhile($n){next;}\n";
+
+    let decision = provider.format_document_decision(
+        source,
+        &formatting_options,
+        &FormatContext::default(),
+    )?;
+
+    let expected = "my $before = 1;\r\nwhile ($n) {\n    next;\n}\n";
+    assert_eq!(decision.document.text, expected);
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].new_text, expected);
+    assert!(decision.document.text.ends_with("}\n"));
+    assert!(!decision.document.text.ends_with("}\r\n"));
+    Ok(())
+}
+
+#[test]
+fn native_range_projection_mixed_prefix_lf_then_crlf_uses_edited_line_ending()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    formatting_options.trim_final_newlines = Some(true);
+    let source = "my $before=1;\nwhile($n){next;}\r\n";
+    let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 16));
+
+    let decision = provider.format_range_decision(
+        source,
+        &range,
+        &formatting_options,
+        &FormatContext::default(),
+    )?;
+
+    let expected = "my $before=1;\nwhile ($n) {\r\n    next;\r\n}\r\n";
+    assert_eq!(decision.document.text, expected);
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].new_text, "while ($n) {\r\n    next;\r\n}");
+    Ok(())
+}
+
+#[test]
+fn native_range_projection_mixed_prefix_crlf_then_lf_uses_edited_line_ending()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    formatting_options.trim_final_newlines = Some(true);
+    let source = "my $before=1;\r\nwhile($n){next;}\n";
+    let range = FormatRange::new(FormatPosition::new(1, 0), FormatPosition::new(1, 16));
+
+    let decision = provider.format_range_decision(
+        source,
+        &range,
+        &formatting_options,
+        &FormatContext::default(),
+    )?;
+
+    let expected = "my $before=1;\r\nwhile ($n) {\n    next;\n}\n";
+    assert_eq!(decision.document.text, expected);
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].new_text, "while ($n) {\n    next;\n}");
+    Ok(())
+}
+
+#[test]
+fn native_projection_trim_then_insert_retains_crlf_document_ending()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+    let mut formatting_options = options();
+    formatting_options.insert_final_newline = Some(true);
+    formatting_options.trim_final_newlines = Some(true);
+    let source = "my $x=1;\r\n";
+
+    let decision = provider.format_document_decision(
+        source,
+        &formatting_options,
+        &FormatContext::default(),
+    )?;
+
+    let expected = "my $x = 1;\r\n";
+    assert_eq!(decision.document.text, expected);
+    assert_eq!(decision.document.edits.len(), 1);
+    assert_eq!(decision.document.edits[0].new_text, expected);
+    assert!(!decision.document.text.ends_with("\r\r\n"));
+    Ok(())
+}
+
+/// The terminal envelope must stay internally consistent across every public
+/// formatting path (#7585).
+///
+/// `Applied` means the caller received edits that really change bytes, so its
+/// change summary is non-zero; `NoChange` means no edits and a zero summary;
+/// refusals and failures never carry an applied-change summary. Asserting the
+/// predicate over a representative corpus keeps the invariant total instead of
+/// leaving it to hold by coincidence at each individual call site.
+#[test]
+fn every_terminal_decision_keeps_a_consistent_change_envelope()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider =
+        FormattingProvider::new(RecordingRuntime { invoked: Arc::new(AtomicBool::new(false)) });
+
+    let mut trimming = options();
+    trimming.trim_trailing_whitespace = Some(true);
+    let mut final_newline = options();
+    final_newline.insert_final_newline = Some(true);
+
+    // (source, options) pairs spanning applied, legitimate no-change, whitespace
+    // fallback, refusal, and failed/not-proven paths.
+    let documents = [
+        ("my$x=1;\n", options()),              // native applied
+        ("my $x = 1;\n", options()),           // native legitimate no-change
+        ("# trailing   \n", trimming.clone()), // whitespace fallback emits an edit
+        ("# trailing\n", trimming.clone()),    // fallback finds no difference
+        ("my $x = ;\n", options()),            // source parse refusal
+        ("print 1;;;\n", options()),           // unsupported-syntax refusal
+        ("my $x = 1;", final_newline),         // final-newline insertion
+        ("", options()),                       // empty document
+    ];
+
+    for (source, formatting_options) in documents {
+        let decision =
+            provider.format_document_decision(source, &formatting_options, &context())?;
+        assert_envelope_is_consistent(source, &decision);
+    }
+
+    let ranges = [
+        FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 13)),
+        FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 10)),
+        FormatRange::new(FormatPosition::new(0, 0), FormatPosition::new(0, 0)),
+    ];
+    for range in ranges {
+        let decision =
+            provider.format_range_decision("# trailing   \n", &range, &trimming, &context())?;
+        assert_envelope_is_consistent("# trailing   \n", &decision);
+    }
+
+    // A partial-line range whose line needs formatting: the engine emits a
+    // full-line edit, containment rejects it, and the decision is downgraded to
+    // not-proven with no edits. Without this case the withheld arm of the
+    // predicate below is never exercised.
+    let containment_rejection =
+        FormatRange::new(FormatPosition::new(0, 2), FormatPosition::new(0, 3));
+    let decision = provider.format_range_decision(
+        "my$x=1;\n",
+        &containment_rejection,
+        &options(),
+        &context(),
+    )?;
+    assert_eq!(decision.outcome.disposition, FormatDisposition::FailedOrNotProven);
+    assert_envelope_is_consistent("my$x=1;\n", &decision);
+
+    // The external adapter is the fourth terminal entry point. Drive it to a
+    // real change and to a byte-for-byte no-op so both arms of its envelope
+    // normalization are pinned by the same predicate.
+    let source = "my$x=1;\n";
+    for stdout in [source, "my $x = 1;\n"] {
+        let external = FormattingProvider::new(ScriptedRuntime { stdout: stdout.to_string() })
+            .with_formatter_mode(FormatterMode::ExternalLegacy);
+        let decision = external.format_document_decision(source, &options(), &context())?;
+        let expected =
+            if stdout == source { FormatDisposition::NoChange } else { FormatDisposition::Applied };
+        assert_eq!(decision.outcome.disposition, expected, "external stdout={stdout:?}");
+        assert_envelope_is_consistent(source, &decision);
+    }
+    Ok(())
+}
+
+fn assert_envelope_is_consistent(
+    source: &str,
+    decision: &perl_lsp_rs_core::providers::formatting::FormattingDecision,
+) {
+    let change = decision.outcome.change;
+    let edits = &decision.document.edits;
+    assert_eq!(
+        change.edit_count,
+        edits.len(),
+        "edit_count must equal the returned edits for {source:?}"
+    );
+
+    match decision.outcome.disposition {
+        FormatDisposition::Applied => {
+            assert!(!edits.is_empty(), "Applied must return edits for {source:?}");
+            assert_ne!(
+                decision.document.text, source,
+                "Applied must change rendered bytes for {source:?}"
+            );
+            assert!(
+                change.source_bytes_changed > 0 && change.rendered_bytes_changed > 0,
+                "Applied must carry non-zero change evidence for {source:?}"
+            );
+        }
+        FormatDisposition::NoChange => {
+            assert!(edits.is_empty(), "NoChange must return no edits for {source:?}");
+            assert_eq!(
+                decision.document.text, source,
+                "NoChange must leave the source bytes intact for {source:?}"
+            );
+            assert_eq!(change.source_bytes_changed, 0);
+            assert_eq!(change.rendered_bytes_changed, 0);
+            assert_eq!(change.changed_lines, 0);
+        }
+        FormatDisposition::Refused | FormatDisposition::FailedOrNotProven => {
+            assert!(edits.is_empty(), "a withheld decision must not return edits for {source:?}");
+            assert_eq!(
+                decision.document.text, source,
+                "a withheld decision must retain the source for {source:?}"
+            );
+            assert_eq!(
+                change.source_bytes_changed, 0,
+                "a withheld decision carries no applied-change summary for {source:?}"
+            );
+            assert_eq!(
+                decision.outcome.safety.line_endings,
+                FormatLineEndingDisposition::Preserved,
+                "a withheld decision returns the source untouched, so it cannot report a \
+                 changed line-ending convention for {source:?}"
+            );
+        }
+    }
 }

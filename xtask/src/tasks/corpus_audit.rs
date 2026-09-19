@@ -376,30 +376,11 @@ fn validate_report_for_ci(report: &AuditReport) -> Result<()> {
     // Propagate errors so a corrupted baseline does not silently pass.
     let floor_metrics = load_parser_floor_metrics()?;
 
-    if let Some(Some(baseline_nodekind)) = floor_metrics.get("node_kind_coverage") {
-        let current_nodekind = if report.nodekind_coverage.total_count == 0 {
-            0.0
-        } else {
-            report.nodekind_coverage.covered_count as f64
-                / report.nodekind_coverage.total_count as f64
-        };
-        if current_nodekind + 1e-6 < *baseline_nodekind {
-            failures.push(format!(
-                "NodeKind coverage regression: {:.4} < {:.4} baseline",
-                current_nodekind, baseline_nodekind
-            ));
-        }
-    }
-
-    if let Some(Some(baseline_gap_count)) = floor_metrics.get("valid_parser_gap_count") {
-        let current_gap_count = report.parse_outcomes.error as f64;
-        if current_gap_count > *baseline_gap_count {
-            failures.push(format!(
-                "Valid parser gap regression: {:.0} > {:.0} baseline",
-                current_gap_count, baseline_gap_count
-            ));
-        }
-    }
+    failures.extend(parser_ratchet_failure_messages(
+        &floor_metrics,
+        &report.nodekind_coverage,
+        report.parse_outcomes.error,
+    ));
 
     // Print error category breakdown if there are errors (Issue #180)
     if current_errors > 0 && !report.parse_outcomes.error_by_category.is_empty() {
@@ -421,6 +402,51 @@ fn validate_report_for_ci(report: &AuditReport) -> Result<()> {
         }
         Err(color_eyre::eyre::eyre!("CI gate validation failed: {}", failures.join("; ")))
     }
+}
+
+fn parser_ratchet_failure_messages(
+    floor_metrics: &BTreeMap<String, Option<f64>>,
+    nodekind: &nodekind_analysis::NodeKindStats,
+    parse_error: usize,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    if !nodekind.actionable_never_seen.is_empty() {
+        failures.push(format!(
+            "Actionable never-seen NodeKinds ({}): {}",
+            nodekind.actionable_never_seen.len(),
+            nodekind.actionable_never_seen.join(", ")
+        ));
+    }
+
+    // An empty actionable list is only trustworthy evidence when the omission
+    // classification forms a complete, canonical, duplicate-free partition of
+    // never_seen; otherwise the zero-actionable ratchet cannot be believed.
+    failures.extend(nodekind_analysis::omission_partition_failures(nodekind));
+
+    if let Some(Some(baseline_nodekind)) = floor_metrics.get("node_kind_coverage") {
+        let current_nodekind = if nodekind.total_count == 0 {
+            0.0
+        } else {
+            nodekind.covered_count as f64 / nodekind.total_count as f64
+        };
+        if current_nodekind + 1e-6 < *baseline_nodekind {
+            failures.push(format!(
+                "NodeKind coverage regression: {current_nodekind:.4} < {baseline_nodekind:.4} baseline"
+            ));
+        }
+    }
+
+    if let Some(Some(baseline_gap_count)) = floor_metrics.get("valid_parser_gap_count") {
+        let current_gap_count = parse_error as f64;
+        if current_gap_count > *baseline_gap_count {
+            failures.push(format!(
+                "Valid parser gap regression: {current_gap_count:.0} > {baseline_gap_count:.0} baseline"
+            ));
+        }
+    }
+
+    failures
 }
 
 fn load_parser_floor_metrics() -> Result<BTreeMap<String, Option<f64>>> {
@@ -530,7 +556,7 @@ mod tests {
     }
 
     // --------------------------------------------------------------------------
-    // Parser floor ratchet logic (nodekind / gap-count)
+    // Parser floor ratchet logic (actionable NodeKind / ratio / gap-count)
     // --------------------------------------------------------------------------
 
     /// Build a minimal floor_metrics map for ratchet tests.
@@ -544,44 +570,127 @@ mod tests {
         m
     }
 
-    /// Check whether `validate_report_for_ci` produces a failure message matching `needle`
-    /// when floor metrics and parse outcomes are configured as given.
-    ///
-    /// We exercise only the ratchet block: other checks (GA coverage, timeouts, panics)
-    /// use values that never fail.
+    /// Exercise the production ratchet with a fully covered, partition-clean
+    /// NodeKindStats (no omissions at all).
     fn ratchet_failure_messages(
         floor_metrics: &BTreeMap<String, Option<f64>>,
         nodekind_covered: usize,
         nodekind_total: usize,
         parse_error: usize,
     ) -> Vec<String> {
-        let mut failures = Vec::new();
-
-        // -- nodekind ratchet --
-        if let Some(Some(baseline_nodekind)) = floor_metrics.get("node_kind_coverage") {
-            let current = if nodekind_total == 0 {
+        let stats = nodekind_analysis::NodeKindStats {
+            total_count: nodekind_total,
+            covered_count: nodekind_covered,
+            coverage_percentage: if nodekind_total == 0 {
                 0.0
             } else {
-                nodekind_covered as f64 / nodekind_total as f64
-            };
-            if current + 1e-6 < *baseline_nodekind {
-                failures.push(format!(
-                    "NodeKind coverage regression: {current:.4} < {baseline_nodekind:.4} baseline"
-                ));
-            }
-        }
+                nodekind_covered as f64 / nodekind_total as f64 * 100.0
+            },
+            never_seen: Vec::new(),
+            allowlisted_never_seen: Vec::new(),
+            actionable_never_seen: Vec::new(),
+            at_risk: Vec::new(),
+            frequency: HashMap::new(),
+        };
+        parser_ratchet_failure_messages(floor_metrics, &stats, parse_error)
+    }
 
-        // -- gap-count ratchet --
-        if let Some(Some(baseline_gap)) = floor_metrics.get("valid_parser_gap_count") {
-            let current = parse_error as f64;
-            if current > *baseline_gap {
-                failures.push(format!(
-                    "Valid parser gap regression: {current:.0} > {baseline_gap:.0} baseline"
-                ));
-            }
+    /// Build NodeKindStats with the exact omission evidence given; used to
+    /// construct both partition-consistent and deliberately inconsistent
+    /// fixtures.
+    fn synthetic_stats(
+        never_seen: Vec<String>,
+        allowlisted_never_seen: Vec<nodekind_analysis::AllowlistedNodeKind>,
+        actionable_never_seen: Vec<String>,
+        covered_count: usize,
+    ) -> nodekind_analysis::NodeKindStats {
+        nodekind_analysis::NodeKindStats {
+            total_count: 76,
+            covered_count,
+            coverage_percentage: covered_count as f64 / 76.0 * 100.0,
+            never_seen,
+            allowlisted_never_seen,
+            actionable_never_seen,
+            at_risk: Vec::new(),
+            frequency: HashMap::new(),
         }
+    }
 
-        failures
+    fn allowlisted(name: &str) -> nodekind_analysis::AllowlistedNodeKind {
+        nodekind_analysis::AllowlistedNodeKind {
+            name: name.to_string(),
+            rationale: "test recovery-only kind".to_string(),
+        }
+    }
+
+    fn synthetic_report_from_stats(stats: nodekind_analysis::NodeKindStats) -> AuditReport {
+        AuditReport {
+            metadata: report::ReportMetadata {
+                generated_at: String::new(),
+                version: String::new(),
+                duration_secs: 0,
+            },
+            inventory: corpus::CorpusInventory {
+                total_files: 0,
+                files_by_layer: Vec::new(),
+                total_size_bytes: 0,
+                total_line_count: 0,
+            },
+            parse_outcomes: ParseOutcomesSummary {
+                total: 0,
+                ok: 0,
+                error: 0,
+                timeout: 0,
+                panic: 0,
+                error_by_category: HashMap::new(),
+                failing_files: Vec::new(),
+            },
+            nodekind_coverage: stats,
+            ga_coverage: ga_alignment::GAFeatureCoverage {
+                total_count: 1,
+                covered_count: 1,
+                coverage_percentage: 100.0,
+                features: Vec::new(),
+                uncovered_critical: Vec::new(),
+                uncovered_partial: Vec::new(),
+            },
+            timeout_risks: Vec::new(),
+        }
+    }
+
+    /// A partition-consistent report: never_seen is exactly the union of the
+    /// two classification buckets.
+    fn synthetic_report(
+        actionable_never_seen: Vec<String>,
+        allowlisted_never_seen: Vec<nodekind_analysis::AllowlistedNodeKind>,
+        covered_count: usize,
+    ) -> AuditReport {
+        let mut never_seen: Vec<String> = actionable_never_seen
+            .iter()
+            .cloned()
+            .chain(allowlisted_never_seen.iter().map(|entry| entry.name.clone()))
+            .collect();
+        never_seen.sort();
+        synthetic_report_from_stats(synthetic_stats(
+            never_seen,
+            allowlisted_never_seen,
+            actionable_never_seen,
+            covered_count,
+        ))
+    }
+
+    #[test]
+    fn test_validate_report_for_ci_rejects_actionable_nodekind_omission() {
+        let report = synthetic_report(vec!["AmperCall".to_string()], Vec::new(), 72);
+
+        let result = validate_report_for_ci(&report);
+        assert!(result.is_err(), "validator must reject reports with actionable omissions");
+        if let Err(error) = result {
+            assert!(
+                error.to_string().contains("Actionable never-seen NodeKinds (1): AmperCall"),
+                "validator error should identify the actionable omission: {error}"
+            );
+        }
     }
 
     #[test]
@@ -600,6 +709,209 @@ mod tests {
         assert!(
             msgs.iter().any(|s| s.contains("NodeKind coverage regression")),
             "expected NodeKind failure: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn test_actionable_nodekind_ratchet_fires_above_ratio_floor() {
+        let m = floor_metrics_from(Some(0.942_029), None);
+
+        // 72/76 is still above the historical ratio floor, so only the semantic
+        // actionable-omission ratchet can reject this regression.
+        let stats = synthetic_stats(
+            vec!["AmperCall".to_string()],
+            Vec::new(),
+            vec!["AmperCall".to_string()],
+            72,
+        );
+        let msgs = parser_ratchet_failure_messages(&m, &stats, 0);
+
+        assert!(
+            msgs.iter().any(|s| s == "Actionable never-seen NodeKinds (1): AmperCall"),
+            "expected actionable NodeKind failure: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|s| s.contains("NodeKind coverage regression")),
+            "fixture must remain above the legacy ratio floor: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn test_recovery_only_nodekind_omissions_remain_allowed() {
+        let m = floor_metrics_from(Some(0.942_029), None);
+
+        // The current 73/76 state has three recovery-only omissions and no
+        // actionable omissions; never_seen is exactly the allowlisted union,
+        // so both the semantic ratchet and the partition validator stay green.
+        let report = synthetic_report(
+            Vec::new(),
+            vec![allowlisted("Error"), allowlisted("MissingBlock"), allowlisted("UnknownRest")],
+            73,
+        );
+        assert_eq!(
+            report.nodekind_coverage.never_seen.len(),
+            3,
+            "control fixture must exercise a real recovery-only partition"
+        );
+
+        let msgs = parser_ratchet_failure_messages(&m, &report.nodekind_coverage, 0);
+
+        assert!(msgs.is_empty(), "recovery-only omissions must remain allowed: {msgs:?}");
+    }
+
+    #[test]
+    fn test_validate_report_for_ci_rejects_mismatched_empty_omission_partition() {
+        // A cached report claiming never_seen = [AmperCall] with BOTH
+        // classification buckets empty: presence-valid, partition-invalid.
+        let stats = synthetic_stats(vec!["AmperCall".to_string()], Vec::new(), Vec::new(), 73);
+        let report = synthetic_report_from_stats(stats);
+
+        let result = validate_report_for_ci(&report);
+        assert!(
+            result.is_err(),
+            "mismatched-empty cached evidence must not pass the zero-actionable gate"
+        );
+        if let Err(error) = result {
+            assert!(
+                error.to_string().contains("Omission partition mismatch"),
+                "validator error should identify the partition mismatch: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_report_for_ci_rejects_non_recovery_allowlist_entry() {
+        // A canonical non-recovery kind can satisfy the partition shape and
+        // still be dishonest zero-actionable evidence unless eligibility is
+        // checked on the production validation path.
+        let report = synthetic_report(Vec::new(), vec![allowlisted("AmperCall")], 73);
+
+        let result = validate_report_for_ci(&report);
+        assert!(result.is_err(), "non-recovery allowlist entries must be rejected");
+        if let Err(error) = result {
+            let message = error.to_string();
+            assert!(
+                message.contains("'AmperCall'") && message.contains("recovery kind"),
+                "validator error should identify the invalid allowlist membership: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_report_for_ci_rejects_actionable_recovery_entry() {
+        // The opposite dishonest partition is also invalid: recovery-only
+        // kinds cannot be made actionable by changing their cached bucket.
+        let report = synthetic_report(vec!["Error".to_string()], Vec::new(), 73);
+
+        let result = validate_report_for_ci(&report);
+        assert!(result.is_err(), "actionable recovery entries must be rejected");
+        if let Err(error) = result {
+            let message = error.to_string();
+            assert!(
+                message.contains("'Error'") && message.contains("recovery kind"),
+                "validator error should identify the invalid actionable membership: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_zero_actionable_with_dropped_member_is_rejected_by_ratchet() {
+        let m = floor_metrics_from(Some(0.942_029), None);
+        let stats = synthetic_stats(
+            vec!["AmperCall".to_string(), "VString".to_string()],
+            Vec::new(),
+            vec!["AmperCall".to_string()],
+            73,
+        );
+
+        let msgs = parser_ratchet_failure_messages(&m, &stats, 0);
+
+        assert!(
+            msgs.iter().any(|s| s.contains("Omission partition mismatch")),
+            "dropped member must fail the ratchet: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|s| s.contains("'VString'")),
+            "dropped member must be named in the failure: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn test_omission_overlap_between_buckets_is_rejected_by_ratchet() {
+        let m = floor_metrics_from(Some(0.942_029), None);
+        let stats = synthetic_stats(
+            vec!["AmperCall".to_string()],
+            vec![allowlisted("AmperCall")],
+            vec!["AmperCall".to_string()],
+            73,
+        );
+
+        let msgs = parser_ratchet_failure_messages(&m, &stats, 0);
+
+        assert!(
+            msgs.iter().any(|s| s.contains("Omission classification overlap")),
+            "overlap must fail the ratchet: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|s| s.contains("Duplicate NodeKind omission entries")),
+            "the same name in both buckets is also a duplicate: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn test_non_canonical_omission_name_is_rejected_by_ratchet() {
+        let m = floor_metrics_from(Some(0.942_029), None);
+        let stats = synthetic_stats(
+            vec!["AmperCal!".to_string()],
+            Vec::new(),
+            vec!["AmperCal!".to_string()],
+            73,
+        );
+
+        let msgs = parser_ratchet_failure_messages(&m, &stats, 0);
+
+        assert!(
+            msgs.iter().any(|s| s.contains("Non-canonical NodeKind omission names")),
+            "typo'd omission names must fail the ratchet: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_omission_entries_are_rejected_by_ratchet() {
+        let m = floor_metrics_from(Some(0.942_029), None);
+        let stats = synthetic_stats(
+            vec!["AmperCall".to_string(), "AmperCall".to_string()],
+            Vec::new(),
+            vec!["AmperCall".to_string(), "AmperCall".to_string()],
+            73,
+        );
+
+        let msgs = parser_ratchet_failure_messages(&m, &stats, 0);
+
+        assert!(
+            msgs.iter().any(|s| s.contains("Duplicate NodeKind omission entries")),
+            "duplicates must fail the ratchet: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn test_empty_allowlist_rationale_is_rejected_by_ratchet() {
+        let m = floor_metrics_from(Some(0.942_029), None);
+        let stats = synthetic_stats(
+            vec!["MissingBlock".to_string()],
+            vec![nodekind_analysis::AllowlistedNodeKind {
+                name: "MissingBlock".to_string(),
+                rationale: "   ".to_string(),
+            }],
+            Vec::new(),
+            73,
+        );
+
+        let msgs = parser_ratchet_failure_messages(&m, &stats, 0);
+
+        assert!(
+            msgs.iter().any(|s| s.contains("empty rationale")),
+            "blank allowlist rationale must fail the ratchet: {msgs:?}"
         );
     }
 

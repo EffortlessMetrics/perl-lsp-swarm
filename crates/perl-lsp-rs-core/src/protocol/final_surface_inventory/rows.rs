@@ -178,7 +178,7 @@ fn capability_rows() -> Vec<SurfaceRow> {
             "cap.textDocumentSync.change",
             "textDocumentSync.change",
             S_DOC_SYNC,
-            "textDocument/didChange (Full=1 reparse)",
+            "textDocument/didChange (Full=1 complete document transfer)",
             "features.toml#lsp.text_document_sync; lifecycle tests text_document_sync_advertises_full_sync_and_open_close",
         ),
         SurfaceRow {
@@ -635,13 +635,13 @@ fn mutation_rows() -> Vec<SurfaceRow> {
         SurfaceRow {
             additional_owned_pointers: super::NO_POINTERS,
             client_capability_inputs: &[
-                "general.positionEncodings (negotiated, stored, NOT advertised)",
+                "general.positionEncodings (classified; utf-16 selected or initialize fails)",
             ],
             ..mut_row(
                 "mut.handle_initialize.positionEncodingPin",
                 "positionEncoding",
                 &["general.positionEncodings"],
-                "position contract pinned utf-16 until negotiated encoding threads through providers; see compat.protocol.positionEncodingUtf16Pin",
+                "v0.18 UTF-16-only envelope (#8129); see compat.protocol.positionEncodingUtf16Pin",
             )
         },
         SurfaceRow {
@@ -700,6 +700,7 @@ fn mutation_rows() -> Vec<SurfaceRow> {
                 "codeActionProvider.documentation[].kind",
                 "codeActionProvider.documentation[].command.title",
                 "codeActionProvider.documentation[].command.command",
+                "codeActionProvider.documentation[].command.tooltip",
                 "codeActionProvider.documentation[].command.arguments[]",
                 "codeActionProvider.documentation[].command.arguments[].provider",
                 "codeActionProvider.documentation[].command.arguments[].receipt_id",
@@ -749,16 +750,16 @@ fn mutation_rows() -> Vec<SurfaceRow> {
                 "(feature, static-support, dynamic-support) tri-state removes/re-inserts the static provider; lsp_inline_completion_registration_tests.rs",
             )
         },
-        // Initialize-result envelope assembly (outside serverCapabilities but
-        // part of the final surface emitted by handle_initialize).
+        // Initialize-result envelope: capabilities + serverInfo (no
+        // protocolVersion); see exact_process_initialize_result_matches_selected_schema.
         SurfaceRow {
-            additional_owned_pointers: &["envelope.serverInfo.name", "envelope.serverInfo.version"],
+            additional_owned_pointers: &["envelope.serverInfo.version"],
             client_capability_inputs: NO_CLIENT,
             ..mut_row(
                 "mut.handle_initialize.envelopeAssembly",
-                "envelope.protocolVersion=3.18",
+                "envelope.serverInfo.name",
                 NO_CLIENT,
-                "LSP_PROTOCOL_VERSION const + serverInfo name/version in the initialize result envelope; json!() assembly kept per in-source rationale comment",
+                "serverInfo name/version in the initialize result envelope; json!() assembly kept per in-source rationale comment",
             )
         },
     ]
@@ -780,7 +781,7 @@ fn registration_rows() -> Vec<SurfaceRow> {
             ],
             &["AdvertisedFeatures.workspace_symbol", "config runtime_tuning.file_watchers"],
             Disposition::Dynamic,
-            "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; RelativePattern fallback string globs (**/*.pl,*.pm,*.t,*.psgi)",
+            "features.toml#lsp.did_change_watched_files; lsp_registration_tests.rs; single catch-all glob (**/*) on the RelativePattern watcher surface with string-glob fallback, handler-side Perl classification (#13308)",
         ),
         registration(
             "reg.perl-inlineCompletion",
@@ -1199,13 +1200,13 @@ fn compatibility_rows() -> Vec<SurfaceRow> {
         ),
         compat(
             "compat.protocol.positionEncodingUtf16Pin",
-            "positionEncoding always advertised utf-16 despite general.positionEncodings negotiation",
+            "positionEncoding always advertised utf-16; well-formed lists that omit utf-16 accept via mandatory UTF-16 fallback",
             RT_INIT,
             &["general.positionEncodings"],
-            "phase-comment block in handle_initialize; position authority #2298",
-            "every client negotiating a non-UTF-16 preferred encoding",
-            "providers still compute UTF-16 offsets; advertising anything else would corrupt positions, so the negotiated value is stored but not advertised",
-            "#8032 train stage threading the negotiated encoding through position/text contracts",
+            "v0.18 full-document UTF-16 envelope (#8129); initialize offer classification",
+            "every client that omits utf-16 from a nonempty general.positionEncodings list",
+            "v0.18 stores and advertises utf-16 only; UTF-8/UTF-32 wire support is not claimed",
+            "#1690/#9282 end-to-end encoding activation remains open and is not this envelope",
         ),
         compat(
             "compat.negotiated.clientInputsWithoutAdvertisementSeam",
@@ -1281,6 +1282,7 @@ fn command_rows() -> Vec<SurfaceRow> {
 #[cfg(test)]
 mod ripr_seam_proof {
     use super::*;
+    use perl_test_must::must_some_with;
 
     #[test]
     fn capability_rows_are_static_capability_fields() {
@@ -1433,9 +1435,10 @@ mod ripr_seam_proof {
                 "compatibility row {} must be unadvertised",
                 row.surface_id
             );
-            let boundary = row.compatibility.as_ref().unwrap_or_else(|| {
-                panic!("compatibility row {} must carry a boundary", row.surface_id)
-            });
+            let boundary = must_some_with(
+                row.compatibility.as_ref(),
+                format!("compatibility row {} must carry a boundary", row.surface_id),
+            );
             assert!(
                 !boundary.subject.is_empty()
                     && !boundary.reason.is_empty()

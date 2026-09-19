@@ -15,6 +15,7 @@ use perl_dap::platform::{
 };
 #[cfg(not(windows))]
 use perl_dap::platform::{detect_perlbrew_perl, detect_plenv_perl};
+#[cfg(not(windows))]
 use perl_tdd_support::{must, must_some};
 use serial_test::serial;
 use std::path::PathBuf;
@@ -281,6 +282,35 @@ fn find_perl_interpreter_cached_respects_configured_path_changes() -> TestResult
     Ok(())
 }
 
+#[test]
+fn find_perl_interpreter_cached_revalidates_configured_file_changes() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let fake_perl = tmp.path().join("cached-perl");
+    let configured = fake_perl.to_string_lossy().to_string();
+
+    let missing = find_perl_interpreter_cached(Some(&configured));
+    assert!(
+        matches!(missing, PerlInterpreterResult::NotFound { .. }),
+        "missing configured path should be cached as NotFound, got: {missing:?}"
+    );
+
+    std::fs::write(&fake_perl, b"#!/usr/bin/env perl\n")?;
+    let found = find_perl_interpreter_cached(Some(&configured));
+    assert!(
+        matches!(found, PerlInterpreterResult::ConfiguredPath(ref path) if *path == fake_perl),
+        "creating a configured interpreter without changing its key must invalidate NotFound, got: {found:?}"
+    );
+
+    std::fs::remove_file(&fake_perl)?;
+    let removed = find_perl_interpreter_cached(Some(&configured));
+    assert!(
+        matches!(removed, PerlInterpreterResult::NotFound { .. }),
+        "deleting a configured interpreter without changing its key must invalidate ConfiguredPath, got: {removed:?}"
+    );
+
+    Ok(())
+}
+
 // ===========================================================================
 // 4. setup_environment edge cases
 // ===========================================================================
@@ -354,13 +384,13 @@ fn make_fake_perl(dir: &std::path::Path, name: &str) -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn detect_perlbrew_perl_env_var_points_to_valid_binary() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let bin_dir = tmp.path().join("perls").join("perl-5.38.0").join("bin");
     std::fs::create_dir_all(&bin_dir)?;
     make_fake_perl(&bin_dir, "perl")?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PERLBREW_ROOT", tmp.path().to_str().unwrap());
@@ -379,10 +409,10 @@ fn detect_perlbrew_perl_env_var_points_to_valid_binary() -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn detect_perlbrew_perl_env_set_but_binary_missing_returns_none() -> TestResult {
     let tmp = tempfile::tempdir()?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PERLBREW_ROOT", tmp.path().to_str().unwrap());
@@ -399,13 +429,13 @@ fn detect_perlbrew_perl_env_set_but_binary_missing_returns_none() -> TestResult 
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn detect_plenv_perl_env_var_points_to_valid_binary() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let bin_dir = tmp.path().join("versions").join("5.38.0").join("bin");
     std::fs::create_dir_all(&bin_dir)?;
     make_fake_perl(&bin_dir, "perl")?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PLENV_ROOT", tmp.path().to_str().unwrap());
@@ -424,10 +454,10 @@ fn detect_plenv_perl_env_var_points_to_valid_binary() -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn detect_plenv_perl_env_set_but_binary_missing_returns_none() -> TestResult {
     let tmp = tempfile::tempdir()?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PLENV_ROOT", tmp.path().to_str().unwrap());
@@ -444,13 +474,13 @@ fn detect_plenv_perl_env_set_but_binary_missing_returns_none() -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn resolve_perl_path_with_toolchain_prefers_perlbrew_over_path() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let bin_dir = tmp.path().join("perls").join("perl-5.38.0").join("bin");
     std::fs::create_dir_all(&bin_dir)?;
     make_fake_perl(&bin_dir, "perl")?;
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::set_var("PERLBREW_ROOT", tmp.path().to_str().unwrap());
@@ -471,10 +501,10 @@ fn resolve_perl_path_with_toolchain_prefers_perlbrew_over_path() -> TestResult {
 
 #[cfg(not(windows))]
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn resolve_perl_path_with_toolchain_prefers_plenv_over_path() -> TestResult {
     // Ensure perlbrew vars are absent so plenv is tried.
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::remove_var("PERLBREW_PERL");
@@ -499,10 +529,10 @@ fn resolve_perl_path_with_toolchain_prefers_plenv_over_path() -> TestResult {
 }
 
 #[test]
-#[serial(env_toolchain)]
+#[serial]
 fn resolve_perl_path_with_toolchain_falls_back_to_path() -> TestResult {
     // Clear toolchain env vars so PATH fallback is exercised.
-    // Safety: env mutation is safe because #[serial(env_toolchain)] prevents
+    // Safety: env mutation is safe because #[serial] prevents
     // concurrent access to PERLBREW_ROOT/PERLBREW_PERL/PLENV_ROOT/PLENV_VERSION.
     unsafe {
         std::env::remove_var("PERLBREW_PERL");

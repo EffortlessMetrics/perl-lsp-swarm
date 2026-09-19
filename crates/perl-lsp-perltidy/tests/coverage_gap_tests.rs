@@ -217,7 +217,6 @@ fn format_doc_indent_indents_parts_at_next_level() {
 fn formatter_mode_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     for (mode, expected_json) in [
         (FormatterMode::Native, "\"native\""),
-        (FormatterMode::Compat, "\"compat\""),
         (FormatterMode::ExternalLegacy, "\"external-legacy\""),
         (FormatterMode::Off, "\"off\""),
     ] {
@@ -302,13 +301,13 @@ fn keyword_spacing_serde_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn native_formatter_insert_final_newline_on_crlf_source() {
-    // FinalNewline::Insert must strip ALL trailing CR/LF chars, then add \n.
+    // FinalNewline::Insert preserves the CRLF convention of the source.
     let formatter = NativeFormatter::new();
     let config = FormatConfig { final_newline: FinalNewline::Insert, ..FormatConfig::default() };
     let source = "my $x = 1;\r\n";
     let result = formatter.format_document(source, &config);
-    // After insert: stripped "\r\n", then one "\n" appended.
-    assert_eq!(result.formatted, "my $x = 1;\n");
+    // After insert: stripped "\r\n", then one "\r\n" appended.
+    assert_eq!(result.formatted, "my $x = 1;\r\n");
 }
 
 #[test]

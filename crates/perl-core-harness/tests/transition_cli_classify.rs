@@ -243,6 +243,47 @@ fn classify_cli_writes_no_change_receipt_for_exact_v2_match() {
     assert!(value["claim_boundary"].as_str().expect("claim boundary").contains("input digests"));
 }
 
+/// The literal reproduction filed on #14375: `classify` against a hand-written
+/// empty accepted baseline and an empty compile report exited 0 with
+/// `"transition": "no_change"`. It must now record `not_proven` — "nothing to
+/// compare" is not "nothing changed".
+#[test]
+fn classify_cli_writes_not_proven_receipt_for_an_empty_observation_pair() {
+    let dir = tempdir().expect("tempdir");
+    let accepted = dir.path().join("empty-compile-accepted.json");
+    let compile = dir.path().join("empty-compile-report.json");
+    let output = dir.path().join("out.json");
+    write_baseline(&accepted, 0, 0);
+    write_report(&compile, 0, 0);
+    let result = Command::new(env!("CARGO_BIN_EXE_perl-core-harness-transition"))
+        .args([
+            "classify",
+            "--accepted-baseline",
+            accepted.to_str().expect("utf8"),
+            "--compile",
+            compile.to_str().expect("utf8"),
+            "--output",
+            output.to_str().expect("utf8"),
+        ])
+        .output()
+        .expect("spawn classify CLI");
+    assert!(
+        result.status.success(),
+        "classify failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let value: Value =
+        serde_json::from_str(&fs::read_to_string(&output).expect("read receipt")).expect("decode");
+    assert_eq!(value["transition"], "not_proven");
+    assert_eq!(value["requires_candidate"], false);
+    let reason = value["reason"].as_str().expect("reason");
+    assert!(reason.contains("contains no file results"), "unexpected reason: {reason}");
+    assert!(
+        !reason.contains("exactly matches the accepted v2 ratchet"),
+        "an empty pair must never claim ratchet identity: {reason}"
+    );
+}
+
 #[test]
 fn classify_cli_writes_regression_receipt_for_pass_to_fail() {
     let dir = tempdir().expect("tempdir");
@@ -921,6 +962,7 @@ fn sample_results(total: usize, passed: usize) -> Vec<RunFileResult> {
         .map(|index| {
             let status = if index < passed { RunnerStatus::Pass } else { RunnerStatus::Fail };
             RunFileResult {
+                mechanism: None,
                 path: format!("base/{index}.t"),
                 status,
                 assertions_passed: usize::from(status == RunnerStatus::Pass),

@@ -72,6 +72,46 @@ fn must_failure_reports_semantic_clauses_once() -> Result<(), String> {
 }
 
 #[test]
+fn must_with_failure_reports_context_type_and_value_once() -> Result<(), String> {
+    let message = panic_text(|| {
+        must_with::<(), DiagnosticError>(Err(DiagnosticError), "fixture must parse");
+    })?;
+
+    let expected = format!(
+        "must: fixture must parse: unexpected Err<{}>: diagnostic-error",
+        std::any::type_name::<DiagnosticError>()
+    );
+    assert_eq!(message, expected);
+    Ok(())
+}
+
+#[test]
+fn must_some_failure_reports_type_and_shape() -> Result<(), String> {
+    let message = panic_text(|| {
+        let _ = must_some(Option::<MissingItem>::None);
+    })?;
+
+    let expected = format!("must_some: unexpected None<{}>", std::any::type_name::<MissingItem>());
+    assert_eq!(message, expected);
+    Ok(())
+}
+
+#[test]
+fn must_err_failure_reports_types_and_value() -> Result<(), String> {
+    let message = panic_text(|| {
+        let _ = must_err::<UnexpectedOk, ExpectedError>(Ok(UnexpectedOk));
+    })?;
+
+    let expected = format!(
+        "must_err: expected Err<{}>, got Ok<{}>: unexpected-ok-value",
+        std::any::type_name::<ExpectedError>(),
+        std::any::type_name::<UnexpectedOk>()
+    );
+    assert_eq!(message, expected);
+    Ok(())
+}
+
+#[test]
 fn must_some_with_failure_reports_context_and_type_once() -> Result<(), String> {
     let message = panic_text(|| {
         let _ = must_some_with(Option::<MissingItem>::None, "indexed symbol must exist");

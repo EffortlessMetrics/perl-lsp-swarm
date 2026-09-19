@@ -745,25 +745,21 @@ fn test_state_started_at_exists() {
 
 #[test]
 fn test_index_state_kind_variants() {
-    assert_eq!(IndexStateKind::Ready, IndexStateKind::Ready);
     assert_ne!(IndexStateKind::Idle, IndexStateKind::Error);
 }
 
 #[test]
 fn test_build_phase_variants() {
-    assert_eq!(BuildPhase::Idle, BuildPhase::Idle);
     assert_ne!(BuildPhase::Scanning, BuildPhase::Indexing);
 }
 
 #[test]
 fn test_invalidation_reason_eq() {
-    assert_eq!(InvalidationReason::ManualRequest, InvalidationReason::ManualRequest);
     assert_ne!(InvalidationReason::CacheCorruption, InvalidationReason::ConfigurationChanged);
 }
 
 #[test]
 fn test_resource_kind_eq() {
-    assert_eq!(ResourceKind::MaxFiles, ResourceKind::MaxFiles);
     assert_ne!(ResourceKind::MaxSymbols, ResourceKind::MaxCacheBytes);
 }
 

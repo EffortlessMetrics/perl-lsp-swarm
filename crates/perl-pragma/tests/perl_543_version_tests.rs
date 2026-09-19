@@ -1,3 +1,5 @@
+#![deny(clippy::map_err_ignore)]
+
 //! Regression coverage for Perl 5.43 development-release version spellings.
 
 use perl_pragma::{PerlVersion, features_enabled_by_version, parse_perl_version};

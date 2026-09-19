@@ -26,6 +26,9 @@ function createMockClient(): LanguageClient {
     onProgress: jest.fn(() => ({ dispose: jest.fn() })),
     sendRequest: jest.fn(async () => ({})),
     sendNotification: jest.fn(),
+    // The adapter gates readiness on the server actually advertising the
+    // custom stream method, so the mock must advertise it too.
+    initializeResult: { capabilities: { experimental: { perlInlineCompletionStream: true } } },
   } as unknown as LanguageClient;
 }
 
@@ -68,11 +71,16 @@ describe('StreamingCompletionController', () => {
     controller.dispose();
   });
 
-  test('registers inline completion provider on construction', () => {
-    expect(vscode.languages.registerInlineCompletionItemProvider).toHaveBeenCalledTimes(1);
-    const call = (vscode.languages.registerInlineCompletionItemProvider as jest.Mock).mock.calls[0];
-    expect(call[0]).toEqual({ scheme: 'file', language: 'perl' });
-    expect(call[1]).toBeDefined();
+  test('does not register a second inline completion provider (#8282)', () => {
+    // The language client already registers a provider for the Perl selector
+    // from the server's inlineCompletionProvider capability. A registration
+    // here would make one editor trigger dispatch two server requests.
+    expect(vscode.languages.registerInlineCompletionItemProvider).not.toHaveBeenCalled();
+  });
+
+  test('exposes itself as the stream adapter rather than a provider', () => {
+    expect(typeof controller.provideInlineCompletionItems).toBe('function');
+    expect(typeof controller.isStreamReady).toBe('function');
   });
 
   test('registers cursor and document change listeners', () => {
@@ -81,13 +89,9 @@ describe('StreamingCompletionController', () => {
   });
 
   test('dispose cleans up all disposables', () => {
-    const providerDispose = jest.fn();
     const cursorDispose = jest.fn();
     const docChangeDispose = jest.fn();
 
-    (vscode.languages.registerInlineCompletionItemProvider as jest.Mock).mockReturnValue({
-      dispose: providerDispose,
-    });
     (vscode.window.onDidChangeTextEditorSelection as jest.Mock).mockReturnValue({
       dispose: cursorDispose,
     });
@@ -98,9 +102,22 @@ describe('StreamingCompletionController', () => {
     const ctrl = new StreamingCompletionController(createMockClient());
     ctrl.dispose();
 
-    expect(providerDispose).toHaveBeenCalled();
     expect(cursorDispose).toHaveBeenCalled();
     expect(docChangeDispose).toHaveBeenCalled();
+  });
+
+  test('a disposed adapter is never stream-ready', () => {
+    (vscode.workspace as Record<string, unknown>).getConfiguration = jest.fn(() => ({
+      get: jest.fn(() => true),
+    }));
+    const ctrl = new StreamingCompletionController(createMockClient());
+    expect(ctrl.isStreamReady()).toBe(true);
+
+    ctrl.dispose();
+
+    // A controller disposed by restart or configuration reconstruction belongs
+    // to a superseded client generation and must not take a route.
+    expect(ctrl.isStreamReady()).toBe(false);
   });
 
   test('notifyAccepted sends notification to client', () => {
@@ -154,8 +171,13 @@ describe('StreamingCompletionController — request identity and cache correctne
   let mockClient: LanguageClient;
   let controller: StreamingCompletionController;
 
-  /** Returns the provider object registered with VS Code during construction. */
-  function getRegisteredProvider(): {
+  /**
+   * Returns the stream adapter under test.
+   *
+   * The controller no longer registers its own provider (#8282) — it is called
+   * directly by `InlineCompletionOwner`, so the tests call it the same way.
+   */
+  function getStreamAdapter(): {
     provideInlineCompletionItems: (
       document: vscode.TextDocument,
       position: vscode.Position,
@@ -163,9 +185,7 @@ describe('StreamingCompletionController — request identity and cache correctne
       token: vscode.CancellationToken,
     ) => vscode.InlineCompletionItem[] | undefined;
   } {
-    const calls = (vscode.languages.registerInlineCompletionItemProvider as jest.Mock).mock.calls;
-    const registerCall = calls[calls.length - 1];
-    return registerCall[1] as ReturnType<typeof getRegisteredProvider>;
+    return controller;
   }
 
   /** Returns the most-recently-registered progress handler from `onProgress`. */
@@ -251,7 +271,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('returns a candidate for the exact same URI/version/line/character key', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
 
@@ -282,7 +302,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('same line/character in a different URI does not return cached ghost text', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const docA = makeMockDoc('file:///a.pl', 1);
     const docB = makeMockDoc('file:///b.pl', 1);
     const pos = makeMockPos(5, 10);
@@ -307,7 +327,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('same URI and position at a newer document version does not return cached ghost text', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const docV1 = makeMockDoc('file:///a.pl', 1);
     const docV2 = makeMockDoc('file:///a.pl', 2);
     const pos = makeMockPos(5, 10);
@@ -332,7 +352,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('same URI and version at a different cursor does not return cached ghost text', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const cachedPos = makeMockPos(5, 10);
     const differentPos = makeMockPos(5, 11);
@@ -355,7 +375,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('late progress callback from a cancelled stream cannot repopulate the cache', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
 
@@ -387,9 +407,12 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('progress from a superseded stream (new request started) cannot repopulate the cache', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const docA = makeMockDoc('file:///a.pl', 1);
     const posA = makeMockPos(5, 10);
+    // A different cursor is a genuinely different request identity, so it
+    // supersedes rather than being deduplicated as a display re-query.
+    const posB = makeMockPos(6, 0);
 
     // Start first stream, capture its handler
     provider.provideInlineCompletionItems(
@@ -400,10 +423,10 @@ describe('StreamingCompletionController — request identity and cache correctne
     );
     const staleHandler = getLastProgressHandler();
 
-    // Start a second stream for the same request identity, superseding the first
+    // Start a second stream at a new cursor, superseding the first
     provider.provideInlineCompletionItems(
       docA,
-      posA,
+      posB,
       {} as vscode.InlineCompletionContext,
       {} as vscode.CancellationToken,
     );
@@ -421,8 +444,141 @@ describe('StreamingCompletionController — request identity and cache correctne
     expect(items).toBeUndefined();
   });
 
+  test('a display re-query for an in-flight identity starts no second backend generation', () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+
+    // handleProgress retriggers the suggest widget on every chunk, so the
+    // provider is re-entered for the identity already in flight. Restarting
+    // here would cancel the stream that produced the chunk and dispatch a
+    // fresh backend generation on every update.
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    const counters = controller.snapshotStreamCounters();
+    expect(counters.streamGenerationsStarted).toBe(1);
+    expect(counters.duplicateDisplayRequeries).toBe(2);
+    expect((mockClient.sendRequest as jest.Mock).mock.calls).toHaveLength(1);
+  });
+
+  test('a settled stream releases the identity so re-invocation can retry', async () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+
+    // Let the request promise resolve: the generation is no longer in flight.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The re-query guard covers in-flight generations only. A stream that
+    // settled without a candidate must not suppress an explicit re-invocation
+    // at the same cursor forever.
+    provider.provideInlineCompletionItems(
+      doc,
+      pos,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
+  });
+
+  test('a late completion from a superseded stream cannot settle its successor', async () => {
+    let resolveFirst: (value: unknown) => void = () => {};
+    const firstRequest = new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+    // The second generation never settles, so only a wrongly-unconditional
+    // settle could clear its in-flight marker.
+    (mockClient.sendRequest as jest.Mock)
+      .mockReturnValueOnce(firstRequest)
+      .mockReturnValue(new Promise(() => {}));
+
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const posA = makeMockPos(5, 10);
+    const posB = makeMockPos(6, 0);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      posA,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    provider.provideInlineCompletionItems(
+      doc,
+      posB,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
+
+    // The superseded first request completes late.
+    resolveFirst({});
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The second generation is still in flight, so its identity must survive
+    // and a re-query at that cursor must still be deduplicated.
+    provider.provideInlineCompletionItems(
+      doc,
+      posB,
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
+  });
+
+  test('a new cursor position does start a distinct backend generation', () => {
+    const provider = getStreamAdapter();
+    const doc = makeMockDoc('file:///a.pl', 1);
+
+    provider.provideInlineCompletionItems(
+      doc,
+      makeMockPos(5, 10),
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    provider.provideInlineCompletionItems(
+      doc,
+      makeMockPos(7, 2),
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    // Opposite-direction control for the dedupe guard above: it must suppress
+    // re-queries, not genuine new requests.
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
+  });
+
   test('higher sequence values supersede lower; out-of-order updates are ignored', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(3, 5);
 
@@ -450,7 +606,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('server replacement range beginning before the cursor is preserved', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10); // cursor at (5, 10)
 
@@ -495,7 +651,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('uses a zero-length range at the request cursor when no server range is supplied', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
 
@@ -535,7 +691,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('uses a zero-length range when the server replacement range is malformed', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
 
@@ -566,7 +722,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('cancelActiveStream clears both cached candidate and request identity', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
 
@@ -594,7 +750,7 @@ describe('StreamingCompletionController — request identity and cache correctne
   });
 
   test('dispose clears both cached candidate and request identity', () => {
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(5, 10);
 
@@ -632,7 +788,7 @@ describe('StreamingCompletionController — request identity and cache correctne
     controller.dispose();
     controller = new StreamingCompletionController(mockClient);
 
-    const provider = getRegisteredProvider();
+    const provider = getStreamAdapter();
     const doc = makeMockDoc('file:///a.pl', 1);
     const pos = makeMockPos(0, 0);
 
@@ -645,5 +801,347 @@ describe('StreamingCompletionController — request identity and cache correctne
     expect(items).toBeUndefined();
     // No stream request should have been triggered
     expect(mockClient.sendRequest).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Actual-context forwarding (#8282).
+ *
+ * The custom stream request previously hardcoded `context.triggerKind: 2`.
+ * That is LSP `Automatic`, which the server refuses before any backend
+ * dispatch (`external_completion_permitted`), so an explicit invocation could
+ * never produce a streamed candidate.
+ */
+describe('StreamingCompletionController — actual request context forwarding', () => {
+  let mockClient: LanguageClient;
+  let controller: StreamingCompletionController;
+
+  function makeMockDoc(uri: string, version: number): vscode.TextDocument {
+    return { uri: { toString: () => uri }, version } as unknown as vscode.TextDocument;
+  }
+
+  function makeMockPos(line: number, character: number): vscode.Position {
+    return { line, character } as unknown as vscode.Position;
+  }
+
+  /** The params object sent with the most recent custom stream request. */
+  function lastRequestParams(): {
+    context?: { triggerKind?: number; selectedCompletionInfo?: unknown };
+    textDocument?: { uri?: string; version?: number };
+    position?: { line?: number; character?: number };
+  } {
+    const calls = (mockClient.sendRequest as jest.Mock).mock.calls;
+    return calls[calls.length - 1][1];
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (vscode as Record<string, unknown>).Position = class {
+      constructor(
+        public line: number,
+        public character: number,
+      ) {}
+    };
+    (vscode as Record<string, unknown>).InlineCompletionItem = class {
+      constructor(
+        public insertText: string,
+        public range?: unknown,
+      ) {}
+    };
+    (vscode.window as Record<string, unknown>).onDidChangeTextEditorSelection = jest.fn(() => ({
+      dispose: jest.fn(),
+    }));
+    (vscode.workspace as Record<string, unknown>).onDidChangeTextDocument = jest.fn(() => ({
+      dispose: jest.fn(),
+    }));
+    (vscode.workspace as Record<string, unknown>).getConfiguration = jest.fn(() => ({
+      get: jest.fn((key: string, defaultValue?: unknown) => {
+        if (key === 'aiCompletion.enabled') return true;
+        if (key === 'aiCompletion.streaming.enabled') return true;
+        return defaultValue;
+      }),
+    }));
+    mockClient = createMockClient();
+    controller = new StreamingCompletionController(mockClient);
+  });
+
+  afterEach(() => {
+    controller.dispose();
+  });
+
+  test('an explicit invocation is forwarded as LSP Invoked (1), not Automatic', () => {
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 3),
+      makeMockPos(4, 8),
+      { triggerKind: 0 } as vscode.InlineCompletionContext, // vscode Invoke
+      {} as vscode.CancellationToken,
+    );
+
+    // Fails against the hardcoded `triggerKind: 2`, which the server refuses.
+    expect(lastRequestParams().context?.triggerKind).toBe(1);
+  });
+
+  test('an automatic trigger is forwarded as LSP Automatic (2)', () => {
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 3),
+      makeMockPos(4, 8),
+      { triggerKind: 1 } as vscode.InlineCompletionContext, // vscode Automatic
+      {} as vscode.CancellationToken,
+    );
+
+    expect(lastRequestParams().context?.triggerKind).toBe(2);
+  });
+
+  test('an absent trigger kind fails closed to Automatic', () => {
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 3),
+      makeMockPos(4, 8),
+      {} as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    // An unknown context must not gain the stronger Invoked permission.
+    expect(lastRequestParams().context?.triggerKind).toBe(2);
+  });
+
+  test('selectedCompletionInfo is forwarded with its exact range and text', () => {
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 3),
+      makeMockPos(4, 8),
+      {
+        triggerKind: 0,
+        selectedCompletionInfo: {
+          range: { start: { line: 4, character: 4 }, end: { line: 4, character: 8 } },
+          text: 'find_user',
+        },
+      } as unknown as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    expect(lastRequestParams().context?.selectedCompletionInfo).toEqual({
+      range: { start: { line: 4, character: 4 }, end: { line: 4, character: 8 } },
+      text: 'find_user',
+    });
+  });
+
+  test('an absent selectedCompletionInfo is omitted rather than sent empty', () => {
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 3),
+      makeMockPos(4, 8),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    expect(lastRequestParams().context?.selectedCompletionInfo).toBeUndefined();
+  });
+
+  test('the exact document identity and cursor reach the request', () => {
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///deep/module.pl', 42),
+      makeMockPos(11, 3),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    const params = lastRequestParams();
+    expect(params.textDocument).toEqual({ uri: 'file:///deep/module.pl', version: 42 });
+    expect(params.position).toEqual({ line: 11, character: 3 });
+  });
+
+  test('a one-shot fallback response is served instead of discarded', async () => {
+    // The server answers this custom request with ordinary inline completion
+    // items when it declines to stream. The owner never calls the standard
+    // route afterwards, so discarding them would lose completions outright.
+    (mockClient.sendRequest as jest.Mock).mockResolvedValueOnce({
+      items: [{ insertText: 'my $deterministic = 1;' }],
+    });
+
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    controller.provideInlineCompletionItems(
+      doc,
+      pos,
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const items = controller.provideInlineCompletionItems(
+      doc,
+      pos,
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toHaveLength(1);
+    const [served] = items as unknown as { insertText: string }[];
+    expect(served?.insertText).toBe('my $deterministic = 1;');
+  });
+
+  test('an empty one-shot response caches nothing', async () => {
+    (mockClient.sendRequest as jest.Mock).mockResolvedValueOnce({ items: [] });
+
+    const doc = makeMockDoc('file:///a.pl', 1);
+    const pos = makeMockPos(5, 10);
+
+    controller.provideInlineCompletionItems(
+      doc,
+      pos,
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Opposite-direction control: an empty result must not install a candidate.
+    // The next call is a fresh generation, not a cache hit.
+    const items = controller.provideInlineCompletionItems(
+      doc,
+      pos,
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(items).toBeUndefined();
+  });
+
+  test('a server that does not advertise the stream method is not stream-ready', () => {
+    (vscode.workspace as Record<string, unknown>).getConfiguration = jest.fn(() => ({
+      get: jest.fn(() => true),
+    }));
+
+    const withoutCapability = {
+      onProgress: jest.fn(() => ({ dispose: jest.fn() })),
+      sendRequest: jest.fn(async () => ({})),
+      sendNotification: jest.fn(),
+      initializeResult: { capabilities: { experimental: {} } },
+    } as unknown as LanguageClient;
+    const ctrl = new StreamingCompletionController(withoutCapability);
+
+    // Routing an invocation to an unsupported method would drop it entirely,
+    // since the owner takes exactly one route.
+    expect(ctrl.isStreamReady()).toBe(false);
+    ctrl.dispose();
+  });
+
+  test('an absent initializeResult fails closed to not stream-ready', () => {
+    (vscode.workspace as Record<string, unknown>).getConfiguration = jest.fn(() => ({
+      get: jest.fn(() => true),
+    }));
+
+    const notInitialized = {
+      onProgress: jest.fn(() => ({ dispose: jest.fn() })),
+      sendRequest: jest.fn(async () => ({})),
+      sendNotification: jest.fn(),
+    } as unknown as LanguageClient;
+    const ctrl = new StreamingCompletionController(notInitialized);
+
+    expect(ctrl.isStreamReady()).toBe(false);
+    ctrl.dispose();
+  });
+
+  test('an already-cancelled token dispatches no stream request', () => {
+    // VS Code defers a listener registered after cancellation to a later
+    // event-loop turn, so subscribing alone would let the request go out and be
+    // cancelled a tick later. Nothing should be dispatched at all.
+    const preCancelledToken = {
+      isCancellationRequested: true,
+      onCancellationRequested: () => ({ dispose: jest.fn() }),
+    } as unknown as vscode.CancellationToken;
+
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 1),
+      makeMockPos(5, 10),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      preCancelledToken,
+    );
+
+    expect(mockClient.sendRequest as jest.Mock).not.toHaveBeenCalled();
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(0);
+  });
+
+  test('a live token after a cancelled one still dispatches', () => {
+    const preCancelledToken = {
+      isCancellationRequested: true,
+      onCancellationRequested: () => ({ dispose: jest.fn() }),
+    } as unknown as vscode.CancellationToken;
+
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 1),
+      makeMockPos(5, 10),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      preCancelledToken,
+    );
+
+    // Opposite-direction control: the refusal must be scoped to the cancelled
+    // token, not latch the adapter off for subsequent live requests.
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 1),
+      makeMockPos(5, 10),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+
+    expect((mockClient.sendRequest as jest.Mock).mock.calls).toHaveLength(1);
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+  });
+
+  test('a token that fires cancellation synchronously on subscribe does not throw', () => {
+    // Not flagged cancelled on entry, so it passes the pre-cancelled refusal
+    // and reaches the subscribe path. Its listener fires synchronously, which
+    // clears activeTokenSource — reading the token after subscribing would
+    // throw a TypeError here and take the provider down.
+    const synchronouslyCancelledToken = {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener: () => void) => {
+        listener();
+        return { dispose: jest.fn() };
+      },
+    } as unknown as vscode.CancellationToken;
+
+    expect(() =>
+      controller.provideInlineCompletionItems(
+        makeMockDoc('file:///a.pl', 1),
+        makeMockPos(5, 10),
+        { triggerKind: 0 } as vscode.InlineCompletionContext,
+        synchronouslyCancelledToken,
+      ),
+    ).not.toThrow();
+
+    // The request still went out with the generation's own token, and the
+    // synchronous cancellation settled it rather than leaving it in flight.
+    expect((mockClient.sendRequest as jest.Mock).mock.calls).toHaveLength(1);
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(1);
+  });
+
+  test('editor cancellation cancels the in-flight stream', () => {
+    let fireCancellation: (() => void) | undefined;
+    const token = {
+      onCancellationRequested: (listener: () => void) => {
+        fireCancellation = listener;
+        return { dispose: jest.fn() };
+      },
+    } as unknown as vscode.CancellationToken;
+
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 1),
+      makeMockPos(5, 10),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      token,
+    );
+    expect(fireCancellation).toBeDefined();
+
+    fireCancellation?.();
+
+    // After cancellation the identity is released, so the next provider call
+    // is a fresh generation rather than a deduplicated re-query.
+    controller.provideInlineCompletionItems(
+      makeMockDoc('file:///a.pl', 1),
+      makeMockPos(5, 10),
+      { triggerKind: 0 } as vscode.InlineCompletionContext,
+      {} as vscode.CancellationToken,
+    );
+    expect(controller.snapshotStreamCounters().streamGenerationsStarted).toBe(2);
   });
 });

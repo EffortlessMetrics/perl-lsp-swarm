@@ -23,8 +23,7 @@ fn native_format_config_defaults_to_native_safe_profile() {
 }
 
 #[test]
-fn native_format_config_exposes_explicit_compat_and_legacy_modes() {
-    assert_eq!(FormatConfig::compat().mode, FormatterMode::Compat);
+fn native_format_config_exposes_an_explicit_external_legacy_mode() {
     assert_eq!(FormatConfig::external_legacy().mode, FormatterMode::ExternalLegacy);
 }
 

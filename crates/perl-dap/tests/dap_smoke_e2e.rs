@@ -4,6 +4,7 @@
     clippy::print_stderr,
     reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
 )]
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use serde_json::{Value, json};
 use std::fs::write;
@@ -30,7 +31,7 @@ fn smoke_timeout() -> Duration {
 }
 
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
@@ -103,7 +104,13 @@ print "$x\n";
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
     );
-    assert!(capabilities.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(false));
+    // #9089: the routed inlineValues extension stays unadvertised until a
+    // versioned negotiation contract is proven. `unwrap_or(true)` so a missing
+    // key fails this assertion instead of passing vacuously.
+    assert!(
+        !capabilities.get("supportsInlineValues").and_then(|v| v.as_bool()).unwrap_or(true),
+        "supportsInlineValues must be false until #9089's negotiation gate passes"
+    );
     let _initialized = wait_for_event(&rx, "initialized", timeout)?;
 
     let perl_path = common::resolve_launch_perl_path()

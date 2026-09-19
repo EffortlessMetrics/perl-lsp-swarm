@@ -1,6 +1,6 @@
 //! Fail-closed boundary for the receipt-based editor UX scorecard.
 //!
-//! The historical scorecard implementation remains in `lsp_stats.rs`; this
+//! The historical scorecard implementation remains in `lsp_stats_impl.rs`; this
 //! module validates receipt and fixture identity before delegating to it. The
 //! boundary prevents malformed or matrix-drifted UX run evidence from
 //! disappearing from an otherwise green aggregation while preserving other
@@ -21,7 +21,6 @@ pub use super::lsp_stats_impl::{
 
 const RECEIPT_SCHEMA_PATH: &str = ".ci/schemas/ux-scenario-run.schema.json";
 const FIXTURE_MATRIX_PATH: &str = "crates/perl-lsp-ux-tests/fixtures/editor_ux_fixture_matrix.json";
-const DEFAULT_RECEIPT_DIR: &str = "target/receipts/editor-ux";
 
 /// Fields that distinguish an editor-UX scenario run from companion receipts
 /// such as Scenario 67's `golden_editor_workload` evidence. Generic receipt
@@ -44,6 +43,15 @@ const UX_RUN_SIGNATURE_FIELDS: &[&str] = &[
 const UX_RUN_DISTINCTIVE_FIELDS: &[&str] =
     &["operation_timings", "time_to_first_useful_result_ms", "canonical_repro", "friendly_repro"];
 
+/// Signature fields that alone identify a receipt as an editor-UX scenario run
+/// even when it declares no `kind`, used to decide whether an unrecognized
+/// receipt is a foreign companion or a malformed UX run that must fail closed.
+const UX_RUN_IDENTITY_FIELDS: &[&str] =
+    &["workflow_id", "scenario_file", "test_name", "ci_tier", "assertions"];
+
+/// Receipt `kind` values that legitimately share the UX receipt directory and
+/// carry overlapping signature fields without being UX scenario runs. Listing
+/// them keeps the fail-closed check from rejecting valid companion evidence.
 const KNOWN_NON_UX_COMPANION_KINDS: &[&str] = &["golden_editor_workload"];
 
 #[derive(Debug, Deserialize)]
@@ -64,11 +72,15 @@ struct ReceiptCandidate {
 }
 
 /// Run `cargo xtask metrics lsp-stats` with fail-closed receipt validation.
-pub fn run_with_receipt_dir(json: bool, receipt_dir: Option<&Path>) -> Result<()> {
+pub fn run_with_receipt_dir(
+    json: bool,
+    receipt_dir: Option<&Path>,
+    output: Option<&Path>,
+) -> Result<()> {
     let root = project_root()?;
     validate_run_inputs(&root, receipt_dir)?;
 
-    super::lsp_stats_impl::run_with_receipt_dir(json, receipt_dir)
+    super::lsp_stats_impl::run_with_receipt_dir(json, receipt_dir, output)
 }
 
 fn validate_run_inputs(root: &Path, receipt_dir: Option<&Path>) -> Result<()> {
@@ -85,6 +97,11 @@ fn validate_run_inputs(root: &Path, receipt_dir: Option<&Path>) -> Result<()> {
 }
 
 /// Aggregate receipts after validating their schema and fixture identity.
+///
+/// The bin entry point [`run_with_receipt_dir`] validates through
+/// [`validate_run_inputs`] before delegating; this wrapper is exercised
+/// directly only by this module's tests.
+#[cfg(test)]
 pub fn aggregate_from_receipts(
     receipts_dir: &Path,
     fixture_matrix: &Path,
@@ -198,9 +215,7 @@ fn looks_like_ux_scenario_run(value: &Value) -> bool {
         return false;
     }
 
-    let has_ux_identity = ["workflow_id", "scenario_file", "test_name", "ci_tier", "assertions"]
-        .iter()
-        .any(|field| object.contains_key(*field));
+    let has_ux_identity = UX_RUN_IDENTITY_FIELDS.iter().any(|field| object.contains_key(*field));
     let has_malformed_marker = signature_fields.iter().any(|field| malformed_marker(object, field));
     if has_malformed_marker {
         return true;
@@ -223,7 +238,7 @@ fn malformed_marker(object: &serde_json::Map<String, Value>, marker: &str) -> bo
     };
     match marker {
         "workflow_id" | "scenario_file" | "test_name" | "canonical_repro" | "friendly_repro" => {
-            value.as_str().map_or(true, str::is_empty)
+            value.as_str().is_none_or(str::is_empty)
         }
         "ci_tier" => !matches!(value.as_str(), Some("pr" | "nightly" | "release")),
         "result" => !matches!(value.as_str(), Some("pass" | "fail" | "quarantined" | "skipped")),
@@ -255,10 +270,10 @@ fn malformed_operation_timings(value: &Value) -> bool {
         }) {
             return true;
         }
-        if !entry
+        if entry
             .get("operation")
             .and_then(Value::as_str)
-            .is_some_and(|operation| !operation.is_empty())
+            .is_none_or(|operation| operation.is_empty())
         {
             return true;
         }
@@ -308,6 +323,11 @@ fn read_receipt_candidates(receipts_dir: &Path) -> Result<Vec<ReceiptCandidate>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Legacy receipt directory used when the CLI receives no explicit
+    /// `--receipt-dir`. Only tests reference it, so it lives here to keep
+    /// non-test builds free of dead-code warnings.
+    const DEFAULT_RECEIPT_DIR: &str = "target/receipts/editor-ux";
 
     fn validation_error(result: Result<()>, context: &str) -> Result<color_eyre::Report> {
         match result {
@@ -532,7 +552,7 @@ mod tests {
     #[test]
     fn no_receipt_dir_preserves_legacy_validation_boundary() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let default_receipts = temp.path().join("target/receipts/editor-ux");
+        let default_receipts = temp.path().join(DEFAULT_RECEIPT_DIR);
         fs::create_dir_all(&default_receipts)?;
         fs::write(default_receipts.join("broken.json"), "{")?;
 
@@ -865,7 +885,7 @@ mod tests {
             "time_to_first_useful_result_ms": null
         }, {
             "operation": "completion",
-            "time_to_first_useful_result_ms": 5.0,
+            "time_to_first_useful_result_ms": null,
             "timing_status": "missing_request_start"
         }]);
         fs::write(&path, serde_json::to_string_pretty(&value)?)?;

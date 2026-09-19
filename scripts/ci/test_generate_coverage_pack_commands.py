@@ -132,7 +132,7 @@ class GenerateScriptTests(unittest.TestCase):
 
     def _make_route_receipt(self, packs: list[dict]) -> dict:
         return {
-            "schema_version": "ci_route.v1",
+            "schema_version": "ci-route.v1",
             "coverage_proof_packs": packs,
         }
 

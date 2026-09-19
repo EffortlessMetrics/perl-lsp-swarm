@@ -222,7 +222,13 @@ fn generic_settings_schema_is_server_native_and_namespaced() -> Result<(), Box<d
 fn generic_formatter_schema_excludes_external_process_modes() -> Result<(), Box<dyn Error>> {
     let schema = load_schema()?;
     let engine = &schema["properties"]["perl"]["properties"]["formatting"]["properties"]["engine"];
-    assert_eq!(engine["enum"], json!(["native", "compat", "off"]));
+    // `compat` is deliberately absent (#7129): it was a bare alias for the
+    // native formatter, producing byte-identical output, so the public
+    // settings contract must not offer it as an engine to choose. The server
+    // rejects the token outright (#15624 closed the deprecation window), so
+    // the schema and the parser now agree: only `native` and `off` are
+    // engines on this channel.
+    assert_eq!(engine["enum"], json!(["native", "off"]));
     Ok(())
 }
 
@@ -277,7 +283,7 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
         "formatting": {
             "enabled": true,
             "formatOnSave": false,
-            "engine": "compat",
+            "engine": "off",
             "maximumLineLength": 100,
             "indentColumns": 2,
             "tabs": false,
@@ -318,7 +324,9 @@ fn generic_schema_fields_are_behavior_backed_by_runtime_config() {
     assert_eq!(server.perlcritic_severity, 4);
     assert_eq!(server.native_critic_profile, "strict");
     assert!(!server.format_on_save);
-    assert!(matches!(server.formatting_engine, FormatterMode::Compat));
+    // A non-default, schema-valid engine, so the assertion proves the field is
+    // actually read rather than matching the compiled default.
+    assert!(matches!(server.formatting_engine, FormatterMode::Off));
     assert_eq!(server.perltidy_maximum_line_length, Some(100));
     assert_eq!(server.perltidy_indent_columns, Some(2));
     assert_eq!(server.perltidy_tabs, Some(false));
@@ -417,6 +425,55 @@ fn generic_schema_excludes_security_sensitive_lsp_settings() -> Result<(), Box<d
         json!([]),
         "streaming.enabled must not advertise client transports (#4997)",
     );
+
+    Ok(())
+}
+
+/// The published schema must advertise the same `maxInflight` bounds the
+/// runtime actually enforces (`#8300`).
+///
+/// The schema previously declared only `minimum: 1`, so a client could send
+/// `maxInflight: 128`, pass schema validation, and have the value silently
+/// discarded by `update_from_value` — validated configuration that does
+/// nothing is worse than configuration rejected up front. This pins both
+/// ends: the schema advertises `1..=64`, and the runtime agrees at each
+/// boundary.
+#[test]
+fn ai_max_inflight_schema_bounds_match_the_runtime_contract() -> Result<(), Box<dyn Error>> {
+    let schema = load_schema()?;
+    let max_inflight =
+        &schema["properties"]["perl"]["properties"]["aiCompletion"]["properties"]["maxInflight"];
+
+    if max_inflight["minimum"] != json!(1) {
+        return Err(std::io::Error::other("schema minimum must be 1").into());
+    }
+    if max_inflight["maximum"] != json!(64) {
+        return Err(std::io::Error::other("schema maximum must be 64").into());
+    }
+
+    // The runtime honours exactly the range the schema publishes: both
+    // boundaries are accepted, and the first value past each is not.
+    for (value, expected) in [(1_u64, 1_u32), (64, 64)] {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&json!({ "aiCompletion": { "maxInflight": value } }));
+        if config.ai_completion.max_inflight != expected {
+            return Err(std::io::Error::other(format!(
+                "maxInflight={value} is inside the published range and must be accepted"
+            ))
+            .into());
+        }
+    }
+
+    for rejected in [0_u64, 65] {
+        let mut config = ServerConfig::default();
+        config.update_from_value(&json!({ "aiCompletion": { "maxInflight": 8 } }));
+        config.update_from_value(&json!({ "aiCompletion": { "maxInflight": rejected } }));
+        if config.ai_completion.max_inflight != 8 {
+            return Err(std::io::Error::other(format!(
+                "maxInflight={rejected} is outside the published range and must keep the previous value"
+            )).into());
+        }
+    }
 
     Ok(())
 }
