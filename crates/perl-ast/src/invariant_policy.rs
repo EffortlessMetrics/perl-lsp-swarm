@@ -213,6 +213,7 @@ pub const AST_NODE_POLICIES: &[AstNodePolicy] = &[
     policy!("Return", Wrapper, Exact, ProfileControlled, Required, Nondecreasing, MayOverlap, &[]),
     policy!("LoopControl", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[AstPayloadPolicy::OperatorExactOrCanonical, AstPayloadPolicy::DeclarationNameAnchor]),
     policy!("Goto", Wrapper, Exact, ProfileControlled, Required, Nondecreasing, MayOverlap, &[AstPayloadPolicy::OperatorExactOrCanonical]),
+    policy!("TargetlessGoto", Leaf, Exact, ProfileControlled, NotApplicable, NotApplicable, NotApplicable, &[]),
     policy!("MethodCall", ChildBearing, Exact, ProfileControlled, Required, Nondecreasing, Disjoint, &[AstPayloadPolicy::DeclarationNameAnchor]),
     policy!("FunctionCall", ChildBearing, Exact, ProfileControlled, Required, Nondecreasing, Disjoint, &[AstPayloadPolicy::DeclarationNameAnchor]),
     policy!("AmperCall", ChildBearing, Exact, ProfileControlled, Required, Nondecreasing, Disjoint, &[AstPayloadPolicy::DeclarationNameAnchor]),
@@ -525,6 +526,7 @@ pub fn node_kind_fixtures() -> Vec<NodeKindFixture> {
         fixture!(NodeKind::Return { value: Some(boxed()) }, &[], &[]),
         fixture!(NodeKind::LoopControl { op: text(), label: Some(text()) }, &["op", "label"], &[]),
         fixture!(NodeKind::Goto { target: boxed(), form: GotoTargetForm::Label }, &["form"], &[]),
+        fixture!(NodeKind::TargetlessGoto {}, &[], &[]),
         fixture!(
             NodeKind::MethodCall { object: boxed(), method: text(), args: vec![dummy(), dummy()] },
             &["method"],
