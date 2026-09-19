@@ -741,6 +741,42 @@ fn wait_cleanup_event(
     None
 }
 
+/// Drain waiting for `name`, recording whether a terminal event was seen
+/// and discarded along the way. `terminated`/`exited` is once-only per
+/// session generation (#15887, same family as #15884): a fast-exiting
+/// debuggee can commit it during the `initialized`/`stopped` setup waits,
+/// in which case a later post-disconnect-only assert would spin out though
+/// the adapter behaved correctly. Callers assert at-least-once per
+/// generation instead of strictly-post-disconnect.
+fn wait_cleanup_event_track_terminal(
+    rx: &Receiver<DapMessageWithEpoch>,
+    name: &str,
+    timeout: Duration,
+    terminated_seen: &mut bool,
+) -> Option<Value> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok((DapMessage::Event { event, body, .. }, _)) if event == name => {
+                if event == "terminated" || event == "exited" {
+                    *terminated_seen = true;
+                }
+                return Some(body.unwrap_or(Value::Null));
+            }
+            Ok((DapMessage::Event { event, .. }, _)) => {
+                if event == "terminated" || event == "exited" {
+                    *terminated_seen = true;
+                }
+                continue;
+            }
+            Ok(_) => continue,
+            Err(_) => break,
+        }
+    }
+    None
+}
+
 fn assert_cleanup_success(response: &DapMessage, expected_command: &str) -> TestResult {
     match response {
         DapMessage::Response { success, command, message, .. } => {
@@ -897,15 +933,19 @@ fn test_disconnect_clears_active_session() -> TestResult {
 
     // Establish a real active launch-owned session before disconnect. The pinned
     // interpreter and stopOnEntry keep the child alive at the disconnect boundary.
+    let timeout = workflow_timeout();
+    let mut terminated_seen = false;
     let initialize = adapter.handle_request(1, "initialize", None);
     assert_cleanup_success(&initialize, "initialize")?;
-    if wait_cleanup_event(&rx, "initialized", 300).is_none() {
+    if wait_cleanup_event_track_terminal(&rx, "initialized", timeout, &mut terminated_seen)
+        .is_none()
+    {
         return Err("initialize must emit an initialized event".into());
     }
     let launch_args = common::resolved_launch_arguments_for_test(script_str, None, true)?;
     let launch = adapter.handle_request(2, "launch", Some(launch_args));
     assert_cleanup_success(&launch, "launch")?;
-    if wait_cleanup_event(&rx, "stopped", 1000).is_none() {
+    if wait_cleanup_event_track_terminal(&rx, "stopped", timeout, &mut terminated_seen).is_none() {
         return Err("stopOnEntry launch must establish an active stopped session".into());
     }
 
@@ -913,10 +953,28 @@ fn test_disconnect_clears_active_session() -> TestResult {
     let dc_response = adapter.handle_request(3, "disconnect", None);
     assert_cleanup_success(&dc_response, "disconnect")?;
 
-    // "terminated" event must be emitted.
+    // `terminated` is once-only per generation: it may already have been
+    // consumed during setup on a fast-exiting debuggee. Assert at-least-once
+    // per generation with a bounded grace drain (same discipline as
+    // `common::DapWorkflowSession::disconnect`), not strictly-post-disconnect.
+    let grace = timeout.min(Duration::from_secs(2));
+    let _ = wait_cleanup_event_track_terminal(&rx, "terminated", grace, &mut terminated_seen);
     assert!(
-        wait_cleanup_event(&rx, "terminated", 300).is_some(),
-        "disconnect must emit a terminated event"
+        terminated_seen,
+        "disconnect must yield a terminated event for the generation \
+         (already-consumed early termination counts)"
+    );
+    // At-most-once: no duplicate terminal event may be queued after accounting.
+    let duplicates = rx
+        .try_iter()
+        .filter(|message| {
+            matches!(message, (DapMessage::Event { event, .. }, _)
+                if event == "terminated" || event == "exited")
+        })
+        .count();
+    assert!(
+        duplicates == 0,
+        "terminated is once-only: duplicate terminal events queued after disconnect"
     );
 
     // After disconnect, stackTrace must prove the active session was cleared.
