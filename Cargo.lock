@@ -2065,6 +2065,7 @@ dependencies = [
  "perl-semantic-facts",
  "perl-source-identity",
  "perl-tdd-support",
+ "perl-test-must",
  "perl-token",
  "proptest",
  "serde",

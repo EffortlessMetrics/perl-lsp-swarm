@@ -5,6 +5,7 @@
 //! error variant is defined here.
 
 use perl_parser_core::{ParseError, Parser};
+use perl_test_must::must_err_with;
 
 fn parse_clean(src: &str) -> Result<(), String> {
     let mut parser = Parser::new(src);
@@ -281,9 +282,10 @@ fn consume_balanced_and_paren_group_call_observation() -> Result<(), String> {
         unclosed.errors()[0]
     );
 
-    let err = Parser::new("do { $s++; } while (($flag)) { $s++; };")
-        .parse()
-        .expect_err("nested groups must still reject the trailing block");
+    let err = must_err_with(
+        Parser::new("do { $s++; } while (($flag)) { $s++; };").parse(),
+        "nested groups must still reject the trailing block",
+    );
     assert!(
         matches!(err, ParseError::DoWhileTrailingBlock { .. }),
         "nested-group trailing block must raise the exact variant, got: {err:?}"
