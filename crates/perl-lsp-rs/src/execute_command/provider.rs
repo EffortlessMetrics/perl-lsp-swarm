@@ -1831,6 +1831,13 @@ pub(crate) fn select_test_runner(
 
 /// Environment inputs that can change a `which` lookup for a command.
 ///
+/// `path_present` distinguishes a missing `PATH` from an explicitly empty one:
+/// the probe delegates a missing `PATH` to `which::which` but fails a present
+/// (possibly empty) `PATH` closed once every entry is stripped, so the two
+/// states must never share an entry. `cwd` is the normalized working
+/// directory because `which` resolves relative or separator-containing command
+/// text against it; a `cwd` change re-probes instead of serving the old
+/// directory's answer.
 /// On Windows the `which` crate resolves extension-less names through
 /// `PATHEXT`, so it participates in the key there; on other platforms only the
 /// `PATH` value matters.
@@ -1840,7 +1847,9 @@ pub(crate) fn select_test_runner(
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CommandExistsCacheKey {
     command: String,
+    path_present: bool,
     path_env: OsString,
+    cwd: PathBuf,
     #[cfg(windows)]
     path_ext: OsString,
 }
@@ -1849,27 +1858,47 @@ struct CommandExistsCacheKey {
 /// sensitivity without mutating the process environment.
 fn command_exists_cache_key(
     command: &str,
+    path_present: bool,
     path_env: &OsStr,
+    cwd: &Path,
     path_ext: Option<&OsStr>,
 ) -> CommandExistsCacheKey {
     #[cfg(not(windows))]
     let _ = path_ext;
     CommandExistsCacheKey {
         command: command.to_string(),
+        path_present,
         path_env: path_env.to_os_string(),
+        cwd: cwd.to_path_buf(),
         #[cfg(windows)]
         path_ext: path_ext.unwrap_or_default().to_os_string(),
     }
 }
 
 /// Snapshot the live environment into a [`CommandExistsCacheKey`].
-fn current_command_exists_cache_key(command: &str) -> CommandExistsCacheKey {
-    let path_env = std::env::var_os("PATH").unwrap_or_default();
+///
+/// Returns `None` when the working directory cannot be determined: a lookup
+/// the cache cannot key must bypass the cache and probe directly rather than
+/// risk serving another directory's answer. The raw (non-canonicalized)
+/// directory is sufficient — two spellings of one directory only ever cause a
+/// redundant re-probe, never a wrong answer.
+fn current_command_exists_cache_key(command: &str) -> Option<CommandExistsCacheKey> {
+    let (path_present, path_env) = match std::env::var_os("PATH") {
+        Some(value) => (true, value),
+        None => (false, OsString::new()),
+    };
+    let cwd = std::env::current_dir().ok()?;
     #[cfg(windows)]
     let path_ext = std::env::var_os("PATHEXT");
     #[cfg(not(windows))]
     let path_ext: Option<OsString> = None;
-    command_exists_cache_key(command, path_env.as_os_str(), path_ext.as_deref())
+    Some(command_exists_cache_key(
+        command,
+        path_present,
+        path_env.as_os_str(),
+        &cwd,
+        path_ext.as_deref(),
+    ))
 }
 
 /// Metadata needed to invalidate a cached probe after a filesystem change.
@@ -1963,22 +1992,55 @@ struct CommandExistsCacheEntry {
 /// environment and candidate filesystem state, not that exactly one probe runs
 /// per entry.
 ///
-/// The map stays bounded in practice: product callers probe a fixed set of
-/// tool names (`perltidy`, `perlcritic`, `yath`, `prove`) and an entry is
-/// only added per distinct (command, environment) key.
+/// The map is hard-bounded ([`MAX_COMMAND_EXISTS_CACHE_ENTRIES`]): `pub fn
+/// command_exists` accepts arbitrary command text, so an unbounded map would
+/// grow for process lifetime on adversarial or churned inputs. Eviction drops
+/// one arbitrary entry; correctness is unaffected because an evicted key
+/// simply re-probes on its next lookup.
 static COMMAND_EXISTS_CACHE: LazyLock<
     Mutex<HashMap<CommandExistsCacheKey, CommandExistsCacheEntry>>,
 > = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Capacity of [`COMMAND_EXISTS_CACHE`]. Product callers probe a fixed set of
+/// tool names (`perltidy`, `perlcritic`, `yath`, `prove`) across a slowly
+/// changing environment; 64 entries give that working set an order of
+/// magnitude of headroom while keeping adversarial growth constant-bounded.
+const MAX_COMMAND_EXISTS_CACHE_ENTRIES: usize = 64;
+
+/// Insert with the capacity bound enforced. Evicting an arbitrary entry keeps
+/// the map constant-bounded; the evicted key re-probes on next lookup, so the
+/// bound can never serve a stale or wrong answer.
+fn insert_bounded(
+    cache: &mut HashMap<CommandExistsCacheKey, CommandExistsCacheEntry>,
+    key: CommandExistsCacheKey,
+    entry: CommandExistsCacheEntry,
+) {
+    let victim = (cache.len() >= MAX_COMMAND_EXISTS_CACHE_ENTRIES && !cache.contains_key(&key))
+        .then(|| cache.keys().next().cloned())
+        .flatten();
+    if let Some(victim) = victim {
+        cache.remove(&victim);
+    }
+    cache.insert(key, entry);
+}
+
 /// Answer command presence through [`COMMAND_EXISTS_CACHE`], running `probe`
 /// only on a cache miss.
+///
+/// A hit still pays one validation walk ([`command_exists_filesystem_state`]):
+/// that walk is the invalidation price for the no-stale-positive guarantee,
+/// and it replaces the strictly larger `which` walk plus per-call `PATH`
+/// string processing the uncached path performs. What the cache removes is
+/// repetition of the probe — not observation of the filesystem.
 ///
 /// The injectable probe is the same test-seam approach used by the
 /// perl-lsp-rs-core config module (#12945/#12978): tests supply a counting
 /// probe to observe that a second lookup does not re-execute the underlying
 /// probe.
 fn command_exists_via(probe: impl Fn(&str) -> bool, command: &str) -> bool {
-    let key = current_command_exists_cache_key(command);
+    let Some(key) = current_command_exists_cache_key(command) else {
+        return probe(command);
+    };
     command_exists_via_key(probe, key)
 }
 
@@ -1996,7 +2058,11 @@ fn command_exists_via_key(probe: impl Fn(&str) -> bool, key: CommandExistsCacheK
 
     let found = probe(&key.command);
     if let Ok(mut cache) = COMMAND_EXISTS_CACHE.lock() {
-        cache.insert(key, CommandExistsCacheEntry { result: found, filesystem_state });
+        insert_bounded(
+            &mut cache,
+            key,
+            CommandExistsCacheEntry { result: found, filesystem_state },
+        );
     }
     found
 }
@@ -2012,34 +2078,54 @@ fn command_exists_via_key(probe: impl Fn(&str) -> bool, key: CommandExistsCacheK
 ///
 /// Memoized per process after the first probe: the initialize-time
 /// `detect_tool("perltidy")` / `detect_tool("perlcritic")` calls and every
-/// later diagnostics/executeCommand availability guard reuse the first
-/// `which` PATH walk instead of re-scanning PATH on each call. The cache key
-/// includes the environment inputs that can change the answer (PATH, plus
-/// PATHEXT on Windows), so an environment change re-probes. No LSP
+/// later diagnostics/executeCommand availability guard reuse the cached answer
+/// instead of re-scanning PATH on each call. The cache key includes the
+/// environment inputs that can change the answer (PATH presence and value,
+/// working directory, plus PATHEXT on Windows), so an environment change
+/// re-probes; entries additionally re-probe when their filesystem fingerprint
+/// changes. The map itself is hard-bounded
+/// ([`MAX_COMMAND_EXISTS_CACHE_ENTRIES`]). No LSP
 /// configuration setting can change external-tool presence, so no
 /// config-change invalidation signal is required. Probe order and results are
 /// unchanged — only repetition is removed.
 pub fn command_exists(command: &str) -> bool {
     command_exists_via(
-        |cmd| match std::env::var_os("PATH") {
-            None => which::which(cmd).is_ok(),
-            Some(path) => {
-                let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path)
-                    .filter(|dir| !dir.as_os_str().is_empty())
-                    .collect();
-                if dirs.is_empty() {
-                    return false;
-                }
-                match std::env::join_paths(dirs.iter()) {
-                    Ok(filtered) => std::env::current_dir()
-                        .map(|cwd| which::which_in(cmd, Some(&filtered), cwd).is_ok())
-                        .unwrap_or(false),
-                    Err(_) => which::which(cmd).is_ok(),
-                }
-            }
+        |cmd| {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            command_exists_probe(cmd, std::env::var_os("PATH").as_deref(), &cwd)
         },
         command,
     )
+}
+
+/// The `which`-backed probe behind [`command_exists`], factored to take its
+/// environment inputs explicitly so each error variant is unit-testable
+/// without mutating process-global state:
+///
+/// - missing `PATH` delegates to `which::which` (ambient lookup);
+/// - present `PATH` is stripped of empty entries first: `which` 8.x emulates
+///   the Unix `which` command, which interprets an empty entry as the current
+///   directory, so a binary planted in the CWD would otherwise satisfy an
+///   availability probe even with an effectively empty PATH (the CWD-first
+///   admission seam, cf. #3028). When nothing searchable remains, the lookup
+///   fails closed;
+/// - a relative or separator-containing command is resolved against `cwd`,
+///   matching `which`'s own interpretation.
+fn command_exists_probe(cmd: &str, path: Option<&OsStr>, cwd: &Path) -> bool {
+    match path {
+        None => which::which(cmd).is_ok(),
+        Some(path) => {
+            let dirs: Vec<std::path::PathBuf> =
+                std::env::split_paths(path).filter(|dir| !dir.as_os_str().is_empty()).collect();
+            if dirs.is_empty() {
+                return false;
+            }
+            match std::env::join_paths(dirs.iter()) {
+                Ok(filtered) => which::which_in(cmd, Some(&filtered), cwd).is_ok(),
+                Err(_) => which::which(cmd).is_ok(),
+            }
+        }
+    }
 }
 
 /// Return the supported executeCommand identifiers.

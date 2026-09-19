@@ -765,7 +765,8 @@ mod tests {
     /// USERPROFILE to resolve the perlbrew/plenv default root.  The PREFIX
     /// variable is used by the Termux path resolver.  Both must appear in the
     /// cache key so that a changed user profile or Termux prefix invalidates
-    /// a stale cached result.
+    /// a stale cached result. Compared structurally (never asserting on live
+    /// values) so the test is hermetic on every host.
     #[test]
     fn discovery_cache_key_contains_userprofile_and_prefix() {
         let base = perl_discovery_cache_key(Some(""));
@@ -777,8 +778,94 @@ mod tests {
         };
         assert_ne!(base, with_profile, "key must differ when userprofile changes");
         assert_ne!(base, with_prefix, "key must differ when prefix changes");
-        assert!(base.userprofile.is_empty(), "base key must retain an empty userprofile value");
-        assert!(base.prefix.is_empty(), "base key must retain an empty prefix value");
+    }
+
+    fn discovery_key_with_path_env(path_env: &str) -> PerlDiscoveryCacheKey {
+        PerlDiscoveryCacheKey {
+            configured_path: None,
+            path_env: OsString::from(path_env),
+            perlbrew_perl: OsString::new(),
+            perlbrew_root: OsString::new(),
+            plenv_root: OsString::new(),
+            plenv_version: OsString::new(),
+            home: OsString::from("/home/test"),
+            userprofile: OsString::new(),
+            prefix: OsString::new(),
+            #[cfg(windows)]
+            program_files: OsString::new(),
+        }
+    }
+
+    /// Path-boundary discriminators for the discovery walk: prefix-adjacent
+    /// directories (`/x/bin` vs `/x/binary`) must keep separate candidates —
+    /// dedup is component-equality, so adjacent spellings can never swallow
+    /// each other's entries. The separator is platform-defined
+    /// (`split_paths`), so each leg pins its own spelling.
+    #[cfg(unix)]
+    #[test]
+    fn discovery_candidate_paths_keep_prefix_adjacent_entries_distinct() {
+        let candidates =
+            perl_discovery_candidate_paths(&discovery_key_with_path_env("/x/bin:/x/binary"));
+        assert!(
+            candidates.contains(&PathBuf::from("/x/bin").join(PERL_EXECUTABLE)),
+            "prefix-adjacent /x/bin entry must keep its candidate: {candidates:?}"
+        );
+        assert!(
+            candidates.contains(&PathBuf::from("/x/binary").join(PERL_EXECUTABLE)),
+            "prefix-adjacent /x/binary entry must keep its candidate: {candidates:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn discovery_candidate_paths_keep_prefix_adjacent_entries_distinct() {
+        let candidates =
+            perl_discovery_candidate_paths(&discovery_key_with_path_env(r"C:\x\bin;C:\x\binary"));
+        assert!(
+            candidates.contains(&PathBuf::from(r"C:\x\bin").join(PERL_EXECUTABLE)),
+            "prefix-adjacent bin entry must keep its candidate: {candidates:?}"
+        );
+        assert!(
+            candidates.contains(&PathBuf::from(r"C:\x\binary").join(PERL_EXECUTABLE)),
+            "prefix-adjacent binary entry must keep its candidate: {candidates:?}"
+        );
+    }
+
+    /// Exact duplicates collapse; trailing-slash spellings collapse too
+    /// because they hold no extra path component (`Path` equality compares
+    /// components). Pinning the boundary so a future normalization change is
+    /// a deliberate diff, not silent drift.
+    #[test]
+    fn push_unique_path_dedups_component_equal_paths() {
+        let mut paths = Vec::new();
+        push_unique_path(&mut paths, PathBuf::from("/x/bin"));
+        push_unique_path(&mut paths, PathBuf::from("/x/bin"));
+        assert_eq!(paths.len(), 1, "exact duplicates must collapse");
+        push_unique_path(&mut paths, PathBuf::from("/x/bin/"));
+        assert_eq!(
+            paths.len(),
+            1,
+            "trailing-slash spellings hold no extra component and must collapse too"
+        );
+        push_unique_path(&mut paths, PathBuf::from("/x/binary"));
+        assert_eq!(paths.len(), 2, "genuinely different directories must stay distinct");
+    }
+
+    /// An empty `PATH` contributes no PATH-derived candidates (the resolver
+    /// skips unusable values), while a populated one derives exactly its
+    /// entries — the empty/non-empty boundary the fingerprint walk prices.
+    #[test]
+    fn empty_path_env_contributes_no_path_derived_candidates() {
+        let empty = perl_discovery_candidate_paths(&discovery_key_with_path_env(""));
+        assert!(
+            !empty.iter().any(|candidate| candidate == Path::new(PERL_EXECUTABLE)),
+            "empty PATH must not contribute a bare relative candidate: {empty:?}"
+        );
+        let populated = perl_discovery_candidate_paths(&discovery_key_with_path_env("/x/bin"));
+        assert!(
+            populated.contains(&PathBuf::from("/x/bin").join(PERL_EXECUTABLE)),
+            "populated PATH must derive its candidate: {populated:?}"
+        );
     }
 
     #[cfg(unix)]
