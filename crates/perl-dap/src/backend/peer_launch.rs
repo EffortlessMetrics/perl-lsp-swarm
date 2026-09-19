@@ -1745,7 +1745,13 @@ mod tests {
         let listener = must(TcpListener::bind(("127.0.0.1", 0)));
         let addr = must(listener.local_addr());
         let expected = must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"));
-        let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
+        // Load-tolerant bounds (#15749): the acceptor deadline and delivery
+        // wait are test inputs, not the property under test. The property is
+        // that a wrong-token handshake consumes only its own connection and
+        // the correct peer is then delivered; a 1s delivery window raced
+        // full-suite parallel load on hosted Windows.
+        let peer_rx =
+            spawn_peer_acceptor(listener, Duration::from_secs(10), Some(expected.clone()));
 
         // This validly-shaped but incorrect credential must consume only the
         // first connection, leaving the listener available for the real peer.
@@ -1753,7 +1759,7 @@ mod tests {
         must(wrong.join());
 
         let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
-        let backend = must(peer_rx.recv_timeout(Duration::from_secs(1)));
+        let backend = must(peer_rx.recv_timeout(Duration::from_secs(10)));
         drop(backend);
         must(correct.join());
     }
@@ -1774,14 +1780,19 @@ mod tests {
         let listener = must(TcpListener::bind(("127.0.0.1", 0)));
         let addr = must(listener.local_addr());
         let expected = must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"));
-        let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
+        // Load-tolerant bounds (#15749), as in the wrong-token twin: the
+        // deadline and delivery wait are staging, not the property. The
+        // property is that a silent unauthenticated stream cannot starve the
+        // correct peer.
+        let peer_rx =
+            spawn_peer_acceptor(listener, Duration::from_secs(10), Some(expected.clone()));
 
         // Connect first, but never send peer/hello. The acceptor must keep
         // making progress on later connections instead of waiting for this
-        // unauthenticated stream until the two-second session deadline.
+        // unauthenticated stream until the session deadline.
         let silent = must(TcpStream::connect(addr));
         let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
-        let backend = must(peer_rx.recv_timeout(Duration::from_secs(1)));
+        let backend = must(peer_rx.recv_timeout(Duration::from_secs(10)));
         drop(backend);
         drop(silent);
         must(correct.join());
@@ -1792,7 +1803,12 @@ mod tests {
         let listener = must(TcpListener::bind(("127.0.0.1", 0)));
         let addr = must(listener.local_addr());
         let expected = must(PeerSessionToken::try_from("0123456789abcdef0123456789abcdef"));
-        let peer_rx = spawn_peer_acceptor(listener, Duration::from_secs(2), Some(expected.clone()));
+        // Load-tolerant bounds (#15749), as in the wrong-token twin: the
+        // negative probe stays tight (an early Ok would be a genuine
+        // violation), while the delivery window for the correct peer absorbs
+        // full-suite parallel load on hosted Windows.
+        let peer_rx =
+            spawn_peer_acceptor(listener, Duration::from_secs(10), Some(expected.clone()));
 
         let attacker =
             spawn_unauthenticated_event_peer(addr, "00000000000000000000000000000000".to_string());
@@ -1802,7 +1818,7 @@ mod tests {
         );
 
         let correct = spawn_hello_peer(addr, expected.as_str().to_string(), true);
-        let backend = must(peer_rx.recv_timeout(Duration::from_secs(1)));
+        let backend = must(peer_rx.recv_timeout(Duration::from_secs(10)));
         drop(backend);
         must(attacker.join());
         must(correct.join());

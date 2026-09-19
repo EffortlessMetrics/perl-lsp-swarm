@@ -682,7 +682,13 @@ mod tests {
             producer_sender.send_event(&producer_seq, "stopped", Some(json!({"reason": "pause"})))
         });
 
-        let deadline = Instant::now() + Duration::from_secs(1);
+        // Generous observation bounds (#15749): the property under test is
+        // ordering, not latency. A close that waited on the admitted send
+        // could never complete before the drain, so a wide bound falsifies
+        // it just as sharply while absorbing scheduler load on hosted
+        // Windows. The previous 1s/200ms bounds raced full-suite parallel
+        // load and misreported the producer as unblocked or close as late.
+        let deadline = Instant::now() + Duration::from_secs(5);
         let producer_blocked = loop {
             match seq.try_lock() {
                 Ok(_) => {
@@ -702,7 +708,7 @@ mod tests {
             let _ = close_done_tx.send(());
         });
         let close_completed_before_drain =
-            close_done_rx.recv_timeout(Duration::from_millis(200)).is_ok();
+            close_done_rx.recv_timeout(Duration::from_secs(5)).is_ok();
 
         let queued = rx.recv().map_err(|error| error.to_string())?;
         if !matches!(&queued, (DapMessage::Event { event, .. }, _) if event == "output") {
