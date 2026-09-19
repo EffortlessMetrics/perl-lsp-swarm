@@ -242,14 +242,35 @@ fn fan_out_step_emits_explicit_disposition_summary() -> Result<()> {
         "fan-out summary must run regardless of dispatch step outcomes and skip on prerelease"
     );
 
+    let env = summary
+        .get("env")
+        .and_then(Value::as_mapping)
+        .context("fan-out summary must declare its dispatch outcomes in env")?;
+    let outcome_env_keys = [
+        "DISPATCH_BREW_OUTCOME",
+        "DISPATCH_SCOOP_OUTCOME",
+        "DISPATCH_CHOCOLATEY_OUTCOME",
+        "DISPATCH_WINGET_OUTCOME",
+    ];
+    for key in outcome_env_keys.iter() {
+        let value = env
+            .get(Value::String((*key).into()))
+            .and_then(Value::as_str)
+            .with_context(|| format!("fan-out summary env must bind `{key}`"))?;
+        ensure!(
+            value.contains("steps["),
+            "fan-out summary env `{key}` must source from steps[*].conclusion (got {value:?})"
+        );
+    }
+
     let text = step_run_text(summary);
     for channel in ["brew", "scoop", "chocolatey", "winget"] {
         ensure!(text.contains(channel), "fan-out summary must explicitly name `{channel}`");
     }
-    for expected_id in DISPATCH_STEP_IDS.iter() {
+    for key in outcome_env_keys.iter() {
         ensure!(
-            text.contains(expected_id),
-            "fan-out summary must read the conclusion of `{expected_id}`"
+            text.contains(key),
+            "fan-out summary must reference env var `{key}` (no inline steps[*].conclusion)"
         );
     }
     Ok(())
