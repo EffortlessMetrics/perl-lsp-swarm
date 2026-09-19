@@ -29,9 +29,9 @@
     "possibly_applied": false,
     "generation": { "previous": 3, "current": 4, "advanced": true },
     "reconciliation": {
-      "loaded_source_refresh": "deferred",
-      "inspection_invalidation": "deferred",
-      "breakpoint_reconciliation": "deferred"
+      "loaded_source_refresh": "unavailable",
+      "inspection_invalidation": "invalidated",
+      "breakpoint_reconciliation": "pending"
     }
   }
 }

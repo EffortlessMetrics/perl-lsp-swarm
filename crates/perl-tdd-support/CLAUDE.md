@@ -6,7 +6,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 `perl-tdd-support` is a **Tier 2 testing utility crate** (single-level dependency on `perl-parser-core`) providing TDD helpers, test generation, and safe assertion utilities for the Perl LSP workspace.
 
-**Purpose**: Safe unwrap replacements (`must`/`must_some`/`must_err`), Perl test code generation from ASTs, test discovery/execution with TAP parsing, TDD workflow state management, refactoring analysis, and ignored test governance.
+**Purpose**: Safe unwrap replacements (`must`/`must_some`/`must_err` and their context-preserving `must_with`/`must_some_with`/`must_err_with` counterparts), Perl test code generation from ASTs, test discovery/execution with TAP parsing, TDD workflow state management, refactoring analysis, and ignored test governance.
 
 **Version**: workspace (currently 0.12.3)
 
@@ -68,6 +68,25 @@ fn test_example() {
     let err = must_err(parser.parse_bad_input());
 }
 ```
+
+The context-preserving counterparts are re-exported too, and are the correct form
+whenever the call site previously carried an `.expect("…")` explanation — the bare
+helpers drop it from the panic diagnostic ([#14291]):
+
+```rust
+use perl_tdd_support::{must_with, must_some_with, must_err_with};
+
+#[test]
+fn test_example_with_context() {
+    let ast = must_with(parser.parse(), "the fixture parses");
+    let symbol = must_some_with(ast.find_symbol("foo"), "the fixture declares foo");
+}
+```
+
+`cargo xtask ci-hygiene check-must-context` reports a change that removes an
+`.expect("…")` and puts a bare helper in its place.
+
+[#14291]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14291
 
 ### Test generation from AST
 

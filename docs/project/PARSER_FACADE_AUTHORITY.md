@@ -6,13 +6,30 @@ The native parser contract remains directly available while compatibility and pr
 
 ## Current boundary
 
-- Authority digest: `5200f50ad361cc0246bd371f39543718a85f292f2f90b240aa90f453a963ae0f`
+- Authority digest: `fbf48ecff7a7e15da35a2e0d23246e413d166480c0296dc0fc7054038c456945`
 - Digest input: `full_normalized_ledger`
 - Public modules: 14
-- Public re-exports: 139
-- Cargo features: 23
-- Direct dependencies: 19
+- Public re-exports: 138
+- Cargo features: 27
+- Declared dependencies: 29
+- Production-context dependencies: 19
+- Development-only dependencies: 10
 - Workspace consumers: 9
+- Unresolved review rows: 40
+
+## Feature isolation
+
+A declared feature is a production boundary when it selects dependencies, gates
+`src/`, or gates whether a production Cargo target is built through
+`required-features`. A feature that gates only test, bench, or example source is
+a test profile, and a feature that gates nothing is taxonomy. Neither may be
+presented as an architectural boundary.
+
+Production boundaries (11): `anyhow`, `cli`, `default`, `incremental`, `lsp-compat`, `lsp-types`, `modernize`, `perl-line-index`, `tracing`, `workspace`, `workspace_refactor`.
+
+Test profiles (9): `constant-advanced`, `crash-repros`, `doc-coverage`, `error-classifier-v2`, `package-qualified`, `parser-extras`, `qw-variants`, `semantic-phase2`, `slow_tests`.
+
+Taxonomy only, isolating nothing (7): `experimental-features`, `expose_lsp_test_api`, `lsp-advanced`, `lsp-ga-lock`, `substitution-advanced`, `test-performance`, `utf16-complete`.
 
 ## Dependency direction
 
@@ -36,11 +53,12 @@ workspace / semantic / refactor / LSP product adapters
 
 ## Incremental authority
 
-The only production API marker is `Edit` + `IncrementalState` + `apply_edits`, with `ReparseResult` as its result contract.
-Historical named generations remain non-production until #6701/#6971/#6975 implement their disposition.
+The production incremental surface is the reviewed export set below; `apply_edits` is its sole public function.
+Production exports: `diagnostics::LexRestartReport`, `diagnostics::LexRestartStrategy`, `diagnostics::ReparseResult`, `edit::Edit`, `snapshot::ParseGeneration`, `snapshot::ParseSnapshot`, `snapshot::ParseSnapshotStrategy`, `snapshot::ParseSnapshotValidationError`, `snapshot::ParseTerminalDisposition`, `state::IncrementalState`.
+Historical named generations remain non-production until their executable migration leaves implement their disposition.
 
 ## Next implementation PRs
 
-1. #7063 implements the staged boundary and compatibility gates.
+1. #7063 is the convergence controller; implementation proceeds through its executable leaves (including #6975), not through #7063 itself.
 2. #7065 makes supported feature/API/dependency/downstream matrices load-bearing.
 3. #6701/#6971/#6975 converge the incremental implementation and public surface.

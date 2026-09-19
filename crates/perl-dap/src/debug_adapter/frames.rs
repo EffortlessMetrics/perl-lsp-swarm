@@ -2,8 +2,7 @@
 
 use super::{
     DEBUGGER_QUERY_WAIT_MS, DapMessage, DebugAdapter, HashMap, Scope, ScopesArguments,
-    ScopesResponseBody, Source, StackFrame, StackTraceArguments, Value, Write, json,
-    lock_or_recover,
+    ScopesResponseBody, Source, StackFrame, StackTraceArguments, Value, json, lock_or_recover,
 };
 use crate::parse_origin::{DebuggerOutputOrigin, OriginatedParseInput, ParseIdentity};
 use std::collections::HashSet;
@@ -90,126 +89,121 @@ impl DebugAdapter {
         request_seq: i64,
         arguments: Option<Value>,
     ) -> DapMessage {
+        // Identity before any debugger query (#8294): when an execution
+        // context is live, the request must name exactly that context. With no
+        // live context, the pre-existing honest empty-list response is kept.
+        if let Err(rejection) = self.validated_live_thread_id(
+            "stackTrace",
+            seq,
+            request_seq,
+            arguments.as_ref().and_then(|v| v.get("threadId")).and_then(Value::as_i64),
+        ) {
+            return rejection;
+        }
         let args: Option<StackTraceArguments> =
             arguments.and_then(|v| serde_json::from_value(v).ok());
         let start_frame =
             args.as_ref().and_then(|value| value.start_frame).unwrap_or(0).max(0) as usize;
         let levels = args.as_ref().and_then(|value| value.levels).unwrap_or(0);
         let requested_count = if levels <= 0 { None } else { Some(levels as usize) };
-        let mut framed_output_lines = None;
-
-        // Ask the debugger for an explicit stack snapshot when a live session is present.
-        if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            && let Some(stdin) = session.process.stdin.as_mut()
+        enum Snapshot {
+            Unavailable,
+            Rejected,
+            Frames(Vec<StackFrame>, HashMap<i32, Vec<String>>),
+        }
+        let mut framed_query = None;
+        let mut captured_identity = None;
         {
-            let commands = vec!["T".to_string()];
-            match self.send_framed_debugger_commands(stdin, &commands) {
-                Ok((begin, end)) => {
-                    framed_output_lines = self.capture_framed_debugger_output(
-                        &begin,
-                        &end,
+            let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+            if let Some(session) = session_guard.as_mut()
+                && session.state == crate::debug_adapter::DebugState::Stopped
+            {
+                let stopped = session.stopped_generation;
+                let broker = self.operation_broker.current_session_generation();
+                let frame_id = session.stack_frames.first().map(|frame| frame.id);
+                // Capture even without stdin: any authoritative fallback is still
+                // bound to this stop/session. A first snapshot needs no prior frame.
+                captured_identity = Some((stopped, broker, frame_id));
+                if let Some(stdin) = session.process.stdin.as_mut() {
+                    match self.send_framed_debugger_query_bound(
+                        stdin,
+                        &["T".to_string()],
                         DEBUGGER_QUERY_WAIT_MS * 8,
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "Failed to send framed stackTrace command, falling back");
-                    let _ = stdin.write_all(b"T\n");
-                    let _ = stdin.flush();
-                    Self::wait_for_debugger_output_window(DEBUGGER_QUERY_WAIT_MS as u32);
+                        Some(stopped),
+                        Some(broker),
+                    ) {
+                        Ok(query) => framed_query = Some(query),
+                        Err(error) => tracing::warn!(%error, "Framed stackTrace unavailable"),
+                    }
                 }
             }
         }
-
-        let parsed_frames = if let Some(lines) = framed_output_lines.as_ref() {
+        // Neither the debugger wait nor parsing holds session ownership.
+        let snapshot = if let Some((operation, begin, end)) = framed_query
+            && let Some(lines) =
+                self.capture_framed_debugger_output_for_operation(&operation, &begin, &end)
+        {
             let output = lines.join("\n");
             let mut identity = ParseIdentity::new().with_operation_id_from_i64(request_seq);
-            if let Some(generation) = lock_or_recover(&self.session, "debug_adapter.session")
-                .as_ref()
-                .map(|session| session.stopped_generation)
-            {
-                identity = identity.with_suspension_generation(generation);
+            if let Some((stopped, _, _)) = captured_identity {
+                identity = identity.with_suspension_generation(stopped);
             }
             let input = OriginatedParseInput::new(
                 DebuggerOutputOrigin::DebuggerControlPayload,
                 identity,
                 &output,
             );
-            let (parsed_frames, frame_arguments) = Self::parse_stack_frames_from_text(input);
-            let visible_frames = Self::filter_user_visible_frames(parsed_frames);
-            let current_frame_id = lock_or_recover(&self.session, "debug_adapter.session")
-                .as_ref()
-                .and_then(|session| session.stack_frames.first().map(|frame| frame.id));
-            let rebound = Self::rebind_generation_frame_ids(
-                visible_frames,
-                frame_arguments,
-                current_frame_id,
-            );
-            let Some((framed_frames, frame_arguments)) = rebound else {
-                // An unencodable generation or exhausted frame namespace is a
-                // hard rejection, not an empty debugger snapshot. Clear both
-                // authorities so the later fallback cannot resurrect prior
-                // frames or their captured arguments.
-                clear_rejected_framed_snapshot(&mut lock_or_recover(
-                    &self.session,
-                    "debug_adapter.session",
-                ));
-                return DapMessage::Response {
-                    seq,
-                    request_seq,
-                    success: true,
-                    command: "stackTrace".to_string(),
-                    body: Some(json!({ "stackFrames": [], "totalFrames": 0 })),
-                    message: None,
-                };
-            };
-            if framed_frames.is_empty() {
-                // The framed T output contained only internal debugger frames (e.g.
-                // `@ = DB::DB called from file '...' line N` at top-level stops) or
-                // none at all.  These are filtered out by filter_user_visible_frames.
-                //
-                // Do NOT fall back to snapshot parsing here: the snapshot buffer
-                // contains the entire session history, including the initial implicit
-                // stop context line (e.g. line 4 in a 7-line fixture), which appears
-                // BEFORE the current breakpoint context line (e.g. line 5).
-                // Snapshot-based parsing returns frames in output order, so the FIRST
-                // frame would be the stale line-4 context, not the current line-5 stop.
-                //
-                // The output reader already parsed the most recent context line and
-                // stored it in session.stack_frames.  Returning an empty vec here
-                // causes the caller to fall through to that authoritative source.
-                Vec::new()
-            } else {
-                if let Some(ref mut session) =
-                    *lock_or_recover(&self.session, "debug_adapter.session")
-                {
-                    session.stack_frame_arguments = frame_arguments;
-                }
-                framed_frames
+            let (frames, arguments) = Self::parse_stack_frames_from_text(input);
+            let frames = Self::filter_user_visible_frames(frames);
+            match Self::rebind_generation_frame_ids(
+                frames,
+                arguments,
+                captured_identity.and_then(|(_, _, frame)| frame),
+            ) {
+                None => Snapshot::Rejected,
+                Some((frames, _)) if frames.is_empty() => Snapshot::Unavailable,
+                Some((frames, arguments)) => Snapshot::Frames(frames, arguments),
             }
         } else {
-            // Snapshot buffer is unreliable when framed transport fails: it holds
-            // the full session history so snapshot-based parsing returns frames in
-            // buffer order — the stale pre-stop context line appears before the
-            // current stop line, producing a wrong first frame.  Return empty so
-            // the caller falls through to session.stack_frames, which the output
-            // reader populates with the authoritative current-stop frame.
-            Vec::new()
+            Snapshot::Unavailable
         };
-
-        let stack_frames = if !parsed_frames.is_empty() {
-            // Keep parsed frames as best-effort latest snapshot. IDs and
-            // captured arguments were rebound together above so every visible
-            // frame remains uniquely addressable within this suspension.
-            let bound_frames = parsed_frames;
-            if let Some(ref mut session) = *lock_or_recover(&self.session, "debug_adapter.session")
-            {
-                session.stack_frames = bound_frames.clone();
+        let stack_frames = if let Some((stopped, broker, _)) = captured_identity {
+            let mut session_guard = lock_or_recover(&self.session, "debug_adapter.session");
+            if session_guard.as_ref().is_some_and(|session| {
+                session.state == crate::debug_adapter::DebugState::Stopped
+                    && session.stopped_generation == stopped
+            }) {
+                // Frames, arguments, rejection clearing and same-stop fallback all
+                // linearize under the same session-to-broker acceptance boundary.
+                self.operation_broker
+                    .accept_if_current(broker, || match snapshot {
+                        Snapshot::Rejected => {
+                            clear_rejected_framed_snapshot(&mut session_guard);
+                            Vec::new()
+                        }
+                        Snapshot::Frames(frames, arguments) => {
+                            if let Some(session) = session_guard.as_mut() {
+                                session.stack_frame_arguments = arguments;
+                                session.stack_frames = frames.clone();
+                            }
+                            frames
+                        }
+                        Snapshot::Unavailable => session_guard
+                            .as_ref()
+                            .map(|session| {
+                                Self::filter_user_visible_frames(session.stack_frames.clone())
+                            })
+                            .unwrap_or_default(),
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
             }
-            bound_frames
-        } else if let Some(ref session) = *lock_or_recover(&self.session, "debug_adapter.session") {
-            Self::filter_user_visible_frames(session.stack_frames.clone())
-        } else if let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
+        } else if lock_or_recover(&self.session, "debug_adapter.session").is_none()
+            && let Some(pid) = *lock_or_recover(&self.attached_pid, "debug_adapter.attached_pid")
         {
+            // Preserve the existing attached-process placeholder; native stopped
+            // snapshots above never borrow it as evidence for a failed query.
             vec![StackFrame {
                 id: Self::i64_to_i32_saturating(i64::from(pid)),
                 name: format!("attached::process::{pid}"),
@@ -224,7 +218,6 @@ impl DebugAdapter {
                 end_column: None,
             }]
         } else {
-            // No active session — return honest empty list per DAP spec
             Vec::new()
         };
         // Capture full depth before pagination so totalFrames reports the real
@@ -609,6 +602,307 @@ mod pagination_tests {
             return Err("stale scope response did not contain a body".into());
         };
         assert_eq!(body.get("variables"), Some(&json!([])));
+        Ok(())
+    }
+
+    fn install_stack_trace_test_session(
+        adapter: &DebugAdapter,
+        frames: Vec<StackFrame>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::process::{Command, Stdio};
+        let previous = lock_or_recover(&adapter.session, "test.replace_stack_session").take();
+        if let Some(mut previous) = previous {
+            let _ = previous.process.kill();
+            let _ = previous.process.wait();
+        }
+        adapter.seed_stopped_session_with_frames_for_test(frames);
+        let child = Command::new("perl")
+            .args(["-e", "while (<STDIN>) {}"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut old = {
+            let mut guard = lock_or_recover(&adapter.session, "test.install_stack_pipe");
+            std::mem::replace(&mut guard.as_mut().ok_or("missing stack session")?.process, child)
+        };
+        let _ = old.kill();
+        let _ = old.wait();
+        Ok(())
+    }
+
+    #[test]
+    fn delayed_stack_trace_query_does_not_hold_session_lock()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let adapter = Arc::new(DebugAdapter::new());
+        install_stack_trace_test_session(&adapter, vec![make_frame(1, "main::current")])?;
+        let request_adapter = Arc::clone(&adapter);
+        let request = std::thread::spawn(move || {
+            request_adapter.handle_stack_trace(1, 1, Some(json!({ "threadId": 1 })))
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() == 0 {
+            return Err("stackTrace query was not submitted".into());
+        }
+        let lock_available = (0..100).any(|_| {
+            if let Ok(guard) = adapter.session.try_lock() {
+                drop(guard);
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+                false
+            }
+        });
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+        adapter.push_recent_output_line_for_test("# 0 main::current at /tmp/current.pl line 8");
+        adapter.push_recent_output_line_for_test("    ($value = 42)");
+        adapter.push_recent_output_line_for_test("DAP_END_1");
+        let response = request.join().map_err(|_| "stackTrace thread panicked")?;
+        if !lock_available {
+            return Err("session lock remained held while stackTrace response was pending".into());
+        }
+        let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+            return Err(
+                format!("stackTrace did not return a successful response: {response:?}").into()
+            );
+        };
+        let frames = body
+            .get("stackFrames")
+            .and_then(Value::as_array)
+            .ok_or("stackTrace body did not contain stackFrames")?;
+        let frame = frames.first().ok_or("stackTrace returned no current frame")?;
+        if frame.get("name").and_then(Value::as_str) != Some("main::current")
+            || frame.get("line").and_then(Value::as_i64) != Some(8)
+        {
+            return Err(format!("stackTrace returned the wrong frame: {frame}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stopped_stack_trace_accepts_first_framed_snapshot_without_prior_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let adapter = Arc::new(DebugAdapter::new());
+        install_stack_trace_test_session(&adapter, Vec::new())?;
+        let worker = {
+            let adapter = Arc::clone(&adapter);
+            std::thread::spawn(move || {
+                adapter.handle_stack_trace(1, 1, Some(json!({ "threadId": 1 })))
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while adapter.debugger_query_count_for_test() == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if adapter.debugger_query_count_for_test() == 0 {
+            return Err("initial stackTrace query was not submitted".into());
+        }
+        adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+        adapter.push_recent_output_line_for_test(
+            "$ = main::run($value, [1, 2], \"a,b\") called from file `script.pl' line 7",
+        );
+        adapter.push_recent_output_line_for_test("DAP_END_1");
+        let response = worker.join().map_err(|_| "stackTrace worker panicked")?;
+        let DapMessage::Response { body: Some(body), .. } = response else {
+            return Err(format!("unexpected stackTrace response: {response:?}").into());
+        };
+        let frames =
+            body.get("stackFrames").and_then(Value::as_array).ok_or("missing stackFrames")?;
+        let frame = frames.first().ok_or("first framed snapshot was empty")?;
+        if frame.get("name").and_then(Value::as_str) != Some("main::run")
+            || frame.get("line").and_then(Value::as_i64) != Some(7)
+        {
+            return Err(format!("unexpected first framed snapshot: {frame}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn delayed_stack_trace_rejects_running_new_stop_and_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        for transition in ["running", "new-stop", "replacement"] {
+            let adapter = Arc::new(DebugAdapter::new());
+            install_stack_trace_test_session(&adapter, vec![make_frame(1, "sentinel")])?;
+            adapter.seed_stack_frame_arguments_for_test(1, vec!["sentinel_arg".to_string()]);
+            let worker = {
+                let adapter = Arc::clone(&adapter);
+                std::thread::spawn(move || {
+                    adapter.handle_stack_trace(1, 1, Some(json!({ "threadId": 1 })))
+                })
+            };
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while adapter.debugger_query_count_for_test() == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if adapter.debugger_query_count_for_test() == 0 {
+                return Err(format!("{transition}: stackTrace query was not submitted").into());
+            }
+            match transition {
+                "running" => {
+                    let mut guard = lock_or_recover(&adapter.session, "test.running_transition");
+                    guard.as_mut().ok_or("running session missing")?.state = DebugState::Running;
+                }
+                "new-stop" => {
+                    let mut guard = lock_or_recover(&adapter.session, "test.new_stop_transition");
+                    let session = guard.as_mut().ok_or("new-stop session missing")?;
+                    session.stopped_generation = 2;
+                }
+                "replacement" => {
+                    adapter.operation_broker.settle_all("replacement");
+                    install_stack_trace_test_session(&adapter, vec![make_frame(1, "sentinel")])?;
+                    adapter.operation_broker.open_session();
+                    adapter
+                        .seed_stack_frame_arguments_for_test(1, vec!["sentinel_arg".to_string()]);
+                }
+                _ => return Err("unknown lifecycle transition".into()),
+            }
+            adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+            adapter.push_recent_output_line_for_test(
+                "$ = main::run($value, [1, 2], \"a,b\") called from file `script.pl' line 7",
+            );
+            adapter.push_recent_output_line_for_test("DAP_END_1");
+            let stale = worker.join().map_err(|_| "lifecycle stackTrace panicked")?;
+            let DapMessage::Response { success: true, body: Some(body), .. } = stale else {
+                return Err(format!("{transition}: missing stale body").into());
+            };
+            if body.get("stackFrames") != Some(&json!([]))
+                || body.get("totalFrames") != Some(&json!(0))
+            {
+                return Err(format!("{transition}: stale response was not empty: {body}").into());
+            }
+            {
+                let guard = lock_or_recover(&adapter.session, "test.sentinel_preservation");
+                let session = guard.as_ref().ok_or("sentinel session missing")?;
+                if session.stack_frames.first().map(|frame| frame.name.as_str()) != Some("sentinel")
+                    || session.stack_frame_arguments.get(&1)
+                        != Some(&vec!["sentinel_arg".to_string()])
+                {
+                    return Err(format!("{transition}: sentinel state was changed").into());
+                }
+            }
+            if transition == "running" {
+                let mut guard = lock_or_recover(&adapter.session, "test.recover_running");
+                guard.as_mut().ok_or("running recovery session missing")?.state =
+                    DebugState::Stopped;
+            }
+            let worker = {
+                let adapter = Arc::clone(&adapter);
+                std::thread::spawn(move || {
+                    adapter.handle_stack_trace(2, 2, Some(json!({ "threadId": 1 })))
+                })
+            };
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while adapter.debugger_query_count_for_test() < 2 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            if adapter.debugger_query_count_for_test() < 2 {
+                return Err(format!("{transition}: recovery query was not submitted").into());
+            }
+            adapter.push_recent_output_line_for_test("DAP_BEGIN_2");
+            adapter.push_recent_output_line_for_test(
+                "$ = main::run($value, [1, 2], \"a,b\") called from file `script.pl' line 7",
+            );
+            adapter.push_recent_output_line_for_test("DAP_END_2");
+            let fresh = worker.join().map_err(|_| "recovery stackTrace panicked")?;
+            let DapMessage::Response { success: true, body: Some(body), .. } = fresh else {
+                return Err(format!("{transition}: missing recovery body").into());
+            };
+            let frame = body
+                .get("stackFrames")
+                .and_then(Value::as_array)
+                .and_then(|frames| frames.first())
+                .ok_or_else(|| format!("{transition}: recovery frame missing"))?;
+            if frame.get("name").and_then(Value::as_str) != Some("main::run")
+                || frame.get("line").and_then(Value::as_i64) != Some(7)
+            {
+                return Err(format!(
+                    "{transition}: recovery frame identity/arguments incorrect: {frame}"
+                )
+                .into());
+            }
+            let guard = lock_or_recover(&adapter.session, "test.recovery_arguments");
+            let session = guard.as_ref().ok_or("recovery session missing")?;
+            if session.stack_frame_arguments.get(&1)
+                != Some(&vec!["$value".to_string(), "[1, 2]".to_string(), "\"a,b\"".to_string()])
+            {
+                return Err(format!(
+                    "{transition}: recovery arguments were not accepted: {:?}",
+                    session.stack_frame_arguments
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn framed_stack_trace_fallback_and_rejection_preserve_their_contracts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for mode in ["empty", "internal", "rejected"] {
+            let adapter = std::sync::Arc::new(DebugAdapter::new());
+            let frame_id = if mode == "rejected" { FRAME_ID_MODULUS } else { 1 };
+            install_stack_trace_test_session(&adapter, vec![make_frame(frame_id, "prior")])?;
+            adapter.seed_stack_frame_arguments_for_test(frame_id, vec!["prior_arg".to_string()]);
+            let request_adapter = std::sync::Arc::clone(&adapter);
+            let request = std::thread::spawn(move || {
+                request_adapter.handle_stack_trace(1, 1, Some(json!({ "threadId": 1 })))
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while adapter.debugger_query_count_for_test() == 0
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            if adapter.debugger_query_count_for_test() == 0 {
+                let _ = request.join();
+                return Err(format!("{mode}: query was not submitted").into());
+            }
+            adapter.push_recent_output_line_for_test("DAP_BEGIN_1");
+            if mode == "internal" {
+                adapter.push_recent_output_line_for_test("# 0 DB::DB at /tmp/perl5db.pl line 8");
+            } else if mode == "rejected" {
+                adapter.push_recent_output_line_for_test("# 0 main::run at /tmp/current.pl line 8");
+            }
+            adapter.push_recent_output_line_for_test("DAP_END_1");
+            let response = request.join().map_err(|_| "stack snapshot thread panicked")?;
+            let DapMessage::Response { success: true, body: Some(body), .. } = response else {
+                return Err(format!("{mode}: unsuccessful response {response:?}").into());
+            };
+            let guard = lock_or_recover(&adapter.session, "test.snapshot_outcome");
+            let session = guard.as_ref().ok_or("missing current session")?;
+            if mode == "rejected" {
+                if body.get("stackFrames") != Some(&json!([]))
+                    || body.get("totalFrames") != Some(&json!(0))
+                    || !session.stack_frames.is_empty()
+                    || !session.stack_frame_arguments.is_empty()
+                {
+                    return Err(format!("rejected frame namespace was retained: {body}").into());
+                }
+            } else if body.get("totalFrames") != Some(&json!(1))
+                || body
+                    .get("stackFrames")
+                    .and_then(Value::as_array)
+                    .and_then(|v| v.first())
+                    .and_then(|v| v.get("name"))
+                    .and_then(Value::as_str)
+                    != Some("prior")
+                || session.stack_frame_arguments.get(&1) != Some(&vec!["prior_arg".to_string()])
+            {
+                return Err(format!("{mode}: same-stop fallback lost its authority: {body}").into());
+            }
+        }
         Ok(())
     }
 }

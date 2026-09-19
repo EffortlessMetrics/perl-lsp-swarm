@@ -3,6 +3,7 @@
 //! Handles client capability parsing and server capabilities construction.
 
 use super::super::{JsonRpcError, LspServer, Ordering};
+use crate::protocol::command::code_action_documentation_entries;
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
@@ -97,9 +98,16 @@ fn workspace_capabilities(
     workspace_folders_support: bool,
     file_operations: FileOperationSupport,
 ) -> Value {
-    let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
-    let filters: Vec<Value> =
-        perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
+    // Advertised file-operation filters share the watcher pattern authority
+    // so both registrations stay honest about what the handlers classify
+    // (#13308). The catch-all delivers non-Perl events by design; the
+    // willRename preflight classifies each renamed subject through the same
+    // discovery admission authority as the startup and watcher seams and
+    // plans no module edits for non-Perl subjects (#14186).
+    let filters: Vec<Value> = super::watchers::PERL_WATCH_PATTERNS
+        .iter()
+        .map(|glob| json!({ "pattern": { "glob": glob } }))
+        .collect();
     let mut file_operation_capabilities = serde_json::Map::new();
     file_operations.insert_capabilities(&mut file_operation_capabilities, &filters);
 
@@ -117,13 +125,6 @@ fn workspace_capabilities(
     }
     workspace
 }
-
-/// The LSP protocol version this server implements.
-///
-/// Advertised in the `initialize` result's `protocolVersion` field (LSP 3.17+).
-/// The server uses 3.18 extensions (e.g. `inlineCompletionProvider`), so the
-/// advertised version reflects the highest spec whose features are surfaced.
-const LSP_PROTOCOL_VERSION: &str = "3.18";
 
 fn is_opencode_client(params: &Value) -> bool {
     params
@@ -163,47 +164,6 @@ fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Val
     };
 
     experimental.insert(key.to_string(), value);
-}
-
-fn code_action_documentation_entries() -> Value {
-    json!([
-        {
-            "kind": "quickfix",
-            "command": {
-                "title": "Explain Perl quick fixes",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "diagnostics",
-                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_quickfix"
-                }]
-            }
-        },
-        {
-            "kind": "refactor",
-            "command": {
-                "title": "Explain Perl refactors",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "rename",
-                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_refactor"
-                }]
-            }
-        },
-        {
-            "kind": "source.fixAll",
-            "command": {
-                "title": "Explain Perl fix-all actions",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "diagnostics",
-                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_fix_all"
-                }]
-            }
-        }
-    ])
 }
 
 impl LspServer {
@@ -726,6 +686,22 @@ impl LspServer {
                 limits.update_from_value(perl);
             }
             *self.initialization_options_perl_settings.lock() = Some(perl.clone());
+
+            // Snapshot the post-tier-1 ServerConfig so the next
+            // `load_and_apply_project_config` can reset to `defaults + tier-1`
+            // before layering tier-2 (project config). This snapshot is
+            // updated on every `didChangeConfiguration` so subsequent resets
+            // also include tier-3 (issue #15715).
+            *self.server_config_baseline.lock() = Some(self.config.lock().clone());
+        }
+
+        // A client may omit `initializationOptions` (or send null): capture
+        // the baseline anyway — `defaults + tier-1`, which is just defaults
+        // here — so a later folder removal can still reset. Never overwrite
+        // the tier-1 snapshot captured above (#15715).
+        if self.server_config_baseline.lock().is_none() {
+            let snapshot = self.config.lock().clone();
+            *self.server_config_baseline.lock() = Some(snapshot);
         }
 
         // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
@@ -823,10 +799,11 @@ impl LspServer {
 
         // Add fields not yet in lsp-types 0.97
         //
-        // Phase 1 (this PR) only negotiates and stores the client's preferred
-        // position encoding on `ClientCapabilities.position_encoding` for
-        // future use. `text_sync` and every feature provider (hover,
-        // definition, diagnostics, ...) still compute positions in UTF-16
+        // Client preference remains available on `ClientCapabilities` for
+        // compatibility parsing, while the server-owned active context keeps
+        // coordinate consumers on UTF-16 during this migration. `text_sync`
+        // and providers not yet migrated (hover, definition, ...) still
+        // compute positions in UTF-16
         // code units. Per the LSP 3.17 spec, client and server MUST agree on
         // one encoding or offsets are misinterpreted, so the *advertised*
         // `positionEncoding` MUST stay pinned to "utf-16" — the mandatory
@@ -874,9 +851,18 @@ impl LspServer {
             );
         }
 
+        // Publish coordinate authority once every capability that can still
+        // fail has been computed, so no partially-built initialize can leave a
+        // published authority behind. The response value is assembled just
+        // below from `capabilities`, which is already final here. Client
+        // preference stays available for compatibility parsing but is not
+        // active authority. Re-entry cannot republish: the duplicate-initialize
+        // guard rejects a second initialize before reaching this point, which
+        // `duplicate_initialize_cannot_mutate_active_identity` pins.
+        self.publish_position_encoding_session_context();
+
         Ok(Some(json!({
             "capabilities": capabilities,
-            "protocolVersion": LSP_PROTOCOL_VERSION,
             "serverInfo": {
                 "name": "perl-lsp",
                 "version": env!("CARGO_PKG_VERSION")
@@ -1593,6 +1579,30 @@ mod tests {
     }
 
     #[test]
+    fn handle_initialize_without_initialization_options_still_captures_baseline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #15715: a client may omit `initializationOptions` (or send null).
+        // The post-tier-1 baseline must still be captured — `defaults +
+        // tier-1`, just defaults here — so a later folder removal can reset
+        // instead of leaving `None` behind.
+        let server = LspServer::new();
+        let params = json!({ "capabilities": {} });
+
+        server.handle_initialize(Some(params))?;
+
+        let baseline = server.server_config_baseline.lock().clone();
+        let Some(baseline) = baseline else {
+            return Err("baseline must be captured without initializationOptions".into());
+        };
+        let config = server.config.lock();
+        assert_eq!(
+            baseline.perlcritic_severity, config.perlcritic_severity,
+            "baseline must snapshot the shared config even with no init options",
+        );
+        Ok(())
+    }
+
+    #[test]
     fn handle_initialize_exact_error_variant() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({ "capabilities": {} });
@@ -1706,6 +1716,20 @@ mod tests {
             .and_then(Value::as_array)
             .ok_or("supported clients should receive CodeActionOptions.documentation")?;
         assert_eq!(docs.len(), 3, "expected quickfix, refactor, and source.fixAll docs");
+        for doc in docs {
+            let command = doc.get("command").ok_or("documentation entry missing command")?;
+            let title = command.get("title").and_then(Value::as_str);
+            let tooltip = command
+                .get("tooltip")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("documentation Command missing tooltip: {doc}"))?;
+            assert!(!tooltip.is_empty(), "documentation Command.tooltip must be non-empty: {doc}");
+            assert_ne!(
+                Some(tooltip),
+                title,
+                "documentation Command.tooltip must not replace title: {doc}"
+            );
+        }
         Ok(())
     }
 

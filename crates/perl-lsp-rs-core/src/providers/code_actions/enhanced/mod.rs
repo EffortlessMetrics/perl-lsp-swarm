@@ -531,7 +531,7 @@ mod tests {
     fn test_utf8_action_adds_open_when_utf8_already_present() {
         let source = "use utf8;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -547,7 +547,7 @@ mod tests {
     fn test_utf8_action_ignores_comment_mentions_of_pragma() {
         let source = "# use utf8;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -564,7 +564,7 @@ mod tests {
         // Inverse regression: only `use open :utf8` is present, should only add `use utf8;`.
         let source = "use open qw(:std :utf8);\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -581,7 +581,7 @@ mod tests {
         // Both pragmas already present — no UTF-8 action should be generated.
         let source = "use utf8;\nuse open qw(:std :utf8);\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -597,7 +597,7 @@ mod tests {
         // No non-ASCII content — no UTF-8 action regardless of pragma presence.
         let source = "my $msg = \"hello\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -613,7 +613,7 @@ mod tests {
         // `use open ... :encoding(UTF-8)` must also count as open-utf8 pragma present.
         let source = "use utf8;\nuse open IO => ':encoding(UTF-8)';\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -629,7 +629,7 @@ mod tests {
         // Leading whitespace on the pragma line should still be matched (anchored to ^\s*).
         let source = "    use utf8;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -646,7 +646,7 @@ mod tests {
         // `use utf8mode` (hypothetical) is not `use utf8` — the \b word boundary must prevent a match.
         let source = "use utf8mode;\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -663,7 +663,7 @@ mod tests {
         // Comment on same line after pragma should still match.
         let source = "use utf8; # enable unicode\nmy $msg = \"café\";\n";
         let mut parser = Parser::new(source);
-        let ast = must(parser.parse());
+        let _ast = must(parser.parse());
 
         let provider = EnhancedCodeActionsProvider::new(source.to_string());
         let actions = provider.get_global_refactorings();
@@ -685,6 +685,48 @@ mod tests {
         let actions = provider.get_enhanced_refactoring_actions(&ast, (0, 30));
 
         assert!(actions.iter().any(|a| a.title.contains("error checking")));
+    }
+
+    /// Regression guard for #9835: a file operation followed within the
+    /// error-checking lookahead window by multi-byte text used to panic the
+    /// `textDocument/codeAction` request, because the window was cut at a fixed
+    /// 50-*byte* offset that could land inside a UTF-8 sequence.
+    #[test]
+    fn test_add_error_checking_does_not_panic_on_multibyte_source() {
+        let source = format!("open my $fh, '<', 'f';\n#{}\n", "é".repeat(40));
+        let mut parser = Parser::new(&source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.clone());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (0, source.len()));
+
+        assert!(
+            actions.iter().any(|a| a.title.contains("error checking")),
+            "the action must still be offered for an unchecked open followed by non-ASCII text"
+        );
+    }
+
+    /// The inverse of the test above, and the one that proves the *character*
+    /// window is the right behavior rather than merely a non-panicking one.
+    ///
+    /// The `die` here sits inside the 50-character window but well outside a
+    /// 50-byte one: the 30 two-byte 'é's push it past byte 60. So the pre-fix
+    /// byte window could not see it and would have offered the action on an
+    /// operation that is already checked; the character window suppresses it.
+    #[test]
+    fn test_add_error_checking_suppressed_by_idiom_beyond_the_byte_window() {
+        let source = format!("open my $fh, '<', 'f';\n# {} or die\n", "é".repeat(30));
+        let mut parser = Parser::new(&source);
+        let ast = must(parser.parse());
+
+        let provider = EnhancedCodeActionsProvider::new(source.clone());
+        let actions = provider.get_enhanced_refactoring_actions(&ast, (0, source.len()));
+
+        assert!(
+            !actions.iter().any(|a| a.title.contains("error checking")),
+            "an idiom inside the 50-character window must suppress the action, \
+             even though it lies beyond 50 bytes"
+        );
     }
 
     #[test]

@@ -11,6 +11,90 @@ set -euo pipefail
 first_commit="d174ec1e9845056b8e1a193001ce88a2ea9eaebe"
 first_parent="470277161c18cd5cfa00e31ea6545e2e7baee461"
 second_commit="0f6a4334eb5a53df54a5ed40103659a63578b6f5"
+first_commit_noop=false
+second_commit_noop=false
+
+reconstruction_tree_is_clean() {
+  [ -z "$(git diff --cached --name-only)" ] &&
+    [ -z "$(git diff --name-only --diff-filter=U)" ] &&
+    git diff --quiet &&
+    [ -z "$(git ls-files --others --exclude-standard)" ]
+}
+
+run_cherry_pick_or_skip_empty() {
+  local label="$1"
+  local expected_commit="$2"
+  shift 2
+  local capture_file
+  local status
+  cherry_pick_noop=false
+  capture_file="$(mktemp)"
+  trap 'rm -f -- "$capture_file"; trap - RETURN' RETURN
+  if "$@" >"$capture_file" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  if [ "$status" -eq 0 ]; then
+    cat "$capture_file"
+    return 0
+  fi
+  cat "$capture_file" >&2
+  if [ "$status" -ne 1 ] || ! grep -Eqi 'previous[[:space:]]+cherry-pick[[:space:]]+is[[:space:]]+now[[:space:]]+empty' "$capture_file"; then
+    echo "$label failed for a non-empty-cherry-pick reason; refusing no-op skip." >&2
+    return 1
+  fi
+  local cherry_pick_head
+  cherry_pick_head="$(git rev-parse --verify CHERRY_PICK_HEAD 2>/dev/null || true)"
+  if [ "$cherry_pick_head" != "$expected_commit" ]; then
+    echo "$label reported empty for $cherry_pick_head, expected $expected_commit; refusing no-op skip." >&2
+    return 1
+  fi
+  if ! reconstruction_tree_is_clean; then
+    echo "$label reported empty but left staged, unresolved, or working-tree state; refusing no-op skip." >&2
+    return 1
+  fi
+  local current_head
+  local evidence_suffix
+  current_head="$(git rev-parse HEAD)"
+  evidence_suffix="$(printf '%s' "$label" | tr '[:space:]' '_' | tr -cd '[:alnum:]_.-')"
+  {
+    printf 'classification: already-current-empty-cherry-pick\n'
+    printf 'command: %s\n' "$label"
+    printf 'exit-status: %s\n' "$status"
+    printf 'expected-commit: %s\n' "$expected_commit"
+    printf 'cherry-pick-head: %s\n' "$cherry_pick_head"
+    printf 'current-head: %s\n' "$current_head"
+    printf 'tree-status: clean\n'
+    printf 'command-output:\n'
+    cat "$capture_file"
+  } > "$evidence_dir/empty-cherry-pick-$evidence_suffix.txt"
+  if ! git cherry-pick --skip; then
+    echo "$label failed while skipping the verified empty cherry-pick; refusing no-op success." >&2
+    return 1
+  fi
+  cherry_pick_noop=true
+  return 0
+}
+
+find_live_rejects() {
+  find . \
+    -path './target/receipts/rebuild-11983/rejected-hunks' -prune \
+    -o -name '*.rej' -print
+}
+
+assert_no_live_rejects() {
+  local live_rejects
+  live_rejects="$(find_live_rejects)"
+  if [ -n "$live_rejects" ]; then
+    echo "Unreviewed rejected hunks remain:" >&2
+    while IFS= read -r reject; do
+      echo "--- $reject" >&2
+      cat "$reject" >&2
+    done <<< "$live_rejects"
+    return 1
+  fi
+}
 
 # Identity gate (#12045 review): prove this lane executed exactly the triggering
 # pull-request revision before any local reconstruction mutates the workspace.
@@ -45,13 +129,25 @@ git merge --no-edit origin/main
 git cat-file -e "${first_commit}^{commit}"
 git cat-file -e "${second_commit}^{commit}"
 
-if ! git cherry-pick "$first_commit"; then
+if ! run_cherry_pick_or_skip_empty "first cherry-pick" "$first_commit" git cherry-pick "$first_commit"; then
   mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
+  if [ "${#conflicts[@]}" -eq 0 ]; then
+    echo "first cherry-pick failed without an expected conflict set; refusing recovery." >&2
+    exit 1
+  fi
   expected=(
+    crates/perl-dap/features_sot.toml
+    crates/perl-lsp-rs-core/features_sot.toml
+    crates/perl-lsp-rs/features_sot.toml
+    crates/perl-parser/features_sot.toml
     crates/perl-lsp-rs/src/runtime/language/formatting_policy/tests.rs
     crates/perl-lsp-rs/src/runtime/text_sync.rs
     crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs
     crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs
+    crates/perl-lsp-rs/tests/lsp_formatting_e2e.rs
+    docs/specs/lsp-318-conformance-matrix.md
+    features.toml
+    xtask/src/tasks/lsp_318_matrix.rs
   )
   mapfile -t expected_sorted < <(printf '%s\n' "${expected[@]}" | sort)
   if ! diff -u \
@@ -67,6 +163,8 @@ if ! git cherry-pick "$first_commit"; then
 
   reject_manifest="$(mktemp)"
   export REBUILD_REJECT_MANIFEST="$reject_manifest"
+  export REBUILD_SOURCE_PARENT="$first_parent"
+  export REBUILD_SOURCE_COMMIT="$first_commit"
   for path in "${conflicts[@]}"; do
     git checkout --ours -- "$path"
     patch="/tmp/$(printf '%s' "$path" | tr '/' '_').patch"
@@ -78,70 +176,63 @@ if ! git cherry-pick "$first_commit"; then
   done
 
   python3 - <<'PY'
+import hashlib
+import json
 import os
-import re
+import subprocess
 from pathlib import Path
-
-
-def hunk_segments(text: str) -> list[str]:
-    segments = []
-    current = None
-    for line in text.splitlines():
-        if line.startswith("@@ "):
-            if current is not None:
-                segments.append("\n".join(current))
-            current = [line]
-        elif current is not None:
-            current.append(line)
-    if current is not None:
-        segments.append("\n".join(current))
-    return segments
-
-
-def reject_evidence_dir() -> Path:
-    evidence = Path("target/receipts/rebuild-11983/rejected-hunks")
-    evidence.mkdir(parents=True, exist_ok=True)
-    return evidence
-
-
 manifest_path = os.environ.get("REBUILD_REJECT_MANIFEST")
 if not manifest_path:
     raise SystemExit("reject manifest environment variable is missing")
-
-verified_rejects: list[Path] = []
+source_parent = os.environ["REBUILD_SOURCE_PARENT"]
+source_commit = os.environ["REBUILD_SOURCE_COMMIT"]
+provenance_path = Path("target/receipts/rebuild-11983/reject-provenance.json")
+artifacts = []
 for entry in Path(manifest_path).read_text(encoding="utf-8").splitlines():
-    path, patch_file, apply_log_file, reject_name = entry.split("\t")
-    log_text = Path(apply_log_file).read_text(encoding="utf-8")
-    rejected_hunks = [int(n) for n in re.findall(r"Rejected hunk #(\d+)\.", log_text)]
-    patch_segments = set(hunk_segments(Path(patch_file).read_text(encoding="utf-8")))
-    reject = Path(reject_name)
-
-    def retain(reason: str) -> None:
-        evidence_dir = reject_evidence_dir()
-        if reject.exists():
-            (evidence_dir / reject.name).write_text(
-                reject.read_text(encoding="utf-8"), encoding="utf-8"
-            )
-        raise SystemExit(
-            f"{path}: unverified rejected hunks retained under {evidence_dir}: {reason}"
-        )
-
-    if not rejected_hunks:
-        if reject.exists():
-            retain("apply reported no rejection but a reject artifact exists")
-        continue
-
-    if not reject.exists():
-        retain(f"apply recorded rejected hunks {rejected_hunks} but no reject file exists")
-    found_segments = sorted(set(hunk_segments(reject.read_text(encoding="utf-8"))))
-    foreign = [s for s in found_segments if s not in patch_segments]
-    if foreign:
-        retain(f"{len(foreign)} reject hunks do not come from the reviewed patch")
-    if len(found_segments) != len(rejected_hunks):
-        retain(
-            f"expected {len(rejected_hunks)} rejected hunks, found {len(found_segments)}"
-        )
-    verified_rejects.append(reject)
+    path, patch_file, apply_log_file, _ = entry.split("\t")
+    artifacts.append(
+        {
+            "path": path,
+            "patch": patch_file,
+            "apply_log": apply_log_file,
+            "patch_sha256": hashlib.sha256(Path(patch_file).read_bytes()).hexdigest(),
+            "apply_log_sha256": hashlib.sha256(Path(apply_log_file).read_bytes()).hexdigest(),
+        }
+    )
+provenance_path.write_text(
+    json.dumps(
+        {
+            "source_parent": source_parent,
+            "source_commit": source_commit,
+            "artifacts": artifacts,
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+verification = subprocess.run(
+    [
+        "python3",
+        "scripts/maintenance/verify_11983_reject_identities.py",
+        "--manifest",
+        manifest_path,
+        "--evidence-dir",
+        "target/receipts/rebuild-11983/rejected-hunks",
+        "--reject-scope",
+        ".",
+        "--delete-verified",
+        "--provenance",
+        str(provenance_path),
+        "--source-parent",
+        source_parent,
+        "--source-commit",
+        source_commit,
+    ],
+    check=False,
+)
+if verification.returncode:
+    raise SystemExit(verification.returncode)
 
 
 def replace_exact(path: str, old: str, new: str) -> None:
@@ -153,22 +244,53 @@ def replace_exact(path: str, old: str, new: str) -> None:
     file.write_text(text.replace(old, new), encoding="utf-8")
 
 
+def replace_stale_import(
+    path: str,
+    old: str,
+    new: str,
+    stale_marker: str,
+    already_current: str,
+) -> None:
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count == 1:
+        file.write_text(text.replace(old, new), encoding="utf-8")
+        return
+    if count == 0 and stale_marker not in text and text.count(already_current) == 1:
+        return
+    raise SystemExit(f"{path}: expected one stale import or the exact already-current import")
+
+
 text_sync = "crates/perl-lsp-rs/src/runtime/text_sync.rs"
-replace_exact(
+replace_stale_import(
     text_sync,
     "    Arc, AtomicBool, AtomicU32, CodeFormatter, DocumentState, FormattingOptions, HashMap,\n"
     "    JsonRpcError, LspServer, Mutex, Node, NonZeroU32, Ordering, Parser, Value,\n",
     "    Arc, AtomicBool, AtomicU32, DocumentState, HashMap, JsonRpcError, LspServer, Mutex,\n"
     "    Node, NonZeroU32, Ordering, Parser, Value,\n",
+    "CodeFormatter",
+    "use super::{\n"
+    "    Arc, AtomicBool, AtomicU32, DocumentState, HashMap, JsonRpcError, LspServer, Mutex, Node,\n"
+    "    NonZeroU32, Ordering, Parser, Value,\n"
+    "    diagnostics_sink::{PushDiagnosticIdentity, PushDiagnosticsDisposition},\n"
+    "    document_symbols_sink::DocumentSymbolIdentity as SymbolsIdentity,\n"
+    "    json, parse_worker, source_path_from_uri,\n"
+    "};",
 )
 
 lifecycle = "crates/perl-lsp-rs/src/runtime/text_sync/lifecycle.rs"
-replace_exact(
+replace_stale_import(
     lifecycle,
     "    Arc, AtomicU32, CodeFormatter, FormattingOptions, JsonRpcError, LspServer, NonZeroU32, Value,\n"
     "    invalid_params, json, source_path_from_uri,\n",
     "    Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,\n"
     "    source_path_from_uri,\n",
+    "CodeFormatter",
+    "use super::{\n"
+    "    Arc, AtomicU32, JsonRpcError, LspServer, NonZeroU32, Value, invalid_params, json,\n"
+    "    source_path_from_uri,\n"
+    "};",
 )
 
 e2e = Path("crates/perl-lsp-rs/tests/lsp_batteries_e2e_workflow_test.rs")
@@ -182,32 +304,23 @@ if required not in e2e_text:
 if '"my $result = calculate(5, 3);\\n",\n            "\\n",' in e2e_text:
     raise SystemExit("stale extra-newline expectation returned")
 
-verified_names = {str(reject) for reject in verified_rejects}
-for expected_reject in [
-    Path(text_sync + ".rej"),
-    Path(lifecycle + ".rej"),
-    Path(str(e2e) + ".rej"),
-]:
-    if str(expected_reject) not in verified_names:
-        raise SystemExit(
-            f"reject evidence not verified against reviewed patch: {expected_reject}"
-        )
-for verified in verified_rejects:
-    if verified.exists():
-        verified.unlink()
 PY
 
-  if find . -name '*.rej' -print -quit | grep -q .; then
-    echo "Unreviewed rejected hunks remain:" >&2
-    find . -name '*.rej' -print -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \;
-    exit 1
-  fi
+  assert_no_live_rejects
 
   git add -- "${conflicts[@]}"
-  git cherry-pick --continue
+  run_cherry_pick_or_skip_empty "first cherry-pick --continue" "$first_commit" git cherry-pick --continue
+  if [ "$cherry_pick_noop" = true ]; then
+    first_commit_noop=true
+  fi
+elif [ "$cherry_pick_noop" = true ]; then
+  first_commit_noop=true
 fi
 
-git cherry-pick "$second_commit"
+run_cherry_pick_or_skip_empty "second cherry-pick" "$second_commit" git cherry-pick "$second_commit"
+if [ "$cherry_pick_noop" = true ]; then
+  second_commit_noop=true
+fi
 
 # Strengthen the containment proof: refusal must leave accepted document source,
 # client version, and generation unchanged, not merely return no edits.
@@ -333,7 +446,7 @@ cargo test -p perl-lsp-rs --test lsp_batteries_e2e_workflow_test --locked
 cargo test -p perl-lsp-rs --test lsp_3_17_formatting_tests --locked
 cargo test -p perl-lsp-rs --test lsp_capabilities_snapshot --locked
 
-cargo run -q -p xtask -- provider-confidence-matrix > /dev/null
+cargo run -q -p xtask -- check-provider-confidence-matrix > /dev/null
 cargo xtask check-support-claims
 cargo xtask check-test-wiring
 cargo xtask check-architecture
@@ -354,6 +467,12 @@ worktree_status="$(git status --porcelain=v1)"
 {
   echo "event-head: $REBUILD_EVENT_HEAD_SHA"
   echo "reconstructed-head: $(git rev-parse HEAD)"
+  if [ "$first_commit_noop" = true ]; then
+    echo "first-commit: already-current-empty-cherry-pick-skipped"
+  fi
+  if [ "$second_commit_noop" = true ]; then
+    echo "second-commit: already-current-empty-cherry-pick-skipped"
+  fi
   printf '%s\n' "$worktree_status"
 } > "$evidence_dir/reconstruction-summary.txt"
 if [ -n "$worktree_status" ]; then

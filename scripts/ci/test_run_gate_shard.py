@@ -16,6 +16,10 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from scripts.bash_binary import bash_binary  # noqa: E402  (path set above)
 from unittest import mock
 
 SCRIPT = Path(__file__).with_name("run_gate_shard.py")
@@ -438,6 +442,44 @@ class GateShardTests(unittest.TestCase):
                 )
             self.assertEqual(1, status)
             self.assertEqual("instrument_failure", summary["gates"][0]["result"])
+
+    def test_gates_producer_schema_version_is_accepted(self) -> None:
+        # The `cargo xtask gates` producer emits its `GATES_RECEIPT_SCHEMA_VERSION`
+        # constant (`gates.v1`); the Python shard validator must accept the same
+        # shape so a producer bump in `xtask` does not silently fail every
+        # CI gate shard. See #15337.
+        from scripts.ci.run_gate_shard import (
+            GATES_PRODUCER_SCHEMA_VERSION,
+            GATES_PRODUCER_SCHEMA_VERSION_PATTERN,
+        )
+
+        self.assertEqual("gates.v1", GATES_PRODUCER_SCHEMA_VERSION)
+        self.assertTrue(
+            GATES_PRODUCER_SCHEMA_VERSION_PATTERN.fullmatch(
+                GATES_PRODUCER_SCHEMA_VERSION
+            )
+        )
+        for spec in (
+            {"schema_version": "gates.v1"},
+            {"schema_version": "gates.v2"},
+        ):
+            with self.subTest(spec=spec), tempfile.TemporaryDirectory() as tmp:
+                status, summary, _, _ = run_direct(
+                    Path(tmp), {"good": spec}, ["good"]
+                )
+            self.assertEqual(0, status, summary)
+            self.assertEqual("success", summary["gates"][0]["result"])
+
+    def test_unknown_schema_version_still_fails_closed(self) -> None:
+        # The producer-accepted pattern is bounded; anything else is rejected.
+        with tempfile.TemporaryDirectory() as tmp:
+            status, summary, _, _ = run_direct(
+                Path(tmp),
+                {"bad": {"schema_version": "gates.beta"}},
+                ["bad"],
+            )
+        self.assertEqual(1, status)
+        self.assertEqual("instrument_failure", summary["gates"][0]["result"])
 
     def test_all_success_is_zero_and_deterministically_ordered(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1506,7 +1548,7 @@ class GateShardTests(unittest.TestCase):
             env = dict(os.environ)
             env["PATH"] = str(stub_bin) + os.pathsep + env.get("PATH", "")
             completed = subprocess.run(
-                ["bash", "-c", harness],
+                [bash_binary(), "-c", harness],
                 cwd=tmp,
                 env=env,
                 capture_output=True,
@@ -1854,6 +1896,165 @@ class RestoredReceiptCleanupTests(unittest.TestCase):
             # Fail-closed means fail-closed: nothing behind the link was touched.
             self.assertTrue((outside / "keep.txt").exists())
 
+
+
+class IntegrationSubjectTests(unittest.TestCase):
+    """Exercise the hosted shard binding on genuinely diverged Git trees."""
+
+    def test_diverged_checkout_binding_and_meta_execution(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = workflow.split("  merge-gate-shards:\n", 1)[1]
+        checkout = job.split("    steps:\n", 1)[1].split("\n      - name:", 1)[0]
+        checkout_ref = next(line.strip().removeprefix("ref: ") for line in checkout.splitlines() if line.strip().startswith("ref: "))
+        def render(expression: str, event: str, integration: str, candidate: str) -> str:
+            # Deliberately bounded to the current binding and its realistic regression.
+            if expression == "${{ github.sha }}":
+                return integration
+            if expression == "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}":
+                return candidate if event == "pull_request" else integration
+            raise ValueError(f"unsupported fixture expression: {expression}")
+        binding = job.split("      - name: Bind shard integration source\n", 1)[1].split("      - name:", 1)[0]
+        expected_ref = next(line.strip().removeprefix("EXPECTED_SOURCE_SHA: ") for line in binding.splitlines() if line.strip().startswith("EXPECTED_SOURCE_SHA: "))
+        if "if:" in binding:
+            raise RuntimeError("every shard must execute the binding")
+        if job.index("Bind shard integration source") > job.index("Warm xtask"):
+            raise RuntimeError("subject refusal must precede the build")
+        script = textwrap.dedent(binding.split("        run: |\n", 1)[1])
+        bash = bash_binary()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            def git(*args: str) -> str:
+                return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+            git("init", "-q")
+            git("config", "user.email", "fixture@example.invalid")
+            git("config", "user.name", "Subject fixture")
+            (root / "seed").write_text("ancestor", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-qm", "ancestor")
+            ancestor = git("rev-parse", "HEAD")
+            git("checkout", "-qb", "candidate")
+            (root / "candidate").write_text("unrelated", encoding="utf-8")
+            git("add", ".")
+            git("commit", "-qm", "candidate")
+            candidate = git("rev-parse", "HEAD")
+            git("checkout", "-qb", "base", ancestor)
+            tests = root / "scripts/ci"
+            tests.mkdir(parents=True)
+            # Every hosted meta invocation runs a base-introduced test.
+            for filename in (
+                "test_run_gate_shard.py",
+                "test_scope_cache_key.py",
+                "test_candidate_meta_self_tests.py",
+            ):
+                (tests / filename).write_text(
+                    "import unittest\nfrom pathlib import Path\nPath('gate-script-executed').touch()\n"
+                    "class Probe(unittest.TestCase):\n"
+                    " def test_observed(self):\n"
+                    "  Path('meta-executed').write_text('yes')\n"
+                    "  if Path('force-failure').exists(): raise RuntimeError('present test failure')\n",
+                    encoding="utf-8",
+                )
+            write_gate_policy(root, "  - name: introduced\n    command: python3 scripts/ci/test_run_gate_shard.py\n")
+            git("add", ".")
+            git("commit", "-qm", "new main gate and self-tests")
+            git("merge", "--no-ff", "-qm", "integration", candidate)
+            integration = git("rev-parse", "HEAD")
+            git("checkout", "--detach", render(checkout_ref, "pull_request", integration, candidate))
+            env = dict(os.environ, EXPECTED_SOURCE_SHA=render(expected_ref, "pull_request", integration, candidate), GITHUB_OUTPUT=str(root / "output"))
+            def bind() -> subprocess.CompletedProcess[str]:
+                return subprocess.run([bash, "-c", script + "\nprintf built > build-marker\n"], cwd=root, env=env, text=True, capture_output=True)
+            if bind().returncode != 0 or not (root / "build-marker").exists():
+                raise RuntimeError("integration subject did not reach the build boundary")
+            shard.load_gate_commands(root / "gate-policy.yaml", ["introduced"], root=root)
+            from scripts.ci.verify_gate_receipt_freshness import find_stale_artifacts
+            # Use the real runner and subprocesses; only adapt its native xtask
+            # argv to a portable fixture producer. Its receipt derives SHA from Git.
+            producer = root / "producer.py"
+            producer.write_text(
+                "import json, subprocess, sys\nfrom pathlib import Path\n"
+                "subprocess.run([sys.executable, 'scripts/ci/test_run_gate_shard.py'], check=True)\n"
+                f"payload = {receipt_payload('introduced', 'pass')!r}\n"
+                "payload['metadata']['git_sha'] = subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()\n"
+                "Path(sys.argv[1]).write_text(json.dumps(payload), encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            execution = write_policy(root, {"introduced": []})
+            schema = write_receipt_schema(root)
+            receipts = root / "receipts"
+            receipts.mkdir()
+            runner = shard.ShardRunner(
+                xtask=Path(sys.executable), gate_policy=root / "gate-policy.yaml",
+                receipt_dir=receipts, summary_path=receipts / "summary.json",
+                subject_sha=git("rev-parse", "HEAD"), gates=["introduced"],
+                dependency_rules=shard.load_execution_policy(execution, ["introduced"]),
+                receipt_contract=shard.load_receipt_contract(schema),
+            )
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with mock.patch.object(runner, "_command", return_value=[sys.executable, str(producer), str(receipts / "introduced.json")]):
+                    if runner.run() != 0:
+                        raise RuntimeError("real shard runner rejected integration producer")
+            finally:
+                os.chdir(previous_cwd)
+            if not (root / "gate-script-executed").exists():
+                raise RuntimeError("merge-only script never executed")
+            if find_stale_artifacts([receipts], integration):
+                raise RuntimeError("produced receipts do not bind the integration tree")
+            if not find_stale_artifacts([receipts], candidate):
+                raise RuntimeError("integration receipt accepted as candidate-only proof")
+            # The consolidated "Verify candidate meta self-tests" step runs one
+            # `python3 -m unittest <file>` per listed self-test; stale-head
+            # tolerance lives in the bash loop, not in this structural probe,
+            # so assert every listed file executes here and propagates failure.
+            block = job.split("      - name: Verify candidate meta self-tests\n", 1)[1].split(
+                "      - name:", 1
+            )[0]
+            listed = re.findall(r"scripts/ci/test_\w+\.py", block)
+            for expected in (
+                "scripts/ci/test_run_gate_shard.py",
+                "scripts/ci/test_scope_cache_key.py",
+                "scripts/ci/test_candidate_meta_self_tests.py",
+            ):
+                if expected not in listed:
+                    raise RuntimeError(f"consolidated meta step no longer runs {expected}")
+            for self_test in listed:
+                command = [sys.executable, "-m", "unittest", self_test]
+                result = subprocess.run(command, cwd=root, capture_output=True)
+                if result.returncode != 0 or not (root / "meta-executed").exists():
+                    raise RuntimeError(f"merge-tree meta test was not executed: {self_test}")
+                (root / "force-failure").touch()
+                if subprocess.run(command, cwd=root, capture_output=True).returncode == 0:
+                    raise RuntimeError(f"present meta test failure was swallowed: {self_test}")
+                (root / "force-failure").unlink()
+                (root / "meta-executed").unlink()
+            (root / "build-marker").unlink()
+            git("checkout", "--detach", candidate)
+            if bind().returncode == 0 or (root / "build-marker").exists():
+                raise RuntimeError("wrong candidate subject reached the build")
+            old_ref = "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+            git("checkout", "--detach", render(old_ref, "pull_request", integration, candidate))
+            if bind().returncode == 0 or (root / "build-marker").exists():
+                raise RuntimeError("old checkout selection mutant reached the build")
+            git("checkout", "--detach", render(checkout_ref, "push", integration, candidate))
+            env["EXPECTED_SOURCE_SHA"] = render(expected_ref, "push", integration, candidate)
+            if bind().returncode != 0:
+                raise RuntimeError("push event subject refused")
+            (root / "scripts/ci/test_run_gate_shard.py").unlink()
+            try:
+                shard.load_gate_commands(root / "gate-policy.yaml", ["introduced"], root=root)
+            except ValueError:
+                pass
+            else:
+                raise RuntimeError("missing merge-only script accepted")
+            write_gate_policy(root, "  - name: other\n    command: echo other\n")
+            try:
+                shard.load_gate_commands(root / "gate-policy.yaml", ["introduced"], root=root)
+            except ValueError as error:
+                if "no gate-policy row" not in str(error):
+                    raise
+            else:
+                raise RuntimeError("genuinely missing selected policy row was accepted")
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,7 +39,6 @@ fn kind_clone_and_copy() {
 
 #[test]
 fn kind_eq_and_ne() {
-    assert_eq!(CursorSymbolKind::Scalar, CursorSymbolKind::Scalar);
     assert_ne!(CursorSymbolKind::Scalar, CursorSymbolKind::Array);
     assert_ne!(CursorSymbolKind::Hash, CursorSymbolKind::Subroutine);
 }
@@ -196,11 +195,12 @@ fn extract_position_at_exact_length_returns_last_token() {
 }
 
 #[test]
-fn extract_cursor_on_whitespace_returns_none() {
+fn extract_cursor_on_whitespace_resolves_adjacent_token() {
     let source = "a b";
-    // position 1 is space, no sigil before or at position, and space is not alnum/_
+    // position 1 is the whitespace boundary after "a": the governed-boundary
+    // contract resolves the adjacent token rather than returning None.
     let result = extract_symbol_from_source(1, source);
-    assert_eq!(result, None);
+    assert_eq!(result, Some(("a".to_string(), CursorSymbolKind::Subroutine)));
 }
 
 #[test]
@@ -359,14 +359,14 @@ fn range_position_beyond_length_returns_none() {
 fn range_position_at_exact_length_returns_last_token() {
     let source = "abc";
     let result = get_symbol_range_at_position(source.len(), source);
-    assert_eq!(result, None);
+    assert_eq!(result, Some((0, 3)));
 }
 
 #[test]
-fn range_on_whitespace_returns_none() {
+fn range_on_whitespace_resolves_adjacent_token() {
     let source = "a b";
     let result = get_symbol_range_at_position(1, source);
-    assert_eq!(result, None);
+    assert_eq!(result, Some((0, 1)));
 }
 
 #[test]

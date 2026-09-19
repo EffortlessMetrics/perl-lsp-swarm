@@ -260,6 +260,34 @@ fn for_each_child_goto() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn for_each_child_targetless_goto() -> Result<(), Box<dyn std::error::Error>> {
+    // #15742: honest targetless goto has no target child.
+    let node = Node::new(NodeKind::TargetlessGoto {}, loc(0, 4));
+    let mut count = 0usize;
+    node.for_each_child(|_| count += 1);
+    assert_eq!(count, 0);
+    Ok(())
+}
+
+#[test]
+fn targetless_goto_kind_name() {
+    let node = Node::new(NodeKind::TargetlessGoto {}, loc(0, 4));
+    assert_eq!(node.kind.kind_name(), "TargetlessGoto");
+}
+
+#[test]
+fn targetless_goto_grammar_kind_name() {
+    let node = Node::new(NodeKind::TargetlessGoto {}, loc(0, 4));
+    assert_eq!(node.kind.grammar_kind_name(), "goto_targetless");
+}
+
+#[test]
+fn targetless_goto_sexp() {
+    let node = Node::new(NodeKind::TargetlessGoto {}, loc(0, 4));
+    assert_eq!(node.to_sexp(), "(goto_targetless)");
+}
+
+#[test]
 fn for_each_child_signature_with_params() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(
         NodeKind::Signature {
@@ -318,7 +346,7 @@ fn for_each_child_leaf_nodes_visit_nothing() -> Result<(), Box<dyn std::error::E
         ),
         Node::new(NodeKind::Readline { filehandle: Some("STDIN".to_string()) }, loc(0, 7)),
         Node::new(NodeKind::Glob { pattern: "*.pl".to_string() }, loc(0, 5)),
-        Node::new(NodeKind::Typeglob { name: "foo".to_string() }, loc(0, 4)),
+        Node::new(NodeKind::Typeglob { name: "foo".to_string(), body: None }, loc(0, 4)),
         Node::new(NodeKind::Diamond, loc(0, 2)),
         Node::new(NodeKind::Ellipsis, loc(0, 3)),
         Node::new(NodeKind::Undef, loc(0, 5)),
@@ -331,7 +359,15 @@ fn for_each_child_leaf_nodes_visit_nothing() -> Result<(), Box<dyn std::error::E
             loc(0, 13),
         ),
         Node::new(NodeKind::Prototype { content: "$@".to_string() }, loc(0, 4)),
-        Node::new(NodeKind::DataSection { marker: "__DATA__".to_string(), body: None }, loc(0, 8)),
+        Node::new(
+            NodeKind::DataSection {
+                marker: "__DATA__".to_string(),
+                marker_span: None,
+                body: None,
+                body_span: None,
+            },
+            loc(0, 8),
+        ),
         Node::new(
             NodeKind::Format {
                 name: "STDOUT".to_string(),
@@ -983,7 +1019,8 @@ fn sexp_glob_pattern() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn sexp_typeglob() -> Result<(), Box<dyn std::error::Error>> {
-    let node = Node::new(NodeKind::Typeglob { name: "main::foo".to_string() }, loc(0, 10));
+    let node =
+        Node::new(NodeKind::Typeglob { name: "main::foo".to_string(), body: None }, loc(0, 10));
     let sexp = node.to_sexp();
     assert_eq!(sexp, "(typeglob (name main::foo))");
     Ok(())
@@ -1138,8 +1175,15 @@ fn sexp_class() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn sexp_data_section_without_body() -> Result<(), Box<dyn std::error::Error>> {
-    let node =
-        Node::new(NodeKind::DataSection { marker: "__END__".to_string(), body: None }, loc(0, 7));
+    let node = Node::new(
+        NodeKind::DataSection {
+            marker: "__END__".to_string(),
+            marker_span: None,
+            body: None,
+            body_span: None,
+        },
+        loc(0, 7),
+    );
     let sexp = node.to_sexp();
     assert_eq!(sexp, "(data_section (marker __END__))");
     Ok(())

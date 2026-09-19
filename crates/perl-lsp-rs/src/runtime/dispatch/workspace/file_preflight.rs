@@ -44,6 +44,22 @@ impl LspServer {
                 };
 
                 tracing::debug!(old_uri, new_uri, "Planning file rename preflight");
+                // One admission authority (#14186): the catch-all
+                // file-operation filter routes arbitrary renames here, but
+                // module rewrite planning only has meaning for Perl subjects.
+                // Classify the renamed source through the same discovery
+                // admission policy as the startup and watcher seams before
+                // deriving any module identity, so an unrelated non-Perl
+                // rename can never rewrite Perl dependents.
+                if !rename_subject_admits_perl(self, old_uri) {
+                    tracing::debug!(
+                        old_uri,
+                        new_uri,
+                        "Rename subject is not admitted Perl source; \
+                         skipping module rewrite planning"
+                    );
+                    continue;
+                }
                 let old_module = path_to_module_name(old_uri);
                 let new_module = path_to_module_name(new_uri);
                 if old_module.is_empty() || new_module.is_empty() {
@@ -101,6 +117,38 @@ impl LspServer {
 
 fn empty_workspace_edit() -> Value {
     json!({ "changes": {} })
+}
+
+/// Returns `true` when the renamed subject at `uri` is admitted Perl source
+/// under the runtime's single admission authority (#14186).
+///
+/// Classification reads only the two authoritative sources: the open editor
+/// buffer when one exists, otherwise the current filesystem object. The
+/// workspace-index copy is deliberately skipped — it can be stale (an
+/// indexed script whose shebang was since removed must classify as
+/// non-Perl), and only a live buffer outranks disk (#8041). Unreadable or
+/// non-filesystem subjects fail closed: a preflight that cannot prove the
+/// subject is Perl plans no edits rather than guessing a module identity.
+#[cfg(feature = "workspace")]
+fn rename_subject_admits_perl(server: &LspServer, uri: &str) -> bool {
+    let Some(path) = perl_uri::uri_to_fs_path(uri) else {
+        return false;
+    };
+    let admission = server.discovery_admission_config(&path);
+    if server.document_is_open(uri) {
+        let documents = server.documents.lock();
+        let Some(text) =
+            server.get_document(&documents, uri).map(|document| document.text_arc.to_string())
+        else {
+            return false;
+        };
+        drop(documents);
+        return admission.admits_bytes(&path, text.as_bytes());
+    }
+    let Ok(text) = crate::util::read_text_file_with_encoding(&path) else {
+        return false;
+    };
+    admission.admits_bytes(&path, text.as_bytes())
 }
 
 #[cfg(feature = "workspace")]
@@ -444,6 +492,82 @@ mod tests {
         assert!(
             changes.get(&server.normalize_uri_key(&old_uri)).is_some_and(Value::is_array),
             "rename preflight should still return the package edit under the normalized URI key"
+        );
+        Ok(())
+    }
+
+    /// #14186 regression: the catch-all file-operation filter routes
+    /// arbitrary renames into `willRenameFiles`. Renaming an extensionless
+    /// non-Perl note that merely contains `use Foo;` must return no edits:
+    /// module rewrite planning requires an admitted Perl subject, classified
+    /// through the same discovery admission authority as the startup and
+    /// watcher seams.
+    #[test]
+    fn non_perl_rename_subjects_plan_no_module_edits() -> TestResult {
+        let server = LspServer::new();
+        let directory = tempfile::tempdir()?;
+        let note_path = directory.path().join("Foo");
+        let new_path = directory.path().join("Bar");
+        std::fs::write(&note_path, "release notes\nuse Foo;\n")?;
+        let old_uri = Url::from_file_path(&note_path).map_err(|_| "invalid old path")?.to_string();
+        let new_uri = Url::from_file_path(&new_path).map_err(|_| "invalid new path")?.to_string();
+
+        let outcome = server.handle_will_rename_files_dispatch(Some(json!({
+            "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
+        })));
+        let edit = outcome.map_err(|error| format!("non-Perl rename preflight failed: {error}"))?;
+        let changes = edit
+            .as_ref()
+            .and_then(|value| value.get("changes"))
+            .and_then(Value::as_object)
+            .ok_or("non-Perl rename preflight must return a WorkspaceEdit changes map")?;
+        assert!(
+            changes.is_empty(),
+            "non-Perl rename subjects must plan no module rewrites, got {changes:?}"
+        );
+        Ok(())
+    }
+
+    /// #14186 review regression: classification of a closed subject must
+    /// come from disk, not the workspace-index copy. An indexed extensionless
+    /// Perl script that loses its shebang on disk is no longer Perl, so its
+    /// rename must plan no edits even though the index still holds the
+    /// shebang-era text.
+    #[test]
+    fn closed_rename_subject_classifies_from_disk_not_stale_index() -> TestResult {
+        let server = LspServer::new();
+        let directory = tempfile::tempdir()?;
+        let script_path = directory.path().join("deploy_hook");
+        let new_path = directory.path().join("retired_hook");
+        let shebang_source = "#!/usr/bin/env perl\npackage Hook;\nsub hook_symbol { 1 }\n1;\n";
+        std::fs::write(&script_path, shebang_source)?;
+        let old_uri =
+            Url::from_file_path(&script_path).map_err(|_| "invalid old path")?.to_string();
+        let new_uri = Url::from_file_path(&new_path).map_err(|_| "invalid new path")?.to_string();
+        // Canonical initial-state seeding (#11301): the fixture pre-seeds the
+        // closed file's pre-change facts; the compatibility `index_file`
+        // surface stays out of new callers per the #13185 ledger precedent.
+        server
+            .coordinator()
+            .ok_or("workspace coordinator unavailable")?
+            .index()
+            .index_initial_file(Url::parse(&old_uri)?, shebang_source.to_string())?;
+        // The disk object loses its Perl shebang after the index snapshot.
+        std::fs::write(&script_path, "#!/bin/sh\npackage Hook;\nsub hook_symbol { 1 }\n1;\n")?;
+
+        let outcome = server.handle_will_rename_files_dispatch(Some(json!({
+            "files": [{ "oldUri": old_uri.clone(), "newUri": new_uri.clone() }]
+        })));
+        let edit =
+            outcome.map_err(|error| format!("stale-index rename preflight failed: {error}"))?;
+        let changes = edit
+            .as_ref()
+            .and_then(|value| value.get("changes"))
+            .and_then(Value::as_object)
+            .ok_or("stale-index preflight must return a WorkspaceEdit changes map")?;
+        assert!(
+            changes.is_empty(),
+            "stale indexed text must not admit a de-shebanged rename subject, got {changes:?}"
         );
         Ok(())
     }
