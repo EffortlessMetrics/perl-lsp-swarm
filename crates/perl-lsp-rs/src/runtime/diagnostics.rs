@@ -2957,6 +2957,56 @@ mod tests {
         Ok(())
     }
 
+    /// One document, two transports, one identity (#15564).
+    ///
+    /// Both pull transports resolve the identity root through one shared chain
+    /// (`build_context` → `critic_root_for_document`), so a result ID minted
+    /// by `textDocument/diagnostic` must be reusable by `workspace/diagnostic`
+    /// for the same document. The topology here is the one where the two
+    /// builders historically diverged: an unregistered document with discovered
+    /// single-file project configuration and no server root. Pre-convergence
+    /// the workspace path had no root authority there and could not reuse the
+    /// document transport's ID; it must now report the document `unchanged`
+    /// against it.
+    #[test]
+    fn document_and_workspace_pulls_share_one_identity_for_one_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = "use builtin 'inf'; builtin::inf();\n";
+        let temp = tempfile::tempdir()?;
+        let (server, _) = make_server_with_capture();
+        let (uri, _) = install_single_file_project_config(&temp, "5.20")?;
+        server.test_handle_did_open(Some(json!({
+            "textDocument": {"uri": uri, "languageId": "perl", "version": 1, "text": source}
+        })))?;
+
+        let document_report = server
+            .handle_document_diagnostic(Some(json!({"textDocument": {"uri": uri}})))?
+            .ok_or("document pull response missing")?;
+        let document_result_id = document_report["resultId"]
+            .as_str()
+            .ok_or("document pull must mint a reusable result ID")?
+            .to_string();
+
+        let workspace_report = server
+            .handle_workspace_diagnostic(Some(json!({
+                "previousResultIds": [{"uri": uri, "value": document_result_id}]
+            })))?
+            .ok_or("workspace pull response missing")?;
+        let item = workspace_report["items"]
+            .get(0)
+            .ok_or("workspace pull response must contain the document item")?;
+        assert_eq!(
+            item["kind"], "unchanged",
+            "workspace pull must reuse the document transport's result ID: {item}"
+        );
+        assert_eq!(
+            item["resultId"].as_str(),
+            Some(document_result_id.as_str()),
+            "unchanged report must echo the reused result ID"
+        );
+        Ok(())
+    }
+
     #[test]
     fn workspace_folder_change_republishes_push_diagnostics_for_open_documents()
     -> Result<(), Box<dyn std::error::Error>> {
