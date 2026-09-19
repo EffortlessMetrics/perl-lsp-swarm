@@ -219,6 +219,16 @@ enum Commands {
     /// declared adaptations of the landed programme train manifests.
     CheckTrainEdgeContract,
 
+    /// Feature-readiness train tooling (FR-C05 #11286): deterministic,
+    /// content-addressed builder and adversarial reviewer packets over a
+    /// bounded representative fixture registry. Offline only; invokes no
+    /// model, mutates no Git/GitHub state, and writes no repository files.
+    #[command(name = "feature-readiness-train")]
+    FeatureReadinessTrain {
+        #[command(subcommand)]
+        command: tasks::feature_readiness_packets::FeatureReadinessTrainCommand,
+    },
+
     /// Validate the structural release-candidate security contract (no audits).
     CandidateSecurityContract {
         /// Path to the contract JSON document.
@@ -5384,6 +5394,9 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::CheckOracleReceiptSchema => oracle_receipt_schema::run(),
         Commands::CheckCompilerPerformanceReceipt => compiler_performance_receipt::run(),
         Commands::CheckTrainEdgeContract => train_edge_contract::run(),
+        Commands::FeatureReadinessTrain { command } => {
+            tasks::feature_readiness_packets::run(command)
+        }
         Commands::CandidateSecurityContract { contract } => {
             tasks::candidate_security_contract::run(&contract)
         }
