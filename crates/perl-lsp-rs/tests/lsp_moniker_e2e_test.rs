@@ -121,6 +121,48 @@ fn moniker_exported_sub_is_classified_as_export() -> TestResult {
 }
 
 #[test]
+fn moniker_multiline_export_lists_classify_only_listed_symbols_as_exports() -> TestResult {
+    let mut harness = LspHarness::new();
+    harness.initialize(None)?;
+
+    let uri = "file:///moniker_multiline_exports.pm";
+    harness.open(
+        uri,
+        "package Foo::Bar;\n\
+         use Exporter 'import';\n\
+         our @EXPORT_OK = qw(\n\
+             qw_export\n\
+         );\n\
+         our @EXPORT = (\n\
+             'array_export',\n\
+         );\n\
+         sub qw_export { return 1 }\n\
+         sub array_export { return 2 }\n\
+         sub private { return 3 }\n\
+         1;\n",
+    )?;
+
+    let qw_monikers = request_monikers(&mut harness, uri, 8, 6)?;
+    assert!(
+        moniker_kinds(&qw_monikers).contains(&"export"),
+        "multiline @EXPORT_OK symbol must be classified as export: {qw_monikers:?}"
+    );
+
+    let array_monikers = request_monikers(&mut harness, uri, 9, 6)?;
+    assert!(
+        moniker_kinds(&array_monikers).contains(&"export"),
+        "multiline @EXPORT symbol must be classified as export: {array_monikers:?}"
+    );
+
+    let private_monikers = request_monikers(&mut harness, uri, 10, 6)?;
+    assert!(
+        !moniker_kinds(&private_monikers).contains(&"export"),
+        "unlisted symbol must not be classified as export: {private_monikers:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn moniker_imported_sub_yields_import_kind_and_source_moniker() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;

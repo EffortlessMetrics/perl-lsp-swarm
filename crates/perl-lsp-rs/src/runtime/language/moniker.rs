@@ -275,7 +275,7 @@ impl LspServer {
         static EXPORT_ARRAY_RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
 
         let export_re = EXPORT_QW_RE.get_or_init(|| {
-            regex::Regex::new(r"@EXPORT(?:_OK)?\s*=\s*qw[(\[{/<|!]([^\n)\]}/|!>]+)[)\]}/|!>]").ok()
+            regex::Regex::new(r"@EXPORT(?:_OK)?\s*=\s*qw[(\[{/<|!]([^\)\]}/|!>]+)[)\]}/|!>]").ok()
         });
 
         if let Some(re) = export_re {
