@@ -2718,21 +2718,11 @@ mod framing_tests {
         // request's epoch. The `initialize` request's trailing
         // `initialized` event keeps the consumer writing while the reload
         // handler enqueues its pair, so both land in a single batch.
-        let unique = format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|elapsed| elapsed.as_nanos())
-                .unwrap_or_default()
-        );
-        let dir = std::env::temp_dir().join(format!("plsw-drain-batch-{unique}"));
-        std::fs::create_dir_all(&dir)?;
-        let source_file = dir.join("reloaded_module.pl");
+        let dir = tempfile::tempdir()?;
+        let source_file = dir.path().join("reloaded_module.pl");
         let body: String = (0..8).map(|index| format!("my $v{index} = {index};\n")).collect();
         std::fs::write(&source_file, body)?;
         let source_path = source_file.to_string_lossy().into_owned();
-        let cleanup_dir = dir.clone();
 
         let mut adapter = DebugAdapter::new();
         adapter.enable_loaded_module_reload_preview_profile(true);
@@ -2802,7 +2792,6 @@ mod framing_tests {
         let started = std::time::Instant::now();
         adapter.run_with_io(Cursor::new(input), SlowEventWriter::new(output.clone()))?;
         let elapsed = started.elapsed();
-        let _ = std::fs::remove_dir_all(&cleanup_dir);
         assert!(
             elapsed < std::time::Duration::from_millis(950),
             "the reload response must not wait out the drain timeout: took {elapsed:?}"
