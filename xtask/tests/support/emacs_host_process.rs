@@ -198,7 +198,7 @@ pub fn run_owned_process(
     // direct run-local attribution, so remediation does not need to wait for
     // the bulk baseline: killing at observation still leaves the run's
     // ledger naming the leak via the recorded PID promoted below.
-    let leaked_descendant_at_exit = leaked_marker_descendant_alive(layout, pid);
+    let leaked_descendant_at_exit = leaked_marker_descendant_alive(layout, pid, &needle);
     if let Some(descendant_pid) = leaked_descendant_at_exit {
         stop_owned_pid(descendant_pid);
     }
@@ -254,9 +254,10 @@ pub fn run_owned_process(
                         // could still be alive; union that recorded PID into the
                         // ledger on every pass — not only when the bulk set is empty —
                         // so a bulk-visible sibling cannot keep the marked-but-missed
-                        // descendant out of remediation. The same per-PID primitive
-                        // backs `descendant_still_running`, so the classification
-                        // stays consistent with the test assertion. A
+                        // descendant out of remediation. The marker path
+                        // identity-checks the recorded PID before stopping it, so a
+                        // recycled PID is never killed or promoted into remediation.
+                        // A
                         // timed-out/force-killed host never promotes the marker
                         // descendant: it was already stopped at observation time,
                         // before the after-probe, so the post-reap ledger stays
@@ -1138,53 +1139,28 @@ fn read_descendant_pid(layout: &HermeticLayout, host_pid: u32) -> Option<u32> {
     trimmed.parse::<u32>().ok()
 }
 
-/// Kernel-verify the fake host's recorded leak descendant at host-exit time.
-/// Returns the recorded PID only when the marker names a foreign PID and the
-/// kernel still reports it alive, so a descendant that died with the host, a
-/// missing/garbled marker, or a failed probe keeps the prior classification
-/// untouched instead of fabricating a survivor.
-fn leaked_marker_descendant_alive(layout: &HermeticLayout, host_pid: u32) -> Option<u32> {
+/// Identity-verify the fake host's recorded leak descendant at host-exit
+/// time. Returns the recorded PID only when the marker names a foreign PID
+/// whose live process still matches this run's candidate needle, so a
+/// descendant that died with the host, a missing/garbled marker, a failed
+/// probe, or a PID recycled to an unrelated process keeps the prior
+/// classification untouched instead of fabricating a survivor or killing a
+/// stranger.
+fn leaked_marker_descendant_alive(
+    layout: &HermeticLayout,
+    host_pid: u32,
+    needle: &str,
+) -> Option<u32> {
     let descendant_pid = read_descendant_pid(layout, host_pid)?;
     if descendant_pid == host_pid {
         return None;
     }
-    match pid_still_alive(descendant_pid) {
-        Some(true) => Some(descendant_pid),
-        _ => None,
-    }
-}
-
-/// Per-PID survival probe used as a Windows fallback when the bulk process
-/// snapshot misses a leaked candidate descendant. `tasklist /FI "PID eq X"`
-/// queries the kernel process table directly and is not subject to the
-/// bulk-enumeration races that can hide a detached candidate image.
-/// Returns `None` on probe failure (preserves the prior `Pass`/`Fail` —
-/// instrumentation errors must not silently flip cleanup).
-fn pid_still_alive(pid: u32) -> Option<bool> {
-    if cfg!(windows) {
-        let output = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
-            .stdin(Stdio::null())
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let needle = format!("\"{pid}\"");
-        // `tasklist` prints a CSV header line `INFO: No tasks are running...`
-        // when no row matches; otherwise the row contains the quoted PID.
-        Some(stdout.contains(&needle) && !stdout.contains("No tasks are running"))
-    } else {
-        let status = Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok()?;
-        Some(status.success())
-    }
+    // Numeric liveness alone is not identity: the descendant may have exited
+    // and had its PID reused by an unrelated process between the marker write
+    // and this observation. Re-probe the live process's identity and only
+    // stop it when it matches this run's candidate needle.
+    let identity = probe_owned_pid_identity(descendant_pid)?;
+    matches_needle(&identity, needle).then_some(descendant_pid)
 }
 
 fn diagnostic_probe_failure(phase: &str, probe: &Option<Result<String>>) -> Option<String> {
@@ -1495,5 +1471,29 @@ mod process_tests {
         assert!(own.as_deref().is_some_and(|identity| !identity.is_empty()));
         // u32::MAX cannot be a live PID on either platform.
         assert!(probe_owned_pid_identity(u32::MAX).is_none());
+    }
+
+    #[test]
+    fn leaked_marker_descendant_requires_needle_matching_identity() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let layout = HermeticLayout::prepare(tmp.path())?;
+        let event_file = layout.event_file();
+        let marker_parent = event_file.parent().context("event file parent")?;
+        let own_pid = std::process::id();
+        // A foreign host PID keeps the self-PID guard out of the way.
+        let host_pid = own_pid + 1;
+        fs::write(
+            marker_parent.join(format!("descendant-ready-{host_pid}")),
+            format!("ready pid={own_pid}\n"),
+        )?;
+        // A live PID whose identity does not match the run needle must not be
+        // returned for termination — numeric liveness alone is not identity.
+        assert!(leaked_marker_descendant_alive(&layout, host_pid, "zzz-unrelated-image").is_none());
+        // The same recorded PID is returned when its live identity matches the
+        // run needle, mirroring the real descendant's staged candidate image.
+        let identity =
+            probe_owned_pid_identity(own_pid).context("self identity probe must succeed")?;
+        assert_eq!(leaked_marker_descendant_alive(&layout, host_pid, &identity), Some(own_pid));
+        Ok(())
     }
 }
