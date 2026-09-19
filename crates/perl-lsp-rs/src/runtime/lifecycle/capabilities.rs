@@ -524,13 +524,40 @@ impl LspServer {
                     }
                 }
 
-                // v0.18 envelope (#8129): UTF-16 is the only wire encoding.
-                // Well-formed lists that omit utf-16 still accept via the
-                // explicit mandatory-fallback reason; malformed shapes already
-                // failed classification above. Store the advertised encoding;
-                // do not keep a second preferred encoding that production never
-                // uses.
-                caps.position_encoding = crate::textdoc::PosEnc::Utf16;
+                // Negotiate the client's preferred encoding per LSP 3.17: the
+                // first entry of `general.positionEncodings` this server
+                // represents, defaulting to UTF-16. The v0.18 classification
+                // above has already validated the offer shape, so a well-formed
+                // list that omits utf-16 lands here as a recorded preference
+                // while the wire stays UTF-16 via the mandatory fallback. This
+                // legacy slot is a compatibility record only — never the active
+                // authority (`position_encoding_session_context`, published at
+                // the end of this handler) and never the advertisement
+                // (`v0_18_text_sync_envelope::WIRE_ENCODING`). Those two own
+                // the active and advertised encodings; keeping the client's
+                // preference here distinct from both is what
+                // `utf8_preference_remains_distinct_from_active_utf16` pins.
+                let negotiated_preference = if let Some(encodings) = params
+                    .pointer("/capabilities/general/positionEncodings")
+                    .and_then(Value::as_array)
+                {
+                    let supported = ["utf-8", "utf-16"];
+                    encodings
+                        .iter()
+                        .find_map(|enc| {
+                            enc.as_str()
+                                .and_then(|s| if supported.contains(&s) { Some(s) } else { None })
+                        })
+                        .and_then(|enc_str| match enc_str {
+                            "utf-8" => Some(crate::textdoc::PosEnc::Utf8),
+                            "utf-16" => Some(crate::textdoc::PosEnc::Utf16),
+                            _ => None,
+                        })
+                        .unwrap_or(crate::textdoc::PosEnc::Utf16)
+                } else {
+                    crate::textdoc::PosEnc::Utf16
+                };
+                caps.position_encoding = negotiated_preference;
             } // caps lock released here
 
             // Check if client supports pull diagnostics.
@@ -799,22 +826,17 @@ impl LspServer {
 
         // Add fields not yet in lsp-types 0.97
         //
-        // Client preference remains available on `ClientCapabilities` for
-        // compatibility parsing, while the server-owned active context keeps
-        // coordinate consumers on UTF-16 during this migration. `text_sync`
-        // and providers not yet migrated (hover, definition, ...) still
-        // compute positions in UTF-16
-        // code units. Per the LSP 3.17 spec, client and server MUST agree on
-        // one encoding or offsets are misinterpreted, so the *advertised*
-        // `positionEncoding` MUST stay pinned to "utf-16" — the mandatory
-        // default — until phase 2 threads the negotiated encoding through the
-        // providers. Advertising anything else here would silently corrupt
-        // document sync and every position-bearing response for non-ASCII
-        // content on a client that prefers a different encoding.
-        capabilities["positionEncoding"] = Value::String("utf-16".to_string());
-        // v0.18 advertises and uses UTF-16 only (#8129). Position-bearing
-        // providers still compute UTF-16 code units. A later encoding cutover
-        // is #1690 and is not part of this envelope.
+        // The v0.18 envelope (#8129) advertises and uses UTF-16 only, written
+        // once from the envelope's `WIRE_ENCODING` authority so the value has
+        // exactly one owner and lifetime. Position-bearing providers still
+        // compute UTF-16 code units, and the active authority published at the
+        // end of this handler is the compatibility-pinned UTF-16 session
+        // context, so advertisement and active encoding cannot disagree. Per
+        // the LSP 3.17 spec, client and server MUST agree on one encoding or
+        // offsets are misinterpreted: advertising anything else would silently
+        // corrupt document sync and every position-bearing response for
+        // non-ASCII content on a client that prefers a different encoding. A
+        // later encoding cutover is #1690 and is not part of this envelope.
         capabilities["positionEncoding"] =
             Value::String(super::super::v0_18_text_sync_envelope::WIRE_ENCODING.to_string());
         if features.declaration {
@@ -1630,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_selects_utf16_when_client_also_offers_utf8()
+    fn initialize_selects_utf16_wire_and_records_client_preference()
     -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
@@ -1648,9 +1670,10 @@ mod tests {
         assert!(
             matches!(
                 server.client_capabilities.lock().position_encoding,
-                crate::textdoc::PosEnc::Utf16
+                crate::textdoc::PosEnc::Utf8
             ),
-            "stored encoding must match advertised utf-16"
+            "the legacy slot records the client's first supported preference; \
+             only the advertisement carries the v0.18 utf-16 wire encoding"
         );
         Ok(())
     }
