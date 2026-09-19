@@ -23,10 +23,15 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::gates::GATES_RECEIPT_SCHEMA_VERSION;
+
 // ── Receipt types (subset of gates::Receipt / gates::GateResult) ─────────────
 
-/// Supported schema version string produced by `cargo xtask gates`.
-const SUPPORTED_SCHEMA_VERSION: &str = "gates.v1";
+/// Schema version this consumer accepts. Single source of truth:
+/// `gates::GATES_RECEIPT_SCHEMA_VERSION`. Producers must emit that same
+/// constant; a mismatch (e.g. `"1.0.0"`) causes every freshly-emitted receipt
+/// to be rejected at load time (#15337).
+const SUPPORTED_SCHEMA_VERSION: &str = GATES_RECEIPT_SCHEMA_VERSION;
 
 #[derive(Debug, Default, Deserialize)]
 struct Receipt {
@@ -519,6 +524,32 @@ mod tests {
         fs::write(&path, br#"{"gates":[]}"#).expect("write");
         let result = load_receipt(&path);
         assert!(result.is_ok());
+    }
+
+    /// Producer/consumer roundtrip — `#15337`.
+    ///
+    /// The `gates` producer emits `GATES_RECEIPT_SCHEMA_VERSION` and the
+    /// `ci_explain` consumer must accept the same string. Both sides now
+    /// resolve through the same source-of-truth constant; this test pins the
+    /// consumer's acceptance of the producer's exact value. If the producer
+    /// constant drifts, this test fails before a freshly-emitted receipt is
+    /// silently rejected.
+    #[test]
+    fn load_receipt_accepts_producer_emitted_schema_version() {
+        use std::fs;
+        use tempfile::TempDir;
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("receipt.json");
+        let body =
+            format!(r#"{{"schema_version":"{}","gates":[]}}"#, GATES_RECEIPT_SCHEMA_VERSION,);
+        fs::write(&path, body).expect("write");
+        let result = load_receipt(&path);
+        assert!(
+            result.is_ok(),
+            "consumer rejected producer-emitted schema_version {:?}: {:?}",
+            GATES_RECEIPT_SCHEMA_VERSION,
+            result.err(),
+        );
     }
 
     // ── find_blocking_gate ───────────────────────────────────────────────────

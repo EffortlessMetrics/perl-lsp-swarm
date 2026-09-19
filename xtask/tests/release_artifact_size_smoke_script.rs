@@ -34,6 +34,13 @@ fn script() -> PathBuf {
     project_root().join("scripts/ci/release_artifact_size_smoke.sh")
 }
 
+/// MSYS bash strips backslashes from absolute Windows paths passed as argv;
+/// forward-slash the script path before handing it to bash on Windows
+/// (#15435 / #15423 family C8).
+fn script_arg_for_bash() -> String {
+    script().to_string_lossy().replace('\\', "/")
+}
+
 fn package_dir(root: &Path, variant: &str) -> PathBuf {
     root.join("target/shadow").join(variant).join(format!("perllsp-{VERSION}-{TARGET}"))
 }
@@ -88,7 +95,7 @@ fn stub_cargo(root: &Path, lsp_receipt: Option<&str>, dap_receipt: bool) -> Resu
 
 fn smoke(root: &Path, variant: &str, cargo: &Path) -> Result<Output> {
     Command::new("bash")
-        .arg(script())
+        .arg(script_arg_for_bash())
         .args([variant, TARGET, VERSION])
         .env("RELEASE_ARTIFACT_SIZE_ROOT", root)
         .env("CARGO", cargo)
