@@ -1,5 +1,7 @@
 //! Typed no-publish side-effect surface inventory (`no_publish_side_effects.v1`)
-//! derived from the canonical release topology.
+//! derived from caller-supplied release-topology bytes (self-consistent
+//! projection; canonical admission is explicitly out of scope, sequenced
+//! behind #8976/#6067/#15281 with subjects behind #8970/#4145).
 //!
 //! Schema and external-surface inventory definition only (#9414): this module
 //! owns the closed contract shape, the closed mutation-authority and
@@ -8,12 +10,15 @@
 //! public channel — those belong to the exact publisher/observer claims this
 //! schema is a prerequisite for.
 //!
-//! The inventory binds to the canonical release-topology artifact
+//! The inventory binds to the caller-supplied release-topology artifact
 //! (`release-topology.json`, produced by `scripts/generate_release_topology.py`):
 //! the artifact bytes carry a typed `sha256:<hex>` digest, and the closed
 //! surface authority — every inventoried `(id, class, topology_state, subject
-//! denominator)` tuple — is derived from those bytes, so the receipt certifies
-//! a named topology state instead of an unbound document shape.
+//! denominator)` tuple — is projected from those supplied bytes, so the receipt
+//! certifies a named supplied-bytes state, not canonical admission. A
+//! fabricated-but-self-consistent topology passes; canonical admission
+//! (schema + checkout/SHA + source-hash + denominator validation against the
+//! real generator) belongs to the sequenced follow-up.
 
 use clap::Parser;
 use color_eyre::eyre::{Context, Result, bail};
@@ -35,14 +40,15 @@ pub const TOPOLOGY_DIGEST_PREFIX: &str = "sha256:";
 #[command(
     name = "no-publish-side-effects",
     about = "Validate a no_publish_side_effects.v1 surface inventory document against \
-             the canonical release topology"
+             caller-supplied release-topology bytes (self-consistent projection; \
+             canonical admission out of scope)"
 )]
 struct Cli {
     /// Path to the inventory JSON document.
     #[arg(long)]
     inventory: PathBuf,
-    /// Path to the canonical release-topology.json artifact the inventory
-    /// must bind to.
+    /// Path to the caller-supplied release-topology.json artifact the inventory
+    /// must bind to (canonical admission out of scope).
     #[arg(long)]
     topology: PathBuf,
 }
@@ -54,10 +60,11 @@ struct Cli {
 #[serde(deny_unknown_fields)]
 pub struct NoPublishSideEffectsInventory {
     pub schema_version: String,
-    /// Digest of the canonical release topology this inventory derives from.
-    /// The inventory is a pure projection of that topology, so the binding is
+    /// Digest of the caller-supplied release topology this inventory projects.
+    /// The inventory is a pure projection of those supplied bytes, so the binding is
     /// mandatory, typed (`sha256:<64 lowercase hex>`), and checked against the
-    /// canonical artifact bytes — a non-empty but stale digest fails.
+    /// supplied artifact bytes — a non-empty but stale digest fails.
+    /// Self-consistent only: canonical admission is out of scope.
     pub topology_digest: String,
     /// One row per topology-required or explicitly deferred channel or public
     /// subject class, in deterministic order.
@@ -205,9 +212,10 @@ fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Derive the closed surface authority from one canonical release-topology
-/// artifact. The artifact bytes are the authority: the digest is computed over
-/// exactly those bytes, and every surface tuple is derived from the manifest
+/// Derive the closed surface authority from caller-supplied release-topology
+/// bytes (self-consistent projection; canonical admission out of scope).
+/// The supplied bytes are the authority: the digest is computed over
+/// exactly those bytes, and every surface tuple is projected from the manifest
 /// fields (`primary_channels`, `secondary_channels`, `published_crates`,
 /// `binary_targets`) that `scripts/generate_release_topology.py` owns.
 pub fn load_topology_authority(path: &Path) -> Result<TopologyAuthority> {
@@ -733,9 +741,10 @@ pub fn derive_inventory(authority: &TopologyAuthority) -> Result<NoPublishSideEf
     })
 }
 
-/// Validate one inventory document against one canonical release-topology
-/// artifact through the production validation path: closed schema, typed
-/// topology binding, closed-world surface authority, and canonical projection.
+/// Validate one inventory document against caller-supplied release-topology
+/// bytes through the production validation path: closed schema, typed
+/// supplied-bytes binding, closed-world surface authority, and
+/// self-consistent projection (canonical admission out of scope).
 pub fn run(inventory_path: PathBuf, topology_path: PathBuf) -> Result<()> {
     let authority = load_topology_authority(&topology_path)
         .with_context(|| format!("loading topology authority {}", topology_path.display()))?;
@@ -825,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn authority_is_the_canonical_closed_world() -> Result<()> {
+    fn authority_is_the_supplied_bytes_closed_world() -> Result<()> {
         let fixture = authority();
         // Primary channels are required — including Open VSX, which the
         // topology lists as primary; the docker secondary channel is
