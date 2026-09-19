@@ -203,7 +203,7 @@ fn collect_package_subs(
             // Only a typeglob ASSIGNMENT installs a glob entry: a bare
             // `*get{CODE}` read or `\*get` reference defines no function and
             // must not shadow a same-named import (#14408 review).
-            if let NodeKind::Typeglob { name } = &lhs.kind {
+            if let NodeKind::Typeglob { name, .. } = &lhs.kind {
                 record_glob_shadow(name, current_package, package_subs);
             }
         }

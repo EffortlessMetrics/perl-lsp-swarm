@@ -1,5 +1,7 @@
-// Test infrastructure — allow test-friendly patterns.
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(
+    clippy::print_stderr,
+    reason = "Scenario 18 reports a local non-execution reason when the required perllsp binary is unavailable."
+)]
 
 //! Scenario 18 — diagnostics refresh after textDocument/didChange.
 //!
@@ -38,19 +40,21 @@ sub greet {\n\
 ";
 
 #[test]
-fn scenario_18_diagnostics_republish_after_full_document_edit() {
+fn scenario_18_diagnostics_republish_after_full_document_edit() -> Result<(), String> {
     if !binary_available() {
         eprintln!("SKIP scenario_18: perl-lsp binary not found");
-        return;
+        return Ok(());
     }
 
     let harness = UxHarness::new(
         ScenarioConfig { timeout: Duration::from_secs(15), ..Default::default() }
             .with_file("edit_diag.pl", BROKEN_SOURCE),
     )
-    .expect("Failed to create UX harness");
+    .map_err(|error| format!("Failed to create UX harness: {error}"))?;
 
-    harness.open_file("edit_diag.pl", BROKEN_SOURCE).expect("didOpen should succeed");
+    harness
+        .open_file("edit_diag.pl", BROKEN_SOURCE)
+        .map_err(|error| format!("didOpen should succeed: {error}"))?;
 
     // Wait for and then drain the initial diagnostics so the post-edit wait
     // sees only new events, not the pre-edit ones still in the peek queue.
@@ -65,7 +69,7 @@ fn scenario_18_diagnostics_republish_after_full_document_edit() {
 
     let updated = harness
         .apply_edit_and_collect_diagnostics("edit_diag.pl", FIXED_SOURCE, Duration::from_secs(5))
-        .expect("didChange full document should succeed");
+        .map_err(|error| format!("didChange full document failed: {error}"))?;
     for diag in &updated {
         assert!(
             diag.get("range").is_some() && diag.get("message").is_some(),
@@ -97,4 +101,5 @@ fn scenario_18_diagnostics_republish_after_full_document_edit() {
         diagnostics_event_count
     );
     harness.assert_no_crash();
+    Ok(())
 }

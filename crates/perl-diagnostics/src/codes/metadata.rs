@@ -113,6 +113,14 @@ impl DiagnosticCode {
             Self::HeredocInEval => "PL805",
             Self::HeredocTiedHandle => "PL806",
             Self::VersionIncompatFeature => "PL900",
+            Self::RegexBacktrackingRisk => "PL1000",
+            Self::RegexAnalysisLimit => "PL1001",
+            Self::RegexModifierInvalid => "PL1002",
+            Self::RegexModifierNoEffect => "PL1003",
+            Self::RegexModifierUnavailable => "PL1004",
+            Self::RegexCaptureInvalid => "PL1005",
+            Self::RegexCaptureUnavailable => "PL1006",
+            Self::RegexAnalysisIncomplete => "PL1007",
         }
     }
 
@@ -189,6 +197,14 @@ impl DiagnosticCode {
             "PL805" => "https://docs.perl-lsp.org/errors/PL805",
             "PL806" => "https://docs.perl-lsp.org/errors/PL806",
             "PL900" => "https://docs.perl-lsp.org/errors/PL900",
+            "PL1000" => "https://docs.perl-lsp.org/errors/PL1000",
+            "PL1001" => "https://docs.perl-lsp.org/errors/PL1001",
+            "PL1002" => "https://docs.perl-lsp.org/errors/PL1002",
+            "PL1003" => "https://docs.perl-lsp.org/errors/PL1003",
+            "PL1004" => "https://docs.perl-lsp.org/errors/PL1004",
+            "PL1005" => "https://docs.perl-lsp.org/errors/PL1005",
+            "PL1006" => "https://docs.perl-lsp.org/errors/PL1006",
+            "PL1007" => "https://docs.perl-lsp.org/errors/PL1007",
             _ => return None,
         })
     }
@@ -204,7 +220,9 @@ impl DiagnosticCode {
             | Self::VariableRedeclaration
             | Self::DuplicateParameter
             | Self::UnquotedBareword
-            | Self::UnresolvedQualifiedCall => DiagnosticSeverity::Error,
+            | Self::UnresolvedQualifiedCall
+            | Self::RegexModifierInvalid
+            | Self::RegexCaptureInvalid => DiagnosticSeverity::Error,
 
             // Warnings
             Self::MissingStrict
@@ -247,7 +265,11 @@ impl DiagnosticCode {
             | Self::ModuleNotFound
             | Self::SourceFilterModule
             | Self::VersionIncompatFeature
-            | Self::EvalErrorFlow => DiagnosticSeverity::Warning,
+            | Self::EvalErrorFlow
+            | Self::RegexBacktrackingRisk
+            | Self::RegexModifierNoEffect
+            | Self::RegexModifierUnavailable
+            | Self::RegexCaptureUnavailable => DiagnosticSeverity::Warning,
 
             // Information
             Self::CaptureVarWithoutRegexMatch
@@ -257,7 +279,9 @@ impl DiagnosticCode {
             | Self::HeredocInSourceFilter
             | Self::HeredocInRegexCode
             | Self::HeredocInEval
-            | Self::HeredocTiedHandle => DiagnosticSeverity::Information,
+            | Self::HeredocTiedHandle
+            | Self::RegexAnalysisLimit
+            | Self::RegexAnalysisIncomplete => DiagnosticSeverity::Information,
 
             // Hints
             Self::MissingPodCoverage | Self::UnusedImport | Self::UnreachableCode => {
@@ -533,6 +557,43 @@ impl DiagnosticCode {
                 in an in-file package are flagged. Define the sub, correct the call, \
                 or load the package via `use`/`require` if it is external.",
             ),
+            Self::RegexBacktrackingRisk => Some(
+                "A repeated group already contains a backtracking quantifier, so input \
+                that fails to match can take super-linear time. Make the inner quantifier \
+                possessive or atomic, or rewrite the group so only one part repeats.",
+            ),
+            Self::RegexAnalysisLimit => Some(
+                "Static analysis of this pattern stopped at a configured limit, so the \
+                rest of the pattern was not inspected. The pattern is not proven clean \
+                beyond this point.",
+            ),
+            Self::RegexModifierInvalid => Some(
+                "This modifier is not recognized, is repeated, conflicts with another \
+                modifier, or is not accepted for this operator. Remove it or use the \
+                modifier that applies to this quote-like operator.",
+            ),
+            Self::RegexModifierNoEffect => Some(
+                "Perl accepts this modifier here but it changes nothing. Remove it to \
+                say what the pattern actually does.",
+            ),
+            Self::RegexModifierUnavailable => Some(
+                "This modifier form needs a newer Perl version or a feature that is not \
+                enabled for this source. Raise the declared version, enable the feature, \
+                or use the form available under the current profile.",
+            ),
+            Self::RegexCaptureInvalid => Some(
+                "This capture name is not valid. Use a name that starts with a letter or \
+                underscore and continues with word characters.",
+            ),
+            Self::RegexCaptureUnavailable => Some(
+                "This capture form needs a newer Perl version or source UTF-8 semantics. \
+                Raise the declared version, add `use utf8;`, or use a plain numbered capture.",
+            ),
+            Self::RegexAnalysisIncomplete => Some(
+                "Static analysis could not finish for this pattern, so its findings are \
+                partial. Absence of a further finding here is not evidence that the \
+                pattern is clean.",
+            ),
         }
     }
 
@@ -675,6 +736,14 @@ impl DiagnosticCode {
             "PL805" => Some(Self::HeredocInEval),
             "PL806" => Some(Self::HeredocTiedHandle),
             "PL900" => Some(Self::VersionIncompatFeature),
+            "PL1000" => Some(Self::RegexBacktrackingRisk),
+            "PL1001" => Some(Self::RegexAnalysisLimit),
+            "PL1002" => Some(Self::RegexModifierInvalid),
+            "PL1003" => Some(Self::RegexModifierNoEffect),
+            "PL1004" => Some(Self::RegexModifierUnavailable),
+            "PL1005" => Some(Self::RegexCaptureInvalid),
+            "PL1006" => Some(Self::RegexCaptureUnavailable),
+            "PL1007" => Some(Self::RegexAnalysisIncomplete),
             _ => None,
         }
     }

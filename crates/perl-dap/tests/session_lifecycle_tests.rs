@@ -8,7 +8,7 @@
 //!
 //! Specification: GitHub Issue #449 - AC5.1, AC5.3, AC5.4, AC5.5
 
-use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
 use perl_lsp_rs_core::config::PerlOracleEnv;
 use perl_tdd_support::{must, must_some};
 use serde_json::json;
@@ -21,7 +21,7 @@ use std::time::Duration;
 use tempfile::NamedTempFile;
 
 /// Helper to create a test adapter with message capture
-fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
+fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
     let (tx, rx) = sync_channel(64);
     let mut adapter = DebugAdapter::new();
     adapter.set_event_sender(tx);
@@ -29,8 +29,8 @@ fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
 }
 
 /// Helper to wait for events with timeout
-fn wait_for_event(rx: &Receiver<DapMessage>, timeout_ms: u64) -> Option<DapMessage> {
-    rx.recv_timeout(Duration::from_millis(timeout_ms)).ok()
+fn wait_for_event(rx: &Receiver<DapMessageWithEpoch>, timeout_ms: u64) -> Option<DapMessage> {
+    rx.recv_timeout(Duration::from_millis(timeout_ms)).ok().map(|(message, _)| message)
 }
 
 fn initialize_adapter(adapter: &mut DebugAdapter) {
