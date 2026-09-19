@@ -718,6 +718,7 @@ impl PullDiagnosticsProvider {
             Some(&resolver),
             &search_paths,
             source_path.as_deref(),
+            context.project_version.as_deref(),
             diagnostic_analysis.as_deref(),
         );
 
