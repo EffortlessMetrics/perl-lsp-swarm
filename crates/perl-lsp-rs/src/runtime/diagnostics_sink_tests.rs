@@ -193,6 +193,19 @@ mod tests {
             })))
             .expect("didOpen should succeed");
         assert!(wait_for_frames(&buf, 1), "initial open should publish before the falsifier runs");
+        // Settle the initial publish: fixtures that recover with diagnostics
+        // (e.g. same-line residue) are followed by a delayed semantic frame,
+        // so drain until no new frames arrive instead of assuming exactly one.
+        // The falsifier below (hook + fast publish + assert silence) is unchanged.
+        let settle_deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let before = String::from_utf8_lossy(&buf.lock()).matches("publishDiagnostics").count();
+            std::thread::sleep(Duration::from_millis(200));
+            let after = String::from_utf8_lossy(&buf.lock()).matches("publishDiagnostics").count();
+            if after == before || Instant::now() >= settle_deadline {
+                break;
+            }
+        }
         buf.lock().clear();
 
         // Between the fast path's snapshot and its enqueue, a newer accepted

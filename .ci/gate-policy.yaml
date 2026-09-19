@@ -824,7 +824,7 @@ gates:
 
   - name: clippy_tests_kernel
     tier: pr_fast
-    description: "Clippy --all-targets on the known-clean staged cohort (37/47 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
+    description: "Clippy --all-targets on the known-clean staged cohort (37/48 crates): required within the pr_fast runner for test/bench/example code in these crates (#11736)"
     required: true
     # (#11736): The workspace lints in Cargo.toml deny `unwrap_used`, `expect_used`,
     # and `panic` but the existing clippy gates use `--lib` only, so these denials
@@ -893,6 +893,41 @@ gates:
     #     verification on 6ec7242bd: lexer_robustness_tests green twice,
     #     check-panic-test exit 0. Exact extended-cohort rerun PASS on this
     #     branch.
+    #   2026-09-05 batch (#11688): perl-lsp-rs-core admitted. Measured 434
+    #     findings on af4dccc6c (the ~154 recorded on #12000 in August is a
+    #     stale census; main moved). Repaired to zero: 243 unwrap/expect sites
+    #     routed to perl_test_must helpers off clippy's own JSON primary spans,
+    #     so the receiver boundary is exact; 206 `.expect*("...")` context
+    #     strings land in `_with` variants and the 37 bare helpers are exactly
+    #     the 37 `.unwrap()`/`.unwrap_err()` sites that carried no message
+    #     (#14291's context-loss defect cannot recur under that identity). 86
+    #     bool_assert_comparison plus mechanical classes took clippy's
+    #     machine-applicable replacements; 49 panic-family sites were removed by
+    #     real assertions and projections, never suppressed, per the
+    #     panic-stays-denied-everywhere contract. Two narrow reasoned
+    #     #[expect(dead_code)] remain: the #9662/#8032 inventory ledger rows and
+    #     an inherent-vs-blanket specialization fallback arm; deleting either
+    #     would destroy evidence rather than remove dead code. Exact
+    #     extended-cohort rerun PASS on this branch (exit 0, 2m19s, within the
+    #     480s/400000ms envelope); cargo test -p perl-lsp-rs-core --all-targets
+    #     --locked = 5244 passed / 0 failed across 100 targets.
+    #     ADMISSION BOUNDARY: this crate's measured residual is zero under the
+    #     cohort contract, but four blanket test-module masks predating this
+    #     work (semantic_snapshot.rs:2417, semantic_construction.rs:1338,
+    #     providers/formatting/formatting.rs:1091, and
+    #     protocol/final_surface_inventory/tests.rs:7) suppress unwrap_used /
+    #     expect_used / panic in their modules. A --force-warn remeasurement
+    #     that pierces them reports 321 further findings the gate cannot see
+    #     (166 unwrap-on-Result, 49 expect_err, 43 expect-on-Result, 31
+    #     unwrap_err, 15 unwrap-on-Option, 9 panic, 8 expect-on-Option). None
+    #     were added here and none are masked by this change; they are
+    #     inherited debt. So this row ratchets the measured surface only, and
+    #     does not assert that perl-lsp-rs-core is free of the panic family.
+    #     Removing those masks is a separate tranche on #11688.
+    # SUPERSEDED ADMISSION: the 2026-09-05 batch also added -p perl-lsp-rs-core
+    # to the strict list below, but main's stack-increment admission boundary
+    # (#15677) now classifies it in CLIPPY_TESTS_KERNEL_RESIDUAL_PACKAGES; the
+    # residual lane owns its clippy status, so that selector is not restored.
     #   2026-09-17 batch (#15414 admission): perl-sync-convergence joins the
     #     cohort; new Tier-1 leaf verified clean under this exact command on the
     #     transplant head (PR #15414 proof: fmt/clippy -D warnings, 28 unit +
@@ -963,6 +998,81 @@ gates:
     planning:
       role: always_on
 
+  # ── Focused control-plane owner proofs (#13698) ────────────────────────────
+  # #13698: main run 33128026402 spent ~22 minutes inside the shared PR-fast
+  # runner before its only failure — the deterministic `ci_subject`
+  # digest-oracle fixture defect — surfaced from `unit_routed_full`, the broad
+  # routed unit cohort (today the only pr_fast gate that executes xtask's
+  # `tests/` suites). These focused owner gates run their owners' fast
+  # deterministic proofs BEFORE that cohort, and (`short_circuit: true`) stop
+  # the remaining plan on a blocking failure, so a control-plane regression is
+  # reported without paying the cohort's full build/test budget first.
+  #
+  # Routing stays exact-subject: `rust_package_scoped` selects each gate only
+  # when ci-scope picks `xtask` — the owner crate of the CI-subject, route
+  # plan, gate-runner, workflow-policy, generated-inventory, and badge-producer
+  # proofs — so product-only diffs pay nothing for control-plane proofs
+  # (falsifier 2). Neither gate duplicates another pr_fast gate: `unit_scoped`
+  # runs `--lib` only and already covers the xtask library surface early, and
+  # `unit_routed_full` runs `--tests` only, so the bin and `ci_subject` targets
+  # are covered nowhere else in this tier. The broad cohort below is untouched
+  # and remains the authoritative backstop: a focused pass never removes it
+  # (falsifier 4), and a focused pass followed by a cohort failure still reds
+  # the run with both dispositions recorded (falsifier 3). No timeout was
+  # raised and no required gate became advisory (acceptance).
+  - name: ci_subject_digest_oracle
+    tier: pr_fast
+    description: "Focused immutable-subject digest-oracle proof (#13698): ci_subject owns the ci-subject.v1 receipt digest/envelope classification and its independent fixture oracle"
+    required: true
+    command: cargo test -p xtask --locked --test ci_subject
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    short_circuit: true
+    tags:
+      - test
+      - focused
+      - ci-subject
+      - digest-oracle
+    planning:
+      role: rust_package_scoped
+      packages:
+        - xtask
+
+  - name: unit_control_plane_bins
+    tier: pr_fast
+    description: "Focused control-plane owner proof (#13698): xtask bin unit tests for the gate runner, route plan/ci-scope, and workflow policy/trigger-lint owner modules (the generated-inventory and badge owners keep their proof in the broad tests cohort)"
+    required: true
+    # Owner-module filters, not the whole 3000-test bin suite: the projection
+    # is exactly the four control-plane owners that publish `#[test]`
+    # functions in the `--bin xtask` target (`tasks::gates::`,
+    # `tasks::ci_scope::`, `tasks::workflow_policy_lint::`,
+    # `tasks::workflow_trigger_lint::`). #13698's two remaining owners — the
+    # generated-file inventory and the badge producer — have no bin-target
+    # unit tests, so naming them here would project a false denominator
+    # (#14409 review); their proof lives in the `xtask/tests/` integration
+    # suites that the broad `unit_routed_full` cohort (`--tests`) still runs.
+    # The filter set also excludes suites with known environment-sensitive
+    # process-timeout tests (e.g. cpan_corpus) so the focused gate stays
+    # deterministic. The pinning test in xtask/src/tasks/gates.rs pins this
+    # command, so module drift fails the focused gate's own proof before CI.
+    command: "cargo test -p xtask --locked --bin xtask -- tasks::gates:: tasks::ci_scope:: tasks::workflow_policy_lint:: tasks::workflow_trigger_lint:: -- --test-threads=1"
+    timeout_seconds: 600
+    retry_count: 0
+    budgets:
+      max_duration_ms: 480000
+    quarantine: false
+    short_circuit: true
+    tags:
+      - test
+      - focused
+      - control-plane
+    planning:
+      role: rust_package_scoped
+      packages:
+        - xtask
   - name: unit_routed_full
     tier: pr_fast
     description: "Scoped routed integration tests for ci-scope selected crates (required test gate for #1470 coupling; --tests runs tests/ directories, catching runtime assertion failures not reachable by --lib)"
@@ -1908,6 +2018,30 @@ gates:
       - contract
       - compiler
 
+  # The agent-ledger contract (#15380) is fail-closed: `cargo xtask
+  # agent ledgers validate` rejects malformed ledger rows, unknown envelope
+  # versions, and schema drift in docs/agents/ledgers/*.jsonl. Only the
+  # validator's unit-test module ran in CI until this gate existed, so the CLI
+  # was never invoked against the committed files and ledger drift was
+  # silently absorbed. Runs in the `policy` shard. Note the Clap hierarchy
+  # is `agent ledgers validate` (AgentCommand::Ledgers) — the dashed
+  # `agent-ledgers` form is not a registered subcommand (exit 2).
+  - name: agent_ledgers_validate
+    tier: merge_gate
+    description: "Validate docs/agents/ledgers/*.jsonl against the agent-ledger contract"
+    required: true
+    command: cargo xtask agent ledgers validate --format json
+    # 300s to match the sibling `cargo xtask ...` gates in this shard. The
+    # validator itself is near-instant; the cost is the cargo invocation.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
   # re-promotion.
@@ -2478,6 +2612,7 @@ workflow_integration:
         - v2_bundle_sync
         - nested_lock_check
         - published_crate_count_pr_fast
+        - agent_ledgers_validate
       # `compile_all_targets` is not listed here since #15638: the meta shard
       # no longer executes it (the required `Compile All Targets (bit-rot
       # guard)` job owns the property), and this mapping must not claim

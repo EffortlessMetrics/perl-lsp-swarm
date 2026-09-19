@@ -19,6 +19,7 @@
 //! | `require $var`                           | `DynamicRequire`      | `Dynamic`                    |
 
 use crate::ast::{Node, NodeKind};
+use perl_parser_core::hir::arguments_outside_configuration_hashes;
 use perl_semantic_facts::{
     AnchorId, Confidence, FileId, ImportKind, ImportSpec, ImportSymbols, Provenance,
 };
@@ -485,9 +486,10 @@ impl ImportExtractor {
         // Collect explicit names, tags, and detect qw() forms.
         let mut explicit_names: Vec<String> = Vec::new();
         let mut tags: Vec<String> = Vec::new();
+        let requested = arguments_outside_configuration_hashes(args);
 
-        for arg in args {
-            let trimmed = arg.trim();
+        for trimmed in &requested {
+            let trimmed = *trimmed;
 
             // qw(...) form: "qw(a b c)"
             if let Some(inner) = Self::parse_qw_content(trimmed) {
@@ -525,11 +527,12 @@ impl ImportExtractor {
         if explicit_names.is_empty() && tags.is_empty() && !args.is_empty() {
             // The parser consumed `()` but produced no meaningful args.
             // However, args may contain punctuation tokens from complex use statements.
-            // If all args are non-symbol tokens, treat as empty import.
-            let has_any_symbol = args.iter().any(|a| {
-                let t = a.trim();
-                Self::looks_like_symbol_name(t) || Self::parse_qw_content(t).is_some()
-            });
+            // If all args are non-symbol tokens, treat as empty import. Only
+            // arguments outside a configuration hash count: a configuration-only
+            // `use` requests nothing and must not fall through to a default import.
+            let has_any_symbol = requested
+                .iter()
+                .any(|t| Self::looks_like_symbol_name(t) || Self::parse_qw_content(t).is_some());
             if !has_any_symbol {
                 return (ImportKind::UseEmpty, ImportSymbols::None);
             }

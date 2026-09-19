@@ -41,6 +41,77 @@ fn test_diagnostic_pull_3_17() -> TestResult {
 }
 
 #[test]
+fn same_line_residue_reaches_lsp_pull_and_push_reports() -> TestResult {
+    let uri = "file:///same-line-residue.pl";
+    // The multibyte identifier makes the parser byte offset (11) differ from
+    // the LSP UTF-16 character position (10) at the residual `print` token.
+    let source = "my $π = 1 print \"hi\";\n";
+    let expected_start = 10_u64;
+
+    let mut pull_harness = LspHarness::new();
+    pull_harness.initialize(None)?;
+    pull_harness.open(uri, source)?;
+    let report = pull_harness.request(
+        "textDocument/diagnostic",
+        json!({
+            "textDocument": { "uri": uri },
+            "identifier": "perl-lsp",
+            "previousResultId": null
+        }),
+    )?;
+    let items = report
+        .get("items")
+        .and_then(|items| items.as_array())
+        .ok_or("pull diagnostics response must include items")?;
+    let pull_diagnostic = items
+        .iter()
+        .find(|item| {
+            item.get("message")
+                .and_then(|message| message.as_str())
+                .is_some_and(|message| message.contains("Unexpected same-line residue"))
+        })
+        .ok_or("pull report did not contain the parser recovery diagnostic")?;
+    assert_eq!(pull_diagnostic["range"]["start"]["line"], 0);
+    assert_eq!(pull_diagnostic["range"]["start"]["character"], expected_start);
+    assert_eq!(pull_diagnostic["range"]["end"]["line"], 0);
+    assert_eq!(pull_diagnostic["range"]["end"]["character"], expected_start + 1);
+
+    let mut push_harness = LspHarness::new();
+    push_harness.initialize(None)?;
+    push_harness.open(uri, source)?;
+    // Diagnostic publication is debounced on a worker: poll the drain until
+    // the residue notification arrives or a longer deadline expires, instead
+    // of relying on one fixed window (#13489 review).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let push_diagnostic = loop {
+        let notifications =
+            push_harness.drain_notifications(Some("textDocument/publishDiagnostics"), 800);
+        let found = notifications
+            .iter()
+            .filter(|notification| notification["params"]["uri"].as_str() == Some(uri))
+            .flat_map(|notification| {
+                notification["params"]["diagnostics"].as_array().into_iter().flatten()
+            })
+            .find(|item| {
+                item.get("message")
+                    .and_then(|message| message.as_str())
+                    .is_some_and(|message| message.contains("Unexpected same-line residue"))
+            });
+        if let Some(diagnostic) = found {
+            break diagnostic.clone();
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("push report did not contain the parser recovery diagnostic".into());
+        }
+    };
+    assert_eq!(push_diagnostic["range"]["start"]["line"], 0);
+    assert_eq!(push_diagnostic["range"]["start"]["character"], expected_start);
+    assert_eq!(push_diagnostic["range"]["end"]["line"], 0);
+    assert_eq!(push_diagnostic["range"]["end"]["character"], expected_start + 1);
+    Ok(())
+}
+
+#[test]
 fn test_diagnostic_pull_missing_uri_returns_invalid_params_3_17() -> TestResult {
     let mut harness = LspHarness::new();
     harness.initialize(None)?;
