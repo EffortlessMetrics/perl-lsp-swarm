@@ -4544,7 +4544,7 @@ fn annotation_from_comment(item: &Value) -> Result<String> {
         escape_cmd(&path),
         line,
         escape_cmd(&format!("ripr {severity} {kind}")),
-        escape_cmd(&message)
+        escape_cmd_data(&message)
     ))
 }
 
@@ -5163,6 +5163,27 @@ fn output_to_string(cmd: &str, output: std::process::Output) -> Result<String> {
     String::from_utf8(output.stdout).with_context(|| format!("{cmd} stdout was not UTF-8"))
 }
 
+/// The `--root` value every `ripr` invocation receives: a **repo-relative**
+/// path spelled with `/` separators (`.` for the repository root itself).
+///
+/// The spelling is load-bearing, not cosmetic. ripr 0.10.0 loses test→seam
+/// association when the root is absolute: probes it would classify `exposed`
+/// under a relative root report `related_tests_total: 0` and collapse into the
+/// merge-blocking `no_static_path` bucket (#15487, reproduced on PR #15747 —
+/// same diff, absolute root `no_static_path: 53`, relative root
+/// `no_static_path: 0, exposed: 52, weakly_exposed: 1`; same defect measured on
+/// #14635). It also regressed against 0.9.0, which associated tests through an
+/// absolute root. The repository's captured 0.10 fixtures
+/// (`xtask/tests/fixtures/ripr-0.10/README.md`) pin the supported contract:
+/// `root` is `.` and probe paths are repository-relative. Passing the
+/// canonicalized absolute path — what this function did before #15487 — made
+/// every production invocation deviate from that contract while CI worked in a
+/// container whose repo path (`/workspace`) happened to differ from every
+/// fixture capture.
+///
+/// Validation is unchanged and stays fail-closed: the root must resolve inside
+/// the canonicalized repository, and relative parent escapes are rejected
+/// before any relative spelling is produced.
 fn command_root_arg(repo: &Path, root: &str) -> Result<String> {
     let repo = repo
         .canonicalize()
@@ -5180,7 +5201,21 @@ fn command_root_arg(repo: &Path, root: &str) -> Result<String> {
             repo.display()
         );
     }
-    Ok(canonical.display().to_string())
+    let Ok(relative) = canonical.strip_prefix(&repo) else {
+        bail!(
+            "RIPR root {} is inside repository root {} but has no relative spelling",
+            canonical.display(),
+            repo.display()
+        );
+    };
+    if relative.as_os_str().is_empty() {
+        return Ok(".".to_string());
+    }
+    Ok(relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
 }
 
 fn write_text(path: &Path, text: &str) -> Result<()> {
@@ -6774,11 +6809,26 @@ mod maybe_tests {
     fn command_root_arg_allows_repo_relative_root() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let repo = temp.path();
-        fs::create_dir(repo.join("crates"))?;
+        fs::create_dir_all(repo.join("crates").join("sub"))?;
 
+        // A subdir root returns a `/`-separated repo-relative spelling — the
+        // contract ripr 0.10.0 associates tests under (#15487).
         let root = command_root_arg(repo, "crates")?;
+        assert_eq!(root, "crates");
 
-        assert_eq!(PathBuf::from(root), repo.join("crates").canonicalize()?);
+        let nested = command_root_arg(repo, "crates/sub")?;
+        assert_eq!(nested, "crates/sub");
+
+        // The repository root itself is spelled `.`, matching the captured
+        // fixture contract (`root` is `.` and probe paths are
+        // repository-relative).
+        let repo_root = command_root_arg(repo, ".")?;
+        assert_eq!(repo_root, ".");
+
+        // An absolute root inside the repository resolves to the same relative
+        // spelling instead of leaking a host path into the producer argv.
+        let absolute = command_root_arg(repo, &repo.canonicalize()?.display().to_string())?;
+        assert_eq!(absolute, ".");
         Ok(())
     }
 
@@ -10182,6 +10232,34 @@ paths = ["archive/["]
         Ok(())
     }
 
+    /// Pin the GitHub workflow-command escape rules apart at the unit level.
+    ///
+    /// The two rules drift apart silently if `escape_cmd` is ever used on the
+    /// data half or `escape_cmd_data` on a property half: the runner unescapes
+    /// `%3A` and `%2C` in properties only, so a property half that is only
+    /// data-escaped will surface literal `:` / `,` where the operator expects
+    /// the original characters, and a data half that is property-escaped will
+    /// surface literal `%3A` / `%2C` everywhere a human is supposed to read.
+    /// See #15527.
+    #[test]
+    fn escape_rules_stay_apart_for_property_and_data_halves() {
+        // Property half: every reserved character must be encoded.
+        let property_value = "ripr strong:gap focused,test 100%";
+        let property = escape_cmd(property_value);
+        assert_eq!(property, "ripr strong%3Agap focused%2Ctest 100%25");
+        assert!(!property.contains(':'));
+        assert!(!property.contains(','));
+
+        // Data half: only `%`, CR and LF must be encoded; `:` and `,` survive.
+        let data_value = "boundary proof: below, equal, above\nSuggested test: add % branch";
+        let data = escape_cmd_data(data_value);
+        assert_eq!(data, "boundary proof: below, equal, above%0ASuggested test: add %25 branch");
+        assert!(data.contains(':'));
+        assert!(data.contains(','));
+        assert!(!data.contains("%3A"));
+        assert!(!data.contains("%2C"));
+    }
+
     #[test]
     fn render_annotations_emits_escaped_github_warning_packets() -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -10211,10 +10289,20 @@ paths = ["archive/["]
         let rendered = render_annotations(repo, REVIEW_COMMENTS_JSON)?;
 
         assert!(!rendered.comments_missing);
+        // Property halves keep the GitHub workflow-command property rule
+        // (%3A, %2C, %25, %0D, %0A are all unescaped by the runner).
         assert!(rendered.text.contains("::warning file=crates/perl-parser/src/lib.rs,line=42"));
         assert!(rendered.text.contains("title=ripr strong%3Agap focused%2Ctest"));
-        assert!(rendered.text.contains("boundary proof%3A below%2C equal%2C above"));
-        assert!(rendered.text.contains("Suggested test%3A add %25 branch table"));
+        // Data half keeps only the three escapes the runner unescapes there
+        // (%25, %0D, %0A). Colons and commas must reach the operator as `:`
+        // and `,`, not as `%3A` / `%2C`.
+        assert!(rendered.text.contains("boundary proof: below, equal, above"));
+        assert!(rendered.text.contains("Suggested test: add %25 branch table"));
+        // And the two rules stay pinned apart: the *property* halves in the
+        // same packet must still encode `:` and `,` while `%` stays escaped
+        // even in data halves.
+        assert!(!rendered.text.contains("boundary proof%3A"));
+        assert!(!rendered.text.contains("Suggested test%3A"));
         Ok(())
     }
 

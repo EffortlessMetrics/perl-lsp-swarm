@@ -7,6 +7,7 @@ extern crate self as xtask;
 pub mod activation;
 pub mod actual_host_receipt;
 pub mod ast_v2_lifecycle_audit;
+pub mod authority_transfer_closeout;
 pub mod branch_deletion_admission;
 pub mod cargo_rustc_wrappers;
 pub mod ci_route_plan;
@@ -61,3 +62,7 @@ pub mod vim_lsp_specialized_driver;
 pub mod vim_lsp_subject_refresh;
 pub mod worktree_cleanup;
 pub mod worktree_forensic_recovery;
+pub mod writer_preflight;
+
+#[cfg(test)]
+mod test_support;

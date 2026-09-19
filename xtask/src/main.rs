@@ -26,6 +26,7 @@ use tasks::dependency_hygiene::{DependencyHygieneConfig, DependencyHygieneMode};
 use tasks::emacs_train_specs::{LeafSpecDisposition, SpecsOutputFormat};
 use tasks::gate_policy::GatePolicyProfile;
 use tasks::gates::{GateTier, OutputFormat as GatesOutputFormat};
+use tasks::issue_controllers::IssueControllersCommand;
 use tasks::issue_plan::IssuePlanOutputFormat;
 use tasks::methodology_gate::MethodologyOutputFormat;
 use tasks::targeted_checks::CheckMode;
@@ -44,28 +45,28 @@ use tasks::{
     compat_inventory, compiler_lexical_cutline, compiler_performance_receipt,
     compiler_upstream_status, completion_candidates, corpus_audit, count_ratchet, cpan_corpus,
     critic_rule_proof, dead_code, debt_report, dependency_hygiene, dev, devex_docs, devex_doctor,
-    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_specs,
-    features, finalize_check, fix_forward, fmt, forbid_fatal_constructs, forensics, gate_receipts,
-    gates, generated_files, github, github_preflight, github_review, goals, hardening, hook_checks,
-    ignored_tests, incremental_proof, inject_sha_assets, inline_completion_quality,
-    inline_completion_smoke, install_surface_check, integration_proof, intent_diff_gate,
-    issue_plan, layer_check, lsp_318_claims, lsp_318_matrix, lsp_ux_smoke, memory_trends,
-    merge_ready, methodology_gate, metrics, module_train, module_train_live, native_critic,
-    native_format, native_neovim_train, native_product_surface, native_tooling,
-    oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema, oracle_runner,
-    parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet, perl_core_harness,
-    perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan, prep_crates_io_launch,
-    product_health_rail_contract, product_health_status, protocol_type_substrate_matrix,
-    provider_confidence_matrix, provider_promotion_ledger, publication_facts, publish,
-    publish_closure, publish_manifest_check, publish_receipts, quality_baseline, quality_gate,
-    queue_health, queue_snapshot, quickorm_api_matrix, receipts, release, release_artifact_check,
-    release_candidate_artifacts, release_evidence, release_notes, release_trust_invariants,
-    release_turnkey, repo_hygiene, repository_topology, ripr_evidence, rust_small_proof, seam_diff,
-    semantic_inline_next_edit, semantic_inline_receipts, semantic_scorecard,
-    semantic_shadow_compare, semantic_token_classes, session_receipt, shadow_parity,
-    srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster, swarm_summary,
-    sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract, unwired_scan,
-    update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
+    devex_plan, doc, doc_claims, e2e_validate, edge_cases, emacs_train_context, emacs_train_packet,
+    emacs_train_specs, features, finalize_check, fix_forward, fmt, forbid_fatal_constructs,
+    forensics, gate_receipts, gates, generated_files, github, github_preflight, github_review,
+    goals, hardening, hook_checks, ignored_tests, incremental_proof, inject_sha_assets,
+    inline_completion_quality, inline_completion_smoke, install_surface_check, integration_proof,
+    intent_diff_gate, issue_controllers, issue_plan, layer_check, lsp_318_claims, lsp_318_matrix,
+    lsp_ux_smoke, memory_trends, merge_ready, methodology_gate, metrics, module_train,
+    module_train_live, native_critic, native_format, native_neovim_train, native_product_surface,
+    native_tooling, oneliner_capability_matrix, oracle_fixture_manifest, oracle_receipt_schema,
+    oracle_runner, parse_rust, parser_corpus_sweep, parser_matrix, parser_ratchet,
+    perl_core_harness, perl_corpus_train, perl_kwalitee, populate_book, pre_push_plan,
+    prep_crates_io_launch, product_health_rail_contract, product_health_status,
+    protocol_type_substrate_matrix, provider_confidence_matrix, provider_promotion_ledger,
+    publication_facts, publish, publish_closure, publish_manifest_check, publish_receipts,
+    quality_baseline, quality_gate, queue_health, queue_snapshot, quickorm_api_matrix, receipts,
+    release, release_artifact_check, release_candidate_artifacts, release_evidence, release_notes,
+    release_trust_invariants, release_turnkey, repo_hygiene, repository_topology, ripr_evidence,
+    rust_small_proof, seam_diff, semantic_inline_next_edit, semantic_inline_receipts,
+    semantic_scorecard, semantic_shadow_compare, semantic_token_classes, session_receipt,
+    shadow_parity, srp_microcrates, supported_editor_inline_smoke, swarm_agent_roster,
+    swarm_summary, sync_release_docs, targeted_checks, test, test_lsp, train_edge_contract,
+    unwired_scan, update_homebrew, update_status, ux_regression_receipt, ux_scorecard,
     validate_workspace_exclusions, workflow_authority_inventory, workflow_policy_lint,
     workflow_trigger_lint, workspace_symbol_classes, worktree_allocator, worktrees,
     writer_admission,
@@ -550,6 +551,15 @@ enum Commands {
     Integration {
         #[command(subcommand)]
         command: IntegrationCommand,
+    },
+
+    /// Issue-controller train tooling: independent static validation of the
+    /// stable `issue_controller_train.v1` manifest and its checked human
+    /// projection (#11765). Deterministic and offline only.
+    #[command(name = "issue-controllers")]
+    IssueControllers {
+        #[command(subcommand)]
+        command: IssueControllersCommand,
     },
 
     /// Writer admission — read-only pre-admission diagnostic (#3957 W1).
@@ -1297,8 +1307,11 @@ enum Commands {
 
     /// Measure CI baseline from recent workflow runs.
     CiBaseline {
-        /// Branch to analyze.
-        #[arg(short, long, default_value = "master")]
+        /// Branch to analyze. When empty, the repository's default branch is
+        /// derived from `gh repo view --json defaultBranchRef` instead of
+        /// assuming a hard-coded name (which silently returned zero rows on
+        /// the `main` branch).
+        #[arg(short, long, default_value = "")]
         branch: String,
 
         /// Number of days to analyze.
@@ -1310,7 +1323,12 @@ enum Commands {
         limit: usize,
 
         /// Output directory for ci_baseline artifacts.
-        #[arg(short, long, default_value = ".ci")]
+        ///
+        /// Defaults to `target/metrics` so the consumer in
+        /// `metrics::release_health::read_ci_baseline` finds the file at the
+        /// canonical contract path. Override to a different directory to keep
+        /// historical or per-branch baselines side by side.
+        #[arg(short, long, default_value = metrics::release_health::CI_BASELINE_OUTPUT_DIR)]
         output: PathBuf,
     },
 
@@ -4591,6 +4609,12 @@ enum CiSubcommand {
         /// Explicit changed file path. Repeat for tests or disconnected runs; when omitted, git diff is used.
         #[arg(long = "changed-file")]
         changed_file: Vec<String>,
+
+        /// Schema version for the route receipt envelope. Must match a supported value
+        /// (currently `ci-route.v1`); an unknown version fails closed with an error so
+        /// the consumer never silently coerces a mismatched envelope.
+        #[arg(long, default_value = "ci-route.v1")]
+        envelope_version: String,
     },
 
     /// Explain the blocking CI check failure with a local reproduction path.
@@ -4802,6 +4826,10 @@ enum EmacsTrainSubcommand {
         #[command(subcommand)]
         command: EmacsTrainSpecsCommand,
     },
+    /// E06 actor-packet adapter (#11719): project the joined train state
+    /// into the shared #10872/#10881 packets. Fail-closed and offline.
+    #[command(flatten)]
+    Packet(emacs_train_packet::EmacsTrainPacketCommand),
 }
 
 #[derive(Subcommand)]
@@ -5280,15 +5308,21 @@ fn run_cli(cli: Cli) -> Result<()> {
         Commands::Ci { command } => match command {
             None => ci::run(),
             Some(CiSubcommand::Doctor) => ci_doctor::run(),
-            Some(CiSubcommand::Route { base, head, receipt, summary, changed_file }) => {
-                ci_route::run(ci_route::CiRouteArgs {
-                    base,
-                    head,
-                    receipt,
-                    summary,
-                    changed_files: changed_file,
-                })
-            }
+            Some(CiSubcommand::Route {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_file,
+                envelope_version,
+            }) => ci_route::run(ci_route::CiRouteArgs {
+                base,
+                head,
+                receipt,
+                summary,
+                changed_files: changed_file,
+                envelope_version,
+            }),
             Some(CiSubcommand::Explain { receipt, run_id, base }) => {
                 ci_explain::run(receipt, run_id, base)
             }
@@ -6264,6 +6298,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             IntegrationCommand::Emacs { command } => match command {
                 EmacsIntegrationCommand::Train { command } => match command {
                     EmacsTrainSubcommand::Context(inner) => emacs_train_context::run(inner),
+                    EmacsTrainSubcommand::Packet(inner) => emacs_train_packet::run(inner),
                     EmacsTrainSubcommand::Specs { command } => match command {
                         EmacsTrainSpecsCommand::Plan { manifest, ledger, format } => {
                             emacs_train_specs::plan(manifest, ledger, format)
@@ -7242,6 +7277,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 })
             }
         },
+        Commands::IssueControllers { command } => issue_controllers::run(command),
         Commands::WriterAdmission {
             branch,
             base,
