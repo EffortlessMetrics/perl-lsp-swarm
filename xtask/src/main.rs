@@ -636,6 +636,15 @@ enum Commands {
         /// additions guard).
         #[arg(long, default_value_t = 1000)]
         large_staged_threshold: u32,
+
+        /// Additional branch names that count as the canonical base for
+        /// the root-checkout health check. The default is empty: a real
+        /// branch named, say, `master` is no longer silently accepted as
+        /// the canonical base. Operators who genuinely use a non-`main`
+        /// canonical branch (e.g., a `master` upstream) must add it here
+        /// explicitly (#15083). May be repeated.
+        #[arg(long = "canonical-base-alternative", value_name = "BRANCH")]
+        canonical_base_alternatives: Vec<String>,
     },
 
     /// Build project with various configurations
@@ -7335,6 +7344,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             floor_gb,
             floor_pct,
             large_staged_threshold,
+            canonical_base_alternatives,
         } => writer_admission::run(writer_admission::AdmissionConfig {
             branch,
             base,
@@ -7346,6 +7356,7 @@ fn run_cli(cli: Cli) -> Result<()> {
             floor_gb,
             floor_pct,
             large_staged_threshold,
+            canonical_base_alternatives,
         }),
         Commands::TargetedChecks { base, mode } => targeted_checks::run(base, mode),
         Commands::ResolvePackageName { crate_dir } => {
