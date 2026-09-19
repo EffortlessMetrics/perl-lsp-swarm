@@ -34,6 +34,18 @@ fn to_json_array<T: serde::Serialize>(values: &[T]) -> Value {
     serde_json::to_value(values).unwrap_or(Value::Array(Vec::new()))
 }
 
+/// Wire encoding for diagnostic identity projections, read from the accepted
+/// text-sync session contract (#9378) — never a free-standing negotiated
+/// value. The pre-initialize fallback equals the only constructible contract
+/// member, so it cannot diverge from the advertised response.
+fn pull_position_encoding(server: &LspServer) -> PullPositionEncoding {
+    use super::lifecycle::session_contract::AcceptedPositionEncoding;
+    match server.accepted_text_sync_session().map(|session| session.contract().position_encoding())
+    {
+        Some(AcceptedPositionEncoding::Utf16) | None => PullPositionEncoding::Utf16,
+    }
+}
+
 /// Build a typed LSP Diagnostic JSON value (#4995).
 ///
 /// Replaces repeated inline `json!({...})` constructions with a single
@@ -282,7 +294,6 @@ impl PullDiagnosticsOrchestrator {
 
         // Get client capabilities
         let markup_message_support = server.client_capabilities.lock().markup_message_support;
-        let position_encoding = server.client_capabilities.lock().position_encoding;
 
         // Wait for index build, then sample per-document staleness before wiring
         // workspace semantic queries or dead-code analysis into pull diagnostics
@@ -331,10 +342,7 @@ impl PullDiagnosticsOrchestrator {
             accepted_critic_snapshot,
             accepted_state_currentness,
             projection: DiagnosticProjectionFragment {
-                position_encoding: match position_encoding {
-                    crate::textdoc::PosEnc::Utf8 => PullPositionEncoding::Utf8,
-                    crate::textdoc::PosEnc::Utf16 => PullPositionEncoding::Utf16,
-                },
+                position_encoding: pull_position_encoding(server),
                 markup_messages: markup_message_support,
             },
             #[cfg(all(feature = "workspace", not(target_arch = "wasm32")))]
