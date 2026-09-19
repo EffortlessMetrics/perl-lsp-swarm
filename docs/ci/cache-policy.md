@@ -146,6 +146,33 @@ into this document. Dormant composite actions and templates are not active behav
 
 ---
 
+## Active cache inventory and receipt
+
+`.ci/ci-cache/cache-inventory.v1.json` is the checked-in, source-derived inventory this
+policy's "exhaustive active denominator" above refers to: one row per active
+`Swatinem/rust-cache`/`actions/cache` (including `/restore` and `/save`) step reachable
+from `.github/workflows/**`, plus a `dormant` array for cache references inside
+`.github/actions/**` composite actions that have no active caller. It is derived, not
+hand-edited: `cargo xtask ci-cache-inventory` regenerates it, and `cargo xtask
+ci-cache-inventory --check` fails the moment source drifts from it — on a new active
+site, a removed site, or any changed field on an existing site (action, reachability,
+save authority, key, path, byte provenance, writer disposition, …).
+
+`cargo xtask ci-cache-inventory` also emits a `ci_cache_receipt.v1` (schema:
+`schemas/ci_cache_receipt.v1.schema.json`) that separates two axes that are easy to
+conflate: the action-level restore/save *hit* (whether `Swatinem/rust-cache` or
+`actions/cache` reported a hit) from *useful-work-avoided* classification (whether that
+hit meaningfully skipped dependency-network, compilation, or corpus-setup work). This
+repository has no live restore/save telemetry hook wired to the receipt today, so every
+`observations[]` entry stays `restore_class: unknown`, `save_result: unknown`, and
+`work_avoided: not_proven` by construction — a real hit is never auto-labelled as
+avoided work it was not proven to avoid. An `unavailable`/`failed` `instrument.status`
+with an empty `families` array means "no evidence was collected," never "no caches
+exist"; the inventory-derivation step errors out rather than emitting that reading
+silently.
+
+---
+
 ## Verification
 
 The repository-owned workflow policy and active-cache inventory must reject:
