@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "owner_issue": 14447,
-  "reason": "Makes VS Code resource configuration folder-owned and transport-coherent (#14447). The candidate adds src/configurationPull.ts (the workspace/configuration middleware) and src/configurationOwnership.ts (the checked setting ownership table), growing the bundled out/extension.js from 1605380 to 1615152 bytes. The measured 29-file package remains size-only: no file additions, removals, or permission loosening.",
-  "base_baseline_file_sha256": "c334509714d671bc93c27387a153089cc133eae98f5d516bcac2f4a77ae898fd",
-  "candidate_baseline_file_sha256": "c10baf7bd1d62390aeacebfb54510dddee90e4a6ddc1f538533b3b834537c56a",
-  "base_inventory_sha256": "b6001a5b7432633f4b24a36899243f507adc4492ff35a6877f6d5b2eb63e1874",
-  "candidate_inventory_sha256": "4ff8fc287eaa5524348eb4afa96f6a8923ba1c9cd183ff5d3094f1b962cac6a3"
+  "owner_issue": 6889,
+  "reason": "Issue #6889 candidate-bound ratchet: the accepted #15940 baseline no longer matches deterministic current-source packaging while no tracked vscode-extension file changed between accepted baseline sha 9aa51820b8 and measured subjects 49509a7c62/ff090d5d14. Measured linux-x64 projected actual (workflow_dispatch run 35460883422 at ff090d5d1443f13dffd1ac11e0c6c80046510dad; identical inventory digest reproduced across pull_request smoke runs 35460286163 and 35459262377): package.json 60871 to 60716, snippets/launch.json 1139 to 791, out/extension.js 1696148 to 1696041, total 1876898 to 1876288, no file added, removed, or renamed, zero policy violations, behavior_safe. Declared size-only shrink re-baseline under the #6889 transition contract.",
+  "base_baseline_file_sha256": "9ce2942d3dd0d02fdbbc3da2ca83e8a43f64867eaf2f5146c184836572cff409",
+  "candidate_baseline_file_sha256": "68410631ff794c5ce32e28c310645316898e0b7f79f7fd85910fcb59a79f4530",
+  "base_inventory_sha256": "49b660b62b3dcd264bde239fe974c5f07b75b9483eb860996575faf1eb59531c",
+  "candidate_inventory_sha256": "896b3f738662ab34991fc07b499033eb647fbaf2c1d8b39d2b46bae3cbc3df3a"
 }

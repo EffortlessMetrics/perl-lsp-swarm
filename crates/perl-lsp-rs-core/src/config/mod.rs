@@ -24,16 +24,19 @@ mod dependency_detection;
 mod metadata_dependencies;
 mod native_build_hints;
 pub mod perl_oracle_env;
+mod project_metadata;
 pub mod toolchain_profile;
 
 pub(crate) use critic_state::CriticSettingsCandidate;
-pub use critic_state::{EffectiveCriticState, EffectiveNativeCriticConfig};
-pub use dependency_detection::detect_dependency_include_paths;
+pub use critic_state::{AcceptedCriticSnapshot, EffectiveCriticState, EffectiveNativeCriticConfig};
+pub use dependency_detection::{
+    detect_dependency_include_paths, detect_dependency_include_paths_with_declaration,
+};
 pub use metadata_dependencies::{
-    DeclaredDependency, DeclaredDependencySource, detect_declared_dependencies,
-    extract_build_pl_requirements, extract_cpanfile_requirements, extract_dist_ini_requirements,
-    extract_makefile_pl_requirements, extract_meta_json_requirements,
-    extract_meta_yml_requirements,
+    DeclaredDependency, DeclaredDependencySource, MetadataSourceRead,
+    declared_dependencies_from_reads, detect_declared_dependencies, extract_build_pl_requirements,
+    extract_cpanfile_requirements, extract_dist_ini_requirements, extract_makefile_pl_requirements,
+    extract_meta_json_requirements, extract_meta_yml_requirements,
 };
 pub use native_build_hints::{
     NativeBuildHintDiagnostic, NativeBuildHintParseReason, NativeBuildHints, NativeBuildScript,
@@ -42,6 +45,9 @@ pub use native_build_hints::{
 pub use perl_lsp_perltidy::FormatterMode;
 #[cfg(not(target_arch = "wasm32"))]
 pub use perl_oracle_env::PerlOracleEnv;
+pub use project_metadata::{
+    ProjectMetadataKind, classify_project_metadata_path, project_metadata_relative_paths,
+};
 pub use toolchain_profile::PerlToolchainProfile;
 
 /// Critic diagnostic engine used for LSP policy diagnostics.
@@ -605,7 +611,31 @@ impl ServerConfig {
                 self.ai_completion.rate_limit_rps = rps;
             }
             if let Some(inflight) = ai.get("maxInflight").and_then(|v| v.as_u64()) {
-                self.ai_completion.max_inflight = inflight as u32;
+                // The configuration authority catalog declares `ai.max_inflight`
+                // as `UnsignedRange { minimum: 1, maximum: 64 }` with
+                // `KeepLastValid`. This channel bypassed both: `as u32` wraps,
+                // so 4294967296 became 0 — and then a gate capacity of 1, i.e.
+                // *tighter* than the user asked for — while 65..=u32::MAX
+                // sailed past the declared maximum.
+                //
+                // Pre-existing, but `max_inflight` is now a live-concurrency
+                // ceiling rather than only the token bucket's burst (`#8300`),
+                // so an out-of-range value changes how many requests may be
+                // simultaneously active. Honour the declared contract here.
+                match u32::try_from(inflight) {
+                    Ok(value) if AI_MAX_INFLIGHT_RANGE.contains(&value) => {
+                        self.ai_completion.max_inflight = value;
+                    }
+                    _ => {
+                        tracing::warn!(
+                            requested = inflight,
+                            minimum = *AI_MAX_INFLIGHT_RANGE.start(),
+                            maximum = *AI_MAX_INFLIGHT_RANGE.end(),
+                            retained = self.ai_completion.max_inflight,
+                            "aiCompletion.maxInflight is out of range; keeping the previous value"
+                        );
+                    }
+                }
             }
             if let Some(fallback) = ai.get("fallback").and_then(|v| v.as_bool()) {
                 self.ai_completion.fallback = fallback;
@@ -761,10 +791,19 @@ pub fn normalize_formatter_mode_value(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace('_', "-")
 }
 
+/// Resolve a `formatting.engine` token to the mode the server will run.
+///
+/// #7129 removed the bare `compat` mode: it selected the native formatter and
+/// produced byte-identical output, so it named no behavior. Its retired
+/// tokens were initially accepted through a deprecation projection; that
+/// window was closed by #15624 before any release ever carried the
+/// acceptance, so the retired tokens are now rejected like any other
+/// unrecognized value. Rejecting them changes no formatting output — they
+/// always ran the native formatter, and an unknown value keeps the current
+/// setting (native by default).
 fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
     match normalize_formatter_mode_value(value).as_str() {
         "native" => Some(FormatterMode::Native),
-        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
         "external-legacy" | "external-perltidy" | "perltidy" => Some(FormatterMode::ExternalLegacy),
         "off" | "disabled" | "none" => Some(FormatterMode::Off),
         _ => None,
@@ -774,7 +813,6 @@ fn parse_formatter_mode(value: &str) -> Option<FormatterMode> {
 fn parse_client_formatter_mode(value: &str) -> Option<FormatterMode> {
     match normalize_formatter_mode_value(value).as_str() {
         "native" => Some(FormatterMode::Native),
-        "compat" | "perltidy-compat" => Some(FormatterMode::Compat),
         "off" | "disabled" | "none" => Some(FormatterMode::Off),
         _ => None,
     }
@@ -798,13 +836,12 @@ fn parse_lsp_critic_engine(value: &str) -> Option<CriticEngine> {
 /// Human-readable list of accepted `formatting.engine` values, used in
 /// `tracing::warn!` messages when a user supplies an unrecognized value.
 /// Kept in sync with [`parse_formatter_mode`].
-const FORMATTER_MODE_VALID_OPTIONS: &str = "native, compat (perltidy-compat), external-legacy (external-perltidy, perltidy), \
-     off (disabled, none)";
+const FORMATTER_MODE_VALID_OPTIONS: &str =
+    "native, external-legacy (external-perltidy, perltidy), off (disabled, none)";
 
 /// Human-readable values accepted for `formatting.engine` on the LSP
 /// client-settings channel. External process selection remains project-owned.
-const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str =
-    "native, compat (perltidy-compat), off (disabled, none)";
+const CLIENT_FORMATTER_MODE_VALID_OPTIONS: &str = "native, off (disabled, none)";
 
 /// Human-readable values accepted for `critic.engine` on the LSP client-settings
 /// channel. Legacy subprocess aliases remain available only through trusted
@@ -1020,6 +1057,147 @@ pub enum SystemIncProbeOutcome {
     Paths(Vec<PathBuf>),
 }
 
+/// Path-free classification of a [`SystemIncProbeOutcome`], plus the
+/// `NotObserved` state that exists only before the first attempt of an epoch.
+///
+/// This is the redacted vocabulary that explanation surfaces project; it
+/// never carries the probed paths themselves (#13589).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemIncProbeOutcomeKind {
+    /// No probe attempt has completed in the current epoch.
+    NotObserved,
+    /// Startup `@INC` probing is disabled by configuration.
+    Disabled,
+    /// No Perl oracle could be constructed for the probe.
+    Unavailable,
+    /// The last attempt timed out.
+    TimedOut,
+    /// The last attempt failed at the process/I-O boundary.
+    IoFailed,
+    /// Perl ran but exited unsuccessfully.
+    NonZeroExit,
+    /// Perl succeeded but produced no usable `@INC` paths.
+    SuccessfulEmpty,
+    /// Perl succeeded and produced usable `@INC` paths.
+    Paths,
+}
+
+impl SystemIncProbeOutcomeKind {
+    /// Stable machine-readable code for this outcome kind.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NotObserved => "not_observed",
+            Self::Disabled => "disabled",
+            Self::Unavailable => "unavailable",
+            Self::TimedOut => "timed_out",
+            Self::IoFailed => "io_failed",
+            Self::NonZeroExit => "non_zero_exit",
+            Self::SuccessfulEmpty => "successful_empty",
+            Self::Paths => "paths",
+        }
+    }
+}
+
+/// How the stored startup-`@INC` state affected a module lookup that
+/// consumed it (#13589 outcome law).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemIncLookupImpact {
+    /// The probed root family (possibly empty) took part in the lookup.
+    Participated,
+    /// Startup roots were intentionally excluded by configuration.
+    Disabled,
+    /// No attempt has completed yet, so the lookup made no claim about
+    /// startup roots; a later live lookup will attempt the probe.
+    NotObserved,
+    /// Startup roots were omitted by a transient timeout with a retry
+    /// remaining; a later lookup may recover them.
+    OmittedTransient,
+    /// Startup roots were omitted by a settled failure or an exhausted retry
+    /// budget; they stay omitted until configuration invalidates the epoch.
+    OmittedTerminal,
+}
+
+impl SystemIncLookupImpact {
+    /// Stable machine-readable code for this lookup impact.
+    #[must_use]
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Participated => "participated",
+            Self::Disabled => "disabled",
+            Self::NotObserved => "not_observed",
+            Self::OmittedTransient => "omitted_transient",
+            Self::OmittedTerminal => "omitted_terminal",
+        }
+    }
+}
+
+/// Non-probing, typed view of one configuration's startup-`@INC` acquisition
+/// state (#13589).
+///
+/// Produced by [`WorkspaceConfig::peek_system_inc_probe`], which reads the
+/// shared probe epoch without launching or retrying Perl. The snapshot is the
+/// only path-free carrier of the epoch's outcome, attempt budget, and retry
+/// disposition; explanation surfaces project it instead of inferring failure
+/// from an empty root list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemIncProbeSnapshot {
+    /// `perl.workspace.useSystemInc` as stored on the owning configuration.
+    pub use_system_inc: bool,
+    /// `perl.workspace.usePerl5lib` as stored on the owning configuration.
+    pub use_perl5lib: bool,
+    /// Classification of the epoch's last outcome.
+    pub outcome: SystemIncProbeOutcomeKind,
+    /// Probe attempts completed in the current epoch.
+    pub attempts_consumed: u32,
+    /// Hard cap on attempts per epoch (`SYSTEM_INC_PROBE_MAX_ATTEMPTS`, currently 2).
+    pub max_attempts: u32,
+    /// Number of probed roots when the outcome is `Paths`; `Some(0)` for
+    /// `SuccessfulEmpty`; `None` when no root list was produced.
+    pub system_root_count: Option<usize>,
+}
+
+impl SystemIncProbeSnapshot {
+    /// Whether the next live lookup would perform another probe attempt.
+    ///
+    /// Only `NotObserved` and a `TimedOut` outcome with budget remaining are
+    /// eligible; every other outcome is settled for the epoch.
+    #[must_use]
+    pub fn retry_eligible(&self) -> bool {
+        match self.outcome {
+            SystemIncProbeOutcomeKind::NotObserved => true,
+            SystemIncProbeOutcomeKind::TimedOut => self.attempts_consumed < self.max_attempts,
+            _ => false,
+        }
+    }
+
+    /// Whether the outcome is terminal until a configuration change resets
+    /// the epoch. `Disabled` is terminal for the current configuration.
+    #[must_use]
+    pub fn terminal(&self) -> bool {
+        !self.retry_eligible()
+    }
+
+    /// The effect this stored state has on a lookup that consumes it.
+    #[must_use]
+    pub fn lookup_impact(&self) -> SystemIncLookupImpact {
+        match self.outcome {
+            SystemIncProbeOutcomeKind::Disabled => SystemIncLookupImpact::Disabled,
+            SystemIncProbeOutcomeKind::NotObserved => SystemIncLookupImpact::NotObserved,
+            SystemIncProbeOutcomeKind::Paths | SystemIncProbeOutcomeKind::SuccessfulEmpty => {
+                SystemIncLookupImpact::Participated
+            }
+            SystemIncProbeOutcomeKind::TimedOut if self.retry_eligible() => {
+                SystemIncLookupImpact::OmittedTransient
+            }
+            SystemIncProbeOutcomeKind::TimedOut
+            | SystemIncProbeOutcomeKind::Unavailable
+            | SystemIncProbeOutcomeKind::IoFailed
+            | SystemIncProbeOutcomeKind::NonZeroExit => SystemIncLookupImpact::OmittedTerminal,
+        }
+    }
+}
+
 /// Shared startup-`@INC` probe epoch: the cached outcome plus the attempt
 /// budget that bounds the transient `TimedOut` retry (#12945).
 ///
@@ -1102,6 +1280,16 @@ pub struct WorkspaceConfig {
     /// imply that a dependency is installed/indexed.
     pub declared_dependencies: Vec<DeclaredDependency>,
 
+    /// Normalized include paths currently contributed by dependency-manager
+    /// marker detection (#13640).
+    ///
+    /// Ownership bookkeeping for [`Self::refresh_dependency_include_paths`]:
+    /// only entries this detector actually appended are recorded, so a later
+    /// refresh can drop a root whose markers disappeared without ever
+    /// removing a path the user configured. An entry that was already present
+    /// when first detected stays unowned and is never removed.
+    pub(crate) detected_dependency_include_paths: Vec<String>,
+
     /// Resolution timeout in milliseconds
     /// Default: 50ms
     pub resolution_timeout_ms: u64,
@@ -1129,6 +1317,7 @@ impl Default for WorkspaceConfig {
             perl_args: Vec::new(),
             native_build_hints: NativeBuildHints::default(),
             declared_dependencies: Vec::new(),
+            detected_dependency_include_paths: Vec::new(),
             resolution_timeout_ms: 50,
             use_perl5lib: true,
             perl5lib_precedence: Perl5LibPrecedence::Prepend,
@@ -1505,15 +1694,99 @@ impl WorkspaceConfig {
         self.declared_dependencies = detect_declared_dependencies(workspace_root);
     }
 
-    /// Append marker-detected Carton/Carmel roots to module-resolution paths.
+    /// Apply per-source captured metadata reads to declared-dependency facts.
+    ///
+    /// Used by the watcher invalidation route (#13640), which resolves each
+    /// source once — preferring an open buffer's staged text — and retains the
+    /// previous entries of any source it could not read.
+    pub fn apply_declared_dependency_reads(
+        &mut self,
+        reads: &[(DeclaredDependencySource, MetadataSourceRead)],
+    ) {
+        self.declared_dependencies =
+            declared_dependencies_from_reads(reads, &self.declared_dependencies);
+    }
+
+    /// Carry metadata facts and detector-owned include roots across an
+    /// effective-settings replacement.
+    ///
+    /// Configuration consumers release their folder lock before performing
+    /// captured metadata reads. Retaining the previous detector contribution
+    /// across that gap prevents concurrent resolution from observing a
+    /// transiently incomplete include-path set. Explicitly configured paths
+    /// remain unowned; the next metadata refresh commits marker additions and
+    /// removals (#15088).
+    pub fn preserve_metadata_state_from(&mut self, previous: &Self) {
+        self.declared_dependencies = previous.declared_dependencies.clone();
+        for detected_path in &previous.detected_dependency_include_paths {
+            let Some(previous_path) = previous.include_paths.iter().find(|path| {
+                normalize_include_path(path).as_deref() == Some(detected_path.as_str())
+            }) else {
+                continue;
+            };
+            let already_configured = self
+                .include_paths
+                .iter()
+                .filter_map(|path| normalize_include_path(path))
+                .any(|path| path == *detected_path);
+            if already_configured {
+                continue;
+            }
+            self.include_paths.push(previous_path.clone());
+            self.detected_dependency_include_paths.push(detected_path.clone());
+        }
+    }
+
+    /// Reconcile marker-detected Carton/Carmel roots into module-resolution paths.
     ///
     /// Existing configured paths are preserved in order, and equivalent paths
     /// are not added twice. `PERL5LIB` is merged later by
     /// [`Self::effective_include_paths`], so its configured precedence remains
     /// unchanged.
+    ///
+    /// This is a reconcile rather than an append (#13640): a root this
+    /// detector previously contributed is removed once its markers are gone,
+    /// so deleting `carton.lock` or the Carmel sentinel does not leave a stale
+    /// include root behind. Ownership is tracked in
+    /// [`Self::detected_dependency_include_paths`], so a path the user
+    /// configured is never removed even when the detector also reports it.
     pub fn refresh_dependency_include_paths(&mut self, workspace_root: &Path) {
-        for detected in detect_dependency_include_paths(workspace_root) {
-            let Some(normalized_detected) = normalize_include_path(&detected) else {
+        self.refresh_dependency_include_paths_with_declaration(workspace_root, None);
+    }
+
+    /// As [`Self::refresh_dependency_include_paths`], with an authoritative
+    /// override for whether the `cpanfile` declaration exists (#13640).
+    ///
+    /// An open editor buffer is the authority for its document and outlives an
+    /// external delete of the backing file, so a deleted-but-open `cpanfile`
+    /// must keep gating the Carton/Carmel root until its buffer closes.
+    pub fn refresh_dependency_include_paths_with_declaration(
+        &mut self,
+        workspace_root: &Path,
+        declaration_present: Option<bool>,
+    ) {
+        let detected =
+            detect_dependency_include_paths_with_declaration(workspace_root, declaration_present);
+        let detected_normalized: Vec<String> =
+            detected.iter().filter_map(|path| normalize_include_path(path)).collect();
+
+        // Drop previously contributed roots whose markers disappeared.
+        let retired: Vec<String> = self
+            .detected_dependency_include_paths
+            .iter()
+            .filter(|&owned| !detected_normalized.contains(owned))
+            .cloned()
+            .collect();
+        if !retired.is_empty() {
+            self.include_paths.retain(|path| match normalize_include_path(path) {
+                Some(normalized) => !retired.contains(&normalized),
+                None => true,
+            });
+        }
+
+        let mut owned = Vec::new();
+        for detected_path in detected {
+            let Some(normalized_detected) = normalize_include_path(&detected_path) else {
                 continue;
             };
             let already_present = self
@@ -1521,10 +1794,18 @@ impl WorkspaceConfig {
                 .iter()
                 .filter_map(|path| normalize_include_path(path))
                 .any(|path| path == normalized_detected);
-            if !already_present {
-                self.include_paths.push(detected);
+            if already_present {
+                // Keep ownership only if this detector added the entry on an
+                // earlier refresh; never claim a user-configured path.
+                if self.detected_dependency_include_paths.contains(&normalized_detected) {
+                    owned.push(normalized_detected);
+                }
+            } else {
+                self.include_paths.push(detected_path);
+                owned.push(normalized_detected);
             }
         }
+        self.detected_dependency_include_paths = owned;
     }
 
     /// Update workspace configuration from LSP settings.
@@ -1568,6 +1849,13 @@ impl WorkspaceConfig {
                             .push(RejectedClientIncludePath { entry: entry.to_string(), reason }),
                     }
                 }
+                // An explicit configuration channel replaces the whole list,
+                // so detector ownership no longer describes any entry here
+                // (#13640). Clearing it keeps a user-supplied path that
+                // happens to equal a detected root from being retired later
+                // when its marker disappears; the next refresh re-observes it
+                // as already-present and leaves it unowned.
+                self.detected_dependency_include_paths.clear();
                 self.include_paths = valid;
             }
             if let Some(paths) = workspace.get("externalIncludePaths").and_then(|v| v.as_array()) {
@@ -1741,6 +2029,74 @@ impl WorkspaceConfig {
         }
     }
 
+    /// Read the current startup-`@INC` acquisition state without probing.
+    ///
+    /// This never calls the probe and never consumes a retry attempt, so an
+    /// explanation surface can report the state the live resolver actually
+    /// used (#13589). Because the epoch is shared across clones, the snapshot
+    /// describes the same stored subject that [`Self::get_system_inc`]
+    /// advanced. `Disabled` is reported directly from `use_system_inc`.
+    ///
+    /// Use [`Self::peek_system_inc`] when the cached paths are needed too;
+    /// it reads both under one lock acquisition.
+    #[must_use]
+    pub fn peek_system_inc_probe(&self) -> SystemIncProbeSnapshot {
+        self.peek_system_inc().1
+    }
+
+    /// The startup-`@INC` paths already held by the shared epoch together
+    /// with the typed acquisition state, read under a single epoch lock so
+    /// the pair is mutually consistent (#13589).
+    ///
+    /// The paths are the cached `Paths` outcome when one exists and empty for
+    /// every other state, including the not-yet-observed one. Unlike
+    /// [`Self::get_system_inc`], this never launches or retries Perl, so a
+    /// caller that only needs to *describe* the last live lookup cannot
+    /// spend the retry budget on the user's behalf.
+    #[must_use]
+    pub fn peek_system_inc(&self) -> (Vec<PathBuf>, SystemIncProbeSnapshot) {
+        let (paths, outcome, attempts_consumed, system_root_count) = if !self.use_system_inc {
+            (Vec::new(), SystemIncProbeOutcomeKind::Disabled, 0, None)
+        } else {
+            let epoch = self.lock_system_inc_epoch();
+            let (paths, outcome, count) = match epoch.outcome.as_ref() {
+                None => (Vec::new(), SystemIncProbeOutcomeKind::NotObserved, None),
+                Some(SystemIncProbeOutcome::Disabled) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::Disabled, None)
+                }
+                Some(SystemIncProbeOutcome::Unavailable) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::Unavailable, None)
+                }
+                Some(SystemIncProbeOutcome::TimedOut) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::TimedOut, None)
+                }
+                Some(SystemIncProbeOutcome::IoFailed) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::IoFailed, None)
+                }
+                Some(SystemIncProbeOutcome::NonZeroExit) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::NonZeroExit, None)
+                }
+                Some(SystemIncProbeOutcome::SuccessfulEmpty) => {
+                    (Vec::new(), SystemIncProbeOutcomeKind::SuccessfulEmpty, Some(0))
+                }
+                Some(SystemIncProbeOutcome::Paths(paths)) => {
+                    (paths.clone(), SystemIncProbeOutcomeKind::Paths, Some(paths.len()))
+                }
+            };
+            (paths, outcome, epoch.attempts, count)
+        };
+
+        let snapshot = SystemIncProbeSnapshot {
+            use_system_inc: self.use_system_inc,
+            use_perl5lib: self.use_perl5lib,
+            outcome,
+            attempts_consumed,
+            max_attempts: SYSTEM_INC_PROBE_MAX_ATTEMPTS,
+            system_root_count,
+        };
+        (paths, snapshot)
+    }
+
     /// Get system @INC paths (lazily populated).
     ///
     /// Any unavailable or failed probe remains fail-closed as an empty slice;
@@ -1895,6 +2251,13 @@ pub(crate) const SYSTEM_INC_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// spawns instead of re-probing on every `get_system_inc()` call.
 const SYSTEM_INC_PROBE_MAX_ATTEMPTS: u32 = 2;
 
+/// Accepted range for `aiCompletion.maxInflight` (`#8300`).
+///
+/// Mirrors the `Validation::UnsignedRange { minimum: 1, maximum: 64 }` declared
+/// for `ai.max_inflight` in `configuration_authority::catalog`, so the
+/// client-settings channel cannot admit a value the authority would reject.
+const AI_MAX_INFLIGHT_RANGE: std::ops::RangeInclusive<u32> = 1..=64;
+
 /// Deterministic probe replacement for the bounded-retry proof (#12945).
 ///
 /// Test-only: the real subprocess probe stays the only production path. The
@@ -1984,7 +2347,7 @@ fn output_with_timeout(mut command: Command, timeout: Duration) -> std::io::Resu
 ///
 /// Unknown TOML keys are silently ignored for forward compatibility.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectConfig {
     /// `[perl]` section: module resolution settings.
@@ -2007,7 +2370,7 @@ pub struct ProjectConfig {
 }
 
 /// `[perl]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectPerlConfig {
     /// Additional include paths for module resolution.
@@ -2019,8 +2382,9 @@ pub struct ProjectPerlConfig {
     pub discovery_extensions: Vec<String>,
     /// Additional directory names skipped during workspace discovery.
     pub discovery_skipped_dirs: Vec<String>,
-    /// Perl version string (e.g. "5.38") — parsed but not yet wired to diagnostics.
-    /// Reserved for future use; ignored in this implementation.
+    /// Trusted per-folder Perl version string (e.g. "5.38") used as the PL900
+    /// fallback target when the source has no `use VERSION` declaration.
+    /// Invalid values fail closed and source declarations always win.
     pub version: Option<String>,
     /// Whether to read `PERL5LIB` from the environment and include it in the
     /// module search path.  Unset means "leave the server default unchanged".
@@ -2031,7 +2395,7 @@ pub struct ProjectPerlConfig {
 }
 
 /// `[diagnostics]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectDiagnosticsConfig {
     /// Whether perlcritic is enabled. Maps to `ServerConfig.perlcritic_enabled`.
@@ -2041,7 +2405,7 @@ pub struct ProjectDiagnosticsConfig {
 }
 
 /// `[critic]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectCriticConfig {
     /// Critic engine (`legacy`, `perlcritic`, or `native`).
@@ -2055,7 +2419,7 @@ pub struct ProjectCriticConfig {
 }
 
 /// `[features]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectFeaturesConfig {
     /// Whether inlay hints are enabled globally. Maps to `ServerConfig.inlay_hints_enabled`.
@@ -2078,7 +2442,7 @@ pub struct ProjectFeaturesConfig {
 /// activate a remote AI backend or override user-owned provider/model choice.
 /// Those settings arrive only through the LSP client configuration channel
 /// (`ServerConfig::update_from_value`'s `aiCompletion` block).
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectAiCompletionConfig {
     /// Opt-out only: when `false`, disables AI completions for this workspace.
@@ -2094,7 +2458,7 @@ pub struct ProjectAiCompletionConfig {
 /// ignored/deprecation reason instead of apparent success; it can never
 /// enable the internal scaffold gate or report ready/enabled.
 #[non_exhaustive]
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectNextEditConfig {
     /// Legacy `enabled` flag. Ignored; kept only for the deprecation reason.
@@ -2102,14 +2466,14 @@ pub struct ProjectNextEditConfig {
 }
 
 /// `[formatting]` section of `.perl-lsp.toml`.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct ProjectFormattingConfig {
     /// Whether LSP formatting is enabled.
     pub enabled: Option<bool>,
     /// Whether to format on save (willSaveWaitUntil). Default `true`.
     pub format_on_save: Option<bool>,
-    /// Formatter engine (`native`, `compat`, `external-perltidy`, or `off`).
+    /// Formatter engine (`native`, `external-legacy`, or `off`).
     pub engine: Option<String>,
     /// Path to a `.perltidyrc` profile file.
     pub perltidy_profile: Option<String>,
@@ -2540,6 +2904,10 @@ impl ProjectConfig {
                 valid.push(entry.clone());
             }
             if !skip_include_paths {
+                // Project-file configuration replaces the list; drop detector
+                // ownership for the same reason as the client-settings channel
+                // (#13640).
+                config.detected_dependency_include_paths.clear();
                 config.include_paths = valid;
             }
         }
@@ -3043,6 +3411,8 @@ fn value_to_string<T: std::fmt::Debug>(value: &T) -> String {
 
 #[cfg(test)]
 mod tests {
+    use perl_test_must::must_some_with;
+
     use super::*;
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -3180,10 +3550,7 @@ mod tests {
         let inputs: Vec<(&str, &ProjectConfig)> = vec![("folderA", &a), ("folderB", &b)];
         let (merged, conflicts) = merge_project_configs_for_server(&inputs);
 
-        assert_eq!(
-            merged.critic.include.as_ref().map(Vec::as_slice),
-            Some(&["ProhibitGrep".to_string()][..])
-        );
+        assert_eq!(merged.critic.include.as_deref(), Some(&["ProhibitGrep".to_string()][..]));
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].key, "critic.include");
     }
@@ -3682,7 +4049,7 @@ profile = "recommended"
         config.update_from_value(&serde_json::json!({
             "formatting": {
                 "enabled": false,
-                "engine": "perltidy_compat",
+                "engine": "off",
                 "profile": "  .perltidyrc  ",
                 "maximumLineLength": 120,
                 "indentColumns": 2,
@@ -3717,7 +4084,9 @@ profile = "recommended"
         }));
 
         assert!(!config.perltidy_enabled);
-        assert_eq!(config.formatting_engine, FormatterMode::Compat);
+        // `off` is a non-default, schema-valid engine value, so this proves the
+        // field is read rather than matching the compiled default (`native`).
+        assert_eq!(config.formatting_engine, FormatterMode::Off);
         assert!(config.perltidy_profile.is_none());
         assert_eq!(config.perltidy_maximum_line_length, Some(120));
         assert_eq!(config.perltidy_indent_columns, Some(2));
@@ -3774,6 +4143,60 @@ profile = "recommended"
         Ok(())
     }
 
+    /// `aiCompletion.maxInflight` must honour the authority catalog's
+    /// `1..=64` / `KeepLastValid` contract on the client-settings channel
+    /// (`#8300`).
+    ///
+    /// Before this, the channel did `inflight as u32`, which wraps. The
+    /// interesting case is not the obvious "too big" one — it is that
+    /// `4294967296` truncated to `0` and then became a gate capacity of **1**,
+    /// silently giving the user a *tighter* ceiling than they asked for.
+    #[test]
+    fn ai_max_inflight_out_of_range_keeps_the_previous_value() -> TestResult {
+        let mut config = ServerConfig::default();
+
+        // A valid value is accepted, and establishes the "previous valid"
+        // state the rejections below must preserve.
+        config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 8 } }));
+        if config.ai_completion.max_inflight != 8 {
+            return Err(std::io::Error::other("valid maxInflight was not accepted").into());
+        }
+
+        // The declared maximum is inclusive.
+        config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 64 } }));
+        if config.ai_completion.max_inflight != 64 {
+            return Err(
+                std::io::Error::other("64 must be accepted as the inclusive maximum").into()
+            );
+        }
+
+        for rejected in [
+            0_u64,               // below the minimum; previously became capacity 1
+            65,                  // above the declared maximum
+            u64::from(u32::MAX), // far above it, but does not wrap
+            4_294_967_296,       // wraps to 0 under `as u32`
+            4_294_967_297,       // wraps to 1 under `as u32`
+            u64::MAX,            // wraps to u32::MAX under `as u32`
+        ] {
+            config.update_from_value(
+                &serde_json::json!({ "aiCompletion": { "maxInflight": rejected } }),
+            );
+            if config.ai_completion.max_inflight != 64 {
+                return Err(std::io::Error::other(format!(
+                    "maxInflight={rejected} is out of range and must keep the previous valid value"
+                ))
+                .into());
+            }
+        }
+
+        // Still usable afterwards: rejection does not latch the field.
+        config.update_from_value(&serde_json::json!({ "aiCompletion": { "maxInflight": 1 } }));
+        if config.ai_completion.max_inflight != 1 {
+            return Err(std::io::Error::other("a later valid maxInflight must still apply").into());
+        }
+        Ok(())
+    }
+
     #[test]
     fn server_config_rejects_external_formatter_engine_from_client_settings() {
         let mut config = ServerConfig::default();
@@ -3810,14 +4233,98 @@ profile = "recommended"
     fn external_perltidy_is_selected_only_by_explicit_engine() {
         // `parse_formatter_mode` is a pure mapping with no environment/PATH
         // probe: the external engine is reachable only through explicit config.
-        assert_eq!(parse_formatter_mode("external-perltidy"), Some(FormatterMode::ExternalLegacy));
-        assert_eq!(parse_formatter_mode("external-legacy"), Some(FormatterMode::ExternalLegacy));
-        assert_eq!(parse_formatter_mode("perltidy"), Some(FormatterMode::ExternalLegacy));
-        assert_eq!(parse_formatter_mode("native"), Some(FormatterMode::Native));
+        let mode = |value| parse_formatter_mode(value);
+        assert_eq!(mode("external-perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(mode("external-legacy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(mode("perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(mode("native"), Some(FormatterMode::Native));
         // Unknown values do not silently select external; the caller keeps its
         // current value (native by default).
-        assert_eq!(parse_formatter_mode("definitely-not-an-engine"), None);
-        assert_eq!(parse_formatter_mode(""), None);
+        assert_eq!(mode("definitely-not-an-engine"), None);
+        assert_eq!(mode(""), None);
+    }
+
+    // ── #7129/#15624: the retired `compat` tokens are rejected ─────────────
+    //
+    // `compat` was a bare alias: it selected the native formatter and produced
+    // byte-identical output, so it named no behavior a user could observe.
+    // #7129 removed the mode; #15624 closed the deprecation window before any
+    // release ever carried the alias acceptance, so the retired tokens are
+    // rejected like any other unrecognized value. No formatting output
+    // changes: an unknown value keeps the current setting (native by
+    // default), which is what the alias ran anyway.
+
+    #[test]
+    fn retired_compat_aliases_are_rejected_on_both_channels() {
+        // Includes the underscore and mixed-case/padded spellings so the
+        // rejection is exercised through `normalize_formatter_mode_value`
+        // rather than by exact-token luck.
+        for value in ["compat", "perltidy-compat", "perltidy_compat", "  COMPAT  "] {
+            assert_eq!(
+                parse_formatter_mode(value),
+                None,
+                "{value:?} is a retired alias (#7129/#15624): it must be rejected on \
+                 project config, not silently accepted"
+            );
+            assert_eq!(
+                parse_client_formatter_mode(value),
+                None,
+                "{value:?} is a retired alias (#7129/#15624): it must be rejected on \
+                 client settings, not silently accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn formatter_engine_near_misses_reach_the_unknown_value_path() {
+        // Tokens that merely resemble a current mode name must reach the
+        // unknown-value path — where the server keeps its current setting and
+        // warns — rather than being quietly accepted.
+        for near_miss in [
+            "compa",           // a prefix of the retired `compat`
+            "compats",         // `compat` with a suffix
+            "xcompat",         // `compat` with a prefix
+            "compat-perltidy", // the retired pair, reversed
+            "compat native",   // the retired alias embedded in a longer phrase
+        ] {
+            assert_eq!(
+                parse_formatter_mode(near_miss),
+                None,
+                "{near_miss:?} must reach the unknown-value path on project config"
+            );
+            assert_eq!(
+                parse_client_formatter_mode(near_miss),
+                None,
+                "{near_miss:?} must reach the unknown-value path on client settings"
+            );
+        }
+
+        // Positive control, so the assertions above cannot pass by the parser
+        // simply rejecting everything. `perltidy` is the one near-miss-shaped
+        // token that IS current: the project channel resolves it to the
+        // external adapter, and the client channel does not offer external
+        // selection at all.
+        assert_eq!(parse_formatter_mode("perltidy"), Some(FormatterMode::ExternalLegacy));
+        assert_eq!(parse_client_formatter_mode("perltidy"), None);
+        assert_eq!(parse_formatter_mode("native"), Some(FormatterMode::Native));
+        assert_eq!(parse_client_formatter_mode("native"), Some(FormatterMode::Native));
+    }
+
+    #[test]
+    fn no_advertised_formatter_mode_option_names_a_retired_alias() {
+        // The valid-value lists are what a user is told to choose from.
+        // Neither may name a retired alias (#7129/#15624).
+        for (channel, options) in [
+            ("project config", FORMATTER_MODE_VALID_OPTIONS),
+            ("client settings", CLIENT_FORMATTER_MODE_VALID_OPTIONS),
+        ] {
+            for alias in ["compat", "perltidy-compat"] {
+                assert!(
+                    !options.contains(alias),
+                    "{channel} still advertises the retired alias {alias:?}: {options}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3925,8 +4432,10 @@ profile = "recommended"
     #[test]
     fn native_critic_config_boundary_agrees_with_profile_authority() {
         for raw in ["recommended", " RECOMMENDED ", "strict", " STRICT "] {
-            let expected = NativeCriticProfile::parse(raw)
-                .expect("boundary fixture must be accepted by the profile authority");
+            let expected = must_some_with(
+                NativeCriticProfile::parse(raw),
+                "boundary fixture must be accepted by the profile authority",
+            );
             let mut config = ServerConfig::default();
             config.update_from_value(&serde_json::json!({
                 "critic": { "profile": raw }
@@ -4402,6 +4911,100 @@ profile = "recommended"
 
         assert!(config.perlcritic_enabled);
         assert!(config.inlay_hints_enabled);
+    }
+
+    /// Detector ownership must not survive an explicit configuration
+    /// replacement (#13640). If it did, a user-supplied path equal to a
+    /// previously detected root would be retired when its marker disappeared.
+    #[test]
+    fn client_settings_replacement_releases_detector_ownership() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        std::fs::write(workspace.path().join("carton.lock"), "snapshot\n")?;
+
+        let mut config = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        config.refresh_dependency_include_paths(workspace.path());
+        // `detected_dependency_include_paths` records paths as produced by
+        // `normalize_include_path`, which re-joins components with the
+        // platform separator, so on Windows the owned root is rendered as
+        // `local\lib\perl5`. Compare through the same normalization (as
+        // `metadata_replacement_retains_detector_until_refresh` does) instead
+        // of the raw forward-slash detector literal (#15611).
+        let detected_root =
+            normalize_include_path("local/lib/perl5").ok_or("detected root should normalize")?;
+        assert!(
+            config.detected_dependency_include_paths.contains(&detected_root),
+            "the detector owns the root it contributed"
+        );
+
+        // The user now configures the same path explicitly.
+        config.update_from_value(&serde_json::json!({
+            "workspace": { "includePaths": ["lib", "local/lib/perl5"] }
+        }));
+        assert!(
+            config.detected_dependency_include_paths.is_empty(),
+            "an explicit replacement releases detector ownership"
+        );
+
+        // The marker disappears; the user-configured path must survive.
+        std::fs::remove_file(workspace.path().join("carton.lock"))?;
+        config.refresh_dependency_include_paths(workspace.path());
+        assert!(
+            config.include_paths.contains(&"local/lib/perl5".to_string()),
+            "a user-configured path is never retired by marker detection"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_replacement_retains_detector_until_refresh() -> TestResult {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(workspace.path().join("cpanfile"), "requires 'JSON';\n")?;
+        let carton_lock = workspace.path().join("carton.lock");
+        std::fs::write(&carton_lock, "snapshot\n")?;
+
+        let mut current = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        current.refresh_dependency_include_paths(workspace.path());
+        let previous = current.clone();
+        let detected_root =
+            normalize_include_path("local/lib/perl5").ok_or("detected root should normalize")?;
+
+        let mut replacement = WorkspaceConfig {
+            include_paths: vec!["lib".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        replacement.preserve_metadata_state_from(&previous);
+        if !replacement.include_paths.contains(&"local/lib/perl5".to_string())
+            || !replacement.detected_dependency_include_paths.contains(&detected_root)
+        {
+            return Err("detector-owned root disappeared during settings replacement".into());
+        }
+
+        std::fs::remove_file(carton_lock)?;
+        replacement.refresh_dependency_include_paths(workspace.path());
+        if replacement.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("missing marker did not retire the retained detector root".into());
+        }
+
+        let mut explicit = WorkspaceConfig {
+            include_paths: vec!["lib".to_string(), "local/lib/perl5".to_string()],
+            ..WorkspaceConfig::default()
+        };
+        explicit.preserve_metadata_state_from(&previous);
+        if explicit.detected_dependency_include_paths.contains(&detected_root) {
+            return Err("explicit user root was incorrectly claimed by the detector".into());
+        }
+        explicit.refresh_dependency_include_paths(workspace.path());
+        if !explicit.include_paths.contains(&"local/lib/perl5".to_string()) {
+            return Err("explicit user root was removed during marker reconciliation".into());
+        }
+        Ok(())
     }
 
     #[test]
@@ -5211,10 +5814,8 @@ profile = "recommended"
             ..WorkspaceConfig::default()
         };
 
-        let start = Instant::now();
         let outcome = config.get_system_inc_probe_outcome();
         let paths = config.get_system_inc().to_vec();
-        let elapsed = start.elapsed();
 
         // The contract under test is bounded, empty, and cached — NOT which
         // failure class the runner's perl produces. The resolved interpreter
@@ -5224,33 +5825,75 @@ profile = "recommended"
         // (CI red with NonZeroExit where the author saw TimedOut locally).
         // SuccessfulEmpty/Paths WOULD be failures here: the sleep program
         // must never produce paths.
-        assert!(
-            matches!(
-                outcome,
-                SystemIncProbeOutcome::TimedOut
-                    | SystemIncProbeOutcome::NonZeroExit
-                    | SystemIncProbeOutcome::IoFailed
-                    | SystemIncProbeOutcome::Unavailable
-            ),
-            "expected a bounded failure outcome, got {outcome:?}"
-        );
-        assert!(paths.is_empty(), "expected empty @INC on timeout, got {paths:?}");
-        // Generous bound: SYSTEM_INC_PROBE_TIMEOUT (1s) + spawn + poll overhead.
-        assert!(
-            elapsed < Duration::from_secs(4),
-            "get_system_inc must return within timeout+overhead, took {elapsed:?}",
-        );
-
+        if !matches!(
+            outcome,
+            SystemIncProbeOutcome::TimedOut
+                | SystemIncProbeOutcome::NonZeroExit
+                | SystemIncProbeOutcome::IoFailed
+                | SystemIncProbeOutcome::Unavailable
+        ) {
+            return Err(format!("expected a bounded failure outcome, got {outcome:?}").into());
+        }
+        if !paths.is_empty() {
+            return Err(format!("expected empty @INC on timeout, got {paths:?}").into());
+        }
         // Cached empty result — second call does not respawn perl.
         let start2 = Instant::now();
         let paths2 = config.get_system_inc().to_vec();
         let elapsed2 = start2.elapsed();
-        assert!(paths2.is_empty());
-        assert!(
-            elapsed2 < Duration::from_millis(50),
-            "cached lookup should be fast, took {elapsed2:?}",
-        );
+        if !paths2.is_empty() {
+            return Err("cached lookup returned paths after a failed probe".into());
+        }
+        if elapsed2 >= Duration::from_millis(50) {
+            return Err(format!("cached lookup should be fast, took {elapsed2:?}").into());
+        }
         Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[serial_test::serial]
+    fn startup_inc_probe_widened_timeout_reaches_live_constructor() -> TestResult {
+        let perl_path = match resolve_perl_path_with_toolchain() {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!(
+                    "SKIP startup_inc_probe_widened_timeout_reaches_live_constructor: {error}"
+                );
+                return Ok(());
+            }
+        };
+        let config = WorkspaceConfig {
+            use_system_inc: true,
+            perl_path: Some(perl_path.to_string_lossy().into_owned()),
+            perl_args: vec!["-e".into(), "sleep 2; print(qq(startup-sentinel).chr(10));".into()],
+            ..WorkspaceConfig::default()
+        };
+
+        let started = std::time::Instant::now();
+        let production = config.clone().get_system_inc_probe_outcome();
+        let elapsed = started.elapsed();
+        if !matches!(production, SystemIncProbeOutcome::TimedOut) {
+            return Err(
+                format!("one-second production probe did not time out: {production:?}").into()
+            );
+        }
+        if elapsed < Duration::from_millis(750) {
+            return Err(format!("one-second production timeout was too fast: {elapsed:?}").into());
+        }
+
+        let widened =
+            PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), || {
+                config.clone().get_system_inc_probe_outcome()
+            });
+        match widened {
+            SystemIncProbeOutcome::Paths(paths)
+                if paths.iter().any(|path| path == Path::new("startup-sentinel")) =>
+            {
+                Ok(())
+            }
+            other => Err(format!("widened live probe missed startup sentinel: {other:?}").into()),
+        }
     }
 
     /// A second lookup must reuse the first probe result rather than launch a
@@ -5302,10 +5945,127 @@ profile = "recommended"
             // test discriminator; normal settings updates invalidate the cache.
             config.perl_path = Some(missing_perl.to_string_lossy().into_owned());
             let reused = config.get_system_inc_probe_outcome();
-            assert_eq!(reused, cached, "second lookup must reuse the cached outcome");
-            assert_eq!(config.get_system_inc().to_vec(), cached_paths);
+            if reused != cached {
+                return Err(format!(
+                    "second lookup changed cached outcome: {reused:?} vs {cached:?}"
+                )
+                .into());
+            }
+            if config.get_system_inc().to_vec() != cached_paths {
+                return Err("second lookup changed cached paths".into());
+            }
             Ok(())
         })
+    }
+
+    /// Real-process counterpart to the injected outcome-law tests (#13589).
+    /// Explicit invocation requires Perl; unavailable instruments fail rather
+    /// than making the required process proof silently pass.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "requires a real Perl interpreter; run explicitly for startup INC process proof (#13589)"]
+    #[serial_test::serial]
+    fn peek_system_inc_real_process_outcome_matrix() -> TestResult {
+        let perl = resolve_perl_path_with_toolchain()
+            .map_err(|error| format!("startup INC process proof requires Perl: {error}"))?;
+        let temp = tempfile::tempdir()?;
+        let rows = [
+            ("timeout", "sleep 10;", SystemIncProbeOutcome::TimedOut, 2u32),
+            ("failed", "exit 7;", SystemIncProbeOutcome::NonZeroExit, 1),
+            ("empty", "exit 0;", SystemIncProbeOutcome::SuccessfulEmpty, 1),
+            (
+                "paths",
+                "print(q(startup-matrix-root)); exit 0;",
+                SystemIncProbeOutcome::Paths(vec![PathBuf::from("startup-matrix-root")]),
+                1,
+            ),
+        ];
+        for (name, behavior, expected, attempts) in rows {
+            let script = temp.path().join(format!("{name}.pl"));
+            let marker = temp.path().join(format!("{name}.pl.calls"));
+            std::fs::write(
+                &script,
+                format!(
+                    "use strict; use warnings;\n\
+                     open(my $calls, '>>', __FILE__ . '.calls') or exit 90;\n\
+                     print {{$calls}} 'x'; close($calls) or exit 91;\n{behavior}\n"
+                ),
+            )?;
+            let run = || -> TestResult {
+                let mut config = WorkspaceConfig {
+                    use_system_inc: true,
+                    use_perl5lib: false,
+                    perl_path: Some(perl.to_string_lossy().into_owned()),
+                    // A script operand makes the probe's appended -e arguments
+                    // script arguments, so this real process controls stdout
+                    // without depending on the host's installed module roots.
+                    perl_args: vec![script.to_string_lossy().into_owned()],
+                    ..WorkspaceConfig::default()
+                };
+                for _ in 0..3 {
+                    let (paths, state) = config.peek_system_inc();
+                    if !paths.is_empty()
+                        || state.outcome != SystemIncProbeOutcomeKind::NotObserved
+                        || state.attempts_consumed != 0
+                        || marker.exists()
+                    {
+                        return Err(format!("{name}: an initial peek acquired Perl state").into());
+                    }
+                }
+                for attempt in 1..=attempts {
+                    let actual = config.get_system_inc_probe_outcome();
+                    if actual != expected {
+                        return Err(format!(
+                            "{name}/{attempt}: real process returned {actual:?}, expected {expected:?}"
+                        )
+                        .into());
+                    }
+                    let expected_paths = match &expected {
+                        SystemIncProbeOutcome::Paths(paths) => paths.clone(),
+                        _ => Vec::new(),
+                    };
+                    let transient = name == "timeout" && attempt == 1;
+                    let impact = if transient {
+                        SystemIncLookupImpact::OmittedTransient
+                    } else if name == "empty" || name == "paths" {
+                        SystemIncLookupImpact::Participated
+                    } else {
+                        SystemIncLookupImpact::OmittedTerminal
+                    };
+                    for _ in 0..3 {
+                        let (paths, state) = config.peek_system_inc();
+                        if paths != expected_paths
+                            || state.attempts_consumed != attempt
+                            || state.retry_eligible() != transient
+                            || state.terminal() == transient
+                            || state.lookup_impact() != impact
+                            || std::fs::read(&marker)?.len() != attempt as usize
+                        {
+                            return Err(format!(
+                                "{name}/{attempt}: peek changed process count or misreported {state:?}"
+                            )
+                            .into());
+                        }
+                    }
+                }
+                // Settled outcomes, including the second timeout, never spawn
+                // again even when a real lookup acquires the cached state.
+                if config.get_system_inc_probe_outcome() != expected
+                    || std::fs::read(&marker)?.len() != attempts as usize
+                {
+                    return Err(
+                        format!("{name}: settled acquisition launched another process").into()
+                    );
+                }
+                Ok(())
+            };
+            if name == "timeout" {
+                run()?; // The unchanged one-second production deadline, twice.
+            } else {
+                PerlOracleEnv::with_startup_inc_probe_timeout(Duration::from_secs(30), run)?;
+            }
+        }
+        Ok(())
     }
 
     /// A single cold-start `TimedOut` must not permanently suppress a later
@@ -5465,6 +6225,250 @@ profile = "recommended"
             );
         }
         Ok(())
+    }
+
+    /// Reading the explanation snapshot must never launch or retry Perl, and
+    /// it must expose the transient-versus-terminal timeout distinction that
+    /// `get_system_inc()` deliberately collapses (#13589 falsifiers 1-3).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn peek_system_inc_probe_never_probes_and_tracks_timeout_budget() -> TestResult {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let counter = calls.clone();
+        let probe: system_inc_probe_injection::InjectedProbe =
+            std::rc::Rc::new(move |_config: &WorkspaceConfig, _args: &[String]| {
+                counter.set(counter.get() + 1);
+                SystemIncProbeOutcome::TimedOut
+            });
+        let _guard = system_inc_probe_injection::install(probe);
+
+        let mut config = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+
+        // Before any live lookup: not observed, eligible, nothing spawned.
+        let before = config.peek_system_inc_probe();
+        assert_eq!(before.outcome, SystemIncProbeOutcomeKind::NotObserved);
+        assert_eq!(before.attempts_consumed, 0);
+        assert_eq!(before.max_attempts, SYSTEM_INC_PROBE_MAX_ATTEMPTS);
+        assert!(before.retry_eligible() && !before.terminal());
+        assert_eq!(before.lookup_impact(), SystemIncLookupImpact::NotObserved);
+        assert!(config.peek_system_inc().0.is_empty());
+        assert_eq!(calls.get(), 0, "peeking must not launch Perl");
+
+        // One live timeout: transient, one retry remains.
+        assert!(config.get_system_inc().is_empty());
+        let transient = config.peek_system_inc_probe();
+        assert_eq!(transient.outcome, SystemIncProbeOutcomeKind::TimedOut);
+        assert_eq!(transient.attempts_consumed, 1);
+        assert!(transient.retry_eligible(), "first timeout must keep its retry");
+        assert!(!transient.terminal(), "first timeout must not be reported terminal");
+        assert_eq!(transient.lookup_impact(), SystemIncLookupImpact::OmittedTransient);
+        for _ in 0..3 {
+            let _ = config.peek_system_inc_probe();
+            let _ = config.peek_system_inc();
+        }
+        assert_eq!(calls.get(), 1, "peeking must not consume the remaining retry");
+
+        // Second live timeout: terminal until invalidation.
+        assert!(config.get_system_inc().is_empty());
+        let terminal = config.peek_system_inc_probe();
+        assert_eq!(terminal.outcome, SystemIncProbeOutcomeKind::TimedOut);
+        assert_eq!(terminal.attempts_consumed, 2);
+        assert!(!terminal.retry_eligible(), "second timeout must not be reported retryable");
+        assert!(terminal.terminal());
+        assert_eq!(terminal.lookup_impact(), SystemIncLookupImpact::OmittedTerminal);
+        assert_eq!(calls.get(), 2);
+        Ok(())
+    }
+
+    /// Settled classes keep their distinct meaning: a legitimate empty probe
+    /// participated, while unavailable/failed/non-zero outcomes are terminal
+    /// omissions (#13589 falsifiers 4-5).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn peek_system_inc_probe_preserves_settled_classes() -> TestResult {
+        let cases = [
+            (
+                SystemIncProbeOutcome::Unavailable,
+                SystemIncProbeOutcomeKind::Unavailable,
+                SystemIncLookupImpact::OmittedTerminal,
+                None,
+            ),
+            (
+                SystemIncProbeOutcome::IoFailed,
+                SystemIncProbeOutcomeKind::IoFailed,
+                SystemIncLookupImpact::OmittedTerminal,
+                None,
+            ),
+            (
+                SystemIncProbeOutcome::NonZeroExit,
+                SystemIncProbeOutcomeKind::NonZeroExit,
+                SystemIncLookupImpact::OmittedTerminal,
+                None,
+            ),
+            (
+                SystemIncProbeOutcome::SuccessfulEmpty,
+                SystemIncProbeOutcomeKind::SuccessfulEmpty,
+                SystemIncLookupImpact::Participated,
+                Some(0),
+            ),
+            (
+                SystemIncProbeOutcome::Paths(vec![PathBuf::from("a"), PathBuf::from("b")]),
+                SystemIncProbeOutcomeKind::Paths,
+                SystemIncLookupImpact::Participated,
+                Some(2),
+            ),
+        ];
+        for (outcome, kind, impact, root_count) in cases {
+            let injected = outcome.clone();
+            let probe: system_inc_probe_injection::InjectedProbe =
+                std::rc::Rc::new(move |_config: &WorkspaceConfig, _args: &[String]| {
+                    injected.clone()
+                });
+            let _guard = system_inc_probe_injection::install(probe);
+            let mut config = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+            let live = config.get_system_inc().to_vec();
+
+            let snapshot = config.peek_system_inc_probe();
+            assert_eq!(snapshot.outcome, kind, "{outcome:?}");
+            assert_eq!(snapshot.attempts_consumed, 1, "{outcome:?}");
+            assert!(snapshot.terminal(), "{outcome:?} is settled");
+            assert!(!snapshot.retry_eligible(), "{outcome:?} must not retry");
+            assert_eq!(snapshot.lookup_impact(), impact, "{outcome:?}");
+            assert_eq!(snapshot.system_root_count, root_count, "{outcome:?}");
+            assert_eq!(
+                config.peek_system_inc().0,
+                live,
+                "peeked paths must equal what the live lookup used for {outcome:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// `Disabled` is a configuration choice, not a failure, and a settings
+    /// change must make the pre-invalidation outcome unavailable rather than
+    /// current (#13589 falsifiers 5 and 9).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn peek_system_inc_probe_reports_disabled_and_drops_stale_outcome() -> TestResult {
+        let disabled = WorkspaceConfig::default().peek_system_inc_probe();
+        assert!(!disabled.use_system_inc);
+        assert_eq!(disabled.outcome, SystemIncProbeOutcomeKind::Disabled);
+        assert_eq!(disabled.lookup_impact(), SystemIncLookupImpact::Disabled);
+        assert!(disabled.terminal() && !disabled.retry_eligible());
+        assert_eq!(disabled.attempts_consumed, 0);
+
+        let probe: system_inc_probe_injection::InjectedProbe =
+            std::rc::Rc::new(move |_config: &WorkspaceConfig, _args: &[String]| {
+                SystemIncProbeOutcome::TimedOut
+            });
+        let _guard = system_inc_probe_injection::install(probe);
+        let mut config = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+        config.get_system_inc();
+        config.get_system_inc();
+        assert_eq!(
+            config.peek_system_inc_probe().lookup_impact(),
+            SystemIncLookupImpact::OmittedTerminal
+        );
+
+        config.update_from_value(&serde_json::json!({ "workspace": { "useSystemInc": false } }));
+        let off = config.peek_system_inc_probe();
+        assert_eq!(off.outcome, SystemIncProbeOutcomeKind::Disabled);
+        assert_eq!(off.attempts_consumed, 0, "a disabled config carries no stale attempts");
+
+        config.update_from_value(&serde_json::json!({ "workspace": { "useSystemInc": true } }));
+        let fresh = config.peek_system_inc_probe();
+        assert_eq!(
+            fresh.outcome,
+            SystemIncProbeOutcomeKind::NotObserved,
+            "the exhausted pre-invalidation outcome must not be published as current"
+        );
+        assert_eq!(fresh.attempts_consumed, 0);
+        assert!(fresh.retry_eligible());
+        Ok(())
+    }
+
+    /// A clone shares the stored epoch, so a snapshot read through either
+    /// handle describes the same live subject (#13589 falsifier 7).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn peek_system_inc_probe_sees_the_shared_epoch_through_clones() -> TestResult {
+        let probe: system_inc_probe_injection::InjectedProbe =
+            std::rc::Rc::new(move |_config: &WorkspaceConfig, _args: &[String]| {
+                SystemIncProbeOutcome::TimedOut
+            });
+        let _guard = system_inc_probe_injection::install(probe);
+        let mut stored = WorkspaceConfig { use_system_inc: true, ..WorkspaceConfig::default() };
+        stored.get_system_inc();
+
+        let mut clone = stored.clone();
+        assert_eq!(clone.peek_system_inc_probe(), stored.peek_system_inc_probe());
+
+        clone.get_system_inc();
+        let through_stored = stored.peek_system_inc_probe();
+        assert_eq!(through_stored.attempts_consumed, 2);
+        assert_eq!(through_stored.lookup_impact(), SystemIncLookupImpact::OmittedTerminal);
+        Ok(())
+    }
+
+    /// The snapshot's retry, terminal, and lookup-impact law over every
+    /// outcome kind and attempt count, stated on literal snapshots so the law
+    /// is pinned independently of how `peek_system_inc` fills the fields
+    /// (#13589 falsifiers 2, 3, 4, 5). Only `TimedOut` below the cap and
+    /// `NotObserved` may retry; `Disabled` is terminal for the configuration
+    /// but never a failure class; `SuccessfulEmpty` participates like `Paths`.
+    #[test]
+    fn system_inc_probe_snapshot_law_holds_on_literal_snapshots() {
+        use SystemIncLookupImpact as I;
+        use SystemIncProbeOutcomeKind as K;
+
+        let literal = |outcome: K, attempts_consumed: u32, system_root_count: Option<usize>| {
+            SystemIncProbeSnapshot {
+                use_system_inc: outcome != K::Disabled,
+                use_perl5lib: false,
+                outcome,
+                attempts_consumed,
+                max_attempts: SYSTEM_INC_PROBE_MAX_ATTEMPTS,
+                system_root_count,
+            }
+        };
+
+        // (outcome, attempts, roots, retry_eligible, terminal, impact)
+        let rows: [(K, u32, Option<usize>, bool, bool, I); 9] = [
+            (K::Disabled, 0, None, false, true, I::Disabled),
+            (K::NotObserved, 0, None, true, false, I::NotObserved),
+            (K::TimedOut, 1, None, true, false, I::OmittedTransient),
+            (K::TimedOut, 2, None, false, true, I::OmittedTerminal),
+            (K::Unavailable, 1, None, false, true, I::OmittedTerminal),
+            (K::IoFailed, 1, None, false, true, I::OmittedTerminal),
+            (K::NonZeroExit, 1, None, false, true, I::OmittedTerminal),
+            (K::SuccessfulEmpty, 1, Some(0), false, true, I::Participated),
+            (K::Paths, 1, Some(3), false, true, I::Participated),
+        ];
+        for (outcome, attempts, roots, eligible, terminal, impact) in rows {
+            let snapshot = literal(outcome, attempts, roots);
+            let label = format!("{outcome:?}/{attempts}");
+            assert_eq!(snapshot.use_system_inc, outcome != K::Disabled, "{label}");
+            assert!(!snapshot.use_perl5lib, "{label}");
+            assert_eq!(snapshot.outcome, outcome, "{label}");
+            assert_eq!(snapshot.attempts_consumed, attempts, "{label}");
+            assert_eq!(snapshot.max_attempts, 2, "{label}: cap is the #12945 constant");
+            assert_eq!(snapshot.system_root_count, roots, "{label}");
+            assert_eq!(snapshot.retry_eligible(), eligible, "{label}");
+            assert_eq!(snapshot.terminal(), terminal, "{label}");
+            assert_eq!(snapshot.lookup_impact(), impact, "{label}");
+            assert_eq!(snapshot.outcome.code(), outcome.code(), "{label}");
+            assert_eq!(snapshot.lookup_impact().code(), impact.code(), "{label}");
+        }
+
+        // The cap is a field, not a constant baked into the law: a snapshot
+        // reporting a larger budget keeps a second timeout retryable, and one
+        // reporting a smaller budget makes the first timeout terminal.
+        let wider = SystemIncProbeSnapshot { max_attempts: 3, ..literal(K::TimedOut, 2, None) };
+        assert!(wider.retry_eligible() && !wider.terminal());
+        assert_eq!(wider.lookup_impact(), I::OmittedTransient);
+        let narrower = SystemIncProbeSnapshot { max_attempts: 1, ..literal(K::TimedOut, 1, None) };
+        assert!(!narrower.retry_eligible() && narrower.terminal());
+        assert_eq!(narrower.lookup_impact(), I::OmittedTerminal);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -5918,7 +6922,7 @@ api_key_prefix = "Attacker "
     /// `generic_channel_ai_activation_shapes_fail_closed_across_clients`
     /// below (#4997).
     #[test]
-    fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_didChange() {
+    fn client_configuration_ignores_ai_endpoint_and_credential_fields_from_did_change() {
         let mut config = ServerConfig::default();
         config.update_from_value(&serde_json::json!({
             "aiCompletion": {

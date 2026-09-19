@@ -20,10 +20,13 @@ on:
       - 'crates/perl-lexer/**'
       - 'crates/perl-ast/**'
       - 'crates/perl-semantic-analyzer/**'
+      - 'crates/perl-pragma/**'
       - 'crates/perl-module/**'
       - 'crates/perl-workspace/**'
       - 'crates/perl-tdd-support/**'
       - '.github/workflows/critic-rule-proof.yml'
+      - 'xtask/src/main.rs'
+      - 'xtask/src/tasks/mod.rs'
   workflow_dispatch: {}
 
 concurrency:

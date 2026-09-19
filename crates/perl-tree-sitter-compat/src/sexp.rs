@@ -54,12 +54,9 @@ fn write_pretty(node: &TsNode, depth: usize, out: &mut String) {
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
     use crate::node::{TsNode, TsPoint};
+    use perl_test_must::must_with;
 
     fn node(kind: &str, children: Vec<TsNode>) -> TsNode {
         TsNode {
@@ -92,7 +89,10 @@ mod tests {
 
     #[test]
     fn sexp_matches_parsed_output() {
-        let tree = crate::convert::parse_to_tree("use strict;\n").unwrap();
+        let tree = must_with(
+            crate::convert::parse_to_tree("use strict;\n"),
+            "sexp fixture must parse to a tree",
+        );
         let sexp = to_sexp(&tree);
         assert!(sexp.starts_with("(program"), "root is program: {sexp}");
         assert!(sexp.contains("(use"), "contains a use node: {sexp}");

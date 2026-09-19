@@ -11,8 +11,11 @@ mod common;
 #[cfg(feature = "dap-phase2")]
 mod cleanup_tests {
     use anyhow::Result;
+    use perl_dap::debug_adapter::DapMessageWithEpoch;
     use perl_dap::{DapMessage, DebugAdapter};
-    use serde_json::{Value, json};
+    #[cfg(windows)]
+    use serde_json::Value;
+    use serde_json::json;
     use std::fs;
     use std::path::Path;
     use std::process::Command;
@@ -23,7 +26,7 @@ mod cleanup_tests {
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
-    fn make_adapter() -> (DebugAdapter, std::sync::mpsc::Receiver<DapMessage>) {
+    fn make_adapter() -> (DebugAdapter, std::sync::mpsc::Receiver<DapMessageWithEpoch>) {
         let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         crate::install_unbounded_test_authority(&adapter);
@@ -36,6 +39,8 @@ mod cleanup_tests {
     }
 
     fn wait_for_child_pid(marker: &Path, script: &Path, timeout: Duration) -> Result<u32> {
+        #[cfg(not(windows))]
+        let _ = script;
         let deadline = Instant::now() + timeout;
         loop {
             if fs::read_to_string(marker).is_ok() {
@@ -44,10 +49,10 @@ mod cleanup_tests {
                     return Ok(pid);
                 }
                 #[cfg(unix)]
-                if let Ok(contents) = fs::read_to_string(marker) {
-                    if let Ok(pid) = contents.trim().parse::<u32>() {
-                        return Ok(pid);
-                    }
+                if let Ok(contents) = fs::read_to_string(marker)
+                    && let Ok(pid) = contents.trim().parse::<u32>()
+                {
+                    return Ok(pid);
                 }
             }
             if Instant::now() >= deadline {

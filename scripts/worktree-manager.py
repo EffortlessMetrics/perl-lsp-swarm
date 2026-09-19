@@ -14,6 +14,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
 from typing import Any, Protocol
 
 
@@ -782,6 +783,23 @@ def printable_status(slot: dict[str, Any]) -> str:
     return status
 
 
+def _bash_spawn(script: Path) -> list[str]:
+    """Build the bash argv for the low-level cleanup script (#15889).
+
+    Prefers the shared host-aware resolver when it ships alongside this
+    file. A standalone deployment of just this script (the allocate
+    self-test copies it alone into a temp repo) degrades to the bare name
+    with the portable forward-slash path rendering — the pre-#15889
+    behavior — instead of failing on import.
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from bash_binary import bash_binary, bash_path
+    except ModuleNotFoundError:
+        return ["bash", script.as_posix()]
+    return [bash_binary(), bash_path(script)]
+
+
 def print_query(state: dict[str, Any]) -> None:
     slots = state.get("slots", [])
     if not slots:
@@ -962,7 +980,7 @@ def cleanup(
 
     if args.run_low_level:
         script = repo_root / "scripts" / "cleanup-completed-worktrees.sh"  # defect 4: was REPO_ROOT
-        cmd = ["bash", str(script)]
+        cmd = _bash_spawn(script)
         if args.dry_run:
             cmd.append("--dry-run")
         proc = run(cmd, check=False)

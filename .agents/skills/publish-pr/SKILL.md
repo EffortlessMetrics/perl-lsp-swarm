@@ -50,8 +50,14 @@ For an existing draft, inspect that named condition. When it is complete, re-eva
 Proportionality mirrors `$review-pr`'s carve-out: a candidate whose cumulative diff is
 mechanical — generated regeneration, lint-site collapse, allowlist row removal,
 comment-only edits — may publish a reduced index of three sections: **Claim**,
-**Proof**, and **What this does not establish**. The full index remains the default
-for anything crossing a production seam.
+**Proof**, and **Non-goals**. The full index remains the default for anything crossing
+a production seam.
+
+The order is load-bearing: establish claim and authority before proof; trace the changed
+production path; record focused and affected proof with `pass` / `fail` / `not-run` /
+`NOT_PROVEN`; challenge a realistic wrong implementation with negative, stale,
+failure, recovery, or opposite-direction controls; simplify before publication; bound
+the claim and non-goals; then name risk, rollback, and review locations.
 
 ```markdown
 ## Claim
@@ -62,8 +68,8 @@ for anything crossing a production seam.
 ## Test hardening
 ## Simplification
 ## Deviations
-## What this establishes
-## What this does not establish
+## Claim Boundary
+## Non-goals
 ## Risk and rollback
 ## Review index
 ```
@@ -88,12 +94,14 @@ silent absorption by the author's next force-push, and diverges the author's loc
 from the PR head unnoticed. Each failure looks like the author's, because the branch
 still presents as one coherent candidate.
 
-Where a reviewer has already pushed, read what landed and verify it against observed
-behavior before adopting it — a reviewer's push carries no proof, so restate it — or
-replace it and say why in the thread. Adopt by fast-forwarding onto the foreign head
-plus re-proving the affected dimensions; do not force-push over a foreign commit —
-rebase the branch so the foreign head remains an ancestor. Treat the result as a new
-authored candidate and invalidate the affected review dimensions.
+Where another context has already pushed, first establish one writer before recovery
+mutation. That writer reads the foreign change and verifies its behavior before
+adopting it; unwanted behavior is repaired with a new commit and an explanation in the
+thread. Fast-forward onto the foreign head when possible. If the histories diverged,
+merge them so both published tips remain ancestors; do not rebase away or force-push
+over a foreign commit. Applicable user and repository authorization still governs the
+operation. Re-prove the affected dimensions and refresh the affected review; a second
+writer receives no recovery exception.
 
 Recreating a closed PR is separate. If the existing head and base branches still exist
 and GitHub permits reopening, reopen and preserve the review record. A fresh PR is needed

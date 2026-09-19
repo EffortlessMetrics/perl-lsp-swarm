@@ -6,9 +6,9 @@
 
 #[cfg(feature = "dap-phase2")]
 mod dap_phase2_tests {
-    use anyhow::Result;
+    use anyhow::{Result, ensure};
     use perl_dap::breakpoints::BreakpointStore;
-    use perl_dap::debug_adapter::{DapMessage, DebugAdapter};
+    use perl_dap::debug_adapter::{DapMessage, DapMessageWithEpoch, DebugAdapter};
     use perl_dap::platform::normalize_path;
     use perl_dap::protocol::{SetBreakpointsArguments, Source, SourceBreakpoint};
     use perl_dap::{create_attach_json_snippet, create_launch_json_snippet};
@@ -19,7 +19,7 @@ mod dap_phase2_tests {
     use std::time::{Duration, Instant};
     use tempfile::NamedTempFile;
 
-    fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessage>) {
+    fn create_test_adapter() -> (DebugAdapter, Receiver<DapMessageWithEpoch>) {
         let (tx, rx) = sync_channel(64);
         let mut adapter = DebugAdapter::new();
         crate::install_unbounded_test_authority(&adapter);
@@ -59,7 +59,7 @@ mod dap_phase2_tests {
 
         let initialized = rx.recv_timeout(Duration::from_millis(200))?;
         match initialized {
-            DapMessage::Event { event, .. } => assert_eq!(event, "initialized"),
+            (DapMessage::Event { event, .. }, _) => assert_eq!(event, "initialized"),
             _ => anyhow::bail!("expected initialized event"),
         }
 
@@ -109,7 +109,7 @@ mod dap_phase2_tests {
     /// Tests feature spec: DAP_IMPLEMENTATION_SPECIFICATION.md#ac7-breakpoint-management
     #[tokio::test]
     // AC:7
-    async fn test_breakpoint_management_with_ast_validation() -> Result<()> {
+    async fn test_breakpoint_management_with_ast_validation_pending_engine_ack() -> Result<()> {
         let mut fixture = NamedTempFile::new()?;
         fixture.write_all(b"# comment line\nmy $x = 1;\nprint $x;\n")?;
         fixture.flush()?;
@@ -132,14 +132,34 @@ mod dap_phase2_tests {
             .get("breakpoints")
             .and_then(Value::as_array)
             .ok_or_else(|| anyhow::anyhow!("missing breakpoints array"))?;
-        assert_eq!(breakpoints.len(), 2);
-        assert!(
-            !breakpoints[0].get("verified").and_then(Value::as_bool).unwrap_or(true),
+        ensure!(breakpoints.len() == 2, "expected two breakpoint results");
+        let comment_breakpoint = breakpoints
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing comment-line breakpoint result"))?;
+        let executable_breakpoint = breakpoints
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("missing executable-line breakpoint result"))?;
+        ensure!(
+            !comment_breakpoint.get("verified").and_then(Value::as_bool).unwrap_or(true),
             "comment line should not be verified"
         );
-        assert!(
-            breakpoints[1].get("verified").and_then(Value::as_bool).unwrap_or(false),
-            "executable line should be verified"
+        let comment_message = comment_breakpoint
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("comment line must retain an AST rejection reason"))?;
+        ensure!(
+            comment_message != "Breakpoint is pending debugger launch",
+            "comment line must retain its static AST rejection reason"
+        );
+        ensure!(
+            !executable_breakpoint.get("verified").and_then(Value::as_bool).unwrap_or(true),
+            "executable line must remain pending until debugger acknowledgement"
+        );
+        ensure!(
+            executable_breakpoint.get("message").and_then(Value::as_str)
+                == Some("Breakpoint is pending debugger launch"),
+            "executable line must report its pending launch state"
         );
 
         Ok(())

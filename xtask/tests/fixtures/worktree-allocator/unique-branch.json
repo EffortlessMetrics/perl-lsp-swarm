@@ -1,4 +1,5 @@
 {
+  "schema_version": "worktree_lease_state.v1",
   "leases": [
     {
       "worktree_id": "wt-pr-102-1700000200",

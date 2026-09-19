@@ -54,7 +54,7 @@ print "x=$x\n";
             return Err("Timed out waiting for initialized event".into());
         }
         match rx.recv_timeout(remaining) {
-            Ok(DapMessage::Event { event, .. }) if event == "initialized" => break,
+            Ok((DapMessage::Event { event, .. }, _)) if event == "initialized" => break,
             Ok(_) => continue,
             Err(_) => return Err("Timed out waiting for initialized event".into()),
         }
@@ -78,7 +78,7 @@ print "x=$x\n";
                     return Err("Timed out waiting for stopped event".into());
                 }
                 match rx.recv_timeout(remaining) {
-                    Ok(DapMessage::Event { event, .. }) if event == "stopped" => break,
+                    Ok((DapMessage::Event { event, .. }, _)) if event == "stopped" => break,
                     Ok(_) => continue,
                     Err(_) => return Err("Timed out waiting for stopped event".into()),
                 }

@@ -13,8 +13,9 @@
     clippy::print_stderr,
     reason = "Integration-test diagnostic and skip output; tracing is not the harness logger."
 )]
+use perl_dap::debug_adapter::{DapMessageWithEpoch, DrainEpoch};
 use perl_dap::{DapMessage, DebugAdapter};
-use perl_tdd_support::must_with;
+use perl_tdd_support::{must_some_with, must_with};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
@@ -51,11 +52,52 @@ fn smoke_timeout() -> Duration {
 }
 
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
     common::wait_for_event(rx, event_name, timeout)
+}
+
+/// Drain waiting for `name`, recording whether a terminal event was seen
+/// and discarded along the way. `terminated`/`exited` is once-only per
+/// session generation (#15887, same family as #15884 and #15905): a fast-exiting
+/// debuggee can commit it during the post-disconnect drain itself, in which
+/// case a strictly-post-disconnect assert would spin out though the adapter
+/// behaved correctly. Callers assert at-least-once per generation instead of
+/// strictly-post-disconnect.
+///
+/// Mirrors `wait_cleanup_event_track_terminal` from #15893 in
+/// `dap_lifecycle_matrix_tests.rs`. Kept local because the existing
+/// `wait_for_event` in this file is also a local thin wrapper around
+/// `common::wait_for_event` — moving the helper to `common` is a separate
+/// follow-up (#15905 deliberately keeps the change surface tight).
+fn wait_cleanup_event_track_terminal(
+    rx: &Receiver<DapMessageWithEpoch>,
+    name: &str,
+    timeout: Duration,
+    terminated_seen: &mut bool,
+) -> Option<Value> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(remaining) {
+            Ok((DapMessage::Event { event, body, .. }, _)) if event == name => {
+                if event == "terminated" || event == "exited" {
+                    *terminated_seen = true;
+                }
+                return body;
+            }
+            Ok((DapMessage::Event { event, .. }, _)) => {
+                if event == "terminated" || event == "exited" {
+                    *terminated_seen = true;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    None
 }
 
 fn response_success(msg: DapMessage, command: &str) -> Result<Option<Value>, String> {
@@ -273,7 +315,14 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
     // We accept either outcome and record it as the status receipt.
     let deadline = Instant::now() + timeout;
     let mut module_breakpoint_hit = false;
-    let mut session_terminated = false;
+    // `terminated_seen` accumulates at-least-once-per-generation accounting
+    // (#15887 family, same discipline #15893 introduced in
+    // `dap_lifecycle_matrix_tests.rs` and #15905 adopts here). A fast-exiting
+    // debuggee can commit `terminated`/`exited` during the setup waits; a
+    // strictly-post-disconnect assertion would then spin out though the
+    // adapter behaved correctly.
+    let mut terminated_seen = false;
+    let mut hit_disconnect_sent = false;
 
     'outer: loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -281,7 +330,7 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
             break;
         }
         match rx.recv_timeout(remaining) {
-            Ok(DapMessage::Event { ref event, ref body, .. }) => {
+            Ok((DapMessage::Event { ref event, ref body, .. }, _)) => {
                 match event.as_str() {
                     "stopped" => {
                         let reason = body
@@ -295,10 +344,17 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
                         }
                         // Whether hit or step/other, disconnect cleanly.
                         let _ = adapter.handle_request(6, "disconnect", Some(json!({})));
+                        hit_disconnect_sent = true;
                         break 'outer;
                     }
                     "terminated" | "exited" => {
-                        session_terminated = true;
+                        // `terminated` is once-only: once drained here it will
+                        // not be re-emitted by any later `disconnect`. Record
+                        // it as the receipt's terminal event and skip the
+                        // post-disconnect wait (which would otherwise spin
+                        // out a 5-second timeout on hosted runners under load,
+                        // #15884).
+                        terminated_seen = true;
                         break 'outer;
                     }
                     _ => {}
@@ -314,7 +370,7 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
     // to `assert!(module_breakpoint_hit)`.
     eprintln!(
         "[module-resolution smoke] outcome: module_breakpoint_hit={module_breakpoint_hit} \
-         session_terminated={session_terminated}"
+         terminated_seen={terminated_seen}"
     );
 
     if module_breakpoint_hit {
@@ -326,13 +382,33 @@ fn test_module_breakpoint_hit_status_receipt() -> TestResult {
         );
     }
 
-    // Tear down: disconnect and wait for the terminated event.  This confirms
-    // the adapter exits cleanly rather than panicking or hanging.
-    let _ = adapter.handle_request(7, "disconnect", Some(json!({})));
-    let terminated = wait_for_event(&rx, "terminated", Duration::from_secs(5));
+    // Tear down: only re-disconnect when no inner disconnect was sent, and
+    // bound the drain grace the same way `common::DapWorkflowSession`'s
+    // `disconnect()` does (`min(timeout, 2s)`), so a host under load that
+    // queues `terminated` a few hundred ms later still completes the receipt
+    // without failing. The hard 5-second wait that used to live here racy'd
+    // `unit_routed_full` (#15884, same family as #15749 / #15887).
+    //
+    // `terminated`/`exited` is once-only per generation (#15905): it may
+    // already have been consumed during the setup `'outer` loop on a
+    // fast-exiting debuggee — in which case the disconnect and the
+    // drain-grace wait are redundant and skipped — or committed during this
+    // drain itself, which the helper records into `terminated_seen`. The
+    // assertion is therefore at-least-once per generation rather than
+    // strictly-post-disconnect (the discipline #15893 introduced in
+    // `dap_lifecycle_matrix_tests.rs`).
+    if !terminated_seen {
+        if !hit_disconnect_sent {
+            let _ = adapter.handle_request(7, "disconnect", Some(json!({})));
+        }
+        let drain_grace = timeout.min(Duration::from_secs(2));
+        let _ =
+            wait_cleanup_event_track_terminal(&rx, "terminated", drain_grace, &mut terminated_seen);
+    }
     assert!(
-        terminated.is_ok(),
-        "adapter must emit `terminated` after disconnect — status receipt must complete cleanly"
+        terminated_seen,
+        "adapter must yield a `terminated`/`exited` event for the generation \
+         (already-consumed early termination counts, #15905)"
     );
 
     Ok(())
@@ -358,4 +434,90 @@ fn install_unbounded_test_authority(adapter: &perl_dap::DebugAdapter) {
         "test authority resolution",
     );
     adapter.set_launch_authority(authority);
+}
+
+// ── Unit tests for `wait_cleanup_event_track_terminal` ────────────────────────
+//
+// These exercise the helper directly (#15905) so a future refactor cannot
+// silently regress the at-least-once-per-generation accounting that the smoke
+// test now depends on. The original test failure was the helper asserting
+// strictly-post-disconnect, which spun out on a fast-exiting debuggee that
+// had already committed `terminated` earlier.
+
+fn make_event(event: &str) -> DapMessage {
+    DapMessage::Event { seq: 0, event: event.to_string(), body: None }
+}
+
+fn make_event_with_body(event: &str, body: Value) -> DapMessage {
+    DapMessage::Event { seq: 0, event: event.to_string(), body: Some(body) }
+}
+
+#[test]
+fn track_terminal_records_terminated_consumed_while_draining_for_other_event() {
+    let (tx, rx) = sync_channel::<DapMessageWithEpoch>(16);
+    let _ = tx.send((make_event("stopped"), DrainEpoch::Global));
+    let _ = tx.send((make_event("terminated"), DrainEpoch::Global));
+    // No `initialized` ever arrives — the drain must time out, NOT hang.
+    let mut terminated_seen = false;
+    let result = wait_cleanup_event_track_terminal(
+        &rx,
+        "initialized",
+        Duration::from_millis(50),
+        &mut terminated_seen,
+    );
+    assert!(result.is_none(), "drain must return None when the target event never arrives");
+    assert!(
+        terminated_seen,
+        "drain must record `terminated` consumed while waiting for another event"
+    );
+}
+
+#[test]
+fn track_terminal_records_terminated_when_target_event_itself_is_terminated() {
+    let (tx, rx) = sync_channel::<DapMessageWithEpoch>(16);
+    let body = json!({"reason": "test"});
+    let _ = tx.send((make_event_with_body("terminated", body.clone()), DrainEpoch::Global));
+    let mut terminated_seen = false;
+    let result = wait_cleanup_event_track_terminal(
+        &rx,
+        "terminated",
+        Duration::from_millis(50),
+        &mut terminated_seen,
+    );
+    let returned =
+        must_some_with(result, "drain must return the body when the target event arrives");
+    assert_eq!(returned, body, "drain must return the original body of the matched event");
+    assert!(terminated_seen, "drain must record `terminated` when it is itself the matched event");
+}
+
+#[test]
+fn track_terminal_records_exited_as_terminal() {
+    let (tx, rx) = sync_channel::<DapMessageWithEpoch>(16);
+    let _ = tx.send((make_event("exited"), DrainEpoch::Global));
+    let mut terminated_seen = false;
+    let _ = wait_cleanup_event_track_terminal(
+        &rx,
+        "initialized",
+        Duration::from_millis(50),
+        &mut terminated_seen,
+    );
+    assert!(
+        terminated_seen,
+        "drain must record `exited` as terminal (same family as `terminated`, #15884)"
+    );
+}
+
+#[test]
+fn track_terminal_leaves_terminated_seen_false_when_only_unrelated_events_arrive() {
+    let (tx, rx) = sync_channel::<DapMessageWithEpoch>(16);
+    let _ = tx.send((make_event("output"), DrainEpoch::Global));
+    let _ = tx.send((make_event("thread"), DrainEpoch::Global));
+    let mut terminated_seen = false;
+    let _ = wait_cleanup_event_track_terminal(
+        &rx,
+        "initialized",
+        Duration::from_millis(50),
+        &mut terminated_seen,
+    );
+    assert!(!terminated_seen, "drain must NOT record terminal when no terminal event was observed");
 }

@@ -97,6 +97,23 @@ pub use tdd::test_runner;
 /// [#14291]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/14291
 pub use perl_test_must::{must, must_err, must_err_with, must_some, must_some_with, must_with};
 
+/// Independent old-generation edit transaction model for source-equivalence
+/// proof ([#7344]).
+///
+/// Applies an ordered edit transaction to an immutable predecessor source
+/// without calling parser or production edit-application code, so a
+/// differential harness can compare production incremental source state
+/// against an oracle that cannot reproduce the production applicator's own
+/// defects.
+///
+/// [#7344]: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/7344
+pub mod reference_edit;
+
+pub use reference_edit::{
+    REFERENCE_EDIT_COORDINATE_MODEL_ID, ReferenceByteMapSegment, ReferenceEdit, ReferenceEditError,
+    ReferenceEditResult, ReferenceEditTransaction, ReferenceSourceState,
+};
+
 /// Typed skip for symlink-creating tests on Windows sessions without
 /// `SeCreateSymbolicLinkPrivilege` (os error 1314).
 pub mod symlink_privilege;

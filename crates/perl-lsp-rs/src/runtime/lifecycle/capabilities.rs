@@ -3,6 +3,7 @@
 //! Handles client capability parsing and server capabilities construction.
 
 use super::super::{JsonRpcError, LspServer, Ordering};
+use crate::protocol::command::code_action_documentation_entries;
 use perl_workspace::folder::{extract_workspace_folder_uris, root_path_to_file_uri};
 use serde_json::{Value, json};
 
@@ -97,9 +98,16 @@ fn workspace_capabilities(
     workspace_folders_support: bool,
     file_operations: FileOperationSupport,
 ) -> Value {
-    let perl_globs = ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi"];
-    let filters: Vec<Value> =
-        perl_globs.iter().map(|glob| json!({ "pattern": { "glob": glob } })).collect();
+    // Advertised file-operation filters share the watcher pattern authority
+    // so both registrations stay honest about what the handlers classify
+    // (#13308). The catch-all delivers non-Perl events by design; the
+    // willRename preflight classifies each renamed subject through the same
+    // discovery admission authority as the startup and watcher seams and
+    // plans no module edits for non-Perl subjects (#14186).
+    let filters: Vec<Value> = super::watchers::PERL_WATCH_PATTERNS
+        .iter()
+        .map(|glob| json!({ "pattern": { "glob": glob } }))
+        .collect();
     let mut file_operation_capabilities = serde_json::Map::new();
     file_operations.insert_capabilities(&mut file_operation_capabilities, &filters);
 
@@ -158,54 +166,23 @@ fn merge_experimental_capability(capabilities: &mut Value, key: &str, value: Val
     experimental.insert(key.to_string(), value);
 }
 
-fn code_action_documentation_entries() -> Value {
-    json!([
-        {
-            "kind": "quickfix",
-            "command": {
-                "title": "Explain Perl quick fixes",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "diagnostics",
-                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_quickfix"
-                }]
-            }
-        },
-        {
-            "kind": "refactor",
-            "command": {
-                "title": "Explain Perl refactors",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "rename",
-                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_refactor"
-                }]
-            }
-        },
-        {
-            "kind": "source.fixAll",
-            "command": {
-                "title": "Explain Perl fix-all actions",
-                "command": "perl.explainProviderDecision",
-                "arguments": [{
-                    "provider": "diagnostics",
-                    "receipt_id": "docs/specs/PLSP-SPEC-0029-lsp-318-conformance-boundary.md#code-action-documentation",
-                    "scenario": "lsp_318_code_action_documentation_fix_all"
-                }]
-            }
-        }
-    ])
-}
-
 impl LspServer {
     /// Handle initialize request
     pub(crate) fn handle_initialize(
         &self,
         params: Option<Value>,
     ) -> Result<Option<Value>, JsonRpcError> {
-        // Atomically check and set initialize_requested
+        // Every later initialize is InvalidRequest before params. The first
+        // attempt consumes the one-shot CAS before classification: a rejected
+        // first payload is not retryable and must not open serving.
+        if self.initialize_requested.load(Ordering::Acquire) {
+            return Err(JsonRpcError {
+                code: -32600, // InvalidRequest per LSP spec 3.17
+                message: "initialize may only be sent once".to_string(),
+                data: None,
+            });
+        }
+
         if self
             .initialize_requested
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -217,6 +194,17 @@ impl LspServer {
                 data: None,
             });
         }
+
+        let selection = match params.as_ref() {
+            Some(params) => {
+                super::super::v0_18_text_sync_envelope::classify_position_encoding_offer(params)?
+            }
+            None => super::super::v0_18_text_sync_envelope::Utf16SelectionReason::Omitted,
+        };
+        tracing::info!(
+            reason = selection.as_str(),
+            "v0.18 initialize selected UTF-16 position encoding"
+        );
 
         // Parse client capabilities
         if let Some(params) = &params {
@@ -536,16 +524,24 @@ impl LspServer {
                     }
                 }
 
-                // Negotiate position encoding per LSP 3.17 spec
-                // Client's `general.positionEncodings` is a list of encodings it supports
-                // Server picks the first one from the list that it also supports
-                // Default to UTF-16 if the list is empty or missing
-                let negotiated_encoding = if let Some(encodings) = params
+                // Negotiate the client's preferred encoding per LSP 3.17: the
+                // first entry of `general.positionEncodings` this server
+                // represents, defaulting to UTF-16. The v0.18 classification
+                // above has already validated the offer shape, so a well-formed
+                // list that omits utf-16 lands here as a recorded preference
+                // while the wire stays UTF-16 via the mandatory fallback. This
+                // legacy slot is a compatibility record only — never the active
+                // authority (`position_encoding_session_context`, published at
+                // the end of this handler) and never the advertisement
+                // (`v0_18_text_sync_envelope::WIRE_ENCODING`). Those two own
+                // the active and advertised encodings; keeping the client's
+                // preference here distinct from both is what
+                // `utf8_preference_remains_distinct_from_active_utf16` pins.
+                let negotiated_preference = if let Some(encodings) = params
                     .pointer("/capabilities/general/positionEncodings")
                     .and_then(Value::as_array)
                 {
-                    // Pick the first encoding from client list that server supports
-                    let supported = ["utf-8", "utf-16"]; // Server supports UTF-8 and UTF-16
+                    let supported = ["utf-8", "utf-16"];
                     encodings
                         .iter()
                         .find_map(|enc| {
@@ -559,10 +555,9 @@ impl LspServer {
                         })
                         .unwrap_or(crate::textdoc::PosEnc::Utf16)
                 } else {
-                    // No encoding preference list provided, default to UTF-16
                     crate::textdoc::PosEnc::Utf16
                 };
-                caps.position_encoding = negotiated_encoding;
+                caps.position_encoding = negotiated_preference;
             } // caps lock released here
 
             // Check if client supports pull diagnostics.
@@ -719,6 +714,22 @@ impl LspServer {
                 limits.update_from_value(perl);
             }
             *self.initialization_options_perl_settings.lock() = Some(perl.clone());
+
+            // Snapshot the post-tier-1 ServerConfig so the next
+            // `load_and_apply_project_config` can reset to `defaults + tier-1`
+            // before layering tier-2 (project config). This snapshot is
+            // updated on every `didChangeConfiguration` so subsequent resets
+            // also include tier-3 (issue #15715).
+            *self.server_config_baseline.lock() = Some(self.config.lock().clone());
+        }
+
+        // A client may omit `initializationOptions` (or send null): capture
+        // the baseline anyway — `defaults + tier-1`, which is just defaults
+        // here — so a later folder removal can still reset. Never overwrite
+        // the tier-1 snapshot captured above (#15715).
+        if self.server_config_baseline.lock().is_none() {
+            let snapshot = self.config.lock().clone();
+            *self.server_config_baseline.lock() = Some(snapshot);
         }
 
         // Load .perl-lsp.toml from workspace root (init options base layer; LSP config overrides later)
@@ -741,11 +752,10 @@ impl LspServer {
 
         tracing::debug!(perltidy = has_perltidy, perlcritic = has_perlcritic, "Tool availability");
 
-        // TextDocumentSyncKind::Full (1): the server always reparses the full
-        // document on every didChange notification.  Advertising Incremental (2)
-        // would be inaccurate â€” we do not maintain incremental AST state between
-        // edits; we rebuild the entire AST from the complete document text each time.
-        let sync_kind = 1;
+        // TextDocumentSyncKind::Full (1): v0.18 transfers complete document text
+        // on every didChange. Incremental ranged transfer is not the supported
+        // envelope; internal full reparse is an independent implementation fact.
+        let sync_kind = super::super::v0_18_text_sync_envelope::TEXT_SYNC_KIND_FULL;
 
         // Build capabilities using catalog-driven approach
         let profile = self.feature_profile();
@@ -816,18 +826,19 @@ impl LspServer {
 
         // Add fields not yet in lsp-types 0.97
         //
-        // Phase 1 (this PR) only negotiates and stores the client's preferred
-        // position encoding on `ClientCapabilities.position_encoding` for
-        // future use. `text_sync` and every feature provider (hover,
-        // definition, diagnostics, ...) still compute positions in UTF-16
-        // code units. Per the LSP 3.17 spec, client and server MUST agree on
-        // one encoding or offsets are misinterpreted, so the *advertised*
-        // `positionEncoding` MUST stay pinned to "utf-16" — the mandatory
-        // default — until phase 2 threads the negotiated encoding through the
-        // providers. Advertising anything else here would silently corrupt
-        // document sync and every position-bearing response for non-ASCII
-        // content on a client that prefers a different encoding.
-        capabilities["positionEncoding"] = Value::String("utf-16".to_string());
+        // The v0.18 envelope (#8129) advertises and uses UTF-16 only, written
+        // once from the envelope's `WIRE_ENCODING` authority so the value has
+        // exactly one owner and lifetime. Position-bearing providers still
+        // compute UTF-16 code units, and the active authority published at the
+        // end of this handler is the compatibility-pinned UTF-16 session
+        // context, so advertisement and active encoding cannot disagree. Per
+        // the LSP 3.17 spec, client and server MUST agree on one encoding or
+        // offsets are misinterpreted: advertising anything else would silently
+        // corrupt document sync and every position-bearing response for
+        // non-ASCII content on a client that prefers a different encoding. A
+        // later encoding cutover is #1690 and is not part of this envelope.
+        capabilities["positionEncoding"] =
+            Value::String(super::super::v0_18_text_sync_envelope::WIRE_ENCODING.to_string());
         if features.declaration {
             capabilities["declarationProvider"] = Value::Bool(true);
         }
@@ -866,6 +877,17 @@ impl LspServer {
                 Value::Bool(true),
             );
         }
+
+        // Publish coordinate authority once every capability that can still
+        // fail has been computed, so no partially-built initialize can leave a
+        // published authority behind. The response value is assembled just
+        // below from `capabilities`, which is already final here. Client
+        // preference stays available for compatibility parsing but is not
+        // active authority. Re-entry cannot republish: the duplicate-initialize
+        // guard rejects a second initialize before reaching this point, which
+        // `duplicate_initialize_cannot_mutate_active_identity` pins.
+        self.publish_position_encoding_session_context();
+        self.initialization_accepted.store(true, Ordering::Release);
 
         Ok(Some(json!({
             "capabilities": capabilities,
@@ -1585,6 +1607,30 @@ mod tests {
     }
 
     #[test]
+    fn handle_initialize_without_initialization_options_still_captures_baseline()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #15715: a client may omit `initializationOptions` (or send null).
+        // The post-tier-1 baseline must still be captured — `defaults +
+        // tier-1`, just defaults here — so a later folder removal can reset
+        // instead of leaving `None` behind.
+        let server = LspServer::new();
+        let params = json!({ "capabilities": {} });
+
+        server.handle_initialize(Some(params))?;
+
+        let baseline = server.server_config_baseline.lock().clone();
+        let Some(baseline) = baseline else {
+            return Err("baseline must be captured without initializationOptions".into());
+        };
+        let config = server.config.lock();
+        assert_eq!(
+            baseline.perlcritic_severity, config.perlcritic_severity,
+            "baseline must snapshot the shared config even with no init options",
+        );
+        Ok(())
+    }
+
+    #[test]
     fn handle_initialize_exact_error_variant() -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({ "capabilities": {} });
@@ -1606,29 +1652,35 @@ mod tests {
     }
 
     #[test]
-    fn initialize_prefers_first_supported_position_encoding() {
+    fn initialize_selects_utf16_wire_and_records_client_preference()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
                 "general": {
-                    "positionEncodings": ["utf-32", "utf-8", "utf-16"]
+                    "positionEncodings": ["utf-8", "utf-16"]
                 }
             }
         });
 
-        let _ = server.handle_initialize(Some(params));
-
+        let result = server.handle_initialize(Some(params))?;
+        let caps = result.as_ref().and_then(|v| v.get("capabilities")).ok_or("capabilities")?;
+        assert_eq!(caps.get("positionEncoding"), Some(&json!("utf-16")));
+        assert_eq!(caps.pointer("/textDocumentSync/change"), Some(&json!(1)));
         assert!(
             matches!(
                 server.client_capabilities.lock().position_encoding,
                 crate::textdoc::PosEnc::Utf8
             ),
-            "position encoding negotiation should skip unsupported entries and pick the first supported encoding"
+            "the legacy slot records the client's first supported preference; \
+             only the advertisement carries the v0.18 utf-16 wire encoding"
         );
+        Ok(())
     }
 
     #[test]
-    fn initialize_accepts_utf16_when_it_is_first_supported_position_encoding() {
+    fn initialize_accepts_utf16_when_it_is_first_supported_position_encoding()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1638,19 +1690,21 @@ mod tests {
             }
         });
 
-        let _ = server.handle_initialize(Some(params));
+        let _ = server.handle_initialize(Some(params))?;
 
         assert!(
             matches!(
                 server.client_capabilities.lock().position_encoding,
                 crate::textdoc::PosEnc::Utf16
             ),
-            "position encoding negotiation should preserve utf-16 when it is the first supported client preference"
+            "position encoding must stay utf-16 when the client lists it first"
         );
+        Ok(())
     }
 
     #[test]
-    fn initialize_falls_back_to_utf16_when_position_encodings_have_no_supported_values() {
+    fn initialize_accepts_position_encodings_that_omit_utf16()
+    -> Result<(), Box<dyn std::error::Error>> {
         let server = LspServer::new();
         let params = json!({
             "capabilities": {
@@ -1660,15 +1714,150 @@ mod tests {
             }
         });
 
-        let _ = server.handle_initialize(Some(params));
+        let result = server
+            .handle_initialize(Some(params))?
+            .ok_or("lists without utf-16 must accept via mandatory UTF-16 fallback")?;
+        assert_eq!(
+            result.pointer("/capabilities/positionEncoding").and_then(Value::as_str),
+            Some("utf-16"),
+            "mandatory fallback must still advertise utf-16: {result}"
+        );
+        assert!(
+            server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire),
+            "accepted omit-utf16 initialize must open the session"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_position_encodings_consume_initialize_and_do_not_open_serving()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let err = match server.handle_initialize(Some(json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": [1]
+                }
+            }
+        }))) {
+            Err(err) => err,
+            Ok(_) => return Err("malformed encodings must fail initialize".into()),
+        };
+        assert_eq!(err.code, -32602);
+        assert!(
+            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            "first attempt must consume the one-shot even when classification fails"
+        );
+        assert!(
+            !server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire),
+            "rejected first attempt must not open an accepted session"
+        );
+
+        let duplicate = match server.handle_initialize(Some(json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-16"]
+                }
+            }
+        }))) {
+            Err(err) => err,
+            Ok(_) => {
+                return Err("retry after rejected first initialize must be InvalidRequest".into());
+            }
+        };
+        assert_eq!(duplicate.code, -32600);
+        assert_eq!(duplicate.message, "initialize may only be sent once");
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_first_initialize_attempts_have_exactly_one_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        let valid = json!({
+            "capabilities": {
+                "general": { "positionEncodings": ["utf-16"] }
+            }
+        });
+        let malformed = json!({
+            "capabilities": {
+                "general": { "positionEncodings": [1] }
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| server.handle_initialize(Some(valid.clone())));
+            let second = scope.spawn(|| server.handle_initialize(Some(malformed.clone())));
+            let first = first.join().expect("first initialize thread");
+            let second = second.join().expect("second initialize thread");
+
+            let outcomes = [first, second];
+            let owners = outcomes
+                .iter()
+                .filter(|outcome| {
+                    outcome.is_ok() || outcome.as_ref().err().is_some_and(|err| err.code == -32602)
+                })
+                .count();
+            let losers = outcomes
+                .iter()
+                .filter(|outcome| outcome.as_ref().err().is_some_and(|err| err.code == -32600))
+                .count();
+            assert_eq!(owners, 1, "exactly one first attempt owns the one-shot: {outcomes:?}");
+            assert_eq!(losers, 1, "the other attempt must be InvalidRequest: {outcomes:?}");
+        });
 
         assert!(
-            matches!(
-                server.client_capabilities.lock().position_encoding,
-                crate::textdoc::PosEnc::Utf16
-            ),
-            "unsupported position encoding lists must fall back to utf-16"
+            server.initialize_requested.load(std::sync::atomic::Ordering::Acquire),
+            "exactly one owner must consume the one-shot"
         );
+        let accepted = server.initialization_accepted.load(std::sync::atomic::Ordering::Acquire);
+        if accepted {
+            assert!(
+                server
+                    .handle_initialize(Some(json!({ "capabilities": {} })))
+                    .err()
+                    .is_some_and(|err| err.code == -32600),
+                "accepted session still rejects later initialize"
+            );
+        } else {
+            let unknown = server.handle_request(crate::protocol::JsonRpcRequest {
+                _jsonrpc: "2.0".to_string(),
+                id: Some(crate::protocol::JsonRpcId::Integer(99)),
+                method: "custom/unknown".to_string(),
+                params: None,
+            });
+            // If the concurrent owner was malformed, serving must stay closed.
+            let code = unknown.and_then(|response| response.error).map(|err| err.code);
+            assert_eq!(
+                code,
+                Some(-32002),
+                "attempted-but-unaccepted initialize must not open serving: {code:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_initialize_after_success_stays_invalid_request_even_with_bad_encodings()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let server = LspServer::new();
+        server.handle_initialize(Some(json!({ "capabilities": {} })))?;
+        let err = match server.handle_initialize(Some(json!({
+            "capabilities": {
+                "general": {
+                    "positionEncodings": ["utf-8"]
+                }
+            }
+        }))) {
+            Err(err) => err,
+            Ok(_) => return Err("duplicate initialize must fail".into()),
+        };
+        assert_eq!(
+            err.code, -32600,
+            "already-consumed initialize must stay InvalidRequest, not encoding InvalidParams"
+        );
+        assert_eq!(err.message, "initialize may only be sent once");
+        Ok(())
     }
 
     #[test]
@@ -1698,6 +1887,20 @@ mod tests {
             .and_then(Value::as_array)
             .ok_or("supported clients should receive CodeActionOptions.documentation")?;
         assert_eq!(docs.len(), 3, "expected quickfix, refactor, and source.fixAll docs");
+        for doc in docs {
+            let command = doc.get("command").ok_or("documentation entry missing command")?;
+            let title = command.get("title").and_then(Value::as_str);
+            let tooltip = command
+                .get("tooltip")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("documentation Command missing tooltip: {doc}"))?;
+            assert!(!tooltip.is_empty(), "documentation Command.tooltip must be non-empty: {doc}");
+            assert_ne!(
+                Some(tooltip),
+                title,
+                "documentation Command.tooltip must not replace title: {doc}"
+            );
+        }
         Ok(())
     }
 

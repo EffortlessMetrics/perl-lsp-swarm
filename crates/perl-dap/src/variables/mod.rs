@@ -16,7 +16,7 @@
 //! # Example
 //!
 //! ```rust
-//! use perl_dap_variables::{PerlValue, RenderedVariable, PerlVariableRenderer, VariableRenderer};
+//! use perl_dap::variables::{PerlValue, PerlVariableRenderer, VariableRenderer};
 //!
 //! let renderer = PerlVariableRenderer::new();
 //! let value = PerlValue::Scalar("hello".to_string());
@@ -28,6 +28,9 @@
 
 mod parser;
 mod renderer;
+
+/// Bounded stopped-state snapshot model for lexical collections (#7358 PR 1).
+pub mod lexical_snapshot;
 
 pub use crate::value::PerlValue;
 pub use parser::{FixedOriginVariableParseError, VariableParseError, VariableParser};

@@ -9,7 +9,7 @@
 //!
 //! ```ignore
 //! // Old:
-//! use perl_parser::workspace_rename;
+//! use perl_workspace::workspace_rename;
 //!
 //! // New:
 //! use perl_lsp::features::workspace_rename;

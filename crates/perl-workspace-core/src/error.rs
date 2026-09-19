@@ -47,14 +47,20 @@ pub struct ModelLimitation {
     pub kind: String,
     /// A human-readable explanation.
     pub message: String,
+    /// Relative paths this limitation bounds, carried structurally so path
+    /// scoping never has to be reconstructed from the id text. Empty means
+    /// the association is only recoverable from the `<kind>:<path>` id
+    /// convention (legacy producers). A producer that emits non-suffixed
+    /// limitation ids relying solely on structural paths changes what older
+    /// consumers can scope and must accompany that change with a
+    /// `SCHEMA_VERSION` bump; within this crate the builder emits suffixed
+    /// `read-failed:<path>` ids so legacy suffix scoping is preserved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 }
 
 #[cfg(test)]
 mod tests {
-    #![expect(
-        clippy::unwrap_used,
-        reason = "tracked conversion debt: https://github.com/EffortlessMetrics/perl-lsp-swarm/issues/3021"
-    )]
     use super::*;
 
     #[test]
@@ -68,14 +74,29 @@ mod tests {
     }
 
     #[test]
-    fn limitation_round_trips() {
+    fn limitation_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         let lim = ModelLimitation {
             id: "parse-failed:lib/App.pm".to_string(),
             kind: "parse_failure".to_string(),
             message: "could not parse".to_string(),
+            paths: Vec::new(),
         };
-        let json = serde_json::to_string(&lim).unwrap();
-        let back: ModelLimitation = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&lim)?;
+        let back: ModelLimitation = serde_json::from_str(&json)?;
         assert_eq!(lim, back);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_limitation_paths_are_omitted() -> Result<(), Box<dyn std::error::Error>> {
+        let lim = ModelLimitation {
+            id: "parse-failed:lib/App.pm".to_string(),
+            kind: "parse_failure".to_string(),
+            message: "could not parse".to_string(),
+            paths: Vec::new(),
+        };
+        let json = serde_json::to_string(&lim)?;
+        assert!(!json.contains("paths"));
+        Ok(())
     }
 }

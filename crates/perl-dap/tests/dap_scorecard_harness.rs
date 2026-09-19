@@ -16,6 +16,7 @@
 mod common;
 
 use common::{DapWorkflowSession, debuggee_perl_or_typed_skip, perl_available, workflow_timeout};
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::transport::framing::frame;
 use perl_tdd_support::must_with;
@@ -75,7 +76,7 @@ struct ScorecardReceipt {
 }
 
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {

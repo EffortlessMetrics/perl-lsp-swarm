@@ -6,12 +6,11 @@
 //!
 //! # Claim boundary
 //!
-//! This contract proves only the public free function
-//! `perl_lsp::execute_command::command_exists`. The `pub(crate)` instance
-//! method in `execute_command/provider.rs` intentionally has divergent
-//! platform behavior — Windows delegates to the hardened PATH-only resolver in
-//! `perl_subprocess_runtime`, and non-Windows spawns `which` under a 2-second
-//! timeout — and is exercised by its own scoped proof, not by this contract.
+//! This contract exercises the public free function
+//! `perl_lsp::execute_command::command_exists` through isolated environments.
+//! The provider instance method delegates to the same function; its delegation
+//! is covered by the provider unit tests. Availability is a presence check
+//! under the shared probe policy, not a guarantee of later launch identity.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -33,7 +32,7 @@ const CHILD_MODE_ENV: &str = "PERL_LSP_COMMAND_EXISTS_CHILD";
 const CHILD_COMMAND_ENV: &str = "PERL_LSP_COMMAND_EXISTS_NAME";
 const CHILD_EXPECTED_ENV: &str = "PERL_LSP_COMMAND_EXISTS_EXPECTED";
 const CHILD_FILTER: &str = "command_exists_contract_child";
-const CHILD_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+const CHILD_PROBE_TIMEOUT: Duration = Duration::from_mins(2);
 const CHILD_PROBE_POLL: Duration = Duration::from_millis(20);
 
 fn command_candidate_name(command: &str) -> String {
@@ -249,8 +248,10 @@ fn public_command_exists_rejects_cwd_sibling_under_empty_path_entry() -> TestRes
     // A launchable sibling sits in the child's current directory and the only
     // PATH entry is empty. The public lookup must not interpret the empty
     // entry as the working directory (the CWD-first admission seam): it must
-    // reject the candidate. which 8.x filters empty PATH entries outright, so
-    // this row also pins that filtering as load-bearing behavior.
+    // reject the candidate under the runtime's shared availability policy: an
+    // empty component is not absolute, so it is refused by the same rule that
+    // refuses `.` and `tools`, on every platform. This row pins that refusal
+    // as load-bearing — it is the regression guard for the CWD-first seam.
     run_child_probe(command, Some(path.as_os_str()), platform_path_ext(), root.path(), false)
 }
 
@@ -258,11 +259,13 @@ fn public_command_exists_rejects_cwd_sibling_under_empty_path_entry() -> TestRes
 #[test]
 fn public_command_exists_requires_unix_executable_mode() -> TestResult {
     let root = tempdir()?;
+    let path_entry = root.path().join("bin");
+    fs::create_dir_all(&path_entry)?;
     let command = "perl_lsp_unix_mode_command_subject";
-    let candidate = root.path().join(command);
+    let candidate = path_entry.join(command);
     fs::write(&candidate, b"unix executable mode fixture\n")?;
     set_file_mode(&candidate, 0o644)?;
-    let path = joined_path(&[root.path()])?;
+    let path = joined_path(&[path_entry.as_path()])?;
 
     run_child_probe(command, Some(path.as_os_str()), None, root.path(), false)?;
 
@@ -296,9 +299,11 @@ fn public_command_exists_distinguishes_valid_and_broken_symlinks() -> TestResult
 #[test]
 fn public_command_exists_honors_windows_pathext() -> TestResult {
     let root = tempdir()?;
+    let path_entry = root.path().join("bin");
+    fs::create_dir_all(&path_entry)?;
     let command = "perl_lsp_windows_pathext_subject";
-    write_valid_candidate(root.path(), command)?;
-    let path = joined_path(&[root.path()])?;
+    write_valid_candidate(&path_entry, command)?;
+    let path = joined_path(&[path_entry.as_path()])?;
 
     run_child_probe(command, Some(path.as_os_str()), Some(OsStr::new(".CMD")), root.path(), true)?;
     run_child_probe(command, Some(path.as_os_str()), Some(OsStr::new(".EXE")), root.path(), false)
