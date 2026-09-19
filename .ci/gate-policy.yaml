@@ -1938,6 +1938,28 @@ gates:
       - contract
       - compiler
 
+  # The agent-ledger contract (#15380) is fail-closed: `cargo xtask
+  # agent-ledgers validate` rejects malformed ledger rows, unknown envelope
+  # versions, and schema drift in docs/agents/ledgers/*.jsonl. Only the
+  # validator's unit-test module ran in CI until this gate existed, so the CLI
+  # was never invoked against the committed files and ledger drift was
+  # silently absorbed. Runs in the `policy` shard.
+  - name: agent_ledgers_validate
+    tier: merge_gate
+    description: "Validate docs/agents/ledgers/*.jsonl against the agent-ledger contract"
+    required: true
+    command: cargo xtask agent-ledgers validate --format json
+    # 300s to match the sibling `cargo xtask ...` gates in this shard. The
+    # validator itself is near-instant; the cost is the cargo invocation.
+    timeout_seconds: 300
+    retry_count: 0
+    budgets:
+      max_duration_ms: 240000
+    quarantine: false
+    tags:
+      - policy
+      - contract
+
   # NOTE (2026-08-10, #6261): demoted to advisory (required: false). No workflow
   # shard executes this gate; wire into parser_stack or corpus shard before
   # re-promotion.
@@ -2508,6 +2530,7 @@ workflow_integration:
         - v2_bundle_sync
         - nested_lock_check
         - published_crate_count_pr_fast
+        - agent_ledgers_validate
       # `compile_all_targets` is not listed here since #15638: the meta shard
       # no longer executes it (the required `Compile All Targets (bit-rot
       # guard)` job owns the property), and this mapping must not claim
