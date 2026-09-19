@@ -8,7 +8,7 @@
 
 <!-- BEGIN: QUALITY_METRICS_BULLETS -->
 - **Quality Metrics**: diagnostics p50 = 53 ms (receipt: `editor_ux.md`); incremental parse median = 37–73 µs (receipt: `parser_performance_scorecard.json`)
-- **UX workflow harness**: 79 scenario files in `perl-lsp-ux-tests`; `just ux-tests` runs the default release-confidence lane and `just ux-tests-full` adds the integration-only 10k-line large-file case; confidence signals (manual smoke, first-5-minutes coverage, issue-burndown regression guards) are tracked in `docs/project/status/editor_ux.json`
+- **UX workflow harness**: 80 scenario files in `perl-lsp-ux-tests`; `just ux-tests` runs the default release-confidence lane and `just ux-tests-full` adds the integration-only 10k-line large-file case; confidence signals (manual smoke, first-5-minutes coverage, issue-burndown regression guards) are tracked in `docs/project/status/editor_ux.json`
 - **Mutation testing**: mutation data pending first nightly CI run — run `just mutation-subset` locally to populate
 - **Lexer performance scorecard**: `cargo bench -p perl-lexer --bench lexer_benchmarks` writes `benchmarks/results/lexer_scorecard.json` for trend comparisons
 - **Production Status**: LSP server public beta (`just ci-gate` passing)
@@ -19,49 +19,51 @@
 <!-- BEGIN: QUALITY_CRATE_TABLE -->
 | Crate | Mutants listed | Tests (lib) |
 |-------|---------------|-------------|
-| perl-ast | — | 124 |
+| perl-ast | — | 209 |
 | perl-ast-v2 | — | 10 |
 | perl-ci-hygiene | — | 93 |
-| perl-core-harness | — | 400 |
-| perl-core-harness-types | — | 6 |
-| perl-corpus | — | 208 |
-| perl-dap | — | 804 |
-| perl-diagnostics | — | 44 |
+| perl-core-harness | — | 535 |
+| perl-core-harness-types | — | 30 |
+| perl-corpus | — | 265 |
+| perl-dap | — | 1163 |
+| perl-diagnostics | — | 45 |
+| perl-evidence-envelope | — | 79 |
 | perl-incremental-parsing | — | 13 |
-| perl-lexer | — | 234 |
+| perl-lexer | — | 245 |
 | perl-line-index | — | 40 |
-| perl-lsp | — | 1792 |
-| perl-lsp-perltidy | — | 36 |
-| perl-lsp-rs-core | — | 3647 |
-| perl-lsp-ux-tests | — | 78 |
-| perl-module | — | 20 |
-| perl-parser | — | 368 |
+| perl-lsp | — | 2283 |
+| perl-lsp-perltidy | — | 51 |
+| perl-lsp-rs-core | — | 4172 |
+| perl-lsp-ux-tests | — | 162 |
+| perl-module | — | 66 |
+| perl-operation-trace | — | 142 |
+| perl-parser | — | 439 |
 | perl-parser-comparison | — | 2 |
-| perl-parser-core | — | 1047 |
-| perl-parser-pest | — | 13 |
-| perl-pod | — | 30 |
-| perl-position-tracking | — | 73 |
+| perl-parser-core | — | 1106 |
+| perl-parser-pest | — | 18 |
+| perl-pod | — | 33 |
+| perl-position-tracking | — | 83 |
 | perl-pragma | — | 1 |
-| perl-regex | — | 80 |
+| perl-regex | — | 103 |
 | perl-release-readiness | — | 150 |
-| perl-ripr-facts | — | 147 |
-| perl-semantic-analyzer | — | 532 |
-| perl-semantic-facts | — | 253 |
-| perl-source-identity | — | 63 |
-| perl-subprocess-runtime | — | 55 |
-| perl-symbol | — | 55 |
-| perl-tdd-support | — | 60 |
+| perl-ripr-facts | — | 148 |
+| perl-semantic-analyzer | — | 725 |
+| perl-semantic-facts | — | 577 |
+| perl-source-identity | — | 83 |
+| perl-subprocess-runtime | — | 68 |
+| perl-symbol | — | 56 |
+| perl-tdd-support | — | 58 |
 | perl-test-facts | — | 25 |
 | perl-test-generators | — | 40 |
 | perl-test-must | — | 12 |
-| perl-token | — | 60 |
+| perl-token | — | 65 |
 | perl-tree-sitter-compat | — | 13 |
-| perl-uri | — | 60 |
-| perl-workspace | — | 804 |
-| perl-workspace-core | — | 126 |
+| perl-uri | — | 62 |
+| perl-workspace | — | 952 |
+| perl-workspace-core | — | 358 |
 | tree-sitter-perl-c | — | 13 |
-| tree-sitter-perl-rs | — | 47 |
-| xtask | — | 302 |
+| tree-sitter-perl-rs | — | 53 |
+| xtask | — | 954 |
 <!-- END: QUALITY_CRATE_TABLE -->
 
 ## Flaky Test Registry
