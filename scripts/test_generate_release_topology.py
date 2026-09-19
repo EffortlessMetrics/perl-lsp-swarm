@@ -15,7 +15,9 @@ from copy import deepcopy
 from tempfile import TemporaryDirectory
 import unittest
 from pathlib import Path
-from shutil import copytree, which
+
+from bash_binary import bash_binary
+from shutil import copytree
 from unittest.mock import patch
 
 
@@ -508,12 +510,20 @@ class ReleaseTopologyTests(unittest.TestCase):
         targets = MODULE.derive_targets(workflow, "0.18.0")
         self.assertTrue(any(target["archive_name"].endswith(".zip") for target in targets))
         self.assertTrue(any(target["archive_name"].endswith(".tar.gz") for target in targets))
-        bash = which("bash")
+        bash = bash_binary()
         self.assertIsNotNone(bash, "Linux Bash (or WSL Bash) is required for the producer oracle")
         platform = subprocess.run([bash, "--noprofile", "--norc", "-c", "uname -s"],
                                   capture_output=True, text=True, timeout=30)
         self.assertEqual(platform.returncode, 0, platform.stderr)
-        self.assertEqual(platform.stdout.strip(), "Linux", "The production checksum oracle requires Linux; Git Bash uses a different sha256sum default")
+        if platform.stdout.strip() != "Linux":
+            # Honest platform envelope (#15401, #15395 pattern): the production
+            # checksum oracle requires Linux — Git Bash's sha256sum behaves
+            # differently — so the producer half of this oracle is Linux-only.
+            # The workflow-shape assertions above already ran everywhere.
+            self.skipTest(
+                "production checksum producer requires Linux; "
+                f"bash here reports {platform.stdout.strip()!r}"
+            )
 
         def execute(script, duplicate=False):
             with TemporaryDirectory() as temporary:

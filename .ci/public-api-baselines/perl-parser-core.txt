@@ -534,6 +534,14 @@ pub use perl_parser_core::engine::position::apply_edit_utf8
 pub use perl_parser_core::engine::position::offset_to_utf16_line_col
 pub use perl_parser_core::engine::position::utf16_line_col_to_offset
 pub mod perl_parser_core::engine::quote_parser
+pub enum perl_parser_core::engine::quote_parser::MatchError
+pub perl_parser_core::engine::quote_parser::MatchError::InvalidDelimiter(char)
+pub perl_parser_core::engine::quote_parser::MatchError::InvalidModifier(char)
+pub perl_parser_core::engine::quote_parser::MatchError::MissingDelimiter
+pub fn perl_parser_core::syntax::quote::MatchError::clone(&self) -> perl_parser_core::syntax::quote::MatchError
+pub fn perl_parser_core::syntax::quote::MatchError::eq(&self, other: &perl_parser_core::syntax::quote::MatchError) -> bool
+pub fn perl_parser_core::syntax::quote::MatchError::from(c: char) -> Self
+pub fn perl_parser_core::syntax::quote::MatchError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::engine::quote_parser::RegexFamilyOperator
 pub perl_parser_core::engine::quote_parser::RegexFamilyOperator::BareMatch
 pub perl_parser_core::engine::quote_parser::RegexFamilyOperator::Match
@@ -591,12 +599,14 @@ pub fn perl_parser_core::syntax::quote::RegexFamilyGeometry::eq(&self, other: &p
 pub fn perl_parser_core::syntax::quote::RegexFamilyGeometry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::engine::quote_parser::extract_regex_family_geometry(text: &str, source_start: usize) -> core::option::Option<perl_parser_core::syntax::quote::RegexFamilyGeometry>
 pub fn perl_parser_core::engine::quote_parser::extract_regex_parts(text: &str) -> (alloc::string::String, alloc::string::String, alloc::string::String)
+pub fn perl_parser_core::engine::quote_parser::extract_regex_parts_strict(text: &str) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::string::String), perl_parser_core::syntax::quote::MatchError>
 pub fn perl_parser_core::engine::quote_parser::extract_substitution_parts(text: &str) -> (alloc::string::String, alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::engine::quote_parser::extract_substitution_parts_strict(text: &str) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::string::String), perl_parser_core::syntax::quote::SubstitutionError>
 pub fn perl_parser_core::engine::quote_parser::extract_transliteration_parts(text: &str) -> (alloc::string::String, alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::engine::quote_parser::extract_transliteration_parts_strict(text: &str) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::string::String), perl_parser_core::syntax::quote::TransliterationError>
 pub fn perl_parser_core::engine::quote_parser::parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> core::option::Option<&'a str>
 pub fn perl_parser_core::engine::quote_parser::parse_qw_words(s: &str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub fn perl_parser_core::engine::quote_parser::validate_match_modifiers(modifiers_str: &str) -> core::result::Result<alloc::string::String, char>
 pub fn perl_parser_core::engine::quote_parser::validate_substitution_modifiers(modifiers_str: &str) -> core::result::Result<alloc::string::String, char>
 pub mod perl_parser_core::engine::regex_retention
 #[non_exhaustive] pub struct perl_parser_core::engine::regex_retention::RegexParseOutput
@@ -3359,6 +3369,14 @@ pub fn perl_parser_core::qualified_name::is_valid_identifier_part(s: &str) -> bo
 pub fn perl_parser_core::qualified_name::split_qualified_name(name: &str) -> (core::option::Option<&str>, &str)
 pub fn perl_parser_core::qualified_name::validate_perl_qualified_name(name: &str) -> core::result::Result<(), perl_parser_core::syntax::qualified_name::QualifiedNameError>
 pub mod perl_parser_core::quote_parser
+pub enum perl_parser_core::quote_parser::MatchError
+pub perl_parser_core::quote_parser::MatchError::InvalidDelimiter(char)
+pub perl_parser_core::quote_parser::MatchError::InvalidModifier(char)
+pub perl_parser_core::quote_parser::MatchError::MissingDelimiter
+pub fn perl_parser_core::syntax::quote::MatchError::clone(&self) -> perl_parser_core::syntax::quote::MatchError
+pub fn perl_parser_core::syntax::quote::MatchError::eq(&self, other: &perl_parser_core::syntax::quote::MatchError) -> bool
+pub fn perl_parser_core::syntax::quote::MatchError::from(c: char) -> Self
+pub fn perl_parser_core::syntax::quote::MatchError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::quote_parser::RegexFamilyOperator
 pub perl_parser_core::quote_parser::RegexFamilyOperator::BareMatch
 pub perl_parser_core::quote_parser::RegexFamilyOperator::Match
@@ -3416,12 +3434,14 @@ pub fn perl_parser_core::syntax::quote::RegexFamilyGeometry::eq(&self, other: &p
 pub fn perl_parser_core::syntax::quote::RegexFamilyGeometry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::quote_parser::extract_regex_family_geometry(text: &str, source_start: usize) -> core::option::Option<perl_parser_core::syntax::quote::RegexFamilyGeometry>
 pub fn perl_parser_core::quote_parser::extract_regex_parts(text: &str) -> (alloc::string::String, alloc::string::String, alloc::string::String)
+pub fn perl_parser_core::quote_parser::extract_regex_parts_strict(text: &str) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::string::String), perl_parser_core::syntax::quote::MatchError>
 pub fn perl_parser_core::quote_parser::extract_substitution_parts(text: &str) -> (alloc::string::String, alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::quote_parser::extract_substitution_parts_strict(text: &str) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::string::String), perl_parser_core::syntax::quote::SubstitutionError>
 pub fn perl_parser_core::quote_parser::extract_transliteration_parts(text: &str) -> (alloc::string::String, alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::quote_parser::extract_transliteration_parts_strict(text: &str) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::string::String), perl_parser_core::syntax::quote::TransliterationError>
 pub fn perl_parser_core::quote_parser::parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> core::option::Option<&'a str>
 pub fn perl_parser_core::quote_parser::parse_qw_words(s: &str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub fn perl_parser_core::quote_parser::validate_match_modifiers(modifiers_str: &str) -> core::result::Result<alloc::string::String, char>
 pub fn perl_parser_core::quote_parser::validate_substitution_modifiers(modifiers_str: &str) -> core::result::Result<alloc::string::String, char>
 pub mod perl_parser_core::source_file
 pub const perl_parser_core::source_file::PERL_SOURCE_EXTENSIONS: [&str; 10]
@@ -3874,6 +3894,14 @@ pub fn perl_parser_core::syntax::qualified_name::is_valid_identifier_part(s: &st
 pub fn perl_parser_core::syntax::qualified_name::split_qualified_name(name: &str) -> (core::option::Option<&str>, &str)
 pub fn perl_parser_core::syntax::qualified_name::validate_perl_qualified_name(name: &str) -> core::result::Result<(), perl_parser_core::syntax::qualified_name::QualifiedNameError>
 pub mod perl_parser_core::syntax::quote
+pub enum perl_parser_core::syntax::quote::MatchError
+pub perl_parser_core::syntax::quote::MatchError::InvalidDelimiter(char)
+pub perl_parser_core::syntax::quote::MatchError::InvalidModifier(char)
+pub perl_parser_core::syntax::quote::MatchError::MissingDelimiter
+pub fn perl_parser_core::syntax::quote::MatchError::clone(&self) -> perl_parser_core::syntax::quote::MatchError
+pub fn perl_parser_core::syntax::quote::MatchError::eq(&self, other: &perl_parser_core::syntax::quote::MatchError) -> bool
+pub fn perl_parser_core::syntax::quote::MatchError::from(c: char) -> Self
+pub fn perl_parser_core::syntax::quote::MatchError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum perl_parser_core::syntax::quote::RegexFamilyOperator
 pub perl_parser_core::syntax::quote::RegexFamilyOperator::BareMatch
 pub perl_parser_core::syntax::quote::RegexFamilyOperator::Match
@@ -3931,12 +3959,14 @@ pub fn perl_parser_core::syntax::quote::RegexFamilyGeometry::eq(&self, other: &p
 pub fn perl_parser_core::syntax::quote::RegexFamilyGeometry::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn perl_parser_core::syntax::quote::extract_regex_family_geometry(text: &str, source_start: usize) -> core::option::Option<perl_parser_core::syntax::quote::RegexFamilyGeometry>
 pub fn perl_parser_core::syntax::quote::extract_regex_parts(text: &str) -> (alloc::string::String, alloc::string::String, alloc::string::String)
+pub fn perl_parser_core::syntax::quote::extract_regex_parts_strict(text: &str) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::string::String), perl_parser_core::syntax::quote::MatchError>
 pub fn perl_parser_core::syntax::quote::extract_substitution_parts(text: &str) -> (alloc::string::String, alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::syntax::quote::extract_substitution_parts_strict(text: &str) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::string::String), perl_parser_core::syntax::quote::SubstitutionError>
 pub fn perl_parser_core::syntax::quote::extract_transliteration_parts(text: &str) -> (alloc::string::String, alloc::string::String, alloc::string::String)
 pub fn perl_parser_core::syntax::quote::extract_transliteration_parts_strict(text: &str) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::string::String), perl_parser_core::syntax::quote::TransliterationError>
 pub fn perl_parser_core::syntax::quote::parse_quote_operator_content<'a>(s: &'a str, operator: &str) -> core::option::Option<&'a str>
 pub fn perl_parser_core::syntax::quote::parse_qw_words(s: &str) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub fn perl_parser_core::syntax::quote::validate_match_modifiers(modifiers_str: &str) -> core::result::Result<alloc::string::String, char>
 pub fn perl_parser_core::syntax::quote::validate_substitution_modifiers(modifiers_str: &str) -> core::result::Result<alloc::string::String, char>
 pub mod perl_parser_core::syntax::regex_analysis
 #[non_exhaustive] pub enum perl_parser_core::syntax::regex_analysis::RegexAnalysisAvailability
