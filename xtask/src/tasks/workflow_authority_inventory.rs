@@ -744,12 +744,15 @@ jobs:
     }
 
     #[test]
-    fn live_droid_records_oidc_write() -> Result<()> {
+    fn live_droid_stays_oidc_free_with_env_injected_token() -> Result<()> {
         let row = live_row("droid.yml")?;
         let kinds = live_kinds(&row);
+        // #15896 moved the droid lane to least privilege: no `id-token: write`
+        // grant remains. Pin the absence so an OIDC grant cannot silently
+        // return.
         assert!(
-            kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
-            "droid.yml grants id-token: write: {kinds:?}"
+            !kinds.contains(&CredentialDerivationKind::OidcIdTokenWrite),
+            "droid.yml must stay least-privilege without id-token: write: {kinds:?}"
         );
         assert!(
             kinds.contains(&CredentialDerivationKind::EnvInjectedToken),

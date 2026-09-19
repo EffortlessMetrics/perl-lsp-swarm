@@ -62,7 +62,12 @@ outcome_owner = "#10230"
 # surface to 6307e3bd... (one non-producer helper plus tests added under the
 # scan roots, zero removals or re-channeling); projection diff is digest-only,
 # `check` passes.
-source_digest = "sha256:164a20042e885d79edcaa166e1a402f0df92163b0d8cd5e3c949a70f3f724ac1"
+# Re-anchor 2026-09-18: #14573 (htmx catalog provenance: catalog.rs added,
+# mod.rs extended) and #14897 (v0.18 full-document UTF-16 text-sync envelope in
+# the runtime completion entry file) drifted the surface to 24f17ee6...; no
+# producer add/remove/re-channel, scanned set unchanged at 42 files; projection
+# diff is digest-only, `check` passes.
+source_digest = "sha256:24f17ee6964d14bfce7a0372c738686b2697fb46972027c822bdae0419116f9c"
 
 [[delegations]]
 module = "dancer2"

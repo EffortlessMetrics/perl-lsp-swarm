@@ -683,7 +683,13 @@ mod tests {
 
     #[test]
     fn surface_exclusion_matches_root_components_and_prefixes_only() {
-        let excluded = ["target/**", ".wt-*", "generated/**"];
+        // "target" is a bare root-component pattern: it prunes the root build
+        // directory for directories and, per the bare-pattern contract, never
+        // matches files. Prefix exclusion of files is covered by
+        // "generated/**" below. The transplanted fixture previously wrote
+        // "target/**" here, which contradicted the "generated/**" assertion
+        // for identical pattern shapes and was unsatisfiable.
+        let excluded = ["target", ".wt-*", "generated/**"];
         assert!(surface_excluded("target", "target", &excluded, true));
         assert!(!surface_excluded("target", "target/file", &excluded, false));
         assert!(!surface_excluded("target", "crates/x/target", &excluded, true));

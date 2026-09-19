@@ -879,7 +879,14 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let mut command = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
         if cfg!(windows) {
-            command.args(["/C", "for /L %i in (1,1,100000) do @echo x"]);
+            // 2000 long lines still emit >2x MAX_RETAINED_GIT_OUTPUT, so the
+            // drain-and-cap property is fully exercised; the previous 100000
+            // short lines kept the cmd loop close enough to
+            // GIT_COMMAND_TIMEOUT that a loaded test runner flaked the suite.
+            command.args([
+                "/C",
+                "for /L %i in (1,1,2000) do @echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            ]);
         } else {
             command.args(["-c", "yes x | head -c 200000"]);
         }
