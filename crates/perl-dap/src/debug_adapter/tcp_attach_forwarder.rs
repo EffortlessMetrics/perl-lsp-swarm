@@ -297,6 +297,42 @@ mod tests {
 
     /// Race falsifier (#9521 review): a state event blocked on a FULL outbound
     /// queue must not commit into a replacement session's stream. The old
+    /// Block until the forwarder has provably parked inside the generation-
+    /// guarded dispatch on a full outbound queue (#15749).
+    ///
+    /// The guarded dispatch holds the seq lock across its bounded commit
+    /// attempt, so a sustained (>= 50 ms) continuous hold identifies the
+    /// parked send rather than the microsecond-long seq assignment of a
+    /// dispatch that commits immediately. This replaces a fixed 100 ms sleep
+    /// that raced scheduler load on hosted Windows and retired both events
+    /// when the park window was missed.
+    fn wait_for_sustained_seq_hold(seq: &Mutex<i64>) -> Result<(), String> {
+        const SUSTAINED_HOLD_POLLS: u32 = 50;
+        const PARK_DEADLINE: Duration = Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + PARK_DEADLINE;
+        let mut sustained = 0u32;
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err("forwarder never parked on the full outbound queue".to_string());
+            }
+            match seq.try_lock() {
+                Ok(_) => {
+                    sustained = 0;
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    sustained += 1;
+                    if sustained >= SUSTAINED_HOLD_POLLS {
+                        return Ok(());
+                    }
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("forwarder panicked while holding the seq lock".to_string());
+                }
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// forwarder checked the generation only before a potentially blocking
     /// dispatch, so a replacement could advance the generation while the stale
     /// event was parked, and draining the queue would then publish it. The
@@ -309,11 +345,12 @@ mod tests {
         // second one must wait for room inside the guarded dispatch.
         let (out_tx, out_rx) = sync_channel::<DapMessageWithEpoch>(1);
         let state = termination_state_at_generation_one();
+        let seq = Arc::new(Mutex::new(0));
 
         let handle = spawn_tcp_attach_event_forwarder(
             rx,
             Some(EventSender::new(out_tx)),
-            Arc::new(Mutex::new(0)),
+            Arc::clone(&seq),
             Arc::clone(&state),
             1,
             EventDrainLatch::default(),
@@ -325,9 +362,13 @@ mod tests {
             .map_err(|e| format!("send first stopped: {e}"))?;
         tx.send(DapEvent::Stopped { reason: "stale".into(), thread_id: 2 })
             .map_err(|e| format!("send stale stopped: {e}"))?;
-        // Deterministic park window: let the forwarder commit the first event and
-        // start waiting on the second before the generation moves.
-        thread::sleep(Duration::from_millis(100));
+        // Deterministic park detection (#15749): the guarded dispatch holds
+        // the seq lock across its bounded commit attempt, so a sustained
+        // hold can only be the forwarder parked on the full queue. A fixed
+        // sleep raced scheduler load: when the park window was missed, the
+        // generation advanced before the live event was committed and the
+        // guard retired BOTH events, publishing nothing.
+        wait_for_sustained_seq_hold(&seq)?;
         lock_or_recover(&state, "test.termination_state").generation = 2;
 
         // The parked stale event must be retired without a drain: the
@@ -364,11 +405,12 @@ mod tests {
         let (tx, rx) = sync_channel::<DapEvent>(8);
         let (out_tx, out_rx) = sync_channel::<DapMessageWithEpoch>(1);
         let state = termination_state_at_generation_one();
+        let seq = Arc::new(Mutex::new(0));
 
         let handle = spawn_tcp_attach_event_forwarder(
             rx,
             Some(EventSender::new(out_tx)),
-            Arc::new(Mutex::new(0)),
+            Arc::clone(&seq),
             Arc::clone(&state),
             1,
             EventDrainLatch::default(),
@@ -376,14 +418,15 @@ mod tests {
 
         // Fill the outbound queue with a live-generation stopped event (the
         // forwarder commits it), then send terminated, which parks in the
-        // guarded terminal send. The park window makes the staging
-        // deterministic: the first event is provably committed, the terminal
-        // is provably still waiting, and only then does the generation move.
+        // guarded terminal send. The staging is deterministic: the first
+        // event is provably committed, the terminal is provably still
+        // waiting, and only then does the generation move.
         tx.send(DapEvent::Stopped { reason: "live".into(), thread_id: 1 })
             .map_err(|e| format!("send stopped: {e}"))?;
         tx.send(DapEvent::Terminated { reason: "stale-terminal".into() })
             .map_err(|e| format!("send terminated: {e}"))?;
-        thread::sleep(Duration::from_millis(100));
+        // Deterministic park detection, as in the stopped twin (#15749).
+        wait_for_sustained_seq_hold(&seq)?;
         lock_or_recover(&state, "test.termination_state").generation = 2;
 
         // Retire the producer side so the forwarder's recv loop can end once
