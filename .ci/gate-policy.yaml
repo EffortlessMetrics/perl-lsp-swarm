@@ -325,6 +325,23 @@ gates:
     planning:
       role: always_on
 
+  - name: standalone_transaction_check
+    tier: pr_fast
+    description: "Verify standalone install transaction model invariants (#10243 child 1, #11099 canonical pipelines)"
+    required: true
+    command: cargo xtask standalone-transaction-check
+    timeout_seconds: 120
+    retry_count: 0
+    budgets:
+      max_duration_ms: 60000
+    quarantine: false
+    tags:
+      - install
+      - contract
+      - standalone
+    planning:
+      role: always_on
+
   - name: ignored_tests_check_refs
     tier: pr_fast
     description: "Require every ignored test to cite a numeric tracking issue"
