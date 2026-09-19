@@ -1036,8 +1036,24 @@ classification = "tooling"
 owner = "release/ci"
 reason = "Per-crate `cargo semver-checks` driver for the v0.18 waived-break release ledger (#15269); regenerates `docs/releases/semver-v0.17.0-vs-main.{json,md}` from `.ci/public-api-baselines/ratchet-crates.txt` and writes per-crate raw output to `target/semver-reports/per-crate/` (gitignored). Standard library only (no third-party dependencies), runs the existing `cargo semver-checks` binary that `just _semver-check-install` already pins."
 covered_by = [
+  "python3 tools/test_parse_semver_checks.py",
   "python3 tools/parse_semver_checks.py --dry-run",
-  "python3 tools/parse_semver_checks.py --crate perl-parser",
+  "python3 tools/parse_semver_checks.py --crate perl-parser --out-dir target/semver-ledger-draft",
+]
+created = "2026-09-18"
+review_after = "2027-03-18"
+
+[[allow]]
+id = "non-rust-tools-semver-inventory-tests"
+path = "tools/test_parse_semver_checks.py"
+kind = "ci_tooling"
+language = "python"
+surface = "tooling"
+classification = "test"
+owner = "release/ci"
+reason = "Focused falsifiers for `tools/parse_semver_checks.py` (#15269): unrecognized zero-exit tool output fails closed instead of parsing as a clean 0/0/0/0 pass, filtered `--crate` runs refuse the canonical ledger directory, baseline-absent crates record a terminal `not_applicable`, and publication exits non-zero while any ratcheted crate lacks a terminal verdict. Standard library `unittest` only, mirrors the adjacent-test convention (`scripts/ci/test_aggregate_lane_history.py`)."
+covered_by = [
+  "python3 tools/test_parse_semver_checks.py",
 ]
 created = "2026-09-18"
 review_after = "2027-03-18"
