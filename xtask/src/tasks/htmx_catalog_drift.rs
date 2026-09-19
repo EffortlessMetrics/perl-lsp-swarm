@@ -237,6 +237,34 @@ fn canonical_attribute_name(upstream: &str) -> String {
 /// Fails closed: a missing section or a section that yields no names is an
 /// error rather than an empty result, because reporting "no drift" from a
 /// document this task could not read is the primary defect risk here.
+/// Refuse the section when a comment span on this line held a heading that
+/// would end it.
+///
+/// The line-level guard in [`section_names`] only sees a heading in a comment
+/// opened on an earlier line. A comment that opens and closes on the line it
+/// appears on never enters that state between `content` calls, so
+/// [`InertScanner`] records what its spans held and this checks the record
+/// under the same same-or-shallower rule and with the same refusal.
+fn refuse_ambiguous_commented_heading(
+    inert: &InertScanner,
+    section: &SectionSpec,
+    depth: usize,
+    line: &str,
+) -> Result<()> {
+    if inert.comment_heading_depth_on_line.is_some_and(|heading_here| heading_here <= depth) {
+        bail!(
+            "the {} section ({}) has an HTML comment holding a line shaped like a \
+             same-or-shallower heading:\n  {}\nWhether the section continues past that \
+             comment or ends at that line cannot be decided from the document, and either \
+             reading has been observed to drop a real upstream entry",
+            section.label,
+            section.anchor,
+            line.trim()
+        );
+    }
+    Ok(())
+}
+
 fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
     let (heading_line, depth) = locate_section(document, section)?;
 
@@ -277,9 +305,14 @@ fn section_names(document: &str, section: &SectionSpec) -> Result<Vec<String>> {
         // are contiguous, so a later table in the same section must present its
         // own separator before its rows count as data.
         let Some(content) = inert.content(line) else {
+            // A line whose text is entirely commented out returns no content,
+            // so the same-line record is the only observation of what its
+            // comment held.
+            refuse_ambiguous_commented_heading(&inert, section, depth, line)?;
             in_body = false;
             continue;
         };
+        refuse_ambiguous_commented_heading(&inert, section, depth, line)?;
         let trimmed = content.as_ref();
         // A deeper heading is a subsection, so this section continues; only a
         // heading at the same or shallower level ends it. Breaking at any
@@ -466,11 +499,16 @@ struct InertScanner {
     // A literal run stays harmless at a paragraph boundary. Before that
     // boundary, a later matching run or comment marker makes it ambiguous.
     pending_inline_run: Option<usize>,
+    // The ATX depth of a heading inside a comment span that opened on the
+    // line just consumed. `commented_heading_depth` only observes comments
+    // opened on an earlier line, so this records the same-line case for the
+    // caller; it is reset at the start of every `content` call.
+    comment_heading_depth_on_line: Option<usize>,
 }
 
 impl InertScanner {
     fn new() -> Self {
-        Self { inside: None, pending_inline_run: None }
+        Self { inside: None, pending_inline_run: None, comment_heading_depth_on_line: None }
     }
 
     /// The ATX depth of a heading-shaped line currently inside an HTML
@@ -485,6 +523,22 @@ impl InertScanner {
             .filter(|depth| *depth > 0)
     }
 
+    /// Record the ATX depth of a heading inside a comment span closed on the
+    /// line being consumed, keeping the deepest finding on that line.
+    ///
+    /// A comment that opens and closes on one line never enters the
+    /// [`InertRegion::Comment`] state between `content` calls, so the
+    /// line-level guard above `section_names` cannot see what its interior
+    /// held. Recording it here keeps same-line and multi-line comments under
+    /// the same refusal instead of letting a commented-out section heading
+    /// hide behind a one-line comment.
+    fn record_comment_heading(&mut self, interior: &str) {
+        let depth = heading_depth(interior.trim());
+        if depth > 0 && self.comment_heading_depth_on_line.is_none_or(|found| depth > found) {
+            self.comment_heading_depth_on_line = Some(depth);
+        }
+    }
+
     /// Advance over one raw line and return the document content in it.
     ///
     /// `None` for a fence delimiter, for everything inside a fence, for an
@@ -496,6 +550,9 @@ impl InertScanner {
     /// commented span would invent one.
     fn content<'line>(&mut self, line: &'line str) -> Option<Cow<'line, str>> {
         let trimmed_line = line.trim_start();
+        // A same-line comment finding belongs to the line being consumed only;
+        // the caller must have decided on it before the next line arrives.
+        self.comment_heading_depth_on_line = None;
         if trimmed_line.is_empty() {
             self.pending_inline_run = None;
         } else if let Some(run) = self.pending_inline_run {
@@ -640,6 +697,7 @@ impl InertScanner {
             match self.inside {
                 Some(InertRegion::Comment) => match line[cursor..].find("-->") {
                     Some(offset) => {
+                        self.record_comment_heading(&line[cursor..cursor + offset]);
                         self.inside = None;
                         cursor += offset + "-->".len();
                     }
@@ -1752,6 +1810,57 @@ Separate example: `-->`
             section_names(unclosed, &CORE_ATTRIBUTES).is_err_and(|error| error
                 .to_string()
                 .contains("HTML comment that is never closed"))
+        );
+    }
+
+    #[test]
+    fn a_same_line_comment_holding_a_section_heading_is_refused_rather_than_guessed() {
+        // A comment that opens and closes on one line never enters the
+        // multi-line comment state, so the guard that refuses a commented-out
+        // section heading on a later line cannot see what this comment held.
+        // The rows after it belong to whichever section is real, and the
+        // document does not say which, so the scan refuses exactly as it does
+        // for the multi-line comment.
+        let same_line_spans_next_section = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET |
+
+<!-- ## Following Attribute Reference {#following} -->
+
+| [`hx-post`](@/attributes/hx-post.md) | belongs to the following section |
+";
+
+        let error = section_names(same_line_spans_next_section, &CORE_ATTRIBUTES)
+            .expect_err("a same-line comment holding a section heading is not decidable");
+        assert!(
+            error.to_string().contains("cannot be decided from the document"),
+            "the refusal must say why it refused: {error}"
+        );
+        // Refusing is not a quiet partial read: the row it would otherwise
+        // have absorbed must not appear anywhere in the result.
+        assert!(!error.to_string().contains("hx-post"), "{error}");
+
+        // The other direction: a deeper heading inside a same-line comment is
+        // an inert subsection note. It ends nothing and hides no row: the row
+        // carrying the note stays a row, and the following contiguous row is
+        // still this section's data.
+        let same_line_subsection_note = "\
+## Core Attribute Reference {#attributes}
+
+| Attribute | Description |
+|-----------|-------------|
+| [`hx-get`](@/attributes/hx-get.md) | issues a GET <!-- ### an ordinary deeper note --> |
+| [`hx-post`](@/attributes/hx-post.md) | still this section's row |
+";
+
+        let names = section_names(same_line_subsection_note, &CORE_ATTRIBUTES)
+            .expect("a deeper heading in a same-line comment ends nothing");
+        assert!(
+            names.iter().any(|name| name == "hx-get") && names.iter().any(|name| name == "hx-post"),
+            "both rows must be read as this section's data: {names:?}"
         );
     }
 
