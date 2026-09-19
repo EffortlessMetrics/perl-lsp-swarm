@@ -926,6 +926,31 @@ Point->new(
     assert_eq!(x_item.insert_text.as_deref(), Some("x => "));
 }
 
+#[test]
+fn test_object_pad_constructor_param_completion_ignores_lone_minus() {
+    let code = r#"
+use Object::Pad;
+
+class Point {
+field $x :param = 0;
+}
+
+Point->new(-
+"#;
+
+    let mut parser = Parser::new(code);
+    let ast = must(parser.parse());
+    let provider = CompletionProvider::new_with_index_and_source(&ast, code, None);
+
+    let completions = provider.get_completions(code, code.len());
+
+    assert!(
+        !completions.iter().any(|item| item.label == "x"),
+        "a lone minus inside constructor arguments must not expose constructor keys; got: {:?}",
+        completions.iter().map(|item| &item.label).collect::<Vec<_>>()
+    );
+}
+
 /// A named `:param(external_name)` is the keyword `new` actually accepts, so
 /// the completion must offer the explicit name instead of the field name.
 ///

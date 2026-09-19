@@ -833,9 +833,12 @@ impl CompletionProvider {
         } else if position >= 1
             && source.as_bytes()[position - 1] == b'-'
             && (position < 2 || source.as_bytes()[position - 2] != b'-')
+            && source[..position - 1].chars().next_back().is_some_and(is_method_receiver_char)
         {
-            // Cursor is right after a lone `-` (not `--`). This fires when `-` is a
-            // trigger character and the user has typed the first char of `->`.
+            // Cursor is right after a lone `-` whose left neighbor can end a
+            // method receiver (not a subtraction or unary-minus operand).
+            // This fires when `-` is a trigger character and the user has typed
+            // the first char of `->`.
             // Build the prefix as receiver + `->` so that downstream method-completion
             // functions see the same shape as the `>` trigger path.
             let receiver_start = method_receiver_start(source, position.saturating_sub(1));
