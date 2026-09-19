@@ -16,6 +16,11 @@ impl LspServer {
     /// This is an *availability* fact, not a support or execution guarantee:
     /// the tool can still be removed, replaced, or fail to spawn afterwards,
     /// and the launch remains authoritative for that.
+    ///
+    /// The `command_exists` lookup is memoized per process (keyed on the
+    /// command and its PATH/PATHEXT environment inputs), so repeated
+    /// detection — the initialize-time capability build, capability refreshes,
+    /// and the diagnostics-cycle availability guards — does not re-walk PATH.
     pub(crate) fn detect_tool(&self, tool_name: &str) -> bool {
         crate::execute_command::command_exists(tool_name)
     }

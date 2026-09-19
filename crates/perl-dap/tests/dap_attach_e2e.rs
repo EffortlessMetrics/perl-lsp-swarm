@@ -5,6 +5,7 @@
 
 mod common;
 
+use perl_dap::debug_adapter::DapMessageWithEpoch;
 use perl_dap::{DapMessage, DebugAdapter};
 use perl_lsp_rs_core::transport::framing::frame;
 use serde_json::{Value, json};
@@ -28,7 +29,7 @@ fn smoke_timeout() -> Duration {
 }
 
 fn wait_for_event(
-    rx: &Receiver<DapMessage>,
+    rx: &Receiver<DapMessageWithEpoch>,
     event_name: &str,
     timeout: Duration,
 ) -> Result<DapMessage, String> {
@@ -266,7 +267,7 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
     loop {
         match rx.try_recv() {
             Err(TryRecvError::Empty) => break,
-            Ok(DapMessage::Event { ref event, .. }) if event == "stopped" => {
+            Ok((DapMessage::Event { ref event, .. }, _)) if event == "stopped" => {
                 failure = Some("attach emitted a stop before the peer did".into());
                 break;
             }
@@ -290,9 +291,9 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
             }
             match rx.recv_timeout(remaining) {
                 Ok(message) => match message {
-                    DapMessage::Event { ref event, .. } if event == "stopped" => {
+                    (DapMessage::Event { ref event, .. }, _) if event == "stopped" => {
                         peer_stop_seen = true;
-                        match event_body(&message) {
+                        match event_body(&message.0) {
                             Some(stopped_body) => {
                                 if stopped_body.get("reason").and_then(Value::as_str)
                                     != Some(peer_reason)
@@ -311,7 +312,7 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
                             None => failure = Some("stopped event missing body".into()),
                         }
                     }
-                    DapMessage::Event { ref event, .. } if event == "terminated" => {
+                    (DapMessage::Event { ref event, .. }, _) if event == "terminated" => {
                         failure = Some("terminated arrived before peer stopped event".into());
                     }
                     _ => {}
@@ -340,11 +341,11 @@ fn tcp_loopback_peer_event(peer_reason: &'static str) -> TestResult {
                 }
                 match rx.recv_timeout(remaining) {
                     Ok(message) => match message {
-                        DapMessage::Event { ref event, .. } if event == "stopped" => {
+                        (DapMessage::Event { ref event, .. }, _) if event == "stopped" => {
                             failure =
                                 Some(format!("stopped event arrived after peer stop: {message:?}"));
                         }
-                        DapMessage::Event { ref event, .. } if event == "terminated" => {
+                        (DapMessage::Event { ref event, .. }, _) if event == "terminated" => {
                             terminated_seen = true;
                         }
                         _ => {}
@@ -421,7 +422,7 @@ fn dap_attach_e2e_tcp_stop_on_entry_is_rejected_before_connect() -> TestResult {
     }
 
     while let Ok(message) = rx.try_recv() {
-        if let DapMessage::Event { event, .. } = message {
+        if let (DapMessage::Event { event, .. }, _) = message {
             return Err(
                 format!("refused attach must not publish postinitialize event `{event}`").into()
             );

@@ -87,6 +87,8 @@ return {
         modules = { "init.lua" } },
       { suite = "init_command_projection_test.lua",
         modules = { "init.lua", "capability_manifest.lua" } },
+      { suite = "init_trace_admission_test.lua",
+        modules = { "init.lua", "server.lua" } },
     },
     ["json.lua"] = {
       { suite = "json_decode_test.lua", modules = { "json.lua" } },
@@ -100,6 +102,8 @@ return {
         modules = { "server.lua" } },
       { suite = "server_initialize_capabilities_test.lua",
         modules = { "server.lua", "capability_manifest.lua" } },
+      { suite = "init_trace_admission_test.lua",
+        modules = { "init.lua", "server.lua" } },
     },
     ["util.lua"] = {
       { suite = "util_show_document_test.lua", modules = { "util.lua" } },
@@ -490,6 +494,23 @@ return {
         ["init.lua"] = "7f5cbd31210f78709b6aadb3e1d2c7ac2362a97f",
       },
     },
+    {
+      id = "leaf_11155b", issue = 11155, pull_request = 15516,
+      title = "trace-admission disclosure at the configuration surface",
+      candidate_sha = "1ad41946a7af2cd981ec7ad26e66da653381074d",
+      changed_paths = { "init.lua", "server.lua" },
+      hard_prerequisites = { "leaf_9019", "leaf_10785" },
+      class = "security",
+      upstream_state = "internal",
+      owner_issue = 11155,
+      conflict_keys = { "lite-xl.upstream.init.lua",
+        "lite-xl.upstream.server.lua" },
+      invalidation_inputs = { "upstream_base_ref", "candidate_sha" },
+      content = {
+        ["init.lua"] = "14ca4ecf4d071ebc4b79d9c8fdea861766d4bd6e",
+        ["server.lua"] = "867150814723468f02c3af9416d9ac248b0355f4",
+      },
+    },
   },
 
   profiles = {
@@ -519,7 +540,7 @@ return {
         "leaf_11128", "leaf_11143", "leaf_11165", "leaf_10845",
         "leaf_10873", "leaf_10833", "leaf_11188", "leaf_11172",
         "leaf_10653", "leaf_10657", "leaf_10785", "leaf_11198",
-        "leaf_9019",
+        "leaf_9019", "leaf_11155b",
       },
     },
     {
@@ -540,7 +561,7 @@ return {
         "leaf_11128", "leaf_11143", "leaf_11165", "leaf_10845",
         "leaf_10873", "leaf_10833", "leaf_11188", "leaf_11172",
         "leaf_10653", "leaf_10657", "leaf_10785", "leaf_11198",
-        "leaf_9019",
+        "leaf_9019", "leaf_11155b",
       },
     },
     {

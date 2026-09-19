@@ -1706,6 +1706,8 @@ fn test_command_exists_behavior() {
 fn test_command_exists_probes_share_one_authority() {
     let provider = ExecuteCommandProvider::new();
 
+    // Mutable only on unix, where the absolute-path row below is pushed.
+    #[allow(unused_mut)]
     let mut names = vec![
         "sh",
         "perlcritic",
