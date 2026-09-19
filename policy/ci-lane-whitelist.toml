@@ -1082,15 +1082,36 @@ default_pr = false
 runner = "ubuntu_latest"
 base_lem = 1
 owner = "ci"
-intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status. Cancels a trusted lane still queued without a runner at the poll deadline so the run reaches an explicit terminal state (#15900)."
+intent = "Normalize conditional self-hosted/hosted implementation jobs into the single stable Validate CI policy ledgers status. Reports actionable deadline diagnostics when the trusted lane stays queued without a runner (#15900)."
 failure_mode = "Branch protection accidentally requires skipped implementation jobs instead of a stable result check, a validator failure masks as a routing skip, or a queued-forever trusted lane leaves the run and its check permanently pending without diagnostics."
-proof_obligation = "Run both lanes; aggregate passes on agreement or on a fallback success when the trusted lane never completes, and fails on trusted failure or divergence; cancel the queued trusted job at the poll deadline with actionable diagnostics; run the fallback contract test."
+proof_obligation = "Run both lanes; aggregate passes on agreement or on a fallback success when the trusted lane never completes, and fails on trusted failure or divergence; report deadline diagnostics for a trusted lane still queued without a runner; run the fallback contract test."
 evidence = ["job output", "step-summary"]
 allowed_triggers = ["pull_request", "workflow_dispatch"]
 expensive = false
 duplicate_of = []
 review_after = "2026-09-18"
 expires = "2027-02-18"
+
+[[lane]]
+id = "policy_validators_nano_reaper"
+workflow = ".github/workflows/policy-validators-nano-reaper.yml"
+job = "reap"
+tier = "frontdoor"
+kind = "control"
+blocking = false
+default_pr = false
+runner = "ubuntu_24_04"
+base_lem = 1
+owner = "ci"
+intent = "Cancel Policy Validators trusted-lane jobs that stayed queued without a runner past the service window so affected runs reach an explicit terminal state (#15900)."
+failure_mode = "A queued-forever trusted lane leaves affected PR runs and their checks permanently pending without diagnostics."
+proof_obligation = "Find queued policy-validators trusted-lane jobs older than the service window, cancel them with actionable diagnostics naming the em-ci-nano group and the follow-up."
+evidence = ["job output", "step-summary"]
+allowed_triggers = ["schedule", "workflow_dispatch"]
+expensive = false
+duplicate_of = []
+review_after = "2026-09-18"
+expires = "2027-03-18"
 
 [[lane]]
 id = "commit_checks"
