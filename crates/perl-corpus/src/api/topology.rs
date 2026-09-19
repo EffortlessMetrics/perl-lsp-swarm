@@ -890,10 +890,20 @@ fn unclassified_reason_for(layer: CorpusAssetLayer, path: &Path) -> Unclassified
         }
     }
 
-    for ancestor in path.ancestors().skip(1).filter(|ancestor| !ancestor.as_os_str().is_empty()) {
+    // Discovery descends root-to-leaf, so the ancestor it refuses on is the
+    // shallowest classifying component; `ancestors()` yields leaf-to-root, so
+    // the scan order is reversed to report the same component discovery hit
+    // first. The reason carries the component name, not the accumulated path,
+    // so `outer.pl/inner.txt` cannot masquerade as the blocking component.
+    let ancestors: Vec<&Path> =
+        path.ancestors().skip(1).filter(|ancestor| !ancestor.as_os_str().is_empty()).collect();
+    for ancestor in ancestors.into_iter().rev() {
         if let Some(kind) = classify_layer_asset(layer, ancestor) {
             return UnclassifiedReason::ClassifyingAncestor {
-                ancestor: ancestor.to_string_lossy().into_owned(),
+                ancestor: ancestor
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| ancestor.to_string_lossy().into_owned()),
                 classified_as: kind,
             };
         }
@@ -901,11 +911,14 @@ fn unclassified_reason_for(layer: CorpusAssetLayer, path: &Path) -> Unclassified
 
     match (layer, path.extension().and_then(|ext| ext.to_str())) {
         (CorpusAssetLayer::TestCorpus, _) => UnclassifiedReason::UnsupportedExtension {
-            extension: path.extension().and_then(|ext| ext.to_str()).map(str::to_owned),
+            extension: path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.to_ascii_lowercase()),
         },
-        (CorpusAssetLayer::Fuzz, Some(extension)) => {
-            UnclassifiedReason::UnsupportedExtension { extension: Some(extension.to_owned()) }
-        }
+        (CorpusAssetLayer::Fuzz, Some(extension)) => UnclassifiedReason::UnsupportedExtension {
+            extension: Some(extension.to_ascii_lowercase()),
+        },
         (CorpusAssetLayer::Fuzz, None) => {
             UnclassifiedReason::UnsupportedShape { expected: "crash-*" }
         }
@@ -1324,7 +1337,7 @@ mod tests {
         // Four shapes that the layer classifier can reject, paired with the typed
         // reason that must surface. Covers both layers and at least one nested ignored
         // component per the issue's acceptance criteria.
-        let cases: [(CorpusAsset, UnclassifiedReason); 6] = [
+        let cases: [(CorpusAsset, UnclassifiedReason); 7] = [
             (
                 CorpusAsset {
                     id: "test_corpus/.hidden.pl".to_string(),
@@ -1361,6 +1374,16 @@ mod tests {
                     layer: CorpusAssetLayer::TestCorpus,
                     kind: CorpusAssetKind::PerlSource,
                     relative_path: "test_corpus/notes.md".to_string(),
+                    requirement: AssetRequirement::Required,
+                },
+                UnclassifiedReason::UnsupportedExtension { extension: Some("md".to_string()) },
+            ),
+            (
+                CorpusAsset {
+                    id: "test_corpus/notes.MD".to_string(),
+                    layer: CorpusAssetLayer::TestCorpus,
+                    kind: CorpusAssetKind::PerlSource,
+                    relative_path: "test_corpus/notes.MD".to_string(),
                     requirement: AssetRequirement::Required,
                 },
                 UnclassifiedReason::UnsupportedExtension { extension: Some("md".to_string()) },
@@ -1426,6 +1449,16 @@ mod tests {
                 "cases.txt",
                 CorpusAssetKind::TextFixture,
             ),
+            (
+                // Two classifying ancestors: discovery refuses at the shallowest
+                // one it reaches first (`outer.pl`), not the deeper `inner.txt`
+                // row the leaf-first ancestor walk would name.
+                CorpusAssetLayer::Fuzz,
+                "crates/perl-corpus/fuzz/outer.pl/inner.txt/case.pl",
+                CorpusAssetKind::PerlSource,
+                "outer.pl",
+                CorpusAssetKind::PerlSource,
+            ),
         ];
 
         for (layer, relative_path, declared_kind, expected_ancestor, expected_kind) in cases {
@@ -1436,13 +1469,13 @@ mod tests {
                 relative_path: relative_path.to_string(),
                 requirement: AssetRequirement::Required,
             };
-            let result = topology_with(vec![asset.clone()]).validate();
+            let result = topology_with(vec![asset]).validate();
             match result {
                 Err(CorpusTopologyError::UnclassifiedAssetPath {
                     id,
                     layer: rejected_layer,
                     reason: UnclassifiedReason::ClassifyingAncestor { ancestor, classified_as },
-                }) if id == asset.id
+                }) if id == relative_path
                     && rejected_layer == layer
                     && ancestor == expected_ancestor
                     && classified_as == expected_kind => {}
