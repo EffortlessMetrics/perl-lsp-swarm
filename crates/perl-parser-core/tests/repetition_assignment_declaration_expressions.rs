@@ -11,9 +11,7 @@ fn find_assignment<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
         return Some(node);
     }
 
-    node.children()
-        .into_iter()
-        .find_map(|child| find_assignment(child, expected_op))
+    node.children().into_iter().find_map(|child| find_assignment(child, expected_op))
 }
 
 fn find_binary<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
@@ -21,9 +19,7 @@ fn find_binary<'a>(node: &'a Node, expected_op: &str) -> Option<&'a Node> {
         return Some(node);
     }
 
-    node.children()
-        .into_iter()
-        .find_map(|child| find_binary(child, expected_op))
+    node.children().into_iter().find_map(|child| find_binary(child, expected_op))
 }
 
 fn find_variable_declaration(node: &Node) -> Option<&Node> {
@@ -39,9 +35,7 @@ fn find_named_call<'a>(node: &'a Node, expected_name: &str) -> Option<&'a Node> 
         return Some(node);
     }
 
-    node.children()
-        .into_iter()
-        .find_map(|child| find_named_call(child, expected_name))
+    node.children().into_iter().find_map(|child| find_named_call(child, expected_name))
 }
 
 fn find_missing_expression(node: &Node) -> Option<&Node> {
@@ -89,8 +83,8 @@ fn call_argument_declaration_accepts_repetition_assignment() -> Result<(), Strin
     let source = "f(my $v x= 3);";
     assert_clean_parse(source);
     let ast = parse(source);
-    let call = find_named_call(&ast, "f")
-        .ok_or_else(|| format!("expected f call:\n{}", ast.to_sexp()))?;
+    let call =
+        find_named_call(&ast, "f").ok_or_else(|| format!("expected f call:\n{}", ast.to_sexp()))?;
     let assignment = find_assignment(call, "x=")
         .ok_or_else(|| format!("expected x= inside f argument:\n{}", ast.to_sexp()))?;
     let NodeKind::Assignment { lhs, rhs, .. } = &assignment.kind else {
@@ -117,8 +111,8 @@ fn declaration_repetition_assignment_keeps_rhs_right_associative() -> Result<(),
     let source = "f(my $v x= $count = 2);";
     assert_clean_parse(source);
     let ast = parse(source);
-    let call = find_named_call(&ast, "f")
-        .ok_or_else(|| format!("expected f call:\n{}", ast.to_sexp()))?;
+    let call =
+        find_named_call(&ast, "f").ok_or_else(|| format!("expected f call:\n{}", ast.to_sexp()))?;
     let assignment = find_assignment(call, "x=")
         .ok_or_else(|| format!("expected outer x= assignment:\n{}", ast.to_sexp()))?;
     let NodeKind::Assignment { rhs, .. } = &assignment.kind else {
@@ -132,10 +126,7 @@ fn declaration_repetition_assignment_keeps_rhs_right_associative() -> Result<(),
 
 #[test]
 fn ordinary_declaration_and_repetition_controls_remain_distinct() -> Result<(), String> {
-    for source in [
-        "f(my $v = 3);",
-        "my ($c, $d) = (1, 2);",
-    ] {
+    for source in ["f(my $v = 3);", "my ($c, $d) = (1, 2);"] {
         assert_clean_parse(source);
         let ast = parse(source);
         if find_assignment(&ast, "x=").is_some() {
@@ -164,11 +155,7 @@ fn ordinary_declaration_and_repetition_controls_remain_distinct() -> Result<(), 
 
 #[test]
 fn trivia_separated_declaration_x_equals_is_never_normalized() -> Result<(), String> {
-    for source in [
-        "my ($x, $y) x = 3;",
-        "f(my $v x\n= 3);",
-        "f(my $v x # gap\n= 3);",
-    ] {
+    for source in ["my ($x, $y) x = 3;", "f(my $v x\n= 3);", "f(my $v x # gap\n= 3);"] {
         let output = Parser::new(source).parse_with_recovery();
         if find_assignment(&output.ast, "x=").is_some() {
             return Err(format!(
