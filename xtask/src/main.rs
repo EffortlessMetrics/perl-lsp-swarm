@@ -1407,22 +1407,34 @@ enum Commands {
 
     /// Materialize a deterministic trusted-base PR integration subject (#14512).
     CiSubjectMaterialize {
+        /// Event kind (`pull_request`, `pull_request_target`, `push`,
+        /// `merge_group`, `workflow_dispatch`, or `explicit`). Defaults to
+        /// `GITHUB_EVENT_NAME`, then `explicit`.
         #[arg(long)]
         event_name: Option<String>,
+        /// GitHub event JSON. Defaults to `GITHUB_EVENT_PATH`.
         #[arg(long)]
         event_path: Option<PathBuf>,
+        /// Expected owner/name. Defaults to `GITHUB_REPOSITORY`.
         #[arg(long)]
         repository: Option<String>,
+        /// Exact GitHub workflow SHA. Defaults to `GITHUB_SHA`.
         #[arg(long)]
         github_sha: Option<String>,
+        /// Exact base SHA for explicit/workflow-dispatch subjects.
         #[arg(long)]
         base_sha: Option<String>,
+        /// Exact head SHA for explicit/workflow-dispatch subjects.
         #[arg(long)]
         head_sha: Option<String>,
+        /// Materialization receipt path. Written for both pass and fail.
         #[arg(long)]
         receipt: PathBuf,
+        /// GitHub environment file that receives `SUBJECT_SHA` and
+        /// `SUBJECT_TREE_SHA` on success.
         #[arg(long)]
         env_file: Option<PathBuf>,
+        /// Repository root override for hermetic fixtures.
         #[arg(long)]
         root: Option<PathBuf>,
     },

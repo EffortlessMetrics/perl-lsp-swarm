@@ -869,9 +869,12 @@ fn scan_trusted_workflow_shape(text: &str) -> Result<()> {
 /// closed when `main` moves without retargeting this constant.
 pub(crate) const PREAPPROVED_SUBJECT_CONTRACT_VERSION: u64 = 10;
 
-/// Canonical `with:` mapping of the preapproved checkout step.
+/// Canonical `with:` mapping of the preapproved checkout step. `fetch-depth: 0`
+/// keeps full history so the materializer's `git merge-tree --write-tree` can
+/// resolve the merge base; an exact-SHA fetch alone leaves it unavailable in a
+/// shallow governed checkout.
 const PREAPPROVED_CHECKOUT_WITH: &str =
-    "ref: ${{ env.EVALUATOR_SHA }}\npersist-credentials: false\n";
+    "ref: ${{ env.EVALUATOR_SHA }}\nfetch-depth: 0\npersist-credentials: false\n";
 
 /// Canonical `with:` mapping of the preapproved receipt upload step. Both
 /// receipts live under `target/policy/`; a missing directory is an error so an
@@ -879,8 +882,9 @@ const PREAPPROVED_CHECKOUT_WITH: &str =
 const PREAPPROVED_UPLOAD_WITH: &str = "name: non-rust-policy-${{ env.SUBJECT_SHA || env.SUBJECT_INPUT_SHA }}\npath: target/policy/\nif-no-files-found: error\nretention-days: 14\n";
 
 fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
-    let yaml: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(text).context("parsing preapproved v4 workflow YAML")?;
+    let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(text).with_context(|| {
+        format!("parsing preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow YAML")
+    })?;
     let key = |name: &str| serde_yaml_ng::Value::String(name.to_string());
     if yaml
         .as_mapping()
@@ -888,13 +892,15 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
         .and_then(serde_yaml_ng::Value::as_str)
         != Some("Non-Rust policy")
     {
-        bail!("preapproved v4 workflow must use the canonical name");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must use the canonical name"
+        );
     }
     let on = yaml
         .as_mapping()
         .and_then(|mapping| mapping.get(key("on")))
         .and_then(serde_yaml_ng::Value::as_mapping)
-        .ok_or_else(|| eyre!("preapproved v4 workflow must define structured triggers"))?;
+        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define structured triggers"))?;
     let expected_on: serde_yaml_ng::Value = serde_yaml_ng::from_str(
         "pull_request_target:\n  branches: [main, master]\n  types: [opened, synchronize, reopened, ready_for_review]\nmerge_group: {}\npush:\n  branches: [main, master]\nworkflow_dispatch:\n  inputs:\n    base_sha:\n      required: true\n      type: string\n    subject_sha:\n      required: true\n      type: string\n",
     )?;
@@ -903,60 +909,76 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
             .as_mapping()
             .ok_or_else(|| eyre!("canonical trigger fixture is not a mapping"))?
     {
-        bail!("preapproved v4 workflow trigger configuration is not canonical");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow trigger configuration is not canonical"
+        );
     }
     let permissions = yaml
         .as_mapping()
         .and_then(|mapping| mapping.get(key("permissions")))
         .and_then(serde_yaml_ng::Value::as_mapping)
-        .ok_or_else(|| eyre!("preapproved v4 workflow must define structured permissions"))?;
+        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define structured permissions"))?;
     if permissions.len() != 1
         || permissions.get(key("contents")).and_then(serde_yaml_ng::Value::as_str) != Some("read")
     {
-        bail!("preapproved v4 workflow must grant only contents: read");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must grant only contents: read"
+        );
     }
     let jobs = yaml
         .as_mapping()
         .and_then(|mapping| mapping.get(key("jobs")))
         .and_then(serde_yaml_ng::Value::as_mapping)
-        .ok_or_else(|| eyre!("preapproved v4 workflow must define jobs mapping"))?;
+        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define jobs mapping"))?;
     if jobs.len() != 1 {
-        bail!("preapproved v4 workflow must define only the exact-tree job");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define only the exact-tree job"
+        );
     }
     let job = jobs
         .get(key("exact-tree"))
         .and_then(serde_yaml_ng::Value::as_mapping)
-        .ok_or_else(|| eyre!("preapproved v4 workflow must define exact-tree job"))?;
+        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow must define exact-tree job"))?;
     if job.get(key("name")).and_then(serde_yaml_ng::Value::as_str)
         != Some("Non-Rust policy exact-tree")
     {
-        bail!("preapproved v4 exact-tree job must use the canonical name");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must use the canonical name"
+        );
     }
     if job.get(key("timeout-minutes")).and_then(serde_yaml_ng::Value::as_i64) != Some(10) {
-        bail!("preapproved v4 exact-tree job must use the canonical timeout");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must use the canonical timeout"
+        );
     }
     let allowed_job_keys = ["name", "runs-on", "timeout-minutes", "env", "steps"];
     if job.keys().any(|key| key.as_str().is_none_or(|name| !allowed_job_keys.contains(&name))) {
-        bail!("preapproved v4 exact-tree job contains an unapproved control field");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job contains an unapproved control field"
+        );
     }
     let allowed_step_keys = ["name", "id", "uses", "run", "with", "if", "continue-on-error"];
     for step in
         job.get(key("steps")).and_then(serde_yaml_ng::Value::as_sequence).into_iter().flatten()
     {
-        let map =
-            step.as_mapping().ok_or_else(|| eyre!("preapproved v4 steps must be mappings"))?;
+        let map = step.as_mapping().ok_or_else(|| {
+            eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} steps must be mappings")
+        })?;
         if map.keys().any(|key| key.as_str().is_none_or(|name| !allowed_step_keys.contains(&name)))
         {
-            bail!("preapproved v4 step contains an unapproved control field");
+            bail!(
+                "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} step contains an unapproved control field"
+            );
         }
     }
     if job.get(key("runs-on")).and_then(serde_yaml_ng::Value::as_str) != Some("ubuntu-24.04") {
-        bail!("preapproved v4 exact-tree job must use ubuntu-24.04");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must use ubuntu-24.04"
+        );
     }
-    let env = job
-        .get(key("env"))
-        .and_then(serde_yaml_ng::Value::as_mapping)
-        .ok_or_else(|| eyre!("preapproved v4 exact-tree job must define env"))?;
+    let env = job.get(key("env")).and_then(serde_yaml_ng::Value::as_mapping).ok_or_else(|| {
+        eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must define env")
+    })?;
     let expected_env = [
         (
             "BASE_SHA",
@@ -983,23 +1005,29 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
         let actual = env
             .get(key(variable))
             .and_then(serde_yaml_ng::Value::as_str)
-            .ok_or_else(|| eyre!("preapproved v4 workflow identity {variable} must be a string"))?;
+            .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow identity {variable} must be a string"))?;
         if actual != expected {
-            bail!("preapproved v4 workflow identity {variable} is not canonical");
+            bail!(
+                "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} workflow identity {variable} is not canonical"
+            );
         }
     }
     // Job env reaches every trusted `cargo run` and `git` invocation, so an
     // extra key (`GIT_CONFIG_*`, `RUSTFLAGS`, `CARGO_*`, ...) is an injection
     // surface, not a harmless addition.
     if env.len() != expected_env.len() {
-        bail!("preapproved v4 exact-tree job env contains an unapproved variable");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job env contains an unapproved variable"
+        );
     }
     let steps = job
         .get(key("steps"))
         .and_then(serde_yaml_ng::Value::as_sequence)
-        .ok_or_else(|| eyre!("preapproved v4 exact-tree job must define steps"))?;
+        .ok_or_else(|| eyre!("preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must define steps"))?;
     if steps.len() != 5 {
-        bail!("preapproved v4 exact-tree job must contain exactly five steps");
+        bail!(
+            "preapproved v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} exact-tree job must contain exactly five steps"
+        );
     }
     let step_run = |step: &serde_yaml_ng::Value| {
         step.as_mapping()
@@ -1026,7 +1054,9 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
     let canonical_with = |fixture: &str| -> Result<serde_yaml_ng::Value> {
         serde_yaml_ng::from_str(fixture).context("canonical with fixture is not YAML")
     };
-    let checkout = steps.first().ok_or_else(|| eyre!("v4 checkout step is missing"))?;
+    let checkout = steps
+        .first()
+        .ok_or_else(|| eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} checkout step is missing"))?;
     let trusted_checkout = checkout
         .as_mapping()
         .and_then(|map| map.get(key("uses")))
@@ -1034,9 +1064,13 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
         .is_some_and(|uses| uses == "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
         && step_with(checkout).as_ref() == Some(&canonical_with(PREAPPROVED_CHECKOUT_WITH)?);
     if !trusted_checkout {
-        bail!("v4 must checkout the trusted evaluator SHA first with exactly the canonical inputs");
+        bail!(
+            "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} must checkout the trusted evaluator SHA first with exactly the canonical inputs"
+        );
     }
-    let materializer = steps.get(1).ok_or_else(|| eyre!("v4 materializer step is missing"))?;
+    let materializer = steps.get(1).ok_or_else(|| {
+        eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} materializer step is missing")
+    })?;
     let materializer_run = step_run(materializer);
     if step_name(materializer).as_deref() != Some("Materialize trusted PR subject")
         || step_id(materializer).as_deref() != Some("materialize")
@@ -1054,9 +1088,13 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
             .and_then(serde_yaml_ng::Value::as_bool)
             != Some(true)
     {
-        bail!("v4 materializer must be the exact trusted invocation");
+        bail!(
+            "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} materializer must be the exact trusted invocation"
+        );
     }
-    let evaluator = steps.get(2).ok_or_else(|| eyre!("v4 evaluator step is missing"))?;
+    let evaluator = steps.get(2).ok_or_else(|| {
+        eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} evaluator step is missing")
+    })?;
     let expected_evaluator = "cargo run --locked -p xtask -- non-rust exact-tree --base-sha \"$BASE_SHA\" --subject-sha \"$SUBJECT_SHA\" ${PR_HEAD_SHA:+--pr-head-sha \"$PR_HEAD_SHA\"} --event-name \"$GITHUB_EVENT_NAME\" --repository \"$GITHUB_REPOSITORY\" --receipt target/policy/non-rust-policy-exact-tree.json";
     let evaluator_run = step_run(evaluator);
     if step_name(evaluator).as_deref() != Some("Run trusted exact-tree evaluator")
@@ -1073,9 +1111,13 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
             .and_then(serde_yaml_ng::Value::as_bool)
             != Some(true)
     {
-        bail!("v4 evaluator must be the exact trusted invocation");
+        bail!(
+            "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} evaluator must be the exact trusted invocation"
+        );
     }
-    let upload = steps.get(3).ok_or_else(|| eyre!("v4 receipt upload step is missing"))?;
+    let upload = steps.get(3).ok_or_else(|| {
+        eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} receipt upload step is missing")
+    })?;
     if !upload
         .as_mapping()
         .and_then(|map| map.get(key("uses")))
@@ -1093,12 +1135,16 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
             .and_then(|map| map.get(key("continue-on-error")))
             .is_some_and(|value| value != &serde_yaml_ng::Value::Bool(false))
     {
-        bail!("v4 must always upload receipts");
+        bail!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} must always upload receipts");
     }
     if step_with(upload).as_ref() != Some(&canonical_with(PREAPPROVED_UPLOAD_WITH)?) {
-        bail!("v4 receipt upload must use exactly the canonical artifact inputs");
+        bail!(
+            "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} receipt upload must use exactly the canonical artifact inputs"
+        );
     }
-    let propagate = steps.get(4).ok_or_else(|| eyre!("v4 propagation step is missing"))?;
+    let propagate = steps.get(4).ok_or_else(|| {
+        eyre!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} propagation step is missing")
+    })?;
     if step_name(propagate).as_deref() != Some("Propagate subject or policy failure")
         || step_run(propagate).as_deref() != Some("exit 1")
         || propagate
@@ -1111,7 +1157,7 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
             .and_then(|map| map.get(key("continue-on-error")))
             .is_some_and(|value| value != &serde_yaml_ng::Value::Bool(false))
     {
-        bail!("v4 must propagate retained materialization or evaluator failure");
+        bail!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} must propagate retained materialization or evaluator failure");
     }
     for step in steps {
         if let Some(uses) = step
@@ -1124,7 +1170,9 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
                 "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
             ];
             if !approved.contains(&uses) {
-                bail!("v4 action is not the approved immutable action: {uses}");
+                bail!(
+                    "v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} action is not the approved immutable action: {uses}"
+                );
             }
         }
         if let Some(run) = step_run(step)
@@ -1132,7 +1180,7 @@ fn validate_preapproved_subject_workflow(text: &str) -> Result<()> {
             && run != evaluator_run.clone().unwrap_or_default()
             && run != "exit 1"
         {
-            bail!("v4 contains an unapproved executable step");
+            bail!("v{PREAPPROVED_SUBJECT_CONTRACT_VERSION} contains an unapproved executable step");
         }
     }
     Ok(())
@@ -6073,6 +6121,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ env.EVALUATOR_SHA }}
+          fetch-depth: 0
           persist-credentials: false
       - name: Materialize trusted PR subject
         id: materialize
