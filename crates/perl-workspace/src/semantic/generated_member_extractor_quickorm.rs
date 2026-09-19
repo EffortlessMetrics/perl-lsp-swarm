@@ -88,6 +88,8 @@ fn is_quickorm_module(module: &str) -> bool {
     module == "DBIx::QuickORM"
 }
 
+use super::generated_member_extractor::{NameCandidate, normalize_symbol_name, stable_id};
+
 #[derive(Debug, Clone, Default)]
 struct QuickOrmWalkCtx {
     current_package: Option<String>,
@@ -156,13 +158,6 @@ impl QuickOrmWalkCtx {
     fn is_suppressed(&self, package: &str) -> bool {
         self.imports.get(package).is_some_and(|state| state.retracts_candidates())
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NameCandidate {
-    name: String,
-    span_start: usize,
-    span_end: usize,
 }
 
 /// Source-backed DBIx::QuickORM column candidate plus its declaration anchor.
@@ -556,7 +551,7 @@ fn single_static_name_candidate(node: &Node) -> Option<NameCandidate> {
 fn collect_static_name_candidates(node: &Node) -> Vec<NameCandidate> {
     match &node.kind {
         NodeKind::String { value, interpolated: false } | NodeKind::Identifier { name: value } => {
-            expand_symbol_list(value)
+            expand_candidate_symbols(value)
                 .into_iter()
                 .map(|name| NameCandidate {
                     name,
@@ -601,12 +596,16 @@ fn normalize_static_field_name(raw: &str) -> Option<String> {
     }
 }
 
-fn normalize_symbol_name(raw: &str) -> Option<String> {
-    let trimmed = raw.trim().trim_matches('\'').trim_matches('"').trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
-}
-
-fn expand_symbol_list(raw: &str) -> Vec<String> {
+/// Expand one QuickORM declaration token into candidate names.
+///
+/// Intentional divergence from the production extractor's `expand_symbol_list`
+/// (issue #13354): the QuickORM pilot accepts any punctuation-delimited `qw`
+/// form via [`parse_qw_words`] and falls back to a single normalized symbol,
+/// because table-class imports and `columns` declarations use different list
+/// shapes than Moo/Moose/Mouse attribute lists. The two expanders disagree on
+/// inputs such as `qw (a b)`; keep them separate and documented rather than
+/// merging silent drift.
+fn expand_candidate_symbols(raw: &str) -> Vec<String> {
     parse_qw_words(raw).unwrap_or_else(|| normalize_symbol_name(raw).into_iter().collect())
 }
 
@@ -677,25 +676,6 @@ fn push_field(
         package: package.to_string(),
         fact: QuickOrmColumnFact { entity, anchor },
     });
-}
-
-fn stable_id(label: &str, file_id: FileId, anchor_start: usize, package: &str, name: &str) -> u64 {
-    const FNV_OFFSET: u64 = 14_695_981_039_346_656_037;
-    const FNV_PRIME: u64 = 1_099_511_628_211;
-
-    let mut hash = FNV_OFFSET;
-    for byte in label
-        .as_bytes()
-        .iter()
-        .chain(file_id.0.to_le_bytes().iter())
-        .chain((anchor_start as u64).to_le_bytes().iter())
-        .chain(package.as_bytes())
-        .chain(name.as_bytes())
-    {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
 }
 
 #[cfg(test)]
