@@ -692,16 +692,21 @@ pub fn classify(evidence: &RecoveryEvidence) -> RecoveryClassification {
     if matches!(&evidence.unique_work, UniqueWorkEvidence::IgnoredContent { .. }) {
         return RecoveryClassification::NotProven;
     }
+    // An observed admin absence dominates downstream git unknowns: when the
+    // backing file is already known missing, `git status`/`rev-parse` failures
+    // are consequences of that absence, so classify from the missing-file
+    // observation rather than NotProven. With admin files present, git
+    // unknowns below still report NotProven as before.
+    if evidence.administrative_gitdir.value.is_none()
+        || evidence.administrative_commondir.value.is_none()
+    {
+        return RecoveryClassification::DirtyOrIndexUnknown;
+    }
     if matches!(&evidence.unique_work, UniqueWorkEvidence::Unknown(_))
         || matches!(&evidence.active_use, ActiveUseEvidence::Unknown(_))
         || !evidence.source_manifest.complete
     {
         return RecoveryClassification::NotProven;
-    }
-    if evidence.administrative_gitdir.value.is_none()
-        || evidence.administrative_commondir.value.is_none()
-    {
-        return RecoveryClassification::DirtyOrIndexUnknown;
     }
     if matches!(&evidence.head, HeadEvidence::Attached { .. })
         && matches!(&evidence.reference, ReferenceEvidence::Resolved { .. })
@@ -1182,6 +1187,17 @@ fn observe_candidate_git_identity(
         ("git-common-dir", "--git-common-dir", repository.common_dir.clone()),
         ("top-level", "--show-toplevel", candidate.to_path_buf()),
     ];
+    // When either administrative file backing these git checks is already
+    // known to be missing, no git check can be trusted: a missing commondir
+    // breaks repository establishment entirely, so `--git-dir`,
+    // `--show-toplevel`, and `HEAD` fail as downstream consequences of the
+    // same observed absence (e.g. `fatal: not a git repository: (null)`).
+    // Record every such failure as an unknown rather than a contradiction so
+    // the planner classifies DirtyOrIndexUnknown from the missing-file
+    // observation instead of IdentityConflict. A mismatch against an observed
+    // (present) backing file still contradicts as before.
+    let admin_backing_missing = evidence.administrative_gitdir.value.is_none()
+        || evidence.administrative_commondir.value.is_none();
     for (label, argument, expected) in checks {
         match read_git_line_required(candidate, &["rev-parse", argument]) {
             Ok(observed) => match resolve_git_path(candidate, &observed) {
@@ -1196,17 +1212,7 @@ fn observe_candidate_git_identity(
                     .push(format!("resolving candidate {label} identity: {error}")),
             },
             Err(error) => {
-                // When the administrative file backing this git check is already
-                // known to be missing, the git failure is a downstream consequence
-                // of that observed absence. Record it as an unknown rather than a
-                // contradiction so the planner can classify DirtyOrIndexUnknown
-                // from the missing-file observation instead of IdentityConflict.
-                let admin_missing = match argument {
-                    "--git-dir" => evidence.administrative_gitdir.value.is_none(),
-                    "--git-common-dir" => evidence.administrative_commondir.value.is_none(),
-                    _ => false,
-                };
-                if admin_missing {
+                if admin_backing_missing {
                     evidence
                         .unknowns
                         .push(format!("CANDIDATE_{label}_IDENTITY_UNAVAILABLE: {error}"));
@@ -1227,7 +1233,13 @@ fn observe_candidate_git_identity(
             }
         }
         Err(error) => {
-            evidence.contradictions.push(format!("CANDIDATE_HEAD_IDENTITY_UNAVAILABLE: {error}"))
+            if admin_backing_missing {
+                evidence.unknowns.push(format!("CANDIDATE_HEAD_IDENTITY_UNAVAILABLE: {error}"))
+            } else {
+                evidence
+                    .contradictions
+                    .push(format!("CANDIDATE_HEAD_IDENTITY_UNAVAILABLE: {error}"))
+            }
         }
     }
 }
