@@ -94,5 +94,44 @@ class BashPathRenderingTests(unittest.TestCase):
         self.assertEqual(bash_path(Path("/usr/local/repo/scripts/x.sh")), "/usr/local/repo/scripts/x.sh")
 
 
+class StandaloneDeploymentTests(unittest.TestCase):
+    def test_worktree_manager_loads_alone_and_degrades_to_bare_bash(self) -> None:
+        """A standalone copy of worktree-manager.py (the self-test ships it
+        alone) must import and resolve bash without the shared module, in a
+        fresh interpreter — the deployment shape the allocate self-test uses."""
+        import shutil
+        import subprocess
+
+        source = Path(__file__).resolve().parent / "worktree-manager.py"
+        with tempfile.TemporaryDirectory() as directory:
+            standalone = Path(directory) / "scripts" / "worktree-manager.py"
+            standalone.parent.mkdir()
+            shutil.copy(source, standalone)
+            driver = (
+                "import importlib.util, pathlib, sys\n"
+                f"spec = importlib.util.spec_from_file_location('wm_standalone', r'{standalone}')\n"
+                "module = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(module)\n"
+                "print(*module._bash_spawn(pathlib.Path('F:/repo/scripts/cleanup.sh')))\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", driver],
+                capture_output=True,
+                text=True,
+                cwd=directory,
+                timeout=60,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"standalone worktree-manager failed to load: {result.stderr}",
+            )
+            self.assertEqual(
+                result.stdout.strip(),
+                "bash F:/repo/scripts/cleanup.sh",
+                "without the shared module the spawn must degrade to the bare "
+                "name with the portable path rendering",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
