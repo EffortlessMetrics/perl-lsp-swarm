@@ -39,12 +39,16 @@ pub(crate) struct LifecycleDates {
 /// adapter to keep candidate verdicts invariant under wall-clock progression.
 ///
 /// When supplied:
+/// - The engine evaluates [`LifecycleOverlay::raw`] — the exact policy bytes
+///   this overlay was computed from — instead of re-reading the caller's
+///   path, so the overlay and the evaluated policy can never disagree.
 /// - Verdict comparison substitutes [`LIFECYCLE_SENTINEL`] for `review_after` /
 ///   `expires` so the `quality_exception_review_due` and
 ///   `quality_exception_expired` arms never fire on committed dates.
 /// - The receipt's `temporary_exceptions.active[*]` and every
 ///   `quality_exception_active_final_blocker` next action stamp the original
-///   committed dates from `rows` keyed by exception id.
+///   committed dates from `rows`, matched per occurrence in policy order so
+///   repeated exception ids keep their own row's dates.
 /// - The receipt's `temporary_exceptions` records `due_review = "advisory"`,
 ///   `lifecycle_authority = "policy_cadence"`, and (when present) the
 ///   `validation_error` from the caller.
@@ -58,7 +62,11 @@ pub(crate) struct LifecycleDates {
 /// diagnoses from competing for the operator's attention.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LifecycleOverlay {
-    pub rows: std::collections::BTreeMap<String, LifecycleDates>,
+    /// The exact policy text this overlay was computed from. This is the
+    /// single read of the caller's policy for the whole run.
+    pub raw: String,
+    /// Committed lifecycle dates per exception id, queued in policy order.
+    pub rows: std::collections::BTreeMap<String, std::collections::VecDeque<LifecycleDates>>,
     pub validation_error: Option<String>,
     pub invalid_metadata_status: bool,
 }
@@ -109,17 +117,10 @@ struct GateEvaluation {
     failed: bool,
 }
 
-pub fn run(args: QualityGateArgs) -> Result<()> {
-    run_with_overlay(args, None)
-}
-
-/// Evaluate the gate and publish the rendered artifacts. When `overlay` is
-/// `Some`, the engine substitutes the sentinel lifecycle dates for verdict
-/// comparison, stamps the overlay's committed dates into the receipt, and
-/// records the overlay's `validation_error` if present.
-///
-/// This is the single entry point the [`super::quality_gate_facade`] adapter
-/// uses. Rendering, freshness comparison, output writes, and exit
+/// Evaluate the gate and publish the rendered artifacts, then classify the
+/// exit. `overlay = None` is the plain engine path; the
+/// [`super::quality_gate_facade`] adapter is the only caller that supplies an
+/// overlay. Rendering, freshness comparison, output writes, and exit
 /// classification all live behind this seam — callers must not duplicate any
 /// of them.
 pub fn run_with_overlay(args: QualityGateArgs, overlay: Option<LifecycleOverlay>) -> Result<()> {
@@ -743,12 +744,12 @@ struct ExceptionRequirements {
 }
 
 /// Parse a raw caller-supplied policy into the lifecycle overlay the engine
-/// applies during evaluation. The overlay carries the original committed
-/// `review_after`/`expires` rows keyed by exception id, the optional
-/// `validation_error` for malformed `due_review` values, and the
-/// `invalid_metadata_status` flag that suppresses the engine's synthetic
-/// `invalid_metadata` next action when `due_review` is the only metadata
-/// defect.
+/// applies during evaluation. The overlay carries the exact `raw` bytes it
+/// was computed from, the original committed `review_after`/`expires` rows
+/// queued per exception id in policy order, the optional `validation_error`
+/// for malformed `due_review` values, and the `invalid_metadata_status` flag
+/// that suppresses the engine's synthetic `invalid_metadata` next action when
+/// `due_review` is the only metadata defect.
 ///
 /// Returns an overlay with no rows and no validation error when the policy
 /// content already lines up with the engine's natural verdict; callers can
@@ -756,66 +757,50 @@ struct ExceptionRequirements {
 pub(crate) fn compute_lifecycle_overlay(raw: &str) -> Result<LifecycleOverlay> {
     use toml::Value as TomlValue;
 
-    let mut overlay = LifecycleOverlay::default();
+    let mut overlay = LifecycleOverlay { raw: raw.to_string(), ..Default::default() };
 
-    let mut policy = match toml::from_str::<TomlValue>(raw) {
-        Ok(value) => value,
-        Err(_) => return Ok(overlay),
+    let Ok(policy) = toml::from_str::<TomlValue>(raw) else {
+        return Ok(overlay);
     };
-    let Some(table) = policy.as_table_mut() else {
+    let Some(table) = policy.as_table() else {
         return Ok(overlay);
     };
 
     let metadata_is_valid = overlay_policy_metadata_is_valid(table);
 
-    let due_review = table.get("due_review").and_then(TomlValue::as_str).map(str::to_string);
-    if let Some(due_review) = due_review.as_deref()
+    if let Some(due_review) = table.get("due_review").and_then(TomlValue::as_str)
         && !matches!(due_review, "warn" | "fail")
     {
         overlay.validation_error =
             Some(format!("quality exception due_review must be warn or fail, found {due_review}"));
         overlay.invalid_metadata_status = metadata_is_valid;
-        table.insert("status".to_string(), TomlValue::String("invalid".to_string()));
     }
-    table.insert("due_review".to_string(), TomlValue::String("warn".to_string()));
 
-    if let Some(exceptions) = table.get_mut("exception").and_then(TomlValue::as_array_mut) {
+    if let Some(exceptions) = table.get("exception").and_then(TomlValue::as_array) {
         for exception in exceptions {
-            let Some(exception) = exception.as_table_mut() else {
+            let Some(exception) = exception.as_table() else {
                 continue;
             };
             if !overlay_exception_is_structurally_valid(exception) {
                 continue;
             }
-            let Some(id) = exception.get("id").and_then(TomlValue::as_str).map(str::to_string)
-            else {
+            let Some(id) = exception.get("id").and_then(TomlValue::as_str) else {
                 continue;
             };
-            let Some(review_after) =
-                exception.get("review_after").and_then(TomlValue::as_str).map(str::to_string)
-            else {
-                continue;
-            };
-            let Some(expires) =
-                exception.get("expires").and_then(TomlValue::as_str).map(str::to_string)
-            else {
+            let (Some(review_after), Some(expires)) = (
+                exception.get("review_after").and_then(TomlValue::as_str),
+                exception.get("expires").and_then(TomlValue::as_str),
+            ) else {
                 continue;
             };
 
-            overlay.rows.insert(id, LifecycleDates { review_after, expires });
-            exception.insert(
-                "review_after".to_string(),
-                TomlValue::String(LIFECYCLE_SENTINEL.to_string()),
-            );
-            exception
-                .insert("expires".to_string(), TomlValue::String(LIFECYCLE_SENTINEL.to_string()));
+            overlay.rows.entry(id.to_string()).or_default().push_back(LifecycleDates {
+                review_after: review_after.to_string(),
+                expires: expires.to_string(),
+            });
         }
     }
 
-    // Preserve the normalized text only as a side effect of running through
-    // `toml::Value` so the caller's file on disk is untouched. The overlay
-    // itself is the contract; the engine never reads back the rewritten text.
-    let _ = toml::to_string(&policy);
     Ok(overlay)
 }
 
@@ -888,24 +873,30 @@ fn read_exception_policy(
     overlay: Option<&LifecycleOverlay>,
 ) -> ExceptionPolicyEvaluation {
     let path = &args.exception_policy;
-    let raw = match fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(_) => {
-            return ExceptionPolicyEvaluation {
-                receipt: json!({
-                    "status": "missing",
-                    "policy": display_path(path),
-                    "active_count": 0,
-                    "final_enforcement_blocked": false,
-                    "active": [],
-                }),
-                actions: vec![quality_exception_policy_action(
-                    args,
-                    "missing",
-                    "quality exception policy ledger is missing",
-                )],
-            };
-        }
+    // An overlay binds the evaluation to the exact bytes it was computed
+    // from: the engine must not re-read the caller's path, or a concurrent
+    // edit could apply policy A's overlay to policy B's rows.
+    let raw = match overlay.map(|overlay| overlay.raw.clone()) {
+        Some(raw) => raw,
+        None => match fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(_) => {
+                return ExceptionPolicyEvaluation {
+                    receipt: json!({
+                        "status": "missing",
+                        "policy": display_path(path),
+                        "active_count": 0,
+                        "final_enforcement_blocked": false,
+                        "active": [],
+                    }),
+                    actions: vec![quality_exception_policy_action(
+                        args,
+                        "missing",
+                        "quality exception policy ledger is missing",
+                    )],
+                };
+            }
+        },
     };
 
     let policy = match toml::from_str::<QualityExceptionPolicy>(&raw) {
@@ -932,6 +923,7 @@ fn read_exception_policy(
     let mut active = Vec::new();
     let mut active_ids = BTreeSet::new();
     let mut actions = Vec::new();
+    let mut overlay_occurrences: BTreeMap<String, usize> = BTreeMap::new();
 
     if policy.schema_version != 1 || policy.policy != "quality-gate-exceptions" {
         actions.push(quality_exception_policy_action(
@@ -978,7 +970,7 @@ fn read_exception_policy(
         let verdict_expires = overlay
             .and_then(|o| o.rows.get(&exception.id))
             .map(|_| LIFECYCLE_SENTINEL)
-            .and_then(|d| parse_policy_date(d))
+            .and_then(parse_policy_date)
             .unwrap_or(expires);
         if verdict_expires < today {
             actions.push(quality_exception_expired_action(args, exception, expires, today));
@@ -988,11 +980,19 @@ fn read_exception_policy(
         active_ids.insert(exception.id.clone());
         // Receipt entries stamp the original committed dates so callers see
         // the row they authored, even when the overlay sentinels drove the
-        // verdict.
+        // verdict. Repeated ids consume their queue in policy order so every
+        // occurrence keeps its own committed review_after.
         let receipt_review_after = overlay
             .and_then(|o| o.rows.get(&exception.id))
-            .map(|d| parse_policy_date(&d.review_after))
-            .unwrap_or(review_after);
+            .and_then(|queue| {
+                let index = overlay_occurrences.entry(exception.id.clone()).or_insert(0);
+                let dates = queue.get(*index);
+                if dates.is_some() {
+                    *index += 1;
+                }
+                dates.or_else(|| queue.back()).and_then(|d| parse_policy_date(&d.review_after))
+            })
+            .or(review_after);
         active.push(quality_exception_receipt_entry(exception, receipt_review_after, expires));
 
         let Some(review_after) = review_after else {
@@ -1001,7 +1001,7 @@ fn read_exception_policy(
         let verdict_review_after = overlay
             .and_then(|o| o.rows.get(&exception.id))
             .map(|_| LIFECYCLE_SENTINEL)
-            .and_then(|d| parse_policy_date(d))
+            .and_then(parse_policy_date)
             .unwrap_or(review_after);
         if verdict_review_after <= today {
             actions.push(quality_exception_review_due_action(
@@ -3693,7 +3693,11 @@ mod tests {
         "#;
         let overlay = compute_lifecycle_overlay(raw).expect("overlay parses");
 
-        let row = overlay.rows.get("EX-1").expect("committed dates recorded for the receipt");
+        let row = overlay
+            .rows
+            .get("EX-1")
+            .and_then(std::collections::VecDeque::front)
+            .expect("committed dates recorded for the receipt");
         assert_eq!(
             row.review_after, "2026-12-31",
             "overlay must lift the committed review_after untouched"
@@ -3706,6 +3710,57 @@ mod tests {
         assert!(
             !overlay.invalid_metadata_status,
             "valid metadata must not flag the synthetic invalid_metadata suppression"
+        );
+        assert_eq!(overlay.raw, raw, "the overlay must carry the exact bytes it was computed from");
+    }
+
+    #[test]
+    fn overlay_queues_duplicate_id_rows_in_policy_order() {
+        let raw = r#"
+            schema_version = 1
+            policy = "quality-gate-exceptions"
+            owner = "test-owner"
+            status = "active"
+            updated = "2026-01-01"
+            due_review = "fail"
+
+            [[exception]]
+            id = "EX-DUP"
+            kind = "temporary_burndown"
+            scope = "crates/perl-lsp-rs/src/first.rs"
+            owner = "team-a"
+            reason = "first occurrence"
+            final_target = "fix in 0.18"
+            evidence = "git history"
+            removal_criteria = "remove when fixed"
+            created = "2026-01-01"
+            review_after = "2026-09-16"
+            expires = "2026-09-30"
+
+            [[exception]]
+            id = "EX-DUP"
+            kind = "temporary_burndown"
+            scope = "crates/perl-lsp-rs/src/second.rs"
+            owner = "team-a"
+            reason = "second occurrence"
+            final_target = "fix in 0.18"
+            evidence = "git history"
+            removal_criteria = "remove when fixed"
+            created = "2026-01-01"
+            review_after = "2026-10-16"
+            expires = "2026-10-30"
+        "#;
+        let overlay = compute_lifecycle_overlay(raw).expect("overlay parses");
+
+        let queue = overlay.rows.get("EX-DUP").expect("both occurrences recorded");
+        let dates: Vec<(&str, &str)> = queue
+            .iter()
+            .map(|dates| (dates.review_after.as_str(), dates.expires.as_str()))
+            .collect();
+        assert_eq!(
+            dates,
+            vec![("2026-09-16", "2026-09-30"), ("2026-10-16", "2026-10-30")],
+            "repeated ids must queue per occurrence in policy order, not collapse to the last row"
         );
     }
 
@@ -3745,6 +3800,80 @@ mod tests {
         assert!(
             overlay.rows.contains_key("EX-2"),
             "exception rows must still be lifted even when due_review is malformed"
+        );
+    }
+
+    #[test]
+    fn overlay_binds_evaluation_to_its_own_policy_bytes() {
+        let dir = tempdir().expect("temp dir");
+        // Bytes A: the policy the facade actually read — future dates, so the
+        // row must stay active with no lifecycle verdict actions.
+        let overlay_bytes = r#"
+            schema_version = 1
+            policy = "quality-gate-exceptions"
+            owner = "test-owner"
+            status = "active"
+            updated = "2026-01-01"
+            due_review = "fail"
+
+            [[exception]]
+            id = "EX-BIND"
+            kind = "temporary_burndown"
+            scope = "crates/perl-lsp-rs/src/bound.rs"
+            owner = "team-a"
+            reason = "tracking"
+            final_target = "fix in 0.18"
+            evidence = "git history"
+            removal_criteria = "remove when fixed"
+            created = "2026-01-01"
+            review_after = "2099-01-01"
+            expires = "2099-12-31"
+        "#;
+        // Bytes B: a concurrent on-disk swap — the same id, now expired. If
+        // the engine re-read the path instead of evaluating the overlay's
+        // bytes, this row would emit `quality_exception_expired` and vanish
+        // from `active`.
+        let swapped_bytes =
+            overlay_bytes.replace("2099-01-01", "2020-01-01").replace("2099-12-31", "2020-12-31");
+        let policy_path = dir.path().join("quality-gate-exceptions.toml");
+        fs::write(&policy_path, swapped_bytes).expect("write swapped policy");
+
+        let overlay = compute_lifecycle_overlay(overlay_bytes).expect("overlay parses");
+        let args = QualityGateArgs {
+            mode: QualityGateMode::EnforcePatchCoverage,
+            exception_policy: policy_path,
+            ripr_receipt: dir.path().join("ripr-plus.json"),
+            ripr_pr_receipt: dir.path().join("repo-exposure.json"),
+            review_receipt: dir.path().join("comments.json"),
+            coverage_receipt: dir.path().join("coverage.json"),
+            codecov: dir.path().join("codecov.yml"),
+            patch_coverage: None,
+            ripr_base: "origin/main".to_string(),
+            ripr_head: "HEAD".to_string(),
+            receipt: dir.path().join("quality-gate.json"),
+            summary: dir.path().join("quality-gate.md"),
+            check: false,
+            quiet: false,
+        };
+
+        let evaluation = read_exception_policy(&args, today(), Some(&overlay));
+
+        assert!(
+            evaluation.actions.iter().all(|action| {
+                action.get("kind").and_then(Value::as_str) != Some("quality_exception_expired")
+            }),
+            "the engine must evaluate the overlay's bytes, not the concurrently swapped on-disk policy: {:?}",
+            evaluation.actions
+        );
+        assert_eq!(
+            evaluation.receipt.pointer("/active/0/review_after").and_then(Value::as_str),
+            Some("2099-01-01"),
+            "the active row must carry the overlay's committed review_after"
+        );
+        assert_eq!(
+            evaluation.receipt.pointer("/due_review").and_then(Value::as_str),
+            Some("advisory"),
+            "an overlaid evaluation records the advisory lifecycle contract"
         );
     }
 }
