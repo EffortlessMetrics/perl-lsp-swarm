@@ -3888,6 +3888,22 @@ mod tests {
     use std::sync::mpsc::{TryRecvError, sync_channel};
     use std::sync::{Arc, Mutex};
 
+    /// An absolute directory fixture in this platform's native shape.
+    ///
+    /// A POSIX-rooted `/ws` fixture is only root-relative on Windows (no
+    /// drive), where `Path::is_absolute` is false and the resolver must — and
+    /// does — treat it as relative and anchor it under the launch cwd. The
+    /// contracts under test (an absolute cwd, an absolute program) therefore
+    /// need a genuinely absolute directory on every platform, so the fixture
+    /// carries a drive root on Windows and a POSIX root elsewhere.
+    fn absolute_fixture_dir(name: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!("C:\\{name}"))
+        } else {
+            PathBuf::from(format!("/{name}"))
+        }
+    }
+
     /// `resolve_launch_program` must agree with what `perl` will open.
     ///
     /// This is the whole point of the helper: the pre-fix code authorized
@@ -3897,15 +3913,16 @@ mod tests {
     /// client's `cwd`, opened `<cwd>/script.pl`.
     #[test]
     fn a_relative_program_resolves_against_the_launch_cwd_not_the_trusted_root() {
-        let cwd = Path::new("/outside/project");
-        let resolved = must(DebugAdapter::resolve_launch_program("script.pl", Some(cwd)));
+        let cwd = absolute_fixture_dir("outside").join("project");
+        let trusted_root = absolute_fixture_dir("trusted");
+        let resolved = must(DebugAdapter::resolve_launch_program("script.pl", Some(cwd.as_path())));
         assert_eq!(
             resolved,
-            PathBuf::from("/outside/project/script.pl"),
+            cwd.join("script.pl"),
             "a relative program must resolve against the directory perl is given"
         );
         assert!(
-            !resolved.starts_with("/trusted"),
+            !resolved.starts_with(&trusted_root),
             "resolution must never silently land inside a trusted root it was not given"
         );
     }
@@ -3944,9 +3961,10 @@ mod tests {
     /// a relative path the child would re-anchor itself.
     #[test]
     fn an_absolute_cwd_anchors_a_relative_program_without_consulting_the_process_directory() {
+        let anchored = absolute_fixture_dir("anchored");
         let resolved =
-            must(DebugAdapter::resolve_launch_program("script.pl", Some(Path::new("/anchored"))));
-        assert_eq!(resolved, PathBuf::from("/anchored/script.pl"));
+            must(DebugAdapter::resolve_launch_program("script.pl", Some(anchored.as_path())));
+        assert_eq!(resolved, anchored.join("script.pl"));
         assert!(resolved.is_absolute());
     }
 
@@ -3958,8 +3976,10 @@ mod tests {
     /// path under the working directory at one call site but not the other.
     #[test]
     fn surrounding_whitespace_does_not_make_an_absolute_program_relative() {
-        let resolved = must(DebugAdapter::resolve_launch_program("  /trusted/script.pl  ", None));
-        assert_eq!(resolved, PathBuf::from("/trusted/script.pl"));
+        let program = absolute_fixture_dir("trusted").join("script.pl");
+        let whitespace_padded = format!("  {}  ", must_some(program.to_str()));
+        let resolved = must(DebugAdapter::resolve_launch_program(&whitespace_padded, None));
+        assert_eq!(resolved, program);
         assert!(resolved.is_absolute());
     }
 
@@ -3986,20 +4006,21 @@ mod tests {
 
     #[test]
     fn an_absolute_program_is_unchanged_by_a_launch_cwd() {
+        let program = absolute_fixture_dir("trusted").join("project/script.pl");
+        let outside = absolute_fixture_dir("outside");
         let resolved = must(DebugAdapter::resolve_launch_program(
-            "/trusted/project/script.pl",
-            Some(Path::new("/outside")),
+            must_some(program.to_str()),
+            Some(outside.as_path()),
         ));
-        assert_eq!(resolved, PathBuf::from("/trusted/project/script.pl"));
+        assert_eq!(resolved, program);
     }
 
     #[test]
     fn a_nested_relative_program_resolves_under_the_launch_cwd() {
-        let resolved = must(DebugAdapter::resolve_launch_program(
-            "lib/deep/script.pl",
-            Some(Path::new("/ws")),
-        ));
-        assert_eq!(resolved, PathBuf::from("/ws/lib/deep/script.pl"));
+        let ws = absolute_fixture_dir("ws");
+        let resolved =
+            must(DebugAdapter::resolve_launch_program("lib/deep/script.pl", Some(ws.as_path())));
+        assert_eq!(resolved, ws.join("lib/deep/script.pl"));
     }
 
     #[test]

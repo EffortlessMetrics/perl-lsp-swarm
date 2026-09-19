@@ -3285,10 +3285,17 @@ print "result: $final\n";
         );
 
         // A genuinely absent file still resolves deterministically under the
-        // first root that admits it, rather than becoming a refusal.
+        // first root that admits it, rather than becoming a refusal. The
+        // resolver canonicalizes the root before joining, so the resolved
+        // directory must be compared in canonical shape too: a raw
+        // `canonicalize` prefix comparison fails on Windows, where canonical
+        // paths carry the `\\?\` verbatim prefix and the resolved path does
+        // not.
         let absent = adapter.validate_source_path("lib/Missing.pm")?;
-        assert!(
-            absent.starts_with(alpha.canonicalize()?),
+        let absent_dir = absent.parent().ok_or("resolved source path has no parent")?;
+        assert_eq!(
+            absent_dir.canonicalize()?,
+            alpha.join("lib").canonicalize()?,
             "an absent relative source must fall back to the first admitting root, got {}",
             absent.display()
         );
