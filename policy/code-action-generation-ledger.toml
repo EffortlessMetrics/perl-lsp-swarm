@@ -157,18 +157,17 @@ id = "native_critic"
 stage = 3
 path = "ast"
 reachability = "production"
-production_anchor = "perl_lsp_rs_core::config::CriticEngine::Native"
+production_anchor = "let native_critic_subject = Some(NativeCriticActionSubject {"
 modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
-summary = "Default native critic registry; only Safe non-empty fixes become quick fixes."
+summary = "Default native critic path (#9062): the AST branch seals one accepted critic snapshot, stages native quick fixes through the protocol-neutral CriticService, and splices them back in place. Only Safe non-empty fixes become quick fixes."
 
 [[generation]]
 id = "legacy_critic"
-stage = 4
-path = "ast"
-reachability = "production"
-production_anchor = "perl_lsp_rs_core::config::CriticEngine::Legacy"
+stage = 0
+path = "none"
+reachability = "unreachable_stub"
 modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
-summary = "Opt-in BuiltInAnalyzer emulating Perl::Critic policy names; mutually exclusive with the native engine."
+summary = "Retired by the #9062 native CriticService cutover (#15418): EffectiveCriticState is Disabled | Native, so a deprecated legacy/external value is a migration observation that cannot construct runtime state and selects no evaluator. No production anchor remains."
 
 [[generation]]
 id = "provider_v2"
@@ -244,9 +243,9 @@ id = "source_fix_all_aggregate"
 stage = 10
 path = "ast"
 reachability = "production"
-production_anchor = "if let Some(fix_all) = build_source_fix_all("
+production_anchor = "self.finalize_staged_code_action_response("
 modules = ["crates/perl-lsp-rs/src/runtime/language/code_actions.rs"]
-summary = "Post-dedupe aggregation of collected quick fixes into one source.fixAll action."
+summary = "Post-dedupe aggregation of collected quick fixes into one source.fixAll action, reachable from the AST branch through the staged-response finalizer. The aggregate itself is constructed by build_source_fix_all inside finalize_code_action_candidate, which the validator checks as an explicitly owned helper edge."
 
 [[generation]]
 id = "text_fallback"
@@ -364,12 +363,11 @@ parity_fixtures = ["cac-parity-critic-quickfix-safe-only"]
 
 [[route]]
 generation = "legacy_critic"
-family = "quickfix:critic_finding"
-disposition = "compatibility_only"
-notes = "Mutually exclusive with the native engine, so the two never publish together. Reachable only through the trusted .perl-lsp.toml project channel: parse_lsp_critic_engine maps Legacy to None, so initializationOptions, didChangeConfiguration and workspace/configuration all reject critic.engine = \"legacy\". The project channel logs a deprecation naming #8253/#9072 as the owning migration."
-retirement_blockers = ["opt_in_engine_has_no_canonical_equivalent"]
+family = "none:unreachable_stub"
+disposition = "retire_candidate"
+notes = "Retired by the #9062 native CriticService cutover (#15418). The former opt-in BuiltInAnalyzer no longer exists in the orchestrator; EffectiveCriticState admits Disabled | Native only. #9190 may delete the row and its modules entry without parity evidence."
+retirement_blockers = []
 parity_fixtures = []
-proof_gap = "The shared critic fixture exercises the default native engine only. Reaching this generation needs a workspace carrying a .perl-lsp.toml that selects the deprecated engine, which no corpus fixture sets up; the LSP settings channels cannot select it at all. #9190 should confirm whether #9072 retires the engine before this row needs parity evidence."
 
 [[route]]
 generation = "provider_original"
