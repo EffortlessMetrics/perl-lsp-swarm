@@ -38,6 +38,66 @@ pub fn perl_module::ModuleImportKind::dispatch_semantics(self) -> perl_module::D
 pub fn perl_module::ModuleImportKind::clone(&self) -> perl_module::ModuleImportKind
 pub fn perl_module::ModuleImportKind::eq(&self, other: &perl_module::ModuleImportKind) -> bool
 pub fn perl_module::ModuleImportKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::ModuleMoveBlocker
+pub perl_module::api::ModuleMoveBlocker::AmbiguousAnchor
+pub perl_module::api::ModuleMoveBlocker::AmbiguousSourcePackage
+pub perl_module::api::ModuleMoveBlocker::CrossRoot
+pub perl_module::api::ModuleMoveBlocker::DuplicateOccurrence
+pub perl_module::api::ModuleMoveBlocker::DynamicBoundary
+pub perl_module::api::ModuleMoveBlocker::IncompleteOccurrences
+pub perl_module::api::ModuleMoveBlocker::InvalidAnchor
+pub perl_module::api::ModuleMoveBlocker::InvalidSource
+pub perl_module::api::ModuleMoveBlocker::MissingFileGeneration
+pub perl_module::api::ModuleMoveBlocker::MissingPackageDeclaration
+pub perl_module::api::ModuleMoveBlocker::OverlappingEdits
+pub perl_module::api::ModuleMoveBlocker::StaleOrUnknownGeneration
+pub perl_module::api::ModuleMoveBlocker::TargetCollision
+pub perl_module::api::ModuleMoveBlocker::UnsafeTarget
+pub perl_module::api::ModuleMoveBlocker::UnsupportedProjection
+pub const fn perl_module::ModuleMoveBlocker::tag(self) -> &'static str
+pub fn perl_module::ModuleMoveBlocker::clone(&self) -> perl_module::ModuleMoveBlocker
+pub fn perl_module::ModuleMoveBlocker::cmp(&self, other: &perl_module::ModuleMoveBlocker) -> core::cmp::Ordering
+pub fn perl_module::ModuleMoveBlocker::eq(&self, other: &perl_module::ModuleMoveBlocker) -> bool
+pub fn perl_module::ModuleMoveBlocker::partial_cmp(&self, other: &perl_module::ModuleMoveBlocker) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_module::ModuleMoveBlocker::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveBlocker::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveBlocker::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_module::api::ModuleMoveDisposition
+pub perl_module::api::ModuleMoveDisposition::Blocked
+pub perl_module::api::ModuleMoveDisposition::Complete
+pub const fn perl_module::ModuleMoveDisposition::tag(self) -> &'static str
+pub fn perl_module::ModuleMoveDisposition::clone(&self) -> perl_module::ModuleMoveDisposition
+pub fn perl_module::ModuleMoveDisposition::eq(&self, other: &perl_module::ModuleMoveDisposition) -> bool
+pub fn perl_module::ModuleMoveDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_module::api::ModuleMoveInvalidPlan::BlockersNotCanonical
+pub perl_module::api::ModuleMoveInvalidPlan::CompletePlanWithoutEdits
+pub perl_module::api::ModuleMoveInvalidPlan::DispositionDisagreesWithBlockers
+pub perl_module::api::ModuleMoveInvalidPlan::DuplicateEdit
+pub perl_module::api::ModuleMoveInvalidPlan::EditIsNotAtItsFilesCurrentGeneration
+pub perl_module::api::ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution
+pub perl_module::api::ModuleMoveInvalidPlan::EditsNotCanonical
+pub perl_module::api::ModuleMoveInvalidPlan::FingerprintMismatch
+pub perl_module::api::ModuleMoveInvalidPlan::GenerationEvidenceUnusable
+pub perl_module::api::ModuleMoveInvalidPlan::MalformedEdit
+pub perl_module::api::ModuleMoveInvalidPlan::MissingPackageDeclaration
+pub perl_module::api::ModuleMoveInvalidPlan::OverlappingEdits
+pub perl_module::api::ModuleMoveInvalidPlan::ResourceTransitionInconsistent
+pub perl_module::api::ModuleMoveInvalidPlan::SourceNotEligible
+pub perl_module::api::ModuleMoveInvalidPlan::TargetWasNotProvenAbsent
+pub perl_module::api::ModuleMoveInvalidPlan::UnknownSchemaVersion
+pub fn perl_module::ModuleMoveInvalidPlan::clone(&self) -> perl_module::ModuleMoveInvalidPlan
+pub fn perl_module::ModuleMoveInvalidPlan::eq(&self, other: &perl_module::ModuleMoveInvalidPlan) -> bool
+pub fn perl_module::ModuleMoveInvalidPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::api::ModuleMoveTarget
+pub perl_module::api::ModuleMoveTarget::Package(alloc::string::String)
+pub perl_module::api::ModuleMoveTarget::RelativePath(alloc::string::String)
+pub fn perl_module::ModuleMoveTarget::clone(&self) -> perl_module::ModuleMoveTarget
+pub fn perl_module::ModuleMoveTarget::eq(&self, other: &perl_module::ModuleMoveTarget) -> bool
+pub fn perl_module::ModuleMoveTarget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveTarget::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveTarget::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_module::api::ModuleProvenanceClass
 pub perl_module::api::ModuleProvenanceClass::ClaimsSignature
 pub perl_module::api::ModuleProvenanceClass::Packaged
@@ -104,6 +164,94 @@ pub perl_module::api::ModuleLineEdit::start_character: usize
 pub fn perl_module::ModuleLineEdit::clone(&self) -> perl_module::ModuleLineEdit
 pub fn perl_module::ModuleLineEdit::eq(&self, other: &perl_module::ModuleLineEdit) -> bool
 pub fn perl_module::ModuleLineEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::api::ModuleMoveEdit
+pub perl_module::api::ModuleMoveEdit::anchor_id: perl_semantic_facts::AnchorId
+pub perl_module::api::ModuleMoveEdit::end_byte: u32
+pub perl_module::api::ModuleMoveEdit::entity_id: perl_semantic_facts::EntityId
+pub perl_module::api::ModuleMoveEdit::file_id: perl_semantic_facts::FileId
+pub perl_module::api::ModuleMoveEdit::generation: perl_semantic_facts::envelope::SourceGeneration
+pub perl_module::api::ModuleMoveEdit::kind: perl_semantic_facts::OccurrenceKind
+pub perl_module::api::ModuleMoveEdit::new_text: alloc::string::String
+pub perl_module::api::ModuleMoveEdit::occurrence_id: perl_semantic_facts::OccurrenceId
+pub perl_module::api::ModuleMoveEdit::old_text: alloc::string::String
+pub perl_module::api::ModuleMoveEdit::start_byte: u32
+pub fn perl_module::ModuleMoveEdit::clone(&self) -> perl_module::ModuleMoveEdit
+pub fn perl_module::ModuleMoveEdit::eq(&self, other: &perl_module::ModuleMoveEdit) -> bool
+pub fn perl_module::ModuleMoveEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveEdit::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveEdit::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::api::ModuleMoveFileGeneration
+pub perl_module::api::ModuleMoveFileGeneration::file_id: perl_semantic_facts::FileId
+pub perl_module::api::ModuleMoveFileGeneration::generation: perl_semantic_facts::envelope::SourceGeneration
+pub fn perl_module::ModuleMoveFileGeneration::clone(&self) -> perl_module::ModuleMoveFileGeneration
+pub fn perl_module::ModuleMoveFileGeneration::eq(&self, other: &perl_module::ModuleMoveFileGeneration) -> bool
+pub fn perl_module::ModuleMoveFileGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveFileGeneration::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveFileGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::api::ModuleMoveOccurrence
+pub perl_module::api::ModuleMoveOccurrence::anchor_id: perl_semantic_facts::AnchorId
+pub perl_module::api::ModuleMoveOccurrence::dynamic: bool
+pub perl_module::api::ModuleMoveOccurrence::end_byte: u32
+pub perl_module::api::ModuleMoveOccurrence::entity_id: perl_semantic_facts::EntityId
+pub perl_module::api::ModuleMoveOccurrence::file_generation: perl_semantic_facts::envelope::SourceGeneration
+pub perl_module::api::ModuleMoveOccurrence::file_id: perl_semantic_facts::FileId
+pub perl_module::api::ModuleMoveOccurrence::kind: perl_semantic_facts::OccurrenceKind
+pub perl_module::api::ModuleMoveOccurrence::occurrence_id: perl_semantic_facts::OccurrenceId
+pub perl_module::api::ModuleMoveOccurrence::old_text: alloc::string::String
+pub perl_module::api::ModuleMoveOccurrence::stale: bool
+pub perl_module::api::ModuleMoveOccurrence::start_byte: u32
+pub perl_module::api::ModuleMoveOccurrence::unsupported: bool
+pub fn perl_module::ModuleMoveOccurrence::clone(&self) -> perl_module::ModuleMoveOccurrence
+pub fn perl_module::ModuleMoveOccurrence::eq(&self, other: &perl_module::ModuleMoveOccurrence) -> bool
+pub fn perl_module::ModuleMoveOccurrence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveOccurrence::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveOccurrence::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::api::ModuleMovePlan
+pub perl_module::api::ModuleMovePlan::blockers: alloc::vec::Vec<perl_module::ModuleMoveBlocker>
+pub perl_module::api::ModuleMovePlan::current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>
+pub perl_module::api::ModuleMovePlan::disposition: perl_module::ModuleMoveDisposition
+pub perl_module::api::ModuleMovePlan::edits: alloc::vec::Vec<perl_module::ModuleMoveEdit>
+pub perl_module::api::ModuleMovePlan::fingerprint: alloc::string::String
+pub perl_module::api::ModuleMovePlan::resource: perl_module::ModuleMoveResourceTransition
+pub perl_module::api::ModuleMovePlan::schema_version: u16
+pub perl_module::api::ModuleMovePlan::source: perl_module::ModuleMoveSource
+pub perl_module::api::ModuleMovePlan::target_was_absent: bool
+pub fn perl_module::ModuleMovePlan::build(source: perl_module::ModuleMoveSource, target: perl_module::ModuleMoveTarget, occurrences: alloc::vec::Vec<perl_module::ModuleMoveOccurrence>, current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>, target_exists: bool) -> Self
+pub fn perl_module::ModuleMovePlan::is_complete(&self) -> bool
+pub fn perl_module::ModuleMovePlan::validate(&self) -> core::result::Result<(), perl_module::ModuleMoveInvalidPlan>
+pub fn perl_module::ModuleMovePlan::clone(&self) -> perl_module::ModuleMovePlan
+pub fn perl_module::ModuleMovePlan::eq(&self, other: &perl_module::ModuleMovePlan) -> bool
+pub fn perl_module::ModuleMovePlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMovePlan::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMovePlan::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::api::ModuleMoveResourceTransition
+pub perl_module::api::ModuleMoveResourceTransition::source_module: alloc::string::String
+pub perl_module::api::ModuleMoveResourceTransition::source_path: alloc::string::String
+pub perl_module::api::ModuleMoveResourceTransition::target_module: alloc::string::String
+pub perl_module::api::ModuleMoveResourceTransition::target_path: alloc::string::String
+pub fn perl_module::ModuleMoveResourceTransition::clone(&self) -> perl_module::ModuleMoveResourceTransition
+pub fn perl_module::ModuleMoveResourceTransition::eq(&self, other: &perl_module::ModuleMoveResourceTransition) -> bool
+pub fn perl_module::ModuleMoveResourceTransition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveResourceTransition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveResourceTransition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::api::ModuleMoveSource
+pub perl_module::api::ModuleMoveSource::editable: bool
+pub perl_module::api::ModuleMoveSource::file_id: perl_semantic_facts::FileId
+pub perl_module::api::ModuleMoveSource::generation: perl_semantic_facts::envelope::SourceGeneration
+pub perl_module::api::ModuleMoveSource::module: alloc::string::String
+pub perl_module::api::ModuleMoveSource::occurrences_complete: bool
+pub perl_module::api::ModuleMoveSource::package: alloc::string::String
+pub perl_module::api::ModuleMoveSource::primary_package_count: u32
+pub perl_module::api::ModuleMoveSource::relative_path: alloc::string::String
+pub perl_module::api::ModuleMoveSource::restricted: bool
+pub perl_module::api::ModuleMoveSource::root: alloc::string::String
+pub perl_module::api::ModuleMoveSource::source_uri: alloc::string::String
+pub perl_module::api::ModuleMoveSource::workspace: alloc::string::String
+pub fn perl_module::ModuleMoveSource::clone(&self) -> perl_module::ModuleMoveSource
+pub fn perl_module::ModuleMoveSource::eq(&self, other: &perl_module::ModuleMoveSource) -> bool
+pub fn perl_module::ModuleMoveSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveSource::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveSource::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::api::ModuleProvenance
 pub perl_module::api::ModuleProvenance::has_checksums: bool
 pub perl_module::api::ModuleProvenance::has_meta: bool
@@ -173,6 +321,7 @@ pub perl_module::api::UseLibPath::path: alloc::string::String
 pub fn perl_module::UseLibPath::clone(&self) -> perl_module::UseLibPath
 pub fn perl_module::UseLibPath::eq(&self, other: &perl_module::UseLibPath) -> bool
 pub fn perl_module::UseLibPath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_module::api::MODULE_MOVE_SCHEMA_VERSION: u16
 pub fn perl_module::api::apply_module_rename_edits(source: &str, edits: &[perl_module::ModuleLineEdit]) -> alloc::string::String
 pub fn perl_module::api::build_effective_inc_roots(include_paths: &[alloc::string::String], perl5lib_paths: &[alloc::string::String], use_perl5lib: bool, lexical_paths: &[alloc::string::String], system_paths: &[std::path::PathBuf]) -> alloc::vec::Vec<perl_module::IncRoot>
 pub fn perl_module::api::collect_module_uri_candidates_with_effective_inc(module_name: &str, open_document_uris: &[alloc::string::String], workspace_folders: &[alloc::string::String], effective_inc_roots: &[perl_module::IncRoot], timeout: core::time::Duration) -> perl_module::ModuleUriCandidateReport
@@ -257,6 +406,66 @@ pub fn perl_module::ModuleImportKind::dispatch_semantics(self) -> perl_module::D
 pub fn perl_module::ModuleImportKind::clone(&self) -> perl_module::ModuleImportKind
 pub fn perl_module::ModuleImportKind::eq(&self, other: &perl_module::ModuleImportKind) -> bool
 pub fn perl_module::ModuleImportKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::ModuleMoveBlocker
+pub perl_module::ModuleMoveBlocker::AmbiguousAnchor
+pub perl_module::ModuleMoveBlocker::AmbiguousSourcePackage
+pub perl_module::ModuleMoveBlocker::CrossRoot
+pub perl_module::ModuleMoveBlocker::DuplicateOccurrence
+pub perl_module::ModuleMoveBlocker::DynamicBoundary
+pub perl_module::ModuleMoveBlocker::IncompleteOccurrences
+pub perl_module::ModuleMoveBlocker::InvalidAnchor
+pub perl_module::ModuleMoveBlocker::InvalidSource
+pub perl_module::ModuleMoveBlocker::MissingFileGeneration
+pub perl_module::ModuleMoveBlocker::MissingPackageDeclaration
+pub perl_module::ModuleMoveBlocker::OverlappingEdits
+pub perl_module::ModuleMoveBlocker::StaleOrUnknownGeneration
+pub perl_module::ModuleMoveBlocker::TargetCollision
+pub perl_module::ModuleMoveBlocker::UnsafeTarget
+pub perl_module::ModuleMoveBlocker::UnsupportedProjection
+pub const fn perl_module::ModuleMoveBlocker::tag(self) -> &'static str
+pub fn perl_module::ModuleMoveBlocker::clone(&self) -> perl_module::ModuleMoveBlocker
+pub fn perl_module::ModuleMoveBlocker::cmp(&self, other: &perl_module::ModuleMoveBlocker) -> core::cmp::Ordering
+pub fn perl_module::ModuleMoveBlocker::eq(&self, other: &perl_module::ModuleMoveBlocker) -> bool
+pub fn perl_module::ModuleMoveBlocker::partial_cmp(&self, other: &perl_module::ModuleMoveBlocker) -> core::option::Option<core::cmp::Ordering>
+pub fn perl_module::ModuleMoveBlocker::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveBlocker::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveBlocker::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum perl_module::ModuleMoveDisposition
+pub perl_module::ModuleMoveDisposition::Blocked
+pub perl_module::ModuleMoveDisposition::Complete
+pub const fn perl_module::ModuleMoveDisposition::tag(self) -> &'static str
+pub fn perl_module::ModuleMoveDisposition::clone(&self) -> perl_module::ModuleMoveDisposition
+pub fn perl_module::ModuleMoveDisposition::eq(&self, other: &perl_module::ModuleMoveDisposition) -> bool
+pub fn perl_module::ModuleMoveDisposition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveDisposition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveDisposition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub perl_module::ModuleMoveInvalidPlan::BlockersNotCanonical
+pub perl_module::ModuleMoveInvalidPlan::CompletePlanWithoutEdits
+pub perl_module::ModuleMoveInvalidPlan::DispositionDisagreesWithBlockers
+pub perl_module::ModuleMoveInvalidPlan::DuplicateEdit
+pub perl_module::ModuleMoveInvalidPlan::EditIsNotAtItsFilesCurrentGeneration
+pub perl_module::ModuleMoveInvalidPlan::EditIsNotTheIdentitySubstitution
+pub perl_module::ModuleMoveInvalidPlan::EditsNotCanonical
+pub perl_module::ModuleMoveInvalidPlan::FingerprintMismatch
+pub perl_module::ModuleMoveInvalidPlan::GenerationEvidenceUnusable
+pub perl_module::ModuleMoveInvalidPlan::MalformedEdit
+pub perl_module::ModuleMoveInvalidPlan::MissingPackageDeclaration
+pub perl_module::ModuleMoveInvalidPlan::OverlappingEdits
+pub perl_module::ModuleMoveInvalidPlan::ResourceTransitionInconsistent
+pub perl_module::ModuleMoveInvalidPlan::SourceNotEligible
+pub perl_module::ModuleMoveInvalidPlan::TargetWasNotProvenAbsent
+pub perl_module::ModuleMoveInvalidPlan::UnknownSchemaVersion
+pub fn perl_module::ModuleMoveInvalidPlan::clone(&self) -> perl_module::ModuleMoveInvalidPlan
+pub fn perl_module::ModuleMoveInvalidPlan::eq(&self, other: &perl_module::ModuleMoveInvalidPlan) -> bool
+pub fn perl_module::ModuleMoveInvalidPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum perl_module::ModuleMoveTarget
+pub perl_module::ModuleMoveTarget::Package(alloc::string::String)
+pub perl_module::ModuleMoveTarget::RelativePath(alloc::string::String)
+pub fn perl_module::ModuleMoveTarget::clone(&self) -> perl_module::ModuleMoveTarget
+pub fn perl_module::ModuleMoveTarget::eq(&self, other: &perl_module::ModuleMoveTarget) -> bool
+pub fn perl_module::ModuleMoveTarget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveTarget::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveTarget::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum perl_module::ModuleProvenanceClass
 pub perl_module::ModuleProvenanceClass::ClaimsSignature
 pub perl_module::ModuleProvenanceClass::Packaged
@@ -323,6 +532,94 @@ pub perl_module::ModuleLineEdit::start_character: usize
 pub fn perl_module::ModuleLineEdit::clone(&self) -> perl_module::ModuleLineEdit
 pub fn perl_module::ModuleLineEdit::eq(&self, other: &perl_module::ModuleLineEdit) -> bool
 pub fn perl_module::ModuleLineEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct perl_module::ModuleMoveEdit
+pub perl_module::ModuleMoveEdit::anchor_id: perl_semantic_facts::AnchorId
+pub perl_module::ModuleMoveEdit::end_byte: u32
+pub perl_module::ModuleMoveEdit::entity_id: perl_semantic_facts::EntityId
+pub perl_module::ModuleMoveEdit::file_id: perl_semantic_facts::FileId
+pub perl_module::ModuleMoveEdit::generation: perl_semantic_facts::envelope::SourceGeneration
+pub perl_module::ModuleMoveEdit::kind: perl_semantic_facts::OccurrenceKind
+pub perl_module::ModuleMoveEdit::new_text: alloc::string::String
+pub perl_module::ModuleMoveEdit::occurrence_id: perl_semantic_facts::OccurrenceId
+pub perl_module::ModuleMoveEdit::old_text: alloc::string::String
+pub perl_module::ModuleMoveEdit::start_byte: u32
+pub fn perl_module::ModuleMoveEdit::clone(&self) -> perl_module::ModuleMoveEdit
+pub fn perl_module::ModuleMoveEdit::eq(&self, other: &perl_module::ModuleMoveEdit) -> bool
+pub fn perl_module::ModuleMoveEdit::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveEdit::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveEdit::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::ModuleMoveFileGeneration
+pub perl_module::ModuleMoveFileGeneration::file_id: perl_semantic_facts::FileId
+pub perl_module::ModuleMoveFileGeneration::generation: perl_semantic_facts::envelope::SourceGeneration
+pub fn perl_module::ModuleMoveFileGeneration::clone(&self) -> perl_module::ModuleMoveFileGeneration
+pub fn perl_module::ModuleMoveFileGeneration::eq(&self, other: &perl_module::ModuleMoveFileGeneration) -> bool
+pub fn perl_module::ModuleMoveFileGeneration::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveFileGeneration::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveFileGeneration::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::ModuleMoveOccurrence
+pub perl_module::ModuleMoveOccurrence::anchor_id: perl_semantic_facts::AnchorId
+pub perl_module::ModuleMoveOccurrence::dynamic: bool
+pub perl_module::ModuleMoveOccurrence::end_byte: u32
+pub perl_module::ModuleMoveOccurrence::entity_id: perl_semantic_facts::EntityId
+pub perl_module::ModuleMoveOccurrence::file_generation: perl_semantic_facts::envelope::SourceGeneration
+pub perl_module::ModuleMoveOccurrence::file_id: perl_semantic_facts::FileId
+pub perl_module::ModuleMoveOccurrence::kind: perl_semantic_facts::OccurrenceKind
+pub perl_module::ModuleMoveOccurrence::occurrence_id: perl_semantic_facts::OccurrenceId
+pub perl_module::ModuleMoveOccurrence::old_text: alloc::string::String
+pub perl_module::ModuleMoveOccurrence::stale: bool
+pub perl_module::ModuleMoveOccurrence::start_byte: u32
+pub perl_module::ModuleMoveOccurrence::unsupported: bool
+pub fn perl_module::ModuleMoveOccurrence::clone(&self) -> perl_module::ModuleMoveOccurrence
+pub fn perl_module::ModuleMoveOccurrence::eq(&self, other: &perl_module::ModuleMoveOccurrence) -> bool
+pub fn perl_module::ModuleMoveOccurrence::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveOccurrence::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveOccurrence::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::ModuleMovePlan
+pub perl_module::ModuleMovePlan::blockers: alloc::vec::Vec<perl_module::ModuleMoveBlocker>
+pub perl_module::ModuleMovePlan::current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>
+pub perl_module::ModuleMovePlan::disposition: perl_module::ModuleMoveDisposition
+pub perl_module::ModuleMovePlan::edits: alloc::vec::Vec<perl_module::ModuleMoveEdit>
+pub perl_module::ModuleMovePlan::fingerprint: alloc::string::String
+pub perl_module::ModuleMovePlan::resource: perl_module::ModuleMoveResourceTransition
+pub perl_module::ModuleMovePlan::schema_version: u16
+pub perl_module::ModuleMovePlan::source: perl_module::ModuleMoveSource
+pub perl_module::ModuleMovePlan::target_was_absent: bool
+pub fn perl_module::ModuleMovePlan::build(source: perl_module::ModuleMoveSource, target: perl_module::ModuleMoveTarget, occurrences: alloc::vec::Vec<perl_module::ModuleMoveOccurrence>, current_generations: alloc::vec::Vec<perl_module::ModuleMoveFileGeneration>, target_exists: bool) -> Self
+pub fn perl_module::ModuleMovePlan::is_complete(&self) -> bool
+pub fn perl_module::ModuleMovePlan::validate(&self) -> core::result::Result<(), perl_module::ModuleMoveInvalidPlan>
+pub fn perl_module::ModuleMovePlan::clone(&self) -> perl_module::ModuleMovePlan
+pub fn perl_module::ModuleMovePlan::eq(&self, other: &perl_module::ModuleMovePlan) -> bool
+pub fn perl_module::ModuleMovePlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMovePlan::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMovePlan::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::ModuleMoveResourceTransition
+pub perl_module::ModuleMoveResourceTransition::source_module: alloc::string::String
+pub perl_module::ModuleMoveResourceTransition::source_path: alloc::string::String
+pub perl_module::ModuleMoveResourceTransition::target_module: alloc::string::String
+pub perl_module::ModuleMoveResourceTransition::target_path: alloc::string::String
+pub fn perl_module::ModuleMoveResourceTransition::clone(&self) -> perl_module::ModuleMoveResourceTransition
+pub fn perl_module::ModuleMoveResourceTransition::eq(&self, other: &perl_module::ModuleMoveResourceTransition) -> bool
+pub fn perl_module::ModuleMoveResourceTransition::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveResourceTransition::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveResourceTransition::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct perl_module::ModuleMoveSource
+pub perl_module::ModuleMoveSource::editable: bool
+pub perl_module::ModuleMoveSource::file_id: perl_semantic_facts::FileId
+pub perl_module::ModuleMoveSource::generation: perl_semantic_facts::envelope::SourceGeneration
+pub perl_module::ModuleMoveSource::module: alloc::string::String
+pub perl_module::ModuleMoveSource::occurrences_complete: bool
+pub perl_module::ModuleMoveSource::package: alloc::string::String
+pub perl_module::ModuleMoveSource::primary_package_count: u32
+pub perl_module::ModuleMoveSource::relative_path: alloc::string::String
+pub perl_module::ModuleMoveSource::restricted: bool
+pub perl_module::ModuleMoveSource::root: alloc::string::String
+pub perl_module::ModuleMoveSource::source_uri: alloc::string::String
+pub perl_module::ModuleMoveSource::workspace: alloc::string::String
+pub fn perl_module::ModuleMoveSource::clone(&self) -> perl_module::ModuleMoveSource
+pub fn perl_module::ModuleMoveSource::eq(&self, other: &perl_module::ModuleMoveSource) -> bool
+pub fn perl_module::ModuleMoveSource::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub fn perl_module::ModuleMoveSource::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn perl_module::ModuleMoveSource::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct perl_module::ModuleProvenance
 pub perl_module::ModuleProvenance::has_checksums: bool
 pub perl_module::ModuleProvenance::has_meta: bool
@@ -392,6 +689,7 @@ pub perl_module::UseLibPath::path: alloc::string::String
 pub fn perl_module::UseLibPath::clone(&self) -> perl_module::UseLibPath
 pub fn perl_module::UseLibPath::eq(&self, other: &perl_module::UseLibPath) -> bool
 pub fn perl_module::UseLibPath::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub const perl_module::MODULE_MOVE_SCHEMA_VERSION: u16
 pub fn perl_module::apply_module_rename_edits(source: &str, edits: &[perl_module::ModuleLineEdit]) -> alloc::string::String
 pub fn perl_module::build_effective_inc_roots(include_paths: &[alloc::string::String], perl5lib_paths: &[alloc::string::String], use_perl5lib: bool, lexical_paths: &[alloc::string::String], system_paths: &[std::path::PathBuf]) -> alloc::vec::Vec<perl_module::IncRoot>
 pub fn perl_module::collect_module_uri_candidates_with_effective_inc(module_name: &str, open_document_uris: &[alloc::string::String], workspace_folders: &[alloc::string::String], effective_inc_roots: &[perl_module::IncRoot], timeout: core::time::Duration) -> perl_module::ModuleUriCandidateReport

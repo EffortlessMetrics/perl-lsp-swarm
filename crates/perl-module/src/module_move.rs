@@ -18,9 +18,12 @@
 //!   [`ModuleMovePlan::is_complete`] re-derives the invariants and the
 //!   fingerprint rather than trusting `disposition`.
 
-use crate::{AnchorId, EntityId, FileId, OccurrenceId, OccurrenceKind, SourceGeneration};
+use crate::path::is_lookup_safe_module_name;
+use crate::token_core::is_module_identifier_char;
+use perl_semantic_facts::{
+    AnchorId, EntityId, FileId, OccurrenceId, OccurrenceKind, SourceGeneration,
+};
 use serde::{Deserialize, Serialize};
-use unicode_ident::{is_xid_continue, is_xid_start};
 
 /// Current plan schema version.  A plan carrying any other version is refused.
 pub const MODULE_MOVE_SCHEMA_VERSION: u16 = 1;
@@ -351,8 +354,8 @@ impl ModuleMovePlan {
             || root.is_empty()
             || source.source_uri.trim().is_empty()
             || source.relative_path.trim().is_empty()
-            || !valid_package(&source.package)
-            || !valid_package(&source.module)
+            || !is_lookup_safe_module_name(&source.package)
+            || !is_lookup_safe_module_name(&source.module)
             || source.package != source.module
             || expected_source_path.as_deref() != Some(source.relative_path.as_str())
             || !source.editable
@@ -744,28 +747,30 @@ fn fingerprint_of(
     blockers: &[ModuleMoveBlocker],
     disposition: ModuleMoveDisposition,
 ) -> String {
-    let mut acc = crate::semantic_identity::SemanticIdentityFingerprint::new("module-move-plan-v1")
-        .field("schema-version", &schema_version.to_string())
-        .field("workspace", &source.workspace)
-        .field("root", &source.root)
-        .field("source-file-id", &source.file_id.0.to_string())
-        .field("source-relative-path", &source.relative_path)
-        .field("source-uri", &source.source_uri)
-        .field("source-package", &source.package)
-        .field("source-module", &source.module)
-        .field("source-generation", &generation_tag(&source.generation))
-        .field("source-editable", bool_tag(source.editable))
-        .field("source-restricted", bool_tag(source.restricted))
-        .field("primary-package-count", &source.primary_package_count.to_string())
-        .field("occurrences-complete", bool_tag(source.occurrences_complete))
-        .field("target-was-absent", bool_tag(target_was_absent))
-        .field("generation-count", &current_generations.len().to_string())
-        .field("resource-source-path", &resource.source_path)
-        .field("resource-target-path", &resource.target_path)
-        .field("resource-source-module", &resource.source_module)
-        .field("resource-target-module", &resource.target_module)
-        .field("disposition", disposition.tag())
-        .field("edit-count", &edits.len().to_string());
+    let mut acc = perl_semantic_facts::semantic_identity::SemanticIdentityFingerprint::new(
+        "module-move-plan-v1",
+    )
+    .field("schema-version", &schema_version.to_string())
+    .field("workspace", &source.workspace)
+    .field("root", &source.root)
+    .field("source-file-id", &source.file_id.0.to_string())
+    .field("source-relative-path", &source.relative_path)
+    .field("source-uri", &source.source_uri)
+    .field("source-package", &source.package)
+    .field("source-module", &source.module)
+    .field("source-generation", &generation_tag(&source.generation))
+    .field("source-editable", bool_tag(source.editable))
+    .field("source-restricted", bool_tag(source.restricted))
+    .field("primary-package-count", &source.primary_package_count.to_string())
+    .field("occurrences-complete", bool_tag(source.occurrences_complete))
+    .field("target-was-absent", bool_tag(target_was_absent))
+    .field("generation-count", &current_generations.len().to_string())
+    .field("resource-source-path", &resource.source_path)
+    .field("resource-target-path", &resource.target_path)
+    .field("resource-source-module", &resource.source_module)
+    .field("resource-target-module", &resource.target_module)
+    .field("disposition", disposition.tag())
+    .field("edit-count", &edits.len().to_string());
     for edit in edits {
         acc = acc
             .field("edit-file-id", &edit.file_id.0.to_string())
@@ -799,6 +804,11 @@ fn generation_tag(generation: &SourceGeneration) -> String {
     match generation {
         SourceGeneration::Known(value) => format!("known:{value}"),
         SourceGeneration::Unknown => "unknown".to_string(),
+        // `SourceGeneration` is `#[non_exhaustive]`, so a future variant is
+        // possible. It carries no provable generation: tagging it like
+        // `Unknown` keeps fingerprints deterministic, and the known-generation
+        // gates refuse it before any edit is authorized.
+        _ => "unknown".to_string(),
     }
 }
 
@@ -820,59 +830,6 @@ const fn occurrence_kind_tag(kind: OccurrenceKind) -> &'static str {
         OccurrenceKind::GeneratedUse => "generated-use",
         OccurrenceKind::DynamicBoundary => "dynamic-boundary",
     }
-}
-
-/// Whether Perl's word class admits `character`.
-///
-/// Perl identifiers are XID intersected with `\w`, which is
-/// `Alphabetic + Mark + Decimal_Number + Connector_Punctuation + Join_Control`.
-/// XID additionally admits `Other_ID_Start` and `Other_ID_Continue`, two small
-/// closed sets Unicode keeps for backward compatibility and Perl does not
-/// accept — `New::U+2118` is a well-formed XID name and invalid Perl.
-/// Subtracting them reproduces `perl-module`'s
-/// `is_xid_*(ch) && is_perl_word_char(ch)` without the `regex` dependency that
-/// predicate needs. Every other XID character is `L`, `Nl`, `M`, `Nd` or `Pc`,
-/// all of which `\w` contains.
-const fn perl_word_admits(character: char) -> bool {
-    !matches!(
-        character,
-        // Other_ID_Start outside `\w`.
-        '\u{2118}' | '\u{212e}'
-        // Other_ID_Continue, none of which `\w` contains.
-        | '\u{b7}' | '\u{387}' | '\u{1369}'..='\u{1371}' | '\u{19da}'
-    )
-}
-
-/// Whether `character` may start a Perl identifier.
-fn starts_identifier(character: char) -> bool {
-    character == '_' || (is_xid_start(character) && perl_word_admits(character))
-}
-
-/// Whether `character` may continue a Perl identifier.
-///
-/// This is the identifier policy `perl-module::is_lookup_safe_module_name` is
-/// built on, expressed through the same `unicode-ident` crate. That helper
-/// cannot be called from here: `perl-semantic-facts` is a dependency of
-/// `perl-parser-core`, which `perl-module` depends on, so importing it is a
-/// cyclic package dependency and cargo refuses the build. Sharing the
-/// *standard* rather than the function is the closest available alignment, and
-/// it avoids a second, ASCII-only package grammar.
-fn continues_identifier(character: char) -> bool {
-    character == '_' || (is_xid_continue(character) && perl_word_admits(character))
-}
-
-/// A Perl package name this profile will write into source.
-///
-/// Segments follow XID: a start character (or `_`) then continuation
-/// characters. Under `use utf8` a package name may be non-ASCII, so an
-/// ASCII-only rule would refuse valid Perl. `package 123` and `package Foo::1`
-/// remain invalid, because a digit is not an XID start.
-fn valid_package(value: &str) -> bool {
-    !value.is_empty()
-        && value.split("::").all(|part| {
-            let mut characters = part.chars();
-            characters.next().is_some_and(starts_identifier) && characters.all(continues_identifier)
-        })
 }
 
 /// The byte offset of the package-name slot in a `package` declaration.
@@ -909,8 +866,8 @@ fn source_is_eligible(source: &ModuleMoveSource) -> bool {
         && !root.is_empty()
         && !source.source_uri.trim().is_empty()
         && !source.relative_path.trim().is_empty()
-        && valid_package(&source.package)
-        && valid_package(&source.module)
+        && is_lookup_safe_module_name(&source.package)
+        && is_lookup_safe_module_name(&source.module)
         && source.package == source.module
         && expected_path.as_deref() == Some(source.relative_path.as_str())
         && source.editable
@@ -921,7 +878,7 @@ fn source_is_eligible(source: &ModuleMoveSource) -> bool {
 }
 
 fn module_path(package: &str) -> Option<String> {
-    valid_package(package).then(|| format!("{}.pm", package.replace("::", "/")))
+    is_lookup_safe_module_name(package).then(|| format!("{}.pm", package.replace("::", "/")))
 }
 
 fn package_from_path(path: &str) -> Option<String> {
@@ -930,7 +887,7 @@ fn package_from_path(path: &str) -> Option<String> {
     }
     let stem = path.strip_suffix(".pm")?;
     let package = stem.replace('/', "::");
-    valid_package(&package).then_some(package)
+    is_lookup_safe_module_name(&package).then_some(package)
 }
 
 /// Every identifier-boundary-clean start offset of `identity` within `text`.
@@ -948,7 +905,7 @@ fn identity_sites(text: &str, identity: &str) -> Vec<usize> {
     // prefix of a longer name. XID_Continue covers combining marks and
     // variation selectors, which `char::is_alphanumeric` reports as false and
     // would otherwise read as punctuation.
-    let boundary = |character: Option<char>| !character.is_some_and(continues_identifier);
+    let boundary = |character: Option<char>| !character.is_some_and(is_module_identifier_char);
     text.match_indices(identity)
         .filter(|(start, _)| {
             let end = start + identity.len();
@@ -2026,13 +1983,13 @@ mod tests {
         }
     }
 
-    /// The exclusion list duplicates policy this crate cannot import, so a
-    /// `unicode-ident` upgrade could silently move a character between the two
-    /// owners. These assertions fail loudly instead: each excluded character
-    /// must still be admitted by XID (or the exclusion is dead) and still be
-    /// outside `\w`'s alphabetic core (or the exclusion is now wrong).
+    /// The plan delegates its package grammar to the canonical
+    /// `is_lookup_safe_module_name`, so a `unicode-ident` or `regex` upgrade
+    /// that moves a character across XID or Perl's word class must surface
+    /// here: XID-admitted characters outside `\w` stay invalid Perl, and the
+    /// `Other_ID_Start` characters `\w` admits stay valid.
     #[test]
-    fn every_word_class_exclusion_is_still_load_bearing() {
+    fn canonical_word_class_boundaries_hold_through_the_facade_authority() {
         for (label, character) in [
             ("U+2118", '\u{2118}'),
             ("U+212E", '\u{212e}'),
@@ -2042,33 +1999,18 @@ mod tests {
             ("U+1371", '\u{1371}'),
             ("U+19DA", '\u{19da}'),
         ] {
+            let name = format!("New::{character}");
             assert!(
-                is_xid_start(character) || is_xid_continue(character),
-                "{label} left XID; the exclusion is now dead code"
+                !is_lookup_safe_module_name(&name),
+                "{label} is admitted; Perl's word class now accepts it and the \
+                 plan's package grammar must be re-decided"
             );
-            assert!(
-                !character.is_alphabetic(),
-                "{label} became Alphabetic; Perl's word class now admits it and \
-                 the exclusion must be dropped"
-            );
-            assert!(!perl_word_admits(character), "{label} is no longer excluded");
         }
-    }
-
-    /// The converse guard: characters deliberately *not* excluded. U+1885 and
-    /// U+1886 are `Other_ID_Start` that Unicode later made Alphabetic, so `\w`
-    /// admits them and excluding them would reject valid Perl; U+309B and
-    /// U+309C are already outside XID, so excluding them would be dead code.
-    #[test]
-    fn characters_needing_no_exclusion_are_still_admitted() {
         for (label, character) in [("U+1885", '\u{1885}'), ("U+1886", '\u{1886}')] {
-            assert!(character.is_alphabetic(), "{label} is no longer Alphabetic");
-            assert!(perl_word_admits(character), "{label} must stay admitted");
-        }
-        for (label, character) in [("U+309B", '\u{309b}'), ("U+309C", '\u{309c}')] {
+            let name = format!("New::{character}");
             assert!(
-                !is_xid_start(character) && !is_xid_continue(character),
-                "{label} entered XID and now needs an explicit decision"
+                character.is_alphabetic() && is_lookup_safe_module_name(&name),
+                "{label} is no longer admitted; excluding it would reject valid Perl"
             );
         }
     }
