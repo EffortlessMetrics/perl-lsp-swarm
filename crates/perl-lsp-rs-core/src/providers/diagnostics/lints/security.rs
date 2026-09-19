@@ -451,6 +451,7 @@ fn walk_security_node(
         | NodeKind::Do { .. }
         | NodeKind::LoopControl { .. }
         | NodeKind::Goto { .. }
+        | NodeKind::TargetlessGoto { .. }
         | NodeKind::Prototype { .. }
         | NodeKind::MissingExpression
         | NodeKind::MissingStatement

@@ -643,8 +643,17 @@ fn project_regex_diagnostics(parse_output: &mut ParseOutput, table: &RegexAnalys
 
     projected.sort_by_key(|diagnostic| diagnostic.location().unwrap_or(usize::MAX));
     projected.dedup();
+    // Bound additions by the same `max_errors` authority that the parser applies
+    // in `Parser::record_error` (`helpers.rs`), which caps at `MAX_ERRORS = 100`
+    // — matching `ParseBudget::default().max_errors`. Without this gate, projected
+    // diagnostics silently inflate `parse_output.diagnostics` and
+    // `budget_usage.errors_emitted` past the configured limit (#15092).
+    const MAX_ERRORS: usize = 100;
     let mut added = 0usize;
     for diagnostic in projected {
+        if parse_output.budget_usage.errors_emitted.saturating_add(added) >= MAX_ERRORS {
+            break;
+        }
         if !parse_output.diagnostics.contains(&diagnostic) {
             parse_output.diagnostics.push(diagnostic);
             added = added.saturating_add(1);

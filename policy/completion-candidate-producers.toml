@@ -62,7 +62,7 @@ outcome_owner = "#10230"
 # surface to 6307e3bd... (one non-producer helper plus tests added under the
 # scan roots, zero removals or re-channeling); projection diff is digest-only,
 # `check` passes.
-source_digest = "sha256:6307e3bda319dfd60c3a76534a6754e5633cd60ef96a31d02cab47034977764a"
+source_digest = "sha256:164a20042e885d79edcaa166e1a402f0df92163b0d8cd5e3c949a70f3f724ac1"
 
 [[delegations]]
 module = "dancer2"

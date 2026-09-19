@@ -93,6 +93,7 @@ use patterns::{
     prompt_re, regex_mutation_re, stack_frame_re, warning_re,
 };
 use safe_eval::validate_safe_expression;
+pub use sync_utils::{DapMessageWithEpoch, DrainEpoch};
 use sync_utils::{EventSender, lock_or_recover};
 
 #[derive(Debug, Default)]
@@ -141,7 +142,11 @@ pub struct DebugAdapter {
     /// A replacement child whose cleanup was not confirmed; retained so a
     /// later terminal cleanup can retry it instead of losing ownership.
     rejected_child: Arc<Mutex<Option<Child>>>,
-    /// Attached process ID for PID-based attach mode
+    /// Legacy signal-control state, dead for production attach requests.
+    /// Only the test/test-helpers seed can populate this field; retained readers
+    /// characterize legacy cleanup and signal failure, not supported PID attach.
+    /// Removal owner: #8109; retention expires 2026-10-13. Real native attach
+    /// requires #6684's transport/session proof rather than reviving this state.
     attached_pid: Arc<Mutex<Option<u32>>>,
     /// TCP attach session (for connecting to running debugger)
     tcp_session: Arc<Mutex<Option<TcpAttachSession>>>,
@@ -317,7 +322,7 @@ impl DebugAdapter {
     /// sender will fail to compile since `SyncSender` and `Sender` are distinct
     /// types.  Use `sync_channel(EVENT_QUEUE_CAPACITY)` or any capacity large
     /// enough for the test's event volume.
-    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessage>) {
+    pub fn set_event_sender(&mut self, sender: SyncSender<DapMessageWithEpoch>) {
         self.event_sender = Some(EventSender::new(sender));
     }
 
@@ -696,12 +701,22 @@ impl DebugAdapter {
             // residue that pushed every later response through the full
             // timeout; a refused or dropped dispatch rolls its reservation
             // back below.
-            self.event_drain.enqueue(1);
+            //
+            // Reservation is per-epoch (#15725): when the calling thread is
+            // the worker thread inside a request handler invocation, the
+            // thread-local `DRAIN_EPOCH` is set and the reservation lands on
+            // the request-scoped latch. Outside that context — background
+            // readers, the forwarder, tests — the cell is unset and we fall
+            // back to `DrainEpoch::Global`, which is preserved for backward
+            // compatibility but not waited on by the per-request response
+            // barrier.
+            let drain_epoch = crate::debug_adapter::sync_utils::current_drain_epoch();
+            self.event_drain.enqueue_at(drain_epoch, 1);
             if !matches!(
                 sender.send_event(&self.seq, event, body),
                 crate::debug_adapter::sync_utils::EventDispatchResult::Sent
             ) {
-                self.event_drain.complete(1);
+                self.event_drain.complete_at(drain_epoch, 1);
             }
         }
     }
@@ -1007,33 +1022,41 @@ impl DebugAdapter {
     /// Only for use in tests; not part of the public API contract.
     #[cfg(any(test, feature = "test-helpers"))]
     pub fn seed_running_session_for_test(&self) {
+        let _ = self.seed_running_session_for_test_required();
+    }
+
+    /// Seed a minimal running session and report setup failure to a proof that
+    /// requires the session-preservation subject to execute.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn seed_running_session_for_test_required(&self) -> Result<(), String> {
         use crate::debug_adapter::session::{DebugSession, DebugState, ResumeMode};
         use crate::debug_adapter::variable_cache::VariableCache;
-        if let Ok(child) = std::process::Command::new("perl")
+        let child = std::process::Command::new("perl")
             .arg("-e")
             .arg("1")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
-            && let Ok(mut guard) = self.session.lock()
-        {
-            *guard = Some(DebugSession {
-                process: child,
-                state: DebugState::Running,
-                stack_frames: vec![],
-                stack_frame_arguments: HashMap::new(),
-                variable_cache: VariableCache::default(),
-                thread_id: 1,
-                debuggee_cwd: std::path::PathBuf::from("."),
-                last_resume_mode: ResumeMode::Continue,
-                initial_stop_pending: false,
-                entry_stop_pending: false,
-                stopped_generation: 0,
-                pending_auto_continued_stop: false,
-                module_generation: RuntimeModuleGenerationClock::new(),
-            });
-        }
+            .map_err(|error| format!("could not seed perl session: {error}"))?;
+        let mut guard =
+            self.session.lock().map_err(|_| "could not lock session while seeding".to_string())?;
+        *guard = Some(DebugSession {
+            process: child,
+            state: DebugState::Running,
+            stack_frames: vec![],
+            stack_frame_arguments: HashMap::new(),
+            variable_cache: VariableCache::default(),
+            thread_id: 1,
+            debuggee_cwd: std::path::PathBuf::from("."),
+            last_resume_mode: ResumeMode::Continue,
+            entry_stop_pending: false,
+            initial_stop_pending: false,
+            stopped_generation: 0,
+            pending_auto_continued_stop: false,
+            module_generation: RuntimeModuleGenerationClock::new(),
+        });
+        Ok(())
     }
 
     /// Seed `attached_pid` with the given PID for testing.
@@ -1064,8 +1087,8 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
-            initial_stop_pending: false,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
             pending_auto_continued_stop: false,
             module_generation: RuntimeModuleGenerationClock::new(),
@@ -1174,8 +1197,8 @@ impl DebugAdapter {
             thread_id: 1,
             debuggee_cwd: std::path::PathBuf::from("."),
             last_resume_mode: ResumeMode::Unknown,
-            initial_stop_pending: false,
             entry_stop_pending: false,
+            initial_stop_pending: false,
             stopped_generation: 0,
             pending_auto_continued_stop: false,
             module_generation: RuntimeModuleGenerationClock::new(),
@@ -2141,27 +2164,216 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_attach_process_id_mode() -> Result<(), Box<dyn std::error::Error>> {
-        let mut adapter = DebugAdapter::new();
-        // #4638: use current process PID so verify_attach_target succeeds.
-        let pid = std::process::id();
-        let args = json!({
-            "processId": pid
-        });
-        let response = adapter.handle_request(1, "attach", Some(args));
+    fn test_attach_process_id_mode_is_refused_fail_closed() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // #8109: processId attach must be refused before any target inspection,
+        // session mutation, signal, or stopped/entry event — process existence
+        // plus signal control is not a stopped debugger session.
+        let assert_refused = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
+            match response {
+                DapMessage::Response { success, command, body, message, .. } => {
+                    if success || command != "attach" || body.is_some() {
+                        return Err("processId attach was not refused cleanly".into());
+                    }
+                    let msg = message.ok_or("Expected message")?;
+                    if !msg.contains("not supported")
+                        || !msg.contains("host")
+                        || !msg.contains("port")
+                    {
+                        return Err(format!("unexpected refusal message: {msg}").into());
+                    }
+                    Ok(())
+                }
+                _ => return Err("Expected response".into()),
+            }
+        };
+        let assert_invalid = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
+            match response {
+                DapMessage::Response { success, command, body, message, .. } => {
+                    if success || command != "attach" || body.is_some() {
+                        return Err("invalid processId was not refused cleanly".into());
+                    }
+                    let msg = message.ok_or("Expected invalid processId message")?;
+                    if !msg.contains("Invalid processId") {
+                        return Err(format!("unexpected invalid-input message: {msg}").into());
+                    }
+                    Ok(())
+                }
+                _ => return Err("Expected response".into()),
+            }
+        };
+        let assert_ambiguous = |response: DapMessage| -> Result<(), Box<dyn std::error::Error>> {
+            match response {
+                DapMessage::Response { success, command, body, message, .. } => {
+                    if success || command != "attach" || body.is_some() {
+                        return Err("ambiguous attach was not refused cleanly".into());
+                    }
+                    let msg = message.ok_or("Expected ambiguous attach message")?;
+                    if !msg.contains("Ambiguous attach") {
+                        return Err(format!("unexpected ambiguity message: {msg}").into());
+                    }
+                    Ok(())
+                }
+                _ => Err("Expected response".into()),
+            }
+        };
 
+        let mut adapter = DebugAdapter::new();
+
+        // Numeric processId — the previously "successful" shape.
+        let args = json!({ "processId": std::process::id() });
+        assert_refused(adapter.handle_request(1, "attach", Some(args)))?;
+
+        // stopOnEntry must not change the disposition (no synthetic entry event).
+        let args = json!({ "processId": std::process::id(), "stopOnEntry": true });
+        assert_refused(adapter.handle_request(2, "attach", Some(args)))?;
+
+        // Malformed processId is rejected before the TCP branch.
+        let args = json!({ "processId": "not-a-number" });
+        assert_invalid(adapter.handle_request(3, "attach", Some(args)))?;
+
+        // A refused PID attach must not disturb an existing active session:
+        // no generation bump, no state clear. This proof is not allowed to
+        // silently skip when the Perl session fixture cannot be seeded.
+        adapter.seed_running_session_for_test_required().map_err(std::io::Error::other)?;
+        let before_generation = adapter.current_session_generation();
+        let before_pid = {
+            let session = lock_or_recover(&adapter.session, "test.attach_refusal_before_session");
+            session
+                .as_ref()
+                .map(|session| session.process.id())
+                .ok_or("seeded session was not installed")?
+        };
+        let args = json!({ "processId": std::process::id() });
+        assert_refused(adapter.handle_request(4, "attach", Some(args)))?;
+        let after_valid_generation = adapter.current_session_generation();
+        let after_valid_pid = {
+            let session =
+                lock_or_recover(&adapter.session, "test.attach_refusal_after_valid_session");
+            session
+                .as_ref()
+                .map(|session| session.process.id())
+                .ok_or("valid refusal cleared the active session")?
+        };
+        if after_valid_generation != before_generation {
+            return Err("valid refusal changed session generation".into());
+        }
+        if after_valid_pid != before_pid {
+            return Err("valid refusal replaced the active process".into());
+        }
+
+        let args = json!({ "processId": "not-a-number" });
+        assert_invalid(adapter.handle_request(5, "attach", Some(args)))?;
+        let after_invalid_generation = adapter.current_session_generation();
+        let after_invalid_pid = {
+            let session =
+                lock_or_recover(&adapter.session, "test.attach_refusal_after_invalid_session");
+            session
+                .as_ref()
+                .map(|session| session.process.id())
+                .ok_or("invalid refusal cleared the active session")?
+        };
+        if after_invalid_generation != before_generation {
+            return Err("invalid refusal changed session generation".into());
+        }
+        if after_invalid_pid != before_pid {
+            return Err("invalid refusal replaced the active process".into());
+        }
+
+        let args = json!({
+            "processId": std::process::id(),
+            "host": "127.0.0.1",
+            "port": 13603
+        });
+        assert_ambiguous(adapter.handle_request(6, "attach", Some(args)))?;
+        if adapter.current_session_generation() != before_generation {
+            return Err("ambiguous refusal changed session generation".into());
+        }
+        let args = json!({
+            "processId": "not-a-number",
+            "host": "127.0.0.1",
+            "port": 13603
+        });
+        assert_invalid(adapter.handle_request(7, "attach", Some(args)))?;
+        if adapter.current_session_generation() != before_generation {
+            return Err("malformed mixed refusal changed session generation".into());
+        }
+        let after_mixed_pid = {
+            let session =
+                lock_or_recover(&adapter.session, "test.attach_refusal_after_mixed_session");
+            session
+                .as_ref()
+                .map(|session| session.process.id())
+                .ok_or("mixed refusal cleared the active session")?
+        };
+        if after_mixed_pid != before_pid {
+            return Err("mixed refusal replaced the active process".into());
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_attach_process_id_refusal_emits_no_events() -> Result<(), Box<dyn std::error::Error>> {
+        // The refusal path must be observable as event-silent: with an event
+        // channel installed, no stopped/entry/thread/process/terminal event may
+        // be emitted for a refused processId attach.
+        use std::sync::mpsc::sync_channel;
+        let mut adapter = DebugAdapter::new();
+        let (tx, rx) = sync_channel::<super::sync_utils::DapMessageWithEpoch>(64);
+        // Tests are a child module of `debug_adapter`, so the private field is
+        // directly reachable; no production setter is needed.
+        adapter.event_sender = Some(EventSender::new(tx));
+
+        let args = json!({ "processId": std::process::id(), "stopOnEntry": true });
+        let response = adapter.handle_request(1, "attach", Some(args));
         match response {
-            DapMessage::Response { success, command, body, message, .. } => {
-                assert!(success);
-                assert_eq!(command, "attach");
-                assert!(body.is_some());
-                let body = body.ok_or("Expected body")?;
-                assert_eq!(body.get("processId").and_then(|v| v.as_u64()), Some(pid as u64));
-                assert!(message.is_some());
-                let msg = message.ok_or("Expected message")?;
-                assert!(msg.contains("signal-control mode"));
+            DapMessage::Response { success, .. } => {
+                if success {
+                    return Err("processId attach must be refused (#8109)".into());
+                }
             }
             _ => return Err("Expected response".into()),
+        }
+
+        // handle_request is synchronous, so any (forbidden) event emission
+        // would already be queued in the channel by the time it returns;
+        // require the channel to be empty without sleeping.
+        match rx.try_recv() {
+            Ok(event) => {
+                return Err(format!("refused processId attach emitted an event: {event:?}").into());
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err("event channel disconnected during attach refusal".into());
+            }
+        }
+        for (seq, args, expected) in [
+            (
+                2,
+                json!({ "processId": std::process::id(), "host": "127.0.0.1", "port": 13603 }),
+                "Ambiguous attach",
+            ),
+            (
+                3,
+                json!({ "processId": "not-a-number", "host": "127.0.0.1", "port": 13603 }),
+                "Invalid processId",
+            ),
+        ] {
+            let response = adapter.handle_request(seq, "attach", Some(args));
+            match response {
+                DapMessage::Response { success, message, .. } => {
+                    if success || !message.is_some_and(|message| message.contains(expected)) {
+                        return Err(
+                            format!("unexpected mixed attach refusal for {expected}").into()
+                        );
+                    }
+                }
+                _ => return Err("Expected response".into()),
+            }
+            if let Ok(event) = rx.try_recv() {
+                return Err(format!("mixed attach refusal emitted an event: {event:?}").into());
+            }
         }
         Ok(())
     }
@@ -2949,6 +3161,16 @@ print "result: $final\n";
     }
 
     #[test]
+    fn test_context_re_windows_drive_path_with_spaces() -> Result<(), String> {
+        let result = apply_context_re(r"main::(C:\Program Files\Perl\file.pl:7):");
+        let expected = Some((r"C:\Program Files\Perl\file.pl".to_string(), "7".to_string()));
+        if result != expected {
+            return Err(format!("Windows spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_context_re_unc_path() {
         // UNC path (Windows network share).
         let result = apply_context_re(r"main::(\\server\share\file.pl:5):");
@@ -2982,10 +3204,94 @@ print "result: $final\n";
     }
 
     #[test]
-    fn test_context_re_no_match_path_with_spaces() {
-        // Paths with spaces do not match — the character class excludes \s.
+    fn test_context_re_path_with_spaces() -> Result<(), String> {
+        // Spaces are valid in Unix and Windows paths and must remain part of the
+        // source location rather than preventing the initial frame from forming.
         let result = apply_context_re("main::(/path with spaces/file.pl:5):");
-        assert!(result.is_none(), "paths with spaces should not match");
+        let expected = Some(("/path with spaces/file.pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("spaced path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_path_with_spaces_and_parentheses() -> Result<(), String> {
+        let result = apply_context_re("main::(/path with spaces (ctx)/file (name).pl:5):");
+        let expected =
+            Some(("/path with spaces (ctx)/file (name).pl".to_string(), "5".to_string()));
+        if result != expected {
+            return Err(format!("parenthesized path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_accepts_perl_source_statement_suffix() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/script.pl:4):\tif ($x =~ /:99)/) {")
+            .ok_or("perl source statement suffix was not accepted")?;
+        let expected = ("/tmp/script.pl".to_string(), "4".to_string());
+        if result != expected {
+            return Err(format!("source suffix parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_path_with_earlier_digit_colon_parenthesis() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/a:12)/file.pl:3):");
+        let expected = Some(("/tmp/a:12)/file.pl".to_string(), "3".to_string()));
+        if result != expected {
+            return Err(format!("digit-colon path parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_source_suffix_uses_last_delimiter() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/a:12): b.pl:3):\tmy $entry = 1;")
+            .ok_or("context with source suffix did not match")?;
+        let expected = ("/tmp/a:12): b.pl".to_string(), "3".to_string());
+        if result != expected {
+            return Err(format!("source suffix parsed as {result:?}; expected {expected:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_rejects_unmarked_prompt_text() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/file.pl:3): text :99) text");
+        if result.is_some() {
+            return Err(format!("unmarked prompt text was accepted as {result:?}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_preserves_legacy_main_fallback_shapes() -> Result<(), String> {
+        let cases = [
+            ("main::(/tmp/file.pl):3:", "/tmp/file.pl"),
+            ("main::/tmp/file.pl:3:", "/tmp/file.pl"),
+        ];
+        for (input, expected_file) in cases {
+            let result = apply_context_re(input);
+            let expected = Some((expected_file.to_string(), "3".to_string()));
+            if result != expected {
+                return Err(format!(
+                    "legacy context {input:?} parsed as {result:?}; expected {expected:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_context_re_rejects_malformed_line_delimiter() -> Result<(), String> {
+        let result = apply_context_re("main::(/tmp/file.pl:3x):");
+        if result.is_some() {
+            return Err(format!("malformed line delimiter was accepted as {result:?}"));
+        }
+        Ok(())
     }
 
     #[test]

@@ -846,7 +846,7 @@ mod tests {
         // then one breakpoint changed event per affected pending record.
         let mut seen = Vec::new();
         while let Ok(message) = receiver.try_recv() {
-            if let DapMessage::Event { event, body, .. } = message {
+            if let (DapMessage::Event { event, body, .. }, _) = message {
                 seen.push((event, body));
             }
         }
@@ -918,7 +918,7 @@ mod tests {
         let (frames, _, _) = session_state_snapshot(&adapter);
         assert_eq!(frames, 0, "old frames cannot survive a possibly applied reload");
         let invalidated = receiver.try_recv().ok().and_then(|message| match message {
-            DapMessage::Event { event, .. } => Some(event),
+            (DapMessage::Event { event, .. }, _) => Some(event),
             _ => None,
         });
         assert_eq!(invalidated.as_deref(), Some("invalidated"));
@@ -994,12 +994,13 @@ mod tests {
         Ok(())
     }
 
-    /// FC-PID-ATTACH-STALE-RELOAD (#10102, R03): a successful PID attach
-    /// is a replacement session, so it must reset the reload route like
-    /// the launch/TCP paths — prior epoch, negotiation, subjects, and
-    /// operation identities never survive the new debuggee.
+    /// FC-PID-ATTACH-STALE-RELOAD (#10102, R03) under the #8109 fail-closed
+    /// contract: a processId attach is refused before any target inspection
+    /// or session mutation, so it must not reset the reload route — prior
+    /// epoch, negotiation, subjects, and operation identities survive the
+    /// refusal unchanged.
     #[test]
-    fn pid_attach_resets_reload_route_identities() -> TestResult {
+    fn pid_attach_refusal_preserves_reload_route_identities() -> TestResult {
         let mut adapter = DebugAdapter::new();
         adapter.enable_loaded_module_reload_preview_profile(true);
         adapter.declare_loaded_module_reload_client_for_test(&[1])?;
@@ -1013,8 +1014,8 @@ mod tests {
         );
         let old_epoch = adapter.loaded_module_reload_epoch_for_test();
 
-        // Attaching to this test process always verifies: the target
-        // exists and is signalable by definition.
+        // #8109: a syntactically valid processId is refused before any
+        // session replacement, reload-epoch advance, or event emission.
         let attach = adapter.handle_request(
             2,
             "attach",
@@ -1023,19 +1024,19 @@ mod tests {
         let DapMessage::Response { success, .. } = attach else {
             return Err("attach must answer with a response".into());
         };
-        assert!(success, "attaching to the test's own process must succeed");
+        assert!(!success, "processId attach must be refused fail-closed (#8109)");
 
         assert_eq!(
             adapter.loaded_module_reload_epoch_for_test(),
-            old_epoch + 1,
-            "PID attach must advance the reload epoch"
+            old_epoch,
+            "refused PID attach must not advance the reload epoch"
         );
-        let unnegotiated =
+        let still_negotiated =
             adapter.handle_request(3, LOADED_MODULE_RELOAD_REQUEST, Some(request(4, old_epoch)));
-        assert_eq!(
-            rejection_code(&unnegotiated),
+        assert_ne!(
+            rejection_code(&still_negotiated),
             "family_not_negotiated",
-            "prior negotiation and subjects never survive a PID attach"
+            "prior negotiation and subjects must survive a refused PID attach"
         );
         Ok(())
     }

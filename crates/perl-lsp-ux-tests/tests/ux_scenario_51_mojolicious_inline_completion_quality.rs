@@ -161,7 +161,10 @@ fn wait_for_inline_registration(harness: &UxHarness) -> bool {
 
 fn probe_module_inline_completion(harness: &UxHarness) -> Result<InlineModuleProbeReport> {
     let (line, character) = position_after(MODULE_IMPORT_PROBE_SOURCE, MODULE_MARKER)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // The quality budget must tolerate analysis lag on cold CI runners:
+    // post-diagnostics, completion facts can land after the previous 5s
+    // window closed (observed as a one-probe zero on a refreshed-base run).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let items = loop {
         let items = harness.inline_completion_with_trigger_kind(
             MODULE_IMPORT_PROBE_PATH,
@@ -397,7 +400,12 @@ fn scenario_51_mojolicious_inline_completion_quality_receipt() {
             open_all_fixture_files(&harness, &fixture_files)?;
             harness.open_file(MODULE_IMPORT_PROBE_PATH, MODULE_IMPORT_PROBE_SOURCE)?;
             harness.open_file(HARD_ZONE_PROBE_PATH, HARD_ZONE_PROBE_SOURCE)?;
-            std::thread::sleep(Duration::from_millis(500));
+            // Synchronize on the server's own analysis-readiness signal instead of a
+            // fixed sleep: on a cold CI runner the sleep let completion queries outrun
+            // the first analysis of the just-opened document and starve the semantic
+            // context (#15870 family).
+            let _ = harness.wait_for_diagnostics(MODULE_IMPORT_PROBE_PATH, Duration::from_secs(30));
+            let _ = harness.wait_for_diagnostics(HARD_ZONE_PROBE_PATH, Duration::from_secs(30));
 
             recorder.mark_request_start("dynamic_inline_registration");
             let dynamic_registration_seen = wait_for_inline_registration(&harness);

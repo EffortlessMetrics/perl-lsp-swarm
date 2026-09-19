@@ -5,11 +5,56 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 WRAPPER = Path(__file__).with_name("verify-staged-binaries.sh")
+
+
+def bash_binary() -> str:
+    """Resolve the bash that can actually run this POSIX adapter oracle.
+
+    CreateProcess resolves the bare name `bash` against System32 before PATH,
+    so on a Windows host with WSL installed the suite silently ran under
+    Linux/WSL bash, where native `F:/...` paths do not exist — every case
+    failed 127 while `shutil.which("bash")` pointed at the Git/MSYS bash the
+    suite was written for (#15401). Prefer the PATH bash explicitly, then the
+    standard Git-for-Windows install locations for hosts where bash is not on
+    PATH at all; POSIX hosts keep the bare name.
+    """
+    if sys.platform != "win32":
+        return "bash"
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        # PATH entries may carry surrounding quotes when they contain `;` or
+        # spaces; a quoted entry would never match an existing file as-is.
+        stripped = entry.strip().strip('"')
+        if "system32" in stripped.lower():
+            continue
+        candidate = Path(stripped) / "bash.exe"
+        if candidate.is_file():
+            return str(candidate)
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    for candidate in (
+        Path(program_files) / "Git" / "bin" / "bash.exe",
+        Path(program_files) / "Git" / "usr" / "bin" / "bash.exe",
+        Path(r"C:\Program Files (x86)\Git") / "usr" / "bin" / "bash.exe",
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return "bash"
+
+
+def bash_path(path: Path) -> str:
+    """Render `path` so bash resolves it on every host.
+
+    Windows spawns bash with native paths; backslashes inside the argument are
+    escape characters to bash, so `F:\\code\\x.sh` became
+    `F:codeRust2x.sh` (exit 127) before the forward-slash form was used
+    (#15401). POSIX hosts are unaffected by `as_posix`.
+    """
+    return path.as_posix()
 
 
 class VerifyStagedBinariesAdapterTests(unittest.TestCase):
@@ -23,17 +68,17 @@ class VerifyStagedBinariesAdapterTests(unittest.TestCase):
                 "python_args=\"$*\"\n"
                 "printf '%s' \"$python_args\" | "
                 "python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))' "
-                f"> {capture!s}\n",
+                f"> {capture.as_posix()}\n",
                 encoding="utf-8",
             )
             fake_python.chmod(0o755)
             environment = os.environ.copy()
-            environment["PERL_LSP_PYTHON"] = str(fake_python)
+            environment["PERL_LSP_PYTHON"] = fake_python.as_posix()
 
             completed = subprocess.run(
                 [
-                    "bash",
-                    str(WRAPPER),
+                    bash_binary(),
+                    bash_path(WRAPPER),
                     "--server",
                     "/stage/perllsp",
                     "--dap",
@@ -80,17 +125,17 @@ class VerifyStagedBinariesAdapterTests(unittest.TestCase):
                 "python_args=\"$*\"\n"
                 "printf '%s' \"$python_args\" | "
                 "python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))' "
-                f"> {capture!s}\n",
+                f"> {capture.as_posix()}\n",
                 encoding="utf-8",
             )
             fake_python.chmod(0o755)
             environment = os.environ.copy()
-            environment["PERL_LSP_PYTHON"] = str(fake_python)
+            environment["PERL_LSP_PYTHON"] = fake_python.as_posix()
 
             completed = subprocess.run(
                 [
-                    "bash",
-                    str(WRAPPER),
+                    bash_binary(),
+                    bash_path(WRAPPER),
                     "--server",
                     "/stage/perllsp",
                     "--expected-version",
@@ -113,7 +158,7 @@ class VerifyStagedBinariesAdapterTests(unittest.TestCase):
 
     def test_missing_required_option_exits_with_usage_before_verifier(self) -> None:
         completed = subprocess.run(
-            ["bash", str(WRAPPER), "--server", "/stage/perllsp"],
+            [bash_binary(), bash_path(WRAPPER), "--server", "/stage/perllsp"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
@@ -124,7 +169,7 @@ class VerifyStagedBinariesAdapterTests(unittest.TestCase):
 
     def test_unknown_positional_argument_is_rejected(self) -> None:
         completed = subprocess.run(
-            ["bash", str(WRAPPER), "server", "version", "target", "receipt"],
+            [bash_binary(), bash_path(WRAPPER), "server", "version", "target", "receipt"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
