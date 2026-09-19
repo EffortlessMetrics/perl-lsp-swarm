@@ -288,7 +288,7 @@ owner_issue = 7192
 removal_condition = "Parity lanes retire with the frozen compatibility proof (#7192)."
 allowed_to_remain = true
 note = "Runs the legacy parity suites; proof wiring, not a readiness caller."
-line_hashes = ["b9a21356bc6622c50f9b1dccc842b554c3fa11cbff4703d2071fa35145cb48f2"]
+line_hashes = ["75dd229277b93ddc4adda5c37209cc026a5f25204c02bd74047ebe4d68aed246"]
 
 [[entry]]
 path = ".spec/11246-clippy-map-err-ignore-boundaries/activation-plan.md"
@@ -388,7 +388,7 @@ owner_issue = 4745
 removal_condition = "None; authority rows for the native catalog and its fixture trees (#4745/#7170)."
 allowed_to_remain = true
 note = "Non-Rust authority rows for the real kwalitee domain."
-line_hashes = ["4ce56ea6e0dee371f71a4ca693549bb254ba901051076daf0679f72338bedfc5", "a0b74d81a97d128dfe1ef77b691ab00e4070d664a37abdbce6c7c7d74fc312cc"]
+line_hashes = ["f387d6cc05e36a34b958e9ba12589a4398ecfc76160d1732eddabf85eff6d3ee", "7d1b5aadf71a289c182d4c1cdf28b2e422f1a1cf20aa7b8d2f295b68f495ce13"]
 
 [[entry]]
 path = "xtask/src/main.rs"
@@ -398,7 +398,7 @@ owner_issue = 8425
 removal_condition = "The legacy command becomes a delegating alias under #8425 and is removed by #7192 once active callers reach zero."
 allowed_to_remain = true
 note = "The active command surface this inventory tracks to zero."
-line_hashes = ["0d3475a9b2381a41d0c1026b408bea63a5a71548488a576db965de0d8da2b744", "14a8714a1c825a25daf9d41db4ba7ee56e93bd3f17f61f7f406069504af01c0c", "15897277c702142e53e536f4b010f7602fc0babbf7c1b58753288bf0ffbe1759", "15897277c702142e53e536f4b010f7602fc0babbf7c1b58753288bf0ffbe1759", "20910a2577b57f5a1c9a2a4120e09354fffb927a3085a307d25237a3e83262e7", "315dabed44ce8d1be352a4043bafaa4cb7df77bbb0454f924cc44fd6582ca4be", "315dabed44ce8d1be352a4043bafaa4cb7df77bbb0454f924cc44fd6582ca4be", "46929ee4af55b7738cdb099a74a7e956b169457c3b566a191a83687d08900fb8", "46929ee4af55b7738cdb099a74a7e956b169457c3b566a191a83687d08900fb8", "4a917ea4cca95223ee3a3926454d5a5c041c760787494325151630a9cc4f2eb4", "4ed7ef5dfcd18876b754053d3e4ea236b3ee4dd5dd0e65c8f33cd485f9bcb78c", "4ed7ef5dfcd18876b754053d3e4ea236b3ee4dd5dd0e65c8f33cd485f9bcb78c", "660803bbf3f47e42866e246376106278f19cb4b6fb3b4e2ed7715adf79810d6f", "796ca8afce888ac6faff496ef3719dd91f32f0b926ece6865e4a5a73d7093693", "91a33756fdcb801d21499a29247cef541ec33ff64fb8d698a483ceb45b6aeadf", "a7b747e6eb138e6197b5a07a46d891383e845641239656f31902a91c95f23cd8", "bf952cf35840f606a11c90f9321c78ed0a5b038d8aa2a8c5b1a37776fe9c3321", "ceb457f34fd8b8213a35e0a65da802f5efea054807c2a72e50616546c39ad9b2", "d02972c4cb85d63d24715328a65ee1fb4e1c60f991e421e3e1e89437f9e16765"]
+line_hashes = ["ceb457f34fd8b8213a35e0a65da802f5efea054807c2a72e50616546c39ad9b2", "872901c9f48077ca692fcb7f57754f659c207cb24468adce6f9984f3bd1d0840", "872901c9f48077ca692fcb7f57754f659c207cb24468adce6f9984f3bd1d0840", "b6ac26112cef129017d1c5ddbf82b78da1a239cd40889d2871f51a060534922d", "e994b0bc068dc2ed67104ba25696aac4a1e80ac57087e5390d76ec435f6f7857", "2d58413e7f6527bb1c6d99b01cf491460eaa118a91e81ea6f207a263e390ca23", "5ad3e14abc26add2783a9ef8c36c4b80a117a2d7b11d9dfc55868515d1957777", "5ad3e14abc26add2783a9ef8c36c4b80a117a2d7b11d9dfc55868515d1957777", "d8a74a458ac0032be7926959732b579101f5f029af8434f025f9caf1a82ea76e", "d8a74a458ac0032be7926959732b579101f5f029af8434f025f9caf1a82ea76e", "c1d5a9407c1ec40d9be20cee1d6beceb9ac4e4469b757cc66d4f5d1a2c2c7d78", "6433d8c1b40d340e9ec1e448b14309c6b7af548601a9855e781183763534c99c", "f7a21b8445b9ea593ddc7f84d420c668e44483f13e9e4adb4bcaeedc62758a47", "a08b3274f1913acda7eef0b25310f7746ee2a9232fd879e4352f3649834204e4", "7ff31ed4bf8a0272eb8496082b5ae7bedc95b76cad6185bf048f97ea170030cc", "2ccf81746c40c6c2e1fb68c12906fabbc525643eb0b5de9d87dae3ddfda05911", "c9444c87713a5c1ce8afdf87bbcd3517802bc8dc130db46a72d5ccc6329797c5", "228ed43ebf5db9da248772609ef5c52dd95b7594b68c116e1a7a9384c61f1cc3", "228ed43ebf5db9da248772609ef5c52dd95b7594b68c116e1a7a9384c61f1cc3"]
 
 [[entry]]
 path = "xtask/src/tasks/kwalitee_namespace_inventory.rs"
@@ -418,7 +418,7 @@ owner_issue = 8425
 removal_condition = "The legacy command becomes a delegating alias under #8425 and is removed by #7192 once active callers reach zero."
 allowed_to_remain = true
 note = "The active command surface this inventory tracks to zero."
-line_hashes = ["31931dd4a841331cf37e8506d1bba802af08b519aca580b1aefd4582a8ae43bf"]
+line_hashes = ["bfbc29c188444ffa11281a4d7905d2caa9ac194962832916928c9c0407e8a54e"]
 
 [[entry]]
 path = "xtask/src/tasks/perl_kwalitee.rs"
