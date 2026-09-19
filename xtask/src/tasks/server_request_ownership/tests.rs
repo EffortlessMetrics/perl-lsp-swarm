@@ -13,10 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
-    match crate::utils::project_root() {
-        Ok(root) => root,
-        Err(error) => unreachable!("xtask always resolves a project root: {error}"),
-    }
+    crate::utils::project_root().expect("xtask always resolves a project root")
 }
 
 fn meta() -> Meta {
@@ -461,6 +458,32 @@ fn an_unknown_catalog_row_fails() {
     let mut row = passing_row();
     row.feature_catalog_row = "lsp.invented_row".to_string();
     assert!(rules(vec![row], &agreeing_discovery()).contains(&"catalog-row-unknown"));
+}
+
+#[test]
+fn a_credit_bearing_row_without_a_catalog_join_fails() {
+    let mut row = passing_row();
+    row.feature_catalog_row = "none".to_string();
+    let found = rules(vec![row], &agreeing_discovery());
+    assert!(
+        found.contains(&"catalog-join-required"),
+        "a row claiming credit must name the catalog row that carries it: {found:?}"
+    );
+}
+
+/// The exemption stays available where it is honest: a row that claims no
+/// credit may record `none` rather than inventing a catalog citation.
+#[test]
+fn an_uncataloged_row_may_stay_unproven() {
+    let mut row = passing_row();
+    row.disposition = "not_proven".to_string();
+    row.feature_catalog_row = "none".to_string();
+    row.emitters.clear();
+    row.emission = "not_emitted".to_string();
+    assert!(
+        !rules(vec![row], &agreeing_discovery()).contains(&"catalog-join-required"),
+        "only credit-bearing rows require a catalog join"
+    );
 }
 
 /// The matrix must not define its own vocabulary. Widening the meta allow-list

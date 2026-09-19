@@ -511,6 +511,20 @@ fn check_row(
         }
     }
 
+    // `none` exempts a row from every catalog join above, so it must never
+    // carry credit: a row claiming support or advertisement has to name the
+    // catalog row that carries the claim.
+    if row.feature_catalog_row == "none" && CREDIT_BEARING.contains(&row.disposition.as_str()) {
+        violations.push(Violation::new(
+            "catalog-join-required",
+            &row.id,
+            format!(
+                "`{}` claims disposition `{}` with `feature_catalog_row = \"none\"`; a credit-bearing row must cite its `{}` row and cannot exempt itself from the catalog join",
+                row.id, row.disposition, meta.feature_catalog
+            ),
+        ));
+    }
+
     // ── Protocol baseline ────────────────────────────────────────────────
     // A selected 3.18 surface may never inherit stable-3.17 status. The
     // catalog's spec is authoritative where it exists, so editing only the
