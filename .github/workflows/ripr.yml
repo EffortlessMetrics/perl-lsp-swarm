@@ -498,7 +498,7 @@ jobs:
     runs-on:
       group: em-ci-small
       labels: [self-hosted, linux, x64, em-ci, cx43, rust-small, trusted-pr]
-    timeout-minutes: 75
+    timeout-minutes: 130
     outputs:
       preflight_ok: ${{ steps.preflight.outputs.preflight_ok }}
     env:
