@@ -33,6 +33,17 @@
 #            2 usage error.
 #   audit  : 0 always (lists expired leases + takeover-candidate lines); 2 usage.
 #
+# ── Concurrency ──────────────────────────────────────────────────────────────
+#   acquire is serialized per branch via a sibling <branch>.json.lock flock
+#   covering the entire decision window (existence check → validation →
+#   refusal decision → write → rename). Without it, two concurrent acquires
+#   could both observe "no unexpired lease", both pass the ownership check,
+#   and both write separate temp files; the later `mv -f` silently replaces
+#   the earlier owner's lease, violating the one-editing-owner-per-branch
+#   invariant this substrate exists to uphold (#15871). The lock scope is
+#   bounded to acquire only — verify, release, and audit do not acquire it,
+#   so unrelated branches and unrelated subcommands are not serialized.
+#
 # ── Test seam ────────────────────────────────────────────────────────────────
 #   REVIEW_LEASES_DIR overrides the state directory (default
 #   .ops-perl-lsp/review-leases). scripts/tests/test-review-lease.sh sets it
@@ -118,6 +129,15 @@ case "$SUBCMD" in
         [[ "$PR" == "null" || "$PR" =~ ^[0-9]+$ ]] || die_usage "--pr must be numeric"
         mkdir -p "$LEASES_DIR"
         path="$(lease_path "$BRANCH")"
+        # Per-branch sibling lock file. The kernel releases the flock when
+        # fd 9 closes (process exit or explicit close), so a crashed peer
+        # cannot strand the lock indefinitely. The 30s wait ceiling below
+        # is a belt-and-braces bound on the unusual case of a stuck peer.
+        lock_path="$path.lock"
+        exec 9>"$lock_path"
+        if ! flock -w 30 9; then
+            die_usage "could not acquire flock on $lock_path within 30s (peer acquire still in flight?)"
+        fi
         now="$(now_epoch)"
         if [[ -f "$path" ]]; then
             validate_lease_file "$path"
@@ -125,6 +145,7 @@ case "$SUBCMD" in
             cur_exp="$(lease_field '.expires_at_epoch // 0')"
             if [[ "$now" -lt "$cur_exp" && "$cur_owner" != "$OWNER" ]]; then
                 echo "REFUSE lease on '$BRANCH' is held by '$cur_owner' until $(iso_of_epoch "$cur_exp") — not '$OWNER'" >&2
+                flock -u 9 || true
                 exit 1
             fi
         fi
@@ -141,6 +162,7 @@ case "$SUBCMD" in
               acquired_at:$aiso, expires_at:$eiso, last_heartbeat:$aiso,
               acquired_at_epoch:$aep, expires_at_epoch:$eep}' > "$tmp_path"
         mv -f "$tmp_path" "$path"
+        flock -u 9 || true
         echo "OK lease acquired on '$BRANCH' by '$OWNER' until $expires_iso"
         exit 0
         ;;
