@@ -53,6 +53,10 @@
 | SPP-C24 | An incomplete instrument concludes only `instrument_failure` or `not_proven`; a complete instrument never reports `instrument_failure`. |
 | SPP-C25 | A fresh-process observation paired with a persistence receipt must declare which outcome it followed, and cannot claim visibility the receipt contradicts. |
 | SPP-C26 | This lane performs no platform mutation, proven against the validator's own source. |
+| SPP-C27 | Command lookup is platform-specific: native Windows normalizes an executable extension and matches case-insensitively; POSIX and WSL match the exact file name. |
+| SPP-C28 | The resolved winner and its row in the observed candidate set carry one identity; a recorded digest on that row must agree. |
+| SPP-C29 | A `logout_login` boundary is strictly stronger than a new shell and is only exercised by a `new_login_session`. |
+| SPP-C30 | A current-process environment edit with no durable write cannot certify a visible entry — enforced in the Rust validator **and** the published schema. |
 
 ## §Falsifier map
 
@@ -93,6 +97,23 @@ exercises and to the test that proves it.
   accepted. Every document is `deny_unknown_fields` with closed enums in both
   the Rust types and the published schemas.
 
+## §Schema limitations
+
+JSON Schema 2020-12 cannot relate two string fields, so one contract row is a
+**declared consumer obligation** rather than a published law:
+
+| Row | Why | Who enforces it |
+|---|---|---|
+| SPP-C06 (owned entry lies under the install root) | requires prefix containment between `path_policy.owned_entry.entry_value` and `environment.install_root.path` | the Rust validator; a schema-only consumer **must** perform the check itself |
+
+This is stated in the schema's own `entry_value` description with a
+`NOT SCHEMA-ENFORCED` marker, and pinned by
+`test_install_root_containment_is_a_declared_consumer_obligation`, which asserts
+both that the schema still accepts `plan_invalid_entry_outside_root.json` and
+that the marker is present. If a future schema dialect can express containment,
+that test fails and the fixture moves into `INVALID_PLAN_FIXTURES`. Every other
+contract row is carried by both the Rust validator and the published schemas.
+
 ## §API-Shape
 
 New, additive only. No existing public surface changes.
@@ -110,9 +131,9 @@ New, additive only. No existing public surface changes.
 
 | Layer | Command | Count |
 |---|---|---|
-| Checked validator battery | `cargo test -p xtask --example standalone_path_persistence --locked` | 46 |
-| Schema-only parity harness | `python -m unittest scripts.ci.test_standalone_path_contract_schemas` | 39 |
-| Fixtures | `fixtures/experience/install_path_persistence/` | 26 (17 positive, 9 committed-invalid) |
+| Checked validator battery | `cargo test -p xtask --example standalone_path_persistence --locked` | 52 |
+| Schema-only parity harness | `python -m unittest scripts.ci.test_standalone_path_contract_schemas` | 42 |
+| Fixtures | `fixtures/experience/install_path_persistence/` | 27 (19 positive, 8 committed-invalid) |
 
 The battery includes `every_invalid_fixture_is_valid_once_its_one_violation_is_repaired`,
 which proves each committed invalid fixture is refused for the law it names and

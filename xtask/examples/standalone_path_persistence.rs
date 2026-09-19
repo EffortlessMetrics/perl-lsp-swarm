@@ -643,11 +643,26 @@ pub fn validate_plan(plan: &PathPlan) -> ContractResult<()> {
     let separator = path_separator(&subject.executable_path);
     let file_name =
         subject.executable_path.rsplit(separator).next().unwrap_or(&subject.executable_path);
-    let stem = file_name.strip_suffix(".exe").unwrap_or(file_name);
-    if stem != subject.command_name {
+    // Command lookup is platform-specific: native Windows appends an executable
+    // extension and matches case-insensitively, while POSIX and WSL resolve the
+    // exact byte sequence. Normalizing the same way on every platform would
+    // accept `perllsp.exe` as the POSIX command `perllsp`, which no POSIX lookup
+    // would ever resolve.
+    let names_the_command = match environment.platform {
+        Platform::WindowsNative => {
+            let stem = match file_name.len().checked_sub(4) {
+                Some(cut) if file_name[cut..].eq_ignore_ascii_case(".exe") => &file_name[..cut],
+                _ => file_name,
+            };
+            stem.eq_ignore_ascii_case(&subject.command_name)
+        }
+        Platform::Posix | Platform::Wsl => file_name == subject.command_name,
+    };
+    if !names_the_command {
         return err(format!(
-            "subject.command_name: `{}` does not name the executable `{file_name}`; the command a user types must be the candidate that is looked up",
-            subject.command_name
+            "subject.command_name: `{}` does not name the executable `{file_name}` under `{}` lookup rules; the command a user types must be the candidate that is looked up",
+            subject.command_name,
+            environment.platform.as_str()
         ));
     }
 
@@ -1138,6 +1153,21 @@ pub fn validate_fresh_process(observation: &FreshProcessObservation) -> Contract
                 resolved.path
             ));
         }
+        // One document, one identity for the binary that won: membership by path
+        // alone would let the observed set and the winner disagree about what
+        // that path contains.
+        if let Some(row) =
+            lookup.competing_candidates.iter().find(|candidate| candidate.path == resolved.path)
+            && let Some(row_digest) = row.sha256.as_deref()
+            && row_digest != resolved.sha256
+        {
+            return err(format!(
+                "lookup.resolved.sha256: the winner at `{}` is recorded as {} but the observed candidate set records {} for the same path; one observation carries one identity",
+                resolved.path,
+                &resolved.sha256[..16],
+                &row_digest[..16]
+            ));
+        }
     }
 
     // A path invocation exercises a path, not a lookup.
@@ -1362,6 +1392,18 @@ pub fn validate_fresh_process_against_plan(
             return err(
                 "result: `path_visible_after_documented_new_session` requires the plan to document the new-session mechanism it tested",
             );
+        }
+        // A logout/login boundary is strictly stronger than a new shell: only a
+        // new login session exercises it. A new shell would report success
+        // without ever crossing the boundary the plan selected.
+        FreshProcessResult::PathVisibleAfterDocumentedNewSession
+            if plan.path_policy.new_session_requirement == NewSessionRequirement::LogoutLogin
+                && observation.session.origin != SessionOrigin::NewLoginSession =>
+        {
+            return err(format!(
+                "session.origin: the plan documents a `logout_login` boundary, which only `new_login_session` exercises; `{}` never crossed it",
+                observation.session.origin.as_str()
+            ));
         }
         FreshProcessResult::PackageManagerOwnedPath
             if plan.path_policy.mutation_owner != MutationOwner::PackageManager =>
@@ -1626,7 +1668,7 @@ mod tests {
 
     /// Every persistence receipt and fresh-process observation, with the plan it
     /// binds. Keeping the pairing here is what lets the battery cross-validate.
-    const BOUND_PERSISTENCE: [(&str, &str); 7] = [
+    const BOUND_PERSISTENCE: [(&str, &str); 8] = [
         ("persistence_installer_persisted.json", "plan_posix_installer_user_scope.json"),
         ("persistence_already_visible_no_change.json", "plan_wsl_already_visible.json"),
         ("persistence_conflict_wrong_existing_entry.json", "plan_posix_installer_user_scope.json"),
@@ -1634,6 +1676,7 @@ mod tests {
         ("persistence_instrument_failure.json", "plan_windows_registry_user_path.json"),
         ("persistence_package_manager_owned.json", "plan_package_manager_owned.json"),
         ("persistence_manual_action_required.json", "plan_manual_instruction_only.json"),
+        ("persistence_conflict_user_edited_entry.json", "plan_posix_installer_user_scope.json"),
     ];
 
     const BOUND_OBSERVATIONS: [(&str, &str); 6] = [
@@ -2300,6 +2343,108 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// Issue fixture case: a user-edited managed marker. The installer owns the
+    /// entry, but the user changed it, so it is a conflict to report rather than
+    /// state to silently overwrite.
+    #[test]
+    fn a_user_edited_owned_entry_is_a_conflict_not_an_overwrite() -> Result<()> {
+        let receipt: PersistenceReceipt = parse("persistence_conflict_user_edited_entry.json")?;
+        validate_persistence(&receipt)
+            .map_err(|error| color_eyre::eyre::eyre!("the fixture must validate: {error}"))?;
+        ensure!(!receipt.mutation_performed, "a user-edited owned entry must not be overwritten");
+
+        // The same observation cannot be laundered into a clean outcome.
+        let overwritten: PersistenceReceipt =
+            mutated("persistence_conflict_user_edited_entry.json", |value| {
+                value["result"] = json!("installer_persisted");
+                value["mutation_performed"] = json!(true);
+                value["entry_state"] = json!("added");
+            })?;
+        expect_rejected(
+            validate_persistence(&overwritten),
+            "an observed conflict cannot be reported under",
+        )
+    }
+
+    // ── review findings (PR #16014, Codex) ──────────────────────────────────
+
+    /// Command lookup is platform-specific. A POSIX lookup for `perllsp` cannot
+    /// resolve a file named `perllsp.exe`, so the plan must not accept one.
+    #[test]
+    fn an_exe_suffix_is_not_stripped_under_posix_lookup_rules() -> Result<()> {
+        let plan: ContractResult<PathPlan> =
+            mutated("plan_posix_installer_user_scope.json", |value| {
+                value["subject"]["executable_path"] =
+                    json!("/home/operator/.local/share/perl-lsp/versions/0.18.0/bin/perllsp.exe");
+            });
+        expect_rejected(plan.and_then(|plan| validate_plan(&plan)), "under `posix` lookup rules")
+    }
+
+    /// Native Windows lookup is case-insensitive, so a `.EXE` spelling names the
+    /// same command and must be accepted.
+    #[test]
+    fn windows_lookup_matches_the_command_case_insensitively() -> Result<()> {
+        let plan: PathPlan = mutated("plan_windows_registry_user_path.json", |value| {
+            value["subject"]["executable_path"] = json!(
+                "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\versions\\0.18.0\\bin\\PerlLSP.EXE"
+            );
+        })?;
+        validate_plan(&plan).map_err(|error| {
+            color_eyre::eyre::eyre!("windows lookup is case-insensitive: {error}")
+        })?;
+        Ok(())
+    }
+
+    /// One observation carries one identity for the binary that won.
+    #[test]
+    fn the_winner_and_the_candidate_set_cannot_disagree_about_one_path() -> Result<()> {
+        let observation: FreshProcessObservation =
+            mutated("fresh_wrong_ambient_binary.json", |value| {
+                value["lookup"]["competing_candidates"][1]["sha256"] = json!("a".repeat(64));
+            })?;
+        expect_rejected(
+            validate_fresh_process(&observation),
+            "one observation carries one identity",
+        )
+    }
+
+    /// A logout/login boundary is strictly stronger than a new shell, and only a
+    /// new login session exercises it.
+    #[test]
+    fn a_logout_login_boundary_is_not_proven_by_a_new_shell() -> Result<()> {
+        let plan: PathPlan = parse("plan_windows_registry_user_path.json")?;
+        let digest = digest_of("plan_windows_registry_user_path.json")?;
+        let observation: FreshProcessObservation = mutated(
+            "fresh_visible_after_documented_new_session.json",
+            |value| {
+                value["bound_plan_id"] = json!("path-plan-windows-registry-user");
+                value["bound_plan_sha256"] = json!(digest_of_windows_plan());
+                value["observed_environment"] = json!({
+                    "platform": "windows_native",
+                    "shell_family": "powershell"
+                });
+                value["session"]["origin"] = json!("new_shell_process");
+                value["lookup"]["resolved"] = json!({
+                    "path": "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\versions\\0.18.0\\bin\\perllsp.exe",
+                    "sha256": "e4".to_string() + &"0".repeat(62),
+                    "matches_candidate": true
+                });
+                value["lookup"]["competing_candidates"] = json!([{
+                    "path": "C:\\Users\\operator\\AppData\\Local\\perl-lsp\\versions\\0.18.0\\bin\\perllsp.exe",
+                    "sha256": "e4".to_string() + &"0".repeat(62)
+                }]);
+            },
+        )?;
+        expect_rejected(
+            validate_fresh_process_against_plan(&observation, &plan, &digest),
+            "only `new_login_session` exercises",
+        )
+    }
+
+    fn digest_of_windows_plan() -> String {
+        digest_of("plan_windows_registry_user_path.json").unwrap_or_default()
     }
 
     #[test]

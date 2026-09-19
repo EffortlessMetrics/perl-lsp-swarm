@@ -38,6 +38,7 @@ PERSISTENCE_FIXTURES = [
     "persistence_instrument_failure.json",
     "persistence_package_manager_owned.json",
     "persistence_manual_action_required.json",
+    "persistence_conflict_user_edited_entry.json",
 ]
 FRESH_PROCESS_FIXTURES = [
     "fresh_visible_after_documented_new_session.json",
@@ -570,6 +571,51 @@ class StandalonePathContractSchemaTests(unittest.TestCase):
             document,
             "an incomplete instrument cannot conclude a real outcome",
         )
+
+    # ── review findings (PR #16014, Codex) ──────────────────────────────────
+
+    def test_a_current_process_edit_cannot_certify_visibility(self):
+        """A schema-only consumer must refuse manufactured persistence evidence."""
+        for result, entry_state in (
+            ("already_visible_no_change", "already_present"),
+            ("installer_persisted", "added"),
+        ):
+            with self.subTest(result=result):
+                document = self._persistence()
+                document["result"] = result
+                document["entry_state"] = entry_state
+                document["mutation_performed"] = False
+                document["current_process_env_mutated"] = True
+                self._expect_rejected(
+                    self.persistence_validator,
+                    document,
+                    "a current-process edit with no durable write is not persistence",
+                )
+
+    def test_install_root_containment_is_a_declared_consumer_obligation(self):
+        """SPP-C06 cannot be expressed in JSON Schema, so it is declared, not silent.
+
+        `plan_invalid_entry_outside_root.json` is deliberately absent from
+        INVALID_PLAN_FIXTURES: the schema accepts it and only the Rust validator
+        rejects it. This test pins that gap so it stays a documented consumer
+        obligation rather than becoming an accidental hole — if a future schema
+        can express the containment law, this test fails and should be replaced
+        by adding the fixture to INVALID_PLAN_FIXTURES.
+        """
+        document = _load(FIXTURE_DIR / "plan_invalid_entry_outside_root.json")
+        self._expect_accepted(
+            self.plan_validator,
+            document,
+            "the schema cannot relate entry_value to install_root",
+        )
+        entry_value = _load(PLAN_SCHEMA)["$defs"]["owned_entry"]["properties"]["entry_value"]
+        description = entry_value["oneOf"][0]["description"]
+        self.assertIn(
+            "NOT SCHEMA-ENFORCED",
+            description,
+            "the unenforceable law must be declared to schema-only consumers",
+        )
+        self.assertIn("install_root", description)
 
     def test_unmodelled_fields_and_words_are_refused(self):
         document = self._plan()

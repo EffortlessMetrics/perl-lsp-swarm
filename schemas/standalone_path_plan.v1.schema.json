@@ -629,7 +629,7 @@
                   }
                 }
               ],
-              "description": "One canonical absolute path: posix `/seg`, drive `X:\\seg`, or UNC `\\\\host\\share`. Expansion metacharacters and PATH list separators are refused."
+              "description": "One canonical absolute path: posix `/seg`, drive `X:\\seg`, or UNC `\\\\host\\share`. Expansion metacharacters and PATH list separators are refused. NOT SCHEMA-ENFORCED: this value must also lie under environment.install_root.path, so that PATH is never pointed at a directory the installer does not own. JSON Schema cannot relate two string fields, so a consumer that validates only against this schema MUST perform that containment check itself; the Rust validator enforces it (SPP-C06)."
             },
             {
               "type": "null"
@@ -717,7 +717,8 @@
             }
           }
         }
-      ]
+      ],
+      "$comment": "The install-root containment law (SPP-C06) is intentionally absent here and is carried by the consumer: see entry_value's description."
     }
   }
 }

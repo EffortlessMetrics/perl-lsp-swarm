@@ -21,10 +21,10 @@ Evidence base: `origin/main@75016cda820a`.
    standalone validation per document, cross-binding of each result to its plan
    by id and by digest of the plan's exact bytes, and cross-binding of an
    observation to the persistence receipt it followed.
-3. **Deterministic fixtures.** 26 documents under
+3. **Deterministic fixtures.** 27 documents under
    `fixtures/experience/install_path_persistence/`: five plans spanning POSIX,
-   Windows, WSL, package-manager, and manual-instruction policies; seven
-   persistence receipts; six fresh-process observations; and nine committed
+   Windows, WSL, package-manager, and manual-instruction policies; eight
+   persistence receipts; six fresh-process observations; and eight committed
    invalid documents, each violating exactly one named law.
 4. **Schema-only parity harness.**
    `scripts/ci/test_standalone_path_contract_schemas.py` probes every published
@@ -42,15 +42,15 @@ Evidence base: `origin/main@75016cda820a`.
 for f in context.md acceptance.md checklist.md; do
   [ -f ".spec/11521-standalone-path-persistence/$f" ] || exit 1
 done
-rg -c "SPP-C(0[1-9]|1[0-9]|2[0-6])" .spec/11521-standalone-path-persistence/acceptance.md   # expect >= 26 contract rows
+rg -c "SPP-C(0[1-9]|[12][0-9]|30)" .spec/11521-standalone-path-persistence/acceptance.md    # expect >= 30 contract rows
 rg -c "^\| [0-9]+ \| " .spec/11521-standalone-path-persistence/acceptance.md                # expect exactly 10 falsifier rows
 rg -n "origin/main@75016cda820a" .spec/11521-standalone-path-persistence/checklist.md        # pinned evidence base
 
 cargo fmt -p xtask -- --check
 cargo clippy -p xtask --all-targets --locked -- -D warnings
-cargo test -p xtask --example standalone_path_persistence --locked                          # 46 focused tests
+cargo test -p xtask --example standalone_path_persistence --locked                          # 52 focused tests
 python3 -m venv .venv-schema-harness && .venv-schema-harness/bin/pip install --quiet jsonschema referencing
-.venv-schema-harness/bin/python -m unittest scripts.ci.test_standalone_path_contract_schemas  # 39 schema-law checks
+.venv-schema-harness/bin/python -m unittest scripts.ci.test_standalone_path_contract_schemas  # 42 schema-law checks
 cargo xtask check-file-policy
 cargo xtask changelog check
 ```

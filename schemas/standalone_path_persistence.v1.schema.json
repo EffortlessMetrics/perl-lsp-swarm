@@ -380,6 +380,35 @@
           }
         }
       }
+    },
+    {
+      "$comment": "A current-process environment edit with no durable write is not persistence evidence; schema-only consumers must refuse it exactly as the Rust validator does.",
+      "if": {
+        "properties": {
+          "current_process_env_mutated": {
+            "const": true
+          },
+          "mutation_performed": {
+            "const": false
+          }
+        },
+        "required": [
+          "current_process_env_mutated",
+          "mutation_performed"
+        ]
+      },
+      "then": {
+        "properties": {
+          "result": {
+            "not": {
+              "enum": [
+                "already_visible_no_change",
+                "installer_persisted"
+              ]
+            }
+          }
+        }
+      }
     }
   ]
 }

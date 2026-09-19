@@ -93,6 +93,47 @@ tasks, and because the battery is the deliverable.
   bounded-field redaction; a complete PATH or profile value pasted into a
   "reason" string is exactly the leak the contract forbids.
 
+## Crosswalk to the vocabularies this packet neighbours
+
+This packet introduces finer-grained words than the two landed vocabularies it
+sits beside. Neither is changed here, and nothing on `origin/main` consumes both,
+so there is no present contradiction — but the #7832 adapters will hold both at
+once, and an unstated mapping is how two vocabularies for the same real state
+drift apart. The mapping is therefore stated now rather than inferred later.
+
+`standalone_path_persistence.v1.result` → the landed
+`standalone_install_transition.v1` `path_persistence` dimension
+(`xtask/src/standalone_diagnostics.rs:105`):
+
+| transition word | persistence results that produce it |
+|---|---|
+| `persisted` | `installer_persisted` |
+| `unchanged` | `already_visible_no_change`, `package_manager_owned` |
+| `failed` | `permission_or_lock_failure`, `conflict_or_wrong_existing_entry` |
+| `not_applicable` | `manual_action_required`, `unsupported_scope` |
+| *(no transition word)* | `new_session_required`, `cancelled`, `instrument_failure`, `not_proven` |
+
+The last row is the point: four results have no honest transition word today.
+Collapsing them into `failed` or `not_applicable` would recreate the conflation
+this packet exists to remove, so an adapter must carry the finer result and let
+the transition dimension stay silent rather than round a `not_proven` into a
+verdict.
+
+`standalone_path_plan.v1` `owned_entry.entry_kind` → the landed
+`standalone_owned_state.v1` `role` this packet plans the creation of:
+
+| entry_kind | owned-state role |
+|---|---|
+| `profile_line` | `profile_marker` |
+| `path_d_fragment` | `path_marker` |
+| `registry_user_path` | `registry_marker` |
+| `none` | *(no owned state created)* |
+
+The two schemas deliberately carry no `$ref` to each other: #11470 owns what
+exists and may be removed, this packet owns what may be created and why. The
+names differ because the tenses differ. An adapter that creates an entry under
+this contract records it under #11470's role in the same transaction.
+
 ## Links
 
 - Parent/controller: #7832 — platform adapters follow.
