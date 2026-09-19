@@ -5324,6 +5324,21 @@ enum UxScorecardOutputFormat {
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+    // The clap derive surface of `Commands` is large enough that its builder
+    // frames overflow the 1 MiB Windows main-thread reserve in debug builds
+    // before argument parsing begins. Dispatch on an explicitly sized stack;
+    // the reservation is virtual memory and costs nothing until used.
+    let dispatcher = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(cli_main)
+        .map_err(|error| eyre!("failed to spawn xtask dispatcher thread: {error}"))?;
+    match dispatcher.join() {
+        Ok(result) => result,
+        Err(_) => Err(eyre!("xtask dispatcher thread panicked")),
+    }
+}
+
+fn cli_main() -> Result<()> {
     run_cli(Cli::parse())
 }
 
