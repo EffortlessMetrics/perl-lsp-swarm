@@ -1684,6 +1684,76 @@ fn a_lazy_row_already_on_demand_cannot_claim_a_wave() {
     assert_reports(&errors, "still claims wave E03");
 }
 
+#[test]
+fn a_lazy_row_still_running_after_response_needs_a_wave() {
+    // Work that already runs past the response but targets on-demand execution
+    // still needs a scheduled move: `on_demand` is not satisfied by running
+    // after the response, so waveless laziness must not validate.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let lazy = InitOperationRow {
+        operation_id: "synthetic.lazy",
+        file: POST_RESPONSE_ROOT_FILE,
+        function: "complete_initialization",
+        declared_exposure: &[Exposure::Filesystem],
+        triggers: &[Trigger::FirstUse],
+        current_point: ExecutionPoint::AfterResponse,
+        phase: PhaseDisposition::LazyOnFirstUse,
+        migration_wave: MigrationWave::None,
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(
+        &[pre_response_row(), post_response_row(), lazy],
+        &census,
+        &lifecycle_roots(),
+    );
+    assert_reports(&errors, "with no migration wave");
+}
+
+#[test]
+fn a_removal_row_still_running_after_response_needs_a_wave() {
+    // A terminal removal has no expressible target point, so wherever the work
+    // runs today, a waveless removal row is an unscheduled intention.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let removal = InitOperationRow {
+        operation_id: "synthetic.removal",
+        file: POST_RESPONSE_ROOT_FILE,
+        function: "complete_initialization",
+        declared_exposure: &[Exposure::Filesystem],
+        triggers: &[Trigger::Initialized],
+        current_point: ExecutionPoint::AfterResponse,
+        phase: PhaseDisposition::RemoveFromProductLifecycle,
+        migration_wave: MigrationWave::None,
+        owns_exposure: false,
+        ..baseline_row()
+    };
+
+    let errors = ledger_errors_with_roots(
+        &[pre_response_row(), post_response_row(), removal],
+        &census,
+        &lifecycle_roots(),
+    );
+    assert_reports(&errors, "with no migration wave");
+}
+
+#[test]
+fn a_deferred_row_already_after_response_without_a_wave_is_accepted() {
+    // Negative control for the two rules above: a deferred operation that
+    // already runs at its disposition's target needs no wave, so the rejections
+    // there cannot be produced by the mere absence of a wave.
+    let census = Census::from_sources(&lifecycle_timing_sources());
+    let errors = ledger_errors_with_roots(
+        &[pre_response_row(), post_response_row()],
+        &census,
+        &lifecycle_roots(),
+    );
+    assert!(
+        !errors.iter().any(|error| error.contains("synthetic.post")),
+        "a deferred row already at its target must not need a wave, got: {errors:#?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Structural and citation discipline
 // ---------------------------------------------------------------------------

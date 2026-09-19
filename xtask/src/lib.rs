@@ -4,8 +4,10 @@
 // self-alias keeps one source of truth compilable in both contexts.
 extern crate self as xtask;
 
+pub mod activation;
 pub mod actual_host_receipt;
 pub mod ast_v2_lifecycle_audit;
+pub mod authority_transfer_closeout;
 pub mod branch_deletion_admission;
 pub mod cargo_rustc_wrappers;
 pub mod ci_route_plan;
@@ -17,8 +19,10 @@ pub mod compiler_profile_contract;
 pub mod compiler_profile_initial_rows;
 pub mod compiler_profile_observation;
 pub mod compiler_transformation_contract;
+pub mod compiler_upstream_status;
 pub mod contributor_topology;
 pub mod critic_rule_proof;
+pub mod durable_publish;
 pub mod editor_client_compat;
 pub mod editor_host;
 pub mod emacs_eglot_upstream_patch;
@@ -31,18 +35,25 @@ pub mod file_identity;
 pub mod git_ancestry;
 pub mod import_cleanup_train_manifest;
 pub mod init_environment;
+pub mod install_surface_route_units;
 pub mod lsp_runtime_train_manifest;
 pub mod main_history_event;
 pub mod native_helix_actions;
 pub mod native_neovim_actions;
+pub mod neovim_activation_root_envelope;
 pub mod no_panic_debt;
 pub mod parser_accuracy_legacy_population;
 pub mod publication_drift;
 pub mod release_trust_invariants;
+pub mod routed_result;
 pub mod rust_hygiene;
+pub mod schema_apply;
+pub mod source_authority;
+pub mod stack_increment;
 pub mod utils;
 pub mod vim_host_diagnostics_run;
 pub mod vim_host_freshness_run;
+pub mod vim_host_lifecycle_run;
 pub mod vim_host_recovery_run;
 pub mod vim_host_run;
 pub mod vim_host_save_format_run;
@@ -52,3 +63,7 @@ pub mod vim_lsp_specialized_driver;
 pub mod vim_lsp_subject_refresh;
 pub mod worktree_cleanup;
 pub mod worktree_forensic_recovery;
+pub mod writer_preflight;
+
+#[cfg(test)]
+mod test_support;

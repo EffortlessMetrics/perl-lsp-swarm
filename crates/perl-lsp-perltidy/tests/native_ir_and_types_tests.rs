@@ -232,7 +232,7 @@ fn format_diagnostic_without_range_stores_none() {
 #[test]
 fn format_config_round_trips_through_json() -> Result<(), Box<dyn std::error::Error>> {
     let config = FormatConfig {
-        mode: FormatterMode::Compat,
+        mode: FormatterMode::ExternalLegacy,
         line_width: 80,
         indent_width: 2,
         use_tabs: true,
@@ -246,7 +246,7 @@ fn format_config_round_trips_through_json() -> Result<(), Box<dyn std::error::Er
     let json = serde_json::to_string(&config)?;
     let restored: FormatConfig = serde_json::from_str(&json)?;
 
-    assert_eq!(restored.mode, FormatterMode::Compat);
+    assert_eq!(restored.mode, FormatterMode::ExternalLegacy);
     assert_eq!(restored.line_width, 80);
     assert_eq!(restored.indent_width, 2);
     assert!(restored.use_tabs);

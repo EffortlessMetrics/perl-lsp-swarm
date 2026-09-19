@@ -479,18 +479,26 @@ fn phase_errors(rows: &[InitOperationRow], census: &Census) -> Vec<String> {
             ));
         }
 
-        // A row that belongs elsewhere but still runs before the response must
-        // name the wave that moves it. This is what keeps "defer it later" from
-        // becoming an unowned intention.
-        if row.phase.implies_movement()
-            && row.current_point == ExecutionPoint::BeforeResponse
-            && row.migration_wave == MigrationWave::None
-        {
-            errors.push(format!(
-                "row {} defers to `{}` but still runs before the response with no migration wave",
-                row.operation_id,
-                row.phase.label()
-            ));
+        // A row that belongs elsewhere must name the wave that moves it,
+        // wherever it runs today. This is what keeps "defer it later" from
+        // becoming an unowned intention: pre-response work needs a scheduled
+        // move off the critical path, and work that already runs past the
+        // response still needs a scheduled move to reach a lazier target.
+        if row.phase.implies_movement() && row.migration_wave == MigrationWave::None {
+            let unscheduled = match phase_target_point(row.phase) {
+                Some(target) => target != row.current_point,
+                // `remove_from_product_lifecycle` leaves the lifecycle, so no
+                // execution point can ever satisfy the move.
+                None => true,
+            };
+            if unscheduled {
+                errors.push(format!(
+                    "row {} disposition `{}` still runs `{}` with no migration wave",
+                    row.operation_id,
+                    row.phase.label(),
+                    row.current_point.label()
+                ));
+            }
         }
 
         // Conversely, a terminal disposition must not claim a cutover.

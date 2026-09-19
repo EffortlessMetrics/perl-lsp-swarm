@@ -307,7 +307,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             proposition: "perltidy's presence on PATH is observed as advisory availability for an \
                           explicitly authorized external adapter, never as automatic selection",
             side_effects: &[],
-            declared_exposure: &[Exposure::PathLookup],
+            declared_exposure: &[Exposure::Filesystem, Exposure::PathLookup, Exposure::EnvRead],
             triggers: &[Trigger::Initialize],
             exactly_once: false,
             current_point: ExecutionPoint::BeforeResponse,
@@ -335,7 +335,7 @@ pub fn ledger_rows() -> Vec<InitOperationRow> {
             proposition: "perlcritic's presence on PATH is observed with no current semantic \
                           consumer beyond tracing at this call site",
             side_effects: &[],
-            declared_exposure: &[Exposure::PathLookup],
+            declared_exposure: &[Exposure::Filesystem, Exposure::PathLookup, Exposure::EnvRead],
             triggers: &[Trigger::Initialize],
             exactly_once: false,
             current_point: ExecutionPoint::BeforeResponse,
