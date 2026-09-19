@@ -55,9 +55,10 @@
 //! than fabricated.  This keeps the scorecard honest when running locally
 //! without the optional CI-baseline artifact.
 
+use crate::tasks::build_timing::SCHEMA_VERSION as BUILD_TIMING_RECEIPT_SCHEMA_VERSION;
 use crate::utils::project_root;
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, eyre};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -157,6 +158,10 @@ struct DebtFlakyTest {
 
 #[derive(Debug, Deserialize)]
 struct BuildTimingReceiptFile {
+    /// No serde default: a receipt without the envelope field fails to parse,
+    /// which [`read_dev_loop_durations`] turns into an error (fail-closed,
+    /// #15357).
+    schema_version: u32,
     #[serde(default)]
     measurements: BTreeMap<String, BuildTimingMeasurement>,
 }
@@ -229,7 +234,7 @@ fn collect_release_health(root: &Path, days: u64) -> Result<ReleaseHealthMetrics
     let baseline = read_ci_baseline(root)
         .filter(|file| file.sample_completeness.as_deref() != Some("partial_sample"));
     let version = read_workspace_version(root);
-    let dev_loop_durations = read_dev_loop_durations(root);
+    let dev_loop_durations = read_dev_loop_durations(root)?;
 
     let quarantined =
         ledger.flaky_tests.iter().filter(|t| t.tier.as_deref() == Some("quarantine")).count();
@@ -302,7 +307,12 @@ fn read_workspace_version(root: &Path) -> Option<String> {
 /// Read optional build-timing receipt written by
 /// `cargo xtask build-timing-receipt` and expose a stable subset of
 /// developer-loop metrics.
-fn read_dev_loop_durations(root: &Path) -> BTreeMap<String, Option<f64>> {
+///
+/// A wholly absent receipt degrades to all-`None` (fresh clone). A receipt
+/// that is present but unparseable, or whose `schema_version` differs from
+/// [`BUILD_TIMING_RECEIPT_SCHEMA_VERSION`], is an error: rendering schema
+/// drift as "all measurements missing" would fail open (#15357).
+fn read_dev_loop_durations(root: &Path) -> Result<BTreeMap<String, Option<f64>>> {
     let tracked: BTreeSet<&str> = [
         "clean_build_workspace",
         "incremental_build_providers",
@@ -315,25 +325,28 @@ fn read_dev_loop_durations(root: &Path) -> BTreeMap<String, Option<f64>> {
     let path = root.join("artifacts").join("build-timing-receipt.json");
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(_) => {
-            return tracked.into_iter().map(|k| (k.to_string(), None)).collect();
-        }
+        // Absent receipt is a fresh-clone condition, not schema drift.
+        Err(_) => return Ok(tracked.into_iter().map(|k| (k.to_string(), None)).collect()),
     };
 
-    let parsed = match serde_json::from_str::<BuildTimingReceiptFile>(&raw) {
-        Ok(parsed) => parsed,
-        Err(_) => {
-            return tracked.into_iter().map(|k| (k.to_string(), None)).collect();
-        }
-    };
+    let parsed = serde_json::from_str::<BuildTimingReceiptFile>(&raw)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    if parsed.schema_version != BUILD_TIMING_RECEIPT_SCHEMA_VERSION {
+        let found = parsed.schema_version;
+        return Err(eyre!(
+            "build timing receipt schema version mismatch at {}: expected \
+             {BUILD_TIMING_RECEIPT_SCHEMA_VERSION}, got {found}",
+            path.display()
+        ));
+    }
 
-    tracked
+    Ok(tracked
         .into_iter()
         .map(|k| {
             let value = parsed.measurements.get(k).map(|m| round_one_decimal(m.duration_seconds));
             (k.to_string(), value)
         })
-        .collect()
+        .collect())
 }
 
 /// Return `Some(percent)` of `cap` consumed by `count`, or `None` when the
@@ -496,8 +509,44 @@ mod tests {
         fs::create_dir_all(&dir)?;
         fs::write(
             dir.join("build-timing-receipt.json"),
-            format!("{{\"measurements\": {measurements_json}}}"),
+            format!("{{\"schema_version\": 1, \"measurements\": {measurements_json}}}"),
         )?;
+        Ok(())
+    }
+
+    fn write_raw_receipt(root: &Path, contents: &str) -> Result<()> {
+        let dir = root.join("artifacts");
+        fs::create_dir_all(&dir)?;
+        fs::write(dir.join("build-timing-receipt.json"), contents)?;
+        Ok(())
+    }
+
+    /// #15357: a receipt from a future producer generation is refused instead
+    /// of silently rendering every dev-loop measurement as missing.
+    #[test]
+    fn read_dev_loop_durations_refuses_wrong_schema_version() -> Result<()> {
+        let tmp = TempDir::new()?;
+        write_raw_receipt(
+            tmp.path(),
+            r#"{"schema_version": 2, "measurements": {"clean_build_workspace": {"duration_seconds": 1.0}}}"#,
+        )?;
+        let err = read_dev_loop_durations(tmp.path())
+            .err()
+            .ok_or_else(|| eyre!("expected schema version rejection"))?;
+        assert!(err.to_string().contains("schema version mismatch"), "{err}");
+        Ok(())
+    }
+
+    /// #15357: legacy receipts without the envelope field fail closed; only a
+    /// wholly absent file degrades to all-`None`.
+    #[test]
+    fn read_dev_loop_durations_refuses_missing_schema_version() -> Result<()> {
+        let tmp = TempDir::new()?;
+        write_raw_receipt(tmp.path(), r#"{"measurements": {}}"#)?;
+        assert!(
+            read_dev_loop_durations(tmp.path()).is_err(),
+            "receipt without schema_version must fail closed"
+        );
         Ok(())
     }
 
@@ -742,22 +791,22 @@ technical_debt:
         Ok(())
     }
 
+    /// #15357: a present-but-unparseable receipt must fail closed — rendering
+    /// schema drift as "all measurements missing" hides a broken producer.
     #[test]
-    fn collect_tolerates_malformed_dev_loop_receipt() -> Result<()> {
+    fn collect_rejects_malformed_dev_loop_receipt() -> Result<()> {
         let tmp = TempDir::new()?;
         let dir = tmp.path().join("artifacts");
         fs::create_dir_all(&dir)?;
         fs::write(dir.join("build-timing-receipt.json"), "not json")?;
 
-        let m = collect_release_health(tmp.path(), 30)?;
-        for k in [
-            "clean_build_workspace",
-            "incremental_build_providers",
-            "incremental_build_parser",
-            "test_build_workspace",
-        ] {
-            assert_eq!(m.dev_loop_durations_seconds[k], None);
-        }
+        let err = collect_release_health(tmp.path(), 30)
+            .err()
+            .ok_or_else(|| eyre!("expected malformed receipt to fail closed"))?;
+        assert!(
+            err.to_string().contains("build-timing-receipt.json"),
+            "error should name the receipt: {err}"
+        );
         Ok(())
     }
 

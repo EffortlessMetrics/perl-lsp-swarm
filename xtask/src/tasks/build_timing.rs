@@ -2,7 +2,7 @@
 
 use crate::utils::project_root;
 use chrono::Utc;
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::{Context, Result, eyre};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -63,8 +63,14 @@ fn classify_improvement(improvement: f64) -> ImprovementClass {
     }
 }
 
+/// Schema version stamped by the producer and required (fail-closed) by
+/// consumers — `run_compare` here and `metrics release-health` in
+/// `tasks/metrics/release_health.rs` (#15357).
+pub(crate) const SCHEMA_VERSION: u32 = 1;
+
 #[derive(Serialize)]
 struct BuildTimingReceipt {
+    schema_version: u32,
     timestamp: String,
     toolchain: String,
     system: SystemInfo,
@@ -86,6 +92,9 @@ struct BuildMeasurement {
 
 #[derive(Deserialize)]
 struct MeasurableReceipt {
+    /// No serde default: a receipt without the envelope field fails to parse
+    /// (fail-closed) instead of being silently compared (#15357).
+    schema_version: u32,
     timestamp: String,
     toolchain: String,
     measurements: BTreeMap<String, BuildMeasurement>,
@@ -176,6 +185,7 @@ pub fn run_receipt(
     }
 
     let receipt = BuildTimingReceipt {
+        schema_version: SCHEMA_VERSION,
         timestamp: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         toolchain: command_output_or_unknown(&["rustc", "--version"]),
         system,
@@ -217,6 +227,21 @@ pub fn run_compare(baseline: PathBuf, current: PathBuf) -> Result<()> {
         serde_json::from_str(&baseline_raw).context("Failed to parse baseline receipt")?;
     let current: MeasurableReceipt =
         serde_json::from_str(&current_raw).context("Failed to parse current receipt")?;
+
+    // Fail closed on schema drift: a receipt written by a different producer
+    // generation must not be silently compared (#15357).
+    for (label, path, receipt) in
+        [("baseline", &baseline_path, &baseline), ("current", &current_path, &current)]
+    {
+        if receipt.schema_version != SCHEMA_VERSION {
+            let found = receipt.schema_version;
+            return Err(eyre!(
+                "Build timing {label} receipt schema version mismatch at {}: \
+                 expected {SCHEMA_VERSION}, got {found}",
+                path.display()
+            ));
+        }
+    }
 
     println!("# Build Timing Comparison");
     println!();
@@ -567,5 +592,33 @@ mod tests {
     #[test]
     fn classify_improvement_negative_at_eps_is_tie() {
         assert_eq!(classify_improvement(-1e-3), ImprovementClass::Tie);
+    }
+
+    /// Producer round-trip: the receipt stamps the current schema version and
+    /// the consumer-facing view parses it back (#15357).
+    #[test]
+    fn receipt_stamps_current_schema_version() -> Result<()> {
+        let receipt = BuildTimingReceipt {
+            schema_version: SCHEMA_VERSION,
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            toolchain: "rustc (test)".to_string(),
+            system: SystemInfo {
+                cpu_cores: Value::from(8u64),
+                memory_gb: Value::from(16.0),
+                os: "test".to_string(),
+            },
+            measurements: BTreeMap::from([(
+                "clean_build_workspace".to_string(),
+                BuildMeasurement { duration_seconds: 1.0, command: "cargo build".to_string() },
+            )]),
+        };
+        let raw = serde_json::to_string(&receipt).context("serialize receipt")?;
+        let parsed: MeasurableReceipt = serde_json::from_str(&raw).context("parse receipt")?;
+        assert_eq!(parsed.schema_version, SCHEMA_VERSION);
+        assert!(
+            parsed.measurements.contains_key("clean_build_workspace"),
+            "round-trip must keep measurements"
+        );
+        Ok(())
     }
 }
