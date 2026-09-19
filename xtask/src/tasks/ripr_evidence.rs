@@ -838,12 +838,26 @@ fn ripr_pr_summary_counts(
         // path matches a policy rule — skipping only path-unknown findings, not
         // classification-unknown ones.
         let Some(canonical) = canonical else {
+            // Known non-severe classes are intentionally absent from the three
+            // severe summary buckets.  They must remain visible in
+            // `suppressed_by_policy` / `outside_head_revision`, but cannot be
+            // subtracted from `severe_gaps` or a well-covered non-production
+            // finding could erase a real production gap.  Only a genuinely
+            // unknown class is safe to count as unclassified for that purpose.
+            let known_non_severe = matches!(
+                raw_class,
+                Some("exposed" | "static_unknown" | "infection_unknown" | "propagation_unknown")
+            );
             if suppression_matches_finding(suppressions, finding) {
                 suppressed.suppressed_by_policy += 1;
-                suppressed.suppressed_unclassified += 1;
+                if !known_non_severe {
+                    suppressed.suppressed_unclassified += 1;
+                }
             } else if outside {
                 outside_head.outside_head_revision += 1;
-                outside_head.outside_head_unclassified += 1;
+                if !known_non_severe {
+                    outside_head.outside_head_unclassified += 1;
+                }
             }
             continue;
         };
@@ -4925,8 +4939,9 @@ esac
             },
             "findings": [
                 {
-                    // Unrecognized classification — not in any canonical match arm.
-                    "classification": "static_unknown",
+                    // Genuinely unknown classification — not in any canonical
+                    // match arm or known non-severe set.
+                    "classification": "future_unknown",
                     "kind": "call_presence",
                     "seam": {
                         "file": "crates/perl-dap/src/debug_adapter/variables.rs",
@@ -4934,8 +4949,8 @@ esac
                     }
                 },
                 {
-                    // Also unrecognized, path matches suppression.
-                    "classification": "infection_unknown",
+                    // Also genuinely unknown, path matches suppression.
+                    "classification": "future_unknown",
                     "kind": "call_presence",
                     "seam": {
                         "file": "crates/perl-dap/src/debug_adapter/variables.rs",
@@ -5003,7 +5018,7 @@ esac
             },
             "findings": [
                 {
-                    "classification": "static_unknown",
+                    "classification": "future_unknown",
                     "kind": "call_presence",
                     "seam": {
                         "file": "crates/perl-lsp-rs/src/some_new_file.rs",
@@ -5036,6 +5051,51 @@ esac
             Some(&json!(1)),
             "unsuppressed unrecognized-classification finding must produce severe_gaps > 0"
         );
+        assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
+        Ok(())
+    }
+
+    #[test]
+    fn ripr_known_non_severe_suppression_does_not_erase_severe_gaps() -> Result<()> {
+        let options = PrEvidenceOptions {
+            root: ".".to_string(),
+            base: "origin/main".to_string(),
+            head: "HEAD".to_string(),
+            pr_head_sha: None,
+        };
+        let check_value = json!({
+            "summary": {
+                "weakly_exposed": 0,
+                "reachable_unrevealed": 1,
+                "no_static_path": 0
+            },
+            "findings": [{
+                "classification": "exposed",
+                "kind": "call_presence",
+                "seam": {
+                    "file": "crates/perl-dap/src/debug_adapter/variables.rs",
+                    "line": 584
+                }
+            }]
+        });
+        let suppressions = RiprSuppressionRules {
+            display_patterns: vec!["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
+            path_patterns: vec![Pattern::new("crates/perl-dap/src/debug_adapter/variables.rs")?],
+            invalid_patterns: Vec::new(),
+            suppression_reasons: Vec::new(),
+        };
+
+        let packet = pr_evidence_packet(
+            &options,
+            &["crates/perl-dap/src/debug_adapter/variables.rs".to_string()],
+            &check_value,
+            "base-sha",
+            "head-sha",
+            &suppressions,
+        );
+
+        assert_eq!(packet.pointer("/summary/suppressed_by_policy"), Some(&json!(1)));
+        assert_eq!(packet.pointer("/summary/severe_gaps"), Some(&json!(1)));
         assert_eq!(packet.pointer("/summary/ripr_severe_gap"), Some(&json!(true)));
         Ok(())
     }
