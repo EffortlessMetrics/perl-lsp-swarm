@@ -350,14 +350,10 @@ impl Census {
     /// never reaches a sender. `None` citations are the citation checker's
     /// finding, so a missing index simply answers `false`.
     pub fn closure_sends_method(&self, index: usize, method: &str) -> bool {
-        let reaches = self
-            .funcs
-            .get(index)
-            .is_some_and(|record| record.sent_methods.contains(method))
+        self.funcs.get(index).is_some_and(|record| record.sent_methods.contains(method))
             || self.reachable_from(index, MAX_DEPTH).into_keys().any(|reached| {
                 self.funcs.get(reached).is_some_and(|record| record.sent_methods.contains(method))
-            });
-        reaches
+            })
     }
 
     /// Files a name was found in, sorted.
