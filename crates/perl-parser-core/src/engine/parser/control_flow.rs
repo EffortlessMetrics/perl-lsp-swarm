@@ -654,10 +654,10 @@ impl<'a> Parser<'a> {
             // Span the consumed `goto` keyword so downstream ranges
             // (semantic tokens, hover, diagnostics) anchor to the real
             // source text instead of a zero-width point (#15742 review).
-            return Ok(Node::new(
+            return Ok(self.charge_node(
                 NodeKind::TargetlessGoto {},
                 SourceLocation { start, end: goto_token.end() },
-            ));
+            )?);
         };
 
         let end = target.location.end;
