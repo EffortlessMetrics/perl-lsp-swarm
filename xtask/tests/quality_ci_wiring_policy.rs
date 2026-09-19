@@ -4,6 +4,7 @@ use std::{fs, path::PathBuf};
 
 use anyhow::{Result, anyhow, ensure};
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use perl_tdd_support::{must, must_some};
 use serde_yaml_ng::Value;
 use toml::Value as TomlValue;
@@ -1236,6 +1237,134 @@ fn conventional_required_checks_record_live_proof_floor() {
             "docs must name advisory coverage context `{advisory}`"
         );
     }
+}
+
+#[test]
+fn agent_ledgers_validator_recipe_wired_into_merge_gate() {
+    // #15380 (local shift-left half): the `ci-agent-ledgers-validate` recipe
+    // plus a `_timed` call inside `merge-gate`, mirroring how `ci-format` /
+    // `ci-clippy` / `ci-policy` are wired. This is developer-facing only; the
+    // hosted closure proof is `agent_ledgers_validator_wired_into_hosted_policy_shard`
+    // below. This test pins the local half so it cannot silently regress.
+    let root = repo_root();
+    let justfile = must(fs::read_to_string(root.join("justfile")));
+
+    let recipe_marker = "ci-agent-ledgers-validate:";
+    let recipe_start = must_some(justfile.find(recipe_marker));
+    let recipe_window = &justfile[recipe_start..];
+    let recipe_end_rel = recipe_window.find("\n\n").unwrap_or(recipe_window.len());
+    let recipe = &recipe_window[..recipe_end_rel];
+    assert!(
+        recipe.contains("cargo xtask agent ledgers validate --format json"),
+        "ci-agent-ledgers-validate recipe must invoke the `agent ledgers validate` CLI in JSON mode, got: {recipe}"
+    );
+
+    let merge_gate_marker = "merge-gate: _check-tools-basic pr-fast";
+    let merge_gate_start = must_some(justfile.find(merge_gate_marker));
+    let merge_gate_window = &justfile[merge_gate_start..];
+    let merge_gate_end_rel = merge_gate_window.find("\n\n").unwrap_or(merge_gate_window.len());
+    let merge_gate = &merge_gate_window[..merge_gate_end_rel];
+    assert!(
+        merge_gate
+            .contains("_timed \"ci-agent-ledgers-validate\" \"just ci-agent-ledgers-validate\""),
+        "merge-gate must call ci-agent-ledgers-validate via _timed so non-zero exit fails closed"
+    );
+}
+
+#[test]
+fn agent_ledgers_validator_wired_into_hosted_policy_shard() {
+    // #15380 (hosted closure proof): the merge surface is not `just
+    // merge-gate` but ci.yml -> merge-gate-shards ->
+    // scripts/ci/run_gate_shard.py -> .ci/gate-policy.yaml. Every leg below
+    // is asserted independently so removing the gate from any one of them
+    // fails this test with the exact missing leg named.
+    let root = repo_root();
+
+    // Leg 1: the gate-policy defines a required merge_gate entry that runs
+    // the validator CLI in JSON mode.
+    let policy = must(fs::read_to_string(root.join(".ci/gate-policy.yaml")));
+    let gate_start = must_some(policy.find("  - name: agent_ledgers_validate"));
+    let gate_tail = &policy[gate_start..];
+    let gate_end = gate_tail.find("\n  - name:").unwrap_or(gate_tail.len());
+    let gate = &gate_tail[..gate_end];
+    for required in [
+        "tier: merge_gate",
+        "required: true",
+        "command: cargo xtask agent ledgers validate --format json",
+        "quarantine: false",
+    ] {
+        assert!(
+            gate.contains(required),
+            "agent_ledgers_validate gate entry must contain `{required}`, got: {gate}"
+        );
+    }
+
+    // Leg 2: the hosted `policy` shard executes the gate by name. The shard
+    // runner resolves names through `cargo xtask gates --gate`, so a name
+    // present here but absent from the policy is a loud runtime failure, not
+    // a silent skip — and a policy entry absent here never runs on merge.
+    let workflow = must(fs::read_to_string(root.join(".github/workflows/ci.yml")));
+    let policy_shard = must_some(workflow.find("- name: policy"));
+    let gates_key = must_some(workflow[policy_shard..].find("gates:"));
+    let gates_line_start = policy_shard + gates_key;
+    let gates_line_end_rel = must_some(workflow[gates_line_start..].find('\n'));
+    let gates_line = &workflow[gates_line_start..gates_line_start + gates_line_end_rel];
+    assert!(
+        gates_line.contains("agent_ledgers_validate"),
+        "ci.yml policy shard gates line must execute agent_ledgers_validate, got: {gates_line}"
+    );
+
+    // Leg 3: policy/workflow agreement — the workflow_integration job mapping
+    // must claim the same gate, or policy and execution disagree about what
+    // the merge surface owns.
+    let mapping_start = must_some(policy.find("job_mapping:"));
+    let mapping = &policy[mapping_start..];
+    assert!(
+        mapping.contains("agent_ledgers_validate"),
+        "workflow_integration.job_mapping.ci-gate.gates must list agent_ledgers_validate"
+    );
+
+    // Leg 4: the shard execution policy knows the gate (dependency row), and
+    // the lane/economics map accounts for it — otherwise the
+    // gate-enforcement and lane-mapping validators report the addition as
+    // unmapped the moment both files meet.
+    let execution = must(fs::read_to_string(root.join(".ci/gate-shard-execution.json")));
+    assert!(
+        execution.contains("\"agent_ledgers_validate\""),
+        "gate-shard-execution.json must carry an agent_ledgers_validate dependency row"
+    );
+    let lane_map = must(fs::read_to_string(root.join("scripts/ci/validate_gate_lane_mapping.py")));
+    assert!(
+        lane_map.contains("\"agent_ledgers_validate\""),
+        "GATE_TO_LANE_MAP must account for agent_ledgers_validate"
+    );
+}
+
+#[test]
+fn agent_ledgers_validator_runs_clean_against_committed_files() {
+    // #15380 (Lane A): once the validator is wired into merge-gate it must pass
+    // against the current committed ledger files. A future drift that breaks a
+    // committed row will fail this test (and the merge-gate), forcing the change
+    // through review instead of being silently absorbed.
+    let root = repo_root();
+    let ledger_dir = root.join("docs/agents/ledgers");
+    assert!(
+        ledger_dir.is_dir(),
+        "committed docs/agents/ledgers/ directory must exist for the wiring to have something to check"
+    );
+
+    let output = cargo_bin_cmd!("xtask")
+        .args(["agent", "ledgers", "validate", "--format", "json"])
+        .current_dir(&root)
+        .output()
+        .expect("spawn cargo xtask agent ledgers validate");
+    assert!(
+        output.status.success(),
+        "agent ledgers validate must pass against the committed files (issue #15380 wired the CLI into CI); \
+         stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 #[test]

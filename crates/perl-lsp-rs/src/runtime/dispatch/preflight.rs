@@ -93,7 +93,7 @@ pub(super) fn prepare_request(
 
 fn auto_initialize_for_compat(server: &LspServer, request: &JsonRpcRequest) {
     if !server.initialized.load(Ordering::Acquire)
-        && server.initialize_requested.load(Ordering::Acquire)
+        && server.initialization_accepted.load(Ordering::Acquire)
         && !is_lifecycle_method(&request.method)
     {
         server.auto_initialize_for_compat(&request.method);
